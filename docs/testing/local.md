@@ -359,7 +359,7 @@ real native sender image and requires `OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE` in
 its prepared state. To run both installed cases in that environment:
 
 ```sh
-OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.mjs
+OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.ts
 ```
 
 Both cases must pass. The receiver writes decoded OTLP to a temporary volume.

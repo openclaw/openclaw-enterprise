@@ -50,7 +50,26 @@ const timer = setInterval(() => {
 }, 100);
 `;
 
-function volumeFor(kind, name) {
+type VolumeKind = "secret" | "configmap";
+type Nudge = "none" | "pod-annotation";
+type WatcherRecord = {
+  watchingAtMs?: number;
+  seenAtMs?: number;
+};
+type VolumeCase = WatcherRecord & {
+  kind: VolumeKind;
+  nudge: Nudge;
+  sample: number;
+  name: string;
+  objectName: string;
+  expected: string;
+  createdAtMs?: number;
+  seconds?: number;
+};
+type ObjectInput = Pick<VolumeCase, "kind" | "objectName" | "expected"> & { namespace: string };
+type PodInput = ObjectInput & Pick<VolumeCase, "name">;
+
+function volumeFor(kind: VolumeKind, name: string) {
   return kind === "secret"
     ? {
         name: "late",
@@ -65,7 +84,7 @@ function volumeFor(kind, name) {
     : { name: "late", configMap: { name, optional: true } };
 }
 
-function podFor({ namespace, name, kind, objectName, expected }) {
+function podFor({ namespace, name, kind, objectName, expected }: PodInput) {
   const file = `${mountPath}/${kind === "secret" ? "setupCode" : "deviceId"}`;
   return {
     apiVersion: "v1",
@@ -104,7 +123,7 @@ function podFor({ namespace, name, kind, objectName, expected }) {
   };
 }
 
-function objectFor({ namespace, kind, objectName, expected }) {
+function objectFor({ namespace, kind, objectName, expected }: ObjectInput) {
   return kind === "secret"
     ? {
         apiVersion: "v1",
@@ -128,7 +147,13 @@ const podSelector = "openclaw.dev/test=volume-refresh";
 // case's log (label selector, prefixed by Pod), every pollIntervalMs.
 const pollIntervalMs = 2_000;
 
-async function waitForRecords(readLogs, cases, field, description, timeoutMs) {
+async function waitForRecords(
+  readLogs: () => Promise<string>,
+  cases: VolumeCase[],
+  field: keyof WatcherRecord,
+  description: string,
+  timeoutMs: number,
+) {
   const pending = () =>
     cases.filter((entry) => entry[field] === undefined).map((entry) => entry.name);
   await waitUntil(
@@ -137,8 +162,9 @@ async function waitForRecords(readLogs, cases, field, description, timeoutMs) {
       const records = podLogRecords(await readLogs());
       for (const entry of cases) {
         const record = records.get(entry.name)?.find((item) => item[field] !== undefined);
-        if (entry[field] === undefined && record !== undefined) {
-          entry[field] = record[field];
+        const value = record?.[field];
+        if (entry[field] === undefined && value !== undefined) {
+          entry[field] = value;
         }
       }
       return pending().length === 0;
@@ -147,13 +173,38 @@ async function waitForRecords(readLogs, cases, field, description, timeoutMs) {
   );
 }
 
+function watcherRecord(value: unknown): WatcherRecord {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+  const record: WatcherRecord = {};
+  if ("watchingAtMs" in value) {
+    assert.ok(
+      typeof value.watchingAtMs === "number" && Number.isFinite(value.watchingAtMs),
+      "Watcher startup time must be finite.",
+    );
+    record.watchingAtMs = value.watchingAtMs;
+  }
+  if ("seenAtMs" in value) {
+    assert.ok(
+      typeof value.seenAtMs === "number" && Number.isFinite(value.seenAtMs),
+      "Watcher observation time must be finite.",
+    );
+    record.seenAtMs = value.seenAtMs;
+  }
+  return record;
+}
+
 // `kubectl logs --prefix` lines read "[pod/<name>/<container>] <line>".
-function podLogRecords(text) {
-  const records = new Map();
+function podLogRecords(text: string) {
+  const records = new Map<string, WatcherRecord[]>();
   for (const line of text.split("\n")) {
     const match = /^\[pod\/([^/\]]+)\/[^\]]+\] (\{.*)$/.exec(line);
     if (match !== null) {
-      records.set(match[1], [...(records.get(match[1]) ?? []), JSON.parse(match[2])]);
+      const [, podName, recordText] = match;
+      if (podName !== undefined && recordText !== undefined) {
+        const parsed: unknown = JSON.parse(recordText);
+        const record = watcherRecord(parsed);
+        records.set(podName, [...(records.get(podName) ?? []), record]);
+      }
     }
   }
   return records;
@@ -170,7 +221,7 @@ test(
   async (t) => {
     assert.ok(image, "OCC_TEST_KUBERNETES_IMAGE must select an imported Kubernetes fixture image.");
     await validateExplicitK3dLoopbackContext(selection);
-    const kubectl = async (...args) =>
+    const kubectl = async (...args: string[]) =>
       (
         await execute("kubectl", kubectlArguments(selection, args), {
           timeout: 30_000,
@@ -182,9 +233,9 @@ test(
     await kubectl("create", "namespace", namespace);
     t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
 
-    const cases = [];
-    for (const kind of ["secret", "configmap"]) {
-      for (const nudge of ["none", "pod-annotation"]) {
+    const cases: VolumeCase[] = [];
+    for (const kind of ["secret", "configmap"] as const) {
+      for (const nudge of ["none", "pod-annotation"] as const) {
         for (let sample = 0; sample < samplesPerCase; sample += 1) {
           const name = `${kind}-${nudge === "none" ? "plain" : "nudged"}-${sample}`;
           cases.push({
@@ -272,8 +323,16 @@ test(
       );
     } finally {
       // Also on a timeout: the cases that did see their content keep their measurement.
-      for (const entry of cases.filter(({ seenAtMs }) => seenAtMs !== undefined)) {
-        entry.seconds = Math.round((entry.seenAtMs - entry.createdAtMs) / 100) / 10;
+      for (const entry of cases) {
+        const { createdAtMs, seenAtMs } = entry;
+        if (seenAtMs === undefined) {
+          continue;
+        }
+        assert.ok(
+          createdAtMs !== undefined && seenAtMs >= createdAtMs,
+          `${entry.name} must observe content at or after object creation.`,
+        );
+        entry.seconds = Math.round((seenAtMs - createdAtMs) / 100) / 10;
         t.diagnostic(
           `openclaw-ci-measurement ${JSON.stringify({
             kind: "kubelet-volume-refresh",
@@ -289,7 +348,7 @@ test(
     for (const entry of cases) {
       const bound = entry.nudge === "pod-annotation" ? nudgedBoundSeconds : unnudgedBoundSeconds;
       assert.ok(
-        entry.seconds <= bound,
+        entry.seconds !== undefined && entry.seconds <= bound,
         `${entry.kind} with nudge ${entry.nudge} took ${entry.seconds} s (bound ${bound} s)`,
       );
     }

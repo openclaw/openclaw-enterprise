@@ -887,6 +887,7 @@ export function createRealKubernetesFixture({
       child.once("error", onError);
       child.once("exit", onExit);
     });
+    /** @type {Promise<void> | undefined} */
     let stopping;
     return {
       url,

@@ -73,7 +73,43 @@ const resources = {
   limits: { cpu: "250m", memory: "96Mi" },
 };
 
-function pod(namespace, name, spec) {
+type VolumeMount = {
+  name: string;
+  mountPath: string;
+  subPath?: string;
+  readOnly?: boolean;
+};
+
+type MountObservation = { mount: string; uid: number; mode: number };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function assertMountObservations(value: unknown): asserts value is MountObservation[] {
+  assert.ok(Array.isArray(value));
+  const entries: readonly unknown[] = value;
+  for (const entry of entries) {
+    const observation = record(entry);
+    assert.ok(typeof observation.mount === "string");
+    assert.ok(typeof observation.uid === "number");
+    assert.ok(typeof observation.mode === "number");
+  }
+}
+
+function pod(
+  namespace: string,
+  name: string,
+  spec: {
+    containers: ReturnType<typeof container>[];
+    initContainers?: ReturnType<typeof container>[];
+  },
+) {
   return {
     apiVersion: "v1",
     kind: "Pod",
@@ -90,7 +126,7 @@ function pod(namespace, name, spec) {
   };
 }
 
-function container(name, script, volumeMounts) {
+function container(name: string, script: string, volumeMounts: VolumeMount[]) {
   return {
     name,
     image,
@@ -113,7 +149,7 @@ test(
   async (t) => {
     assert.ok(image, "OCC_TEST_KUBERNETES_IMAGE must select an imported Kubernetes fixture image.");
     await validateExplicitK3dLoopbackContext(selection);
-    const kubectl = async (...args) =>
+    const kubectl = async (...args: string[]) =>
       (
         await execute("kubectl", kubectlArguments(selection, args), {
           timeout: 30_000,
@@ -131,16 +167,19 @@ test(
     // Lane cleanup empties that storage as root (scripts/ci/cleanup.mjs), so the case does not
     // wait for local-path to remove its volume.
     t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
-    const completed = (name) =>
+    const completed = (name: string): Promise<unknown> =>
       waitFor(`${name} to complete`, async () => {
-        const observed = await resource("pod", name, namespace);
-        if (observed.status?.phase === "Failed") {
+        const observed = record(await resource("pod", name, namespace));
+        const status = observed.status == null ? undefined : record(observed.status);
+        if (status?.phase === "Failed") {
           assert.fail(`${name} failed: ${JSON.stringify(observed.status)}`);
         }
-        return observed.status?.phase === "Succeeded" ? observed : undefined;
+        return status?.phase === "Succeeded" ? observed : undefined;
       });
-    const output = async (name) =>
-      JSON.parse((await kubectl("logs", name, "--namespace", namespace)).trim().split("\n").at(-1));
+    const output = async (name: string): Promise<unknown> =>
+      JSON.parse(
+        (await kubectl("logs", name, "--namespace", namespace)).trim().split("\n").at(-1) ?? "",
+      );
 
     await applyManifest(
       JSON.stringify({
@@ -164,7 +203,9 @@ test(
       ),
     );
     await completed("released");
-    for (const { mount, uid, mode } of await output("released")) {
+    const released = await output("released");
+    assertMountObservations(released);
+    for (const { mount, uid, mode } of released) {
       assert.equal(uid, 0, `${mount} must be kubelet-created, as in the release`);
       assert.equal(mode & 0o002, 0o002, `${mount} must be world-writable, as in the release`);
     }
@@ -192,9 +233,15 @@ test(
         }),
       ),
     );
-    const upgraded = await completed("upgraded");
-    assert.equal(upgraded.status.initContainerStatuses[0].state.terminated.exitCode, 0);
-    const observed = await output("upgraded");
+    const upgraded = record(await completed("upgraded"));
+    const initContainerStatuses = record(upgraded.status).initContainerStatuses;
+    assert.ok(Array.isArray(initContainerStatuses));
+    const initStatus = record(initContainerStatuses[0]);
+    const initState = record(initStatus.state);
+    const termination = record(initState.terminated);
+    assert.equal(termination.exitCode, 0);
+    const observed = record(await output("upgraded"));
+    assertMountObservations(observed.mounts);
     for (const { mount, uid, mode } of observed.mounts) {
       assert.equal(uid, 1000, `${mount} must now belong to the Harness user`);
       assert.equal(mode & 0o7777, 0o700, `${mount} must now be private`);

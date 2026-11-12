@@ -7,6 +7,8 @@ import { connect } from "node:net";
 import { createServer } from "node:tls";
 import test from "node:test";
 import { promisify } from "node:util";
+import { Check } from "typebox/value";
+import { NamespaceId } from "../../packages/contracts/src/index.ts";
 import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.ts";
@@ -15,13 +17,56 @@ import {
   observabilitySelection,
 } from "../helpers/production-observability-k3d.mjs";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function array(value: unknown): unknown[] {
+  assert.ok(Array.isArray(value));
+  return value;
+}
+
+function string(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function number(value: unknown): number {
+  assert.ok(typeof value === "number");
+  return value;
+}
+
+function named(value: unknown): value is Record<string, unknown> & { name: string } {
+  return (
+    typeof value === "object" && value !== null && "name" in value && typeof value.name === "string"
+  );
+}
+
+function deployment(value: unknown) {
+  const object = record(value);
+  const metadata = record(object.metadata);
+  const spec = record(object.spec);
+  return {
+    metadata: { uid: string(metadata.uid), generation: number(metadata.generation) },
+    spec: { replicas: number(spec.replicas) },
+  };
+}
+
 test(
   "separate migration Helm upgrades keep writers stopped until the database passes verification",
   observabilitySelection,
   async (t) => {
     const f = await installObservabilityControlPlane(t);
-    const installation = await f.api("GET", "/installation");
-    const sql = (statement) =>
+    const installation = record(await f.api("GET", "/installation"));
+    const installationId = string(installation.id);
+    const kubeconfigPath = string(f.selection.kubeconfigPath);
+    const kubernetesContext = string(f.selection.kubernetesContext);
+    const sql = (statement: string) =>
       f.kubectl(
         "-n",
         f.system,
@@ -44,11 +89,16 @@ test(
     const before = await receipts();
     // Finish real bootstrap provisioning so active writers have no deferred work
     // whose legitimate progress could obscure a migration-side database write.
-    const defaultNamespace = (await f.api("GET", "/namespaces")).find(
-      ({ name }) => name === "default",
+    const defaultNamespace = array(await f.api("GET", "/namespaces")).find(
+      (namespace) => named(namespace) && namespace.name === "default",
     );
-    assert.ok(defaultNamespace);
-    await f.readyNamespace(defaultNamespace);
+    assert.ok(defaultNamespace, "The default Namespace must be present.");
+    const namespaceId = record(defaultNamespace).id;
+    assert.ok(
+      Check(NamespaceId, namespaceId),
+      "The default Namespace ID must match the API contract.",
+    );
+    await f.readyNamespace({ id: namespaceId });
     await f.waitFor(
       "bootstrap work settled",
       async () =>
@@ -62,7 +112,7 @@ test(
       f.system,
       "annotate",
       "secret/occ-installation-startup",
-      `openclaw.dev/installation-id=${installation.id}`,
+      `openclaw.dev/installation-id=${installationId}`,
     );
 
     // Exercise the ordinary helper against this installed API and database. A
@@ -82,23 +132,28 @@ test(
       "cat",
       "/bootstrap/initial-admin-service-key.json",
     );
-    const serviceKey = JSON.parse(key).data;
-    f.secrets.push(serviceKey.key);
+    const serviceKey = record(record(JSON.parse(key)).data);
+    const serviceKeyId = string(serviceKey.id);
+    f.secrets.push(string(serviceKey.key));
     await writeFile(keyPath, key, { mode: 0o600 });
-    const startup = await f.get("secret", "occ-installation-startup");
+    const startup = record(await f.get("secret", "occ-installation-startup"));
     const installationPath = join(f.directory, "installation.json");
-    await writeFile(installationPath, Buffer.from(startup.data["installation.yaml"], "base64"), {
-      mode: 0o600,
-    });
+    await writeFile(
+      installationPath,
+      Buffer.from(string(record(startup.data)["installation.yaml"]), "base64"),
+      {
+        mode: 0o600,
+      },
+    );
     // Production listens on the Pod IP, while kubectl forwards to loopback.
     // Relay through the fixture's allowed operator without widening API ingress.
     const relay = spawn(
       "kubectl",
       [
         "--kubeconfig",
-        f.selection.kubeconfigPath,
+        kubeconfigPath,
         "--context",
-        f.selection.kubernetesContext,
+        kubernetesContext,
         "-n",
         f.system,
         "exec",
@@ -123,17 +178,18 @@ test(
       relay.once("exit", (code) => reject(new Error(`operator relay exited (${code})`)));
       relay.stdout.once("data", resolve);
     });
-    const connection = await createRealKubernetesFixture(f.selection).startPortForwardTarget(
-      f.system,
-      "pod/operator",
-      "0:3101",
-    );
+    const connection = await createRealKubernetesFixture({
+      ...f.selection,
+      gatewayImage: undefined,
+      codexImage: undefined,
+      databaseUrl: undefined,
+    }).startPortForwardTarget(f.system, "pod/operator", "0:3101");
     t.after(() => connection.stop());
     // Terminate verified test-owned TLS on loopback and relay bytes to the real
     // installed API; no HTTP operation or response is replaced by this transport.
     const tls = await harnessTlsFixture(t);
     const ingress = createServer(tls, (client) => {
-      const upstream = connect(Number(new URL(connection.url).port), "127.0.0.1");
+      const upstream = connect(Number(new URL(string(connection.url)).port), "127.0.0.1");
       client.on("error", () => upstream.destroy());
       client.on("close", () => upstream.destroy());
       upstream.on("error", () => client.destroy());
@@ -146,21 +202,23 @@ test(
       OCC_CA_BUNDLE: tls.rootCertificatePath,
       OCC_SERVICE_KEY_FILE: keyPath,
     };
-    const connected = JSON.parse(
-      await f.run(occ, ["--output", "json", "installation", "get"], {
-        env: cliEnvironment,
-      }),
+    const connected = record(
+      JSON.parse(
+        await f.run(occ, ["--output", "json", "installation", "get"], {
+          env: cliEnvironment,
+        }),
+      ),
     );
-    assert.equal(connected.id, installation.id);
-    const preflight = (name, preflightOnly) =>
+    assert.equal(string(connected.id), installationId);
+    const preflight = (name: string, preflightOnly: boolean) =>
       f.run(
         "bash",
         [
           "scripts/upgrade-production-images",
           "--kubeconfig",
-          f.selection.kubeconfigPath,
+          kubeconfigPath,
           "--context",
-          f.selection.kubernetesContext,
+          kubernetesContext,
           "--namespace",
           f.system,
           "--release",
@@ -170,7 +228,7 @@ test(
           "--installation",
           installationPath,
           "--runtime-image",
-          f.images.node,
+          string(f.images.node),
           "--source-revision",
           source,
           "--evidence-dir",
@@ -189,7 +247,7 @@ test(
     // Keep full dumps private. Authenticating the real CLI updates exactly this
     // key's last_request and updated_at; compare every other byte, including all
     // other keys, and verify the two expected timestamps independently.
-    const databaseSnapshot = async (name) => {
+    const databaseSnapshot = async (name: string) => {
       // Decode only after complete byte capture: pipe chunks can split UTF-8 characters.
       // Keep command failures generic because both streams may contain private data.
       const { stdout: bytes } = await promisify(execFile)(
@@ -212,22 +270,25 @@ test(
       });
       await writeFile(join(f.directory, `${name}.sql`), bytes, { mode: 0o600 });
       const dump = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-      let timestamps;
+      const captured: { timestamps?: number[] } = {};
       const normalized = dump.replace(
         /^COPY occ\.apikey \(([^\n]+)\) FROM stdin;\n([\s\S]*?)\n\\\.\n/m,
-        (section, header, data) => {
+        (_section: string, header: string, data: string) => {
           const columns = header.split(", ");
           const idIndex = columns.indexOf("id");
           const indices = ["last_request", "updated_at"].map((column) => columns.indexOf(column));
           assert.ok(idIndex >= 0 && indices.every((index) => index >= 0));
           const rows = data.split("\n").map((row) => {
             const values = row.split("\t");
-            if (values[idIndex] !== serviceKey.id) {
+            if (values[idIndex] !== serviceKeyId) {
               return row;
             }
-            assert.equal(timestamps, undefined, "exactly one CLI service key must match");
-            timestamps = indices.map((index) => Date.parse(values[index]));
-            assert.ok(timestamps.every(Number.isFinite), "authentication timestamps must be valid");
+            assert.equal(captured.timestamps, undefined, "exactly one CLI service key must match");
+            captured.timestamps = indices.map((index) => Date.parse(values[index] ?? ""));
+            assert.ok(
+              captured.timestamps.every(Number.isFinite),
+              "authentication timestamps must be valid",
+            );
             for (const index of indices) {
               values[index] = "<authentication timestamp>";
             }
@@ -236,10 +297,16 @@ test(
           return `COPY occ.apikey (${header}) FROM stdin;\n${rows.join("\n")}\n\\.\n`;
         },
       );
-      assert.ok(timestamps, "full dump must include the exact CLI service key");
-      return { hash: createHash("sha256").update(normalized).digest("hex"), timestamps };
+      assert.ok(captured.timestamps, "full dump must include the exact CLI service key");
+      return {
+        hash: createHash("sha256").update(normalized).digest("hex"),
+        timestamps: captured.timestamps,
+      };
     };
-    const assertDatabase = async (before, name) => {
+    const assertDatabase = async (
+      before: Awaited<ReturnType<typeof databaseSnapshot>>,
+      name: string,
+    ) => {
       const after = await databaseSnapshot(name);
       assert.equal(
         after.hash,
@@ -247,28 +314,32 @@ test(
         "only the CLI key's authentication timestamps may change",
       );
       after.timestamps.forEach((timestamp, index) =>
-        assert.ok(timestamp >= before.timestamps[index]),
+        assert.ok(timestamp >= number(before.timestamps[index])),
       );
     };
-    const incumbent = {};
+    const incumbent: Record<string, ReturnType<typeof deployment>> = {};
     for (const component of ["api", "worker"]) {
-      incumbent[component] = await f.get("deployment", `openclaw-enterprise-${component}`);
+      incumbent[component] = deployment(
+        await f.get("deployment", `openclaw-enterprise-${component}`),
+      );
     }
     const assertIncumbent = async () => {
       for (const component of ["api", "worker"]) {
-        const actual = await f.get("deployment", `openclaw-enterprise-${component}`);
-        assert.equal(actual.metadata.uid, incumbent[component].metadata.uid);
-        assert.equal(actual.metadata.generation, incumbent[component].metadata.generation);
-        assert.equal(actual.spec.replicas, incumbent[component].spec.replicas);
+        const actual = deployment(await f.get("deployment", `openclaw-enterprise-${component}`));
+        const previous = incumbent[component];
+        assert.ok(previous);
+        assert.equal(actual.metadata.uid, previous.metadata.uid);
+        assert.equal(actual.metadata.generation, previous.metadata.generation);
+        assert.equal(actual.spec.replicas, previous.spec.replicas);
         assert.ok(actual.spec.replicas > 0);
       }
     };
-    const interior = JSON.parse(before)[14];
-    assert.match(interior.hash, /^[a-f0-9]{64}$/);
-    assert.ok(Number.isSafeInteger(interior.id));
-    await sql(
-      `UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=${interior.id}`,
-    );
+    const interior = record(array(JSON.parse(before))[14]);
+    const interiorHash = string(interior.hash);
+    const interiorId = number(interior.id);
+    assert.match(interiorHash, /^[a-f0-9]{64}$/);
+    assert.ok(Number.isSafeInteger(interiorId));
+    await sql(`UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=${interiorId}`);
     const corruptSnapshot = await databaseSnapshot("corrupt-before");
     for (const preflightOnly of [true, false]) {
       const name = preflightOnly ? "incompatible-preflight" : "incompatible-upgrade";
@@ -280,20 +351,24 @@ test(
       assert.match(log, /MIGRATION_HISTORY_UNSUPPORTED/);
       await assertDatabase(corruptSnapshot, `${name}-after`);
       await assertIncumbent();
-      const remaining = JSON.parse(
-        await f.kubectl(
-          "-n",
-          f.system,
-          "get",
-          "jobs,pods,secrets,networkpolicies",
-          "-l",
-          `app.kubernetes.io/instance=${f.release}`,
-          "-o",
-          "json",
+      const remaining = record(
+        JSON.parse(
+          await f.kubectl(
+            "-n",
+            f.system,
+            "get",
+            "jobs,pods,secrets,networkpolicies",
+            "-l",
+            `app.kubernetes.io/instance=${f.release}`,
+            "-o",
+            "json",
+          ),
         ),
       );
       assert.deepEqual(
-        remaining.items.filter(({ metadata }) => metadata.name.includes("-upgrade-preflight-")),
+        array(remaining.items).filter((item) =>
+          string(record(record(item).metadata).name).includes("-upgrade-preflight-"),
+        ),
         [],
         "preflight resources must be removed before return",
       );
@@ -301,7 +376,7 @@ test(
     // Restore only the exact injected fault. A successful read-only check must
     // leave the full database and the serving Deployments untouched as well.
     await sql(
-      `UPDATE drizzle.__drizzle_migrations SET hash='${interior.hash}' WHERE id=${interior.id}`,
+      `UPDATE drizzle.__drizzle_migrations SET hash='${interiorHash}' WHERE id=${interiorId}`,
     );
     const repairedSnapshot = await databaseSnapshot("repaired-before");
     await preflight("compatible-preflight", true);
@@ -324,45 +399,53 @@ test(
     );
     await f.waitFor(
       "both writers stopped",
-      async () => (await f.pods("api")).length === 0 && (await f.pods("worker")).length === 0,
+      async () =>
+        array(await f.pods("api")).length === 0 && array(await f.pods("worker")).length === 0,
     );
-    const stopped = {};
+    const stopped: Record<string, ReturnType<typeof deployment>> = {};
     for (const component of ["api", "worker"]) {
-      stopped[component] = await f.get("deployment", `openclaw-enterprise-${component}`);
+      stopped[component] = deployment(
+        await f.get("deployment", `openclaw-enterprise-${component}`),
+      );
     }
 
     // A real privilege drift must fail the chart's migration init container before
     // Helm restores either Deployment. Rendering the right argument alone cannot prove this.
     await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
     await assert.rejects(
-      f.upgrade({ database: { ...f.values.database, upgradeMigration: "separate" } }),
+      f.upgrade({
+        database: { ...record(record(f.values).database), upgradeMigration: "separate" },
+      }),
       /failed pre-upgrade|BackoffLimitExceeded/,
     );
-    const hook = await f.get("job", `${f.release}-initialization`);
-    const logs = await f.kubectl(
-      "-n",
-      f.system,
-      "logs",
-      `job/${hook.metadata.name}`,
-      "-c",
-      "migration",
-    );
+    const hook = record(await f.get("job", `${f.release}-initialization`));
+    const hookName = string(record(hook.metadata).name);
+    const logs = await f.kubectl("-n", f.system, "logs", `job/${hookName}`, "-c", "migration");
     assert.match(logs, /MIGRATION_HISTORY_UNSUPPORTED/);
     assert.equal(await receipts(), before);
     for (const component of ["api", "worker"]) {
-      const deployment = await f.get("deployment", `openclaw-enterprise-${component}`);
-      assert.equal(deployment.metadata.uid, stopped[component].metadata.uid);
-      assert.equal(deployment.metadata.generation, stopped[component].metadata.generation);
-      assert.equal(deployment.spec.replicas, 0);
-      assert.equal((await f.pods(component)).length, 0);
+      const currentDeployment = deployment(
+        await f.get("deployment", `openclaw-enterprise-${component}`),
+      );
+      const previous = stopped[component];
+      assert.ok(previous);
+      assert.equal(currentDeployment.metadata.uid, previous.metadata.uid);
+      assert.equal(currentDeployment.metadata.generation, previous.metadata.generation);
+      assert.equal(currentDeployment.spec.replicas, 0);
+      assert.equal(array(await f.pods(component)).length, 0);
     }
 
     // Reconcile the known fault, then use the documented independent migration Job
     // with the same candidate image, migrator Secret, and initialization network policy.
     await sql("GRANT SELECT ON occ.iam_identities TO occ_app");
-    const template = hook.spec.template;
-    const migration = template.spec.initContainers.find(({ name }) => name === "migration");
-    const mounts = new Set((migration.volumeMounts ?? []).map(({ name }) => name));
+    const template = record(record(record(hook.spec).template).spec);
+    const migration = array(template.initContainers).find(
+      (container) => named(container) && container.name === "migration",
+    );
+    assert.ok(named(migration));
+    const mounts = new Set(
+      array(migration.volumeMounts ?? []).map((mount) => string(record(mount).name)),
+    );
     const jobName = "separate-database-migration";
     await f.apply({
       apiVersion: "batch/v1",
@@ -379,12 +462,14 @@ test(
             },
           },
           spec: {
-            serviceAccountName: template.spec.serviceAccountName,
+            serviceAccountName: string(template.serviceAccountName),
             automountServiceAccountToken: false,
             restartPolicy: "Never",
-            securityContext: template.spec.securityContext,
+            securityContext: record(template.securityContext),
             containers: [{ ...migration, args: ["scripts/migrate-production.mjs"] }],
-            volumes: template.spec.volumes.filter(({ name }) => mounts.has(name)),
+            volumes: array(template.volumes).filter((volume) =>
+              mounts.has(string(record(volume).name)),
+            ),
           },
         },
       },
@@ -402,24 +487,17 @@ test(
     await f.kubectl("-n", f.system, "delete", "job", jobName, "--wait=true", "--timeout=120s");
 
     await f.upgrade({});
-    const checked = await f.kubectl(
-      "-n",
-      f.system,
-      "logs",
-      `job/${hook.metadata.name}`,
-      "-c",
-      "migration",
-    );
+    const checked = await f.kubectl("-n", f.system, "logs", `job/${hookName}`, "-c", "migration");
     assert.match(checked, /"event":"migration.checked","history":"completed"/);
     for (const component of ["api", "worker"]) {
       await f.currentPod(component);
       assert.equal(
-        (await f.get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
+        deployment(await f.get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
         1,
       );
     }
     assert.equal(await receipts(), before);
-    assert.equal((await f.api("GET", "/installation")).id, installation.id);
+    assert.equal(string(record(await f.api("GET", "/installation")).id), installationId);
     // Prove the recovered API and worker can still deploy an Agent through their real caller.
     const agent = await f.createAgent();
     await agent.deploy();
