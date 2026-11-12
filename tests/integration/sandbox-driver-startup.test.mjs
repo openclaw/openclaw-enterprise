@@ -996,10 +996,9 @@ test("a selected Google account keeps its request guard alongside an independent
   assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
 });
 
-test(
-  "OpenShell builds managed MCP rules for the declared endpoint and upstream tool name",
-  verifyManagedMcpProjection,
-);
+test("OpenShell builds managed MCP rules for the declared endpoint and upstream tool name", () => {
+  verifyManagedMcpProjection();
+});
 
 test("OpenShell limits a Slack connection to the revision's exact MCP tools and recovers after detach", async () => {
   assert.ok(managedSlackInstall);
