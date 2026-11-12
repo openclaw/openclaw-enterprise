@@ -231,7 +231,10 @@ binding. Reusing a referenced Kubernetes name cannot retarget an existing Agent.
 For first-time managed creation, require Agent `create` and `administer` on the
 Namespace collection plus Configuration `create`, and the existing exact source
 permissions. This delegates creation within that Namespace without Installation
-administration. Ordinary provisioning keeps its Installation `administer`
+administration. An Installation administrator delegates an already configured
+Role to an exact non-Agent ServicePrincipal in one Namespace through an audited
+IAM operation. The grant is revocable through ordinary AccessBinding deletion;
+it cannot create Roles or grant Installation permissions. Ordinary provisioning keeps its Installation `administer`
 requirement. Persist the source, actor and initial generation in the provisioning
 plan, then publish external ownership atomically with Agent creation. The worker
 reauthorizes that same delegated scope. Recover the accepted request by its
