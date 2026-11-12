@@ -17,14 +17,23 @@ import { TextDecoder } from "node:util";
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const oid = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
+type Classification =
+  | { mode: "full" | "docs"; reason: string; category: string }
+  | { mode: "tests"; reason: string; category: string; lanes: string[] };
+
+type LaneFile = Record<string, unknown> & { path: string };
+type LaneManifest = Record<string, unknown> & { files: LaneFile[] };
+
 class InspectionError extends Error {
-  constructor(message, category = "unavailable") {
+  readonly category: string;
+
+  constructor(message: string, category = "unavailable") {
     super(message);
     this.category = category;
   }
 }
 
-function gitStatus(...args) {
+function gitStatus(...args: string[]) {
   const result = spawnSync("git", args, { encoding: null, stdio: "ignore" });
   return result.error ? null : result.status;
 }
@@ -33,7 +42,7 @@ function gitStatus(...args) {
 const outputLimit = 64 * 1024 * 1024;
 
 // `input`, when given, is the command's standard input (for --batch modes).
-function gitWith(input, args, maxBuffer = outputLimit) {
+function gitWith(input: string | undefined, args: string[], maxBuffer = outputLimit) {
   const result = spawnSync("git", args, {
     encoding: null,
     maxBuffer,
@@ -45,13 +54,13 @@ function gitWith(input, args, maxBuffer = outputLimit) {
   return result.stdout;
 }
 
-function git(...args) {
+function git(...args: string[]) {
   return gitWith(undefined, args);
 }
 
 // Whether each name resolves to a commit, from one `git cat-file --batch-check`:
 // the answers `git cat-file -e <name>^{commit}` gives one process per name.
-function commitsPresent(names) {
+function commitsPresent(names: string[]) {
   const output = gitWith(names.map((name) => `${name}^{commit}\n`).join(""), [
     "cat-file",
     "--batch-check=%(objecttype)",
@@ -64,7 +73,7 @@ function commitsPresent(names) {
   return output.slice(0, -1).map((line) => line === "commit");
 }
 
-function documentationPath(path) {
+function documentationPath(path: string) {
   if (
     /^(?:docs|specs)\/(?:[\s\S]*\/)?AGENTS\.md$/.test(path) ||
     ["docs/reference/api.md", "docs/reference/cheatsheets/api.md"].includes(path) ||
@@ -93,11 +102,15 @@ const fallbackLane = "checks-baseline-1";
 const typecheckLane = "checks-baseline-2";
 const fixtureLane = "runtime-image-fixture";
 
-function isObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function parseJsonBlob(bytes) {
+function property(value: unknown, key: string): unknown {
+  return isObject(value) ? value[key] : undefined;
+}
+
+function parseJsonBlob(bytes: Uint8Array): unknown {
   try {
     return JSON.parse(decoder.decode(bytes));
   } catch {
@@ -114,9 +127,9 @@ const batchedBlobLimit = outputLimit / 2;
 // whose content is missing from the result (absent, larger than batchedBlobLimit,
 // or the batch failed or exceeded the output limit) is left out; its reader then
 // runs `git cat-file blob` alone, so it fails exactly as that command does.
-function batchContents(ids) {
-  const contents = new Map();
-  let output;
+function batchContents(ids: string[]): Map<string, Buffer> {
+  const contents = new Map<string, Buffer>();
+  let output: Buffer;
   try {
     output = gitWith(ids.map((id) => `${id}\n`).join(""), ["cat-file", "--batch"]);
   } catch {
@@ -153,33 +166,34 @@ function batchContents(ids) {
 // would: a path that is not exactly one regular non-executable file entry, or not
 // valid UTF-8 JSON, is unavailable; a failed Git command is an inspection failure.
 // A reader throws only when called, so callers see errors in the order they read.
-function readJsonBlobs(commit, paths) {
+function readJsonBlobs(commit: string, paths: string[]): Map<string, () => unknown> {
   if (paths.length === 0) {
     return new Map();
   }
-  const fail = (error) => () => {
+  const fail = (error: unknown) => () => {
     throw error;
   };
-  let listing;
+  let listing: string;
   try {
     listing = git("ls-tree", "-z", commit, "--", ...paths).toString("binary");
   } catch (error) {
     return new Map(paths.map((path) => [path, fail(error)]));
   }
   // A directory lists its children, so only an entry named exactly by a path counts.
-  const entries = new Map();
+  const entries = new Map<string, string | null>();
   for (const entry of listing.split("\0").slice(0, -1)) {
     const name = entry.slice(entry.indexOf("\t") + 1);
     entries.set(name, entries.has(name) ? null : entry);
   }
-  const blobs = new Map();
+  const blobs = new Map<string, string>();
   for (const path of paths) {
     const match = /^100644 blob ([0-9a-f]{40}|[0-9a-f]{64})\t/.exec(entries.get(path) ?? "");
-    if (match) {
+    if (match?.[1] !== undefined) {
       blobs.set(path, match[1]);
     }
   }
-  const contents = blobs.size > 0 ? batchContents([...new Set(blobs.values())]) : new Map();
+  const contents: Map<string, Buffer> =
+    blobs.size > 0 ? batchContents([...new Set(blobs.values())]) : new Map();
   const unavailable = fail(
     new InspectionError("suite manifest is unavailable", "manifest_unavailable"),
   );
@@ -195,16 +209,24 @@ function readJsonBlobs(commit, paths) {
   );
 }
 
-function readJsonBlob(commit, path) {
-  return readJsonBlobs(commit, [path]).get(path)();
+function readJsonFrom(readers: Map<string, () => unknown>, path: string): unknown {
+  const read = readers.get(path);
+  if (!read) {
+    throw new InspectionError("suite manifest is unavailable", "manifest_unavailable");
+  }
+  return read();
 }
 
-function suiteIndex(commit) {
+function readJsonBlob(commit: string, path: string): unknown {
+  return readJsonFrom(readJsonBlobs(commit, [path]), path);
+}
+
+function suiteIndex(commit: string) {
   const index = readJsonBlob(commit, suiteIndexPath);
   if (!isObject(index) || index.version !== 1 || !isObject(index.lanes)) {
     throw new InspectionError("suite index has an unexpected shape", "manifest_unavailable");
   }
-  const lanes = new Map();
+  const lanes = new Map<string, string>();
   for (const [name, target] of Object.entries(index.lanes)) {
     const match =
       typeof target === "string" && /^\.\/test-suites\/([a-z0-9-]+\.json)$/.exec(target);
@@ -213,37 +235,52 @@ function suiteIndex(commit) {
     }
     lanes.set(name, `scripts/ci/test-suites/${match[1]}`);
   }
-  const ci = index.groups?.ci;
+  const ci = property(index.groups, "ci");
+  if (!Array.isArray(ci)) {
+    throw new InspectionError("suite index has an unexpected shape", "manifest_unavailable");
+  }
+  const names: unknown[] = ci;
   if (
-    !Array.isArray(ci) ||
-    !ci.every((name) => typeof name === "string" && lanes.has(name)) ||
-    !ci.includes(fallbackLane)
+    !names.every((name): name is string => typeof name === "string" && lanes.has(name)) ||
+    !names.includes(fallbackLane)
   ) {
     throw new InspectionError("suite index has an unexpected shape", "manifest_unavailable");
   }
-  return { lanes, ci: new Set(ci) };
+  return { lanes, ci: new Set(names) };
 }
 
-function laneFiles(manifest) {
+function isLaneFile(file: unknown): file is LaneFile {
+  return isObject(file) && typeof file.path === "string";
+}
+
+function isLaneManifest(manifest: unknown): manifest is LaneManifest {
   if (!isObject(manifest) || !Array.isArray(manifest.files)) {
+    return false;
+  }
+  const files: unknown[] = manifest.files;
+  return files.every(isLaneFile);
+}
+
+function laneManifest(manifest: unknown): LaneManifest {
+  if (!isLaneManifest(manifest)) {
     throw new InspectionError("lane manifest has an unexpected shape", "manifest_unavailable");
   }
-  for (const file of manifest.files) {
-    if (!isObject(file) || typeof file.path !== "string") {
-      throw new InspectionError("lane manifest has an unexpected shape", "manifest_unavailable");
-    }
-  }
-  return manifest.files;
+  return manifest;
 }
 
-function withoutFiles(manifest, paths) {
+function laneFiles(manifest: unknown): LaneFile[] {
+  return laneManifest(manifest).files;
+}
+
+function withoutFiles(manifest: unknown, paths: Set<string>) {
+  const validated = laneManifest(manifest);
   return JSON.stringify({
-    ...manifest,
-    files: laneFiles(manifest).filter((file) => !paths.has(file.path)),
+    ...validated,
+    files: validated.files.filter((file) => !paths.has(file.path)),
   });
 }
 
-function selectTestLanes(mergeBase, tested, tests, manifests) {
+function selectTestLanes(mergeBase: string, tested: string, tests: string[], manifests: string[]) {
   // The index is outside the allowlist, so it is identical in both trees.
   const index = suiteIndex(mergeBase);
   const lanePaths = new Set(index.lanes.values());
@@ -255,8 +292,8 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
     tested,
     [...changedManifests].filter((path) => lanePaths.has(path)),
   );
-  const manifestAt = (commit, path) =>
-    (commit === mergeBase ? baseManifests : testedManifests).get(path)();
+  const manifestAt = (commit: string, path: string) =>
+    readJsonFrom(commit === mergeBase ? baseManifests : testedManifests, path);
   for (const path of changedManifests) {
     if (!lanePaths.has(path)) {
       throw new InspectionError("a changed manifest is not an indexed lane", "manifest_change");
@@ -272,7 +309,7 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
       );
     }
   }
-  const owners = new Map(tests.map((path) => [path, new Set()]));
+  const owners = new Map(tests.map((path) => [path, new Set<string>()]));
   for (const [name, path] of index.lanes) {
     const commits = changedManifests.has(path) ? [mergeBase, tested] : [mergeBase];
     for (const commit of commits) {
@@ -286,7 +323,7 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
   if (tree.split("\0").some((entry) => entry.startsWith("120000 "))) {
     throw new InspectionError("the tested tree contains a symbolic link", "referenced_test");
   }
-  const selected = new Set();
+  const selected = new Set<string>();
   for (const [path, lanes] of owners) {
     if (lanes.size === 0 || [...lanes].some((name) => !index.ci.has(name))) {
       throw new InspectionError("a changed test is not mapped only to CI lanes", "unmapped_test");
@@ -339,7 +376,7 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
   return [...selected].sort();
 }
 
-export function classify() {
+export function classify(): Classification {
   const push = process.env.GITHUB_EVENT_NAME === "push";
   const canonicalPush =
     push &&
@@ -353,13 +390,17 @@ export function classify() {
     };
   }
   try {
-    let eventText;
+    let eventText: string;
     try {
-      eventText = readFileSync(process.env.GITHUB_EVENT_PATH, "utf8");
+      const eventPath = process.env.GITHUB_EVENT_PATH;
+      if (eventPath === undefined) {
+        throw new InspectionError("event unavailable", "event_unavailable");
+      }
+      eventText = readFileSync(eventPath, "utf8");
     } catch {
       throw new InspectionError("event unavailable", "event_unavailable");
     }
-    let event;
+    let event: unknown;
     try {
       event = JSON.parse(eventText);
     } catch {
@@ -367,24 +408,32 @@ export function classify() {
     }
     if (
       push &&
-      (event?.ref !== "refs/heads/main" ||
-        event?.repository?.full_name !== "openclaw/openclaw-enterprise" ||
-        event?.forced !== false ||
-        event?.deleted !== false ||
-        event?.created !== false)
+      (property(event, "ref") !== "refs/heads/main" ||
+        property(property(event, "repository"), "full_name") !== "openclaw/openclaw-enterprise" ||
+        property(event, "forced") !== false ||
+        property(event, "deleted") !== false ||
+        property(event, "created") !== false)
     ) {
       throw new InspectionError("push is not an ordinary canonical main update", "invalid_event");
     }
-    const base = push ? event.before : event?.pull_request?.base?.sha;
-    const head = push ? event.after : event?.pull_request?.head?.sha;
+    const pullRequest = property(event, "pull_request");
+    const base = push ? property(event, "before") : property(property(pullRequest, "base"), "sha");
+    const head = push ? property(event, "after") : property(property(pullRequest, "head"), "sha");
     const tested = process.env.GITHUB_SHA;
-    if (![base, head, tested].every((value) => typeof value === "string" && oid.test(value))) {
+    if (
+      typeof base !== "string" ||
+      !oid.test(base) ||
+      typeof head !== "string" ||
+      !oid.test(head) ||
+      typeof tested !== "string" ||
+      !oid.test(tested)
+    ) {
       throw new InspectionError("missing or invalid commit identifiers", "invalid_identity");
     }
     // The checkout's commit and its parents, from one process. If that fails, HEAD's
     // commit alone tells a mismatched checkout from a failed inspection, as it did
     // when the commit and its parents each had their own process.
-    let shown;
+    let shown: Buffer;
     try {
       shown = git("show", "-s", "--format=%H %P", "HEAD^{commit}", "--");
     } catch (error) {
@@ -398,7 +447,7 @@ export function classify() {
     if (actual !== tested) {
       throw new InspectionError("checkout does not match tested commit", "checkout_mismatch");
     }
-    let mergeBase;
+    let mergeBase: string;
     if (push) {
       if (head !== tested || /^0+$/.test(base) || /^0+$/.test(head)) {
         throw new InspectionError("push endpoints do not match checkout", "checkout_mismatch");
@@ -414,7 +463,13 @@ export function classify() {
       }
       mergeBase = base;
     } else {
-      if (parents.length !== 2 || !oid.test(parents[0]) || parents[1] !== head) {
+      const firstParent = parents[0];
+      if (
+        parents.length !== 2 ||
+        firstParent === undefined ||
+        !oid.test(firstParent) ||
+        parents[1] !== head
+      ) {
         throw new InspectionError(
           "event commits do not match the tested merge parents",
           "checkout_mismatch",
@@ -424,8 +479,8 @@ export function classify() {
       // the event's base.sha when the base moved after the push. The tested
       // merge's first parent is the base of the tested tree. A depth-two
       // checkout lacks an older base.sha; when it is present it must be behind.
-      mergeBase = parents[0];
-      let present;
+      mergeBase = firstParent;
+      let present: boolean[];
       try {
         present = commitsPresent(base === mergeBase ? [mergeBase, head] : [mergeBase, head, base]);
       } catch (error) {
@@ -479,13 +534,18 @@ export function classify() {
     const manifests = [];
     let documents = 0;
     for (let i = 0; i < fields.length; i += 2) {
-      const header = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([AMDT])$/.exec(fields[i]);
-      if (!header) {
+      const rawHeader = fields[i];
+      const rawPath = fields[i + 1];
+      const header =
+        rawHeader === undefined
+          ? null
+          : /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([AMDT])$/.exec(rawHeader);
+      if (!header || rawPath === undefined) {
         throw new InspectionError("diff has an unexpected shape", "malformed_diff");
       }
-      let path;
+      let path: string;
       try {
-        path = decoder.decode(Buffer.from(fields[i + 1], "binary"));
+        path = decoder.decode(Buffer.from(rawPath, "binary"));
       } catch {
         throw new InspectionError("filename is not UTF-8", "filename_not_utf8");
       }
@@ -554,18 +614,19 @@ export function classify() {
 }
 
 // Throws unless `args` is a command line the CLI accepts.
-export function checkArguments(args) {
+export function checkArguments(args: string[]): asserts args is [string, string, ...string[]] {
   const [option, value] = args;
   const verifyLanes = option === "--verify-mode" && value === "tests";
   if (
     args.length !== (verifyLanes ? 4 : 2) ||
     !value ||
+    !option ||
     !["--github-output", "--verify-mode"].includes(option) ||
     (option === "--verify-mode" && !["docs", "full", "tests"].includes(value)) ||
     (verifyLanes && (args[2] !== "--lanes" || !args[3]))
   ) {
     throw new Error(
-      "usage: impact.mjs --github-output PATH | --verify-mode docs|full | --verify-mode tests --lanes JSON",
+      "usage: impact.ts --github-output PATH | --verify-mode docs|full | --verify-mode tests --lanes JSON",
     );
   }
 }
@@ -574,7 +635,7 @@ export function checkArguments(args) {
 // line, and the GitHub output to append or whether the requested mode verified.
 // Exported with classify() so tests can check many command lines against one
 // classification; main() is the only production caller.
-export function respond(args, result) {
+export function respond(args: string[], result: Classification) {
   const [option, value] = args;
   const lanes = result.mode === "tests" ? JSON.stringify(result.lanes) : null;
   const line = `CI impact: ${result.mode} (${result.reason})${lanes ? ` ${lanes}` : ""}`;
@@ -620,7 +681,10 @@ function main() {
 // or when that cannot be told (as it always ran before).
 function startedAsScript() {
   try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+    const entry = process.argv[1];
+    return (
+      entry === undefined || realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
+    );
   } catch {
     return true;
   }

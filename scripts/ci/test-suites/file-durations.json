@@ -167,7 +167,7 @@
     "tests/integration/ci-image-pull.test.ts": 1200,
     "tests/integration/ci-image-reconciliation.test.ts": 1300,
     "tests/integration/ci-impact-gate.test.ts": 2500,
-    "tests/integration/ci-impact.test.mjs": 19600,
+    "tests/integration/ci-impact.test.ts": 19600,
     "tests/integration/ci-logging.test.ts": 100,
     "tests/integration/ci-openshell.test.mjs": 10600,
     "tests/integration/ci-prepare-k3d.test.mjs": 7500,

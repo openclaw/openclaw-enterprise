@@ -80,7 +80,7 @@ The second parent must match the event head. Main pushes use `before` policy for
 `before`→verified `after` diff. Missing history,
 forced pushes, and older policies retain full CI.
 Decoding preserves leading UTF-8 BOMs.
-`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown, `docs/docs.json`
+`scripts/ci/impact.ts:documentationPath` admits allowlisted Markdown, `docs/docs.json`
 and `specs/rfcs/**/*.png`. Generated API references, other images, executables and
 symlinks require full CI.
 
