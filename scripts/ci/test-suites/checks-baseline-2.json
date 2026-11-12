@@ -98,7 +98,7 @@
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.ts",
     "tests/integration/plugin-driver-real-preflight.test.mjs",
-    "tests/conformance/postgres-transaction-commit.test.mjs",
+    "tests/conformance/postgres-transaction-commit.test.ts",
     "tests/conformance/plugin-runtime-policy.test.mjs",
     "tests/integration/password-sign-in-policy.test.ts",
     "tests/integration/compute-singleton-worker.test.mjs",
@@ -458,7 +458,7 @@
       "path": "tests/conformance/repository-transactions.test.mjs"
     },
     {
-      "path": "tests/conformance/postgres-transaction-commit.test.mjs"
+      "path": "tests/conformance/postgres-transaction-commit.test.ts"
     },
     {
       "path": "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
