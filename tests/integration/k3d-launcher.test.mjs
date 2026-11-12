@@ -78,6 +78,7 @@ async function runLauncher(
   const state = join(root, "state", "openclaw-enterprise", `k3d-${engine}-${stateHarness}`);
   const invocation = join(root, "node-invocation.json");
   const prepareCount = join(root, "prepare-count");
+  const preparationInvocations = join(root, "preparation-invocations.jsonl");
   const imagePulls = join(root, "image-pulls");
   const clipboard = join(root, "clipboard");
   const resetCalled = join(root, "reset-called");
@@ -160,6 +161,9 @@ exit 91
       `
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
+
+appendFileSync(${JSON.stringify(preparationInvocations)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 const result = spawnSync(process.execPath, process.argv.slice(2), {
   encoding: "utf8",
   env: { ...process.env, OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "fixture-mutable" },
@@ -327,6 +331,29 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
     expectedPreparations = "0\n";
   }
   assert.equal(await readFile(prepareCount, "utf8"), expectedPreparations);
+  if (realPreparationAdmission) {
+    const preparations = (await readFile(preparationInvocations, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    // A fresh launch creates lane state before file preparation; reset reuses it.
+    // Reaching the image gate alone cannot distinguish these preparation modes.
+    assert.deepEqual(
+      preparations,
+      (afterReset ? ["--file"] : ["--selected-file", "--file"]).map((selection) => [
+        "scripts/ci/prepare.mjs",
+        "--lane",
+        "openshell",
+        selection,
+        "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        "--state",
+        join(state, "state.json"),
+        "--github-env",
+        join(state, "env"),
+      ]),
+      "native launcher must prepare the selected lane before preparing the same file",
+    );
+  }
   if (action === "copy") {
     return { clipboard: await readFile(clipboard, "utf8"), stdout };
   }
@@ -712,12 +739,19 @@ test("native OpenClaw preparation requires its API key instead of a Codex token"
     ["openclaw", "test-only-value", /CI state already exists/],
     ["openclaw", "", /Missing required CI input\(s\): OPENAI_API_KEY/],
   ]) {
-    // An existing owned state stops bootstrap before infrastructure effects. Only the
-    // native helper's explicit selection may pass credential admission without Codex.
+    // An existing owned state stops bootstrap before infrastructure effects. The
+    // native helper selects its single workflow to avoid unrelated PAT requirements.
     await assert.rejects(
       execute(
         process.execPath,
-        ["scripts/ci/prepare.mjs", "--lane", "openshell", "--state", existingState],
+        [
+          "scripts/ci/prepare.mjs",
+          "--lane",
+          "openshell",
+          ...(helperHarness === "openclaw" ? ["--selected-file", nativeFile] : []),
+          "--state",
+          existingState,
+        ],
         {
           env: {
             ...process.env,
