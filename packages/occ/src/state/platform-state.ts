@@ -129,6 +129,10 @@ import type {
   AgentProvisioningReadRepository,
   AgentProvisioningRepository,
 } from "./agent-provisioning.ts";
+import type {
+  ObserverInvocationReadRepository,
+  ObserverInvocationRepository,
+} from "./observer-invocation.ts";
 
 export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 
@@ -1268,6 +1272,7 @@ export interface PlatformReadView {
   readonly iamPolicy: IAMPolicyReadRepository;
   readonly repositorySessions: RepositorySessionReadRepository;
   readonly provisioning: AgentProvisioningReadRepository;
+  readonly observer: ObserverInvocationReadRepository;
   readonly operations: PlatformOperationReadRepository;
 }
 
@@ -1291,6 +1296,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly iamPolicy: IAMPolicyRepository;
   readonly repositorySessions: RepositorySessionRepository;
   readonly provisioning: AgentProvisioningRepository;
+  readonly observer: ObserverInvocationRepository;
   readonly audit: PlatformAuditRepository;
   readonly operations: PlatformOperationRepository;
 }
@@ -4589,6 +4595,14 @@ function repositories(
   const provisioningAbsent = async (): Promise<undefined> => undefined;
   const provisioningPendingAbsent = async (): Promise<boolean> => false;
 
+  const observerUnavailable = async (): Promise<never> => {
+    throw new DependencyUnavailableError(
+      "Observer invocations require durable PostgreSQL state for checkpoints.",
+    );
+  };
+  const observerAbsent = async (): Promise<undefined> => undefined;
+  const observerHistoryAbsent = async (): Promise<readonly never[]> => Object.freeze([]);
+
   return {
     installations,
     namespaces,
@@ -4625,6 +4639,16 @@ function repositories(
       settleAbandonedEffect: provisioningUnavailable,
       retryByWorkId: provisioningUnavailable,
       releaseConfiguration: async () => false,
+    },
+    observer: {
+      findByWorkId: observerAbsent,
+      findWithWork: observerAbsent,
+      findByRequest: observerAbsent,
+      listRevisionInvocations: observerHistoryAbsent,
+      create: observerUnavailable,
+      checkpoint: observerUnavailable,
+      recordFailure: observerUnavailable,
+      cancel: observerUnavailable,
     },
     audit: {
       async append(event) {

@@ -144,6 +144,18 @@ import {
   type CreateAgentProvisioningRecord,
 } from "./agent-provisioning.ts";
 import {
+  copyObserverInvocationRecord,
+  validateObserverInvocationCheckpoint,
+  validateObserverInvocationCreate,
+  validateObserverInvocationFailure,
+  validateObserverInvocationReplay,
+  type CreateObserverInvocationRecord,
+  type ObserverInvocationCheckpoint,
+  type ObserverInvocationFailure,
+  type ObserverInvocationQualification,
+  type ObserverInvocationRecord,
+} from "./observer-invocation.ts";
+import {
   assertHarnessAuthAvailable,
   assertRevisionAuthAvailable,
   assertSameCredentialSourceFields,
@@ -1225,6 +1237,50 @@ function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioning
       : { revisionId: text(row, "revision_id") }),
     plan: jsonObject(row.plan),
     progress: jsonObject(row.progress),
+    createdAt: timestampDate(row, "created_at"),
+    updatedAt: timestampDate(row, "updated_at"),
+  });
+}
+
+function observerInvocationRecordFromRow(row: PostgresRow): Readonly<ObserverInvocationRecord> {
+  const status = text(row, "status");
+  if (
+    status !== "queued" &&
+    status !== "running" &&
+    status !== "failed" &&
+    status !== "succeeded" &&
+    status !== "cancelled"
+  ) {
+    throw new DependencyUnavailableError("Persisted observer invocation status is invalid.");
+  }
+  const completedPhase = text(row, "completed_phase");
+  if (
+    completedPhase !== "admitted" &&
+    completedPhase !== "target_resolved" &&
+    completedPhase !== "observer_created" &&
+    completedPhase !== "ready" &&
+    completedPhase !== "terminal" &&
+    completedPhase !== "cleanup"
+  ) {
+    throw new DependencyUnavailableError("Persisted observer invocation phase is invalid.");
+  }
+  const targetRole = text(row, "target_role");
+  if (targetRole !== "agent" && targetRole !== "gateway") {
+    throw new DependencyUnavailableError("Persisted observer invocation target role is invalid.");
+  }
+  return copyObserverInvocationRecord({
+    workId: text(row, "work_id"),
+    namespaceId: text(row, "namespace_id"),
+    agentId: text(row, "agent_id"),
+    revisionId: text(row, "revision_id"),
+    actorId: text(row, "actor_id"),
+    requestId: text(row, "request_id"),
+    requestFingerprint: text(row, "request_fingerprint"),
+    targetRole,
+    status,
+    completedPhase,
+    plan: jsonObject(row.plan) as unknown as ObserverInvocationRecord["plan"],
+    progress: jsonObject(row.progress) as unknown as ObserverInvocationRecord["progress"],
     createdAt: timestampDate(row, "created_at"),
     updatedAt: timestampDate(row, "updated_at"),
   });
@@ -5584,6 +5640,411 @@ export class PostgresPlatformState implements PlatformStateStore {
             [namespaceId, configurationId],
           );
           return released.rowCount === 1;
+        },
+      },
+      observer: {
+        findByWorkId: async (workId) => {
+          const found = rows(
+            (
+              await client.query("SELECT * FROM occ.observer_invocations WHERE work_id = $1", [
+                workId,
+              ])
+            ).rows,
+          );
+          return found[0] === undefined ? undefined : observerInvocationRecordFromRow(found[0]);
+        },
+        findWithWork: async (workId) => {
+          const found = rows(
+            (
+              await client.query(
+                `SELECT invocation.*,
+                          to_jsonb(work) || jsonb_build_object(
+                            'lease_active',
+                            work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()
+                          ) AS controller_work
+                   FROM occ.observer_invocations AS invocation
+                   LEFT JOIN occ.controller_work AS work
+                     ON work.idempotency_key = invocation.work_id
+                   WHERE invocation.work_id = $1`,
+                [workId],
+              )
+            ).rows,
+          );
+          if (found[0] === undefined) {
+            return undefined;
+          }
+          const work = found[0].controller_work;
+          return Object.freeze({
+            record: observerInvocationRecordFromRow(found[0]),
+            ...(work === null || work === undefined ? {} : { work: asWork(work) }),
+          });
+        },
+        findByRequest: async (namespaceId, actorId, requestId) => {
+          const found = rows(
+            (
+              await client.query(
+                `SELECT * FROM occ.observer_invocations
+                   WHERE namespace_id = $1 AND actor_id = $2 AND request_id = $3`,
+                [namespaceId, actorId, requestId],
+              )
+            ).rows,
+          );
+          return found[0] === undefined ? undefined : observerInvocationRecordFromRow(found[0]);
+        },
+        listRevisionInvocations: async (namespaceId, agentId, revisionId) => {
+          const found = rows(
+            (
+              await client.query(
+                `SELECT * FROM occ.observer_invocations
+                   WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3
+                   ORDER BY created_at, work_id`,
+                [namespaceId, agentId, revisionId],
+              )
+            ).rows,
+          );
+          return Object.freeze(found.map(observerInvocationRecordFromRow));
+        },
+        create: async (
+          input: CreateObserverInvocationRecord,
+          qualification: Readonly<ObserverInvocationQualification>,
+        ) => {
+          const record = validateObserverInvocationCreate(input, qualification);
+          await this.requireInitialized(context);
+          await queue.enqueue({
+            kind: "observer",
+            idempotencyKey: record.workId,
+            namespaceId: record.namespaceId,
+            agentId: record.agentId,
+            revisionId: record.revisionId,
+            actorId: record.actorId,
+          });
+          const inserted = rows(
+            (
+              await client.query(
+                `INSERT INTO occ.observer_invocations (
+                     work_id, namespace_id, agent_id, revision_id, actor_id,
+                     request_id, request_fingerprint, target_role, status, completed_phase,
+                     qualification, plan, progress, created_at, updated_at
+                   )
+                   SELECT work.idempotency_key, work.namespace_id, work.agent_id,
+                     work.revision_id, work.actor_id, $6::text, $7::text, $8::text,
+                     'queued', 'admitted', $9::jsonb, $10::jsonb, '{}'::jsonb,
+                     clock_timestamp(), clock_timestamp()
+                   FROM occ.controller_work AS work
+                   WHERE work.idempotency_key = $1
+                     AND work.work_kind = 'observer'
+                     AND work.namespace_id = $2
+                     AND work.agent_id = $3
+                     AND work.revision_id = $4
+                     AND work.actor_id = $5
+                     AND work.namespace_target IS NULL
+                     AND work.agent_target IS NULL
+                   ON CONFLICT (namespace_id, actor_id, request_id) DO NOTHING
+                   RETURNING *`,
+                [
+                  record.workId,
+                  record.namespaceId,
+                  record.agentId,
+                  record.revisionId,
+                  record.actorId,
+                  record.requestId,
+                  record.requestFingerprint,
+                  record.targetRole,
+                  JSON.stringify(qualification),
+                  JSON.stringify(record.plan),
+                ],
+              )
+            ).rows,
+          );
+          if (inserted[0] !== undefined) {
+            return Object.freeze({
+              record: observerInvocationRecordFromRow(inserted[0]),
+              replayed: false,
+            });
+          }
+          const existing = await this.repositories(context).observer.findByRequest(
+            record.namespaceId,
+            record.actorId,
+            record.requestId,
+          );
+          if (existing === undefined) {
+            throw new ResourceConflictError(
+              "The observer invocation could not be reserved with its accepted plan.",
+            );
+          }
+          validateObserverInvocationReplay(existing, record);
+          return Object.freeze({ record: existing, replayed: true });
+        },
+        checkpoint: async (claim, checkpoint: ObserverInvocationCheckpoint) => {
+          const current = await this.repositories(context).observer.findByWorkId(
+            claim.idempotencyKey,
+          );
+          if (current === undefined) {
+            throw new ResourceConflictError("The observer invocation record is unavailable.");
+          }
+          if (
+            current.status === "succeeded" ||
+            current.status === "failed" ||
+            current.status === "cancelled"
+          ) {
+            throw new ScopeViolationError(
+              "Terminal observer invocation work cannot be checkpointed.",
+            );
+          }
+          const next = validateObserverInvocationCheckpoint(checkpoint, current.plan);
+          if (next.status === "failed" || next.status === "cancelled") {
+            throw new ScopeViolationError(
+              "Observer failure and cancellation must use their lifecycle repository methods.",
+            );
+          }
+          const updated = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+                     SELECT work.*
+                     FROM occ.controller_work AS work
+                     JOIN occ.observer_invocations AS invocation
+                       ON invocation.work_id = work.idempotency_key
+                     WHERE invocation.work_id = $1
+                       AND work.work_kind = 'observer'
+                       AND work.namespace_id = invocation.namespace_id
+                       AND work.agent_id = invocation.agent_id
+                       AND work.revision_id = invocation.revision_id
+                       AND work.actor_id = invocation.actor_id
+                       AND work.namespace_target IS NULL
+                       AND work.agent_target IS NULL
+                       AND work.state = 'claimed'
+                       AND work.claim_token = $2::uuid
+                       AND work.lease_expires_at > clock_timestamp()
+                     FOR UPDATE OF work
+                   ), updated_invocation AS (
+                     UPDATE occ.observer_invocations AS invocation
+                     SET completed_phase = $3::text,
+                         status = COALESCE($4::text, invocation.status),
+                         progress = COALESCE($5::jsonb, invocation.progress),
+                         updated_at = clock_timestamp()
+                     FROM owner
+                     WHERE invocation.work_id = owner.idempotency_key
+                       AND invocation.status NOT IN ('succeeded', 'failed', 'cancelled')
+                       AND invocation.progress = $6::jsonb
+                     RETURNING invocation.*
+                    )
+                    SELECT * FROM updated_invocation`,
+                [
+                  claim.idempotencyKey,
+                  claim.claimToken,
+                  next.completedPhase,
+                  next.status ?? null,
+                  next.progress === undefined ? null : JSON.stringify(next.progress),
+                  JSON.stringify(current.progress),
+                ],
+              )
+            ).rows,
+          );
+          if (updated[0] === undefined) {
+            throw new WorkClaimLostError();
+          }
+          const record = observerInvocationRecordFromRow(updated[0]);
+          if (next.completedPhase === "cleanup" && next.status === "succeeded") {
+            await queue.complete(claim, { code: "OBSERVER_COMPLETED" });
+          }
+          return record;
+        },
+        recordFailure: async (
+          claim,
+          checkpoint: ObserverInvocationCheckpoint,
+          failure: ObserverInvocationFailure,
+        ) => {
+          const current = await this.repositories(context).observer.findByWorkId(
+            claim.idempotencyKey,
+          );
+          if (current === undefined) {
+            throw new ResourceConflictError("The observer invocation record is unavailable.");
+          }
+          if (
+            current.status === "succeeded" ||
+            current.status === "failed" ||
+            current.status === "cancelled"
+          ) {
+            throw new ScopeViolationError("Terminal observer invocation work cannot fail again.");
+          }
+          const next = validateObserverInvocationCheckpoint(checkpoint, current.plan);
+          const failed = validateObserverInvocationFailure(failure);
+          const terminalFailure = next.completedPhase === "cleanup" && next.status === "failed";
+          if (failed.disposition === "permanent" && !terminalFailure) {
+            throw new ScopeViolationError(
+              "Permanent observer failure requires verified failed cleanup.",
+            );
+          }
+          if (
+            failed.disposition === "defer" &&
+            next.status !== undefined &&
+            next.status !== "running"
+          ) {
+            throw new ScopeViolationError(
+              "Deferred observer failure requires a nonterminal checkpoint.",
+            );
+          }
+          if (
+            failed.disposition === "retry" &&
+            next.status !== undefined &&
+            next.status !== "running" &&
+            !terminalFailure
+          ) {
+            throw new ScopeViolationError(
+              "Retryable observer failure requires a nonterminal or verified failed-cleanup checkpoint.",
+            );
+          }
+          const checkpointed = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+                     SELECT work.*
+                     FROM occ.controller_work AS work
+                     JOIN occ.observer_invocations AS invocation
+                       ON invocation.work_id = work.idempotency_key
+                     WHERE invocation.work_id = $1
+                       AND work.work_kind = 'observer'
+                       AND work.namespace_id = invocation.namespace_id
+                       AND work.agent_id = invocation.agent_id
+                       AND work.revision_id = invocation.revision_id
+                       AND work.actor_id = invocation.actor_id
+                       AND work.namespace_target IS NULL
+                       AND work.agent_target IS NULL
+                       AND work.state = 'claimed'
+                       AND work.claim_token = $2::uuid
+                       AND work.lease_expires_at > clock_timestamp()
+                     FOR UPDATE OF work
+                   ), updated_invocation AS (
+                     UPDATE occ.observer_invocations AS invocation
+                     SET completed_phase = $3::text,
+                         status = COALESCE($4::text, invocation.status),
+                         progress = COALESCE($5::jsonb, invocation.progress),
+                         updated_at = clock_timestamp()
+                     FROM owner
+                     WHERE invocation.work_id = owner.idempotency_key
+                       AND invocation.status NOT IN ('succeeded', 'failed', 'cancelled')
+                       AND invocation.progress = $6::jsonb
+                     RETURNING invocation.*
+                   )
+                   SELECT * FROM updated_invocation`,
+                [
+                  claim.idempotencyKey,
+                  claim.claimToken,
+                  next.completedPhase,
+                  next.status ?? null,
+                  next.progress === undefined ? null : JSON.stringify(next.progress),
+                  JSON.stringify(current.progress),
+                ],
+              )
+            ).rows,
+          );
+          if (checkpointed[0] === undefined) {
+            throw new WorkClaimLostError();
+          }
+          if (failed.disposition === "permanent") {
+            await queue.fail(claim, { code: failed.code }, { observerSettlement: true });
+            return observerInvocationRecordFromRow(checkpointed[0]);
+          }
+          if (failed.disposition === "defer") {
+            await queue.defer(
+              claim,
+              { code: failed.code },
+              { delayMs: failed.delayMs!, recordEvidence: false },
+            );
+            return observerInvocationRecordFromRow(checkpointed[0]);
+          }
+          const work = await queue.retry(
+            claim,
+            { code: failed.code },
+            { observerSettlement: true },
+          );
+          const exhausted = work.state === "failed_permanent";
+          if (exhausted !== terminalFailure) {
+            throw new ScopeViolationError(
+              exhausted
+                ? "Observer retry exhaustion requires verified failed cleanup."
+                : "Observer retry before exhaustion requires a nonterminal checkpoint.",
+            );
+          }
+          return observerInvocationRecordFromRow(checkpointed[0]);
+        },
+        cancel: async (claim, checkpoint: ObserverInvocationCheckpoint, error) => {
+          const code = typeof error.code === "string" ? error.code : "";
+          const message = typeof error.message === "string" ? error.message : "";
+          if (code.length === 0 || message.length === 0) {
+            throw new ScopeViolationError(
+              "Observer invocation cancellation requires a safe reason.",
+            );
+          }
+          const current = await this.repositories(context).observer.findByWorkId(
+            claim.idempotencyKey,
+          );
+          if (current === undefined) {
+            throw new ResourceConflictError("The observer invocation record is unavailable.");
+          }
+          if (
+            current.status === "succeeded" ||
+            current.status === "failed" ||
+            current.status === "cancelled"
+          ) {
+            throw new ScopeViolationError("Terminal observer invocation work cannot be cancelled.");
+          }
+          const next = validateObserverInvocationCheckpoint(checkpoint, current.plan);
+          if (next.completedPhase !== "cleanup" || next.status !== "cancelled") {
+            throw new ScopeViolationError(
+              "Observer cancellation requires verified cancelled cleanup.",
+            );
+          }
+          const cancelled = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+                     SELECT work.*
+                     FROM occ.controller_work AS work
+                     JOIN occ.observer_invocations AS invocation
+                       ON invocation.work_id = work.idempotency_key
+                     WHERE invocation.work_id = $1
+                       AND work.work_kind = 'observer'
+                       AND work.namespace_id = invocation.namespace_id
+                       AND work.agent_id = invocation.agent_id
+                       AND work.revision_id = invocation.revision_id
+                       AND work.actor_id = invocation.actor_id
+                       AND work.namespace_target IS NULL
+                       AND work.agent_target IS NULL
+                       AND work.state = 'claimed'
+                       AND work.claim_token = $2::uuid
+                       AND work.lease_expires_at > clock_timestamp()
+                     FOR UPDATE OF work
+                   ), updated_invocation AS (
+                     UPDATE occ.observer_invocations AS invocation
+                     SET completed_phase = $3::text,
+                         status = $4::text,
+                         progress = $5::jsonb,
+                         updated_at = clock_timestamp()
+                     FROM owner
+                     WHERE invocation.work_id = owner.idempotency_key
+                       AND invocation.status NOT IN ('succeeded', 'failed', 'cancelled')
+                       AND invocation.progress = $6::jsonb
+                     RETURNING invocation.*
+                   )
+                   SELECT * FROM updated_invocation`,
+                [
+                  claim.idempotencyKey,
+                  claim.claimToken,
+                  next.completedPhase,
+                  next.status,
+                  JSON.stringify(next.progress),
+                  JSON.stringify(current.progress),
+                ],
+              )
+            ).rows,
+          );
+          if (cancelled[0] === undefined) {
+            throw new WorkClaimLostError();
+          }
+          await queue.fail(claim, { code }, { observerSettlement: true });
+          return observerInvocationRecordFromRow(cancelled[0]);
         },
       },
       audit: {
