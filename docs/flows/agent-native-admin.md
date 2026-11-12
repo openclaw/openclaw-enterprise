@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-11
-last_updated_session: authoring-run/2dccf6f5-0340-47b6-88a4-eb047f929fff
+updated: 2026-11-12
+last_updated_session: authoring-run/bae4d18e-05ed-457e-9c6a-96ef2b959619
 ---
 
 # Agent Native Admin UI Flow
@@ -245,24 +245,24 @@ both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy normalizes URLs (maximum 4,096 characters). It checks the exact
-Agent `Origin` and allows GET and HEAD to omit it. It strips cookies, service
-keys, and forwarding, identity, and scope headers. It forwards surviving
-`Content-Length` over private HTTPS. If inbound headers specify body framing
-and no length remains, it adds chunked framing.
+The HTTP proxy normalizes URLs up to 4,096 characters, checks exact Agent
+`Origin` (optional for GET/HEAD), and strips cookies, service keys and forwarding,
+identity, and scope headers. Over private HTTPS it preserves surviving
+`Content-Length`; otherwise, it uses chunked framing only when inbound headers
+specify framing.
 
-Both modes use `occ-workspace-files`. Chat sets `x-openclaw-scopes` to
-`operator.sessions.write`, which caps runtime authority alongside identity and
-device grants.
+Both modes use `occ-workspace-files`. Chat sets
+`x-openclaw-scopes: operator.sessions.write`, capping runtime authority alongside
+identity and device grants.
 
-The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, and
-rewrites same-upstream redirects to the Agent origin. It strips upstream
-`Set-Cookie` and `Clear-Site-Data`.
+The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, rewrites
+same-upstream redirects to the Agent origin, and strips upstream `Set-Cookie`
+and `Clear-Site-Data`.
 
-If an upstream transfer fails, the proxy stops the upstream request. It returns
-`503` if response headers are still pending. It aborts the response if it has
-already sent headers. For an avatar `502`, it returns an empty `404` for the
-initials fallback and cancels the upstream response body.
+An upstream transfer failure stops the request. Before sending response headers,
+the proxy returns `503`; afterwards it aborts the response. An avatar `502`
+becomes an empty `404` for the initials fallback, and the proxy cancels its
+upstream body.
 
 ### 7. OCC proxies native WebSocket upgrades
 
@@ -333,6 +333,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 00:02: Shorten relay trace. (authoring-run/bae4d18e-05ed-457e-9c6a-96ef2b959619 - cbca5166c168531ada145c95da19ef04c7a34488)
 
 - 2026-11-11 23:34: Clarify request framing. (authoring-run/2dccf6f5-0340-47b6-88a4-eb047f929fff - a8ccd21095bf8f651c8dbc270e069808251fd0db)
 
