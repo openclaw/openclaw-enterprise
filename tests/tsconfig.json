@@ -34,6 +34,7 @@
     "conformance/kubernetes-gateway-retirement-case.ts",
     "conformance/kubernetes-runtime-log-fixture.ts",
     "conformance/kubernetes-teardown-cases.ts",
+    "integration/ci-cleanup-process-cases.ts",
     "integration/occ-api-injected-fixture.ts",
     "integration/occ-api-resource-route-cases.ts",
     "integration/postgres-agent-provisioning-configuration-resend-cases.ts",
