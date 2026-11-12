@@ -351,15 +351,7 @@ node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 
-The ordinary controller upgrade samples authenticated `GET /installation` through
-the operator Pod’s HTTPS proxy. For [sample outcomes and limits](populated-controller-return.md),
-see the recovery rehearsal. Normal fixture cleanup leaves the receipt in the
-private temporary directory. To retain just the observations, copy the file
-before the runner is removed:
-
-```sh
-install -m 600 "$run_dir"/oce-production-tui-*/forward-api-availability.json "$run_dir/forward-api-availability.json"
-```
+Before removing the runner, [retain both private availability receipts](populated-controller-return.md#retain-ordinary-upgrade-observations).
 
 After success or failure, save the private image mapping if needed and clean up:
 
