@@ -954,7 +954,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   ): Promise<Pick<Agent, "id" | "namespaceId"> | undefined> {
     const controller = getController();
     const domain = nativeAdminDomain;
-    if (!controller || domain === undefined) {
+    const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+    if (
+      !controller ||
+      domain === undefined ||
+      agentKey === undefined ||
+      hostname !== `agent-${agentKey}.${domain}`
+    ) {
       return undefined;
     }
     return controller.resolveAgentReference(

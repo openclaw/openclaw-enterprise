@@ -13,6 +13,12 @@ import type {
 } from "../../../access/control-contracts.ts";
 import { assertClientDirectoryAvailable, writeClientConfiguration } from "./config.ts";
 
+function assertOperatorAdmissionId(admissionId: string): void {
+  if (!/^[0-9]{13}-[0-9a-f-]{36}$/.test(admissionId)) {
+    throw new Error("invalid-admission-id");
+  }
+}
+
 export async function callControl(
   socket: string,
   request: ControlRequest,
@@ -25,9 +31,7 @@ export async function callControl(
   ) {
     throw new Error("invalid-control-request");
   }
-  if (!/^[0-9]{13}-[0-9a-f-]{36}$/.test(admissionId)) {
-    throw new Error("invalid-admission-id");
-  }
+  assertOperatorAdmissionId(admissionId);
   const body = "body" in request ? JSON.stringify(request.body) : "";
   if (Buffer.byteLength(body) > 16 * 1024) {
     throw new Error("invalid-control-request");
@@ -249,9 +253,7 @@ async function main(): Promise<void> {
       throw new Error("invalid-ca");
     }
     const admissionId = options.get("--admission-id") ?? `${Date.now()}-${randomUUID()}`;
-    if (!/^[0-9]{13}-[0-9a-f-]{36}$/.test(admissionId)) {
-      throw new Error("invalid-admission-id");
-    }
+    assertOperatorAdmissionId(admissionId);
     // Refuse an unusable --output before admission; the publish below checks again for races.
     try {
       await assertClientDirectoryAvailable(directory);

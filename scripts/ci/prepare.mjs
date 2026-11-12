@@ -25,11 +25,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
+import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
   runtimeArtifactSelection,
-} from "./runtime-artifact.mjs";
+} from "./runtime-artifact.ts";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
@@ -47,11 +48,12 @@ import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
+import { verifyPreloadedAgentSandbox } from "./agent-sandbox.ts";
 import {
   preparationIdentity,
   readImageCodexProvenance,
   readRuntimeProvenance,
-} from "./runtime-provenance.mjs";
+} from "./runtime-provenance.ts";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -765,13 +767,47 @@ async function ensurePostgresServer(statePath, state) {
     throw error;
   }
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  const container = (
-    await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
-      env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
-    })
-  ).stdout.trim();
+  // Standalone podman-compose does not accept a service argument to ps.
+  const lookup =
+    basename(docker) === "podman"
+      ? await execFile(docker, [
+          "ps",
+          "--no-trunc",
+          "--filter",
+          `label=com.docker.compose.project=${resource.name}`,
+          "--filter",
+          "label=com.docker.compose.service=postgres",
+          "--format",
+          "{{.ID}}",
+        ])
+      : await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
+          env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
+        });
+  const container = lookup.stdout.trim();
   if (!/^[a-f0-9]{64}$/.test(container)) {
     throw new Error("Expected one owned PostgreSQL container for port discovery.");
+  }
+  const cluster = state.resources.find(
+    (entry) => entry.kind === "k3d-cluster" && entry.status === "ready",
+  );
+  if (cluster) {
+    // Linux Docker can reassign an automatic host port when a network attaches.
+    // Finish this topology before publishing the port or opening test pools.
+    const networks = JSON.parse(
+      (
+        await execFile(docker, [
+          "inspect",
+          "--format",
+          "{{json .NetworkSettings.Networks}}",
+          `k3d-${cluster.name}-server-0`,
+        ])
+      ).stdout,
+    );
+    const network = Object.keys(networks).find((name) => name.startsWith(`k3d-${cluster.name}`));
+    if (!network) {
+      throw new Error("The owned k3d network is unavailable for PostgreSQL.");
+    }
+    await execFile(docker, ["network", "connect", network, container]);
   }
   const output = await execFile(docker, [
     "inspect",
@@ -979,34 +1015,65 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
   }
 }
 
-async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
+async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors } = {}) {
   const name = laneName(lane);
   const prepare = lanePrepare(name);
   const effectiveEnv = effectiveLaneEnv(name);
+  const modelEnv = modelSelectors ?? {
+    ...effectiveEnv,
+    ...laneDefinition(name).files?.find((entry) => entry.path === file)?.env,
+  };
+  const harnessError = openShellHarnessError(name, file, modelEnv);
+  if (harnessError) {
+    throw new Error(harnessError);
+  }
   if (prepare.k3d && !isOpenShellLane(name) && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  const openShellGatewayFile = [
-    "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
-    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-    "tests/integration/openshell-refresh-real.test.ts",
+  const openShellApiKeyWorkflowFile = [
     "tests/integration/openshell-upstream-real.test.ts",
-    "tests/integration/openshell-credentials-real.test.ts",
+    "tests/integration/openshell-refresh-real.test.ts",
     "tests/integration/openshell-withdrawal-real.test.ts",
+    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
   ].includes(file);
-  const openShellApiKey =
-    isOpenShellLane(name) &&
-    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-      (openShellGatewayFile ||
-        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
-      (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
-  requireEnv(
-    (prepare.requireEnv ?? []).map((input) =>
-      openShellApiKey && input === "CODEX_ACCESS_TOKEN" ? "OPENAI_API_KEY" : input,
-    ),
-    effectiveEnv,
-  );
+  // Custom keys must not reach sibling tests that register the public provider.
+  if (isOpenShellLane(name)) {
+    const endpoint = effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+    const parsedEndpoint = endpoint ? URL.parse(endpoint) : null;
+    if (endpoint && !parsedEndpoint) {
+      throw new Error("The OpenShell model endpoint must be a valid absolute URL.");
+    }
+    const customEndpoint =
+      parsedEndpoint && parsedEndpoint.href.replace(/\/$/u, "") !== "https://api.openai.com/v1";
+    if (customEndpoint && !openShellApiKeyWorkflowFile) {
+      throw new Error("Custom OpenShell model endpoints require a focused gateway workflow file.");
+    }
+    if (effectiveEnv.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE) {
+      if (
+        ![
+          "tests/integration/local-first-agent-openshell-real.test.mjs",
+          "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+        ].includes(file)
+      ) {
+        throw new Error("Custom native providers require a focused first-Agent file.");
+      }
+      requireEnv(["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"], effectiveEnv);
+    }
+  }
+  const requiredInputs =
+    name === "openshell-installers" && file === undefined
+      ? [
+          ...new Set(
+            laneDefinition(name).files.flatMap((entry) =>
+              openShellRequiredEnv(name, entry.path, prepare.requireEnv ?? [], {
+                ...modelEnv,
+                ...entry.env,
+              }),
+            ),
+          ),
+        ]
+      : openShellRequiredEnv(name, file, prepare.requireEnv ?? [], modelEnv);
+  requireEnv(requiredInputs, effectiveEnv);
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
@@ -2844,7 +2911,164 @@ async function streamImageIntoK3dNodes(cluster, saveArgs) {
   }
 }
 
-async function registerImageInK3d(statePath, state, cluster, image, envName) {
+// Native selection belongs to the importer: the required child may be present
+// only beneath its pinned index in the engine's local content store.
+async function selectNativeSourceImage(image, selection, envName) {
+  const repository = (reference) => {
+    const name = reference.split("@")[0];
+    return name.lastIndexOf(":") > name.lastIndexOf("/")
+      ? name.slice(0, name.lastIndexOf(":"))
+      : name;
+  };
+  assertImmutableImageReference(image, envName);
+  assertImmutableImageReference(selection.cacheIndex, envName);
+  assertDockerImageId(selection.configDigest, envName);
+  if (
+    repository(image) !== repository(selection.cacheIndex) ||
+    !selection.platform.startsWith("linux/")
+  ) {
+    throw new Error(`${envName} has an invalid native image selection.`);
+  }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const inspect = async (reference, platform) => {
+    let result;
+    try {
+      result = await boundedImageCommand([
+        "image",
+        "inspect",
+        ...(platform && basename(docker) !== "podman" ? ["--platform", platform] : []),
+        reference,
+      ]);
+    } catch (error) {
+      const expected = reference.includes("@")
+        ? `${repository(reference)}@sha256:${immutableDigest(reference)}`
+        : reference;
+      const diagnostic = (error.stderr ?? "").trim();
+      if (
+        error.exitCode === 1 &&
+        !error.signal &&
+        ["", "[]"].includes((error.stdout ?? "").trim()) &&
+        [
+          `Error response from daemon: No such image: ${expected}`,
+          `Error response from daemon: No such image: ${reference}`,
+          `Error: ${expected}: image not known`,
+        ].includes(diagnostic)
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
+    const values = JSON.parse(result.stdout);
+    if (!Array.isArray(values) || values.length !== 1) {
+      throw new Error(`${envName} has an invalid local image inspection.`);
+    }
+    const inspected = values[0];
+    if (
+      inspected.Descriptor !== undefined &&
+      inspected.Descriptor !== null &&
+      (typeof inspected.Descriptor !== "object" || Array.isArray(inspected.Descriptor))
+    ) {
+      throw new Error(`${envName} has an invalid local image descriptor.`);
+    }
+    const id = /^[a-f0-9]{64}$/.test(inspected.Id ?? "") ? `sha256:${inspected.Id}` : inspected.Id;
+    assertDockerImageId(id, envName);
+    return { ...inspected, Id: id };
+  };
+  const usable = async (reference) => {
+    const held = await inspect(reference);
+    if (!held) {
+      return undefined;
+    }
+    const expected = `${repository(reference)}@sha256:${immutableDigest(reference)}`;
+    if (!Array.isArray(held.RepoDigests) || !held.RepoDigests.includes(expected)) {
+      throw new Error(`${envName} does not match its exact repository digest.`);
+    }
+    if (
+      held.Descriptor &&
+      (held.Descriptor.digest !== `sha256:${immutableDigest(reference)}` ||
+        held.Id !== held.Descriptor.digest)
+    ) {
+      throw new Error(`${envName} local descriptor contradicts its acquisition identity.`);
+    }
+    const native = held.Descriptor ? await inspect(reference, selection.platform) : held;
+    if (!native) {
+      return undefined;
+    }
+    if (held.Descriptor && !native.Descriptor) {
+      throw new Error(`${envName} native image inspection lost its descriptor.`);
+    }
+    if (native.Descriptor) {
+      if (
+        ![
+          "application/vnd.oci.image.manifest.v1+json",
+          "application/vnd.docker.distribution.manifest.v2+json",
+        ].includes(native.Descriptor.mediaType) ||
+        native.Descriptor.digest !== `sha256:${immutableDigest(image)}` ||
+        native.Id !== native.Descriptor.digest
+      ) {
+        throw new Error(`${envName} does not match the selected native manifest.`);
+      }
+      const annotated = native.Descriptor.annotations?.["config.digest"];
+      const platform = native.Descriptor.platform;
+      if (
+        (annotated !== undefined && annotated !== selection.configDigest) ||
+        (platform !== undefined &&
+          `${platform?.os}/${platform?.architecture}` !== selection.platform)
+      ) {
+        throw new Error(`${envName} descriptor contradicts its native config or platform.`);
+      }
+      if (basename(docker) !== "podman" && native.Os === "" && native.Architecture === "") {
+        return undefined;
+      }
+    } else if (native.Id !== selection.configDigest) {
+      throw new Error(`${envName} does not match the selected native config.`);
+    }
+    if (`${native.Os}/${native.Architecture}` !== selection.platform) {
+      throw new Error(`${envName} does not match the selected node platform.`);
+    }
+    return { acquisitionReference: reference, hostImageId: held.Id };
+  };
+  for (const reference of [image, selection.cacheIndex]) {
+    const held = await usable(reference);
+    if (held) {
+      return held;
+    }
+  }
+  await pullImage(image, { execFile, docker });
+  const pulled = await usable(image);
+  if (!pulled) {
+    throw new Error(`${envName} pull did not materialize the selected native image.`);
+  }
+  return pulled;
+}
+
+async function assertK3dNativeImage(cluster, reference, selection, envName) {
+  const digest = `sha256:${immutableDigest(reference)}`;
+  for (const node of cluster.nodes) {
+    const { stdout } = await k3dNodeImageCheck(
+      node,
+      ["ctr", "-n", "k8s.io", "content", "get", digest],
+      "containerd",
+    );
+    if (
+      `sha256:${createHash("sha256").update(stdout).digest("hex")}` !== digest ||
+      JSON.parse(stdout).config?.digest !== selection.configDigest
+    ) {
+      throw new Error(
+        `${envName} imported manifest does not match the selected native config on ${node}.`,
+      );
+    }
+    const result = await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
+    const { status } = JSON.parse(result.stdout);
+    if (status?.id !== selection.configDigest || !status?.repoDigests?.includes(reference)) {
+      throw new Error(
+        `${envName} imported CRI image does not match the selected native config on ${node}.`,
+      );
+    }
+  }
+}
+
+async function registerImageInK3d(statePath, state, cluster, image, envName, nativeSelection) {
   const existing = state.resources.find(
     (resource) =>
       resource.kind === "k3d-image" &&
@@ -2853,41 +3077,52 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       (resource.sourceImage === image || resource.name === image || resource.reference === image),
   );
   if (existing) {
-    if (!existing.hostImageId && existing.sourceImage) {
+    if (!nativeSelection && !existing.hostImageId && existing.sourceImage) {
       existing.hostImageId = await ensureDockerSourceImage(state, existing.sourceImage, envName);
       await writeState(statePath, state);
     }
     assertDockerImageId(existing.hostImageId, envName);
     await assertK3dImageReference(state.lane, cluster, existing.reference, envName);
+    if (nativeSelection) {
+      await assertK3dNativeImage(cluster, existing.reference, nativeSelection, envName);
+    }
     return existing;
   }
 
-  const hostImageId = await ensureDockerSourceImage(state, image, envName);
+  const { acquisitionReference, hostImageId } = nativeSelection
+    ? await selectNativeSourceImage(image, nativeSelection, envName)
+    : {
+        acquisitionReference: image,
+        hostImageId: await ensureDockerSourceImage(state, image, envName),
+      };
   let importReference = image;
   if (!stateOwnsImageTag(state, image)) {
     importReference = localImportTag(cluster, envName);
     const tagResource = addResource(state, "image-tag", { name: importReference });
     await writeState(statePath, state);
-    await boundedImageCommand(["tag", image, importReference]);
+    await boundedImageCommand(["tag", acquisitionReference, importReference]);
     await markResourceReady(statePath, state, tagResource);
   }
 
   const resource = addResource(state, "k3d-image", {
     name: importReference,
     sourceImage: image,
+    ...(nativeSelection ? { acquisitionReference, nativeSelection } : {}),
     hostImageId,
     cluster: cluster.name,
     envName,
   });
   await writeState(statePath, state);
-  const inspected = await boundedImageCommand([
-    "image",
-    "inspect",
-    "--format",
-    "{{.Os}}/{{.Architecture}}",
-    importReference,
-  ]);
-  const platform = inspected.stdout.trim();
+  const inspected = nativeSelection
+    ? undefined
+    : await boundedImageCommand([
+        "image",
+        "inspect",
+        "--format",
+        "{{.Os}}/{{.Architecture}}",
+        importReference,
+      ]);
+  const platform = nativeSelection?.platform ?? inspected.stdout.trim();
   if (!platform.startsWith("linux/")) {
     throw new Error(`${envName} must contain a Linux image.`);
   }
@@ -2955,6 +3190,9 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     );
   }
   await assertK3dImageReference(state.lane, cluster, runtimeReference, envName);
+  if (nativeSelection) {
+    await assertK3dNativeImage(cluster, runtimeReference, nativeSelection, envName);
+  }
   resource.reference = runtimeReference;
   await markResourceReady(statePath, state, resource);
   return resource;
@@ -3143,7 +3381,16 @@ async function prepareK3dRuntimeImages(
   }
   // Replace the build tag with its imported digest before publishing the next step's inputs.
   env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
-  if (lanePrepare(state.lane).codexSeccomp && process.env.OCC_K3D_OPENCLAW_SOURCE === undefined) {
+  // This focused journey deploys only embedded OpenClaw Agents. The full lane
+  // still prepares Codex because its other files exercise dedicated execution.
+  const embeddedOidcOnly =
+    state.lane === "gateway-routing" &&
+    state.selectedFile === "tests/integration/oidc-agent-chat-k3d-real.test.ts";
+  if (
+    lanePrepare(state.lane).codexSeccomp &&
+    !embeddedOidcOnly &&
+    process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
+  ) {
     progress(state.lane, "Deriving and installing the dedicated Codex seccomp profile.");
     const seccomp = await prepareCodexSeccompProfile({
       cluster,
@@ -3757,7 +4004,6 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
     case "k3d-otel":
     case "gateway-routing": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
-      await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
         buildRuntime: true,
@@ -3840,12 +4086,51 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
           cluster,
           execFile,
           env: { ...process.env, ...env },
-          registerImage: (image, name) =>
-            registerImageInK3d(resolvedStatePath, state, cluster, image, name).then(
-              (registered) => registered.reference,
-            ),
+          registerImage: (image, name, nativeSelection) =>
+            registerImageInK3d(
+              resolvedStatePath,
+              state,
+              cluster,
+              image,
+              name,
+              nativeSelection,
+            ).then((registered) => registered.reference),
         }),
       );
+      const agentSandbox = state.resources.find(
+        (resource) =>
+          resource.kind === "k3d-image" &&
+          resource.cluster === cluster.name &&
+          resource.envName === "Agent Sandbox controller" &&
+          resource.status === "ready",
+      );
+      if (!agentSandbox) {
+        throw new Error("Agent Sandbox preparation did not record its imported image.");
+      }
+      const maxVerificationOutput = 4 * 1024 * 1024;
+      await verifyPreloadedAgentSandbox({
+        execFile: async (file, args) => {
+          const output = await execFile(file, args, {
+            timeoutMs: imageCommandTimeoutMs,
+            maxOutputChars: maxVerificationOutput,
+          });
+          // This wrapper retains only the tail at its cap. Never validate a
+          // truncated response, even if that tail happens to be valid JSON.
+          if (
+            output.stdout.length >= maxVerificationOutput ||
+            output.stderr.length >= maxVerificationOutput
+          ) {
+            throw new Error("Agent Sandbox verification output exceeded its limit.");
+          }
+          return output;
+        },
+        kubectlCommand: env.OCC_KUBECTL_BIN ?? "kubectl",
+        kubectl: ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context],
+        engine: process.env.OCC_DOCKER_BIN ?? "docker",
+        ownedNodes: cluster.nodes,
+        source: agentSandbox.sourceImage,
+        reference: agentSandbox.reference,
+      });
       // The OAuth2 refresh proof's Keycloak: pulled here with pullImage's retry and
       // imported, so the cluster never pulls it from the registry.
       env.OCC_TEST_KEYCLOAK_IMAGE = (
@@ -3963,6 +4248,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
 
 async function prepareK3dModelLane(statePath, state, env, options) {
   const cluster = await ensureK3dCluster(statePath, state);
+  // Register PostgreSQL after the cluster so cleanup removes its attached
+  // container before k3d removes the network. Test files preserve this attachment.
+  await ensurePostgresServer(statePath, state);
   env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
   env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
   if (cluster.pluginStatusProxyCidrs !== undefined) {
@@ -3986,13 +4274,13 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 // (CREATE DATABASE ... TEMPLATE) instead of a copy of the lane template. The worker
 // revision suite copies the database the runner prepared for its file, one copy per test.
 // Defaults remain overridable by a file; env contains preparation-owned outputs.
-async function prepareFile({ lane, file, statePath, template }) {
+async function prepareFile({ lane, file, statePath, template, modelSelectors }) {
   const name = assertLane(lane);
   if (!file) {
     throw new Error("prepareFile requires a file.");
   }
   const relativeFile = toRepositoryRelative(filePath(file));
-  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile, modelSelectors });
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.
@@ -4104,6 +4392,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (
       [
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
         "tests/integration/openshell-plugin-install-real.test.ts",
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
         "tests/integration/openshell-refresh-real.test.ts",
@@ -4141,7 +4430,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     env.OCC_BOOTSTRAP_FAILURE_MIGRATION_DATABASE_URL = failures.migrationUrl;
   }
 
-  if (relativeFile.endsWith("postgres-production-wireup.test.mjs")) {
+  if (relativeFile.endsWith("postgres-production-wireup.test.ts")) {
     const production = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: "ci",
       label: `${fileStem(relativeFile)}_production`,

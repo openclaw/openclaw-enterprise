@@ -19,13 +19,13 @@ import {
   validatePreparedImage,
   verifyGhcr,
 } from "../../scripts/ci/container-release.mjs";
-import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.mjs";
+import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import {
   chartArchiveContent,
   stageReleaseChart,
   validateImageReceipt,
-} from "../../scripts/ci/chart-release.mjs";
+} from "../../scripts/ci/chart-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -1086,10 +1086,11 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   }
   // Image Runtime Startup files outside the runtime-image-* names.
   const otherSmokeFiles = [
-    "tests/helpers/workspace-gateway-relay-container.test.mjs",
+    "tests/helpers/workspace-gateway-relay-container.test.ts",
     "tests/integration/codex-plugin-stdio-real.test.ts",
     // Its OpenShell initializer case executes the pinned native workspace initializer.
     "tests/integration/sandbox-driver-startup.test.mjs",
+    "tests/integration/sandbox-driver-startup-validation.test.ts",
     "tests/integration/sandbox-driver-installation-configuration.test.ts",
     "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
     "tests/integration/sandbox-driver-codex-app-server.test.ts",

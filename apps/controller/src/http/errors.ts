@@ -415,25 +415,45 @@ export function unstorableTextFailure(
     readonly parent?: Node;
     readonly key?: string;
   }
-  const pending: Node[] = [{ value }];
+  function* children(parent: Node): Generator<Node> {
+    const value = parent.value;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        yield { value: value[index], parent, key: String(index) };
+      }
+    } else if (value !== null && typeof value === "object") {
+      for (const key in value) {
+        if (Object.hasOwn(value, key)) {
+          yield { value: (value as Record<string, unknown>)[key], parent, key };
+        }
+      }
+    }
+  }
+  // Keep only the active ancestors, advancing one sibling at a time. A refusal in the first
+  // entry must not allocate pairs or pending nodes for the rest of a wide container.
+  const pending: Iterator<Node>[] = [];
+  let node: Node | undefined = { value };
   let found: { readonly node: Node; readonly problem: "nul" | "surrogate" } | undefined;
-  while (found === undefined && pending.length > 0) {
-    const node = pending.pop()!;
+  while (node !== undefined) {
     // A key is checked when its entry is visited, so keys and values share document order.
     const problem =
       (node.key === undefined ? undefined : unstorableText(node.key)) ??
       (typeof node.value === "string" ? unstorableText(node.value) : undefined);
     if (problem !== undefined) {
       found = { node, problem };
-    } else if (node.value !== null && typeof node.value === "object") {
-      const entries = Array.isArray(node.value)
-        ? node.value.map((entry, index) => [String(index), entry] as const)
-        : Object.entries(node.value);
-      // Reversed onto the stack, so the walk reports the first offender in document order.
-      // (A loop, not push(...entries): a large array would exceed the argument limit.)
-      for (let index = entries.length - 1; index >= 0; index -= 1) {
-        const [key, entry] = entries[index]!;
-        pending.push({ value: entry, parent: node, key });
+      break;
+    }
+    if (node.value !== null && typeof node.value === "object") {
+      pending.push(children(node));
+    }
+    node = undefined;
+    while (pending.length > 0) {
+      const next = pending[pending.length - 1]!.next();
+      if (next.done) {
+        pending.pop();
+      } else {
+        node = next.value;
+        break;
       }
     }
   }

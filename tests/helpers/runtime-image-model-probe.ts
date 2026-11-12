@@ -43,7 +43,7 @@ function assertCapturedOutput(
   assert.ok(operation.child.stdout, "the child process must capture stdout");
 }
 
-export function execute(command: string, args: string[], options: ExecFileOptions) {
+export function execute(command: string, args: string[], options?: ExecFileOptions) {
   const operation = executeFile(command, args, options);
   assertCapturedOutput(operation);
   return operation;

@@ -129,6 +129,7 @@ function isExternalIdentityConflict(error: unknown): boolean {
 /** A validated password account whose hash was computed before the State transaction. */
 export interface PreparedPasswordAccount {
   readonly id: string;
+  readonly emailVerified: boolean;
   readonly email: string;
   readonly name: string;
   readonly passwordHash: string;
@@ -576,8 +577,8 @@ export class PostgresHumanAuthentication {
       await this.query(
         unit,
         `INSERT INTO occ."user" (id, name, email, email_verified, image, created_at, updated_at)
-         SELECT $1, $2, $3, true, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
-        [prepared.id, prepared.name, prepared.email],
+         SELECT $1, $2, $3, $4, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
+        [prepared.id, prepared.name, prepared.email, prepared.emailVerified],
       );
     } catch (error) {
       if (

@@ -32,7 +32,14 @@ import {
   quantityRefusals,
   resourceNameAndSignRefusals,
 } from "../helpers/production-chart-quantity-cases.ts";
+import { productionChartRendererRefusalCases } from "../helpers/production-chart-renderer-refusal-cases.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { RecordingContext } from "../conformance/kubernetes-teardown-cases.ts";
+import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
+import { withEnvironment } from "../helpers/environment.ts";
 
 const execute = promisify(execFile);
 
@@ -1308,6 +1315,11 @@ test(
       ),
     );
     const installationPath = join(directory, "installation.yaml");
+    const load = () =>
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: installationPath },
+      });
     const invalid = [
       "192.168.1",
       "2130706433",
@@ -1350,11 +1362,6 @@ test(
         configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
       }
       await writeFile(installationPath, JSON.stringify(configuration));
-      const load = () =>
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: installationPath },
-        });
       // Helm --set reads a bare integer or 0x hex as a number. Pass those spellings
       // with --set-string so the chart sees the hostname the Installation stores.
       const numericHostname =
@@ -1426,11 +1433,6 @@ test(
       const configuration = structuredClone(example);
       configuration.drivers.compute.configuration.gatewayRouting.sandbox = { domain };
       await writeFile(installationPath, JSON.stringify(configuration));
-      const load = () =>
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: installationPath },
-        });
       const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
       if (domain === "192.0.2.1") {
         await assert.rejects(load(), (error) => {
@@ -1649,12 +1651,7 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       initializer.spec.template.metadata.annotations?.["openclaw.dev/upgrade-attempt"],
       isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
     );
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-    const api = deployment("api").spec.template.spec.containers[0];
+    const api = deploymentPodSpec(objects, "api").containers[0];
     assert.equal(api.image, controllerImage);
     assert.deepEqual(
       api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
@@ -1664,7 +1661,7 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       api.env.find(({ name }) => name === "OCC_AGENT_NATIVE_ADMIN_ENABLED"),
       { name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "true" },
     );
-    const broker = deployment("worker").spec.template.spec.containers.find(
+    const broker = deploymentPodSpec(objects, "worker").containers.find(
       ({ name }) => name === "repository-credentials",
     );
     assert.deepEqual(broker.args, [
@@ -1787,14 +1784,9 @@ test(
   async () => {
     const { stdout } = await render(agentNativeAdminValues);
     const objects = await resources(stdout);
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
 
-    const apiEnvironment = deployment("api").spec.template.spec.containers[0].env;
-    const workerEnvironment = deployment("worker").spec.template.spec.containers[0].env;
+    const apiEnvironment = deploymentPodSpec(objects, "api").containers[0].env;
+    const workerEnvironment = deploymentPodSpec(objects, "worker").containers[0].env;
     assert.deepEqual(
       apiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
       [
@@ -1831,12 +1823,7 @@ test(
     }
 
     const disabledObjects = await resources((await render()).stdout);
-    const disabledDeployment = (component) =>
-      disabledObjects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-    const disabledApiEnvironment = disabledDeployment("api").spec.template.spec.containers[0].env;
+    const disabledApiEnvironment = deploymentPodSpec(disabledObjects, "api").containers[0].env;
     assert.deepEqual(
       disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
       [
@@ -1856,11 +1843,7 @@ test(
       objects.find(
         ({ kind, metadata }) => kind === "ClusterRole" && metadata.name.endsWith(suffix),
       );
-    const apiEnvironment = (objects) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
-      ).spec.template.spec.containers[0].env;
+    const apiEnvironment = (objects) => deploymentPodSpec(objects, "api").containers[0].env;
     const hasLogRules = (rules) =>
       rules.some(({ resources = [] }) => resources.includes("pods/log")) ||
       rules.some(({ resources = [] }) => resources.includes("events"));
@@ -2857,12 +2840,9 @@ test("the chart validates scalar and literal repository backend IDs", tooling, a
         )
       ).stdout,
     );
-    const broker = objects
-      .find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
-      )
-      .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
+    const broker = deploymentPodSpec(objects, "worker").containers.find(
+      ({ name }) => name === "repository-credentials",
+    );
     assert.equal(
       broker.args[broker.args.indexOf("--backend-id") + 1],
       argument,
@@ -4952,304 +4932,14 @@ test(
       const gateway = objects.find((object) => object.kind === "Gateway");
       assert.equal(gateway.metadata.namespace, namespace);
     }
-    for (const [description, override, message] of [
-      ["mutable controller", { "images.controller": "registry.example/controller:latest" }],
-      ["missing Better Auth secret", { "auth.secretName": "" }],
-      ["missing bootstrap admin email", { "bootstrap.adminEmail": "" }],
-      ["missing bootstrap password claim", { "bootstrap.password.claimName": "" }],
-      ["nested bootstrap password file", { "bootstrap.password.fileName": "nested/password" }],
-      [
-        "oversized bootstrap password basename",
-        { "bootstrap.password.fileName": "a".repeat(256) },
-        /bootstrap\.password\.fileName must be a simple basename of at most 255 characters/,
-      ],
-      ["missing bootstrap service key file", { "bootstrap.serviceKey.fileName": "" }],
-      ["nested bootstrap service key file", { "bootstrap.serviceKey.fileName": "nested/key.json" }],
-      [
-        "shared bootstrap output file",
-        { "bootstrap.serviceKey.fileName": "initial-admin-password" },
-      ],
-      ["unrestricted client namespace", { "api.clients[0].namespace": "" }],
-      ["retired database egress key", { "database.cidr": "10.45.0.12/32" }],
-      ["retired Kubernetes API egress key", { "cluster.cidr": "10.43.0.1/32" }],
-      ["missing database egress list", { "database.cidrs": "" }],
-      ["missing Kubernetes API egress list", { "cluster.cidrs": "" }],
-      ["broad database egress", { "database.cidrs[0]": "0.0.0.0/0" }],
-      ["database egress that is not an IPv4 host", { "database.cidrs[0]": "999.1.2.3/32" }],
-      ["database egress with a leading-zero octet", { "database.cidrs[0]": "01.2.3.4/32" }],
-      ["broad Kubernetes API egress", { "cluster.cidrs[0]": "10.43.0.0/16" }],
-      ["Kubernetes API egress that is not an IPv4 host", { "cluster.cidrs[0]": "256.0.0.1/32" }],
-      ["Kubernetes API egress with a leading-zero octet", { "cluster.cidrs[0]": "01.2.3.4/32" }],
-      ["invalid control-plane node selector", { "controlPlane.nodeSelector": "control" }],
-      ["false control-plane node selector", { "controlPlane.nodeSelector": false }],
-      [
-        "invalid database CA key",
-        { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
-      ],
-      [
-        "overlong database CA key",
-        { "database.caSecretName": "occ-rds-ca", "database.caKey": "a".repeat(254) },
-        /database\.caKey must be a Kubernetes Secret key/,
-      ],
-      ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
-      ["reserved application database Secret key", { "database.appUrlKey": "." }],
-      ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
-      ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
-      ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
-      ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
-      [
-        "invalid installation startup Secret key",
-        { "installation.key": "bad/key" },
-        /installation\.key must be a Kubernetes Secret key/,
-      ],
-      [
-        "reserved installation startup Secret key",
-        { "installation.key": "." },
-        /installation\.key must be a Kubernetes Secret key/,
-      ],
-      [
-        "invalid execution kubeconfig Secret key",
-        {
-          "executionCluster.enabled": "true",
-          "executionCluster.apiKubeconfigSecretName": "execution-api",
-          "executionCluster.workerKubeconfigSecretName": "execution-worker",
-          "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-          "executionCluster.kubeconfigKey": "bad/key",
-        },
-        /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "reserved execution kubeconfig Secret key",
-        {
-          "executionCluster.enabled": "true",
-          "executionCluster.apiKubeconfigSecretName": "execution-api",
-          "executionCluster.workerKubeconfigSecretName": "execution-worker",
-          "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-          "executionCluster.kubeconfigKey": "..kube",
-        },
-        /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "invalid Better Auth signing Secret key",
-        { "auth.secretKey": "bad/key" },
-        /auth\.secretKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "reserved Better Auth signing Secret key",
-        { "auth.secretKey": "." },
-        /auth\.secretKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "overlong Better Auth signing Secret key",
-        { "auth.secretKey": "a".repeat(254) },
-        /auth\.secretKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "invalid GitHub client ID Secret key",
-        { ...googleLoginValues, "auth.google.clientIdKey": "bad/key" },
-        /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "reserved GitHub client secret Secret key",
-        { ...googleLoginValues, "auth.google.clientSecretKey": "." },
-        /auth\.google\.clientSecretKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "overlong Google client secret Secret key",
-        {
-          "auth.google.enabled": "true",
-          "auth.recoveryUserId": "recovery-admin_1",
-          "auth.google.clientSecretKey": "a".repeat(254),
-        },
-        /auth\.google\.clientSecretKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "invalid OIDC client ID Secret key",
-        {
-          "auth.oidc.enabled": "true",
-          "auth.recoveryUserId": "recovery-admin_1",
-          "auth.oidc.clientIdKey": "bad/key",
-        },
-        /auth\.oidc\.clientIdKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "reserved Google client ID Secret key",
-        {
-          "auth.google.enabled": "true",
-          "auth.recoveryUserId": "recovery-admin_1",
-          "auth.google.clientIdKey": "..client-id",
-        },
-        /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
-      ],
-      ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
-      [
-        "retired ChatGPT integration key",
-        {
-          "integrations.chatgpt.enabled": "true",
-          "integrations.chatgpt.providerCidr": "198.51.100.25/32",
-        },
-      ],
-      [
-        "unrestricted ChatGPT provider egress",
-        { ...chatgptValues, "backend.chatgpt.providerCidr": "0.0.0.0/0" },
-      ],
-      [
-        "ChatGPT provider host that is not an IPv4 address",
-        { ...chatgptValues, "backend.chatgpt.providerCidr": "999.1.2.3/32" },
-      ],
-      [
-        "ChatGPT provider host with a leading-zero octet",
-        { ...chatgptValues, "backend.chatgpt.providerCidr": "01.2.3.4/32" },
-      ],
-      [
-        "ChatGPT Backend without an approved provider host",
-        { ...chatgptValues, "backend.chatgpt.providerCidr": "" },
-      ],
-      [
-        "ChatGPT admin key shared with installation configuration",
-        { ...chatgptValues, "backend.chatgpt.secretName": "occ-installation-startup" },
-      ],
-      [
-        "ChatGPT Backend without an admin Secret key",
-        { ...chatgptValues, "backend.chatgpt.key": "" },
-      ],
-      [
-        "ChatGPT Backend with an invalid admin Secret name",
-        { ...chatgptValues, "backend.chatgpt.secretName": "Bad_Name" },
-        /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
-      ],
-      [
-        "ChatGPT Backend with an invalid admin Secret key",
-        { ...chatgptValues, "backend.chatgpt.key": "bad/key" },
-        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
-      ],
-      [
-        "ChatGPT Backend with a reserved admin Secret key",
-        { ...chatgptValues, "backend.chatgpt.key": "..admin-key" },
-        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
-      ],
-      [
-        "ChatGPT Backend with an overlong admin Secret name",
-        { ...chatgptValues, "backend.chatgpt.secretName": "a".repeat(254) },
-        /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
-      ],
-      [
-        "ChatGPT Backend with an overlong admin Secret key",
-        { ...chatgptValues, "backend.chatgpt.key": "a".repeat(254) },
-        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
-      ],
-      [
-        "Agent native admin enabled without a public DNS suffix",
-        { "agentNativeAdmin.enabled": "true", "agentNativeAdmin.domain": "" },
-      ],
-      [
-        "retired shared cookie domain setting",
-        { "agentNativeAdmin.sharedCookieDomain": "example.invalid" },
-        /agentNativeAdmin.sharedCookieDomain is no longer supported/,
-      ],
-      [
-        "Agent native admin configured with a wildcard DNS suffix",
-        { ...agentNativeAdminValues, "agentNativeAdmin.domain": "*.example.invalid" },
-      ],
-      [
-        "Agent native admin configured with a URL",
-        { ...agentNativeAdminValues, "agentNativeAdmin.domain": "https://agents.example.invalid" },
-      ],
-      [
-        "Agent native admin enabled without private Gateway routing",
-        {
-          "agentNativeAdmin.enabled": "true",
-          "agentNativeAdmin.domain": "agents.example.invalid",
-        },
-      ],
-      [
-        "retired workspace-files endpoint ConfigMap",
-        { "workspaceFiles.configMapName": "operator-agent-endpoints" },
-      ],
-      [
-        "private Envoy Gateway without an existing GatewayClass",
-        {
-          "gatewayRouting.enabled": "true",
-          "gatewayRouting.apiKeySecretName": "occ-gateway-api-key",
-        },
-      ],
-      [
-        "private Envoy Gateway without an Envoy namespace",
-        { ...gatewayRoutingValues, "gatewayRouting.envoyNamespace": "" },
-      ],
-      [
-        "private Envoy Gateway without an operator-created API-key Secret",
-        { ...gatewayRoutingValues, "gatewayRouting.apiKeySecretName": "" },
-      ],
-      [
-        "private Envoy Gateway sharing the Better Auth Secret",
-        { ...gatewayRoutingValues, "gatewayRouting.apiKeySecretName": "occ-auth" },
-      ],
-      [
-        "private Envoy Gateway with manual CA trust but generated issuer",
-        {
-          ...gatewayRoutingValues,
-          "gatewayRouting.caSecretName": "occ-private-ca",
-          "gatewayRouting.caSecretKey": "ca.crt",
-        },
-      ],
-      [
-        "private Envoy Gateway with an incomplete private CA Secret",
-        { ...externalGatewayRoutingValues, "gatewayRouting.caSecretName": "occ-private-ca" },
-      ],
-      [
-        "private Envoy Gateway with an invalid external CA Secret key",
-        {
-          ...externalGatewayRoutingValues,
-          "gatewayRouting.caSecretName": "occ-private-ca",
-          "gatewayRouting.caSecretKey": "bad/key",
-        },
-        /gatewayRouting\.caSecretKey must be a Kubernetes Secret key/,
-      ],
-      [
-        "private Envoy Gateway with leaf TLS colliding with installation Secret",
-        { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-installation-startup" },
-      ],
-      [
-        "private Envoy Gateway with leaf TLS colliding with database Secret",
-        { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-database" },
-      ],
-      [
-        "private Envoy Gateway with leaf TLS colliding with Better Auth Secret",
-        { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-auth" },
-      ],
-      [
-        "private Envoy Gateway with leaf TLS colliding with ChatGPT provider Secret",
-        {
-          ...gatewayRoutingValues,
-          ...chatgptValues,
-          "gatewayRouting.tlsSecretName": "occ-chatgpt-admin",
-        },
-      ],
-      [
-        "private Envoy Gateway with external CA trust colliding with leaf TLS Secret",
-        {
-          ...externalGatewayRoutingValues,
-          "gatewayRouting.caSecretName": "oce-agent-gateways-tls",
-          "gatewayRouting.caSecretKey": "ca.crt",
-        },
-      ],
-      [
-        "private Envoy Gateway with generated root CA colliding with leaf TLS Secret",
-        {
-          ...gatewayRoutingValues,
-          "gatewayRouting.tlsSecretName": rootSecretName("openclaw-system", "oce-agent-gateways"),
-        },
-      ],
-      [
-        "private Envoy Gateway with an invalid tenant gateway port",
-        { ...gatewayRoutingValues, "gatewayRouting.tenantGatewayPort": "0" },
-      ],
-      [
-        "private Envoy Gateway with an invalid Envoy HTTPS target port",
-        { ...gatewayRoutingValues, "gatewayRouting.envoyHttpsTargetPort": "0" },
-      ],
-    ]) {
+    for (const [description, override, message] of productionChartRendererRefusalCases({
+      agentNativeAdminValues,
+      chatgptValues,
+      externalGatewayRoutingValues,
+      gatewayRootSecret: rootSecretName("openclaw-system", "oce-agent-gateways"),
+      gatewayRoutingValues,
+      googleLoginValues,
+    })) {
       // Rejection comes from the actual Helm templates, not a reimplemented test validator.
       await assert.rejects(
         render(override),
@@ -5493,6 +5183,13 @@ test("default routing refuses missing operator configuration", tooling, async ()
   );
 });
 
+function deploymentPodSpec(objects, component) {
+  return objects.find(
+    ({ kind, metadata }) =>
+      kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
+  ).spec.template.spec;
+}
+
 test(
   "private Envoy Gateway routing defaults on with automatic CA and deterministic hostnames",
   tooling,
@@ -5539,14 +5236,8 @@ test(
       ),
     );
 
-    const deployment = (component) =>
-      configured.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-
     for (const component of ["api", "worker"]) {
-      const pod = deployment(component).spec.template.spec;
+      const pod = deploymentPodSpec(configured, component);
       const apiKeyVolume = pod.volumes.find(({ name }) => name === "gateway-api-key");
       const caVolume = pod.volumes.find(({ name }) => name === "gateway-ca");
       const apiKeyMount = pod.containers[0].volumeMounts.find(
@@ -5805,14 +5496,8 @@ test(
     const gatewayName = "oce-agent-gateways";
     const gatewayNamespace = "openclaw-system";
     const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
-    const apiPod = configured.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
-    ).spec.template.spec;
-    const workerPod = configured.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
-    ).spec.template.spec;
+    const apiPod = deploymentPodSpec(configured, "api");
+    const workerPod = deploymentPodSpec(configured, "worker");
 
     assert.deepEqual(apiPod.volumes.find(({ name }) => name === "gateway-ca").secret, {
       secretName: "occ-private-ca",
@@ -6951,3 +6636,78 @@ test(
     }
   },
 );
+
+test("OpenShell Envoy cleanup reports rejected deletes and continues remaining cleanup", async (t) => {
+  const directory = await temporaryDirectory(t, "envoy-cleanup-");
+  const certificate = await selfSigned(directory);
+  await withEnvironment(
+    {
+      OCC_TEST_GATEWAY_CA_CERT_PATH: certificate.certPath,
+      OCC_TEST_GATEWAY_CA_KEY_PATH: certificate.keyPath,
+    },
+    async () => {
+      for (const refused of ["gatewayclass", "networkpolicy"]) {
+        const attempted = [];
+        const testContext = new RecordingContext();
+        // The plugin fixture registers its aggregate first on the raw context.
+        testContext.after(async () => {
+          attempted.push("fixture aggregate");
+        });
+        // Run the real plan and its Helm rendering. Only cluster I/O is substituted;
+        // the regression concerns the actual registered cleanup's rejected command.
+        await createEnvoyWorkspaceGatewayPlan(
+          testContext,
+          { platformNamespace: "cleanup-fixture" },
+          {
+            applyManifest: async () => {},
+            waitFor: async (_description, read) => {
+              assert.ok(await read());
+            },
+            resource: async (kind) => {
+              if (kind === "secret") {
+                return { data: { "tls.crt": certificate.cert } };
+              }
+              return {
+                status: {
+                  conditions: ["Ready", "Accepted", "Programmed"].map((type) => ({
+                    type,
+                    status: "True",
+                  })),
+                  listeners: [
+                    { name: "https", conditions: [{ type: "Accepted", status: "True" }] },
+                  ],
+                },
+              };
+            },
+            kubectl: async (...args) => {
+              if (args[0] === "get") {
+                return JSON.stringify({ items: [{ spec: { podCIDR: "10.42.0.0/24" } }] });
+              }
+              assert.equal(args[0], "delete");
+              assert.ok(args.includes("--ignore-not-found=true"));
+              if (args[1] === "gatewayclass") {
+                assert.ok(args.includes("--wait=false"));
+              }
+              attempted.push(args[1]);
+              if (args[1] === refused) {
+                throw new Error("fixture delete rejected");
+              }
+              return "";
+            },
+          },
+        );
+        // Another helper receiving this raw context shares the Envoy cleanup group.
+        withBoundedTeardown(testContext).after(() => attempted.push("relay cleanup"));
+        await assert.rejects(async () => {
+          for (const hook of testContext.hooks) {
+            await hook();
+          }
+        }, /fixture delete rejected/);
+        assert.equal(attempted[0], "fixture aggregate");
+        assert.equal(attempted[1], "relay cleanup");
+        assert.ok(attempted.includes("gatewayclass"));
+        assert.ok(attempted.includes("networkpolicy"));
+      }
+    },
+  );
+});

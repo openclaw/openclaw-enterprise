@@ -143,6 +143,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createRuntimeLogDriverFixture } from "./kubernetes-runtime-log-fixture.ts";
 import { createDedicatedDeployKubernetesFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
+import { checkGatewayRetirement } from "./kubernetes-gateway-retirement-case.ts";
 import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
 import { OPENCLAW_CONFIG_ENVIRONMENT_COMMIT } from "../../apps/controller/src/drivers/compute/kubernetes/openclaw-config-environment.ts";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
@@ -7139,14 +7140,8 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     nodeHeaders.set.some(({ name }) => name === "x-occ-identity"),
     false,
   );
-  for (const header of [
-    "authorization",
-    "cookie",
-    "x-occ-identity",
-    "x-api-key",
-    "x-openclaw-scopes",
-    "tailscale-user-login",
-  ]) {
+  const sharedRemovedHeaders = ["cookie", "x-occ-identity", "x-api-key", "x-openclaw-scopes"];
+  for (const header of ["authorization", ...sharedRemovedHeaders, "tailscale-user-login"]) {
     assert.ok(nodeHeaders.remove.includes(header), `node route must strip ${header}`);
   }
   assert.deepEqual(nodeRoute.spec.rules[1], {
@@ -7187,13 +7182,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   });
   const hookHeaders = hookRoute.filters[1].requestHeaderModifier;
   assert.equal(hookHeaders.remove.includes("authorization"), false);
-  for (const header of [
-    "cookie",
-    "x-occ-identity",
-    "x-api-key",
-    "x-openclaw-scopes",
-    "tailscale-user-login",
-  ]) {
+  for (const header of [...sharedRemovedHeaders, "tailscale-user-login"]) {
     assert.ok(hookHeaders.remove.includes(header), `hook route must strip ${header}`);
   }
   for (const [rule, transferPath] of nodeRoute.spec.rules
@@ -7218,7 +7207,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     });
     const transferHeaders = rule.filters[1].requestHeaderModifier;
     assert.equal(transferHeaders.remove.includes("authorization"), false);
-    for (const header of ["cookie", "x-occ-identity", "x-api-key", "x-openclaw-scopes"]) {
+    for (const header of sharedRemovedHeaders) {
       assert.ok(transferHeaders.remove.includes(header), `transfer route must strip ${header}`);
     }
   }
@@ -7277,23 +7266,33 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.notEqual(derivedOutputs[0].endpoint, derivedOutputs[2].endpoint);
   assert.notDeepEqual(derivedOutputs[0].hostnames, derivedOutputs[2].hostnames);
 
-  const plainGateway = driver.deployment(
+  function gatewayPodFixture(gatewayDriver, gatewayRevision, gatewayName, gatewayOwnership) {
+    const deployment = gatewayDriver.deployment(
+      gatewayName,
+      gatewayOwnership,
+      { name: namespace, plane: "execution" },
+      "openclaw-enterprise/gateway-fixture:local",
+      gatewayName,
+      "gateway",
+      {},
+      "info",
+      gatewayDriver.gatewayConfiguration(gatewayRevision, undefined, {
+        name: kubernetesNamespaceName(tenant.id),
+        plane: "execution",
+      }),
+    );
+    const pod = deployment.spec.template.spec;
+    return {
+      pod,
+      environment: Object.fromEntries(pod.containers[0].env.map((entry) => [entry.name, entry])),
+    };
+  }
+
+  const { pod: plainPod, environment: plainEnvironment } = gatewayPodFixture(
+    driver,
+    revision,
     name,
     ownership,
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    name,
-    "gateway",
-    {},
-    "info",
-    driver.gatewayConfiguration(revision, undefined, {
-      name: kubernetesNamespaceName(tenant.id),
-      plane: "execution",
-    }),
-  );
-  const plainPod = plainGateway.spec.template.spec;
-  const plainEnvironment = Object.fromEntries(
-    plainPod.containers[0].env.map((entry) => [entry.name, entry]),
   );
   assert.equal(plainEnvironment.OPENCLAW_CONFIG_PATH.value, "/home/node/.openclaw/openclaw.json");
   assert.deepEqual(
@@ -7312,23 +7311,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   );
   const runtimeRevision = routedRevision(runtimeDriver);
   const runtimeName = `gateway-${digest(runtimeRevision.agentId)}`;
-  const runtimeGateway = runtimeDriver.deployment(
+  const { pod: runtimePod, environment: runtimeEnvironment } = gatewayPodFixture(
+    runtimeDriver,
+    runtimeRevision,
     runtimeName,
     { namespaceId: tenant.id, agentId: runtimeRevision.agentId },
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    runtimeName,
-    "gateway",
-    {},
-    "info",
-    runtimeDriver.gatewayConfiguration(runtimeRevision, undefined, {
-      name: kubernetesNamespaceName(tenant.id),
-      plane: "execution",
-    }),
-  );
-  const runtimePod = runtimeGateway.spec.template.spec;
-  const runtimeEnvironment = Object.fromEntries(
-    runtimePod.containers[0].env.map((entry) => [entry.name, entry]),
   );
   assert.equal(runtimeEnvironment.OPENCLAW_CONFIG_PATH.value, "/etc/openclaw/openclaw.json");
   assert.deepEqual(
@@ -7361,23 +7348,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       },
     },
   });
-  const nativeAdminGateway = runtimeDriver.deployment(
+  const { pod: nativeAdminPod, environment: nativeAdminEnvironment } = gatewayPodFixture(
+    runtimeDriver,
+    nativeAdminRevision,
     runtimeName,
     { namespaceId: tenant.id, agentId: nativeAdminRevision.agentId },
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    runtimeName,
-    "gateway",
-    {},
-    "info",
-    runtimeDriver.gatewayConfiguration(nativeAdminRevision, undefined, {
-      name: kubernetesNamespaceName(tenant.id),
-      plane: "execution",
-    }),
-  );
-  const nativeAdminPod = nativeAdminGateway.spec.template.spec;
-  const nativeAdminEnvironment = Object.fromEntries(
-    nativeAdminPod.containers[0].env.map((entry) => [entry.name, entry]),
   );
   assert.equal(
     nativeAdminEnvironment.OPENCLAW_CONFIG_PATH.value,
@@ -7410,24 +7385,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     ...nativeAdminRevision,
     compute: { id: privateRuntimeDriver.id, implementation: privateRuntimeDriver.implementation },
   };
-  const privateNativeAdminGateway = privateRuntimeDriver.deployment(
-    runtimeName,
-    { namespaceId: tenant.id, agentId: privateNativeAdminRevision.agentId },
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    runtimeName,
-    "gateway",
-    {},
-    "info",
-    privateRuntimeDriver.gatewayConfiguration(privateNativeAdminRevision, undefined, {
-      name: kubernetesNamespaceName(tenant.id),
-      plane: "execution",
-    }),
-  );
-  const privateNativeAdminPod = privateNativeAdminGateway.spec.template.spec;
-  const privateNativeAdminEnvironment = Object.fromEntries(
-    privateNativeAdminPod.containers[0].env.map((entry) => [entry.name, entry]),
-  );
+  const { pod: privateNativeAdminPod, environment: privateNativeAdminEnvironment } =
+    gatewayPodFixture(privateRuntimeDriver, privateNativeAdminRevision, runtimeName, {
+      namespaceId: tenant.id,
+      agentId: privateNativeAdminRevision.agentId,
+    });
   assert.equal(
     privateNativeAdminEnvironment.OPENCLAW_CONFIG_PATH.value,
     "/etc/openclaw/openclaw.json",
@@ -14741,18 +14703,25 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
     ["anthropic", "claude-sonnet-4-5", "ANTHROPIC_API_KEY"],
   ]) {
     // A failed model probe publishes a classified cause from a closed vocabulary.
-    for (const [variant, probeStatus, failureCode, cause] of [
+    for (const [name, probeStatus, failureCode, cause, fixture = {}, expected = {}] of [
       ["accepted", "ok", undefined],
       [
         "wrong provider result",
         "ok",
         "MODEL_PROBE_FAILED",
         { kind: "INVALID_OUTPUT", detail: "shape" },
+        { responseProvider: "another-provider" },
       ],
       // OpenClaw buckets provider 401/403 and invalid-key responses as "auth".
       ["credentials rejected", "auth", "AUTHENTICATION_FAILED"],
       // The provider's 401 to the upfront request ends the probe before OpenClaw starts.
-      ["credentials rejected upfront", undefined, "AUTHENTICATION_FAILED"],
+      [
+        "credentials rejected upfront",
+        undefined,
+        "AUTHENTICATION_FAILED",
+        undefined,
+        { upfront: true },
+      ],
       [
         "provider unavailable",
         "unknown",
@@ -14784,48 +14753,91 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         undefined,
         "MODEL_PROBE_FAILED",
         { kind: "PROCESS_EXIT", detail: "exit-1" },
+        { processFailure: "nonzero" },
       ],
       [
         "probe output exceeded its buffer",
         undefined,
         "MODEL_PROBE_FAILED",
         { kind: "PROCESS_EXIT", detail: "error-ENOBUFS" },
+        { processFailure: "buffer" },
       ],
       [
         "probe output is not JSON",
         undefined,
         "MODEL_PROBE_FAILED",
         { kind: "INVALID_OUTPUT", detail: "json" },
+        { processFailure: "invalid-json" },
       ],
       // OpenClaw's own 15 s timer ends the probe. Its window is judged on the CPU wait the
       // CLI preload read inside it, not on the whole run: a boot throttled at the CPU
       // limit before that timer started is not starvation (finding 2675).
-      ["provider timeout", "timeout", "MODEL_PROBE_TIMEOUT"],
-      ["provider timeout after a throttled boot", "timeout", "MODEL_PROBE_TIMEOUT"],
+      [
+        "provider timeout",
+        "timeout",
+        "MODEL_PROBE_TIMEOUT",
+        undefined,
+        { windowCpuWaitMs: 500 },
+        { timeoutWindow: [15_000, 500, 15_000] },
+      ],
+      [
+        "provider timeout after a throttled boot",
+        "timeout",
+        "MODEL_PROBE_TIMEOUT",
+        undefined,
+        { cpuCountersGrow: true, windowCpuWaitMs: 500 },
+        { cpuWait: [100_000, 100_000, 100_000], timeoutWindow: [15_000, 500, 15_000] },
+      ],
       [
         "provider timeout while waiting for CPU in its window",
         "timeout",
         "MODEL_PROBE_CPU_STARVED",
+        undefined,
+        { cpuCountersGrow: true, windowCpuWaitMs: 9_000 },
+        { cpuWait: [100_000, 100_000, 100_000], timeoutWindow: [15_000, 9_000, 0] },
       ],
       ["provider timeout without a window reading", "timeout", "MODEL_PROBE_TIMEOUT"],
       // The wrapper's cap ends the probe. Only CPU waiting for most of it makes
       // the failure CPU starvation, which fails the deployment at once.
-      ["cap exceeded while waiting for CPU", undefined, "MODEL_PROBE_CPU_STARVED"],
-      ["cap exceeded without CPU waiting", undefined, "MODEL_PROBE_TIMEOUT"],
+      [
+        "cap exceeded while waiting for CPU",
+        undefined,
+        "MODEL_PROBE_CPU_STARVED",
+        undefined,
+        { processFailure: "cap", cpuCountersGrow: true },
+        { cpuWait: [100_000, 100_000, 100_000] },
+      ],
+      [
+        "cap exceeded without CPU waiting",
+        undefined,
+        "MODEL_PROBE_TIMEOUT",
+        undefined,
+        { processFailure: "cap" },
+      ],
       // Without pressure accounting, CPU-limit throttling is the waiting evidence.
       [
         "cap exceeded while throttled without pressure accounting",
         undefined,
         "MODEL_PROBE_CPU_STARVED",
+        undefined,
+        { processFailure: "cap", cpuCountersGrow: true, pressureUnavailable: true },
+        { cpuWait: [100_000, null, 100_000] },
       ],
       // Children of the killed probe can still write into its directory, so its
       // removal fails; the classified result must still be logged and published.
-      ["cap exceeded while waiting for CPU, cleanup fails", undefined, "MODEL_PROBE_CPU_STARVED"],
+      [
+        "cap exceeded while waiting for CPU, cleanup fails",
+        undefined,
+        "MODEL_PROBE_CPU_STARVED",
+        undefined,
+        { processFailure: "cap", cpuCountersGrow: true, cleanupFails: true },
+        { cpuWait: [100_000, 100_000, 100_000], cleanupError: "ENOTEMPTY" },
+      ],
     ]) {
       const accepted = failureCode === undefined;
-      const upfront = variant === "credentials rejected upfront";
+      const upfront = fixture.upfront === true;
       const providerText = "provider-detail: HTTP 404 for key fixture-model-key";
-      await t.test(`${provider}: ${variant}`, async () => {
+      await t.test(`${provider}: ${name}`, async () => {
         const driver = createKubernetesComputeDriver(options());
         const candidate = {
           namespaceId: tenant.id,
@@ -14914,7 +14926,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                 },
                 rmSync(path, options) {
                   removals.push([path, { ...options }]);
-                  if (variant.endsWith("cleanup fails")) {
+                  if (fixture.cleanupFails) {
                     throw Object.assign(new Error("directory not empty /isolated-probe"), {
                       code: "ENOTEMPTY",
                     });
@@ -14922,30 +14934,24 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                 },
                 // A 500m CPU limit; each wait counter grows 100 s across a starved probe.
                 readFileSync(path) {
-                  const starved =
-                    variant.includes("waiting for CPU") || variant.includes("throttled");
                   if (path === "/sys/fs/cgroup/cpu.max") {
                     return "50000 100000\n";
                   }
-                  if (
-                    path === "/sys/fs/cgroup/cpu.pressure" &&
-                    !variant.includes("pressure accounting")
-                  ) {
-                    const total = starved ? pressureReads++ * 1e8 : 0;
+                  if (path === "/sys/fs/cgroup/cpu.pressure" && !fixture.pressureUnavailable) {
+                    const total = fixture.cpuCountersGrow ? pressureReads++ * 1e8 : 0;
                     return `some avg10=0.00 avg60=0.00 avg300=0.00 total=${total}\nfull total=0\n`;
                   }
                   if (path === "/sys/fs/cgroup/cpu.stat") {
                     // 1000 throttled 100 ms periods bound the 100 s of throttled time.
-                    const reads = starved ? throttledReads++ : 0;
+                    const reads = fixture.cpuCountersGrow ? throttledReads++ : 0;
                     return `usage_usec 1\nnr_throttled ${reads * 1000}\nthrottled_usec ${reads * 1e8}\n`;
                   }
                   // The CLI preload's samples across OpenClaw's 15 s timeout window.
                   if (
                     path === "/isolated-probe/cpu-window.json" &&
-                    variant.startsWith("provider timeout") &&
-                    !variant.endsWith("without a window reading")
+                    fixture.windowCpuWaitMs !== undefined
                   ) {
-                    const waitMs = variant.endsWith("in its window") ? 9_000 : 500;
+                    const waitMs = fixture.windowCpuWaitMs;
                     return JSON.stringify([
                       [1_000, 0, 0, 0],
                       [16_000, waitMs, waitMs, 15_000],
@@ -14974,7 +14980,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                       stdout: upfront ? '["json-error-code","other","invalid_request_error"]' : "",
                     };
                   }
-                  if (variant.startsWith("cap exceeded")) {
+                  if (fixture.processFailure === "cap") {
                     return {
                       status: null,
                       signal: "SIGKILL",
@@ -14984,10 +14990,10 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                   }
                   // Native output and provider text that echo the credential
                   // must never reach the published cause or the probe log.
-                  if (variant === "probe exited nonzero") {
+                  if (fixture.processFailure === "nonzero") {
                     return { status: 1, signal: null, stdout: "", stderr: providerText };
                   }
-                  if (variant === "probe output exceeded its buffer") {
+                  if (fixture.processFailure === "buffer") {
                     return {
                       status: null,
                       signal: "SIGTERM",
@@ -14995,7 +15001,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                       error: { code: "ENOBUFS", message: providerText },
                     };
                   }
-                  if (variant === "probe output is not JSON") {
+                  if (fixture.processFailure === "invalid-json") {
                     return { status: 0, stdout: providerText };
                   }
                   return {
@@ -15005,8 +15011,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                         probes: {
                           results: [
                             {
-                              provider:
-                                variant === "wrong provider result" ? "another-provider" : provider,
+                              provider: fixture.responseProvider ?? provider,
                               model: `${provider}/${model}`,
                               source: "env",
                               status: probeStatus,
@@ -15105,7 +15110,8 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         const phaseLines = errors.filter((line) => line.includes('"runtime.startup_phase"'));
         const probeLines = errors.filter((line) => line.includes('"openclaw.model_probe"'));
         assert.equal(probeLines.length, 1);
-        const probeLog = JSON.parse(probeLines[0]);
+        const [probeLine] = probeLines;
+        const probeLog = JSON.parse(probeLine);
         const otherLines = errors.filter(
           (line) => !phaseLines.includes(line) && !probeLines.includes(line),
         );
@@ -15158,31 +15164,23 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.deepEqual(removals, [
           ["/isolated-probe", { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }],
         ]);
-        assert.equal(
-          probeLog.cleanupError,
-          variant.endsWith("cleanup fails") ? "ENOTEMPTY" : undefined,
-        );
-        assert.doesNotMatch(probeLines[0], /isolated-probe|not empty/);
-        const waitMs =
-          variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0;
-        assert.equal(probeLog.cpuWaitMs, waitMs);
+        assert.equal(probeLog.cleanupError, expected.cleanupError);
+        assert.doesNotMatch(probeLine, /isolated-probe|not empty/);
+        const [cpuWaitMs, pressureWaitMs, throttledWaitMs] = expected.cpuWait ?? [0, 0, 0];
+        assert.equal(probeLog.cpuWaitMs, cpuWaitMs);
         assert.deepEqual(
           [probeLog.timeoutWindowMs, probeLog.timeoutWindowCpuWaitMs, probeLog.timeoutWindowIdleMs],
-          !variant.startsWith("provider timeout") || variant.endsWith("without a window reading")
-            ? [undefined, undefined, undefined]
-            : variant.endsWith("in its window")
-              ? [15_000, 9_000, 0]
-              : [15_000, 500, 15_000],
+          expected.timeoutWindow ?? [undefined, undefined, undefined],
         );
         // The event records each counter's delta; without pressure accounting PSI has none.
         assert.deepEqual(
           [probeLog.pressureWaitMs, probeLog.throttledWaitMs],
-          [variant.includes("pressure accounting") ? null : waitMs, waitMs],
+          [pressureWaitMs, throttledWaitMs],
         );
-        assert.doesNotMatch(
-          probeLines[0],
-          new RegExp([provider, model, credentialName, "fixture-model-key"].join("|")),
+        const providerDetails = new RegExp(
+          [provider, model, credentialName, "fixture-model-key"].join("|"),
         );
+        assert.doesNotMatch(probeLine, providerDetails);
         // Startup timing names phases only, never the provider, model or credential.
         assert.deepEqual(
           phaseLines.map((line) => {
@@ -15194,17 +15192,15 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
             ...(accepted ? [["gateway", "native-spawn", "ok"]] : []),
           ],
         );
-        assert.doesNotMatch(
-          phaseLines.join("\n"),
-          new RegExp([provider, model, credentialName, "fixture-model-key"].join("|")),
-        );
+        assert.doesNotMatch(phaseLines.join("\n"), providerDetails);
         let body = "";
         statusHandler(
           { method: "GET", url: "/openclaw/runtime/status" },
           { writeHead() {}, end: (chunk) => (body += chunk) },
         );
-        assert.equal(JSON.parse(body).runtimeFailure?.code, failureCode);
-        assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
+        const { runtimeFailure } = JSON.parse(body);
+        assert.equal(runtimeFailure?.code, failureCode);
+        assert.deepEqual(runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
         // The log line keeps the provider's HTTP status from its error, never the text;
         // the upfront rejection names its 401, who answered it and only a
@@ -15218,7 +15214,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(probeLog.bodyShape, upfront ? "json-error-code" : undefined);
         assert.equal(probeLog.providerErrorCode, upfront ? "other" : undefined);
         assert.equal(probeLog.providerErrorType, upfront ? "invalid_request_error" : undefined);
-        assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
+        assert.doesNotMatch(body + probeLine, /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();
           assert.deepEqual(childSignals, ["SIGTERM"]);
@@ -19660,416 +19656,10 @@ test("activation trims unwritten Agent policies only in its Gateway namespace", 
   }
 });
 
-test("retirement preserves active storage and node routing and deletes exact owned UIDs", async () => {
-  const driver = createKubernetesComputeDriver(
-    routedOptions({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-      },
-    }),
-  );
-  const agentId = "agent-revision-storage";
-  const compute = { id: driver.id, implementation: driver.implementation };
-  const ownership = { namespaceId: tenant.id, agentId };
-  const harnessNamespace = kubernetesNamespaceName(tenant.id);
-  const namespace = kubernetesNamespaceName(tenant.id);
-  const gatewayName = "gateway-" + createHash("sha256").update(agentId).digest("hex").slice(0, 12);
-  const gateway = driver.manifest("apps/v1", "Deployment", gatewayName, ownership, {
-    name: namespace,
-    plane: "execution",
-  });
-  gateway.metadata.uid = "gateway-uid";
-  gateway.metadata.annotations["openclaw.dev/agent-revision-id"] = "revision-2";
-  let observedGateway = gateway;
-  const gatewayService = driver.service(
-    gatewayName,
-    ownership,
-    { name: namespace, plane: "execution" },
-    {
-      "app.kubernetes.io/name": gatewayName,
-    },
-  );
-  gatewayService.metadata.uid = "gateway-service-uid";
-  let observedService = gatewayService;
-  const gatewayAccount = driver.manifest("v1", "ServiceAccount", gatewayName, ownership, {
-    name: namespace,
-    plane: "execution",
-  });
-  gatewayAccount.metadata.uid = "gateway-account-uid";
-  let observedServiceAccount = gatewayAccount;
-  const agentName = `agent-${digest(agentId)}`;
-  const agentOwnership = {
-    ...ownership,
-    servicePrincipalId: "service-agent-revision-storage",
-  };
-  const agentService = driver.service(
-    agentName,
-    agentOwnership,
-    { name: harnessNamespace, plane: "execution" },
-    {
-      "openclaw.dev/agent": agentId,
-      "openclaw.dev/revision": "revision-2",
-      "openclaw.dev/workload-role": "agent",
-    },
-  );
-  agentService.metadata.uid = "agent-service-uid";
-  const agentAccount = driver.manifest("v1", "ServiceAccount", agentName, agentOwnership, {
-    name: harnessNamespace,
-    plane: "execution",
-  });
-  agentAccount.metadata.uid = "agent-account-uid";
-  const route = driver.gatewayRoute(
-    routedRevision(driver, { id: "revision-2", revision: 2, agentId }),
-    ownership,
-    { name: namespace, plane: "execution" },
-    gatewayService,
-  );
-  route.metadata.uid = "route-uid";
-  route.metadata.resourceVersion = "route-version-2";
-  let observedRoute = route;
-  const nodeResources = new Map();
-  const claims = [
-    driver.gatewayPrivateStateClaim(agentId, ownership, { name: namespace, plane: "execution" }),
-    driver.harnessWorkspaceClaim(agentId, ownership, {
-      name: harnessNamespace,
-      plane: "execution",
-    }),
-  ];
-  for (const claim of claims) {
-    claim.metadata.uid = claim.metadata.name + "-uid";
-  }
-  const deletions = [];
-  let failServiceDelete = false;
-  const missing = async () => {
-    throw Object.assign(new Error("Not found"), { code: 404 });
-  };
-  driver.apiClients = Promise.resolve({
-    apps: {
-      async readNamespacedDeployment({ name, namespace: target }) {
-        if (name !== gatewayName || target !== namespace) {
-          return missing();
-        }
-        if (observedGateway === undefined) {
-          return missing();
-        }
-        return structuredClone(observedGateway);
-      },
-      async deleteNamespacedDeployment(request) {
-        deletions.push(["Deployment", request]);
-      },
-    },
-    core: {
-      async listNamespacedPod() {
-        return { apiVersion: "v1", kind: "PodList", items: [] };
-      },
-      readNamespacedConfigMap: missing,
-      readNamespacedSecret: missing,
-      async readNamespacedPersistentVolumeClaim({ name }) {
-        const claim = claims.find(({ metadata }) => metadata.name === name);
-        if (claim === undefined) {
-          return missing();
-        }
-        return structuredClone(claim);
-      },
-      async deleteNamespacedPersistentVolumeClaim(request) {
-        deletions.push(["PersistentVolumeClaim", request]);
-      },
-      async readNamespacedService({ name }) {
-        if (name === agentName) {
-          return structuredClone(agentService);
-        }
-        if (observedService === undefined) {
-          return missing();
-        }
-        return structuredClone(observedService);
-      },
-      async deleteNamespacedService(request) {
-        deletions.push(["Service", request]);
-        if (failServiceDelete) {
-          throw new Error("service delete failed");
-        }
-      },
-      async readNamespacedServiceAccount({ name }) {
-        if (name === agentName) {
-          return structuredClone(agentAccount);
-        }
-        if (observedServiceAccount === undefined) {
-          return missing();
-        }
-        return structuredClone(observedServiceAccount);
-      },
-      async deleteNamespacedServiceAccount(request) {
-        deletions.push(["ServiceAccount", request]);
-      },
-    },
-    networking: {
-      readNamespacedNetworkPolicy: missing,
-    },
-    objects: {
-      async read({ kind, metadata }) {
-        if (metadata.name === `${gatewayName}-node`) {
-          const resource = nodeResources.get(kind);
-          if (resource === undefined) {
-            return missing();
-          }
-          return structuredClone(resource);
-        }
-        if (
-          kind !== "HTTPRoute" ||
-          metadata.name !== gatewayName ||
-          metadata.namespace !== namespace
-        ) {
-          return missing();
-        }
-        if (observedRoute === undefined) {
-          return missing();
-        }
-        return structuredClone(observedRoute);
-      },
-      async patch(body) {
-        if (body.metadata.name === gatewayName) {
-          observedRoute = {
-            ...structuredClone(body),
-            metadata: { ...body.metadata, uid: "route-uid", resourceVersion: "1" },
-          };
-          return;
-        }
-        assert.equal(body.metadata.name, `${gatewayName}-node`);
-        nodeResources.set(body.kind, {
-          ...structuredClone(body),
-          metadata: { ...body.metadata, uid: `${body.kind}-node-uid`, resourceVersion: "1" },
-        });
-      },
-      async delete(
-        spec,
-        pretty,
-        dryRun,
-        gracePeriodSeconds,
-        orphanDependents,
-        propagationPolicy,
-        body,
-      ) {
-        deletions.push([spec.kind, { spec, body }]);
-      },
-    },
-  });
-  await driver.removeRetiredGateway(
-    {
-      id: "revision-1",
-      agentId,
-      namespaceId: tenant.id,
-      servicePrincipalId: "service-agent-revision-storage",
-      compute,
-      harness: { mode: "dedicated" },
-    },
-    { name: harnessNamespace, plane: "execution" },
-  );
-  assert.deepEqual(deletions, []);
-  failServiceDelete = true;
-  await assert.rejects(
-    driver.removeRetiredGateway(
-      {
-        id: "revision-2",
-        agentId,
-        namespaceId: tenant.id,
-        servicePrincipalId: "service-agent-revision-storage",
-        compute,
-        harness: { mode: "dedicated" },
-      },
-      { name: harnessNamespace, plane: "execution" },
-    ),
-    /service delete failed/,
-  );
-  assert.deepEqual(
-    deletions.map(([kind]) => kind),
-    ["HTTPRoute", "Service"],
-  );
-  assert.equal(
-    deletions.some(([kind]) => kind === "Deployment"),
-    false,
-    "Deployment must remain as the retry witness until Service deletion succeeds",
-  );
-
-  deletions.length = 0;
-  failServiceDelete = false;
-  await driver.removeRetiredGateway(
-    {
-      id: "revision-2",
-      agentId,
-      namespaceId: tenant.id,
-      servicePrincipalId: "service-agent-revision-storage",
-      compute,
-      harness: { mode: "dedicated" },
-    },
-    { name: harnessNamespace, plane: "execution" },
-  );
-  assert.deepEqual(deletions, [
-    [
-      "HTTPRoute",
-      {
-        spec: {
-          apiVersion: "gateway.networking.k8s.io/v1",
-          kind: "HTTPRoute",
-          metadata: { name: gatewayName, namespace },
-        },
-        body: { preconditions: { uid: "route-uid", resourceVersion: "route-version-2" } },
-      },
-    ],
-    [
-      "Service",
-      { name: gatewayName, namespace, body: { preconditions: { uid: "gateway-service-uid" } } },
-    ],
-    [
-      "ServiceAccount",
-      { name: gatewayName, namespace, body: { preconditions: { uid: "gateway-account-uid" } } },
-    ],
-    [
-      "Deployment",
-      { name: gatewayName, namespace, body: { preconditions: { uid: "gateway-uid" } } },
-    ],
-    [
-      "Service",
-      {
-        name: agentName,
-        namespace: harnessNamespace,
-        body: { preconditions: { uid: "agent-service-uid" } },
-      },
-    ],
-    [
-      "ServiceAccount",
-      {
-        name: agentName,
-        namespace: harnessNamespace,
-        body: { preconditions: { uid: "agent-account-uid" } },
-      },
-    ],
-  ]);
-
-  deletions.length = 0;
-  observedGateway = undefined;
-  observedService = gatewayService;
-  observedServiceAccount = gatewayAccount;
-  observedRoute = route;
-  await driver.removeRetiredGateway(
-    {
-      id: "revision-2",
-      agentId,
-      namespaceId: tenant.id,
-      servicePrincipalId: "service-agent-revision-storage",
-      compute,
-      harness: { mode: "dedicated" },
-    },
-    { name: harnessNamespace, plane: "execution" },
-  );
-  assert.deepEqual(deletions, [
-    [
-      "HTTPRoute",
-      {
-        spec: {
-          apiVersion: "gateway.networking.k8s.io/v1",
-          kind: "HTTPRoute",
-          metadata: { name: gatewayName, namespace },
-        },
-        body: { preconditions: { uid: "route-uid", resourceVersion: "route-version-2" } },
-      },
-    ],
-    [
-      "Service",
-      { name: gatewayName, namespace, body: { preconditions: { uid: "gateway-service-uid" } } },
-    ],
-    [
-      "ServiceAccount",
-      { name: gatewayName, namespace, body: { preconditions: { uid: "gateway-account-uid" } } },
-    ],
-    [
-      "Service",
-      {
-        name: agentName,
-        namespace: harnessNamespace,
-        body: { preconditions: { uid: "agent-service-uid" } },
-      },
-    ],
-    [
-      "ServiceAccount",
-      {
-        name: agentName,
-        namespace: harnessNamespace,
-        body: { preconditions: { uid: "agent-account-uid" } },
-      },
-    ],
-  ]);
-
-  deletions.length = 0;
-  observedRoute = {
-    ...route,
-    metadata: {
-      ...route.metadata,
-      annotations: {
-        ...route.metadata.annotations,
-        "openclaw.dev/agent-revision-id": "revision-3",
-      },
-    },
-  };
-  await driver.removeRetiredGateway(
-    {
-      id: "revision-2",
-      agentId,
-      namespaceId: tenant.id,
-      servicePrincipalId: "service-agent-revision-storage",
-      compute,
-      harness: { mode: "dedicated" },
-    },
-    { name: harnessNamespace, plane: "execution" },
-  );
-  assert.deepEqual(deletions, []);
-
-  // Preparation can run while the previous Gateway still serves requests. A
-  // failed candidate must not acquire and then delete that Gateway's node route.
-  observedGateway = structuredClone(gateway);
-  const active = routedRevision(driver, {
-    id: "revision-2",
-    revision: 2,
-    agentId,
-    servicePrincipalId: agentOwnership.servicePrincipalId,
-  });
-  observedGateway.metadata.annotations["openclaw.dev/agent-revision"] = String(active.revision);
-  const candidate = { ...active, id: "revision-3", revision: 3 };
-  await driver.reconcileGatewayRoute(active, ownership, { name: namespace, plane: "execution" });
-  const activeNodeResources = structuredClone(nodeResources);
-  assert.equal(activeNodeResources.size, 2);
-  await driver.reconcileGatewayRoute(candidate, ownership, { name: namespace, plane: "execution" });
-  assert.deepEqual(nodeResources, activeNodeResources);
-  // A serving Gateway predating node enrollment may have no node endpoint.
-  // Preparing its successor must create one under the serving revision, or
-  // node readiness would wait for activation while activation waits for it.
-  nodeResources.clear();
-  await driver.reconcileGatewayRoute(candidate, ownership, { name: namespace, plane: "execution" });
-  assert.deepEqual(nodeResources, activeNodeResources);
-  await driver.removeRetiredGateway(candidate, { name: harnessNamespace, plane: "execution" });
-  assert.deepEqual(deletions, []);
-
-  // Once activation replaces the Gateway, the same endpoint belongs to the new
-  // revision. Retiring the predecessor must leave it usable by the new node.
-  observedGateway.metadata.annotations["openclaw.dev/agent-revision-id"] = candidate.id;
-  observedGateway.metadata.annotations["openclaw.dev/agent-revision"] = String(candidate.revision);
-  await driver.reconcileGatewayRoute(candidate, ownership, { name: namespace, plane: "execution" });
-  for (const resource of nodeResources.values()) {
-    assert.equal(resource.metadata.annotations["openclaw.dev/agent-revision-id"], candidate.id);
-  }
-  await driver.removeRetiredGateway(active, { name: harnessNamespace, plane: "execution" });
-  assert.deepEqual(deletions, []);
-  await driver.removeRetiredGateway(candidate, { name: harnessNamespace, plane: "execution" });
-  assert.deepEqual(
-    deletions
-      .slice(0, 2)
-      .map(([kind, { spec, body }]) => [kind, spec.metadata.name, body.preconditions.uid]),
-    [
-      ["HTTPRoute", `${gatewayName}-node`, "HTTPRoute-node-uid"],
-      ["SecurityPolicy", `${gatewayName}-node`, "SecurityPolicy-node-uid"],
-    ],
-  );
-});
+test(
+  "retirement preserves active storage and node routing and deletes exact owned UIDs",
+  checkGatewayRetirement,
+);
 
 test("external ChatGPT source preparation delivers the exact placeholder and account only to its Harness", async (t) => {
   const account = {

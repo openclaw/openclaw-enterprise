@@ -271,12 +271,12 @@ behavior.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
-  `tests/integration/postgres-production-wireup.test.mjs` checks revocation after
+  `tests/integration/postgres-production-wireup.test.ts` checks revocation after
   real HTTP admission, cross-replica logout ordering, expiry during policy work,
   and expiry after the final client check with COMMIT paused at the transport. It uses
   real authentication, IAM and PostgreSQL; its passive Compute does not prove a native Gateway.
 - The guarded activation case in
-  `tests/integration/postgres-password-default-activation.test.mjs` checks a
+  `tests/integration/postgres-password-default-activation.test.ts` checks a
   Namespace wait beyond five seconds, an independent session's write, and
   subsequent account revocation. These cases emit credential-free execution
   diagnostics for review evidence.

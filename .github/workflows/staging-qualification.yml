@@ -214,7 +214,7 @@ jobs:
         env:
           PLAN: ${{ steps.pair.outputs.plan }}
         run: |
-          prepared=$(node scripts/ci/prepare-staged-signin.mjs "$PLAN")
+          prepared=$(node scripts/ci/prepare-staged-signin.ts "$PLAN")
           [[ "$prepared" =~ ^[0-9a-f]{64}$ ]]
           printf 'prepared=%s\n' "$prepared" >> "$GITHUB_OUTPUT"
       - name: Run the fixed sign-in case under descendant supervision

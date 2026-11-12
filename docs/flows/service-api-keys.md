@@ -210,9 +210,9 @@ schedule rotation.
   invalid, expired, revoked, unauthorized, and cross-Namespace requests;
   IAM-authorized service-key management; session preservation; Agent exclusion;
   and audit attribution without keys.
-- [PostgreSQL integration](../../tests/integration/postgres-service-api-keys.test.mjs):
+- [PostgreSQL integration](../../tests/integration/postgres-service-api-keys.test.ts):
   with `OCC_TEST_DATABASE_URL` selecting a disposable application-role database,
-  run `node --test tests/integration/postgres-service-api-keys.test.mjs`.
+  run `node --test tests/integration/postgres-service-api-keys.test.ts`.
   This separately checks stored hashing, foreign-Installation rejection,
   cross-instance revocation, and deletion during concurrent verification.
   Use the existing [test environment instructions](../testing/postgresql.md#postgresql-test-environment).

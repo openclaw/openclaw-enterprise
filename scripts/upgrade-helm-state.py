@@ -137,7 +137,7 @@ def attempt(directory, nonce=None):
     return root, record
 
 
-def new_attempt(directory, release, helm_args):
+def new_attempt(directory, release, values_path, helm_args):
     nonce = str(uuid.uuid4())
     root = directory / "helm-attempts" / nonce
     root.mkdir(parents=True, mode=0o700)
@@ -145,7 +145,9 @@ def new_attempt(directory, release, helm_args):
     # any prepared/submission pointer can name this attempt.
     sync_directory(root.parent)
     sync_directory(directory)
-    values = command(["yq", '.installation.upgradeAttemptId = strenv(OCE_UPGRADE_ATTEMPT)',
+    # These exact bytes are also written back to the operator's values file.
+    output_format = ["-o=json"] if values_path.suffix.lower() == ".json" else []
+    values = command(["yq", *output_format, '.installation.upgradeAttemptId = strenv(OCE_UPGRADE_ATTEMPT)',
                       str(directory / "candidate-values.yaml")],
                      env={**os.environ, "OCE_UPGRADE_ATTEMPT": nonce})
     write(root / "values.yaml", values)
@@ -670,7 +672,7 @@ def main():
     action, location, *args = sys.argv[1:]
     directory = Path(location)
     if action == "new":
-        new_attempt(directory, args[0], args[1:])
+        new_attempt(directory, args[0], Path(args[1]), args[2:])
     elif action == "select":
         print(attempt(directory)[1]["nonce"])
     elif action == "predecessor":
