@@ -17,9 +17,8 @@ import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/driver
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 import {
   OpenShellGateway,
@@ -96,7 +95,6 @@ import {
   verifyDedicatedHarnessSelection,
   verifyWorkspaceWrapperDiagnostics,
   verifyManagedNamespaceRejectsMutation,
-  verifySandboxFactoryValidation,
   verifyOperatorPolicyDrift,
   verifyOperatorAliasesRejected,
   prepareStockWorkspaceChart,
@@ -146,6 +144,8 @@ import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts"
 import { registerSandboxDriverWorkspaceRenewalCases } from "./sandbox-driver-workspace-renewal-cases.ts";
 import { registerSandboxDriverWorkspaceExpiryCases } from "./sandbox-driver-workspace-expiry-cases.ts";
 import { registerSandboxDriverPreparerCleanupCases } from "./sandbox-driver-preparer-cleanup-cases.ts";
+import { registerSandboxDriverNativePreparationCases } from "./sandbox-driver-native-preparation-cases.ts";
+import { verifySandboxScratchStorage } from "./sandbox-driver-scratch-storage-case.ts";
 
 const harnessLifecycleChecks = createSandboxHarnessLifecycleChecks({
   chmod,
@@ -195,20 +195,15 @@ function sandboxStartupGuardChecks() {
   return createSandboxStartupGuardChecks({
     conformanceKubernetesOptions,
     controllerRequire,
-    endpointOf,
     invalidValue,
     kubernetesObjectClient,
     namespaceContext,
     openShellDriver,
     ownedWorkspace,
-    policiesOf,
-    readinessWait,
     rejectsAtStartup,
     runtimeSandboxFixture,
-    sandboxInstallation,
     sandboxOf,
     sandboxRecord,
-    structuralRefusal,
   });
 }
 
@@ -1947,58 +1942,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
 });
 
 test("OpenShell keeps scratch separate from its durable data mount", async () => {
-  const scratch = {
-    claimName: "operator-scratch",
-    subPath: "scratch",
-    mountPath: "/sandbox/scratch",
-    readOnly: false,
-  };
-  for (const dataMount of [
-    { claimName: scratch.claimName, subPath: scratch.subPath },
-    { mountPath: "/sandbox/scratch" },
-    { mountPath: "/sandbox/scratch/workspace" },
-    { mountPath: "/sandbox/enterprise/.." },
-    { mountPath: "/sandbox/enterprise/../scratch" },
-    {},
-  ]) {
-    const gateway = workspaceGatewayClient();
-    const requests = [];
-    gateway.createSandbox = async (request) => {
-      requests.push(request);
-      return storedSandbox(request);
-    };
-    const options = sandboxInstallation().drivers.sandbox.configuration;
-    Object.assign(options.kubernetes.sandboxDataMount, dataMount);
-    const driver = openShellDriver(gateway, options);
-    const { context, revision, requirements } = runtimeSandboxFixture(driver);
-    requirements.workspaceMounts.push(scratch);
-    const provision = () => driver.provisionHarness({ ...context, revision, requirements });
-    if (Object.keys(dataMount).length > 0) {
-      await assert.rejects(
-        provision(),
-        /sandboxDataMount must preserve durable storage separately/,
-      );
-      assert.equal(requests.length, 0, "invalid storage must not reach Sandbox creation");
-      continue;
-    }
-    await provision();
-    const { spec } = requests[0];
-    const kubernetes = spec.template.driver_config.fields.kubernetes.structValue.fields;
-    const mounts =
-      kubernetes.containers.structValue.fields.agent.structValue.fields.volume_mounts.listValue.values.map(
-        ({ structValue: { fields } }) => fields,
-      );
-    const durable = mounts.find(
-      ({ mount_path }) => mount_path.stringValue === "/sandbox/enterprise",
-    );
-    const selected = mounts.find(({ mount_path }) => mount_path.stringValue === scratch.mountPath);
-    assert.ok(durable);
-    assert.ok(selected);
-    assert.notEqual(selected.name.stringValue, durable.name.stringValue);
-    assert.equal(selected.sub_path.stringValue, scratch.subPath);
-    assert.equal(selected.read_only.boolValue, false);
-    assert.equal(spec.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/enterprise");
-  }
+  await verifySandboxScratchStorage({ openShellDriver, runtimeSandboxFixture });
 });
 
 test("OpenShell holds withdrawn Codex authentication after a Harness restart", async (t) => {
@@ -2349,53 +2293,12 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
   await sandboxStartupGuardChecks().refusesControllerIdentity();
 });
 
-test("startup rejects invalid bundled OpenShell configuration before invoking an injected factory", async (t) => {
-  await verifySandboxFactoryValidation({
-    t,
-    sandboxInstallation,
-    structuralRefusal,
-    SharedConfigurationValidationError,
-  });
-});
-
 // Each test below changes settings of a valid installation, and startup refuses each change.
 const sandboxOf = (c) => c.drivers.sandbox.configuration;
-const policiesOf = (c) => sandboxOf(c).policy.networkPolicies;
-const firstPolicyOf = (c) => policiesOf(c)[0];
-const endpointOf = (c) => firstPolicyOf(c).endpoints[0];
-const readinessWait = {
-  serviceName: "openshell-gateway",
-  podSelector: { "app.kubernetes.io/name": "openshell" },
-};
 
 // The gateway refuses these in CreateSandbox, which runs only after a dedicated deploy has
 // stopped its predecessors, so startup applies the same rules (findings 2331-2333).
 const invalidValue = (path, message) => [{ path, code: "INVALID_VALUE", message }];
-
-// Typos in these objects were ignored, and the Gateway refused Agent resources it cannot
-// decode, or the API server their quantities, after a deploy stopped its predecessors
-// (findings 2353, 2356).
-test("startup refuses unknown OpenShell settings and invalid Agent resource quantities", async (t) => {
-  await sandboxStartupGuardChecks().refusesUnknownSettingsAndInvalidResources(t);
-});
-
-test("startup refuses invalid or conflicting exact-Agent resource overrides", async (t) => {
-  await sandboxStartupGuardChecks().refusesInvalidAgentResourceOverrides(t);
-});
-
-// The Gateway refuses these protocols at CreateSandbox (finding 2335): unknown names, L7
-// protocols without an access preset, access or enforcement on tcp, enforce on sql, and json-rpc
-// or mcp, which need rules.
-test("startup refuses OpenShell endpoint protocols the gateway refuses", async (t) => {
-  await sandboxStartupGuardChecks().refusesUnsupportedEndpointProtocols(t);
-});
-
-// The schema leaves these open, so the Driver's own checks are the only refusal. Startup
-// reports each as the same generic detail, so every case must change one valid field of
-// the fixture, and the control below shows the fixture loads otherwise.
-test("startup refuses OpenShell settings its schema leaves open", async (t) => {
-  await sandboxStartupGuardChecks().refusesSchemaOpenSettings(t);
-});
 
 // A non-object ingress rule cannot be mapped for the client; startup names the field instead of
 // the apply failing later.
@@ -3017,152 +2920,7 @@ async function orphanedNativePreparation({
   return { driver, gateway, api, resource, deployment, context, requirements };
 }
 
-async function runNativePreparation(t, program, directory) {
-  const child = spawn(process.execPath, ["-e", program], {
-    cwd: directory,
-    env: { PATH: dirname(process.execPath) },
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  let errors = "";
-  child.stderr.on("data", (chunk) => {
-    errors += chunk;
-  });
-  const exited = new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-  });
-  const stopDeadline = setTimeout(() => child.kill("SIGKILL"), 5_000);
-  t.after(async () => {
-    clearTimeout(stopDeadline);
-    child.kill("SIGKILL");
-    await exited;
-  });
-  const marker = join(directory, "preparation-status", "ready");
-  for (;;) {
-    assert.equal(child.exitCode, null, errors);
-    assert.equal(child.signalCode, null, errors);
-    const ready = await readFile(marker, "utf8").catch((error) => {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-      return undefined;
-    });
-    if (ready !== undefined) {
-      assert.equal(ready, "ready");
-      break;
-    }
-    await delay(20);
-  }
-  // A preparer must acknowledge termination, rather than wait for Kubernetes to
-  // force-kill it. The completion marker survives its successful shutdown.
-  child.kill("SIGTERM");
-  assert.deepEqual(await exited, { code: 0, signal: null });
-  assert.equal(await readFile(marker, "utf8"), "ready");
-}
-
-test("OpenShell native preparation exits cleanly on SIGTERM after readiness", async (t) => {
-  // Capture the production manifest through the existing transport fixture, then
-  // execute its preparation process. Live Pod deletion is proved separately.
-  const { deployment } = await orphanedNativePreparation({ scratch: true });
-  const spec = deployment.spec.template.spec;
-  const container = spec.containers[0];
-  const directory = await temporaryDirectory(t, "openshell-preparation-stop-");
-  for (const mount of container.volumeMounts) {
-    await mkdir(join(directory, mount.mountPath), { recursive: true });
-  }
-  const claimRoot = (claimName) => {
-    const volume = spec.volumes.find(
-      (entry) => entry.persistentVolumeClaim?.claimName === claimName,
-    );
-    assert.ok(volume);
-    return join(
-      directory,
-      container.volumeMounts.find(({ name }) => name === volume.name).mountPath,
-    );
-  };
-  const scratchRoot = claimRoot("operator-scratch");
-  // fsGroup-backed volumes commonly inherit setgid; a new private child must
-  // still become 0700 without changing pre-existing operator state.
-  await chmod(scratchRoot, 0o2770);
-  const workspaceRoot = claimRoot("harness-workspace-codex");
-  // Only OCE's durable workspace participates in legacy directory migration.
-  // An operator may own this identically named sibling on the separate scratch PVC.
-  const sibling = join(scratchRoot, ".scratch.kubelet-created");
-  await mkdir(sibling, { mode: 0o750 });
-  await writeFile(join(sibling, "operator-data"), "keep operator data");
-  const siblingBefore = await stat(sibling);
-  const legacyWorkspace = join(workspaceRoot, ".workspace.kubelet-created");
-  await mkdir(legacyWorkspace);
-  await writeFile(join(legacyWorkspace, "notes.md"), "keep durable workspace");
-  // Only relocate mount paths; keep the generated preparation and signal code.
-  const program = container.command[2]
-    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
-    .replaceAll("/preparation-status", join(directory, "preparation-status"));
-  await runNativePreparation(t, program, directory);
-  assert.equal(await readFile(join(sibling, "operator-data"), "utf8"), "keep operator data");
-  const siblingAfter = await stat(sibling);
-  assert.equal(siblingAfter.ino, siblingBefore.ino);
-  assert.equal(siblingAfter.mode, siblingBefore.mode);
-  assert.equal(siblingAfter.uid, siblingBefore.uid);
-  const initialized = await stat(join(scratchRoot, "scratch"));
-  assert.equal(initialized.mode & 0o7777, 0o700);
-  assert.equal(initialized.uid, process.getuid());
-  await assert.rejects(stat(join(scratchRoot, "scratch", "operator-data")), { code: "ENOENT" });
-  assert.equal(
-    await readFile(join(workspaceRoot, "workspace", "notes.md"), "utf8"),
-    "keep durable workspace",
-  );
-  await assert.rejects(stat(legacyWorkspace), { code: "ENOENT" });
-  assert.equal((await stat(scratchRoot)).mode & 0o7777, 0o2770);
-
-  // Only a newly created scratch child may have its inherited setgid cleared.
-  // An incompatible existing directory must fail without silently repairing it.
-  const scratchDirectory = join(scratchRoot, "scratch");
-  await chmod(scratchDirectory, 0o750);
-  await writeFile(join(scratchDirectory, "retained"), "existing scratch data");
-  const refused = spawnSync(process.execPath, ["-e", program], {
-    cwd: directory,
-    env: { PATH: dirname(process.execPath) },
-    encoding: "utf8",
-    timeout: 2000,
-  });
-  assert.equal(refused.status, 1, refused.stderr);
-  assert.match(refused.stderr, /Private workspace preparation did not complete/);
-  assert.equal((await stat(scratchDirectory)).mode & 0o7777, 0o750);
-  assert.equal(await readFile(join(scratchDirectory, "retained"), "utf8"), "existing scratch data");
-  assert.equal(await readFile(join(sibling, "operator-data"), "utf8"), "keep operator data");
-});
-
-test("OpenShell preserves legacy workspace recovery when its data mount uses the scratch path", async (t) => {
-  const { deployment } = await orphanedNativePreparation({ dataMountPath: "/sandbox/scratch" });
-  const spec = deployment.spec.template.spec;
-  const container = spec.containers[0];
-  const directory = await temporaryDirectory(t, "openshell-workspace-path-");
-  for (const mount of container.volumeMounts) {
-    await mkdir(join(directory, mount.mountPath), { recursive: true });
-  }
-  const volume = spec.volumes.find(
-    ({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName === "harness-workspace-codex",
-  );
-  const root = join(
-    directory,
-    container.volumeMounts.find(({ name }) => name === volume.name).mountPath,
-  );
-  // This is the existing durable claim: its configured destination does not
-  // turn it into operator scratch or remove normal legacy workspace recovery.
-  const saved = join(root, ".workspace.kubelet-created");
-  await mkdir(saved);
-  await writeFile(join(saved, "notes.md"), "durable workspace data");
-  const program = container.command[2]
-    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
-    .replaceAll("/preparation-status", join(directory, "preparation-status"));
-  await runNativePreparation(t, program, directory);
-  assert.equal(
-    await readFile(join(root, "workspace", "notes.md"), "utf8"),
-    "durable workspace data",
-  );
-  await assert.rejects(stat(saved), { code: "ENOENT" });
-});
+registerSandboxDriverNativePreparationCases(orphanedNativePreparation);
 
 registerSandboxDriverPreparerCleanupCases({
   orphanedNativePreparation,
