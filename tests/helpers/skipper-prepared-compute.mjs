@@ -350,42 +350,16 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     revisionId: revision.id,
     seccomp,
   });
-  const chat = async (prompt, gatewayChatPhase) => {
-    // Readiness isn't a model turn. Record a bounded, content-free failure at the real receiver
-    // before cleanup; never replay a turn whose effect might be unknown.
-    const before = await modelEvents(AbortSignal.timeout(10_000)).catch(() => undefined);
-    const since = new Date().toISOString();
-    const text = await runSkipperOperation("gateway-exec", () =>
-      enter(
-        "node",
-        "-e",
-        `(${inGateway.toString()})(process.argv[1], process.argv[2])`,
-        prompt,
-        "agent:main:skipper-acceptance-" + id,
-      ),
-    );
-    const { status, category, content } = JSON.parse(text);
-    if (status !== 200 || category !== undefined) {
-      // Keep the primary outcome even if collecting or saving optional evidence fails.
-      const failure = Object.assign(new Error("Gateway chat failed"), {
-        openclawCiDiagnostic: skipperOperationDiagnostic({
-          kind: "skipper-operation",
-          operation: "gateway-chat",
-          gatewayChatPhase,
-          gatewayCategory: category,
-          httpStatus: status,
-        }),
-      });
-      try {
-        const after = await modelEvents(AbortSignal.timeout(10_000)).catch(() => undefined);
-        const events =
-          before?.length && after && isDeepStrictEqual(after.slice(0, before.length), before)
-            ? after.slice(before.length)
-            : undefined;
-        const nonce = prompt.match(/OCE_SMOKE_[a-f0-9-]+/)?.[0];
-        // Do not retain runtime logs. An allowlisted signal can distinguish a native thread
-        // sandbox failure before the first model request from an observed transport failure.
-        const runtimeSignal = await Promise.all(
+  const chat = (marker, gatewayChatPhase) =>
+    sendSkipperChat({
+      gatewayChatPhase,
+      marker,
+      sessionKey: "agent:main:skipper-acceptance-" + id,
+      enter,
+      modelEvents,
+      checkpoint,
+      runtimeLogs: (since) =>
+        Promise.all(
           [
             [gateway, "gateway"],
             [harness, "agent"],
@@ -403,51 +377,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
               "--limit-bytes=65536",
             ).then(({ stdout }) => stdout),
           ),
-        ).then(
-          (logs) => {
-            const raw = logs.join("\n");
-            if (
-              /fs sandbox helper|bwrap:.*(?:permission denied|operation not permitted)/i.test(raw)
-            ) {
-              return "thread-filesystem-sandbox-denied";
-            }
-            if (/thread\/start|failed to start.*thread/i.test(raw)) {
-              return "thread-start";
-            }
-            if (
-              /websocket.*failed|tls.*failed|certificate verify failed|unable to get local issuer/i.test(
-                raw,
-              )
-            ) {
-              return "model-transport";
-            }
-            return "no-known-signal";
-          },
-          () => "logs-unavailable",
-        );
-        await checkpoint("gateway-chat-refused", {
-          httpStatus: status,
-          category,
-          runtimeSignal,
-          modelTurns: events?.filter((e) => e.event === "request" && e.turn).length ?? null,
-          modelAnswers: events?.filter((e) => e.event === "turn-answered").length ?? null,
-          expectedNonceAnswered: events
-            ? Boolean(
-                nonce &&
-                events.some(
-                  (e) => e.event === "turn-answered" && e.status === 200 && e.text === nonce,
-                ),
-              )
-            : null,
-          tlsErrors: events?.filter((e) => e.event === "tls-error").length ?? null,
-        });
-      } catch {
-        // Diagnostic reads and writes must not replace the failed request.
-      }
-      throw failure;
-    }
-    return content;
-  };
+        ),
+    });
   const native = async (marker) => {
     // The observer can exceed Linux's per-argument limit. Send its source over stdin
     // and keep the marker and expected commands in their normal node -e positions.
@@ -498,9 +429,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       await rename(controlFile + ".next", controlFile);
     });
     await checkpoint("native-command-started", { label });
-    const reply = await runSkipperOperation("gateway-chat", () =>
-      chat("Perform the authorized disposable private Git task " + marker, "native-git"),
-    );
+    const reply = await runSkipperOperation("gateway-chat", () => chat(marker, "native-git"));
     const expected = "SKIPPER_COMPUTE_DONE_" + marker;
     if (reply !== expected) {
       // Only counts and booleans leave the private journey log. Diagnostics must not
@@ -547,7 +476,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   };
   async function ordinaryChat(label, gatewayChatPhase) {
     const nonce = "OCE_SMOKE_" + randomUUID();
-    assert.equal(await chat("Please reply with exactly " + nonce, gatewayChatPhase), nonce);
+    assert.equal(await chat(nonce, gatewayChatPhase), nonce);
     const matches = (await modelEvents()).filter(
       (e) => e.event === "turn-answered" && e.text === nonce && e.status === 200,
     );
@@ -572,6 +501,115 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     sendScript,
     ordinaryChat,
   };
+}
+
+// A complete prefix from the same model process bounds this single chat. A generic
+// turn alone cannot distinguish its request from another turn in the same window.
+function modelRequestObservation(before, after, gatewayChatPhase, marker) {
+  const matches = (event) =>
+    gatewayChatPhase === "native-git"
+      ? event.event === "skipper-native-request" && event.id === marker
+      : event.event === "turn-answered" && event.status === 200 && event.text === marker;
+  if (
+    !marker ||
+    !before?.some((event) => event.event === "listening") ||
+    !after ||
+    !isDeepStrictEqual(after.slice(0, before.length), before) ||
+    before.some(matches)
+  ) {
+    return "unavailable";
+  }
+  const window = after.slice(before.length);
+  if (window.some((event) => event.event === "listening")) {
+    return "unavailable";
+  }
+  if (window.some(matches)) {
+    return "observed";
+  }
+  // A connection, failed handshake, or prewarm need not carry a model turn.
+  return window.every(
+    (event) =>
+      (event.event === "request" && event.turn === false) ||
+      ["connection", "secure", "tls-error", "prewarm", "turn-closed"].includes(event.event),
+  )
+    ? "none-in-window"
+    : "unavailable";
+}
+
+export async function sendSkipperChat({
+  gatewayChatPhase,
+  marker,
+  sessionKey,
+  enter,
+  modelEvents,
+  runtimeLogs,
+  checkpoint,
+}) {
+  const snapshot = () => modelEvents(AbortSignal.timeout(10_000)).catch(() => undefined);
+  const prompt =
+    (gatewayChatPhase === "native-git"
+      ? "Perform the authorized disposable private Git task "
+      : "Please reply with exactly ") + marker;
+  const before = await snapshot();
+  const since = new Date().toISOString();
+  const text = await runSkipperOperation("gateway-exec", () =>
+    enter(
+      "node",
+      "-e",
+      `(${inGateway.toString()})(process.argv[1], process.argv[2])`,
+      prompt,
+      sessionKey,
+    ),
+  );
+  const { status, category, content } = JSON.parse(text);
+  if (status === 200 && category === undefined) {
+    return content;
+  }
+
+  // Attach only closed observations to this rejection. A later ledger row or
+  // another failing turn in the same chat phase cannot supply its evidence.
+  const [after, runtimeSignal] = await Promise.all([
+    snapshot(),
+    runtimeLogs(since).then(
+      (logs) => {
+        const raw = logs.join("\n");
+        if (/fs sandbox helper|bwrap:.*(?:permission denied|operation not permitted)/i.test(raw)) {
+          return "thread-filesystem-sandbox-denied";
+        }
+        if (/thread\/start|failed to start.*thread/i.test(raw)) {
+          return "thread-start";
+        }
+        if (
+          /websocket.*failed|tls.*failed|certificate verify failed|unable to get local issuer/i.test(
+            raw,
+          )
+        ) {
+          return "model-transport";
+        }
+        return "no-known-signal";
+      },
+      () => "logs-unavailable",
+    ),
+  ]);
+  const observation = modelRequestObservation(before, after, gatewayChatPhase, marker);
+  const failure = Object.assign(new Error("Gateway chat failed"), {
+    openclawCiDiagnostic: skipperOperationDiagnostic({
+      kind: "skipper-operation",
+      operation: "gateway-chat",
+      gatewayChatPhase,
+      gatewayCategory: category,
+      httpStatus: status,
+      runtimeSignal,
+      modelRequestObservation: observation,
+    }),
+  });
+  await checkpoint("gateway-chat-refused", {
+    httpStatus: status,
+    category,
+    runtimeSignal,
+    modelRequestObservation: observation,
+  }).catch(() => {});
+  throw failure;
 }
 
 // Use the installed Agent Gateway, as a user of that Agent would. Never exec Git on the host.

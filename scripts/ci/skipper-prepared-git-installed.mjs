@@ -339,39 +339,16 @@ try {
     progress(name);
   }
   if (failure) {
-    const chat = entries.find((e) => e.phase === "gateway-chat-refused");
-    if (chat) {
-      const { httpStatus, category, modelTurns, modelAnswers, expectedNonceAnswered, tlsErrors } =
-        chat;
-      if (
-        (httpStatus === 0 ||
-          (Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599)) &&
-        typeof category === "string" &&
-        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|client-deadline|response-body|response-json)$/.test(
-          category,
-        ) &&
-        [modelTurns, modelAnswers, tlsErrors].every(
-          (n) => n === null || (Number.isSafeInteger(n) && n >= 0),
-        ) &&
-        (expectedNonceAnswered === null || typeof expectedNonceAnswered === "boolean") &&
-        typeof chat.runtimeSignal === "string" &&
-        /^(thread-filesystem-sandbox-denied|thread-start|model-transport|no-known-signal|logs-unavailable)$/.test(
-          chat.runtimeSignal,
-        )
-      ) {
-        console.error(
-          "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%s, answers=%s, expected nonce answered=%s, TLS errors=%s.",
-          httpStatus,
-          category,
-          chat.runtimeSignal,
-          modelTurns ?? "unknown",
-          modelAnswers ?? "unknown",
-          expectedNonceAnswered ?? "unknown",
-          tlsErrors ?? "unknown",
-        );
-      } else {
-        console.error("Gateway diagnostics unavailable.");
-      }
+    if (failure.gatewayChat) {
+      const { httpStatus, gatewayCategory, runtimeSignal, modelRequestObservation } =
+        failure.gatewayChat;
+      console.error(
+        "Gateway HTTP %s, %s, %s. Synthetic model request: %s.",
+        httpStatus ?? "unknown",
+        gatewayCategory ?? "unknown",
+        runtimeSignal ?? "unknown",
+        modelRequestObservation ?? "unknown",
+      );
     }
     if (records.includes("repository-binding-withdrawn-discovery-released")) {
       console.error("Repository binding withdrawn and held discovery released.");
