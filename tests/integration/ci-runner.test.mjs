@@ -2839,6 +2839,67 @@ for (const workflow of apiKeyWorkflows) {
   });
 }
 
+for (const view of ["default", "full-integration"]) {
+  for (const selection of ["compose prepared", "compose default", "kubernetes"]) {
+    test(`the ${view} guided installer runner scopes prepared controller inputs (${selection})`, async (t) => {
+      const root = await fixture(t);
+      const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view);
+      const laneName = view === "default" ? "openshell" : "openshell-installers";
+      const lane = suites.lanes[laneName];
+      const path =
+        selection === "kubernetes"
+          ? "tests/integration/local-first-agent-openshell-k3d-real.test.mjs"
+          : "tests/integration/local-first-agent-openshell-real.test.mjs";
+      const file = lane.files.find((entry) => entry.path === path);
+      const controller = "registry.example.test/controller@sha256:" + "1".repeat(64);
+      const runtime = "registry.example.test/runtime@sha256:" + "2".repeat(64);
+      const expectedController = selection === "compose prepared" ? controller : undefined;
+      const resultsPath = join(root, "results/prepared-input.json");
+      // Preserve canonical lane/file metadata and the real runner. The child
+      // only observes its environment, so no image pull or installation occurs.
+      await writeRunnerManifest(root, { lanes: { [laneName]: lane } });
+      await writeFile(
+        join(root, path),
+        [
+          'import assert from "node:assert/strict"; import test from "node:test";',
+          ...file.expectedTests.map(
+            (name) => `test(${JSON.stringify(name)}, () => {
+          assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE, ${JSON.stringify(expectedController)});
+          assert.equal(process.env.OCC_KUBERNETES_RUNTIME_IMAGE, ${JSON.stringify(runtime)});
+          assert.equal(process.env.OCC_TEST_UNLISTED_IMAGE, undefined);
+        });`,
+          ),
+        ].join("\n"),
+      );
+      const env = Object.fromEntries(
+        [...lane.requiredEnv, ...(file.requiredEnv ?? [])].map((name) => [
+          name,
+          "synthetic-prerequisite",
+        ]),
+      );
+      const result = run(
+        root,
+        [...laneArgs(root, laneName, "state/prepared-input.json", resultsPath), "--file", path],
+        {
+          ...env,
+          OCC_CI_SUITE_VIEW: "default",
+          OCC_CI_IMAGE_CACHE: "",
+          OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE:
+            selection === "compose default" ? undefined : controller,
+          OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
+          OCC_TEST_UNLISTED_IMAGE: "unlisted-image-selection",
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
+      assert.equal(receipt.status, "passed");
+      assert.equal(receipt.counts.passed, file.expectedTests.length);
+      assert.equal(receipt.counts.failed, 0);
+      assert.equal(receipt.counts.skipped, 0);
+    });
+  }
+}
+
 test("run fails missing expected tests, skipped expected tests, skips, todos, and missing required env", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/lane.json");

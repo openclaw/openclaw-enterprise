@@ -107,6 +107,7 @@
     },
     {
       "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "optionalEnv": ["OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE"],
       "expectedTests": [
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
         "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"

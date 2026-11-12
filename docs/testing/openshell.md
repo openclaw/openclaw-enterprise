@@ -325,11 +325,11 @@ OpenClaw Control UI URLs. Trust startup's browser CA first. Finish with
 
 ### Guided native OpenClaw redeployment
 
-`tests/integration/local-first-agent-real.test.mjs` runs in both Compose-plus-k3d
-and Kubernetes-only first-Agent stacks. Each stack is created by the public Local
-Setup installer, including OpenShell installation. Hosted focused jobs prepare
-current-source images through the [CI image path](ci.md); local runs retain source
-builds in the installer.
+`tests/integration/local-first-agent-real.test.mjs` provisions Compose-plus-k3d and
+Kubernetes-only stacks through public Local Setup. Hosted jobs prepare
+[current-source images](ci.md); local runs build by default. Only the Compose file
+accepts `OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE` for a verified development
+controller, paired with `OCC_KUBERNETES_RUNTIME_IMAGE`.
 Installer tests use `OPENAI_API_KEY` and verify exact CredentialSource access.
 The first run checks a nonce and custom prompt. Reuse checks a new nonce
 without that prompt or helper-environment credentials, retaining the exact Agent,
