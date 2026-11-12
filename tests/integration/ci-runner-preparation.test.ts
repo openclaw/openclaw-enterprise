@@ -188,8 +188,8 @@ for (const scenario of [
     name: "unknown error",
     input: {
       code: "secret-canary-code",
-      stage: "secret-canary-stage",
-      failure: "secret-canary-failure",
+      stage: "database-create",
+      failure: "exit",
     },
     expected: { name: "Error" },
   },
