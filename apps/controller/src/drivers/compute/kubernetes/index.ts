@@ -6,6 +6,11 @@ import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/con
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
+  KubernetesRequestTimeout,
+  unreachableSocketCause,
+  unreachableSocketFailure,
+} from "../../kubernetes/request.ts";
+import {
   assertExecutionAdmission,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
@@ -701,8 +706,6 @@ class GatewaySettingFailure extends ConfigurationFailure {
   }
 }
 
-class KubernetesRequestTimeout extends Error {}
-
 type KubernetesPreparationStage =
   | "prepare_revision"
   | "workspace_setup"
@@ -859,52 +862,6 @@ function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFai
     errorClass: "KubernetesPreparationFailure",
     message: "Kubernetes revision preparation failed.",
   };
-}
-
-// Socket-level failures: the request never reached a Kubernetes API server, or its
-// connection broke before an answer. EPIPE is a write to a connection the peer already
-// closed; ECONNABORTED is a connection the local kernel aborted (a socket destroyed
-// through sock_diag, as `ss -K` does). undici's header and body timeouts are absent: they
-// default to 300 s, so REQUEST_TIMEOUT_MS always ends a request first. TLS trust and
-// HTTP status failures keep their original error.
-const UNREACHABLE_SOCKET_CODES = new Set([
-  "EAI_AGAIN",
-  "ECONNABORTED",
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
-  "ENOTFOUND",
-  "EPIPE",
-  "ETIMEDOUT",
-  "UND_ERR_CONNECT_TIMEOUT",
-  "UND_ERR_SOCKET",
-]);
-
-export function unreachableSocketFailure(error: unknown): boolean {
-  return unreachableSocketCause(error) !== undefined;
-}
-
-/** "timeout" for a request timeout, else the socket code that never reached an API server. */
-function unreachableSocketCause(error: unknown, depth = 0): string | undefined {
-  if (error instanceof KubernetesRequestTimeout) {
-    return "timeout";
-  }
-  const record = asRecord(error);
-  if (record === undefined || depth > 4) {
-    return undefined;
-  }
-  if (typeof record.code === "string" && UNREACHABLE_SOCKET_CODES.has(record.code)) {
-    return record.code;
-  }
-  const nested = Array.isArray(record.errors) ? record.errors : [];
-  for (const entry of [record.cause, ...nested]) {
-    const cause = unreachableSocketCause(entry, depth + 1);
-    if (cause !== undefined) {
-      return cause;
-    }
-  }
-  return undefined;
 }
 
 /**
