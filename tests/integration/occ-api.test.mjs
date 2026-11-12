@@ -445,6 +445,23 @@ async function configuredController(options = {}) {
   };
 }
 
+async function admittedDeploymentFixture(namespaceName, agentName, { recordOperations } = {}) {
+  const deploymentWorks = new Map();
+  const controller = await configuredController({ deploymentWorks, recordOperations });
+  const { fixture } = controller;
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, namespaceName);
+  const agent = await createAgent(controller, namespace.id, agentName);
+  await fixture.markNamespaceReady(namespace.id);
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const admitted = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  return { controller, fixture, namespace, agent, admitted, deploymentWorks };
+}
+
 function stateWithDeploymentWork(state, deploymentWorks) {
   const withWork = (view) => ({
     ...view,
@@ -4402,22 +4419,10 @@ test("Installation API exposes Agent provisioning capabilities without configure
 });
 
 test("Agent deployment status polls the admitted revision work with exact read authorization", async () => {
-  const deploymentWorks = new Map();
-  const fixture = await createInjectedFixture({ deploymentWorks, recordOperations: true });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deployment-status");
-  const agent = await createAgent(controller, namespace.id, "status-agent");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  await bindHarnessKey(fixture, namespace.id, agent);
-
-  const admitted = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks } =
+    await admittedDeploymentFixture("deployment-status", "status-agent", {
+      recordOperations: true,
+    });
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${admitted.data.id}`;
 
   const status = await controller.request("GET", path);
@@ -4582,21 +4587,8 @@ test("Agent deployment status polls the admitted revision work with exact read a
 test("a refused deployment's status names its cause and remedy without naming principals", async () => {
   // Finding 1039: these refusals used to fall through to "Deployment reconciliation failed.",
   // so a member whose deploy permission was revoked mid-rollout saw no cause or remedy.
-  const deploymentWorks = new Map();
-  const fixture = await createInjectedFixture({ deploymentWorks });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deployment-refusals");
-  const agent = await createAgent(controller, namespace.id, "refused-agent");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  await bindHarnessKey(fixture, namespace.id, agent);
-  const admitted = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks } =
+    await admittedDeploymentFixture("deployment-refusals", "refused-agent");
   const workKey = `agent_revision:${admitted.data.id}:reconcile`;
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${admitted.data.id}`;
   const messages = {
@@ -4747,21 +4739,10 @@ test("a deletion retry by another delete holder names the initiator condition an
 });
 
 test("Installation deployment inventory fails closed on incomplete authorization and reports in-flight work", async () => {
-  const deploymentWorks = new Map();
-  const fixture = await createInjectedFixture({ deploymentWorks, recordOperations: true });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deployment-inventory");
-  const agent = await createAgent(controller, namespace.id, "inventory-agent");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  await bindHarnessKey(fixture, namespace.id, agent);
-  const admitted = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks } =
+    await admittedDeploymentFixture("deployment-inventory", "inventory-agent", {
+      recordOperations: true,
+    });
   const workKey = `agent_revision:${admitted.data.id}:reconcile`;
   const completedWork = {
     kind: "lifecycle",
