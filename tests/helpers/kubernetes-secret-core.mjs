@@ -6,6 +6,7 @@ import {
 } from "./kubernetes-core-api.mjs";
 
 export class FakeSecretCoreV1Api extends FakeNamespaceCoreV1Api {
+  /** @type {string | undefined} */
   secretUid = undefined;
   secrets = new Map();
   reads = 0;

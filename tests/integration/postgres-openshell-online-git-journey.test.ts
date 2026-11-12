@@ -1,13 +1,133 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { narrowOnlineGitJourney } from "../helpers/postgres-repository-set-journey.ts";
+import {
+  beforeNarrowGitPreparation,
+  narrowOnlineGitJourney,
+} from "../helpers/postgres-repository-set-journey.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+
+test(
+  "online model and Git deployment requires both registrations and reports original-worker-required",
+  {
+    ...requiresPostgres,
+    timeout: 45_000,
+  },
+  async (t) => {
+    const modelBaseUrl = "https://provider.example.test/v1";
+    let missingRegistration: string | undefined;
+    await beforeNarrowGitPreparation(
+      t,
+      import.meta.url,
+      async ({ pool, revision, runtime, wiring, writes }) => {
+        const revisions = await new PostgresPlatformState(pool).read((unit) =>
+          unit.revisions.listRevisions(revision.namespaceId, revision.agentId),
+        );
+        assert.deepEqual(
+          revisions.map(({ id }) => id),
+          [revision.id],
+        );
+        const [saved] = revisions;
+        assert.ok(saved?.egressPlan && saved.repositoryCredentials);
+        assert.deepEqual(saved.executionAdmission, { version: 9, mode: "protected" });
+        assert.equal(saved.egressPlan.authorization, "online-request");
+        assert.equal(saved.egressPlan.repositoryGitAuthorization, "online-request");
+        assert.deepEqual(
+          saved.egressPlan.routes.map((route) => route.binding.grant.kind),
+          ["inference"],
+        );
+        assert.deepEqual(saved.egressPlan.repositoryGit, saved.repositoryCredentials);
+        assert.equal(saved.repositoryCredentials.standingApprovalId, undefined);
+        assert.deepEqual(
+          saved.repositoryCredentials.bindings.map((binding) => binding.profile),
+          ["git-write"],
+        );
+        const middlewares = asRecord(wiring.configuration.network_middlewares);
+        assert.ok(middlewares);
+        assert.deepEqual(Object.keys(middlewares).sort(), ["oce-model", "oce-prepared-git"]);
+        assert.equal(
+          await runtime.repositoryWorkerRestartDisposition(saved, t.signal),
+          "original-worker-required",
+        );
+        assert.equal(writes(), 0);
+      },
+      {
+        requestModel: {
+          baseUrl: modelBaseUrl,
+          registrations: () =>
+            ["oce-model", "oce-prepared-git"].filter((name) => name !== missingRegistration),
+        },
+        draftPull: false,
+        sessionDurationSeconds: 120,
+        async beforeAdmission({ fixture, agent, configuration }) {
+          const { controller, actor, namespace } = fixture;
+          const { core } = useInstallationSecretDriver(controller);
+          core.addNamespace(namespace.id);
+          // Kubernetes returns a UUID. PostgreSQL validates it when it records the Secret.
+          core.secretUid = randomUUID();
+          const secret = await controller.createSecret(actor.id, {
+            namespaceId: namespace.id,
+            name: "combined-model",
+            value: "fixture-model-key",
+          });
+          const source = await controller.createCredentialSource(actor.id, {
+            namespaceId: namespace.id,
+            name: "combined-inference",
+            type: "openai",
+            authorization: "online-request",
+            config: { authorized_base_url: modelBaseUrl },
+            secrets: { api_key: secret.ref },
+          });
+          const role = await controller.createIAMRole(actor.id, {
+            namespaceId: namespace.id,
+            name: "model-use",
+            permissions: [{ action: "operate", resourceKind: "credential_source" }],
+          });
+          await controller.createIAMAccessBinding(actor.id, {
+            namespaceId: namespace.id,
+            roleId: role.id,
+            resourceKind: "credential_source",
+            resourceId: source.id,
+            subjectKind: "identity",
+            subjectId: agent.servicePrincipalId,
+          });
+          await controller.updateAgent(actor.id, {
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            configurationId: configuration.id,
+            harnessAuth: { method: "credential_source", sourceId: source.id },
+            credentialSources: [{ sourceId: source.id }],
+          });
+          for (const registration of ["oce-model", "oce-prepared-git"]) {
+            missingRegistration = registration;
+            await assert.rejects(
+              controller.deployAgent(
+                actor.id,
+                { namespaceId: namespace.id, agentId: agent.id },
+                resolveApprovedHarness,
+              ),
+              /middleware registration/i,
+            );
+            const revisions = await fixture.state.read((unit) =>
+              unit.revisions.listRevisions(namespace.id, agent.id),
+            );
+            assert.equal(revisions.length, 0);
+          }
+          missingRegistration = undefined;
+        },
+      },
+    );
+  },
+);
 
 type GitUseReceipt = {
   exchange_id: string;

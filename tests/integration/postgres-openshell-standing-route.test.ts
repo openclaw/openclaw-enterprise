@@ -334,6 +334,7 @@ test(
   async (t) => {
     await beforeNarrowGitPreparation(
       t,
+      import.meta.url,
       async ({ runtime: first, revision, client, workspace, sandbox, pool, peer, writes }) => {
         let lostAcknowledgements = 0;
         const releases: boolean[] = [];
