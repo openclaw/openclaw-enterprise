@@ -1630,7 +1630,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         abort("The HTTP client disconnected before the workspace file request completed.");
       }
     };
-    if (request.raw.aborted) {
+    if (request.raw.aborted || reply.raw.destroyed) {
       abort("The HTTP client disconnected before the workspace file request.");
     }
     request.raw.once("aborted", onRequestAborted);
