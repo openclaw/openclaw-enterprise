@@ -109,6 +109,12 @@ test(
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const unboundId: unknown = created.data.id;
     assert.ok(typeof unboundId === "string");
+    // Registration creates a Gateway source. Establish protected admission explicitly
+    // before checking re-admission and retirement against its persisted generation.
+    const adopted = await f.request("PATCH", `${f.path}/${unboundId}`, {
+      body: consent,
+    });
+    assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
     assert.equal(
       await p.state.transact((view) =>
         view.credentialSources.hasReferences(f.namespace.id, unboundId),
