@@ -66,6 +66,7 @@ export async function prepareNativeModelBarrier(
   let dnsRolloutPending = false;
   let clusterUid;
   let consumers;
+  let consumerNamespace;
   let consumerOutcome = "not-bound";
   let dnsProbeUid;
   const mutations = [];
@@ -161,6 +162,7 @@ export async function prepareNativeModelBarrier(
       dnsProbeUid,
       clusterUid,
       consumerOutcome,
+      consumerNamespace,
       mutations,
       dnsRolloutPending,
       postgresContainerId,
@@ -1244,11 +1246,13 @@ const deadline = setTimeout(() => process.exit(1), 25000);
     await record();
     await verifyDns();
     return {
-      bindConsumers(read) {
+      async bindConsumers(read, namespace) {
         assert.equal(consumers, undefined, "Consumer ownership may be bound only once");
         assert.equal(typeof read, "function");
         consumers = read;
         consumerOutcome = "bound";
+        consumerNamespace = namespace;
+        await record();
       },
       modelKey,
       assertPostgresBinding,

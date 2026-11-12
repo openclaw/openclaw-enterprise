@@ -1360,7 +1360,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   const platformNamespace = `oce-production-${mode}-${hash(identifier)}`;
   let platformNamespaceCreation = "not-started";
   const providerConsumers = new Map([[platformNamespace, "app.kubernetes.io/component=worker"]]);
-  options.controlledModelProvider?.bindConsumers(async ({ deadline }) => {
+  await options.controlledModelProvider?.bindConsumers(async ({ deadline }) => {
     if (platformNamespaceCreation === "not-started") {
       return;
     }
@@ -1402,16 +1402,23 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       completed === true && Date.now() < deadline,
       "Provider consumer inspection deadline elapsed",
     );
-  });
+  }, platformNamespace);
+  assertActive();
+  if (options.controlledModelProvider) {
+    context.after(() => {
+      assert.notEqual(
+        platformNamespaceCreation,
+        "pending",
+        `Namespace creation is unconfirmed for ${platformNamespace}; retain dependencies for reconciliation`,
+      );
+    });
+  }
+  // A missing create acknowledgement proves neither absence nor ownership.
+  // Keep cleanup uncertain until an acknowledged create permits deletion.
+  platformNamespaceCreation = "pending";
+  await kubectl("create", "namespace", platformNamespace);
+  platformNamespaceCreation = "acknowledged";
   context.after(async () => {
-    if (platformNamespaceCreation === "not-started") {
-      return;
-    }
-    assert.notEqual(
-      platformNamespaceCreation,
-      "pending",
-      `Namespace creation is unconfirmed for ${platformNamespace}; retain dependencies for reconciliation`,
-    );
     try {
       await inClusterWorker?.stop();
     } finally {
@@ -1425,12 +1432,6 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       );
     }
   });
-  assertActive();
-  // A missing create acknowledgement proves neither absence nor ownership.
-  // Keep cleanup uncertain until an acknowledged create permits deletion.
-  platformNamespaceCreation = "pending";
-  await kubectl("create", "namespace", platformNamespace);
-  platformNamespaceCreation = "acknowledged";
   const controller = await createScopedController(
     context,
     identifier,
