@@ -57,8 +57,14 @@ Agent admission, a model call, or Compose orchestration.
 
 ## Verify host routing relay diagnostics
 
-If the host routing relay is not observed running, failed commands contribute
-their exit status; container state and redacted logs are reported when available.
+On Linux, host-run Gateway clients reuse kubectl's allocated loopback port. The
+fixture maps that port to the Envoy Service's existing HTTPS target for
+in-cluster clients. Separate test processes and clusters can keep these routes
+open together without competing for host port 443. The scoped DNS override does
+not support independent concurrent teardown within one process.
+
+On macOS, the host routing relay runs in a container. If it is not observed
+running, failed commands contribute their exit status; container state and redacted logs are reported when available.
 The fixture verifies its invocation label before reading or removing a container.
 Cleanup waits for the bounded launch before checking ownership. An interrupted
 launch reports an indeterminate outcome even if no container is visible; a

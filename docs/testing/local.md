@@ -22,6 +22,7 @@ pnpm format:check
 pnpm typecheck
 pnpm openapi:check
 pnpm test:conformance
+pnpm cli:build
 pnpm test:integration
 ```
 
@@ -36,6 +37,14 @@ Run one file or one named case:
 ```sh
 node --test tests/integration/secret-api.test.mjs
 node --test --test-name-pattern='part of the test name' tests/integration/secret-api.test.mjs
+```
+
+The first-Agent startup suite invokes the checkout's real CLI. Rebuild it from
+current source before running that file by itself:
+
+```sh
+pnpm cli:build
+node --test tests/integration/first-agent-startup.test.mjs
 ```
 
 ## Linting and formatting

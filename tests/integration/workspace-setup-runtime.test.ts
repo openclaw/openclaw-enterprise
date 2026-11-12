@@ -104,10 +104,14 @@ function fixture(t: TestContext): Fixture {
 }
 // A refusal exits WORKSPACE_SETUP_REFUSED_EXIT_STATUS, which Kubernetes Compute fails at once;
 // a failure a restart may clear, and the completion verifier, exit 1 (finding 1677).
-function failed(result: SpawnSyncReturns<string>, status = WORKSPACE_SETUP_REFUSED_EXIT_STATUS) {
+function failed(
+  result: SpawnSyncReturns<string>,
+  status = WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
+  code?: string,
+) {
   assert.equal(result.status, status);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "WORKSPACE_SETUP_FAILED\n");
+  assert.equal(result.stderr, `WORKSPACE_SETUP_FAILED${code ? ` (${code})` : ""}\n`);
 }
 function passed(result: SpawnSyncReturns<string>) {
   assert.equal(result.status, 0, result.stderr);
@@ -143,7 +147,7 @@ test("workspace setup distinguishes refusal, retryable failure, and native setup
   assert.equal(WORKSPACE_SETUP_REFUSED_EXIT_STATUS, 2);
   // The runtime it sets up with is missing: not a refusal of this workspace, so it keeps the
   // retrying wait.
-  failed(f.run(setup, { OPENCLAW_EXECUTABLE: join(f.root, "absent-runtime.mjs") }), 1);
+  failed(f.run(setup, { OPENCLAW_EXECUTABLE: join(f.root, "absent-runtime.mjs") }), 1, "ENOENT");
   assert.equal(existsSync(f.workspace), false);
   // Native setup itself failed, here in a stand-in OpenClaw with the pinned release and
   // templates: a restart may pass.
@@ -162,14 +166,32 @@ test("workspace setup distinguishes refusal, retryable failure, and native setup
     'import { writeFileSync } from "node:fs"; writeFileSync(new URL("ran", import.meta.url), ""); process.stderr.write("private native output"); process.exit(7);',
   );
   const standIn = { OPENCLAW_EXECUTABLE: join(runtime, "openclaw.mjs") };
+  // The real initializer must retain a filesystem cause without exposing the temporary
+  // path or file contents. An invalid TMPDIR fails before the native child can start.
+  const temporaryFile = join(f.root, "private-temporary-path");
+  writeFileSync(temporaryFile, "private temporary contents");
+  failed(f.run(setup, { ...standIn, TMPDIR: temporaryFile }), 1, "ENOTDIR");
+  assert.equal(existsSync(join(runtime, "ran")), false, "native setup must not start");
+  assert.equal(existsSync(join(f.workspace, ".oce-workspace-setup.json")), false);
   failed(f.run(setup, standIn), 3);
   assert.equal(existsSync(join(runtime, "ran")), true, "native setup ran");
-  // Simulate only the native process's timeout result; no wall-clock timeout is exercised.
+  // A cleanup failure must not replace the first native failure. These faults are simulated;
+  // the filesystem admission failure above uses the real initializer and filesystem.
   const timeout = `require("node:child_process").spawnSync = () => ({
     error: Object.assign(new Error("private native output"), { code: "ETIMEDOUT" }),
     status: null, stdout: "private native output", stderr: "private native output",
-  });\n`;
-  failed(f.execute(timeout + WORKSPACE_SETUP_RUNTIME, JSON.stringify(setup), standIn), 4);
+  });
+  require("node:fs").rmSync = () => {
+    throw Object.assign(new Error("private cleanup output"), { code: "EACCES" });
+  };\n`;
+  failed(
+    f.execute(timeout + WORKSPACE_SETUP_RUNTIME, JSON.stringify(setup), {
+      ...standIn,
+      TMPDIR: f.root,
+    }),
+    4,
+    "ETIMEDOUT",
+  );
   assert.equal(existsSync(join(f.workspace, ".oce-workspace-setup.json")), false);
   // Templates that differ from the Console's defaults fail every restart the same way.
   writeFileSync(join(templates, "USER.md"), "changed");
