@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-12
-last_updated_session: authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb
+last_updated_session: authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8
 ---
 
 # Protected credential request flow
@@ -92,7 +92,11 @@ owners refuse release; cold sources remain pending.
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
 (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, and Installation limits.
-Without protected sources or Git bindings, Gateway delivery needs no Proxy plan. Preparation repeats both Git refusals.
+Agents with ordinary Gateway sources and no protected sources or Git bindings
+need no Proxy plan. Agents with no sources retain selected Proxy admission.
+`packages/occ/src/index.ts:admitProxyPlan` checks availability before saving an
+empty protected plan; Kubernetes uses it for runtime-authenticated Dedicated
+Codex without inference access. Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
@@ -337,6 +341,8 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-12 19:08: Preserve source-free Proxy admission while bypassing it for ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
 
 - 2026-11-12 10:58: Separate Gateway delivery and unprotected admission from Git. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 

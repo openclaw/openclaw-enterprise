@@ -3775,7 +3775,8 @@ test("production Compute refuses protected admission and release, including empt
     compute: { ...unprotected.compute, id: compute.id, implementation: compute.implementation },
   });
 
-  // An Agent with neither protected sources nor Git does not require a Proxy plan.
+  // Source-free runtime authentication retains an empty protected plan. Compute without
+  // a qualified protected release must refuse it, even though no credentials are granted.
   const emptyAgent = await f.createAgent(
     f.namespace.id,
     "credential-free",
@@ -3786,9 +3787,12 @@ test("production Compute refuses protected admission and release, including empt
   const emptyRevision = await f.controller.transact((unit) =>
     unit.revisions.findRevision(f.namespace.id, emptyAgent.id, emptyMetadata.id),
   );
-  assert.deepEqual(emptyRevision.executionAdmission, { version: 2, mode: "unprotected" });
-  assert.equal(emptyRevision.egressPlan, undefined);
-  assert.doesNotThrow(() => compute.validateExecutionAdmission(emptyRevision));
+  assert.deepEqual(emptyRevision.executionAdmission, { version: 3, mode: "protected" });
+  assert.deepEqual(emptyRevision.egressPlan.routes, []);
+  await assert.rejects(
+    compute.prepareRevision(emptyRevision),
+    /Protected execution is unavailable/,
+  );
 
   // Exercise the real OCC deploy route with the shipped Compute admission policy.
   // Other Compute operations remain deterministic fixtures; this is not cluster proof.

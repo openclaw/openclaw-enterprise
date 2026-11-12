@@ -118,8 +118,9 @@ or `meta.notConfigured` (no `repository` settings) permits creation without bind
 failures block submission.
 
 The credential catalog includes ordinary Gateway sources even when a Git Proxy
-is selected. Repository access remains optional in the form. Deployment admission
-checks Proxy enforcement only for protected sources or repository bindings.
+is selected. Repository access remains optional in the form. An ordinary Gateway
+source without protected sources or repository bindings needs no Proxy admission.
+Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 4. Submit provisioning or an ordinary draft
 
@@ -226,6 +227,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 ## Changelog
 
 - 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
+
+- 2026-11-12 19:08: Limit the Proxy bypass to Agents with ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
 
 - 2026-11-12 18:36: Preserve credential registration refusals across empty status checks. (authoring-run/e0dff858-3588-44ee-9ffa-b67c8dd4dfe5 - 4478a18a7)
 

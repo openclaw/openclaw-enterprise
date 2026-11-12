@@ -8462,9 +8462,13 @@ export class OpenClawController {
       }
       return undefined;
     }
-    // Ordinary sources keep Gateway delivery. Only protected sources or Git bindings need
-    // Proxy admission; a Git-only Proxy must not gate an unrelated model deployment.
-    if (sources.length === 0 && repositoryGit === undefined) {
+    // Ordinary sources keep Gateway delivery without depending on an unrelated Git Proxy.
+    // Source-free Agents retain Proxy admission, including empty protected plans.
+    if (
+      sources.length === 0 &&
+      (agent.credentialSources?.length ?? 0) > 0 &&
+      repositoryGit === undefined
+    ) {
       return undefined;
     }
     const sourceCount = sources.length + (harnessCredentialSource ? 1 : 0);
