@@ -38,6 +38,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-deadline.test.ts",
     "tests/integration/ci-runner-preparation.test.ts",
     "tests/integration/ci-runner-failure-output.test.ts",
     "tests/integration/ci-runner-aggregate.test.ts",
@@ -256,6 +257,9 @@
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
       ]
+    },
+    {
+      "path": "tests/integration/ci-runner-deadline.test.ts"
     },
     {
       "path": "tests/integration/ci-runner-preparation.test.ts"
