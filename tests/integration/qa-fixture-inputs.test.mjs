@@ -115,12 +115,23 @@ test("API-key QA injection stays in the consumer and its errors are redacted", a
       "-e",
       `
     import { launcherEnvironment } from ${JSON.stringify(helper)};
-    console.log(Object.hasOwn(launcherEnvironment(), "OCC_TEST_QA_MODEL_API_KEY"));
+    const env = launcherEnvironment();
+    console.log(JSON.stringify({
+      modelKey: Object.hasOwn(env, "OCC_TEST_QA_MODEL_API_KEY"),
+      subnet: env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR,
+    }));
   `,
     ],
-    { encoding: "utf8", env: { ...process.env, OCC_TEST_QA_MODEL_API_KEY: secret } },
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OCC_TEST_QA_MODEL_API_KEY: secret,
+        OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: "10.253.4.0/24",
+      },
+    },
   );
-  assert.equal(result.trim(), "false");
+  assert.deepEqual(JSON.parse(result), { modelKey: false, subnet: "10.253.4.0/24" });
 });
 
 test(
