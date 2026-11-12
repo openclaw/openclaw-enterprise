@@ -144,7 +144,7 @@ done
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_test_local \
   node --test --test-concurrency=1 tests/integration/postgres-platform-state.test.mjs
 OCC_PRODUCTION_WIREUP_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_bootstrap_local \
-  node --test --test-concurrency=1 tests/integration/postgres-production-wireup.test.mjs
+  node --test --test-concurrency=1 tests/integration/postgres-production-wireup.test.ts
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_singleton_local \
   node --test --test-concurrency=1 tests/integration/compute-singleton-worker-postgres.test.mjs
 ```
@@ -303,7 +303,7 @@ when its evidence is no longer needed.
 ## Service-key persistence
 
 With `OCC_TEST_DATABASE_URL` set as above, run
-`node --test tests/integration/postgres-service-api-keys.test.mjs`. This verifies
+`node --test tests/integration/postgres-service-api-keys.test.ts`. This verifies
 persistence, not a deployed installation.
 
 ## Authentication binding
@@ -312,7 +312,7 @@ With a migrated disposable `OCC_TEST_DATABASE_URL`, run:
 
 ```sh
 node --test --test-concurrency=1 tests/integration/postgres-auth-binding.test.mjs \
-  tests/integration/postgres-auth-accounts.test.mjs tests/integration/postgres-service-api-keys.test.mjs
+  tests/integration/postgres-auth-accounts.test.ts tests/integration/postgres-service-api-keys.test.ts
 ```
 
 Missing database configuration skips these cases. See the

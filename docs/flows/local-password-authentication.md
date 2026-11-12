@@ -309,9 +309,9 @@ Run `tests/integration/` files with `node --test`.
   real Keycloak, a deployed Agent and a model reply.
 - `node --test tests/integration/native-admin-access.test.mjs` covers trusted and
   untrusted origins on session mutations and sign-out, plus service-key admission.
-- `postgres-production-wireup.test.mjs` with `OCC_PRODUCTION_WIREUP_DATABASE_URL`
+- `postgres-production-wireup.test.ts` with `OCC_PRODUCTION_WIREUP_DATABASE_URL`
   proves bootstrap, protected password/key delivery, human/service access and no reissue.
-- `postgres-auth-accounts.test.mjs` with `OCC_TEST_DATABASE_URL` covers provisioning,
+- `postgres-auth-accounts.test.ts` with `OCC_TEST_DATABASE_URL` covers provisioning,
   rollback, lost COMMIT replies and password-only logout under contention. Its
   fresh-bootstrap case verifies service identity, output and access, skipping
   existing Installations.

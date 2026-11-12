@@ -92,6 +92,8 @@ source-building path.
 
 The producer's build has a provisional 180-minute limit within a 240-minute job.
 These limits allow measurement of cold builds; they are not expected build times.
+The **CI runtime image timing** notice measures source argument preparation,
+the Buildx build and OCI export. Local image verification follows the notice.
 Inspect producer build/export and consumer download/load timings separately from
 test durations. Ordinary artifacts stay within their workflow and do not replace
 native container verification or authorize publication.

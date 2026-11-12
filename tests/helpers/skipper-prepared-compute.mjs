@@ -580,6 +580,7 @@ export async function inGateway(prompt, sessionKey) {
     process.stdout.write(JSON.stringify({ status: 0, category: "gateway-credential-unavailable" }));
     return;
   }
+  const signal = AbortSignal.timeout(170_000);
   let res;
   try {
     res = await fetch(
@@ -587,7 +588,7 @@ export async function inGateway(prompt, sessionKey) {
       {
         method: "POST",
         redirect: "error",
-        signal: AbortSignal.timeout(170_000),
+        signal,
         headers: {
           authorization: "Bearer " + process.env.OPENCLAW_GATEWAY_PASSWORD,
           "content-type": "application/json",
@@ -600,8 +601,9 @@ export async function inGateway(prompt, sessionKey) {
         }),
       },
     );
-  } catch {
-    process.stdout.write(JSON.stringify({ status: 0, category: "transport" }));
+  } catch (error) {
+    const category = signal.aborted && error === signal.reason ? "client-deadline" : "transport";
+    process.stdout.write(JSON.stringify({ status: 0, category }));
     return;
   }
   let raw;

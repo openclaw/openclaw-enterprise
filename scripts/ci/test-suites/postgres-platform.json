@@ -12,7 +12,7 @@
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.mjs",
     "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
-    "tests/integration/postgres-production-wireup.test.mjs",
+    "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.mjs",
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
@@ -127,7 +127,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-production-wireup.test.mjs",
+      "path": "tests/integration/postgres-production-wireup.test.ts",
       "expectedTests": [
         "production bootstrap creates a generated-password administrator that can authenticate"
       ]
