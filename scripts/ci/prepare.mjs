@@ -107,7 +107,7 @@ const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server
 // checks they match).
 const defaultK3sImage =
   "docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc";
-const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.mjs";
+const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.ts";
 const productionUpgradeImages = {
   OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
   OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",

@@ -15,7 +15,7 @@
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.ts",
     "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
-    "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+    "tests/integration/postgres-native-iam-policy-barrier.test.ts",
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
     "tests/integration/postgres-worker-harness-exposure.test.mjs",
     "tests/integration/auth-maintain.test.mjs",
@@ -32,7 +32,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+      "path": "tests/integration/postgres-native-iam-policy-barrier.test.ts",
       "expectedTests": [
         "xid8 comparison preserves the tuple transaction ID across epochs",
         "native IAM barrier fixture rejects unsafe connection targets before connecting",
