@@ -167,7 +167,7 @@ does not prove plugin execution. The remaining qualification boundaries are belo
 
 ## Receiver fixtures and full-stack qualification
 
-`tests/integration/device-authorization-api.test.mjs` exercises real Fastify,
+`tests/integration/device-authorization-api.test.ts` exercises real Fastify,
 OCC, IAM and credential-source storage through login, Agent creation/version
 admission and plugin discovery. The external credential services and provider HTTP
 are simulated. It verifies session fencing, source grants, configuration discovery after
