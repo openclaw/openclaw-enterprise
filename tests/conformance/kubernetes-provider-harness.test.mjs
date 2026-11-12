@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
-import { inflateRawSync } from "node:zlib";
+import { brotliDecompressSync, inflateRawSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
@@ -1487,10 +1487,11 @@ test("provider Harness protected execution is released only on current signed in
         ...protectedRevision,
         compute: { ...protectedRevision.compute, admission },
       };
-      // Controller-rendered programs reach `node -e` compressed behind a fixed loader.
-      const program = ([loader, ...pieces]) => {
-        assert.equal(loader, nodeProgramArguments("")[0]);
-        return inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8");
+      // Check each rendered loader before decoding the command it carries.
+      const program = ([loader, ...pieces], codec = "deflate") => {
+        assert.equal(loader, nodeProgramArguments("", codec)[0]);
+        const decompress = codec === "brotli" ? brotliDecompressSync : inflateRawSync;
+        return decompress(Buffer.from(pieces.join(""), "base64")).toString("utf8");
       };
       const pod = fixture.pod("protected-revision");
       pod.metadata.labels["openclaw.dev/revision"] = protectedRevision.id;
@@ -1536,7 +1537,8 @@ test("provider Harness protected execution is released only on current signed in
             const outer = program(command.slice(RUNTIME_WRAPPER_COMMAND.length));
             const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
             assert.equal(child !== null, node);
-            const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
+            const childCodec = disabled ? "brotli" : "deflate";
+            const codex = node ? program(JSON.parse(child[1]).slice(1), childCodec) : outer;
             // Standalone commands retain their full source. The nested child
             // omits unused native helpers; both must preserve the admission below.
             if (!node) {
