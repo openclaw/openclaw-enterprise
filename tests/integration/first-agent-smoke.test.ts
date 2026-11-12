@@ -219,7 +219,9 @@ test("deployment poll reports a failed revision while the Agent read is outstand
   const stack = {
     namespaceId: "smoke",
     api: (_method: string, path: string) => {
-      if (path === agentPath) return agent.promise;
+      if (path === agentPath) {
+        return agent.promise;
+      }
       assert.equal(path, deploymentPath);
       return Promise.resolve({ status: "failed", error });
     },
@@ -238,7 +240,9 @@ test("deployment poll propagates an Agent error while the deployment read is out
   const stack = {
     namespaceId: "smoke",
     api: (_method: string, path: string) => {
-      if (path === deploymentPath) return deployment.promise;
+      if (path === deploymentPath) {
+        return deployment.promise;
+      }
       assert.equal(path, agentPath);
       return Promise.reject(error);
     },
@@ -264,17 +268,21 @@ test("deployment poll starts both final reads together and enforces its deadline
           await Promise.resolve();
           clock.advance(Math.max(0, start + latency - clock.now()));
         }
-        if (path === agentPath) return { activeRevisionId: revision };
+        if (path === agentPath) {
+          return { activeRevisionId: revision };
+        }
         assert.equal(path, deploymentPath);
         return { status: finalPoll ? "succeeded" : "queued" };
       },
     };
     const result = waitForDeployment(stack, "embedded", revision, "embedded", clock);
-    if (latency === 1_500) await result;
-    else
+    if (latency === 1_500) {
+      await result;
+    } else {
       await assert.rejects(result, {
         message: `Timed out waiting for embedded revision ${revision}: ${JSON.stringify({ deployment: "succeeded", active: revision })}`,
       });
+    }
     assert.deepEqual(starts, [
       [deploymentPath, 598_000],
       [agentPath, 598_000],
