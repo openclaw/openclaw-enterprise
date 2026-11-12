@@ -364,6 +364,7 @@ function resolveLink(page, href) {
     repository +
     "/blob/main/" +
     path.relative(root, target).split(path.sep).map(encodeURIComponent).join("/") +
+    (target.startsWith(docs + path.sep) ? url.search : "") +
     url.hash
   );
 }
