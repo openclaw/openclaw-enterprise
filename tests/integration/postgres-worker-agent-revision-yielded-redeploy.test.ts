@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
-import test, { after } from "node:test";
+import test, { after, type TestContext, type TestOptions } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import type { QueryResult } from "pg";
+import type {
+  Agent,
+  AgentRevision,
+  ComputeDriver,
+  IAMDriver,
+  RevisionHarnessDescriptor,
+} from "../../packages/contracts/src/index.ts";
+import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import {
   ComputeStopYieldedError,
   computeStopShouldYield,
@@ -12,7 +21,7 @@ import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revisio
 import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
-  denyDeploy,
+  denyDeploy as denyFixtureDeploy,
   proxiedIAM,
 } from "../helpers/postgres-worker-refused-candidate.mjs";
 
@@ -25,8 +34,77 @@ import {
 // These files name the -replacement and -yielded-redeploy siblings only by suffix: CI Impact sends
 // a test-only change to full CI when another file names that test.
 
-const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
-after(cleanup);
+const fixtures = createWorkerRevisionFixtures(import.meta.url);
+type RawFixture = Awaited<ReturnType<typeof fixtures.setup>>;
+type WorkIdentity = { id: string; idempotencyKey: string };
+type WorkRow = { state: string; claim_token: string | null; attempt_count: number };
+type WorkerEvent = Readonly<Record<string, unknown>> & {
+  event?: string;
+  workId?: string;
+  outcome?: string;
+  code?: string;
+  stopYields?: number;
+};
+function checkedWorkerEvent<T extends Readonly<Record<string, unknown>>>(
+  event: T,
+): T & WorkerEvent {
+  for (const key of ["event", "workId", "outcome", "code"]) {
+    assert.ok(event[key] === undefined || typeof event[key] === "string", `invalid worker ${key}`);
+  }
+  assert.ok(
+    event.stopYields === undefined || typeof event.stopYields === "number",
+    "invalid stop yield count",
+  );
+  return event;
+}
+type Fixture = Omit<
+  RawFixture,
+  "compute" | "start" | "revision" | "work" | "workResult" | "requestStop" | "activePointer"
+> & {
+  work: (candidate: WorkIdentity, expected: string, timeoutMs?: number) => Promise<WorkRow>;
+  workResult: (
+    candidate: Pick<WorkIdentity, "idempotencyKey">,
+  ) => Promise<QueryResult<{ reason_code: string | null; result_data: unknown }>>;
+  requestStop: (owner: Pick<Agent, "id">) => Promise<WorkIdentity>;
+  activePointer: (
+    owner: Pick<Agent, "id">,
+  ) => Promise<QueryResult<{ active_revision_id: string | null }>>;
+  compute: ComputeDriver;
+  start: (
+    compute: ComputeDriver,
+    options?: Omit<NonNullable<Parameters<RawFixture["start"]>[1]>, "transformDrivers"> &
+      Pick<ControllerWorkerOptions, "convergenceTimeoutMs"> & {
+        transformDrivers?: (
+          drivers: NonNullable<ControllerWorkerOptions["drivers"]>,
+        ) => NonNullable<ControllerWorkerOptions["drivers"]> | undefined;
+      },
+  ) => ReturnType<RawFixture["start"]>;
+  revision: (
+    owner: Agent,
+    number: number,
+    options?: { harness?: RevisionHarnessDescriptor; workAge?: string },
+  ) => Promise<AgentRevision & WorkIdentity>;
+};
+const setup = fixtures.setup as (
+  context: TestContext,
+  options?: Parameters<typeof fixtures.setup>[1],
+) => Promise<Fixture>;
+const revisionTest = fixtures.revisionTest as (
+  name: string,
+  run: (fixture: Fixture, context: TestContext) => Promise<void>,
+  options?: TestOptions,
+) => void;
+after(fixtures.cleanup);
+
+const denyDeploy: (
+  fixture: Pick<Fixture, "observerPool" | "namespace">,
+  owner: Pick<Agent, "id">,
+) => Promise<unknown> = denyFixtureDeploy;
+
+function required<T>(value: T | null | undefined): T {
+  assert.ok(value !== null && value !== undefined);
+  return value;
+}
 
 // Finding 1090: on exclusive replacement (Kubernetes dedicated), a redeploy's stop of its
 // predecessor held the serial worker for the predecessor Gateway's whole drain (up to about
@@ -43,29 +121,36 @@ after(cleanup);
 // resolves true throws before it does anything. `exclusive` decides which revisions declare
 // exclusive replacement (all by default), and a revision for which `heldFailure` returns true
 // reports a held model-probe failure.
+type DrainOptions = {
+  drainMs: number;
+  holdMs?: number | undefined;
+  failStop?: ((revision: AgentRevision) => Promise<boolean>) | undefined;
+  exclusive?: ((revision: AgentRevision) => boolean) | undefined;
+  heldFailure?: ((revision: AgentRevision) => boolean) | undefined;
+};
 function drainingExclusiveCompute(
-  fixture,
+  fixture: Fixture,
   {
     drainMs,
     holdMs,
     failStop = async () => false,
     exclusive = () => true,
     heldFailure = () => false,
-  },
+  }: DrainOptions,
 ) {
-  const running = new Map();
-  const busy = new Set();
-  const prepared = [];
-  const overlaps = [];
-  const harnessStops = [];
-  const drains = new Map();
-  const pointers = new Set();
-  const stopCalls = new Map();
-  const stoppedAt = new Map();
-  const holds = [];
-  const isBusy = (revision) => busy.has(revision.id) || busy.has(revision.agentId);
+  const running = new Map<string, string>();
+  const busy = new Set<string>();
+  const prepared: string[] = [];
+  const overlaps: [string, string][] = [];
+  const harnessStops: string[] = [];
+  const drains = new Map<string, number>();
+  const pointers = new Set<string | null>();
+  const stopCalls = new Map<string, number>();
+  const stoppedAt = new Map<string, { started: number; harness?: number }>();
+  const holds: number[] = [];
+  const isBusy = (revision: AgentRevision) => busy.has(revision.id) || busy.has(revision.agentId);
   let yields = 0;
-  const compute = {
+  const compute: ComputeDriver = {
     ...fixture.compute,
     requiresStoppedPredecessors: exclusive,
     async prepareRevision(revision) {
@@ -111,7 +196,9 @@ function drainingExclusiveCompute(
         drains.set(revision.id, Date.now() + drainMs);
         stoppedAt.set(revision.id, { started: Date.now() });
       }
-      while (Date.now() < drains.get(revision.id)) {
+      const drainEndsAt = drains.get(revision.id);
+      assert.ok(drainEndsAt !== undefined);
+      while (Date.now() < drainEndsAt) {
         const agent = await fixture.currentAgent({ id: revision.agentId });
         pointers.add(agent?.activeRevisionId ?? null);
         if (await computeStopShouldYield("gateway")) {
@@ -124,7 +211,9 @@ function drainingExclusiveCompute(
       }
       running.delete(revision.id);
       harnessStops.push(revision.id);
-      stoppedAt.set(revision.id, { ...stoppedAt.get(revision.id), harness: Date.now() });
+      const stop = stoppedAt.get(revision.id);
+      assert.ok(stop);
+      stoppedAt.set(revision.id, { ...stop, harness: Date.now() });
     },
     async retireRevision(revision) {
       running.delete(revision.id);
@@ -139,17 +228,17 @@ function drainingExclusiveCompute(
     harnessStops,
     pointers,
     holds,
-    stoppedAt: (revision) => stoppedAt.get(revision.id),
-    stopCalls: (revision) => stopCalls.get(revision.id) ?? 0,
+    stoppedAt: (revision: Pick<AgentRevision, "id">) => stoppedAt.get(revision.id),
+    stopCalls: (revision: Pick<AgentRevision, "id">) => stopCalls.get(revision.id) ?? 0,
     yields: () => yields,
   };
 }
 
-function runningFor(driver, owner) {
+function runningFor(driver: ReturnType<typeof drainingExclusiveCompute>, owner: { id: string }) {
   return [...driver.running].filter(([, agentId]) => agentId === owner.id).map(([id]) => id);
 }
 
-function workPasses(events, work) {
+function workPasses<T extends WorkerEvent>(events: readonly T[], work: { idempotencyKey: string }) {
   return events.filter(
     ({ event, workId }) => event === "worker.completed" && workId === work.idempotencyKey,
   );
@@ -162,9 +251,16 @@ function workPasses(events, work) {
  * are optional.
  */
 async function yieldedRedeploy(
-  fixture,
-  label,
-  { drainMs, holdMs, failStop, exclusive, heldFailure, start = {} },
+  fixture: Fixture,
+  label: string,
+  {
+    drainMs,
+    holdMs,
+    failStop,
+    exclusive,
+    heldFailure,
+    start = {},
+  }: DrainOptions & { start?: Parameters<Fixture["start"]>[1] },
 ) {
   const owner = await fixture.agent(label, { executionMode: "dedicated" });
   const driver = drainingExclusiveCompute(fixture, {
@@ -174,10 +270,10 @@ async function yieldedRedeploy(
     exclusive,
     heldFailure,
   });
-  const events = [];
+  const events: (WorkerEvent & { at: number })[] = [];
   await fixture.start(driver.compute, {
     ...start,
-    emit: (event) => events.push({ ...event, at: Date.now() }),
+    emit: (event) => events.push(checkedWorkerEvent({ ...event, at: Date.now() })),
   });
   const first = await fixture.revision(owner, 1);
   await fixture.work(first, "succeeded");
@@ -199,7 +295,7 @@ revisionTest(
     assert.equal(yielded.outcome, "pending");
     // Deployment status says what the replacement waits for.
     const waiting = await fixture.deploymentStatus(owner, replacement);
-    assert.equal(waiting.progress.lastAttempt.code, "PREDECESSOR_STOP_YIELDED");
+    assert.equal(waiting.progress?.lastAttempt?.code, "PREDECESSOR_STOP_YIELDED");
     // The other Agent's deployment runs while the replacement waits for the drain.
     await waitFor(
       "another Agent's pass while the replacement is deferred",
@@ -221,7 +317,7 @@ revisionTest(
     assert.ok(driver.prepared.indexOf(replacement.id) > driver.prepared.lastIndexOf(first.id));
     // While the drain yielded, the pointer still named the predecessor; then the replacement.
     assert.deepEqual([...driver.pointers], [first.id]);
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, replacement.id);
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, replacement.id);
     const passes = await completedPasses(events, replacement);
     assert.ok(passes.every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
     // The yields are throttled like a stopped Agent's, and the completion carries their count.
@@ -249,7 +345,7 @@ revisionTest(
       fixture.work(replacement, "succeeded", 30_000),
     ]);
     assert.equal(
-      (await fixture.workResult(replacement)).rows[0].reason_code,
+      required((await fixture.workResult(replacement)).rows[0]).reason_code,
       "REVISION_SUPERSEDED",
     );
     // Nothing slipped in: the yielded replacement never started, and the newer revision started
@@ -258,7 +354,7 @@ revisionTest(
     assert.ok(!driver.prepared.includes(replacement.id), driver.prepared.join(","));
     assert.deepEqual(driver.harnessStops, [first.id]);
     assert.deepEqual(runningFor(driver, owner), [third.id]);
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, third.id);
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, third.id);
   },
 );
 
@@ -283,7 +379,10 @@ revisionTest(
     assert.ok(!driver.prepared.includes(replacement.id));
     assert.ok(!driver.prepared.includes(refused.id));
     assert.deepEqual(driver.overlaps, []);
-    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
+    assert.equal(
+      required((await fixture.activePointer(owner)).rows[0]).active_revision_id,
+      first.id,
+    );
   },
 );
 
@@ -305,7 +404,10 @@ revisionTest(
     assert.ok(!driver.prepared.includes(replacement.id));
     assert.deepEqual(driver.overlaps, []);
     // Nothing serves until a new revision activates; the pointer still names the predecessor.
-    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
+    assert.equal(
+      required((await fixture.activePointer(owner)).rows[0]).active_revision_id,
+      first.id,
+    );
   },
 );
 
@@ -346,7 +448,10 @@ revisionTest(
       driver.overlaps.every(([id]) => id === embedded.id),
       JSON.stringify(driver.overlaps),
     );
-    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
+    assert.equal(
+      required((await fixture.activePointer(owner)).rows[0]).active_revision_id,
+      first.id,
+    );
   },
 );
 
@@ -361,7 +466,7 @@ for (const failing of [false, true]) {
       ? "a yielded redeploy overtaken by an Agent stop retries a failed predecessor stop before it ends stopped"
       : "a yielded redeploy overtaken by an Agent stop finishes its predecessor stop before it ends stopped",
     async (fixture) => {
-      let operateDenied;
+      const authorization: { operateDenied?: string } = {};
       let failOnce = failing;
       const { owner, driver, events, first, replacement } = await yieldedRedeploy(
         fixture,
@@ -382,17 +487,20 @@ for (const failing of [false, true]) {
             return true;
           },
           start: {
-            transformDrivers: proxiedIAM(async (iam, request) => {
-              const decision = await iam.authorize(request);
-              return request.action === "operate" && request.resource.id === operateDenied
-                ? { ...decision, allowed: false }
-                : decision;
-            }),
+            transformDrivers: proxiedIAM(
+              async (iam: IAMDriver, request: Parameters<IAMDriver["authorize"]>[0]) => {
+                const decision = await iam.authorize(request);
+                return request.action === "operate" &&
+                  request.resource.id === authorization.operateDenied
+                  ? { ...decision, allowed: false }
+                  : decision;
+              },
+            ),
           },
         },
       );
       // The stop is admitted, but the worker's per-pass check refuses the Agent-stop work.
-      operateDenied = owner.id;
+      authorization.operateDenied = owner.id;
       const stop = await fixture.requestStop(owner);
       await assertWorkEnds(fixture, stop, "failed_permanent", "AUTHORIZATION_DENIED");
       await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_STOPPED");
@@ -403,7 +511,10 @@ for (const failing of [false, true]) {
       assert.deepEqual(driver.harnessStops, [first.id]);
       assert.deepEqual(runningFor(driver, owner), []);
       // A stop keeps the pointer and the workspace; only a deployment moves the pointer.
-      assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
+      assert.equal(
+        required((await fixture.activePointer(owner)).rows[0]).active_revision_id,
+        first.id,
+      );
       // Its finishing drain yielded like the stopped Agent's own drain, not as a deployment
       // waiting to start: deployment status read AGENT_STOP_YIELDED meanwhile.
       const codes = (await completedPasses(events, replacement)).map(({ code }) => code);
@@ -413,7 +524,7 @@ for (const failing of [false, true]) {
       if (failing) {
         return;
       }
-      const evidence = await fixture.observerPool.query(
+      const evidence = await fixture.observerPool.query<{ reason_code: string }>(
         `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
        WHERE kind = 'mutation' AND action = 'reconcile' AND details->>'workId' = $1
        ORDER BY occurred_at, id`,
@@ -446,7 +557,7 @@ revisionTest(
     assert.ok(elapsed < 3_000 + 12_000, `${elapsed} ms, holds ${driver.holds.join(", ")}`);
     assert.deepEqual(driver.overlaps, []);
     assert.deepEqual(driver.harnessStops, [first.id]);
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, replacement.id);
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, replacement.id);
   },
 );
 
@@ -463,7 +574,10 @@ revisionTest(
     await assertWorkEnds(fixture, replacement, "failed_permanent", "AUTHORIZATION_DENIED");
     assert.equal(driver.stopCalls(first), 0, "the serving revision is not stopped");
     assert.ok(driver.running.has(first.id));
-    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
+    assert.equal(
+      required((await fixture.activePointer(owner)).rows[0]).active_revision_id,
+      first.id,
+    );
   },
 );
 
@@ -519,7 +633,7 @@ for (const refused of [false, true]) {
       assert.deepEqual(driver.harnessStops, [first.id]);
       assert.deepEqual(runningFor(driver, owner), refused ? [] : [replacement.id]);
       assert.equal(
-        (await fixture.activePointer(owner)).rows[0].active_revision_id,
+        required((await fixture.activePointer(owner)).rows[0]).active_revision_id,
         refused ? first.id : replacement.id,
       );
     },
@@ -531,13 +645,17 @@ for (const refused of [false, true]) {
  * so OCC never selects it, beside another Agent's deployment that keeps Work due. `start` holds
  * worker options.
  */
-async function unselectedVersion(fixture, label, { drainMs, start = {} }) {
+async function unselectedVersion(
+  fixture: Fixture,
+  label: string,
+  { drainMs, start = {} }: { drainMs: number; start?: Parameters<Fixture["start"]>[1] },
+) {
   const owner = await fixture.agent(label, { executionMode: "dedicated" });
   const driver = drainingExclusiveCompute(fixture, { drainMs });
-  const events = [];
+  const events: (WorkerEvent & { at: number })[] = [];
   await fixture.start(driver.compute, {
     ...start,
-    emit: (event) => events.push({ ...event, at: Date.now() }),
+    emit: (event) => events.push(checkedWorkerEvent({ ...event, at: Date.now() })),
   });
   const busyOwner = await fixture.agent(`${label}-busy`);
   driver.busy.add(busyOwner.id);
@@ -546,7 +664,10 @@ async function unselectedVersion(fixture, label, { drainMs, start = {} }) {
   return { owner, driver, events, busy };
 }
 
-function pendingPass(events, work) {
+function pendingPass<T extends WorkerEvent>(
+  events: readonly T[],
+  work: { idempotencyKey: string },
+) {
   return workPasses(events, work).find(({ outcome }) => outcome === "pending");
 }
 
@@ -570,17 +691,19 @@ revisionTest(
     driver.busy.add(older.id);
     const newer = await fixture.revision(owner, 2);
     const yielded = await waitFor("the older version's pass after the newer admission", async () =>
-      workPasses(events, older).find(({ code }) =>
-        ["SUPERSEDED_STOP_YIELDED", "REVISION_SUPERSEDED", "PREDECESSOR_STOP_YIELDED"].includes(
-          code,
-        ),
+      workPasses(events, older).find(
+        ({ code }) =>
+          code !== undefined &&
+          ["SUPERSEDED_STOP_YIELDED", "REVISION_SUPERSEDED", "PREDECESSOR_STOP_YIELDED"].includes(
+            code,
+          ),
       ),
     );
     assert.equal(yielded.code, "SUPERSEDED_STOP_YIELDED");
     assert.equal(yielded.outcome, "pending");
     // Deployment status says what the older version waits for.
     const waiting = await fixture.deploymentStatus(owner, older);
-    assert.equal(waiting.progress.lastAttempt.code, "SUPERSEDED_STOP_YIELDED");
+    assert.equal(waiting.progress?.lastAttempt?.code, "SUPERSEDED_STOP_YIELDED");
     // The other Agent's deployment runs while the older version's drain is still pending.
     await waitFor(
       "another Agent's pass after the older version's yield",
@@ -590,7 +713,7 @@ revisionTest(
     );
     await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
     await fixture.work(newer, "succeeded", 30_000);
-    const { harness } = driver.stoppedAt(older);
+    const harness = required(driver.stoppedAt(older)?.harness);
     assert.ok(
       workPasses(events, busy).some(({ at }) => at > yielded.at && at < harness),
       "another Agent's work ran during the older version's drain",
@@ -601,14 +724,15 @@ revisionTest(
     assert.deepEqual(driver.harnessStops, [older.id]);
     assert.deepEqual(runningFor(driver, owner), [newer.id]);
     assert.deepEqual([...driver.pointers], [null]);
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, newer.id);
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, newer.id);
     // The yields are throttled like a stopped Agent's, refund their attempt, and the completion
     // carries their count.
     const passes = (await completedPasses(events, older)).filter(({ at }) => at >= yielded.at);
     assert.ok(passes.every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
-    assert.deepEqual(passes[0].stopYields, 1);
-    assert.equal(passes.at(-1).code, "REVISION_SUPERSEDED");
-    assert.ok(passes.at(-1).stopYields >= 1, JSON.stringify(passes.at(-1)));
+    assert.deepEqual(required(passes[0]).stopYields, 1);
+    const lastPass = required(passes.at(-1));
+    assert.equal(lastPass.code, "REVISION_SUPERSEDED");
+    assert.ok(required(lastPass.stopYields) >= 1, JSON.stringify(lastPass));
     assert.deepEqual(
       [...new Set(passes.slice(0, -1).map(({ code }) => code))],
       ["SUPERSEDED_STOP_YIELDED"],
@@ -648,11 +772,12 @@ revisionTest(
     const restartedAt = Date.now();
     await fixture.start(driver.compute, {
       convergenceTimeoutMs: 300_000,
-      emit: (event) => events.push({ ...event, at: Date.now() }),
+      emit: (event) => events.push(checkedWorkerEvent({ ...event, at: Date.now() })),
     });
     await assertWorkEnds(fixture, refused, "failed_permanent", "HARNESS_DESCRIPTOR_MISMATCH");
     await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
-    const { started, harness } = driver.stoppedAt(older);
+    const { started, harness: stoppedHarness } = required(driver.stoppedAt(older));
+    const harness = required(stoppedHarness);
     assert.ok(started > restartedAt);
     assert.equal(driver.stopCalls(older), 1);
     assert.deepEqual(driver.harnessStops, [older.id]);

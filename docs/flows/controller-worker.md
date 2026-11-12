@@ -393,11 +393,11 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
   [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.mjs),
-  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs),
-  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs),
-  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs),
+  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.ts),
+  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.ts),
+  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts),
   [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs),
-  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.mjs) and
+  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.ts) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs)
   require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution

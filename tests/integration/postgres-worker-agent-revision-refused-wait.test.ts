@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import test, { after } from "node:test";
+import test, { after, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import type { ComputeDriver, IAMDriver } from "../../packages/contracts/src/index.ts";
+import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import {
   PersistedStateInvalidError,
   PostgresPlatformState,
   TransientDependencyError,
+  type PlatformReadView,
 } from "../../packages/occ/src/index.ts";
 import {
   ComputeStopYieldedError,
@@ -21,14 +24,16 @@ import {
 } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
-  denyDeploy,
   failingStop,
   proxiedIAM,
   refusals,
-  refusedStopWaits,
-  startRefusedCandidate,
   waitForRefusedStopWaits,
 } from "../helpers/postgres-worker-refused-candidate.mjs";
+import {
+  denyDeploy,
+  refusedStopWaits,
+  startRefusedCandidate,
+} from "../helpers/postgres-worker-refused-fixture.ts";
 
 // A stored refusal's wait on its candidate's stop: it retries only the stop, is published while a
 // yielding stop competes with due work, survives failures before the stop past the deadline,
@@ -41,6 +46,13 @@ import {
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
+
+type RevisionFixture = Awaited<
+  ReturnType<ReturnType<typeof createWorkerRevisionFixtures>["setup"]>
+>;
+type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
+type Revision = Parameters<ComputeDriver["stopRevision"]>[0];
+
 // For assertWorkEnds: make the work's queued retries due while waiting for it to end.
 const due = { due: true };
 
@@ -51,10 +63,10 @@ const due = { due: true };
 // (revoked) never prepared it again. Finding 2199: a revision admitted with an unqualified Git
 // sender (unqualified) fails at once, not at the convergence deadline; finding 2204: so does a
 // Git plan with no delivery profile (undeliverable).
-for (const refuse of ["revoked", "unsupported", "unqualified", "undeliverable"]) {
+for (const refuse of ["revoked", "unsupported", "unqualified", "undeliverable"] as const) {
   revisionTest(
     `a ${refuse} candidate's stored refusal retries only its stop`,
-    async (fixture) => {
+    async (fixture: RevisionFixture) => {
       const stop = failingStop({ limit: 3 });
       const { first, replacement, driver } = await startRefusedCandidate(
         fixture,
@@ -80,18 +92,18 @@ for (const refuse of ["revoked", "unsupported", "unqualified", "undeliverable"])
 // that never becomes ready keeps the queue busy.
 revisionTest(
   "a refusal decided inside Compute is published while a yielding stop competes with due work",
-  async (fixture) => {
+  async (fixture: RevisionFixture) => {
     const stats = { starts: 0, yields: 0 };
     let preparedAt = 0;
     let seenPreparations = 0;
-    let otherId;
+    let otherId: string | undefined = undefined;
     const { replacement, driver } = await startRefusedCandidate(fixture, "refused-busy-yield", {
       refuse: "unsupported",
       ready: (revision) => revision.id !== otherId,
       stopRevision: (revision) =>
         (async () => {
           stats.starts += 1;
-          let checked;
+          let checked: number | undefined;
           for (;;) {
             const preparations = driver.preparations(revision);
             if (preparations !== seenPreparations) {
@@ -136,7 +148,7 @@ for (const mode of ["transient", "generic"]) {
     async (context) => {
       // Two attempts: on main the second ordinary failure ended the work.
       const fixture = await setup(context, { maxAttempts: 2 });
-      const events = [];
+      const events: WorkerEvent[] = [];
       const stop = failingStop({ message: "Pods did not terminate before the deadline" });
       let failIAM = false;
       let iamFailures = 0;
@@ -146,19 +158,21 @@ for (const mode of ["transient", "generic"]) {
         stopRevision: stop.stopRevision,
         startOptions: {
           convergenceTimeoutMs: 2_000,
-          transformDrivers: proxiedIAM(async (iam, request) => {
-            if (!failIAM) {
-              return iam.authorize(request);
-            }
-            iamFailures += 1;
-            throw mode === "transient"
-              ? new TransientDependencyError(
-                  "kubernetes_api",
-                  "unavailable",
-                  "The Kubernetes API answered HTTP 503.",
-                )
-              : new Error("IAM state temporarily unavailable");
-          }),
+          transformDrivers: proxiedIAM(
+            async (iam: IAMDriver, request: Parameters<IAMDriver["authorize"]>[0]) => {
+              if (!failIAM) {
+                return iam.authorize(request);
+              }
+              iamFailures += 1;
+              throw mode === "transient"
+                ? new TransientDependencyError(
+                    "kubernetes_api",
+                    "unavailable",
+                    "The Kubernetes API answered HTTP 503.",
+                  )
+                : new Error("IAM state temporarily unavailable");
+            },
+          ),
         },
       });
       const admitted = Date.now();
@@ -211,13 +225,13 @@ for (const mode of ["transient", "generic"]) {
 for (const [row, code] of [
   ["Agent", "LEASE_EXPIRED"],
   ["AgentRevision", "DEPENDENCY_UNAVAILABLE"],
-]) {
+] as const) {
   test(
     `a refused candidate's wait over an unreadable ${row} ends at the attempt limit`,
     { ...requiresPostgres, timeout: 90_000 },
     async (context) => {
       const fixture = await setup(context, { maxAttempts: 2, leaseDurationMs: 5_000 });
-      const events = [];
+      const events: WorkerEvent[] = [];
       const stop = failingStop();
       const { owner, replacement } = await startRefusedCandidate(
         fixture,
@@ -257,7 +271,7 @@ test(
   { ...requiresPostgres, timeout: 90_000 },
   async (context) => {
     const fixture = await setup(context, { maxAttempts: 2, leaseDurationMs: 5_000 });
-    const events = [];
+    const events: WorkerEvent[] = [];
     const stop = failingStop();
     const { first, replacement, driver } = await startRefusedCandidate(
       fixture,
@@ -295,7 +309,10 @@ test(
 );
 
 /** Makes the Agent's row unreadable: the column only checks for an object, the reader each entry. */
-async function unreadableAgent(fixture, owner) {
+async function unreadableAgent(
+  fixture: RevisionFixture,
+  owner: Pick<Awaited<ReturnType<RevisionFixture["agent"]>>, "id">,
+) {
   await fixture.observerPool.query(
     `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb,
        plugin_driver = '{"id": "occ-plugin", "implementation": "occ/openclaw-plugin"}'::jsonb
@@ -309,10 +326,12 @@ async function unreadableAgent(fixture, owner) {
  * Admitted revisions are immutable, so the reader's refusal (an older admission a newer controller
  * no longer decodes) is injected at every `findRevision` of `revision`. Returns its undo.
  */
-function unreadableRevision(revision) {
+function unreadableRevision(revision: Pick<Revision, "id">) {
   const read = PostgresPlatformState.prototype.read;
-  PostgresPlatformState.prototype.read = function (work) {
-    return read.call(this, (view) =>
+  PostgresPlatformState.prototype.read = function <T>(
+    work: (view: PlatformReadView) => Promise<T>,
+  ): Promise<T> {
+    return (read<T>).call(this, (view) =>
       work({
         ...view,
         revisions: {
@@ -338,10 +357,10 @@ function unreadableRevision(revision) {
 for (const refuse of ["revoked", "unsupported"]) {
   revisionTest(
     `a ${refuse} candidate whose refusal lifts during its wait ${refuse === "revoked" ? "deploys" : "keeps its refusal"}`,
-    async (fixture) => {
+    async (fixture: RevisionFixture) => {
       const stop = failingStop();
       let lifted = false;
-      let scenario;
+      let scenario: Awaited<ReturnType<typeof startRefusedCandidate>> | undefined = undefined;
       scenario = await startRefusedCandidate(fixture, `refused-lifts-${refuse}`, {
         // "iam": the IAM Driver below denies `deploy` once the candidate's runtime started.
         refuse: refuse === "revoked" ? "iam" : "unsupported",
@@ -349,16 +368,18 @@ for (const refuse of ["revoked", "unsupported"]) {
         candidateReady: () => lifted,
         stopRevision: stop.stopRevision,
         startOptions: {
-          transformDrivers: proxiedIAM(async (iam, request) => {
-            const decision = await iam.authorize(request);
-            const denied =
-              refuse === "revoked" &&
-              !lifted &&
-              request.action === "deploy" &&
-              scenario !== undefined &&
-              scenario.driver.preparations(scenario.replacement) > 0;
-            return denied ? { ...decision, allowed: false } : decision;
-          }),
+          transformDrivers: proxiedIAM(
+            async (iam: IAMDriver, request: Parameters<IAMDriver["authorize"]>[0]) => {
+              const decision = await iam.authorize(request);
+              const denied =
+                refuse === "revoked" &&
+                !lifted &&
+                request.action === "deploy" &&
+                scenario !== undefined &&
+                scenario.driver.preparations(scenario.replacement) > 0;
+              return denied ? { ...decision, allowed: false } : decision;
+            },
+          ),
         },
       });
       const { owner, replacement, driver } = scenario;
@@ -378,7 +399,11 @@ for (const refuse of ["revoked", "unsupported"]) {
       if (refuse === "revoked") {
         await waitForWorkStateDue(fixture, replacement, "succeeded");
         const active = await fixture.activePointer(owner);
-        assert.equal(active.rows[0].active_revision_id, replacement.id);
+        const activeRow: unknown = active.rows[0];
+        assert.ok(
+          typeof activeRow === "object" && activeRow !== null && "active_revision_id" in activeRow,
+        );
+        assert.equal(activeRow.active_revision_id, replacement.id);
         assert.ok(driver.running.has(replacement.id), "the deployment kept its candidate");
       } else {
         await assertWorkEnds(
@@ -407,7 +432,7 @@ test(
   async (context) => {
     // The newer revision's own sweep fails on the same stop and retries until it succeeds.
     const fixture = await setup(context, { maxAttempts: 20 });
-    const events = [];
+    const events: WorkerEvent[] = [];
     const stop = failingStop();
     const { owner, replacement, driver } = await startRefusedCandidate(
       fixture,
@@ -465,8 +490,8 @@ test(
 // last lease, here the newer revision's sweep.
 revisionTest(
   "a superseded refused candidate that the newer sweep stopped is not stopped again",
-  async (fixture) => {
-    const events = [];
+  async (fixture: RevisionFixture) => {
+    const events: WorkerEvent[] = [];
     const stop = failingStop();
     const { owner, replacement, driver } = await startRefusedCandidate(fixture, "refused-swept", {
       refuse: "unsupported",
@@ -495,8 +520,8 @@ revisionTest(
 // before any wait evidence, still spent an attempt; the shutdown now defers the work as
 // REFUSED_CANDIDATE_STOP_PENDING while its lease holds. Exclusive replacement and a shared first
 // deployment reach the stop the same way.
-for (const shape of ["exclusive", "shared"]) {
-  for (const restart of ["lost", "graceful"]) {
+for (const shape of ["exclusive", "shared"] as const) {
+  for (const restart of ["lost", "graceful"] as const) {
     const label =
       shape === "exclusive" ? "exclusive candidate" : "first deployment on shared Compute";
     test(
@@ -511,7 +536,11 @@ for (const shape of ["exclusive", "shared"]) {
   }
 }
 
-async function refusedStopRestarts(context, shape, restart) {
+async function refusedStopRestarts(
+  context: TestContext,
+  shape: "exclusive" | "shared",
+  restart: "lost" | "graceful",
+) {
   // On main the second restart exhausted these two attempts.
   const restarts = 3;
   const fixture = await setup(context, { maxAttempts: 2 });
@@ -522,12 +551,12 @@ async function refusedStopRestarts(context, shape, restart) {
   // A lost-claim run first fails one stop, so its recovered claims follow wait evidence; a
   // graceful run blocks from the first stop on.
   const failedStops = restart === "lost" ? 1 : 0;
-  let candidateId;
+  let candidateId: string | undefined = undefined;
   let candidatePasses = 0;
   let stopCalls = 0;
-  let release;
-  const events = [];
-  const compute = {
+  let release: (() => void) | undefined;
+  const events: WorkerEvent[] = [];
+  const compute: ComputeDriver = {
     ...fixture.compute,
     ...(shape === "exclusive" ? { requiresStoppedPredecessors: () => true } : {}),
     async prepareRevision(revision) {
@@ -551,7 +580,7 @@ async function refusedStopRestarts(context, shape, restart) {
         }
         if (stopCalls <= failedStops + restarts) {
           // A Pod-termination wait that outlasts the controller's shutdown.
-          await new Promise((resolve) => {
+          await new Promise<void>((resolve) => {
             release = resolve;
           });
           throw new Error("Pods did not terminate before the controller stopped");
@@ -578,7 +607,12 @@ async function refusedStopRestarts(context, shape, restart) {
           return { blocked: true };
         }
         const { rows } = await fixture.workResult(candidate);
-        return rows[0] !== undefined && rows[0].reason_code !== null ? rows[0] : undefined;
+        const row: unknown = rows[0];
+        if (row === undefined) {
+          return undefined;
+        }
+        assert.ok(typeof row === "object" && row !== null && "reason_code" in row);
+        return row.reason_code !== null ? row : undefined;
       },
       30_000,
     );
@@ -588,6 +622,7 @@ async function refusedStopRestarts(context, shape, restart) {
       await expireLease();
     }
     const stopped = fixture.stop();
+    assert.ok(release);
     release();
     release = undefined;
     await stopped;
@@ -596,6 +631,7 @@ async function refusedStopRestarts(context, shape, restart) {
       const recovery = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 2 });
       assert.equal((await recovery.recoverStale()).recovered, 1);
       const status = await fixture.deploymentStatus(owner, candidate);
+      assert.ok(status.progress?.lastAttempt);
       assert.equal(status.progress.lastAttempt.code, "LEASE_EXPIRED");
       assert.equal(
         status.progress.lastAttempt.message,
@@ -609,6 +645,7 @@ async function refusedStopRestarts(context, shape, restart) {
       );
       assert.deepEqual(rows[0], { state: "queued", attempt_count: 0 });
       const status = await fixture.deploymentStatus(owner, candidate);
+      assert.ok(status.progress?.lastAttempt);
       assert.equal(status.progress.lastAttempt.code, "REFUSED_CANDIDATE_STOP_PENDING");
       assert.match(
         status.progress.lastAttempt.message,
@@ -627,7 +664,7 @@ async function refusedStopRestarts(context, shape, restart) {
   );
   // A shutdown's deferral logs why the stop ended, not a lost claim.
   assert.deepEqual(
-    refusedStopWaits(events, candidate).map(({ cause }) => cause),
+    refusedStopWaits(events, candidate).map(({ cause }: WorkerEvent) => cause),
     restart === "lost" ? ["Error"] : Array.from({ length: restarts }, () => "WorkerStopping"),
   );
   const evidence = await fixture.observerPool.query(
