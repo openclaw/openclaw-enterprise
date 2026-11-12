@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import {

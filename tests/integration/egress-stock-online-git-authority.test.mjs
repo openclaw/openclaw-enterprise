@@ -19,8 +19,8 @@ import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-pr
 import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { signedLeaf } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.ts";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
 
 const binding = {

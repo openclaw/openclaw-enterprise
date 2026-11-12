@@ -6186,6 +6186,24 @@ async function assertRoutedWorkspaceFilesThroughOcc(topology, connection) {
   return { marker, files };
 }
 
+async function assertGatewayWorkspaceReconnect(topology, expectedContent) {
+  // Pod readiness does not establish that the dedicated workspace node has reconnected.
+  // The deadline also aborts the host kubectl stream, not only the RPC inside the Pod.
+  const reconnected = await withinDiagnosticDeadline(
+    () =>
+      waitForWorkspaceReconnect(() =>
+        gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+      ),
+    { timeoutMs: 60_000, timedOut: null },
+  );
+  assert.notEqual(reconnected, null, "Timed out waiting for replacement Gateway workspace");
+  assert.equal(
+    reconnected.file.content,
+    expectedContent,
+    "replacement Gateway must read the retained workspace from its reconnected node",
+  );
+}
+
 async function assertRoutedWorkspaceFileReads(topology, files) {
   const basePath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/workspace/files`;
   for (const [name, content] of files) {
@@ -6223,6 +6241,7 @@ export {
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
+  assertGatewayWorkspaceReconnect,
   assertGatewayPrivateResources,
   assertKubernetesOtelLogs,
   assertInvalidHarnessAuthStaysUnready,

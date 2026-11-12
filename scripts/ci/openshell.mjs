@@ -6,6 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
 import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { downloadPinnedArtifact } from "./routing.mjs";
+import { preloadAgentSandboxController } from "./agent-sandbox.ts";
 import { selectOpenShellCandidate, verifyOpenShellCandidate } from "./openshell-candidate.ts";
 
 const openShellVersion = "0.1.6";
@@ -268,7 +269,7 @@ async function acquireOpenShellCharts(execFile, helm, directory) {
   return { gateway: chartPath, workspace: workspaceChartPath };
 }
 
-async function installAgentSandbox(execFile, kubectl, cluster, directory) {
+async function installAgentSandbox(execFile, kubectl, cluster, directory, registerImage) {
   const manifestPath = await downloadPinnedArtifact({
     artifact: {
       name: "Agent Sandbox",
@@ -279,7 +280,11 @@ async function installAgentSandbox(execFile, kubectl, cluster, directory) {
     },
     directory,
   });
-  await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", manifestPath]));
+  const nodes = JSON.parse(
+    (await execFile(kubectl, kubectlArgs(cluster, ["get", "nodes", "-o", "json"]))).stdout,
+  );
+  const localManifest = await preloadAgentSandboxController(manifestPath, nodes, registerImage);
+  await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", localManifest]));
   await execFile(kubectl, kubectlArgs(cluster, ["get", "crd", "sandboxes.agents.x-k8s.io"]));
   await execFile(
     kubectl,
@@ -680,7 +685,7 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
   const charts = candidate
     ? { gateway: candidate.gatewayChart, workspace: candidate.workspaceChart }
     : await acquireOpenShellCharts(execFile, helm, directory);
-  await installAgentSandbox(execFile, kubectl, selectedCluster, directory);
+  await installAgentSandbox(execFile, kubectl, selectedCluster, directory, registerImage);
 
   const gatewayImage = chartDeployableImageReference(
     await registerImage(gatewaySourceImage, "OCC_TEST_OPENSHELL_GATEWAY_IMAGE"),

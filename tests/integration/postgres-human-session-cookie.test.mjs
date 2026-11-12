@@ -139,7 +139,7 @@ test(
       ownKey,
     );
     // Protected API narrowing is proved with the full composition in
-    // postgres-google-sign-in.test.mjs; this fixture owns the HTTPS session route.
+    // postgres-google-sign-in.test.ts; this fixture owns the HTTPS session route.
     const plain = await inspect("/api/auth/session", { cookie: ownCookie });
     assert.equal(plain.json().data.user.id, recoveryUserId);
     assert.equal(

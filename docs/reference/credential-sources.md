@@ -265,9 +265,11 @@ requires exact `delete` and returns `204`:
   The record stays `deleting`. Retry after the time in the message, at most 72
   minutes after the attempt. A refused issue with no token does not block deletion.
   While the worker is revoking a token, deletion waits up to 25 seconds for GitHub's answer.
-- Within 70 seconds of registration, cleanup returns `503`
-  and keeps the record, because a timed-out registration could still create a
-  copy. The message names the seconds left; retry after them.
+- Within 70 seconds of registration, `503 DEPENDENCY_UNAVAILABLE` keeps the
+  record against late registration. `error.reason: "credential_registration_pending"`
+  identifies this refusal; `Retry-After` gives the remaining whole seconds.
+  Wait that long before retrying the same deletion. Other `503` responses
+  do not authorize an automatic retry.
 
 While a source exists, including one in `deleting`, its Namespace cannot be
 deleted, and its referenced Secrets cannot be deleted.
