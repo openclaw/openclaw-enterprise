@@ -1820,6 +1820,8 @@ test("Mixed Installation targets each Harness catalog before reading a discovery
     assert.equal(details.data.id, entry.id);
   }
   for (const body of [
+    { q: "Linear" },
+    { harnessId: "unknown", q: "Linear" },
     { secretRef: secret.ref },
     { harnessId: "openclaw", secretRef: secret.ref },
   ]) {
