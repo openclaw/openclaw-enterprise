@@ -9,6 +9,9 @@ reports whether cleanup completed.
 This command applies only to runs with a versioned `preflight-journal.json`. For
 older or uncertain evidence, follow [manual reconciliation](#reconcile-unsupported-or-uncertain-evidence).
 Never create a journal or fill missing receipts from current resource names.
+The journal is bound to hashes of the original helper files. A newer checkout
+cannot clean up older evidence merely because it recognizes that journal shape.
+Retain the original checkout; do not update recorded hashes to bypass this check.
 
 ## Prepare the cleanup
 

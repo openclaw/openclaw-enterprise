@@ -44,10 +44,13 @@ unlock the upgrade or establish database state.
 
 ## Resume an unfinished prepared upgrade
 
-Failed migration preflight prevents further shutdown; writers may already be stopped.
-Inspect the current `migration-preflight-resume.*/preflight-migration.log` and
-`preflight-migration-logs.err`. Reconcile unknown creates; retain the original
-evidence, lock and dispatch journal for `--resume`.
+Failed application identity or migration preflight prevents further shutdown and
+Helm submission; writers may already be stopped. Inspect the current
+`upgrade-preflight-resume.*/preflight-{api,worker,migration}.log` and corresponding
+`preflight-*-logs.err`. Reconcile the application connection or migration failure
+and unknown creates; retain the original evidence, lock and dispatch journal for
+`--resume`. Historical `migration-preflight-resume.*` attempts remain valid for
+`--cleanup-preflight` using their original, hash-matching helper checkout.
 
 With `--verify-agent`, inspect `agent-continuity.json` and
 `agent-continuity-after*.json`. The former binds the original revision and workload

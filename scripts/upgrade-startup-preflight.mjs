@@ -15,6 +15,7 @@ const computeIncomplete = "Kubernetes Compute startup preflight could not comple
 // controller's own startup refusal uses the same words.
 const nameRefusal = "The stored Installation name breaks the Name rule:";
 const nameVariable = "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME";
+const idVariable = "OCC_UPGRADE_PREFLIGHT_INSTALLATION_ID";
 // Names the component (api or worker) whose credentials and grants the Pod checks.
 const componentVariable = "OCC_UPGRADE_PREFLIGHT_COMPONENT";
 // The saved draft of each Agent the upgrade deploys (finding 2809): the API Pod reads it from
@@ -29,8 +30,58 @@ const draftRefusal = "Agent draft refused:";
 // candidate Installation and the drafts, so the drafts get what the Installation leaves.
 const secretLimitBytes = 1024 * 1024;
 
+const identityCheck = `
+// Use the candidate's connection owner, including its TLS and credential handling.
+// This module predates the upgrade helper. Do not bootstrap or construct State:
+// this check must also work before the candidate's migrations have been applied.
+let identityPool;
+let identityClient;
+let identityMismatch = false;
+const identityFailure = () => {
+  process.stderr.write(identityMismatch
+    ? "Candidate application database does not identify the incumbent Installation.\\n"
+    : "Candidate application database Installation identity could not be verified.\\n");
+  process.exit(1);
+};
+// Older pool helpers do not honor every timeout option. Bound the whole operation,
+// including authentication and cleanup, independently of that historical ABI.
+const identityDeadline = setTimeout(identityFailure, 15000);
+try {
+  const expectedId = JSON.parse(process.env.${idVariable});
+  if (typeof expectedId !== "string" || expectedId.length === 0 ||
+      typeof process.env.OCC_DATABASE_URL !== "string" || !process.env.OCC_DATABASE_URL.trim()) {
+    throw new Error();
+  }
+  if (!["postgres:", "postgresql:"].includes(new URL(process.env.OCC_DATABASE_URL).protocol)) {
+    throw new Error();
+  }
+  const { createPostgresPool } = await import("/app/packages/occ/src/state/postgres-pool.ts");
+  identityPool = await createPostgresPool(process.env.OCC_DATABASE_URL, { max: 1 });
+  identityClient = await identityPool.connect();
+  identityClient.on("error", identityFailure);
+  // BEGIN precedes all reads, even if the supplied role normally has write access.
+  await identityClient.query("BEGIN READ ONLY");
+  await identityClient.query("SET LOCAL statement_timeout = '5s'");
+  await identityClient.query("SET LOCAL lock_timeout = '5s'");
+  const { rows } = await identityClient.query("SELECT id FROM occ.installation LIMIT 2");
+  if (rows.length !== 1 || rows[0].id !== expectedId) {
+    identityMismatch = true;
+    throw new Error();
+  }
+  await identityClient.query("ROLLBACK");
+  identityClient.release(true);
+  identityClient = undefined;
+  await identityPool.end();
+} catch {
+  // Never include connection details, database rows, or internal error messages.
+  try { identityClient?.release(true); } catch {}
+  identityFailure();
+}
+clearTimeout(identityDeadline);
+`;
+
 // Runs inside the controller image. It reads OCC_CONFIG_PATH and the chart's
-// environment, loads Drivers and Preset files, and never opens the database.
+// environment, loads Drivers and Preset files, and reads the database identity.
 // With the bundled Kubernetes Compute Driver it then runs that Driver's startup
 // preflight, which reads the Kubernetes version and Namespaces with the Pod's
 // service account; it refuses, for example, single-cluster split-layout storage.
@@ -161,6 +212,7 @@ if (process.env.${draftsVariable} !== undefined) {
     process.stdout.write("agent-drafts-accepted\\n");
   }
 }
+${identityCheck}
 process.stdout.write("installation-startup-ready\\n");
 `;
 
@@ -270,6 +322,114 @@ const containerFields = [
   "resources",
 ];
 
+// Only the chart-owned preload and CA assembler may survive replacing the server
+// entrypoint. Never execute an arbitrary command from a rendered Deployment.
+function connectionPlan(spec, container, component, check) {
+  const refuse = () => fail("the rendered application connection prerequisites are unsupported.");
+  const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const entrypoint = `apps/controller/src/${component === "api" ? "server" : "worker"}.mjs`;
+  const assemblers = (spec.initContainers ?? []).filter(({ name }) => name === "assemble-api-ca");
+  if (container.command !== undefined && !same(container.command, ["node"])) {
+    refuse();
+  }
+  const plainArgs = ["--input-type=module", "-e", check];
+  if (same(container.args, [entrypoint])) {
+    if (assemblers.length || container.env?.some(({ name }) => name === "OCC_DATABASE_CA_SOURCE")) {
+      refuse();
+    }
+    return { args: plainArgs, initContainers: [] };
+  }
+  const source = (name) =>
+    readFileSync(
+      new URL(`../deploy/helm/openclaw-enterprise/files/${name}`, import.meta.url),
+      "utf8",
+    );
+  const preload = `data:text/javascript;base64,${Buffer.from(source("check-api-database-ca.mjs")).toString("base64")}`;
+  const args = container.args ?? [];
+  const caPath = args[3];
+  const caMounts = (container.volumeMounts ?? []).filter(
+    ({ name, mountPath, readOnly }) =>
+      name === "database-ca" && readOnly === true && typeof mountPath === "string",
+  );
+  if (
+    component !== "api" ||
+    args.length !== 4 ||
+    args[0] !== "--import" ||
+    args[1] !== preload ||
+    args[2] !== entrypoint ||
+    caMounts.length !== 1 ||
+    assemblers.length !== 1
+  ) {
+    refuse();
+  }
+  const caVolume = (spec.volumes ?? []).find(({ name }) => name === caMounts[0].name);
+  const caDirectory = caMounts[0].mountPath.replace(/\/$/, "");
+  if (!caVolume?.secret?.items?.some(({ path }) => caPath === `${caDirectory}/${path}`)) {
+    refuse();
+  }
+  const assembler = assemblers[0];
+  const output = "/etc/openclaw/api-extra-ca/ca.crt";
+  const inputs = ["/etc/openclaw/oidc-ca/ca.crt"];
+  if (assembler.volumeMounts?.some(({ name }) => name === "gateway-ca")) {
+    inputs.push("/etc/openclaw/gateway-ca/ca.crt");
+  }
+  if (
+    assembler.image !== container.image ||
+    !same(assembler.command, ["node"]) ||
+    !same(assembler.args, [
+      "--input-type=module",
+      "-e",
+      source("assemble-api-ca.mjs"),
+      output,
+      ...inputs,
+    ]) ||
+    assembler.volumeMounts?.length !== inputs.length + 1 ||
+    assembler.envFrom?.length ||
+    assembler.env?.some(
+      ({ name, value }) => name !== "OCC_CA_SOURCES" || typeof value !== "string",
+    ) ||
+    !container.env?.some(({ name, value }) => name === "NODE_EXTRA_CA_CERTS" && value === output)
+  ) {
+    refuse();
+  }
+  for (const path of [output, ...inputs]) {
+    const mounts = (assembler.volumeMounts ?? []).filter(({ mountPath }) =>
+      path.startsWith(`${mountPath}/`),
+    );
+    const volume =
+      mounts.length === 1 && (spec.volumes ?? []).find(({ name }) => name === mounts[0].name);
+    if (
+      !volume ||
+      (path === output ? !volume.emptyDir : !volume.secret || mounts[0].readOnly !== true)
+    ) {
+      refuse();
+    }
+  }
+  const outputMount = assembler.volumeMounts.find(({ mountPath }) =>
+    output.startsWith(`${mountPath}/`),
+  );
+  if (
+    !container.volumeMounts?.some(
+      ({ name, mountPath, readOnly }) =>
+        name === outputMount.name && mountPath === outputMount.mountPath && readOnly === true,
+    )
+  ) {
+    refuse();
+  }
+  // With -e, argv[1] is the first trailing argument. Keep the chart's CA at
+  // argv[2], exactly where its preload reads it before this program executes.
+  return {
+    args: ["--import", preload, ...plainArgs, "--", entrypoint, caPath],
+    initContainers: [
+      Object.fromEntries(
+        [...containerFields, "command", "args"]
+          .filter((field) => field in assembler)
+          .map((field) => [field, assembler[field]]),
+      ),
+    ],
+  };
+}
+
 // Reuse the initialization Job's database identity and mounted CA, but run only
 // the candidate's read-only compatibility check. Never copy bootstrap or other
 // init containers into a preflight that runs while the incumbent is serving.
@@ -327,26 +487,34 @@ function migrationJob(renderedPath, name, namespace, release, image, timeoutSeco
 // service account and placement, with the Installation
 // volume pointed at the temporary candidate Secret. Probes, ports and the chart's
 // other containers are left out; the Pod runs the startup check once. The stored
-// Installation name comes from the helper's `occ installation get` output.
-function job([
-  renderedPath,
-  component,
-  name,
-  namespace,
-  release,
-  installationSecret,
-  candidateSecret,
-  image,
-  timeoutSeconds,
-  storedInstallationPath,
-  withDrafts,
-]) {
+// Installation name and ID come from the helper's `occ installation get` output.
+function job(
+  [
+    renderedPath,
+    component,
+    name,
+    namespace,
+    release,
+    installationSecret,
+    candidateSecret,
+    image,
+    timeoutSeconds,
+    storedInstallationPath,
+    withDrafts,
+  ],
+  check = startupCheck,
+) {
   if (component === "migration") {
     return migrationJob(renderedPath, name, namespace, release, image, timeoutSeconds);
   }
-  const storedName = JSON.parse(readFileSync(storedInstallationPath, "utf8")).name;
+  const { name: storedName, id: storedId } = JSON.parse(
+    readFileSync(storedInstallationPath, "utf8"),
+  );
   if (typeof storedName !== "string") {
     fail("OCC did not return the stored Installation name.");
+  }
+  if (typeof storedId !== "string" || storedId.length === 0) {
+    fail("OCC did not return the stored Installation ID.");
   }
   const deployments = documents(renderedPath).filter(
     (document) =>
@@ -375,18 +543,25 @@ function job([
   );
   // The image entrypoint is node; name it so a chart command cannot change the check.
   container.command = ["node"];
-  container.args = ["--input-type=module", "-e", startupCheck];
+  const plan = connectionPlan(spec, matches[0], component, check);
+  container.args = plan.args;
   // JSON keeps any control character in the name intact through the environment.
   // Kubernetes expands $(VAR) and turns $$ into $ in env values; doubling every $
   // makes it deliver the name unchanged.
   container.env = [
     ...(container.env ?? []).filter(
-      (variable) => ![nameVariable, componentVariable, draftsVariable].includes(variable.name),
+      (variable) =>
+        ![nameVariable, idVariable, componentVariable, draftsVariable].includes(variable.name),
     ),
     { name: nameVariable, value: JSON.stringify(storedName).replaceAll("$", () => "$$") },
+    { name: idVariable, value: JSON.stringify(storedId).replaceAll("$", () => "$$") },
     { name: componentVariable, value: component },
   ];
-  const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
+  const mounted = new Set(
+    [container, ...plan.initContainers].flatMap((item) =>
+      (item.volumeMounts ?? []).map((mount) => mount.name),
+    ),
+  );
   const volumes = structuredClone(
     (spec.volumes ?? []).filter((volume) => mounted.has(volume.name)),
   );
@@ -430,6 +605,7 @@ function job([
           activeDeadlineSeconds: Number(timeoutSeconds),
           enableServiceLinks: false,
           containers: [container],
+          ...(plan.initContainers.length ? { initContainers: plan.initContainers } : {}),
           volumes,
         },
       },
@@ -610,6 +786,13 @@ const actions = {
   drafts: [3, drafts],
   secret: [6, (values) => JSON.stringify(secret(values))],
   job: [11, (values) => JSON.stringify(job(values))],
+  "identity-job": [
+    11,
+    (values) =>
+      JSON.stringify(
+        job(values, identityCheck + 'process.stdout.write("installation-startup-ready\\n");'),
+      ),
+  ],
   child: [4, child],
   remaining: [5, remaining],
   refusals: [1, refusals],
@@ -618,7 +801,7 @@ const actions = {
 };
 if (!(action in actions) || input.length !== actions[action][0]) {
   fail(
-    "expected drafts, secret, job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
+    "expected drafts, secret, job, identity-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
   );
 }
 process.stdout.write(`${actions[action][1](input)}\n`);
