@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-06"
-last_updated_session: "authoring-run/12b5a135-b3b1-4d2e-bd32-259e373e9abe"
+updated: "2026-11-12"
+last_updated_session: "authoring-run/4ce62d56-3932-48c4-8c2e-df863a7979cd"
 ---
 
 # How OCC saves an OAuth connection template
@@ -71,7 +71,7 @@ OCC verifies the person's Namespace permission and pins the selected template ve
 
 On callback, OCC consumes the matching attempt once and rechecks the person's session and authority. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
 
-At startup, the API and worker each install an `oauth_refresh_token` issuer in their Token Service. After exchange, OCC registers the grant with that kind, naming the pending source, approved template version and selected OAuth client. The service checks that approval against the source and reads the issuer, token endpoint, authentication method and MCP resource from the stored configuration. It stores the access token and refresh grant in a private Secret. OCC records the approved recipient, reported scopes and template version, marks the account ready and grants its owner access. When the provider omits scopes after a provider-default request, the receipt records an empty list.
+At startup, the API and worker each install an `oauth_refresh_token` issuer in their Token Service. After exchange, OCC registers the grant with that kind, naming the pending source, approved template version and selected OAuth client. The service checks that approval against the source and reads the issuer, token endpoint, authentication method and MCP resource from the stored configuration. It stores the access token and refresh grant in a private Secret. OCC records the approved recipient, reported scopes and template version, marks the account ready and grants its owner access. The same transaction records the saved credential source as the affected resource and `credential_source:create` on the consumed Namespace as the authorized operation. When the provider omits scopes after a provider-default request, the receipt records an empty list.
 
 ### 5. Resolve current destinations and renew the grant
 
@@ -100,6 +100,8 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 05:05: Record the callback audit authorization from the consumed Namespace. (authoring-run/4ce62d56-3932-48c4-8c2e-df863a7979cd - 31a99b1bc02340887cc875094b85ce5fa369cdf5)
 
 - 2026-11-05 23:59: Document independent client mutations and structure the existing flow. (authoring-run/12b5a135-b3b1-4d2e-bd32-259e373e9abe - e9cce241a2776521b745c22cd336cdb112444afb)
 

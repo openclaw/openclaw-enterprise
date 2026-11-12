@@ -175,7 +175,10 @@ failure alone does not fail the workflow. Aggregation reads
 retained results only for a successful plan; abandoned uploads cannot replace
 fresh evidence. The aggregate applies the same
 case and cleanup rules to both sources; reuse is not independent execution.
-Hosted discovery, publication and final reuse accounting remain unverified.
+To confirm that reused results reached the aggregate, check that both
+`Download committed reused results` and `Combine committed reused results` succeeded.
+In [Full Integration run 43103074336](https://github.com/openclaw/openclaw-enterprise/actions/runs/43103074336/job/130836667906),
+both steps succeeded before `Aggregate full suite` failed.
 
 ## Files
 

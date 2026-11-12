@@ -1,3 +1,12 @@
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+import {
+  boundedProgressLines,
+  openShellProgress,
+  openShellProgressPrefix,
+} from "../../scripts/ci/openshell-progress.mjs";
 import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 
 const pluginInstallCase = "OpenShell installs selected Codex plugins before WebSocket startup";
@@ -78,9 +87,59 @@ function failureMessage(value: unknown): string | DeploymentFailure {
   return "OpenShell plugin installation case failed; child details withheld.";
 }
 
-// Console output is a test:stdout/stderr event, never a reporter frame. Drop it
-// entirely: even an interrupted child must not expose raw fixture diagnostics.
+type PluginStage = {
+  kind: "openshell-stage";
+  stage: "installation" | "exposure-auth";
+  outcome: "started" | "passed" | "failed";
+};
+
+function validPluginTransition(previous: PluginStage | undefined, next: PluginStage): boolean {
+  if (!previous) {
+    return next.stage === "installation" && next.outcome === "started";
+  }
+  if (previous.outcome === "started") {
+    return next.stage === previous.stage && next.outcome !== "started";
+  }
+  return (
+    previous.stage === "installation" &&
+    previous.outcome === "passed" &&
+    next.stage === "exposure-auth" &&
+    next.outcome === "started"
+  );
+}
+
+function nextPluginStage(line: string, previous: PluginStage | undefined): PluginStage | undefined {
+  if (!line.startsWith(openShellProgressPrefix)) {
+    return undefined;
+  }
+  try {
+    const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
+    if (
+      value?.kind === "openshell-stage" &&
+      (value.stage === "installation" || value.stage === "exposure-auth") &&
+      line === `${openShellProgressPrefix}${JSON.stringify(value)}` &&
+      validPluginTransition(previous, value as PluginStage)
+    ) {
+      return value as PluginStage;
+    }
+  } catch {
+    // Arbitrary diagnostics and malformed records never cross this boundary.
+  }
+  return undefined;
+}
+
+// Only complete, validated stdout stage records precede the terminal frame.
 export default async function* reporter(source: AsyncIterable<{ type: string; data: unknown }>) {
+  // The transition check admits at most four frames across the entire child.
+  const pending: string[] = [];
+  let progress: PluginStage | undefined;
+  const readProgress = boundedProgressLines((line: string) => {
+    const value = nextPluginStage(line, progress);
+    if (value) {
+      progress = value;
+      pending.push(line + "\n");
+    }
+  });
   let passed = 0;
   let failed = false;
   let complete = false;
@@ -88,6 +147,12 @@ export default async function* reporter(source: AsyncIterable<{ type: string; da
   let teardown = false;
   for await (const event of source) {
     const data = record(event.data);
+    if (event.type === "test:stdout" && typeof data.message === "string") {
+      readProgress(data.message);
+      for (const frame of pending.splice(0)) {
+        yield frame;
+      }
+    }
     if (
       event.type === "test:diagnostic" &&
       data.nesting === 0 &&
@@ -196,4 +261,78 @@ export function pluginInstallOutcome(
     primary = `OpenShell revision deployment failed (${code}${categories ? `: ${categories}` : ""}).`;
   }
   return outcome.teardown ? `${primary} ${teardownFailed}` : primary;
+}
+
+// Keep the last complete stage even if execFile's deadline interrupts the child.
+// Only canonical leading frames are removed; all remaining bytes still face the
+// exact terminal protocol, so extra or malformed output cannot turn into a pass.
+export function pluginInstallResult(
+  stdout: string,
+  cleanExit: boolean,
+  killedByTimeout = false,
+): { progress: PluginStage | undefined; failure: string | undefined } {
+  let progress: PluginStage | undefined;
+  let offset = 0;
+  while (stdout.startsWith(openShellProgressPrefix, offset)) {
+    const end = stdout.indexOf("\n", offset);
+    if (end === -1 || end - offset > 256) {
+      break;
+    }
+    const line = stdout.slice(offset, end);
+    const value = nextPluginStage(line, progress);
+    if (!value) {
+      break;
+    }
+    progress = value;
+    offset = end + 1;
+  }
+  return {
+    progress,
+    failure: pluginInstallOutcome(stdout.slice(offset), cleanExit, killedByTimeout),
+  };
+}
+
+export async function runPluginInstallCase(testFile: string, timeout: number): Promise<void> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OCC_TEST_OPENSHELL_HARNESS: "codex",
+    OCC_TEST_OPENSHELL_SCENARIO: "plugin-install",
+  };
+  delete env.NODE_TEST_CONTEXT;
+  const result = await promisify(execFile)(
+    process.execPath,
+    [
+      "--test",
+      `--test-reporter=${fileURLToPath(import.meta.url)}`,
+      `--test-name-pattern=^${pluginInstallCase}$`,
+      testFile,
+    ],
+    { env, timeout, maxBuffer: 32 * 1024 * 1024 },
+  ).then(
+    ({ stdout }) => ({ stdout, cleanExit: true, killedByTimeout: false }),
+    (error: unknown) => {
+      const details = error !== null && typeof error === "object" ? error : {};
+      return {
+        stdout: "stdout" in details && typeof details.stdout === "string" ? details.stdout : "",
+        cleanExit: false,
+        // execFile owns this kill marker: its only kill paths are timeout and
+        // maxBuffer. A nested runner may drain SIGTERM and close with exit 1.
+        killedByTimeout:
+          "killed" in details &&
+          details.killed === true &&
+          !("code" in details && details.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"),
+      };
+    },
+  );
+  const { progress, failure } = pluginInstallResult(
+    result.stdout,
+    result.cleanExit,
+    result.killedByTimeout,
+  );
+  if (failure !== undefined) {
+    const stage = progress
+      ? `\nLast reported OpenShell stage was ${progress.stage} (${progress.outcome}).`
+      : "";
+    throw new Error(failure + stage);
+  }
 }

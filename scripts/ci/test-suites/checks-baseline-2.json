@@ -38,15 +38,19 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-deadline.test.ts",
+    "tests/integration/ci-runner-preparation.test.ts",
+    "tests/integration/ci-runner-failure-output.test.ts",
     "tests/integration/ci-runner-aggregate.test.ts",
     "tests/integration/ci-runner-scheduling.test.ts",
     "tests/integration/ci-runner-redaction.test.ts",
+    "tests/integration/openshell-plugin-install-reporter.test.ts",
     "tests/integration/ci-runner-first-agent-startup.test.ts",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
     "tests/integration/password-sign-in-admission.test.ts",
-    "tests/integration/google-login-transport.test.mjs",
+    "tests/integration/google-login-transport.test.ts",
     "tests/conformance/slack-channel-directory.test.mjs",
     "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
@@ -82,7 +86,7 @@
     "tests/integration/kubernetes-peer-status.test.mjs",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.mjs",
-    "tests/integration/oidc-login-transport.test.mjs",
+    "tests/integration/oidc-login-transport.test.ts",
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/ci-prepare-postgres.test.ts",
@@ -255,6 +259,15 @@
       ]
     },
     {
+      "path": "tests/integration/ci-runner-deadline.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-preparation.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-failure-output.test.ts"
+    },
+    {
       "path": "tests/integration/ci-runner-aggregate.test.ts"
     },
     {
@@ -262,6 +275,9 @@
     },
     {
       "path": "tests/integration/ci-runner-redaction.test.ts"
+    },
+    {
+      "path": "tests/integration/openshell-plugin-install-reporter.test.ts"
     },
     {
       "path": "tests/integration/ci-runner-first-agent-startup.test.ts"
@@ -640,13 +656,13 @@
       "path": "tests/integration/google-id-token.test.mjs"
     },
     {
-      "path": "tests/integration/google-login-transport.test.mjs"
+      "path": "tests/integration/google-login-transport.test.ts"
     },
     {
       "path": "tests/integration/oidc-id-token.test.mjs"
     },
     {
-      "path": "tests/integration/oidc-login-transport.test.mjs"
+      "path": "tests/integration/oidc-login-transport.test.ts"
     },
     {
       "path": "tests/integration/password-sign-in-policy.test.ts"

@@ -1796,7 +1796,7 @@ if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
   printf '%s\n' "$installation_checksum" >"$evidence_dir/installation-checksum"
 fi
 
-helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "${helm_args[@]}")
+helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "$values" "${helm_args[@]}")
 candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
 rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
 preflight_startup
@@ -2001,7 +2001,7 @@ if ((helm_complete == 0)); then
   fi
   if [[ -f "$evidence_dir/helm-started" ]]; then
     # Every submitted retry has a fresh hook identity; retain earlier attempts.
-    helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "${helm_args[@]}")
+    helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "$values" "${helm_args[@]}")
     candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
   fi
   if [[ "$repository_enabled" == true ]]; then

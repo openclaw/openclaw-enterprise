@@ -242,8 +242,14 @@ test("aggregate qualifies only the independently selected Skipper image set with
 });
 
 test("installed Skipper receiver reports failures without exposing response content", async (t) => {
+  function shortenGatewayDeadline() {
+    const timeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms) => timeout(ms === 170_000 ? 1_000 : ms);
+  }
   for (const [scenario, status, category] of [
     ["transport", 0, "transport"],
+    ["client-deadline", 0, "client-deadline"],
+    ["http-timeout", 504, "timeout"],
     ["body", 200, "response-body"],
     ["json", 200, "response-json"],
     ["http", 403, "permission"],
@@ -252,11 +258,16 @@ test("installed Skipper receiver reports failures without exposing response cont
     await t.test(scenario, async (t) => {
       const canary = "private-response-content";
       // Real sockets exercise fetch rejection, interrupted body reads and JSON parsing.
+      let requests = 0;
       const server = createServer((req, res) => {
+        requests++;
         assert.equal(req.method, "POST");
         assert.equal(req.url, "/v1/chat/completions");
         assert.equal(req.headers.authorization, "Bearer synthetic-receiver-key");
         req.resume();
+        if (scenario === "client-deadline") {
+          return; // Leave headers unsent until the client aborts.
+        }
         if (scenario === "transport") {
           req.socket.destroy();
         } else if (scenario === "body") {
@@ -265,6 +276,9 @@ test("installed Skipper receiver reports failures without exposing response cont
           setTimeout(() => res.destroy(), 50);
         } else if (scenario === "json") {
           res.end(canary);
+        } else if (scenario === "http-timeout") {
+          res.writeHead(504);
+          res.end("timed out " + canary);
         } else if (scenario === "http") {
           res.writeHead(403);
           res.end("permission denied " + canary);
@@ -281,9 +295,11 @@ test("installed Skipper receiver reports failures without exposing response cont
       const address = server.address();
       assert.ok(address && typeof address !== "string");
       // Serialize the same receiver that kubectl executes, without a fake fetch implementation.
+      const clock =
+        scenario === "client-deadline" ? `(${shortenGatewayDeadline.toString()})();` : "";
       const result = await promisify(execFile)(
         process.execPath,
-        ["-e", `(${inGateway.toString()})("prompt", "session")`],
+        ["-e", `${clock}\n(${inGateway.toString()})("prompt", "session")`],
         {
           timeout: 10_000,
           env: {
@@ -293,6 +309,7 @@ test("installed Skipper receiver reports failures without exposing response cont
           },
         },
       );
+      assert.equal(requests, 1);
       assert.equal(result.stderr, "");
       assert.deepEqual(
         JSON.parse(result.stdout),
@@ -680,6 +697,11 @@ test("installed Skipper failure retention preserves known checkpoints and withho
       input: { httpStatus: 0, gatewayCategory: "transport" },
       expected: { httpStatus: 0, gatewayCategory: "transport" },
     },
+    {
+      name: "client-deadline",
+      input: { httpStatus: 0, gatewayCategory: "client-deadline" },
+      expected: { httpStatus: 0, gatewayCategory: "client-deadline" },
+    },
     { name: "status only", input: { httpStatus: 503 }, expected: { httpStatus: 503 } },
     {
       name: "category only",
@@ -839,19 +861,21 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         });
         assert.doesNotMatch(published, /private-canary|synthetic-canary/);
       }
-      if (name === "gateway" || name === "native" || name === "native-git") {
-        // Damaged optional diagnostics and a truncated tail must still reach the original assertion.
+      if (["gateway", "native", "native-git", "client-deadline"].includes(name)) {
+        // A truncated ledger must preserve both valid diagnostics and the primary failure.
+        const deadline = name === "client-deadline";
         const diagnostic = JSON.stringify({
-          phase: expected,
-          httpStatus: 403,
-          category: "private-canary",
+          ...(deadline
+            ? { phase: refused, httpStatus: 0, category: name }
+            : { phase: expected, httpStatus: 403, category: "private-canary" }),
           runtimeSignal: "no-known-signal",
           modelTurns: null,
           modelAnswers: null,
           expectedNonceAnswered: null,
           tlsErrors: null,
         });
-        await writeFile(ledgerPath, diagnostic + "\n{\n");
+        const tail = deadline ? native : "";
+        await writeFile(ledgerPath, diagnostic + "\n" + tail + "{\n");
         await writeFile(stageOutput, "");
         const failed = child(`
           import assert from "node:assert/strict";
@@ -867,6 +891,9 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         `);
         assert.equal(failed.status, 1);
         assert.match(failed.stderr, /AssertionError.*selected test runner failed/);
+        if (deadline) {
+          assert.match(failed.stderr, /Gateway HTTP 0, client-deadline, no-known-signal/);
+        }
         assert.doesNotMatch(failed.stderr, /private-canary/);
         assert.deepEqual(await readOutputs(), {
           ...expectedOutputs,

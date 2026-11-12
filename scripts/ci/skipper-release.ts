@@ -165,6 +165,7 @@ export function skipperOperationDiagnostic(value: unknown) {
       "unavailable",
       "unclassified",
       "transport",
+      "client-deadline",
       "response-body",
       "response-json",
     ].includes(gatewayCategory)

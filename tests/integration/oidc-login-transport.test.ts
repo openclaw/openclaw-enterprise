@@ -3,6 +3,8 @@ import test from "node:test";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import { oidcLoginConfiguration, oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
 import {
+  assertSafeEqual,
+  assertSafeThrows,
   callbackState,
   createIdTokenSigner,
   createLoginFixture,
@@ -10,12 +12,17 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
+  parseAuthorizationUrl,
   providerAttemptId,
   providerInstanceId,
+  readProviderRequestBody,
   redirectProviderFetch,
+  responseFields,
   startProviderServer,
   testOversizedProviderBodies,
-} from "../helpers/human-login-transport.mjs";
+  type LoginFixtureOptions,
+  type ProviderHandler,
+} from "../helpers/human-login-transport.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 
 const subject = "auth0|65f0c1d2e3a4b5c6d7e8f901";
@@ -27,13 +34,16 @@ const environment = {
   OCC_AUTH_OIDC_CLIENT_ID: "fixture-oidc-client",
   OCC_AUTH_OIDC_CLIENT_SECRET: "fixture-oidc-client-secret",
 };
-const oidc = oidcLoginConfiguration(environment);
+const configuredOidc = oidcLoginConfiguration(environment);
+assert.ok(configuredOidc, "OIDC fixture configuration was missing");
+const { enrollment, ...oidc } = configuredOidc;
+assert.equal(enrollment, undefined, "OIDC fixture must not configure enrollment");
 const pinned = new Set([oidc.tokenUrl, oidc.jwksUrl]);
 
 const providerId = providerInstanceId("oidc", { issuer: oidc.issuer, clientId: oidc.clientId });
 
 const signer = createIdTokenSigner();
-function idToken(state = callbackState, overrides = {}) {
+function idToken(state = callbackState, overrides: Record<string, unknown> = {}) {
   const now = Math.floor(Date.now() / 1000);
   return signer.sign({
     iss: oidc.issuer,
@@ -46,47 +56,50 @@ function idToken(state = callbackState, overrides = {}) {
   });
 }
 
-function loginFixture(providers = { oidc }) {
+function loginFixture(providers: LoginFixtureOptions["providers"] = { oidc }) {
   return createLoginFixture({ provider: "oidc", providers });
 }
 
 test("OIDC sign-in configuration shares the recovery user with Google", () => {
   const recovery = { OCC_AUTH_RECOVERY_USER_ID: "recovery-user" };
-  assert.deepEqual(humanLoginConfiguration({ ...environment, ...recovery }), {
-    oidc: { ...oidc, recoveryUserId: "recovery-user" },
-  });
-  assert.throws(
+  assertSafeEqual(
+    humanLoginConfiguration({ ...environment, ...recovery }),
+    {
+      oidc: { ...oidc, recoveryUserId: "recovery-user" },
+    },
+    "sign-in configuration did not match",
+  );
+  assertSafeThrows(
     () => humanLoginConfiguration(environment),
     /OIDC sign-in requires its provider settings and a recovery user ID/,
   );
-  assert.throws(
+  assertSafeThrows(
     () => humanLoginConfiguration({ ...environment, OCC_AUTH_RECOVERY_USER_ID: " " }),
     /OIDC sign-in requires its provider settings and a recovery user ID/,
   );
 });
 
 test("OIDC login fetches only its pinned URLs and binds the ID token to the attempt", async (t) => {
-  let serve;
+  let serve: ProviderHandler = () => {
+    throw new Error("Provider handler was not selected");
+  };
   const { requests, port } = await startProviderServer(t, (request, response) =>
     serve(request, response),
   );
   const providerOrigin = `http://127.0.0.1:${port}`;
   // Only the pinned destinations are redirected to the fake IdP; anything else fails.
   redirectProviderFetch(t, pinned, providerOrigin);
-  let exchange;
+  let exchange: URLSearchParams | undefined;
   const provider =
-    (token = idToken()) =>
+    (token = idToken()): ProviderHandler =>
     async (request, response) => {
       response.setHeader("content-type", "application/json");
       if (request.url === "/oauth/token") {
-        let body = "";
-        for await (const chunk of request) {
-          body += chunk;
-        }
+        const body = await readProviderRequestBody(request);
         exchange = new URLSearchParams(body);
         response.end(JSON.stringify({ access_token: "fixture-access", id_token: token }));
       } else {
-        assert.equal(request.url, "/.well-known/jwks.json");
+        assertSafeEqual(request.url, "/.well-known/jwks.json", "unexpected provider endpoint");
         response.end(JSON.stringify(signer.jwks));
       }
     };
@@ -95,24 +108,55 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     const fixture = loginFixture();
     const response = await fixture.start();
     assert.equal(response.status, 200);
-    const { url } = await response.json();
-    const authorization = new URL(url);
-    assert.equal(`${authorization.origin}${authorization.pathname}`, oidc.authorizationUrl);
+    const url = (await responseFields(response)).get("url");
+    const authorization = parseAuthorizationUrl(url);
+    assertSafeEqual(
+      `${authorization.origin}${authorization.pathname}`,
+      oidc.authorizationUrl,
+      "authorization attempt did not match",
+    );
     const parameters = authorization.searchParams;
-    assert.equal(parameters.get("scope"), "openid");
-    assert.equal(parameters.get("client_id"), oidc.clientId);
-    assert.equal(parameters.get("response_type"), "code");
-    assert.equal(parameters.get("code_challenge_method"), "S256");
-    assert.equal(parameters.get("redirect_uri"), `${origin}/api/auth/providers/oidc/callback`);
-    assert.equal(parameters.get("nonce"), oidcNonce(secret, parameters.get("state")));
+    assertSafeEqual(parameters.get("scope"), "openid", "authorization attempt did not match");
+    assertSafeEqual(
+      parameters.get("client_id"),
+      oidc.clientId,
+      "authorization attempt did not match",
+    );
+    assertSafeEqual(parameters.get("response_type"), "code", "authorization attempt did not match");
+    assertSafeEqual(
+      parameters.get("code_challenge_method"),
+      "S256",
+      "authorization attempt did not match",
+    );
+    assertSafeEqual(
+      parameters.get("redirect_uri"),
+      `${origin}/api/auth/providers/oidc/callback`,
+      "authorization attempt did not match",
+    );
+    const state = parameters.get("state");
+    assert.ok(state !== null, "attempt state was missing");
+    assertSafeEqual(
+      parameters.get("nonce"),
+      oidcNonce(secret, state),
+      "authorization attempt did not match",
+    );
     const [attempt] = fixture.attempts;
     // Rotating the client secret voids pending attempts but keeps enrollment.
-    assert.equal(attempt.providerId, providerAttemptId(providerId, oidc.clientSecret));
+    assert.ok(attempt, "start attempt was not recorded");
+    assertSafeEqual(
+      attempt.providerId,
+      providerAttemptId(providerId, oidc.clientSecret),
+      "authorization attempt did not match",
+    );
     assert.equal(fixture.login.oidcProviderId, providerId);
-    assert.deepEqual(fixture.login.oidcSignIn, {
-      label: "single sign-on",
-      authorizationUrl: oidc.authorizationUrl,
-    });
+    assertSafeEqual(
+      fixture.login.oidcSignIn,
+      {
+        label: "single sign-on",
+        authorizationUrl: oidc.authorizationUrl,
+      },
+      "sign-in configuration did not match",
+    );
     assert.equal(fixture.login.googleProviderId, undefined);
     assert.equal((await fixture.start("10.0.0.1", "google")).status, 404);
   });
@@ -124,11 +168,28 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     const before = requests.length;
     await expectDenied(await fixture.callback(`state=${callbackState}&code=${code}`));
     // No session here (State is a fixture); the exchange and snapshot are what count.
-    assert.deepEqual(requests.slice(before), ["/oauth/token", "/.well-known/jwks.json"]);
-    assert.equal(exchange.get("code"), code);
-    assert.equal(exchange.get("client_secret"), oidc.clientSecret);
-    assert.deepEqual(fixture.subjects, [[providerId, subject]]);
-    assert.deepEqual(fixture.denials, [["EXTERNAL_IDENTITY_REJECTED", "oidc", { subject }]]);
+    assertSafeEqual(
+      requests.slice(before),
+      ["/oauth/token", "/.well-known/jwks.json"],
+      "provider request paths did not match",
+    );
+    assert.ok(exchange, "provider exchange was not observed");
+    assertSafeEqual(exchange.get("code"), code, "exchange code did not match");
+    assertSafeEqual(
+      exchange.get("client_secret"),
+      oidc.clientSecret,
+      "exchange client secret did not match",
+    );
+    assertSafeEqual(
+      fixture.subjects,
+      [[providerId, subject]],
+      "recorded identity observation did not match",
+    );
+    assertSafeEqual(
+      fixture.denials,
+      [["EXTERNAL_IDENTITY_REJECTED", "oidc", { subject }]],
+      "recorded identity observation did not match",
+    );
   });
 
   await t.test("a code over 4,096 characters is refused before any exchange", async () => {
@@ -136,7 +197,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     const before = requests.length;
     await expectDenied(await fixture.callback(`state=${callbackState}&code=${"c".repeat(4097)}`));
     assert.equal(requests.length, before);
-    assert.deepEqual(fixture.denials, []);
+    assertSafeEqual(fixture.denials, [], "recorded identity observation did not match");
     assert.deepEqual(fixture.unmatched, ["oidc"]);
   });
 
@@ -149,8 +210,12 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       const fixture = loginFixture();
       serve = provider(idToken(callbackState, overrides));
       await expectDenied(await fixture.callback());
-      assert.deepEqual(fixture.subjects, []);
-      assert.deepEqual(fixture.denials, [["EXTERNAL_IDENTITY_REJECTED", "oidc"]]);
+      assertSafeEqual(fixture.subjects, [], "recorded identity observation did not match");
+      assertSafeEqual(
+        fixture.denials,
+        [["EXTERNAL_IDENTITY_REJECTED", "oidc"]],
+        "recorded identity observation did not match",
+      );
     }
   });
 
@@ -162,11 +227,21 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     };
     const before = requests.length;
     await expectProviderUnavailable(await fixture.callback());
-    assert.deepEqual(requests.slice(before), ["/oauth/token"]);
-    assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
-    assert.deepEqual(fixture.operationalLogs(), [
-      unavailableLog({ step: "token", cause: "redirect" }),
-    ]);
+    assertSafeEqual(
+      requests.slice(before),
+      ["/oauth/token"],
+      "provider request paths did not match",
+    );
+    assertSafeEqual(
+      fixture.denials,
+      [["PROVIDER_UNAVAILABLE", "oidc"]],
+      "recorded identity observation did not match",
+    );
+    assertSafeEqual(
+      fixture.operationalLogs(),
+      [unavailableLog({ step: "token", cause: "redirect" })],
+      "operational log did not match",
+    );
   });
 
   await testOversizedProviderBodies(t, {
@@ -192,10 +267,16 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       response.end(JSON.stringify({ error: "jwks down", detail: "fixture-code" }));
     };
     await expectProviderUnavailable(await fixture.callback());
-    assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
-    assert.deepEqual(fixture.operationalLogs(), [
-      unavailableLog({ step: "jwks", cause: "http_status", status: 503 }),
-    ]);
+    assertSafeEqual(
+      fixture.denials,
+      [["PROVIDER_UNAVAILABLE", "oidc"]],
+      "recorded identity observation did not match",
+    );
+    assertSafeEqual(
+      fixture.operationalLogs(),
+      [unavailableLog({ step: "jwks", cause: "http_status", status: 503 })],
+      "operational log did not match",
+    );
     assertNoSecrets(fixture.operationalLogs());
   });
 
@@ -206,10 +287,16 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       await fixture.callback(`state=${callbackState}&error=server_error&error_description=x`),
     );
     assert.equal(requests.length, before);
-    assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
-    assert.deepEqual(fixture.operationalLogs(), [
-      unavailableLog({ step: "authorization", cause: "provider_error" }),
-    ]);
+    assertSafeEqual(
+      fixture.denials,
+      [["PROVIDER_UNAVAILABLE", "oidc"]],
+      "recorded identity observation did not match",
+    );
+    assertSafeEqual(
+      fixture.operationalLogs(),
+      [unavailableLog({ step: "authorization", cause: "provider_error" })],
+      "operational log did not match",
+    );
   });
 
   await t.test("a rejected exchange is audited but logs no provider warning", async () => {
@@ -219,8 +306,12 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       response.end(JSON.stringify({ error: "invalid_grant" }));
     };
     await expectDenied(await fixture.callback());
-    assert.deepEqual(fixture.denials, [["EXTERNAL_IDENTITY_REJECTED", "oidc"]]);
-    assert.deepEqual(fixture.operationalLogs(), []);
+    assertSafeEqual(
+      fixture.denials,
+      [["EXTERNAL_IDENTITY_REJECTED", "oidc"]],
+      "recorded identity observation did not match",
+    );
+    assertSafeEqual(fixture.operationalLogs(), [], "operational log did not match");
   });
 
   await t.test("a refused client secret logs one warning instead of a rejection", async () => {
@@ -230,10 +321,16 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       response.end(JSON.stringify({ error: "invalid_client", error_description: "fixture-code" }));
     };
     await expectProviderUnavailable(await fixture.callback());
-    assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
-    assert.deepEqual(fixture.operationalLogs(), [
-      unavailableLog({ step: "token", cause: "client_rejected" }),
-    ]);
+    assertSafeEqual(
+      fixture.denials,
+      [["PROVIDER_UNAVAILABLE", "oidc"]],
+      "recorded identity observation did not match",
+    );
+    assertSafeEqual(
+      fixture.operationalLogs(),
+      [unavailableLog({ step: "token", cause: "client_rejected" })],
+      "operational log did not match",
+    );
     assertNoSecrets(fixture.operationalLogs());
   });
 
@@ -244,8 +341,12 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       response.end("<html>invalid_client</html>");
     };
     await expectDenied(await fixture.callback());
-    assert.deepEqual(fixture.denials, [["EXTERNAL_IDENTITY_REJECTED", "oidc"]]);
-    assert.deepEqual(fixture.operationalLogs(), []);
+    assertSafeEqual(
+      fixture.denials,
+      [["EXTERNAL_IDENTITY_REJECTED", "oidc"]],
+      "recorded identity observation did not match",
+    );
+    assertSafeEqual(fixture.operationalLogs(), [], "operational log did not match");
   });
 
   await t.test("Google and OIDC share the start budget", async () => {
@@ -265,7 +366,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
   });
 });
 
-function unavailableLog(fields) {
+function unavailableLog(fields: Record<string, string | number>) {
   return {
     severity: "WARN",
     service: "occ-api",
@@ -276,7 +377,7 @@ function unavailableLog(fields) {
   };
 }
 
-function assertNoSecrets(lines) {
+function assertNoSecrets(lines: readonly Record<string, unknown>[]) {
   const text = JSON.stringify(lines);
   for (const value of [
     "fixture-code",
@@ -286,7 +387,7 @@ function assertNoSecrets(lines) {
     "127.0.0.1",
     "jwks down",
   ]) {
-    assert.ok(!text.includes(value), `log leaked ${value}`);
+    assert.ok(!text.includes(value), "a credential or provider detail reached logs");
   }
 }
 
@@ -297,10 +398,16 @@ test("an unreachable OIDC token endpoint logs connect_refused with its code", as
   redirectProviderFetch(t, pinned, `http://127.0.0.1:${refusing.port}`);
   const fixture = loginFixture();
   await expectProviderUnavailable(await fixture.callback());
-  assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
-  assert.deepEqual(fixture.operationalLogs(), [
-    unavailableLog({ step: "token", cause: "connect_refused", code: "ECONNREFUSED" }),
-  ]);
+  assertSafeEqual(
+    fixture.denials,
+    [["PROVIDER_UNAVAILABLE", "oidc"]],
+    "recorded identity observation did not match",
+  );
+  assertSafeEqual(
+    fixture.operationalLogs(),
+    [unavailableLog({ step: "token", cause: "connect_refused", code: "ECONNREFUSED" })],
+    "operational log did not match",
+  );
   assertNoSecrets(fixture.operationalLogs());
 });
 
@@ -310,11 +417,20 @@ test("a TLS failure at the OIDC token endpoint logs cause tls", async (t) => {
   redirectProviderFetch(t, pinned, `https://127.0.0.1:${port}`);
   const fixture = loginFixture();
   await expectProviderUnavailable(await fixture.callback());
-  assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
+  assertSafeEqual(
+    fixture.denials,
+    [["PROVIDER_UNAVAILABLE", "oidc"]],
+    "recorded identity observation did not match",
+  );
   const [line, ...rest] = fixture.operationalLogs();
-  assert.deepEqual(rest, []);
-  assert.equal(line.event, "authentication.provider-unavailable-warning");
-  assert.equal(line.step, "token");
-  assert.equal(line.cause, "tls");
+  assertSafeEqual(rest, [], "operational log did not match");
+  assert.ok(line, "provider warning was missing");
+  assertSafeEqual(
+    line.event,
+    "authentication.provider-unavailable-warning",
+    "operational log did not match",
+  );
+  assertSafeEqual(line.step, "token", "operational log did not match");
+  assertSafeEqual(line.cause, "tls", "operational log did not match");
   assertNoSecrets(fixture.operationalLogs());
 });
