@@ -322,7 +322,8 @@ In a [private environment file](README.md#requirements-and-credentials), set:
 - `OPENAI_API_KEY`: existing authorized credential; optionally set
   `OCC_TEST_OPENAI_MODEL` (default `gpt-6-astra`).
 
-Cleanup uninstalls the release and deletes its namespaces.
+Ordinary teardown requests Helm uninstall and namespace deletion. It suppresses
+command errors and returns without waiting for namespace deletion. Verify resource absence separately.
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` retains the setup for rehearsal with
 `attach.sh` and `proof.json`. Require a completed run for proof.
 
