@@ -2092,9 +2092,13 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     "bash scripts/ci/setup-tools.sh workflows",
     "actionlint .github/workflows/*.yml",
     "node scripts/ci/run-tests.mjs audit",
-    ...skipped.map(({ run }) => (run === "pnpm lint" ? "pnpm lint --concurrency 2" : run)),
+    ...skipped.flatMap(({ run }) =>
+      run === "pnpm lint" ? ["pnpm lint --concurrency 2"] : present(run).split(" && "),
+    ),
   ];
-  const checks = staticChecks.steps.filter((step) => commands.includes(step.run));
+  const checks = staticChecks.steps.filter(
+    (step) => step.run !== undefined && commands.includes(step.run),
+  );
   assert.deepEqual(
     checks.map((step) => step.run),
     commands,
