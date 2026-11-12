@@ -28,6 +28,7 @@ function readFailure(reason: ReadFailure) {
   return {
     kind: "read" as const,
     name: "read " + reason,
+    stage: "persisted reply" as const,
     reason,
     expected: fails("persisted reply; read=" + reason),
   };
@@ -56,7 +57,13 @@ function transcript(
 ) {
   const expected: Expected =
     outcome === "success" ? { status: "passed" } : fails("persisted reply; read=" + outcome);
-  return { kind: "transcript" as const, name: variant, variant, expected };
+  return {
+    kind: "transcript" as const,
+    name: variant,
+    stage: "persisted reply" as const,
+    variant,
+    expected,
+  };
 }
 
 function probe(
@@ -64,7 +71,13 @@ function probe(
   response: { error: string; status: number | string; extra?: string },
   detail: string,
 ) {
-  return { kind: "probe" as const, name, response, expected: fails("model turn; probe=" + detail) };
+  return {
+    kind: "probe" as const,
+    name,
+    stage: "model turn" as const,
+    response,
+    expected: fails("model turn; probe=" + detail),
+  };
 }
 
 const interval = { start: 1794140000000, end: 1794140001000 };
@@ -111,6 +124,7 @@ function observe(
   return {
     kind: "observation" as const,
     name,
+    stage: "model turn" as const,
     expected: fails("model turn; probe=upstream; HTTP=500; gateway=" + observation),
     logs,
     drift,
@@ -378,8 +392,7 @@ export async function registerFiniteConversationTests() {
       let posts = 0;
       let guards = 0;
       const reading = scenario.kind === "read" || scenario.kind === "transcript";
-      const stage =
-        scenario.kind === "stage" ? scenario.stage : reading ? "persisted reply" : "model turn";
+      const stage = scenario.stage;
       const pod = gatewayPod(0);
       const conversation = createFiniteGitConversation({
         agent,
