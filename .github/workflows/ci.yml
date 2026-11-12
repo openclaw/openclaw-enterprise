@@ -54,7 +54,7 @@ jobs:
         run: |
           # The workflow itself is PR-controlled; independent required-workflow
           # enforcement is needed to protect this bootstrap from workflow edits.
-          policy=$(mktemp "$RUNNER_TEMP/ci-impact-policy.XXXXXX.mjs")
+          policy=$(mktemp "$RUNNER_TEMP/ci-impact-policy.XXXXXX.ts")
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
@@ -98,9 +98,9 @@ jobs:
               fi
             fi
             reason=bootstrap_git_inspection_failed
-            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
+            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.ts) || return 1
             reason=bootstrap_policy_unavailable
-            [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.mjs$ ]] || return 1
+            [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.ts$ ]] || return 1
             reason=bootstrap_git_inspection_failed
             git cat-file blob "${BASH_REMATCH[1]}" > "$policy" || return 1
             reason=bootstrap_policy_unavailable
@@ -603,7 +603,7 @@ jobs:
         run: |
           # The workflow itself is PR-controlled; independent required-workflow
           # enforcement is needed to protect this bootstrap from workflow edits.
-          policy=$(mktemp "$RUNNER_TEMP/ci-impact-policy.XXXXXX.mjs")
+          policy=$(mktemp "$RUNNER_TEMP/ci-impact-policy.XXXXXX.ts")
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
@@ -647,9 +647,9 @@ jobs:
               fi
             fi
             reason=bootstrap_git_inspection_failed
-            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
+            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.ts) || return 1
             reason=bootstrap_policy_unavailable
-            [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.mjs$ ]] || return 1
+            [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.ts$ ]] || return 1
             reason=bootstrap_git_inspection_failed
             git cat-file blob "${BASH_REMATCH[1]}" > "$policy" || return 1
             reason=bootstrap_policy_unavailable
