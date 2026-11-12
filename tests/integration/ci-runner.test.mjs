@@ -7534,6 +7534,7 @@ const { localFirstAgentStack } = await import("../helpers/local-first-agent-stac
 test("a failed local setup reports only paired outcomes", async (t) => {
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+  process.env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = "172.20.1.0/24";
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
   process.env.OPENAI_API_KEY = "invented-fixture-input";
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
@@ -7709,6 +7710,7 @@ const { localFirstAgentStack } = await import("../helpers/local-first-agent-stac
 test("startup", async (t) => {
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+  process.env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = "172.20.1.0/24";
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
   process.env.OPENAI_API_KEY = "invented-fixture-input";
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
@@ -7837,6 +7839,7 @@ const { localFirstAgentStack, startupFailureObservation } = await import("../hel
 test("reject ambiguous or non-failure startup records", async (t) => {
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+  process.env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = "172.20.1.0/24";
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
   process.env.OPENAI_API_KEY = "invented-fixture-input";
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
