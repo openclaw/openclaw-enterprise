@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-11
-last_updated_session: authoring-run/b642b758-0314-4f01-a300-5e37962b8fb4
+last_updated_session: authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb
 ---
 
 # Credential source lifecycle Flow
@@ -16,7 +16,7 @@ See [refresh](credential-source-refresh.md) and
 [Protected sources](credential-source-egress.md) admit versioned Secret references,
 skip gateway copies and require explicit migration while unbound. Protected revisions
 refuse legacy attachments. [OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
-uses the paired Credential Gateway and Refresh Drivers with `credential_proxy` unselected.
+uses the paired Credential Gateway and Refresh Drivers, including with a Git Proxy selected.
 
 ## Entry Points
 
@@ -42,9 +42,6 @@ graph TD
   D -- "ready or pending" --> E0["<b>Attempt mark ready</b><br/>Gateway registration"]
   E0 -- "marked" --> E["<b>Commit ready</b><br/>with audit"]
   E0 -- "lost to DELETE" --> Y
-  R -- "live, no refresh: no write" --> E1["<b>Attempt mark ready</b><br/>Live registration"]
-  E1 -- "marked" --> E
-  E1 -- "lost to DELETE" --> X1["<b>409 conflict</b><br/>DELETE owns cleanup"]
   E --> F["<b>Bind to Agent</b><br/>actor operate"]
   F --> G{"<b>deployAgent</b><br/>gateway, Sandbox, both grants"}
   G -- "Secret-backed method" --> Z["<b>409 conflict</b><br/>No env fallback"]
@@ -94,7 +91,9 @@ validation does not consult backend Gateway placement. OAuth2 validation resolve
 to reject token endpoints in the Gateway's own Namespace; registration repeats that
 check with tenant placement. Source ownership and cleanup remain with the recorded Driver.
 
-For a fresh static source, `packages/occ/src/index.ts:staticEgressProvider` selects
+Ordinary sources register through Credential Gateway. Selecting Credential Proxy
+does not opt them into protection. Protected source types use their Proxy owner.
+For explicit live adoption, `packages/occ/src/index.ts:staticEgressProvider` selects
 the first catalog entry for the requested type, then resolves its exact reference.
 Duplicate registrations for that ID and generation return `409` before a Secret
 payload read. Distinct providers of the same type retain catalog order. Updates
@@ -128,9 +127,6 @@ source-owned profile, creates the labeled provider, and rechecks creation
 collisions. These calls are not atomic. Only the Refresh Driver receives refresh
 material.
 
-For a live versioned static OpenAI source without refresh, OCC skips placement
-and Gateway registration. The Gateway still owns the catalog and the source record.
-
 Codex PAT profiles include native app metadata and MCP transport; the
 [Driver reference](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
 owns the exact source-wide routes.
@@ -141,12 +137,7 @@ cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retai
 failed commit leaves `registering`: binding/admission fail, deletion remains
 possible.
 
-If DELETE wins before a fresh live static source without refresh becomes ready,
-POST returns `409` without resolving placement, calling Gateway removal, or deleting
-the row. This POST wrote nothing to the Gateway or Refresh Driver. If the registration
-fence delayed DELETE, the row stays `deleting` with its Secret link until DELETE
-retries. If DELETE finished, the row is already gone.
-After a Gateway write or Refresh configuration/mint, the losing POST still
+If DELETE wins after a Gateway write or Refresh configuration/mint, POST
 compensates through the original Drivers. Prepared issuer withdrawal belongs to
 DELETE; POST does not replay configuration.
 
@@ -369,6 +360,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 
 - 2026-11-11 16:45: Expose structured retry guidance for the existing registration deletion fence. (authoring-run/b642b758-0314-4f01-a300-5e37962b8fb4 - 5eed51d18d8ea86a6c9450c352e967b433fa47da)
 

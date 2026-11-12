@@ -12,7 +12,7 @@ status: Proposed
 
 Let an Agent use a provider without giving it the provider credential. If `build-agent` may read GitHub repository `123`, it makes an ordinary request; a trusted sender verifies which execution sent it, checks whether the read is still allowed, and authenticates to GitHub. A child process has the same access as its parent. A different execution needs its own admitted authority.
 
-Retire `CredentialGatewayDriver` and `CredentialRefreshDriver` as Installation capabilities. The selected `CredentialProxyDriver` configures and withdraws protected egress. Its paired `SandboxDriver` installs the policy and prevents bypass. OCE’s built-in Token Service registers dynamic credentials and resolves access tokens through provider-specific issuers. `SecretDriver` supplies authorized static material. See [credential access and lifecycle](contracts.md#credential-access-and-lifecycle).
+Retain `CredentialGatewayDriver` and `CredentialRefreshDriver` for ordinary credential delivery. Protected source types and explicit live adoption use the Credential Proxy; selecting a Proxy alone does not adopt ordinary sources. The selected `CredentialProxyDriver` configures and withdraws protected egress. Its paired `SandboxDriver` installs the policy and prevents bypass. OCE’s built-in Token Service registers dynamic credentials and resolves access tokens through provider-specific issuers. `SecretDriver` supplies authorized static material. See [credential access and lifecycle](contracts.md#credential-access-and-lifecycle).
 
 ![Proposed protected egress: Sandbox prevents bypass; a trusted sender checks current authority, resolves a credential if needed, and sends the request](assets/overview.svg)
 
@@ -40,11 +40,13 @@ It does not replace the existing post-replacement terminal-result amendment.
 
 ## Two deployment modes
 
-The deployment selects an egress implementation; it does not separately select an authentication mechanism. Protection is an explicit admission decision, independent of how many credentials are configured.
+Protection follows the Agent’s protected sources and repository bindings. Ordinary Gateway sources alone do not require a Proxy plan.
+
+Enabling Git integration must not prevent successful model credential registration and delivery for Agents with or without repository access, while preserving the protection required by each credential source.
 
 | Mode                                                     | What it means                                                                                                                                                                                                                                                                               |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Unprotected** · minimal CI or simple local development | OCE knows the Agent exists but does not authenticate or govern its direct requests. No managed route, clone, or provider credential. Asking for one fails admission, rather than silently using ambient credentials.                                                                        |
+| **Unprotected by Credential Proxy** | Credential Gateway delivery retains its own authorization and attachment checks. Protected sources and repository access cannot use this mode to bypass required Proxy enforcement.                                                                        |
 | **Protected** · OpenShell, in production or locally      | Authenticate the whole Agent execution, prevent direct egress, and authorize each operation at the admitted level of protection. A route may explicitly require no provider credential; zero allowed routes means deny all. Failure to establish protection never selects unprotected mode. |
 
 ## Two levels of protection

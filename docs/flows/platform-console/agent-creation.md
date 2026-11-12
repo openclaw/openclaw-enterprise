@@ -117,13 +117,9 @@ discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILA
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
 failures block submission.
 
-After authorizing the capability read, `packages/occ/src/index.ts:capabilities`
-checks the selected Credential Proxy's profile without repository access. A
-confirmed repository-only refusal adds `repositoryAccessRequired` to both
-capability responses. An unavailable registration leaves it absent.
-`create.mts:renderAgentForm` explains this requirement until the repository
-selection has approved access and pauses immediate provisioning. It still allows ordinary drafts.
-Deployment admission checks the selected profile and repository grants again.
+The credential catalog includes ordinary Gateway sources even when a Git Proxy
+is selected. Repository access remains optional in the form. Deployment admission
+checks Proxy enforcement only for protected sources or repository bindings.
 
 ### 4. Submit provisioning or an ordinary draft
 
@@ -229,6 +225,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 - 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 
 - 2026-11-12 16:13: Trace Agent create authorization, Namespace lookup, and browser-access capability discovery. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
+
+- 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 
 - 2026-11-10 13:36: Show a confirmed repository-only Credential Proxy requirement before provisioning. (authoring-run/f0decdaf-c71f-47f9-b2e5-c5bd6b1dfee1 - 07c2a00c82e8a10635533eb1a27b110b52b90f14)
 - 2026-11-05: A member reads the Namespace's Agent capabilities after a refused Installation read, registers a model Secret with a Credential Gateway, and opens the draft without an IAM request. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)

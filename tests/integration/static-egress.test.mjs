@@ -91,7 +91,7 @@ async function assertAdmissionUnchanged(f, before) {
   assert.deepEqual({ ...after, audit: [] }, { ...before, audit: [] });
 }
 
-test("bundled OpenShell startup refuses mixed static CREATE before material or registration; Gateway-only CREATE and PATCH remain ordinary", async (t) => {
+test("bundled OpenShell keeps Gateway CREATE and PATCH ordinary with or without Credential Proxy", async (t) => {
   for (const gatewayOnly of [false, true]) {
     const f = await staticEgressAdmissionFixture(t, { gatewayOnly });
     const before = await admissionSnapshot(f);
@@ -103,94 +103,87 @@ test("bundled OpenShell startup refuses mixed static CREATE before material or r
         secrets: { api_key: f.secret.ref },
       },
     });
-    if (!gatewayOnly) {
-      assertRetired(result);
-      await assertAdmissionUnchanged(f, before);
-    } else {
-      assert.equal(result.status, 201, JSON.stringify(result.body));
-      assert.equal(result.data.egress, undefined);
-      assert.equal(f.materialReads.ordinary, before.materialReads.ordinary + 1);
-      assert.equal(f.materialReads.versioned, before.materialReads.versioned);
-      assert.deepEqual(f.gatewayEffects, [...before.gatewayEffects, "registerSource"]);
-      const rows = await f.controller.transact((unit) =>
-        unit.credentialSources.listCredentialSources(f.namespace.id),
-      );
-      assert.equal(rows.length, 1);
-      assert.equal(rows[0].ownerCapability, "credential_gateway");
-      assert.equal(rows[0].driverId, "openshell-credentials");
-      assert.deepEqual(rows[0].secrets, { api_key: f.secret.ref });
-      assert.equal(
-        [...f.providers.values()][0].credentials.OPENAI_API_KEY,
-        "synthetic-key-initial",
-      );
-      assert.deepEqual(f.providerRequests, []);
+    // Proxy selection does not opt ordinary Gateway sources into protected live reads.
+    assert.equal(result.status, 201, JSON.stringify(result.body));
+    assert.equal(result.data.egress, undefined);
+    assert.equal(f.materialReads.ordinary, before.materialReads.ordinary + 1);
+    assert.equal(f.materialReads.versioned, before.materialReads.versioned);
+    assert.deepEqual(f.gatewayEffects, [...before.gatewayEffects, "registerSource"]);
+    const rows = await f.controller.transact((unit) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].ownerCapability, "credential_gateway");
+    assert.equal(rows[0].driverId, "openshell-credentials");
+    assert.deepEqual(rows[0].secrets, { api_key: f.secret.ref });
+    assert.equal([...f.providers.values()][0].credentials.OPENAI_API_KEY, "synthetic-key-initial");
+    assert.deepEqual(f.providerRequests, []);
 
-      const replacement = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-        body: { name: "ordinary-replacement", value: "synthetic-key-replacement" },
-      });
-      assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
-      const original = structuredClone(rows[0]);
-      const [[name, provider]] = structuredClone([...f.providers]);
-      const profiles = structuredClone([...f.profiles]);
-      const updateBefore = await admissionSnapshot(f);
-      const wireStart = f.gatewayRequests.length;
-      const updated = await f.request("PATCH", `${f.path}/${original.id}`, {
-        body: { secrets: { api_key: replacement.data.ref } },
-      });
-      assert.equal(updated.status, 200, JSON.stringify(updated.body));
-      assert.deepEqual(updated.data, {
-        ...result.data,
-        secrets: { api_key: replacement.data.ref },
-        status: { state: "ready" },
-      });
-      const updatedRows = await f.controller.transact((unit) =>
-        unit.credentialSources.listCredentialSources(f.namespace.id),
-      );
-      assert.deepEqual(updatedRows, [{ ...original, secrets: { api_key: replacement.data.ref } }]);
-      assert.equal(updatedRows[0].egress, undefined);
-      assert.equal(updatedRows[0].state, "ready");
-      assert.deepEqual(
-        [...f.providers],
+    const replacement = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+      body: { name: "ordinary-replacement", value: "synthetic-key-replacement" },
+    });
+    assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
+    const original = structuredClone(rows[0]);
+    const [[name, provider]] = structuredClone([...f.providers]);
+    const profiles = structuredClone([...f.profiles]);
+    const updateBefore = await admissionSnapshot(f);
+    const wireStart = f.gatewayRequests.length;
+    const updated = await f.request("PATCH", `${f.path}/${original.id}`, {
+      body: { secrets: { api_key: replacement.data.ref } },
+    });
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    assert.deepEqual(updated.data, {
+      ...result.data,
+      secrets: { api_key: replacement.data.ref },
+      status: { state: "ready" },
+    });
+    const updatedRows = await f.controller.transact((unit) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+    assert.deepEqual(updatedRows, [{ ...original, secrets: { api_key: replacement.data.ref } }]);
+    assert.equal(updatedRows[0].egress, undefined);
+    assert.equal(updatedRows[0].state, "ready");
+    assert.deepEqual(
+      [...f.providers],
+      [
         [
-          [
-            name,
-            {
-              ...provider,
-              metadata: { ...provider.metadata, resource_version: "2" },
-              credentials: { OPENAI_API_KEY: "synthetic-key-replacement" },
-            },
-          ],
-        ],
-      );
-      assert.deepEqual([...f.profiles], profiles);
-      const wire = f.gatewayRequests.slice(wireStart);
-      assert.equal(wire.length, 2);
-      assert.match(wire[1].request.request_id, /^[0-9a-f-]{36}$/);
-      assert.deepEqual(wire, [
-        {
-          method: "GetProvider",
-          request: { name, workspace_scope: { workspace: f.namespace.name } },
-          found: true,
-        },
-        {
-          method: "UpdateProvider",
-          request: {
-            provider: {
-              metadata: { name },
-              credentials: { OPENAI_API_KEY: "synthetic-key-replacement" },
-            },
-            workspace_scope: { workspace: f.namespace.name },
-            // The empty credential_expiration_times map is omitted on the wire.
-            request_id: wire[1].request.request_id,
+          name,
+          {
+            ...provider,
+            metadata: { ...provider.metadata, resource_version: "2" },
+            credentials: { OPENAI_API_KEY: "synthetic-key-replacement" },
           },
+        ],
+      ],
+    );
+    assert.deepEqual([...f.profiles], profiles);
+    const wire = f.gatewayRequests.slice(wireStart);
+    assert.equal(wire.length, 2);
+    assert.match(wire[1].request.request_id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(wire, [
+      {
+        method: "GetProvider",
+        request: { name, workspace_scope: { workspace: f.namespace.name } },
+        found: true,
+      },
+      {
+        method: "UpdateProvider",
+        request: {
+          provider: {
+            metadata: { name },
+            credentials: { OPENAI_API_KEY: "synthetic-key-replacement" },
+          },
+          workspace_scope: { workspace: f.namespace.name },
+          // The empty credential_expiration_times map is omitted on the wire.
+          request_id: wire[1].request.request_id,
         },
-      ]);
-      assert.equal(f.materialReads.ordinary, updateBefore.materialReads.ordinary + 1);
-      assert.equal(f.materialReads.versioned, updateBefore.materialReads.versioned);
-      assert.equal(f.countSecretReads(), updateBefore.secretReads + 1);
-      assert.deepEqual(f.gatewayEffects, [...updateBefore.gatewayEffects, "updateSource"]);
-      assert.deepEqual(f.providerRequests, []);
-    }
+      },
+    ]);
+    assert.equal(f.materialReads.ordinary, updateBefore.materialReads.ordinary + 1);
+    assert.equal(f.materialReads.versioned, updateBefore.materialReads.versioned);
+    assert.equal(f.countSecretReads(), updateBefore.secretReads + 1);
+    assert.deepEqual(f.gatewayEffects, [...updateBefore.gatewayEffects, "updateSource"]);
+    assert.deepEqual(f.providerRequests, []);
   }
 });
 
@@ -637,7 +630,7 @@ test("protected admission requires the actual counterpart and exact loaded polic
   );
   assert.ok(manifest.extension.required_capabilities.includes(capability));
   f.observed.available = false;
-  const refused = await f.request("POST", f.path, {
+  const candidate = await f.request("POST", f.path, {
     body: {
       name: "unsupported-peer",
       type: "openai",
@@ -645,11 +638,15 @@ test("protected admission requires the actual counterpart and exact loaded polic
       secrets: { api_key: f.secret.ref },
     },
   });
+  assert.equal(candidate.status, 201, JSON.stringify(candidate.body));
+  const refused = await f.request("PATCH", `${f.path}/${candidate.data.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
   assert.equal(
-    (await f.request("GET", f.path)).data.length,
-    1,
-    "failed candidate cannot leave admitted source metadata",
+    (await f.request("GET", `${f.path}/${candidate.data.id}`)).data.egress,
+    undefined,
+    "failed adoption leaves the ordinary Gateway source unchanged",
   );
   await assert.rejects(f.egress.configureRevision(f.context), {
     name: "RetryLaterError",
@@ -735,7 +732,7 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   const f = await staticEgressFixture(t, { includeLegacy: true });
   const path = `${f.path}/${f.legacySource.id}`;
   const before = structuredClone([...f.providers.values()]);
-  assert.equal(before.length, 1);
+  assert.equal(before.length, 2);
   assert.equal(before[0].credentials.OPENAI_API_KEY, "synthetic-key-initial");
   assert.equal(f.legacySource.egress, undefined);
   await f.rotateSecret("synthetic-key-replacement");
@@ -3778,27 +3775,20 @@ test("production Compute refuses protected admission and release, including empt
     compute: { ...unprotected.compute, id: compute.id, implementation: compute.implementation },
   });
 
-  // Protection comes from the selected execution policy, not the number of credentials.
-  // Runtime-auth fixtures carry no credential source; their durable plan remains deny-all.
+  // An Agent with neither protected sources nor Git does not require a Proxy plan.
   const emptyAgent = await f.createAgent(
     f.namespace.id,
     "credential-free",
     f.revision.configuration,
-    {
-      executionMode: "dedicated",
-      harnessAuth: { method: "runtime" },
-    },
+    { executionMode: "dedicated", harnessAuth: { method: "runtime" } },
   );
   const emptyMetadata = await f.deployAgent(f.namespace.id, emptyAgent.id);
   const emptyRevision = await f.controller.transact((unit) =>
     unit.revisions.findRevision(f.namespace.id, emptyAgent.id, emptyMetadata.id),
   );
-  assert.deepEqual(emptyRevision.executionAdmission, { version: 3, mode: "protected" });
-  assert.deepEqual(emptyRevision.egressPlan.routes, []);
-  await assert.rejects(
-    compute.prepareRevision(emptyRevision),
-    /Protected execution is unavailable/,
-  );
+  assert.deepEqual(emptyRevision.executionAdmission, { version: 2, mode: "unprotected" });
+  assert.equal(emptyRevision.egressPlan, undefined);
+  assert.doesNotThrow(() => compute.validateExecutionAdmission(emptyRevision));
 
   // Exercise the real OCC deploy route with the shipped Compute admission policy.
   // Other Compute operations remain deterministic fixtures; this is not cluster proof.

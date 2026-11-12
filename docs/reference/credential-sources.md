@@ -38,8 +38,7 @@ OpenShell is a development integration. See the
    referenced Secret. A protected metadata source requires `agent:operate`
    on the active, dedicated Agent named by `config.agent_id` in that Namespace.
 
-For example, this source names the GitHub App, installation, repository and
-Agent. `"authority": "execution"` admits requests from processes throughout
+This source names the GitHub App, installation, repository and Agent. `"authority": "execution"` admits requests from processes throughout
 that execution. Replace the example IDs and Secret reference with your own.
 
 ```json
@@ -68,8 +67,9 @@ OCC returns `201` with a `cs_` source ID, binding `ref` and status. Use the
 `cs_` ID in the Agent draft. The `sec_` reference stays on the source.
 
 - `name` is unique within the Namespace.
-- `type` must be offered by the installation. With a Credential Proxy selected,
-  registration also requires a protected profile for that type.
+- `type` must be offered by the installation. Ordinary types register through
+  Credential Gateway even when a Credential Proxy is selected. Protected types
+  and explicit live adoption require their Proxy profile.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`. Custom authorization must match the

@@ -1311,7 +1311,6 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
 ]);
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
-const CREDENTIAL_PROXY_DISCOVERY_TIMEOUT_MS = 2_000;
 const CONNECTION_OPERATION_TIMEOUT_MS = 30_000;
 const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 /** Only a claimed server-side consent attempt may operate on its still-pending source. */
@@ -2610,23 +2609,19 @@ export class OpenClawController {
       nativeWorkers: _unchecked,
       openclaw: _derived,
       pluginCatalogs: _catalogs,
-      repositoryAccessRequired: _repositoryAccessRequired,
       ...declared
     } = this.installation.capabilities ?? {};
     const openclaw = this.openClawExecutionModes();
     const nativeWorkers = openclaw.executionModes.includes("dedicated")
       ? this.nativeWorkers
       : undefined;
-    const [gatewayTypes, repositoryAccessRequired] = await Promise.all([
-      this.selections.has("credential_gateway")
-        ? this.credentialGatewayOperation(() =>
-            this.credentialGatewayDriver().listSourceTypes({
-              signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-            }),
-          )
-        : undefined,
-      this.repositoryAccessRequired(),
-    ]);
+    const gatewayTypes = this.selections.has("credential_gateway")
+      ? await this.credentialGatewayOperation(() =>
+          this.credentialGatewayDriver().listSourceTypes({
+            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          }),
+        )
+      : undefined;
     const protectedTypes = this.protectedSourceTypes().map(({ type }) => type);
     const types = [
       ...protectedTypes,
@@ -2636,7 +2631,6 @@ export class OpenClawController {
       ...declared,
       ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
       openclaw,
-      ...(repositoryAccessRequired ? { repositoryAccessRequired: true as const } : {}),
       ...(gatewayTypes || types.length ? { credentialSources: { types } } : {}),
     };
     const catalogs = this.enabledPluginDrivers().map((driver) => ({
@@ -2653,23 +2647,6 @@ export class OpenClawController {
       ...capabilities,
       ...(catalogs.length > 0 ? { pluginCatalogs: catalogs } : {}),
     };
-  }
-
-  private async repositoryAccessRequired(): Promise<boolean> {
-    if (!this.selections.has("credential_proxy")) {
-      return false;
-    }
-    try {
-      const proxy = this.selectedProxyOwner().require("credential_proxy");
-      await proxy.sourceControl.assertAvailable(
-        AbortSignal.timeout(CREDENTIAL_PROXY_DISCOVERY_TIMEOUT_MS),
-      );
-      return false;
-    } catch (error) {
-      // Only the permanent profile refusal is a capability restriction. Admission still
-      // checks the current counterpart and distinguishes an unavailable registration.
-      return error instanceof CredentialProxyRepositoryOnlyError;
-    }
   }
 
   /**
@@ -8375,7 +8352,7 @@ export class OpenClawController {
       // An Installation property about the type the request sent (finding 2536). The who comes
       // before the type list, so the 256-character cap never cuts it.
       throw new ResourceStateConflictError(
-        `The selected Credential Proxy cannot protect ${type} sources, and a Proxy protects every new source. Ask an Installation administrator, or create a type it protects: ${control.providers.map((entry) => entry.sourceType.type).join(", ")}.`,
+        `The selected Credential Proxy cannot protect ${type} sources. Ask an Installation administrator, or create a type it protects: ${control.providers.map((entry) => entry.sourceType.type).join(", ")}.`,
       );
     }
     const { provider, ref, inject, normalizeConfig, assertCurrent } = selection;
@@ -8485,6 +8462,11 @@ export class OpenClawController {
       }
       return undefined;
     }
+    // Ordinary sources keep Gateway delivery. Only protected sources or Git bindings need
+    // Proxy admission; a Git-only Proxy must not gate an unrelated model deployment.
+    if (sources.length === 0 && repositoryGit === undefined) {
+      return undefined;
+    }
     const sourceCount = sources.length + (harnessCredentialSource ? 1 : 0);
     const owner = this.selectedProxyOwner();
     const driver = owner.require("credential_proxy");
@@ -8495,17 +8477,6 @@ export class OpenClawController {
       }
     }
     if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
-      if (repositoryGit === undefined) {
-        // Finding 2360: when the Proxy serves only repository Git, replacing the source cannot
-        // help, so that refusal comes first. Any other outcome leaves the binding refusal.
-        await driver.sourceControl
-          .assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS))
-          .catch((error: unknown) => {
-            if (error instanceof CredentialProxyRepositoryOnlyError) {
-              throw error;
-            }
-          });
-      }
       throw new CredentialSourceUnprotectedError();
     }
     if (sourceCount > 1 && !repositoryGit && driver.policyReduction?.version !== 1) {
@@ -8708,18 +8679,7 @@ export class OpenClawController {
         prepared?.source ??
         (type.type === credentialFreeMetadataType
           ? await this.admitCredentialFreeMetadata(state, principalId, locked.id, sourceId, config)
-          : this.selections.has("credential_proxy")
-            ? await this.admitStaticEgressSource(
-                state,
-                principalId,
-                locked.id,
-                sourceId,
-                type.type,
-                config,
-                secretRefs,
-                1,
-              )
-            : undefined);
+          : undefined);
       const read =
         egress === undefined
           ? await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs)
@@ -8760,13 +8720,7 @@ export class OpenClawController {
     });
     const { namespace, gateway, refresh, deferred, source, values, issuer } = registration;
     const config = source.config;
-    // This fresh live registration writes neither a Gateway copy nor Refresh state.
-    const liveRegistrationWithoutWrite =
-      source.egress?.adoption === "live" && refresh === undefined;
-    const placed =
-      gateway && !liveRegistrationWithoutWrite
-        ? await this.credentialNamespace(namespace)
-        : namespace;
+    const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
     let status: CredentialSourceStatus;
     // A returned result means every gateway effect of this attempt has finished; a throw does not.
     let terminal = false;
@@ -8840,8 +8794,7 @@ export class OpenClawController {
     });
     if (ready === undefined) {
       // A concurrent deletion owns the prepared family withdrawal. It must not be reconfigured or replayed.
-      // A fresh live registration made no external write to compensate. Leave DELETE's row alone.
-      if (gateway && source.egress?.adoption !== "prepared" && !liveRegistrationWithoutWrite) {
+      if (gateway && source.egress?.adoption !== "prepared") {
         await this.abandonCredentialRegistration(placed, gateway, source, true, refresh);
       }
       throw new ResourceStateConflictError("The credential source changed during registration.");

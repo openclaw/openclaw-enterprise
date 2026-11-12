@@ -27,18 +27,24 @@ test("protected credential source create names the type, the foreign Secret or t
   // Prepared GitHub metadata enabled: the Proxy's longest list of protected types.
   const f = await protectedSourceFixture(t, { githubMetadata: true });
   const create = (body, session) => f.request("POST", f.path, { body, session });
-  // With a Credential Proxy selected, a Gateway type the Proxy cannot protect is an Installation
-  // property, not a missing resource.
+  // An ordinary PAT registers through Gateway; explicit protection still requires a profile.
   const pat = await create({
     name: "unprotected-pat",
     type: "codex-pat",
     secrets: { access_token: f.source.secrets.api_key },
   });
-  assert.equal(pat.status, 409, JSON.stringify(pat.body));
-  assert.equal(pat.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(pat.status, 201, JSON.stringify(pat.body));
+  const adoption = await f.request("PATCH", `${f.path}/${pat.data.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(adoption.status, 409, JSON.stringify(adoption.body));
+  assert.equal(adoption.body.error.code, "RESOURCE_CONFLICT");
   // The whole text, who to ask included: the 256-character message cap must not cut it.
   const protectedTypes = "openai, credential-free-repository-metadata, github-app-metadata";
-  assert.equal(pat.body.error.message, protectedSourceTypeRefused("codex-pat", protectedTypes));
+  assert.equal(
+    adoption.body.error.message,
+    protectedSourceTypeRefused("codex-pat", protectedTypes),
+  );
   // The longest bundled Gateway type (OpenShell, with toolBinaries and a Refresh Driver) fits too.
   assert.ok(protectedSourceTypeRefused("oauth2-client-credentials", protectedTypes).length <= 256);
   // A Secret reference to another Namespace is the request's own error, refused as the Credential
@@ -85,8 +91,8 @@ test("protected credential source create names the type, the foreign Secret or t
   );
   assert.deepEqual(
     (await f.request("GET", f.path)).data.map(({ id }) => id),
-    [f.source.id],
-    "no refused request leaves a source",
+    [f.source.id, pat.data.id],
+    "only successful registrations leave sources",
   );
 });
 

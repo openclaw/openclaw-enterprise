@@ -63,7 +63,6 @@ type CreateAgentScenario = {
     "at"
   >;
   provisionedDeploymentError?: AgentDeploymentStatusWire["error"];
-  repositoryAccessRequired?: true;
   repositoryOptions?: readonly RepositoryOption[];
   secretOperateDenied?: readonly string[];
   denySecretCreate?: true;
@@ -1488,8 +1487,8 @@ export const createAgentProvisioningScenarios = {
     name: "Repository-only Credential Proxy",
     path: create,
     actions: dedicatedOpenclawForm,
+    credentialSourceTypes: modelCredentialSourceTypes,
     openclawExecutionModes: ["dedicated"],
-    repositoryAccessRequired: true,
     repositoryOptions: [
       {
         repositoryRef: "application",
@@ -1498,11 +1497,11 @@ export const createAgentProvisioningScenarios = {
       },
     ],
     description:
-      "The installation supports Dedicated OpenClaw but requires repository access to deploy. Create explains the restriction before it submits a provisioning request.",
+      "The simulated installation offers Git access alongside Dedicated OpenClaw. An Agent can be created with a model credential and no repository selection.",
     steps: [
-      "Check the reason beside Create Agent on the model-only form.",
+      "Check that Create Agent is available on the model-only form.",
       "Choose Codex and select example/application under Repository access.",
-      "In Customize access, turn off Create and manage issues to use the repository's approved access level. The requirement clears.",
+      "In Customize access, turn off Create and manage issues to use the repository's approved access level.",
     ],
   },
   createRepositoriesSelected: {

@@ -7,7 +7,6 @@ import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -1610,172 +1609,6 @@ function computeAfterProxyCutover(fixture) {
   return driver;
 }
 
-// Exercise Worker.process and the shipping Drivers. Only state, IAM decisions, the queue and
-// the Kubernetes transport are local fixtures; a successful prepare alone missed this cutover.
-test("the owning active reconcile withdraws its admitted reader across the Credential Proxy cutoff", async () => {
-  const { f, revision, driver: ordinary, admission } = await publicReaderAdmission();
-  revision.compute.admission = admission;
-  const context = f.context(undefined);
-  await ordinary.prepareRevision(revision, context);
-  f.markReady();
-  await ordinary.activateRevision(revision, context);
-  const deployment = f.consumer();
-  const policy = publicReaderPolicies(f)[0];
-  assert.ok(policy.metadata.uid && deployment.metadata.uid);
-  f.setPods([workloadPod(deployment, f.namespace, "selected-agent")]);
-
-  delete ordinary.options.network.publicGithubRead;
-  const driver = computeAfterProxyCutover(f);
-  assert.throws(() => driver.validateExecutionAdmission(revision), /exact paired Compute release/);
-
-  const legacy = structuredClone(revision);
-  delete legacy.executionAdmission;
-  const unselected = structuredClone(revision);
-  delete unselected.compute.admission;
-  const otherCompute = structuredClone(revision);
-  otherCompute.compute.id = "other-compute";
-  for (const unsupported of [legacy, unselected, otherCompute]) {
-    assert.equal(driver.rejectedExecutionWithdrawal(unsupported), undefined);
-    assert.throws(() => driver.validateExecutionAdmission(unsupported), {
-      message: /Protected execution is unavailable|unsupported durable execution admission/,
-    });
-  }
-
-  const { id: revisionId, namespaceId, agentId, servicePrincipalId } = revision;
-  const actorId = "authorized-actor";
-  const key = "agent_revision:" + revisionId + ":reconcile";
-  const claim = { idempotencyKey: key, namespaceId, agentId, revisionId, actorId, attemptCount: 1 };
-  const iam = {
-    id: "fixture-iam",
-    capability: "iam",
-    async authorize() {
-      return {
-        allowed: true,
-        reason: "authorized maintenance",
-        driverId: this.id,
-        evidence: {
-          identityId: actorId,
-          groupIds: [],
-          roleIds: [],
-          bindingIds: [],
-          restrictionIds: [],
-        },
-      };
-    },
-  };
-  const agent = {
-    id: agentId,
-    namespaceId,
-    servicePrincipalId,
-    activeRevisionId: revisionId,
-    desiredRuntimeState: "running",
-  };
-  const view = {
-    namespaces: { findNamespace: () => ({ id: namespaceId, status: "ready" }) },
-    agents: { findAgent: () => agent },
-    revisions: {
-      findRevision: () => structuredClone(revision),
-      listRevisionMetadata: () => [revision],
-    },
-    credentialSources: { listCredentialWithdrawals: () => [] },
-  };
-  const worker = new ControllerWorker({
-    pool: {},
-    mode: "production",
-    emit() {},
-    drivers: {
-      installation: { drivers: { iam, compute: driver } },
-      computeDriver: driver,
-      proxyDriver: driver.proxyDriver,
-      createIAMDriver: () => iam,
-    },
-  });
-  worker.installation = { id: "cutover-test" };
-  worker.state.loadNativeIAMState = () => ({
-    identities: [
-      { id: actorId },
-      { id: servicePrincipalId, kind: "service_principal", namespaceId, agentId },
-    ],
-  });
-  worker.state.read = (read) => read(view);
-  worker.queue.findWorkAttempt = () => undefined;
-  const queueWrites = [];
-  let ageMs = 100;
-  worker.queue.heartbeat = () => ({ ageMs });
-  const queue = {
-    heartbeat: () => claim,
-    defer: (_claim, result) => queueWrites.push(["defer", result.code]),
-    fail: (_claim, result) => queueWrites.push(["fail", result.code]),
-  };
-  worker.state.transactWithQueue = (update) => update(view, queue);
-
-  // A reconcile whose Agent principal no longer owns the revision has no withdrawal authority.
-  agent.servicePrincipalId = "other-principal";
-  f.apiCalls.length = 0;
-  worker.workOrigins.set(claim, performance.now() - ageMs);
-  await worker.process(claim);
-  assert.deepEqual(f.apiCalls, []);
-  assert.equal(publicReaderPolicies(f)[0].metadata.uid, policy.metadata.uid);
-  assert.equal(f.consumer().metadata.uid, deployment.metadata.uid);
-
-  agent.servicePrincipalId = servicePrincipalId;
-  // Losing the claim at the effect boundary must also leave the exact objects untouched.
-  const heartbeat = worker.queue.heartbeat;
-  worker.queue.heartbeat = () => undefined;
-  await assert.rejects(worker.process(claim), { name: "WorkClaimLostError" });
-  assert.deepEqual(f.apiCalls, []);
-  assert.equal(publicReaderPolicies(f)[0].metadata.uid, policy.metadata.uid);
-  worker.queue.heartbeat = heartbeat;
-
-  // The cutoff is not a convergence failure. Force a real incomplete Pod observation after
-  // closing the policy and UID-bound foreground deletion; even past the convergence deadline the live claim must defer.
-  ageMs = worker.convergenceTimeoutMs + 5000;
-  worker.workOrigins.set(claim, performance.now() - ageMs);
-  queueWrites.length = 0;
-  let deleted = false;
-  const remove = f.clients.apps.deleteNamespacedDeployment;
-  f.clients.apps.deleteNamespacedDeployment = async (request) => {
-    assert.equal(publicReaderPolicies(f).length, 0);
-    assert.equal(request.body.preconditions.uid, deployment.metadata.uid);
-    assert.equal(request.body.propagationPolicy, "Foreground");
-    await remove(request);
-    deleted = true;
-  };
-  const listPods = f.clients.core.listNamespacedPod;
-  let podsExamined = false;
-  f.clients.core.listNamespacedPod = async (request) => {
-    const pods = (await listPods(request)).items;
-    assert.deepEqual(
-      pods.map(({ metadata }) => metadata.name),
-      ["selected-agent"],
-    );
-    podsExamined = true;
-    return { items: pods, metadata: { continue: "incomplete-observation" } };
-  };
-  await worker.process(claim);
-  assert.deepEqual(queueWrites, [["defer", "EXECUTION_ADMISSION_WITHDRAWAL_PENDING"]]);
-  assert.ok(deleted && podsExamined);
-
-  // A mere return of the peer confers no release. Reobserve the selected Pod gone, then fail the
-  // old release (never publish success or start another workload).
-  driver.options.network.publicGithubRead = publicReader;
-  f.clients.core.listNamespacedPod = listPods;
-  let terminationExamined = false;
-  f.observePods(() => {
-    assert.equal(publicReaderPolicies(f).length, 0);
-    assert.equal(f.consumer(), undefined);
-    f.setPods([]);
-    terminationExamined = true;
-  });
-  queueWrites.length = 0;
-  await worker.process(claim);
-  assert.ok(terminationExamined);
-  assert.deepEqual(queueWrites, [["fail", "EXECUTION_ADMISSION_WITHDRAWN"]]);
-  assert.equal(publicReaderPolicies(f).length, 0);
-  assert.equal(f.consumer(), undefined);
-  assert.throws(() => driver.validateExecutionAdmission(revision), /exact paired Compute release/);
-});
-
 test("API-admitted protected credential-free metadata projects no inference tools or anonymous reader", async (t) => {
   const f = await staticEgressFixture(t, {
     async admitSource({ app, agent, namespace, path, origin }) {
@@ -1890,13 +1723,11 @@ test("withdrawing a selected reader narrows access and stops only its revision",
     f.setPods([workloadPod(selected, f.namespace, "selected"), successorPod]);
     assert.equal(publicReaderPolicies(f).length, 1);
     f.driver.options.network.publicGithubRead = replacement;
-    // Selecting Credential Proxy cannot convert the old grant, or block withdrawal of its owned workload.
+    // Selecting Credential Proxy leaves ordinary admission valid. Removing or replacing
+    // the reader still withdraws its exact grant and workload.
     const driver = replacement === undefined ? f.driver : computeAfterProxyCutover(f);
     if (replacement !== undefined) {
-      await assert.rejects(
-        driver.prepareRevision(successor, context),
-        /exact paired Compute release/,
-      );
+      assert.doesNotThrow(() => driver.validateExecutionAdmission(successor, "stored"));
     }
     const deleteDeployment = f.clients.apps.deleteNamespacedDeployment;
     const readDeployment = f.clients.apps.readNamespacedDeployment;

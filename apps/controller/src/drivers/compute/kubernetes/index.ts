@@ -6283,7 +6283,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     assertExecutionAdmission(revision);
     const plan = revision.egressPlan;
-    if (plan === undefined && this.proxyDriver === undefined) {
+    if (plan === undefined) {
       return;
     }
     if (

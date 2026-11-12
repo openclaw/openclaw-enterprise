@@ -408,27 +408,6 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   assert.equal(namespaceList.items.length, 1);
   const sandboxNamespace = namespaceList.items[0].metadata.name;
   assert.equal(namespaceList.items[0].metadata.labels["openshell.ai/openclaw-workspace"], "true");
-  const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
-    name: "installed-git-model",
-    value: process.env.OPENAI_API_KEY,
-  });
-  const registeredModel = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
-    name: "installed-git-model",
-    type: "openai",
-    config: { authorized_base_url: "https://api.openai.com/v1" },
-    secrets: { api_key: secret.ref },
-  });
-  const modelSource = await eventually("Gateway-owned model source", async () => {
-    const current = await request(
-      "GET",
-      `/namespaces/${namespace.id}/credential-sources/${registeredModel.id}`,
-    );
-    assert.equal(current.ownerCapability, "credential_gateway");
-    assert.equal(current.egress, undefined);
-    assert.notEqual(current.status?.state, "failed", "model source registration failed");
-    return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
-  });
-
   const network = JSON.parse(
     await command("docker", ["network", "inspect", `k3d-${state.cluster}`]),
   );
@@ -694,6 +673,29 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     ],
     { timeout: 190_000 },
   );
+
+  // Register after enabling repository.openShell: Git configuration must not divert model
+  // registration into the Git-only Proxy. All installed Git journeys use this fresh source.
+  const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
+    name: "installed-git-model",
+    value: process.env.OPENAI_API_KEY,
+  });
+  const registeredModel = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+    name: "installed-git-model",
+    type: "openai",
+    config: { authorized_base_url: "https://api.openai.com/v1" },
+    secrets: { api_key: secret.ref },
+  });
+  const modelSource = await eventually("Gateway-owned model source", async () => {
+    const current = await request(
+      "GET",
+      `/namespaces/${namespace.id}/credential-sources/${registeredModel.id}`,
+    );
+    assert.equal(current.ownerCapability, "credential_gateway");
+    assert.equal(current.egress, undefined);
+    assert.notEqual(current.status?.state, "failed", "model source registration failed");
+    return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
+  });
 
   const supervisor = await trustedSupervisor({
     command,

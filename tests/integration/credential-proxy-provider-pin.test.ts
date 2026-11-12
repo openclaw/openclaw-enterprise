@@ -1,4 +1,3 @@
-import type { OpenShellCredentialGatewaySelection } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -103,7 +102,7 @@ test("classification diagnostics reject contradictory reports and preserve audit
   }
 });
 
-test("fresh static source refuses duplicate provider identity in either catalog order", async (t) => {
+test("live adoption refuses duplicate provider identity in either catalog order", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f && "createNamespaceMember" in f && "signIn" in f);
   const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
@@ -140,10 +139,14 @@ test("fresh static source refuses duplicate provider identity in either catalog 
   for (const [index, order] of [entries, [...entries].reverse()].entries()) {
     providers.splice(0, providers.length, ...order);
     injections.fill(0);
+    const created: { status: number; data: { id: string } } = await f.request("POST", f.path, {
+      body: { ...body, name: `ambiguous-${index}` },
+    });
+    assert.equal(created.status, 201);
     const count = (await sources()).length;
     const reads = f.secretReads;
-    const result = await f.request("POST", f.path, {
-      body: { ...body, name: `ambiguous-${index}` },
+    const result = await f.request("PATCH", `${f.path}/${created.data.id}`, {
+      body: { adoption: "live", authorityScope: "execution" },
     });
     outcomes.push({
       status: result.status,
@@ -157,7 +160,7 @@ test("fresh static source refuses duplicate provider identity in either catalog 
   assert.equal(f.providerRequests.length, 0);
 });
 
-test("fresh static source keeps catalog order for distinct provider identities", async (t) => {
+test("live adoption keeps catalog order for distinct provider identities", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
   const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
@@ -177,7 +180,6 @@ test("fresh static source keeps catalog order for distinct provider identities",
   const b = make("catalog-b");
   for (const entries of [[a], [a, b], [b, a]]) {
     providers.splice(0, providers.length, ...entries);
-    const reads: number = f.secretReads;
     const result: { status: number; data: { id: string } } = await f.request("POST", f.path, {
       body: {
         name: `catalog-${injections.length}`,
@@ -187,6 +189,12 @@ test("fresh static source keeps catalog order for distinct provider identities",
       },
     });
     assert.equal(result.status, 201);
+    const reads: number = f.secretReads;
+    const adopted: { status: number } = await f.request("PATCH", `${f.path}/${result.data.id}`, {
+      body: { adoption: "live", authorityScope: "execution" },
+    });
+    assert.equal(adopted.status, 200);
+
     const source: Readonly<CredentialSource> | undefined = await f.controller.transact(
       (unit: PlatformUnitOfWork) =>
         unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
@@ -198,7 +206,7 @@ test("fresh static source keeps catalog order for distinct provider identities",
   assert.equal(f.providerRequests.length, 0);
 });
 
-test("fresh static source refuses a provider duplicate added during material resolution", async (t) => {
+test("live adoption refuses a provider duplicate added during material resolution", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
   const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
@@ -218,17 +226,21 @@ test("fresh static source refuses a provider duplicate added during material res
     f.controller.transact((unit: PlatformUnitOfWork) =>
       unit.credentialSources.listCredentialSources(f.namespace.id),
     );
-  const count = (await sources()).length;
-  const reads = f.secretReads;
-  const release = f.pauseSecretReads();
-  t.after(release);
-  const pending = f.request("POST", f.path, {
+  const created = await f.request("POST", f.path, {
     body: {
-      name: "pending-create",
+      name: "pending-adoption",
       type: "openai",
       config: { authorized_base_url: f.modelProvider.baseUrl },
       secrets: { api_key: f.secret.ref },
     },
+  });
+  assert.equal(created.status, 201);
+  const count = (await sources()).length;
+  const reads = f.secretReads;
+  const release = f.pauseSecretReads();
+  t.after(release);
+  const pending = f.request("PATCH", `${f.path}/${created.data.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
   });
   try {
     const until = Date.now() + 5_000;
@@ -671,6 +683,10 @@ test("an unbound source update keeps its admitted provider when same-type provid
   const created = await f.request("POST", f.path, { body });
   assert.equal(created.status, 201);
   const { id } = created.data;
+  const adopted = await f.request("PATCH", `${f.path}/${id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(adopted.status, 200);
   const update = () => f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
   const savedSource = () =>
     f.controller.transact((unit: PlatformUnitOfWork) =>
@@ -767,6 +783,10 @@ test("a source update withholds resolved material after its provider or injector
   const created = await f.request("POST", f.path, { body });
   assert.equal(created.status, 201);
   const { id } = created.data;
+  const adopted = await f.request("PATCH", `${f.path}/${id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(adopted.status, 200);
   const update = () => f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
   const savedSource = () =>
     f.controller.transact((unit: PlatformUnitOfWork) =>
@@ -808,9 +828,13 @@ test("a source update withholds resolved material after its provider or injector
     providers[index] = b;
     return original.normalizeConfig.call(this, config);
   };
-  const reads = f.secretReads;
   const name = "refused-create";
-  const createRefused = await f.request("POST", f.path, { body: { ...body, name } });
+  const candidate = await f.request("POST", f.path, { body: { ...body, name } });
+  assert.equal(candidate.status, 201);
+  const reads = f.secretReads;
+  const createRefused = await f.request("PATCH", `${f.path}/${candidate.data.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
   providers[index] = a;
   const updateRefused = await update();
   for (const result of [createRefused, updateRefused]) {
@@ -824,10 +848,7 @@ test("a source update withholds resolved material after its provider or injector
   const sources = await f.controller.transact((unit: PlatformUnitOfWork) =>
     unit.credentialSources.listCredentialSources(f.namespace.id),
   );
-  assert.equal(
-    sources.some((source: { name: string }) => source.name === name),
-    false,
-  );
+  assert.equal(sources.find((source: CredentialSource) => source.name === name)?.egress, undefined);
   assert.equal(f.secretReads, reads, "a replacement before access must prevent the Secret read");
   assert.deepEqual([originalCalls, replacementCalls], [1, 0]);
   assert.deepEqual(await savedSource(), before);
@@ -893,18 +914,10 @@ test("a source update withholds resolved material after its provider or injector
   assert.equal(f.providerRequests.length, 0);
 });
 
-test("live static registration does not require Compute placement", async (t) => {
+test("explicit live adoption does not require Compute placement", async (t) => {
   const f = await staticEgressFixture(t, { physicalPlacement: true });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
-  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
-  const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
-    throw new Error("placement unavailable");
-  });
-  const registration = t.mock.method(gateway, "registerSource");
-  const reads = f.secretReads;
-  const result = await f.request("POST", f.path, {
+  const created = await f.request("POST", f.path, {
     body: {
       name: "static-no-placement",
       type: "openai",
@@ -912,182 +925,16 @@ test("live static registration does not require Compute placement", async (t) =>
       secrets: { api_key: f.secret.ref },
     },
   });
-  assert.equal(result.status, 201);
-  const stored = await f.controller.transact((unit: PlatformUnitOfWork) =>
-    unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
-  );
-  assert.equal(stored?.state, "ready");
-  assert.deepEqual(stored?.config, { authorized_base_url: f.modelProvider.baseUrl });
-  assert.equal(stored?.ownerCapability, "credential_gateway");
-  assert.equal(stored?.driverId, gateway.id);
-  assert.equal(stored?.egress?.adoption, "live");
-  assert.equal(f.secretReads - reads, 1);
-  assert.equal(placement.mock.callCount(), 0);
-  assert.equal(registration.mock.callCount(), 0);
-});
-
-test("live static source validation does not consult backend Gateway placement", async (t) => {
-  const f = await staticEgressFixture(t, { physicalPlacement: true });
-  assert.ok("egress" in f);
-  assert.ok("iamDriver" in f);
-  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
-  // Instrument the fixture-owned backend after setup, leaving the real source validator intact.
-  const backend = Reflect.get(gateway, "backend") as OpenShellCredentialGatewaySelection["backend"];
-  const placement = t.mock.method(backend.client, "placement", () => {
-    throw new Error("Gateway placement unavailable");
-  });
-  const authorization = t.mock.method(f.iamDriver, "authorize");
-  const reads = f.secretReads;
-  const result = await f.request("POST", f.path, {
-    body: {
-      name: "static-no-backend-placement",
-      type: "openai",
-      config: {
-        authorized_base_url:
-          f.modelProvider.baseUrl.replace("provider.example.test", "PROVIDER.example.test") + "/",
-      },
-      secrets: { api_key: f.secret.ref },
-    },
-  });
-  assert.equal(
-    placement.mock.callCount(),
-    0,
-    "static validation must not resolve backend placement",
-  );
-  assert.equal(result.status, 201);
-  const stored = await f.controller.transact((unit: PlatformUnitOfWork) =>
-    unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
-  );
-  assert.equal(stored?.state, "ready");
-  assert.equal(stored?.ownerCapability, "credential_gateway");
-  assert.equal(stored?.driverId, gateway.id);
-  assert.equal(stored?.egress?.adoption, "live");
-  assert.deepEqual(stored?.config, { authorized_base_url: f.modelProvider.baseUrl });
-  assert.equal(f.secretReads - reads, 1);
-  const secretOperations = authorization.mock.calls
-    .map((call) => call.arguments[0])
-    .filter((request) => request.action === "operate" && request.resource.kind === "secret");
-  assert.equal(secretOperations.length, 1);
-  assert.equal(secretOperations[0]?.resource.id, f.secret.ref.id);
-
-  for (const host of ["127.0.0.1", "127.1"]) {
-    const denied = await f.request("POST", f.path, {
-      body: {
-        name: "invalid-static-endpoint",
-        type: "openai",
-        config: { authorized_base_url: `https://${host}/v1` },
-        secrets: { api_key: f.secret.ref },
-      },
-    });
-    assert.equal(denied.status, 400);
-    assert.equal(denied.body.error.code, "INVALID_REQUEST");
-    assert.deepEqual(denied.body.error.details, [
-      { path: "/config/authorized_base_url", code: "INVALID_VALUE" },
-    ]);
-    assert.equal(
-      denied.body.error.message,
-      "The openai authorized_base_url host must be an exact DNS name.",
-    );
-    assert.equal(f.secretReads - reads, 1);
-    assert.equal(placement.mock.callCount(), 0);
-  }
-  const listed = await f.request("GET", f.path);
-  assert.equal(listed.status, 200);
-  assert.ok(
-    !listed.data.some((source: CredentialSource) => source.name === "invalid-static-endpoint"),
-  );
-});
-
-test("live static registration losing to DELETE preserves its deleting row without Gateway cleanup", async (t) => {
-  const committed = Promise.withResolvers<Readonly<CredentialSource>>();
-  const resume = Promise.withResolvers<void>();
-  t.after(() => resume.resolve());
-  let pauseRegistration = false;
-  const f = await staticEgressFixture(t, {
-    physicalPlacement: true,
-    appFactory: (context, options) =>
-      createConsoleAppFixture(context, {
-        ...options,
-        wrapState: (state: PlatformStateStore): PlatformStateStore => ({
-          read: (work) => state.read(work),
-          async transact(work) {
-            let created: Readonly<CredentialSource> | undefined;
-            const result = await state.transact((unit) =>
-              work({
-                ...unit,
-                credentialSources: {
-                  ...unit.credentialSources,
-                  async createCredentialSource(input) {
-                    const source = await unit.credentialSources.createCredentialSource(input);
-                    if (pauseRegistration) {
-                      created = source;
-                    }
-                    return source;
-                  },
-                },
-              }),
-            );
-            // Pause after commit, outside the transaction: DELETE uses its own request and locks.
-            if (created) {
-              committed.resolve(created);
-              await resume.promise;
-            }
-            return result;
-          },
-        }),
-      }),
-  });
-  assert.ok("egress" in f);
+  assert.equal(created.status, 201);
   const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
     f.controller.selectedDriver("compute");
-  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
-  const placement = t.mock.method(compute, "resolveSandboxNamespace");
-  const registration = t.mock.method(gateway, "registerSource");
-  // Only the external removal is simulated; DELETE authorization, state and fence are real.
-  const terminalRemoval: CredentialGatewayDriver["removeSource"] = async () => {};
-  const removal = t.mock.method(gateway, "removeSource", terminalRemoval);
-  pauseRegistration = true;
-  const post = f.request("POST", f.path, {
-    body: {
-      name: "late-delete",
-      type: "openai",
-      config: { authorized_base_url: f.modelProvider.baseUrl },
-      secrets: { api_key: f.secret.ref },
-    },
-  });
-  const source = await Promise.race([
-    committed.promise,
-    post.then(() => {
-      throw new Error("POST ended before the source registration committed");
-    }),
-  ]);
-  assert.equal(source.state, "registering");
-  assert.equal(source.egress?.adoption, "live");
-  assert.equal(source.ownerCapability, "credential_gateway");
-  assert.equal(source.driverId, gateway.id);
-
-  // The independent DELETE calls removal, but the registration fence retains the row.
-  assert.equal((await f.request("DELETE", `${f.path}/${source.id}`)).status, 503);
-  assert.equal(placement.mock.callCount(), 1);
-  assert.equal(removal.mock.callCount(), 1);
-  assert.equal(removal.mock.calls[0]!.this, gateway);
-  assert.deepEqual(removal.mock.calls[0]!.arguments[0].namespace, f.runtimeNamespace);
-  assert.equal(removal.mock.calls[0]!.arguments[0].source.id, source.id);
-  assert.notEqual(f.runtimeNamespace.name, f.namespace.name);
-
-  // A placement outage must not turn the losing no-write POST into a cleanup attempt or a 503.
-  placement.mock.mockImplementation(async () => {
+  const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
     throw new Error("placement unavailable");
   });
-  resume.resolve();
-  assert.equal((await post).status, 409);
-  assert.equal(placement.mock.callCount(), 1);
-  assert.equal(registration.mock.callCount(), 0);
-  assert.equal(removal.mock.callCount(), 1);
-  const retained = await f.controller.transact((unit: PlatformUnitOfWork) =>
-    unit.credentialSources.findCredentialSource(f.namespace.id, source.id),
-  );
-  assert.equal(retained?.state, "deleting");
-  assert.equal(retained?.ownerCapability, source.ownerCapability);
-  assert.equal(retained?.driverId, source.driverId);
+  const result = await f.request("PATCH", `${f.path}/${created.data.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.data.egress.adoption, "live");
+  assert.equal(placement.mock.callCount(), 0);
 });

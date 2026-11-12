@@ -101,6 +101,8 @@ schedules, hooks and pending work inert. Preserve authorized read-only access to
 
 ## Retire the legacy path without widening existing grants
 
+Retire Gateway delivery only after its replacement qualifies for the affected sources. Selecting a Credential Proxy for Git does not retire Gateway model delivery.
+
 ### Execution authority
 
 Migrate execution authority and static-material approval **independently**. If a legacy grant

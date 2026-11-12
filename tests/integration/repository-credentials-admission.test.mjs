@@ -31,7 +31,6 @@ import {
   InMemoryPlatformState,
   DriverConfigurationRegistry,
   CredentialProxyRepositoryOnlyError,
-  CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
   RepositoryGitSenderUnqualifiedError,
@@ -140,7 +139,7 @@ class OpenShellGitComputeDriver extends KubernetesComputeDriver {
 // An Installation with runtime storage that dedicated Agents can use: gateway routing, node
 // enrollment and a Gateway node selector (deployment admission refuses dedicated Agents
 // otherwise, finding 2349).
-function kubernetesCompute(Driver = KubernetesComputeDriver) {
+function kubernetesCompute(Driver = KubernetesComputeDriver, selection = {}) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
@@ -177,7 +176,7 @@ function kubernetesCompute(Driver = KubernetesComputeDriver) {
       },
       servicePrincipalCredentials: { mode: "disabled" },
     },
-    { nodeEnrollment: {} },
+    { nodeEnrollment: {}, ...selection },
   );
   // Repository admission has no cluster; its transport credential prerequisite is satisfied.
   compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
@@ -1883,6 +1882,10 @@ async function protectedOpenShellComposition(
     // Kubernetes Compute paired with the OpenShell Gateway delivers credential-source Harness
     // authentication; this one is not bound to that pair, so its delivery check is not the subject.
     validateHarnessAuth() {}
+    // This admission fixture has no Kubernetes cluster; placement is a separate integration.
+    async resolveSandboxNamespace(namespace) {
+      return namespace;
+    }
   }
   const f = await fixture(t, {
     harness,
@@ -1905,7 +1908,22 @@ async function protectedOpenShellComposition(
   );
   const registration = "oce-prepared-git";
   let gatewayReads = 0;
+  // Gateway storage is simulated; registration still uses the bundled Gateway Driver.
+  const providers = new Map();
+  const profiles = new Map();
   const gateway = {
+    async getProvider(workspace, name) {
+      return providers.get(`${workspace}/${name}`);
+    },
+    async createProvider(input) {
+      providers.set(`${input.workspace}/${input.name}`, structuredClone(input));
+    },
+    async getProviderProfile(workspace, id) {
+      return profiles.get(`${workspace}/${id}`);
+    },
+    async importProviderProfile(workspace, profile) {
+      profiles.set(`${workspace}/${profile.id}`, structuredClone(profile));
+    },
     async getGatewayInfo() {
       gatewayReads += 1;
       // What stock 0.1.5 reports once the request-phase service is registered.
@@ -1981,7 +1999,7 @@ async function protectedOpenShellComposition(
     f.controller.registerDriver(catalog);
     f.controller.selectDriver(catalog.capability, catalog.id);
   }
-  return { ...f, gatewayReads: () => gatewayReads };
+  return { ...f, providers, protectedDriver: owner, gatewayReads: () => gatewayReads };
 }
 
 // Deploys a dedicated Codex Agent with `bindings` on that composition; the response and the
@@ -2236,54 +2254,45 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
   assert.equal(f.gatewayReads(), 0);
 });
 
-test("A Git-only Credential Proxy names repository.openShell instead of a 503 or a bare 404", async (t) => {
-  // Finding 2360: with repository.openShell the Proxy's only registration is the request-phase
-  // Git service, which never advertises the execution profile. Creating a model source answered a
-  // generic 503, and deploying an Agent without Git whose Gateway source predates the Proxy
-  // answered 404 with nothing logged. Each refusal now names what cannot serve it; any other
-  // probe outcome keeps the binding refusal.
-  for (const [label, options, refusal] of [
-    ["stock 0.1.5", {}, CredentialProxyRepositoryOnlyError],
-    ["with the execution profile", { advertised: true }, CredentialSourceUnprotectedError],
-    ["registration missing", { registered: false }, CredentialSourceUnprotectedError],
-    ["no proxy selected", { credentialProxy: false }, undefined],
+test("Git Proxy selection preserves Gateway model registration and independent Git admission", async (t) => {
+  for (const [label, options, git = false, expected = 202] of [
+    ["Git-only Proxy", {}],
+    ["Codex without repositories", { harness: "codex" }],
+    ["execution-capable Proxy", { advertised: true }],
+    ["missing Proxy registration", { registered: false }],
+    ["no Proxy", { credentialProxy: false }],
+    ["Git with model", { installationAccess: true, preview: true }, true],
+    [
+      "Git enforcement unavailable",
+      { installationAccess: true, preview: true, registered: false },
+      true,
+      503,
+    ],
   ]) {
     const f = await protectedOpenShellComposition(t, {
       ...options,
       credentialGateway: true,
-      harness: "openclaw",
+      harness: git ? "codex" : (options.harness ?? "openclaw"),
     });
+    // Exercise the shipped Compute gate through the deploy route. The original fixture
+    // bypassed it and missed rejection of ordinary Agents when a Proxy was configured.
+    const compute = kubernetesCompute(KubernetesComputeDriver, {
+      ...(options.credentialProxy !== false && { protectedDriver: f.protectedDriver }),
+    });
+    f.controller.selectedDriver("compute").validateExecutionAdmission =
+      compute.validateExecutionAdmission.bind(compute);
     const namespaceId = f.namespace.id;
     const capabilitiesPath = `/namespaces/${namespaceId}/agent-capabilities`;
     const outsider = await f.requestWithoutGrants(f.app);
     assert.equal((await outsider("GET", capabilitiesPath)).status, 403, label);
-    assert.equal(f.gatewayReads(), 0, label);
-
-    const capabilities = await f.request("GET", capabilitiesPath);
-    const installation = await f.request("GET", "/installation");
-    assert.equal(capabilities.status, 200, JSON.stringify(capabilities));
-    assert.equal(installation.status, 200, JSON.stringify(installation));
-    const repositoryAccessRequired =
-      refusal === CredentialProxyRepositoryOnlyError ? true : undefined;
-    assert.equal(
-      capabilities.data.capabilities.repositoryAccessRequired,
-      repositoryAccessRequired,
-      label,
-    );
-    assert.equal(
-      installation.data.capabilities.repositoryAccessRequired,
-      repositoryAccessRequired,
-      label,
-    );
-    assert.ok(
-      capabilities.data.capabilities.credentialSources.types.some(({ type }) => type === "openai"),
-    );
-    assert.deepEqual(capabilities.data.capabilities.openclaw.executionModes, ["dedicated"], label);
-    assert.equal(capabilities.data.capabilities.nativeWorkers.support, "pinned-runtime", label);
-    if (!refusal) {
-      assert.equal(f.gatewayReads(), 0, label);
+    for (const path of [capabilitiesPath, "/installation"]) {
+      const response = await f.request("GET", path);
+      assert.equal(response.status, 200, JSON.stringify(response));
+      assert.equal(response.data.capabilities.repositoryAccessRequired, undefined, label);
+      assert.ok(
+        response.data.capabilities.credentialSources.types.some(({ type }) => type === "openai"),
+      );
     }
-
     await f.state.transact((unit) =>
       unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
     );
@@ -2292,37 +2301,21 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
       value: "synthetic-admission-model-key",
     });
     assert.equal(secret.status, 201, JSON.stringify(secret));
-    const sourceInput = { type: "openai", config: {}, secrets: { api_key: secret.data.ref } };
-    if (label === "stock 0.1.5" || label === "registration missing") {
-      // The Installation refusal comes before any Secret read: this fixture's Secret Driver
-      // has no versioned reads, which would otherwise answer first. A gateway without the
-      // registration is a state an operator fixes: a 503 that names it (finding 2536).
-      const created = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
-        name: "fresh-model",
-        ...sourceInput,
-      });
-      const [status, message] =
-        label === "stock 0.1.5"
-          ? [409, CredentialProxyRepositoryOnlyError.description]
-          : [503, PROXY_REGISTRATION_UNAVAILABLE];
-      assert.equal(created.status, status, `${label}: ${JSON.stringify(created)}`);
-      assert.equal(created.error.message, message, label);
-    }
-    // A Gateway-owned source registered before the Installation selected the Proxy.
-    const sourceId = `cs_${randomUUID()}`;
-    await f.state.transact((unit) =>
-      unit.credentialSources.createCredentialSource({
-        id: sourceId,
-        namespaceId,
-        name: "earlier-model",
-        ...sourceInput,
-        ownerCapability: "credential_gateway",
-        driverId: "openshell-credentials",
-        state: "ready",
-        createdAt: new Date().toISOString(),
-      }),
-    );
+    const created = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+      name: "fresh-model",
+      type: "openai",
+      config: {},
+      secrets: { api_key: secret.data.ref },
+    });
+    assert.equal(created.status, 201, `${label}: ${JSON.stringify(created)}`);
+    assert.equal(created.data.state, "ready");
+    assert.equal(created.data.egress, undefined);
+    assert.equal(f.providers.size, 1, "registration writes the model provider through the Gateway");
+    const sourceId = created.data.id;
     const agent = await f.createAgent({
+      ...(git && {
+        repositoryBindings: [{ repositoryRef: "installation", profile: "github-installation" }],
+      }),
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId },
       credentialSources: [{ sourceId }],
@@ -2341,64 +2334,63 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
     });
     const path = `${f.collection}/${agent.id}`;
     const deployed = await f.request("POST", `${path}/deploy`);
+    assert.equal(deployed.status, expected, `${label}: ${JSON.stringify(deployed)}`);
     const revisions = (await f.request("GET", `${path}/revisions`)).data;
-    if (refusal) {
-      assert.equal(deployed.status, 409, `${label}: ${JSON.stringify(deployed)}`);
-      assert.equal(deployed.error.message, refusal.description, label);
-      assert.deepEqual(revisions, [], label);
-    } else {
-      assert.equal(deployed.status, 202, `${label}: ${JSON.stringify(deployed)}`);
-      assert.equal(revisions.length, 1);
-      assert.equal(f.gatewayReads(), 0, label);
+    assert.equal(revisions.length, expected === 202 ? 1 : 0);
+    if (!git) {
+      const revision = await f.state.transact((unit) =>
+        unit.revisions.findRevision(namespaceId, agent.id, revisions[0].id),
+      );
+      assert.deepEqual(revision.executionAdmission, { version: 2, mode: "unprotected" });
+      assert.equal(revision.egressPlan, undefined);
+      compute.validateExecutionAdmission(revision, "stored");
+      assert.equal(f.gatewayReads(), 0, "ordinary model use does not probe the Proxy");
+    } else if (expected === 503) {
+      assert.equal(deployed.error.message, PROXY_REGISTRATION_UNAVAILABLE);
     }
   }
+  const empty = await protectedOpenShellDeploy(t, []);
+  assert.equal(empty.response.status, 202, JSON.stringify(empty.response));
+  assert.equal(empty.gatewayReads, 0);
+});
 
-  // The same registration still supports the qualified Git profile.
-  const git = await protectedOpenShellDeploy(
-    t,
-    [{ repositoryRef: "installation", profile: "github-installation" }],
-    { installationAccess: true, preview: true },
-  );
-  assert.equal(git.response.status, 202, JSON.stringify(git.response));
-  assert.equal(git.revisions.length, 1);
-
-  // An Agent with no credential source reaches the same named 409 through the counterpart check.
-  const { response, revisions } = await protectedOpenShellDeploy(t, []);
-  assert.equal(response.status, 409, JSON.stringify(response));
-  assert.equal(response.error.message, CredentialProxyRepositoryOnlyError.description);
-  assert.deepEqual(revisions, []);
-  // Only the repository registration, of either kind encoding, at protocol 1 and advertising no
-  // execution capability, is Git-only. A registration missing from gateway info, a partial
-  // negotiation or a separate egress registration is still an unavailable counterpart.
-  for (const [label, options, status] of [
-    ["named kind", { extension: { kind: "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" } }, 409],
-    ["registration missing", { registered: false }, 503],
-    ["protocol 2", { extension: { protocol_major: 2 } }, 503],
+test("explicit live adoption still requires a qualified Proxy", async (t) => {
+  for (const [label, options, status, message] of [
+    ["Git-only", {}, 409, CredentialProxyRepositoryOnlyError.description],
+    ["missing registration", { registered: false }, 503, PROXY_REGISTRATION_UNAVAILABLE],
+    ["wrong protocol", { extension: { protocol_major: 2 } }, 503, PROXY_REGISTRATION_UNAVAILABLE],
     [
-      "required capabilities only",
+      "partial capabilities",
       { extension: { required_capabilities: [...openShellExchangeCapabilities] } },
       503,
-    ],
-    [
-      "supported capabilities only",
-      { extension: { supported_capabilities: [...openShellExchangeCapabilities] } },
-      503,
-    ],
-    [
-      "separate egress registration",
-      { middlewareName: "oce-egress", extension: { configured_name: "oce-egress" } },
-      503,
+      PROXY_REGISTRATION_UNAVAILABLE,
     ],
   ]) {
-    const { response } = await protectedOpenShellDeploy(t, [], options);
-    assert.equal(response.status, status, `${label}: ${JSON.stringify(response)}`);
-    if (status === 409) {
-      assert.equal(response.error.message, CredentialProxyRepositoryOnlyError.description, label);
-    } else {
-      // A gateway state an operator fixes, named (finding 2536).
-      assert.equal(response.error.code, "DEPENDENCY_UNAVAILABLE", label);
-      assert.equal(response.error.message, PROXY_REGISTRATION_UNAVAILABLE, label);
-    }
+    const f = await protectedOpenShellComposition(t, { ...options, credentialGateway: true });
+    await f.state.transact((unit) =>
+      unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
+    );
+    const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+      name: "model-key",
+      value: "synthetic-model-key",
+    });
+    assert.equal(secret.status, 201, JSON.stringify(secret));
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const source = await f.request("POST", path, {
+      name: "model",
+      type: "openai",
+      secrets: { api_key: secret.data.ref },
+    });
+    assert.equal(source.status, 201, JSON.stringify(source));
+    const adoption = await f.request("PATCH", `${path}/${source.data.id}`, {
+      adoption: "live",
+      authorityScope: "execution",
+    });
+    assert.equal(adoption.status, status, `${label}: ${JSON.stringify(adoption)}`);
+    assert.equal(adoption.error.message, message, label);
+    const unchanged = await f.request("GET", `${path}/${source.data.id}`);
+    assert.equal(unchanged.data.egress, undefined);
+    assert.equal(unchanged.data.status.state, "ready");
   }
 });
 

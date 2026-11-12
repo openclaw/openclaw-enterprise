@@ -13,16 +13,15 @@ installing OpenShell does not grant it.
 For a fresh local k3d installation, use the authenticated
 [Gateway setup](#prepare-an-authenticated-local-gateway).
 
-A fresh installation needs a ready, Gateway-owned model source before enabling
-the repository Credential Proxy. If that source already exists, start at step 2.
+Select the OpenShell Gateway and Sandbox, then
+[register the model source](../deploy/openshell-credential-sources.md). You can
+register it before or after enabling the repository Credential Proxy. Verify that
+its state and Gateway status are ready and that it has no `egress`. If a ready
+Gateway-owned model source already exists, use it.
 
-1. Select the OpenShell Gateway and Sandbox. Leave `drivers.credential_proxy`
-   and the Backend’s `drivers.credential_proxy` unset. [Register the model source](../deploy/openshell-credential-sources.md)
-   and verify that its state and Gateway status are ready and that it has no `egress`.
-2. Keep the Gateway selected and use that same source with
-   `harnessAuth.method: credential_source`. Enable the repository Credential Proxy
-   as described below. This procedure is for a fresh installation; changing an
-   existing installation can affect running Agents.
+Keep the Gateway selected and use the source with
+`harnessAuth.method: credential_source`. Configure the repository Credential Proxy
+as described below. Changing an existing installation can affect running Agents.
 
 ### Prepare an authenticated local Gateway
 
