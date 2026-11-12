@@ -354,7 +354,7 @@ function resolveLink(page, href) {
     }
     return linked.route + url.search + url.hash;
   }
-  if (target.startsWith(docs + path.sep)) {
+  if (/^(?:assets|snippets)\//.test(docSource)) {
     return "/" + docSource.split("/").map(encodeURIComponent).join("/") + url.search + url.hash;
   }
   if (url.hash && target.endsWith(".md") && !resolveDocsFragment(url.hash, githubAnchors(target))) {
