@@ -272,6 +272,43 @@ test("service API keys authenticate scoped automation without replacing sessions
     },
   );
 
+  await t.test("Agent-capability denials identify the exact Agent collection", async () => {
+    // The foreign Namespace fails service-key scope admission. The key's own Namespace
+    // reaches OCC, where its Role lacks Agent create. Both must name the requested collection.
+    for (const targetNamespaceId of [stringField(tenantB.data, "id"), namespaceId]) {
+      const deniedBefore = auditSink.events.length;
+      const response = await request("GET", `/namespaces/${targetNamespaceId}/agent-capabilities`, {
+        headers,
+      });
+      assert.equal(response.status, 403);
+      assert.equal(stringField(response.error, "code"), "FORBIDDEN");
+      const denials = auditSink.events
+        .slice(deniedBefore)
+        .filter((event) => event.kind === "authorization_denial");
+      assert.equal(denials.length, 1);
+      const denial = denials[0];
+      assert.ok(denial);
+      const resource = { kind: "agent", id: targetNamespaceId, namespaceId: targetNamespaceId };
+      assert.equal(denial.action, "openclaw.namespaces.agent_capabilities.read");
+      assert.equal(denial.actorId, principal.id);
+      assert.equal(denial.details?.actorServiceKeyId, stringField(issued.data, "id"));
+      assert.deepEqual(denial.authorization, {
+        principalId: principal.id,
+        action: "create",
+        resource,
+      });
+      assert.deepEqual(denial.resource, resource);
+      if (targetNamespaceId !== namespaceId) {
+        assert.equal(
+          stringField(response.error, "message"),
+          serviceKeyOutsideNamespace(namespaceId),
+        );
+      } else {
+        assert.equal(record(denial.details?.iamEvidence).identityId, principal.id);
+      }
+    }
+  });
+
   await t.test(
     "audit rows name the service key that acted, apart from its principal's other keys",
     async () => {
