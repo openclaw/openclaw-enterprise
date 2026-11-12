@@ -5089,7 +5089,7 @@ export class OpenClawController {
     const { namespaceId, credentialSourceId } = session;
     let exchangeStarted = false;
     let handoffStarted = false;
-    let schedule: NonNullable<OAuthConnectionStatus["schedule"]>;
+    let schedule: OAuthConnectionStatus["schedule"] | undefined;
     let approved: Pick<
       SavedConnection,
       | "issuer"
@@ -5209,11 +5209,13 @@ export class OpenClawController {
         if (!ready) {
           throw new ResourceStateConflictError("The pending connection changed. Connect again.");
         }
-        await state.savedConnections.recordTokenSchedule(namespaceId, credentialSourceId, {
-          scheduledVersion: schedule.version,
-          nextRefreshAt: schedule.nextRefreshAt,
-          grantedScopes: schedule.grantedScopes,
-        });
+        if (schedule) {
+          await state.savedConnections.recordTokenSchedule(namespaceId, credentialSourceId, {
+            scheduledVersion: schedule.version,
+            nextRefreshAt: schedule.nextRefreshAt,
+            grantedScopes: schedule.grantedScopes,
+          });
+        }
         const connection = await state.savedConnections.createSavedConnection({
           ...approved,
           namespaceId,
@@ -5446,13 +5448,13 @@ export class OpenClawController {
       await this.mutate(holdSession);
     }
     const reference = await this.tokenService().register(registration, signal);
-    const { schedule } = await issuer.status(reference, signal);
-    if (!schedule) {
+    const connectionStatus = await issuer.status(reference, signal);
+    if (connectionStatus.state !== "ready") {
       throw new ResourceStateConflictError(
         "No eligible access token is prepared for this account.",
       );
     }
-    return schedule;
+    return connectionStatus.schedule;
   }
 
   /** Used by the installed Token Service to authenticate the original client on each renewal. */
@@ -9167,6 +9169,14 @@ export class OpenClawController {
         refresh = await this.maintainConnectionToken(source.namespaceId, source.id);
         if (!refresh) {
           throw new ResourceStateConflictError("The connected account was retired.");
+        }
+        if (
+          (refresh.state === "ready" && !refresh.schedule) ||
+          (refresh.state === "failed" && refresh.failureCode === "access_token_expired")
+        ) {
+          throw new ResourceStateConflictError(
+            "This saved account has no refresh grant and cannot rotate; reconnect it to replace its access token.",
+          );
         }
         const outcome = refresh.state === "ready" ? audit : failureAudit?.(failureCode);
         if (outcome) {
