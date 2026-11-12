@@ -545,6 +545,54 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   );
 });
 
+test("the OpenShell policy replacement timeout reports only the last recognized deployment status", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const agentPath = "/agents/agent";
+  const revisionId = "replacement";
+  const description = `Timed out waiting for OpenShell revision ${revisionId} activation`;
+  for (const [status, label] of [
+    ["queued", "queued"],
+    ["running", "running"],
+    ["succeeded", "succeeded"],
+    ["unrecognized status", undefined],
+    [{ value: "running" }, undefined],
+    [undefined, undefined],
+  ]) {
+    const deadline = Date.now() + 1;
+    let reads = 0;
+    await assert.rejects(
+      waitForOpenShellRevisionActivation(
+        (description, read) => waitFor(description, read, { timeoutMs: 1, intervalMs: 0 }),
+        {
+          request: async (method, path) => {
+            assert.equal(method, "GET");
+            if (path === agentPath) {
+              return { status: 200, data: { activeRevisionId: "previous" } };
+            }
+            assert.equal(path, `${agentPath}/deployments/${revisionId}`);
+            if (++reads === 1) {
+              return { status: 200, data: { status: "running" } };
+            }
+            t.mock.timers.setTime(deadline);
+            return { status: 200, data: { status } };
+          },
+          agentPath,
+          revisionId,
+          checkDeploymentBeforeActivation: true,
+          reportDeploymentStatusOnTimeout: true,
+        },
+      ),
+      {
+        message:
+          label === undefined
+            ? `${description}.`
+            : `${description} (last deployment status: ${label}).`,
+      },
+    );
+    assert.equal(reads, 2);
+  }
+});
+
 // Finding 1846: the worker can claim the work again between reads. The status is read only once
 // the work is queued after an attempt, and a started deployment reads as `running` then (finding
 // 2456), so that read ends the wait with the work it followed.
