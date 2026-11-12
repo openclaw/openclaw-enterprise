@@ -44,6 +44,7 @@ import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
+import { registryImage } from "./fixture-support-images.mjs";
 import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
@@ -1709,8 +1710,6 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
   const nodeBaseImage = effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE;
   assertNodeBaseImage(nodeBaseImage);
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  const registryImage =
-    "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
   const port = await reserveLoopbackPort();
   const registry = addResource(state, "first-agent-image-registry", {
     name: ownedName("openclaw-ci-first-images", state.prefix, { maxLength: 63 }),
