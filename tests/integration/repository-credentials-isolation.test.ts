@@ -1,6 +1,6 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
-async function deliveredImages(t) {
+async function deliveredImages(t: TestContext) {
   const serviceImage = process.env.REPOSITORY_CREDENTIALS_SERVICE_IMAGE;
   const clientImage = process.env.REPOSITORY_CREDENTIALS_CLIENT_IMAGE;
   if (!serviceImage && !clientImage) {

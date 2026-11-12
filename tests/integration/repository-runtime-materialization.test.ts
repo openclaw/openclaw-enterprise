@@ -14,19 +14,20 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import test, { before } from "node:test";
+import test, { before, type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
-import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.mjs";
+import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
-const client = repositoryClientData({ pushRefAllowlist: ["refs/heads/agent/*"] });
+const client = { ...repositoryClientData(), pushRefAllowlist: ["refs/heads/agent/*"] };
 
-let nativeClientImport;
+let nativeClientImport: string;
 
 before(async (t) => {
+  assert.ok("after" in t);
   const root = await temporaryDirectory(t, "repository-material-client-");
   const repository = fileURLToPath(new URL("../../", import.meta.url));
   const build = join(root, "build");
@@ -80,7 +81,9 @@ before(async (t) => {
   `)}`;
 });
 
-async function projectionFixture(t, { count = 1, publicCa } = {}) {
+type ProjectionOptions = { count?: number; publicCa?: Uint8Array };
+
+async function projectionFixture(t: TestContext, { count = 1, publicCa }: ProjectionOptions = {}) {
   const root = await realpath(await temporaryDirectory(t, "repository-runtime-material-"));
   const sourceRoot = join(root, "projection");
   const targetRoot = join(root, "output", "private");
@@ -93,33 +96,36 @@ async function projectionFixture(t, { count = 1, publicCa } = {}) {
     deployment,
     descriptor: projected,
     generation,
+    sessions,
   } = await projectRepositorySessions(sourceRoot, { client, deadlineWallMs, count, publicCa });
   const descriptor = { ...projected, sourceRoot, targetRoot };
+  const firstBinding = descriptor.manifest.bindings[0];
+  const firstProjectedBinding = bindings[0];
+  assert.ok(firstBinding);
+  assert.ok(firstProjectedBinding);
+  const materialScript = deployment.initContainers[0]?.args[0];
+  const nativeScript = deployment.initContainers[1]?.args[0];
+  assert.ok(materialScript);
+  assert.ok(nativeScript);
   const run = () =>
     spawnSync(
       process.execPath,
-      [
-        "--import",
-        nativeClientImport,
-        "-e",
-        deployment.initContainers[0].args[0],
-        JSON.stringify(descriptor),
-      ],
+      ["--import", nativeClientImport, "-e", materialScript, JSON.stringify(descriptor)],
       {
         encoding: "utf8",
         timeout: 10000,
         env: { PATH: process.env.PATH },
       },
     );
-  const runNativeAt = (directory) =>
-    spawnSync(
-      process.execPath,
-      ["--import", nativeClientImport, "-e", deployment.initContainers[1].args[0], directory],
-      { encoding: "utf8", timeout: 10000, env: { PATH: process.env.PATH } },
-    );
+  const runNativeAt = (directory: string) =>
+    spawnSync(process.execPath, ["--import", nativeClientImport, "-e", nativeScript, directory], {
+      encoding: "utf8",
+      timeout: 10000,
+      env: { PATH: process.env.PATH },
+    });
   const runNative = async () => {
     // Relocation models the second init's subPath view, not a live volume mount.
-    // repository-runtime-volume.test.mjs exercises the actual container mounts.
+    // repository-runtime-volume.test.ts exercises the actual container mounts.
     const mounted = join(root, "private-mount");
     await rename(targetRoot, mounted);
     try {
@@ -136,6 +142,9 @@ async function projectionFixture(t, { count = 1, publicCa } = {}) {
     descriptor,
     bindings,
     deployment,
+    sessions,
+    firstBinding,
+    firstProjectedBinding,
     run,
     runNative,
     runNativeAt,
@@ -156,7 +165,7 @@ test("the actual repository init process turns projected Secrets into private ru
   assert.equal((await lstat(fixture.targetRoot)).mode & 0o777, 0o700);
   const gitconfig = join(fixture.targetRoot, "gitconfig");
   assert.equal((await lstat(gitconfig)).mode & 0o777, 0o600);
-  const setting = (name) => {
+  const setting = (name: string) => {
     const result = spawnSync(
       "git",
       ["--no-replace-objects", "config", "--file", gitconfig, "--get-all", name],
@@ -190,15 +199,17 @@ test("the actual repository init process turns projected Secrets into private ru
       assert.equal(metadata.isDirectory(), true);
       assert.equal(metadata.mode & 0o777, 0o700);
     }
-    for (const [name, content] of Object.entries(fixture.bindings[index].files)) {
+    const projectedBinding = fixture.bindings[index];
+    assert.ok(projectedBinding);
+    for (const [name, content] of Object.entries(projectedBinding.files)) {
       const path = join(directory, name);
       const metadata = await lstat(path);
       assert.equal(metadata.isFile(), true);
       assert.equal(metadata.mode & 0o777, 0o600);
       assert.equal(await readFile(path, "utf8"), content);
-      assert.equal(result.stderr.includes(fixture.bindings[index].files.bearer), false);
+      assert.equal(result.stderr.includes(projectedBinding.files.bearer), false);
     }
-    assert.equal(nativeConfig.includes(fixture.bindings[index].files.bearer), false);
+    assert.equal(nativeConfig.includes(projectedBinding.files.bearer), false);
   }
 });
 
@@ -209,7 +220,7 @@ test("the actual repository init process combines broker CA with system roots", 
   const fixture = await projectionFixture(t, { publicCa });
   const result = fixture.run();
   assert.equal(result.status, 0, result.stderr);
-  const directory = basename(fixture.descriptor.manifest.bindings[0].directory);
+  const directory = basename(fixture.firstBinding.directory);
   const ca = await readFile(join(fixture.targetRoot, "sessions", directory, "ca.pem"));
   const bundle = await readFile(join(fixture.targetRoot, "sessions", directory, "ca-bundle.pem"));
   assert.equal(ca.toString("utf8"), publicCa.toString("utf8"));
@@ -226,6 +237,11 @@ test("the actual repository init process combines broker CA with system roots", 
 test("the second repository init fails when native Git configuration cannot be prepared", async (t) => {
   const fixture = await projectionFixture(t, { count: 2 });
   const binding = fixture.descriptor.manifest.bindings[1];
+  const projectedBinding = fixture.bindings[1];
+  const session = fixture.sessions[1];
+  assert.ok(binding);
+  assert.ok(projectedBinding);
+  assert.ok(session);
   // Both sessions remain individually valid, but one canonical host cannot be
   // routed to two gateways. The real native preparer must reject the generation.
   binding.client = {
@@ -235,8 +251,8 @@ test("the second repository init fails when native Git configuration cannot be p
     apiHost: "other-credentials.example.test",
   };
   const files = encodeRepositoryCredentialSessionFiles({
-    session: { sessionId: binding.sessionId, deadlineWallMs: binding.deadlineWallMs },
-    bearer: fixture.bindings[1].files.bearer,
+    session,
+    bearer: projectedBinding.files.bearer,
     client: binding.client,
   });
   const directory = join(fixture.generation, basename(binding.directory));
@@ -255,7 +271,9 @@ test("the second repository init fails when native Git configuration cannot be p
 
 test("repository init validates the complete projection before publishing any session", async (t) => {
   const fixture = await projectionFixture(t, { count: 2 });
-  const second = basename(fixture.descriptor.manifest.bindings[1].directory);
+  const secondBinding = fixture.descriptor.manifest.bindings[1];
+  assert.ok(secondBinding);
+  const second = basename(secondBinding.directory);
   await rm(join(fixture.generation, second, "bearer"));
   const result = fixture.run();
   assert.notEqual(result.status, 0);
@@ -268,35 +286,36 @@ test("repository init validates the complete projection before publishing any se
 
 test("repository init refuses a projected file outside its Secret generation", async (t) => {
   const fixture = await projectionFixture(t);
-  const directory = basename(fixture.descriptor.manifest.bindings[0].directory);
+  const directory = basename(fixture.firstBinding.directory);
   const outside = join(fixture.root, "outside-bearer");
-  await writeFile(outside, fixture.bindings[0].files.bearer);
+  await writeFile(outside, fixture.firstProjectedBinding.files.bearer);
   const projected = join(fixture.generation, directory, "bearer");
   await rm(projected);
   await symlink(outside, projected);
   const result = fixture.run();
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr.includes(fixture.bindings[0].files.bearer), false);
+  assert.equal(result.stderr.includes(fixture.firstProjectedBinding.files.bearer), false);
   await assert.rejects(lstat(join(fixture.targetRoot, "sessions")), { code: "ENOENT" });
 });
 
 test("repository init refuses session identity drift in the projected client document", async (t) => {
   const fixture = await projectionFixture(t);
-  const directory = basename(fixture.descriptor.manifest.bindings[0].directory);
-  const document = JSON.parse(fixture.bindings[0].files["client.json"]);
+  const directory = basename(fixture.firstBinding.directory);
+  const document: unknown = JSON.parse(fixture.firstProjectedBinding.files["client.json"]);
+  assert.ok(document !== null && typeof document === "object" && "sessionId" in document);
   document.sessionId = "another-session";
   await rm(join(fixture.generation, directory, "client.json"));
   await writeFile(join(fixture.generation, directory, "client.json"), JSON.stringify(document));
   const result = fixture.run();
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr.includes(fixture.bindings[0].files.bearer), false);
+  assert.equal(result.stderr.includes(fixture.firstProjectedBinding.files.bearer), false);
 });
 
 test("repository init refuses drift in the selected push-ref policy", async (t) => {
   const fixture = await projectionFixture(t);
-  const binding = fixture.descriptor.manifest.bindings[0];
+  const binding = fixture.firstBinding;
   binding.client = { ...binding.client, pushRefAllowlist: ["refs/heads/main"] };
   const result = fixture.run();
   assert.equal(result.status, 1);
@@ -306,7 +325,7 @@ test("repository init refuses drift in the selected push-ref policy", async (t) 
 
 const brokerCa = "-----BEGIN CERTIFICATE-----\nfixture-broker-ca\n-----END CERTIFICATE-----\n";
 
-for (const [name, options, corrupt] of [
+const corruptions: Array<[string, ProjectionOptions, (directory: string) => Promise<void>]> = [
   [
     "malformed UTF-8",
     { publicCa: Buffer.from(brokerCa) },
@@ -315,6 +334,7 @@ for (const [name, options, corrupt] of [
     async (directory) => {
       await rm(join(directory, "ca.pem"));
       const [head, tail] = brokerCa.split("fixture-broker-ca");
+      assert.ok(head !== undefined && tail !== undefined);
       await writeFile(
         join(directory, "ca.pem"),
         Buffer.concat([Buffer.from(head), Buffer.from([0xc3, 0x28]), Buffer.from(tail)]),
@@ -322,15 +342,17 @@ for (const [name, options, corrupt] of [
     },
   ],
   ["an undeclared file", {}, (directory) => writeFile(join(directory, "extra.json"), "{}")],
-]) {
+];
+
+for (const [name, options, corrupt] of corruptions) {
   test(`repository init refuses ${name} in the projected session`, async (t) => {
     const fixture = await projectionFixture(t, options);
-    const directory = basename(fixture.descriptor.manifest.bindings[0].directory);
+    const directory = basename(fixture.firstBinding.directory);
     await corrupt(join(fixture.generation, directory));
     const result = fixture.run();
     assert.notEqual(result.status, 0);
     assert.equal(result.stdout, "");
-    assert.equal(result.stderr.includes(fixture.bindings[0].files.bearer), false);
+    assert.equal(result.stderr.includes(fixture.firstProjectedBinding.files.bearer), false);
     await assert.rejects(lstat(join(fixture.targetRoot, "sessions")), { code: "ENOENT" });
   });
 }
@@ -377,11 +399,7 @@ test("native preparation retries partial output and retains directory custody ch
 test("native preparation refuses altered private client material", async (t) => {
   const fixture = await projectionFixture(t);
   assert.equal(fixture.run().status, 0);
-  const directory = join(
-    fixture.targetRoot,
-    "sessions",
-    basename(fixture.descriptor.manifest.bindings[0].directory),
-  );
+  const directory = join(fixture.targetRoot, "sessions", basename(fixture.firstBinding.directory));
   await chmod(join(directory, "client.json"), 0o640);
   assert.equal((await fixture.runNative()).status, 1);
   await assert.rejects(lstat(join(fixture.targetRoot, "gitconfig")), { code: "ENOENT" });

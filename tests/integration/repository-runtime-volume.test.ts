@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
-import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.mjs";
+import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 const client = repositoryClientData();
 
-async function repositoryProjectionFixture(t) {
+async function repositoryProjectionFixture(t: TestContext) {
   const root = await temporaryDirectory(t, "repository-runtime-material-");
   const sourceRoot = join(root, "projection");
   await mkdir(sourceRoot);
@@ -30,7 +30,8 @@ test(
   },
   async (t) => {
     const fixture = await repositoryProjectionFixture(t);
-    const docker = (args) =>
+    assert.ok(runtimeImage);
+    const docker = (args: string[]) =>
       spawnSync(process.env.OCC_DOCKER_BIN ?? "docker", args, {
         encoding: "utf8",
         timeout: 15000,
@@ -87,7 +88,7 @@ test(
     ]);
     assert.equal(held.status, 0, held.stderr);
     // Use the image-installed client bundle for both init stages and the consumer.
-    const run = (user, mounts, script, ...args) =>
+    const run = (user: string, mounts: string[], script: string, ...args: string[]) =>
       docker([
         "run",
         "--rm",
@@ -119,11 +120,17 @@ test(
       sourceRoot: "/run/oce/repository-projection",
       targetRoot: "/run/oce/repository-output/private",
     };
+    const materialScript = fixture.deployment.initContainers[0]?.args[0];
+    const nativeScript = fixture.deployment.initContainers[1]?.args[0];
+    const nativeRoot = fixture.deployment.initContainers[1]?.args[1];
+    assert.ok(materialScript);
+    assert.ok(nativeScript);
+    assert.ok(nativeRoot);
     const material = () =>
       run(
         "1000:1000",
         [outputMount, `type=bind,src=${fixture.sourceRoot},dst=${descriptor.sourceRoot},readonly`],
-        fixture.deployment.initContainers[0].args[0],
+        materialScript,
         JSON.stringify(descriptor),
       );
     const copied = material();
@@ -135,13 +142,7 @@ test(
     );
     assert.equal(parent.status, 0, parent.stderr);
     assert.equal(parent.stdout.trim(), "0 1000 2775");
-    const prepare = (user = "1000:1000") =>
-      run(
-        user,
-        [privateMount],
-        fixture.deployment.initContainers[1].args[0],
-        fixture.deployment.initContainers[1].args[1],
-      );
+    const prepare = (user = "1000:1000") => run(user, [privateMount], nativeScript, nativeRoot);
     // A different UID cannot adopt or delete the first init's private material.
     const otherOwner = prepare("1001:1000");
     assert.equal(otherOwner.status, 1, otherOwner.stderr);

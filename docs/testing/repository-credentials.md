@@ -19,9 +19,9 @@ The controlled tests use disposable fixtures and do not use ambient GitHub crede
 ```sh
 node scripts/verify-repository-credentials-boundary.mjs
 node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs \
-  tests/conformance/repository-credentials-backend-conformance.test.mjs
-node --test tests/integration/repository-credentials-git.test.mjs \
-  tests/integration/repository-credentials-native-paths.test.mjs \
+  tests/conformance/repository-credentials-backend-conformance.test.ts
+node --test tests/integration/repository-credentials-git.test.ts \
+  tests/integration/repository-credentials-native-paths.test.ts \
   tests/integration/repository-credentials-service-loss.test.ts
 ```
 
@@ -81,7 +81,7 @@ Build before running the source and materialization checks:
 pnpm build
 node --test tests/integration/repository-credentials-admission.test.mjs \
   tests/integration/repository-credentials-driver.test.mjs \
-  tests/integration/repository-runtime-materialization.test.mjs \
+  tests/integration/repository-runtime-materialization.test.ts \
   tests/integration/repository-credentials-router.test.mjs
 ```
 
@@ -122,8 +122,8 @@ docker build --builder default --load --pull=false \
   -f tests/fixtures/repository-credentials/Dockerfile.qualification \
   -t repository-credentials-qualification:test .
 REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
-  node --test tests/integration/repository-credentials-container.test.mjs \
-    tests/integration/repository-credentials-gh.test.mjs
+  node --test tests/integration/repository-credentials-container.test.ts \
+    tests/integration/repository-credentials-gh.test.ts
 ```
 
 The combined suite runs the emitted service/client cases, native Git paths, pinned
@@ -140,7 +140,7 @@ Build the runtime image from the candidate source and follow the
 
 ```sh
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
-  node --test tests/integration/repository-runtime-volume.test.mjs
+  node --test tests/integration/repository-runtime-volume.test.ts
 ```
 
 This tests the image-installed client and Docker mounts. An unset selector skips
@@ -153,7 +153,7 @@ With both delivered images built, run:
 ```sh
 REPOSITORY_CREDENTIALS_SERVICE_IMAGE=repository-credentials:local \
 REPOSITORY_CREDENTIALS_CLIENT_IMAGE=repository-credentials-client:local \
-  node --test tests/integration/repository-credentials-isolation.test.mjs
+  node --test tests/integration/repository-credentials-isolation.test.ts
 ```
 
 The test checks credential custody and Git/`gh` access through separate running

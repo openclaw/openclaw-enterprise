@@ -151,7 +151,7 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-managed-files.test.ts \
     tests/integration/runtime-image-native-listener.test.mjs \
-    tests/integration/repository-runtime-volume.test.mjs
+    tests/integration/repository-runtime-volume.test.ts
 ```
 
 All cases must pass without skips for the exact pair before installation. Repeat
@@ -231,7 +231,7 @@ image test files side by side.
 
 ## Repository runtime volume test environment
 
-The runtime suite includes `repository-runtime-volume.test.mjs`, which requires
+The runtime suite includes `repository-runtime-volume.test.ts`, which requires
 Docker `volume-subpath` support. It exercises the installed client and removes
 its owned container and volume. It does not prove Kubernetes fsGroup or live
 GitHub behavior.
