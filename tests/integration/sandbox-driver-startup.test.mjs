@@ -2,6 +2,8 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createOpenShellInstallationConfiguration } from "../helpers/openshell-kubernetes-real.mjs";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
+import { backendFor, openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
+import { verifyProtectedGitNetworkAdmission } from "./sandbox-driver-protected-git-network-admission.ts";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
@@ -20,7 +22,6 @@ import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import {
-  OpenShellGateway,
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
@@ -96,6 +97,7 @@ import { assertManagedMcpProjection } from "./sandbox-driver-managed-mcp-rules-c
 import { createSandboxStartupGuardChecks } from "./sandbox-driver-startup-guard-cases.ts";
 import {
   verifySharedBackendComposition,
+  verifyRejectedCredentialGatewayExecutable,
   verifyDedicatedHarnessSelection,
   verifyWorkspaceWrapperDiagnostics,
   verifyManagedNamespaceRejectsMutation,
@@ -126,7 +128,10 @@ import {
   verifyInitialWorkspaceAdmission,
   verifyMainWorkspaceMount,
 } from "./sandbox-driver-workspace-admission-cases.ts";
-import { verifyOperatorWorkspaceChart } from "./sandbox-driver-operator-chart-case.ts";
+import {
+  buildOperatorIngressManifests,
+  verifyOperatorWorkspaceChart,
+} from "./sandbox-driver-operator-chart-case.ts";
 import {
   verifyProtectedStartupRefusals,
   verifyProtectedChartListenerRefusals,
@@ -138,7 +143,7 @@ import {
   makeStructuralRefusal,
 } from "./sandbox-driver-installation-fixture.ts";
 import {
-  buildSandboxInstallation,
+  buildSandboxInstallation as sandboxInstallation,
   rejectsAtStartup,
 } from "./sandbox-driver-startup-installation-fixture.ts";
 import { verifyEndpointAdmission } from "./sandbox-driver-endpoint-admission-case.ts";
@@ -217,18 +222,6 @@ const controllerRequire = createRequire(
 const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
 const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
 
-function sandboxInstallation() {
-  return buildSandboxInstallation();
-}
-
-function backendFor(gatewayClient) {
-  return {
-    id: "openshell",
-    drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
-    client: new OpenShellGateway({ serviceName: "openshell-gateway" }, { gatewayClient }),
-  };
-}
-
 function harnessRuntimeCommand(program) {
   return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(program)];
 }
@@ -255,13 +248,6 @@ function kubernetesObjectClient(events) {
     ]);
   };
   return client;
-}
-
-function openShellDriver(gatewayClient, configuration) {
-  return new OpenShellSandboxDriver(
-    configuration ?? sandboxInstallation().drivers.sandbox.configuration,
-    { id: "openshell-sandbox", implementation: "openshell", backend: backendFor(gatewayClient) },
-  );
 }
 
 /** A dedicated Codex revision on `driver`; `n` is the 12-digit tail of its ids. */
@@ -533,11 +519,7 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
 });
 
 test("startup composes both OpenShell members from one Backend", async (t) => {
-  await verifySharedBackendComposition({
-    t,
-    sandboxInstallation,
-    OpenShellCredentialGatewayDriver,
-  });
+  await verifySharedBackendComposition(t);
 });
 
 test("startup pairs the Credential Refresh Driver with its gateway on one OpenShell Backend", async (t) => {
@@ -545,13 +527,7 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
 });
 
 test("startup identifies the rejected Credential Gateway executable", (t) =>
-  rejectsAtStartup(
-    t,
-    (c) => {
-      c.drivers.credential_gateway.configuration.toolBinaries = ["bin/curl"];
-    },
-    structuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
-  ));
+  verifyRejectedCredentialGatewayExecutable(t));
 
 test("startup rejects an OpenShell Backend whose members are not both selected", async (t) => {
   await rejectsAtStartup(
@@ -1038,18 +1014,12 @@ test("OpenShell builds managed MCP rules for the declared endpoint and upstream 
   };
   const provider = managedMcpProviderEndpoint(install);
   const network = managedMcpNetwork(install, ["read_inventory"]);
-  assertManagedMcpProjection({ endpoint, install, provider, network });
-  const policyWith = (port) => ({
-    [network.name]: network,
-    other: { endpoints: [{ host: "*.tools.example", ports: [port] }] },
+  assertManagedMcpProjection({
+    install,
+    provider,
+    network,
+    checkOverlap: (policies) => assertNoManagedMcpRouteOverlap(policies, install, [network.name]),
   });
-  assert.doesNotThrow(() =>
-    assertNoManagedMcpRouteOverlap(policyWith(443), install, [network.name]),
-  );
-  assert.throws(
-    () => assertNoManagedMcpRouteOverlap(policyWith(endpoint.port), install, [network.name]),
-    /overlaps the credentialed managed MCP endpoint/,
-  );
 });
 
 test("OpenShell limits a Slack connection to the revision's exact MCP tools and recovers after detach", async () => {
@@ -3206,42 +3176,7 @@ function recordingObjectApi(discovery) {
 // wire `from` of a workspace-chart policy was dropped and the rule lost its source restriction.
 test("OpenShell operator mode applies NetworkPolicy ingress sources through the SDK serializer", async () => {
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
-  // The stock OpenShell workspace chart's SSH policy as occ dev renders it, in wire form.
-  const ingress = [
-    {
-      from: [
-        {
-          namespaceSelector: {
-            matchLabels: { "kubernetes.io/metadata.name": "openshell-system" },
-          },
-          podSelector: { matchLabels: { "app.kubernetes.io/instance": "openshell-gateway" } },
-        },
-      ],
-      ports: [{ protocol: "TCP", port: 2222 }],
-    },
-  ];
-  const policy = (name) => ({
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    metadata: { name },
-    spec: {
-      podSelector: { matchLabels: { "openshell.ai/managed-by": "openshell" } },
-      policyTypes: ["Ingress"],
-      ingress: structuredClone(ingress),
-    },
-  });
-  // A provider CRD that is also named NetworkPolicy has no SDK model: the client sends it as
-  // written, so renaming its `from` would make the API server drop the field.
-  const crdIngress = [{ action: "Allow", ...structuredClone(ingress[0]) }];
-  const crdPolicy = {
-    apiVersion: "crd.antrea.io/v1beta1",
-    kind: "NetworkPolicy",
-    metadata: { name: "provider-crd-ingress" },
-    spec: {
-      appliedTo: [{ podSelector: { matchLabels: { "openshell.ai/managed-by": "openshell" } } }],
-      ingress: structuredClone(crdIngress),
-    },
-  };
+  const { ingress, policy, crdIngress, crdPolicy } = buildOperatorIngressManifests();
   configuration.gateway.operatorWorkspaceResources = [policy("openshell-workspace-sandbox-ssh")];
   configuration.gateway.networkPolicyResources = [policy("provider-ingress"), crdPolicy];
   const gatewayClient = workspaceGatewayClient();
@@ -3979,91 +3914,7 @@ test(
             backend: backendFor(gateway),
           });
 
-          // Finding 2144: an Agent network grant must not open a route beside the middleware either,
-          // on any port. Admission refuses it for a repository-bound Agent, naming the grant.
-          const allowed = {
-            id: "docs",
-            binary: "/usr/bin/curl",
-            host: "objects.githubusercontent.com",
-            ports: [{ from: 443, to: 443 }],
-          };
-          const repositoryScope = { repositoryCredentials: true };
-          assert.deepEqual(
-            sandbox.admitNetworkPolicy([allowed], 2, undefined, repositoryScope).additions,
-            [allowed],
-          );
-          for (const [host, port] of [
-            ["github.com", 22],
-            ["api.github.com", 443],
-            ["*.github.com", 443],
-            // Finding 2148: GitHub's other front ends under github.com skip the middleware too.
-            ["ssh.github.com", 443],
-            ["codeload.github.com", 443],
-          ]) {
-            const direct = {
-              ...allowed,
-              id: "git-direct",
-              host,
-              ports: [{ from: port, to: port }],
-            };
-            assert.throws(
-              () => sandbox.admitNetworkPolicy([allowed, direct], 2, undefined, repositoryScope),
-              {
-                name: "SandboxNetworkPolicyConflictError",
-                message: `OpenShell Git reaches github.com and its subdomains only through its middleware route, so an Agent with a repository binding cannot also allow them: remove network grant git-direct (${host}).`,
-              },
-              host,
-            );
-            // Without a repository binding, or without the Git route, the grant is admitted.
-            assert.equal(sandbox.admitNetworkPolicy([direct], 2).additions[0].host, host);
-            assert.equal(
-              routeless.admitNetworkPolicy([direct], 2, undefined, repositoryScope).additions[0]
-                .host,
-              host,
-            );
-          }
-          // Finding 2145: an IP-address grant may reach GitHub, so it is refused with its own message;
-          // without the Git route it stays an ordinary grant.
-          for (const host of ["140.82.112.3", "*.82.112.3", "0x8c.0x52.0x70.0x3", "2354212867"]) {
-            const address = { ...allowed, id: "git-address", host };
-            assert.throws(
-              () => sandbox.admitNetworkPolicy([allowed, address], 2, undefined, repositoryScope),
-              {
-                name: "SandboxNetworkPolicyConflictError",
-                message: `OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there, so an Agent with a repository binding cannot allow one: remove network grant git-address (${host}).`,
-              },
-              host,
-            );
-            assert.equal(sandbox.admitNetworkPolicy([address], 2).additions[0].host, host);
-          }
-          // Revision defaults get the same check; the Driver's own policies were checked at startup.
-          const defaults = sandbox.admitNetworkPolicy([], 1).defaults;
-          assert.throws(
-            () =>
-              sandbox.admitNetworkPolicy(
-                [],
-                1,
-                { ...defaults, mirror: { name: "mirror", endpoints: [{ host: "github.com" }] } },
-                repositoryScope,
-              ),
-            /remove sandbox network policy mirror \(github\.com\)\.$/,
-          );
-          for (const host of ["2606:50c0:8000::154", "[2606:50c0:8000::154]", "140.82.112.0/20"]) {
-            assert.throws(
-              () =>
-                sandbox.admitNetworkPolicy(
-                  [],
-                  1,
-                  { ...defaults, mirror: { name: "mirror", endpoints: [{ host }] } },
-                  repositoryScope,
-                ),
-              {
-                name: "SandboxNetworkPolicyConflictError",
-                message: `OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there, so an Agent with a repository binding cannot allow one: remove sandbox network policy mirror (${host}).`,
-              },
-              host,
-            );
-          }
+          const { allowed, defaults } = verifyProtectedGitNetworkAdmission(sandbox, routeless);
           // Backstop at provisioning: a revision admitted with such a grant never gets a Sandbox.
           const direct = {
             ...allowed,

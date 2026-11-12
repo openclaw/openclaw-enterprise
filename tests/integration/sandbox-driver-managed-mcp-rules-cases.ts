@@ -7,16 +7,17 @@ import type {
 type ManagedMcpInstall = Parameters<typeof managedMcpProviderEndpoint>[0];
 
 export function assertManagedMcpProjection({
-  endpoint,
   install,
   provider,
   network,
+  checkOverlap,
 }: {
-  endpoint: ManagedMcpInstall["endpoint"];
   install: ManagedMcpInstall;
   provider: ReturnType<typeof managedMcpProviderEndpoint>;
   network: ReturnType<typeof managedMcpNetwork>;
+  checkOverlap: (policies: ReturnType<typeof overlappingPolicy>) => void;
 }): void {
+  const { endpoint } = install;
   assert.deepEqual(provider, {
     ...endpoint,
     protocol: "mcp",
@@ -42,4 +43,16 @@ export function assertManagedMcpProjection({
       ],
     },
   ]);
+  assert.doesNotThrow(() => checkOverlap(overlappingPolicy(network, 443)));
+  assert.throws(
+    () => checkOverlap(overlappingPolicy(network, endpoint.port)),
+    /overlaps the credentialed managed MCP endpoint/,
+  );
+}
+
+function overlappingPolicy(network: ReturnType<typeof managedMcpNetwork>, port: number) {
+  return {
+    [network.name]: network,
+    other: { endpoints: [{ host: "*.tools.example", ports: [port] }] },
+  };
 }
