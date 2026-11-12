@@ -36,6 +36,7 @@
     "conformance/kubernetes-teardown-cases.ts",
     "integration/occ-api-injected-fixture.ts",
     "integration/occ-api-resource-route-cases.ts",
+    "integration/plugin-discovery-api-saved-agent-cases.ts",
     "integration/configuration-startup-validation-cases.ts",
     "integration/qa-agent-lifecycle-diagnostics-cases.ts",
     "integration/postgres-agent-provisioning-configuration-resend-cases.ts",
