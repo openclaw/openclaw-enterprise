@@ -197,6 +197,22 @@ async function timedPreparation(lane, phase, operation) {
     const elapsedMs = Math.round(performance.now() - started);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
+    if (
+      process.env.GITHUB_ACTIONS === "true" &&
+      lane === "k3d-model" &&
+      [
+        "postgres-start",
+        "k3d-cluster-preparation",
+        "image-build-or-reuse",
+        "runtime-image-preparation",
+        "gateway-routing",
+      ].includes(phase)
+    ) {
+      const outcome = succeeded ? "success" : "failure";
+      process.stderr.write(
+        `::notice title=k3d Model Runtime preparation::stage=${phase} elapsed_ms=${elapsedMs} outcome=${outcome}\n`,
+      );
+    }
     if (lane === "logging-collector" && phase === "image-pulls") {
       await recordLoggingSetupTiming("image-pulls", succeeded ? "success" : "failure", elapsedMs);
     }
@@ -218,6 +234,10 @@ async function timedPreparation(lane, phase, operation) {
       }
     }
   }
+}
+
+export function timedK3dModelPreparation(lane, phase, operation) {
+  return lane === "k3d-model" ? timedPreparation(lane, phase, operation) : operation();
 }
 
 function filePath(file) {
@@ -3333,13 +3353,15 @@ async function prepareK3dRuntimeImages(
         `Building the current ${images} image${needsController && needsRuntime ? "s" : ""}.`,
       );
     }
-    const built = await buildRuntimeImages(statePath, state, {
-      controller: needsController,
-      runtime: needsRuntime,
-      nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
-      reuseEngineImages,
-      runtimeArtifact,
-    });
+    const built = await timedK3dModelPreparation(state.lane, "image-build-or-reuse", () =>
+      buildRuntimeImages(statePath, state, {
+        controller: needsController,
+        runtime: needsRuntime,
+        nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
+        reuseEngineImages,
+        runtimeArtifact,
+      }),
+    );
     Object.assign(env, built.env);
     if (needsRuntime) {
       env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE = built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE;
@@ -4008,7 +4030,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
         buildRuntime: true,
         runtimeArtifact,
       });
-      const routing = await prepareGatewayRouting({ cluster, execFile });
+      const routing = await timedK3dModelPreparation(name, "gateway-routing", () =>
+        prepareGatewayRouting({ cluster, execFile }),
+      );
       Object.assign(env, routing.env);
       if (name === "k3d-otel") {
         await prepareLaneLogging(resolvedStatePath, state, env, cluster);
@@ -4246,10 +4270,14 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
 }
 
 async function prepareK3dModelLane(statePath, state, env, options) {
-  const cluster = await ensureK3dCluster(statePath, state);
+  const cluster = await timedK3dModelPreparation(state.lane, "k3d-cluster-preparation", () =>
+    ensureK3dCluster(statePath, state),
+  );
   // Register PostgreSQL after the cluster so cleanup removes its attached
   // container before k3d removes the network. Test files preserve this attachment.
-  await ensurePostgresServer(statePath, state);
+  await timedK3dModelPreparation(state.lane, "postgres-start", () =>
+    ensurePostgresServer(statePath, state),
+  );
   env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
   env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
   if (cluster.pluginStatusProxyCidrs !== undefined) {
@@ -4264,7 +4292,9 @@ async function prepareK3dModelLane(statePath, state, env, options) {
   if (cluster.runtimeHandler) {
     env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER = cluster.runtimeHandler;
   }
-  await prepareK3dRuntimeImages(statePath, state, cluster, env, options);
+  await timedK3dModelPreparation(state.lane, "runtime-image-preparation", () =>
+    prepareK3dRuntimeImages(statePath, state, cluster, env, options),
+  );
   return cluster;
 }
 
