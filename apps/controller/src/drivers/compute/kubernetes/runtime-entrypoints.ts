@@ -16,12 +16,18 @@ import {
   managedCredentialEnvironment,
 } from "../../sandbox/openshell-plugin-runtime.ts";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
-import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
+import {
+  PLUGIN_RUNTIME_TRANSLATOR_SOURCE,
+  PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE,
+} from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
-import { nodeProgramArguments } from "../node-program.ts";
+import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
+  DELIBERATE_RESTART_EXIT_STATUS,
+  DELIBERATE_RESTART_MESSAGE,
+  UNEXPLAINED_EXITS_MESSAGE,
   gatewayManagedModeEnvironment,
   gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
@@ -646,9 +652,9 @@ function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
 
 `;
 
-function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+function pluginRuntimeHelpers(includeOpenClawInstaller: boolean, publicGithubRead = false): string {
   return String.raw`
-const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
+const pluginRuntimeTranslator = (${publicGithubRead ? PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE : PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
   dirname: pluginDirname,
   resolve: pluginResolve,
@@ -2248,7 +2254,7 @@ function codexPluginStartupFailureCode(error) {
 `;
 }
 
-export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(true);
+export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(true, true);
 
 // Holds unready until an explicit restart; readiness polls never submit model calls.
 // A failed probe's cause is a closed kind and a fixed token, never native output,
@@ -2284,14 +2290,28 @@ function probeExitFailure({ error, status, signal }) {
 //
 // The probe is a whole embedded agent run. Its local work (Node and OpenClaw
 // boot, SQLite session state, cleanup) took about 16 CPU-seconds on the runtime
-// image, on one core however many it may use; --probe-timeout bounds the model
-// turn itself. A fixed 30-second cap let the example 500m CPU limit starve that
+// image, on one core however many it may use. --probe-timeout bounds OpenClaw's
+// whole isolated completion, its local agent preparation included, not only the
+// model turn. A fixed 30-second cap let the example 500m CPU limit starve that
 // local work into MODEL_PROBE_TIMEOUT before the turn finished. The cap is now
-// the 15-second turn, 5 seconds of slack, and 45 CPU-seconds of local work at
+// the 15-second timeout, 5 seconds of slack, and 45 CPU-seconds of local work at
 // the container's CPU limit (cgroup cpu.max, at most one core), at most 600 s.
-// A probe that still reaches it after waiting for CPU for over a quarter of the
+// A probe that reaches the cap after waiting for CPU for over a quarter of the
 // time reports MODEL_PROBE_CPU_STARVED: a restart would get the same CPU. The
-// wait is the larger of the cgroup cpu.pressure delta (throttling and node
+// same holds when OpenClaw's own timer fires first (status "timeout"), but its
+// window is only the last 15 s: Node and OpenClaw boot before it start, and at
+// 500m that boot alone is throttled 6-7 s of a ~24 s hung-provider probe, over a
+// quarter of the whole run. So a CLI timeout is judged on its window only, from
+// per-second samples a preload in the CLI takes: it is CPU starvation when over
+// a quarter of the window waited for CPU and no 5 s stretch of it was idle
+// (each second under a tenth waiting). A hung provider leaves the CLI idle for
+// most of the window; its own local work there at the limit still read up to
+// 26% waiting on a remote test VM, so the quarter alone misread 2 of 40 hung
+// probes (finding 2675). Without a window reading it stays MODEL_PROBE_TIMEOUT.
+// The preload (OPENCLAW_PROBE_CPU_WINDOW) samples the cgroup each second on the
+// CLI's main thread with the wrapper's own cpuWaitSample and, at exit, writes
+// the samples from the last one at least 15 s old, then the exit sample.
+// The wait is the larger of the cgroup cpu.pressure delta (throttling and node
 // contention) and the cpu.stat throttled time (throttling only), each used only
 // when both of its samples are valid: on one CI VM pressure read 8x low and hid
 // a starved probe as a timeout (finding 2271). throttled_usec adds up every
@@ -2311,18 +2331,14 @@ const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
 function probeOpenClawAuthenticationFailure() {
   const fs = require("node:fs");
-  const cgroup = (name) => { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } };
-  const [quota, period] = cgroup("cpu.max").split(" ");
-  const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
-  const sample = () => { const stat = cgroup("cpu.stat"); return [/^some .*total=(\d+)/m.exec(cgroup("cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000); };
-  const startedAt = Date.now(), before = sample();
+  const [quota, period] = cpuCgroupFile(fs, "cpu.max").split(" ");
+  const capMs = Math.min(600000, OPENCLAW_PROBE_TIMEOUT_MS + 5000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
+  const before = cpuWaitSample(fs);
   const cleanup = {};
   let code = runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;
   if (typeof code === "object") ({ code, cause, ...provider } = code);
-  const elapsedMs = Date.now() - startedAt, [pressure, throttled, periods] = sample().map((total, i) => { const wait = total - before[i]; return Number.isFinite(wait) && wait >= 0 ? wait : NaN; });
-  const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
-  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite), cpuWaitMs = waits.length ? Math.max(...waits) : NaN;
-  if (code === "CAP") code = cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
+  const { elapsedMs, cpuWaitMs, pressureWaitMs, throttledWaitMs } = cpuWaitBetween(before, cpuWaitSample(fs));
+  if (code === "CAP") code = cpuStarved(elapsedMs, cpuWaitMs);
   console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, pressureWaitMs, throttledWaitMs, code: code ?? "READY", cause, ...provider, ...cleanup }));
   return code === undefined ? undefined : { code, cause };
 }
@@ -2398,6 +2414,33 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
     ...upfrontToken("bodyShape", bodyShape, UPFRONT_BODY_SHAPES), ...upfrontToken("providerErrorCode", errorCode, [...UPFRONT_ERROR_CODES, "other"]), ...upfrontToken("providerErrorType", errorType, [...UPFRONT_ERROR_TYPES, "other"]) };
 }
 
+function cpuCgroupFile(fs, name) { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } }
+function cpuWaitSample(fs) {
+  const period = cpuCgroupFile(fs, "cpu.max").split(" ")[1], stat = cpuCgroupFile(fs, "cpu.stat");
+  return [Date.now(), ...[/^some .*total=(\d+)/m.exec(cpuCgroupFile(fs, "cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000)];
+}
+function cpuWaitBetween(before, after) {
+  const [elapsedMs, pressure, throttled, periods] = after.map((total, i) => { const wait = total - before[i]; return Number.isFinite(total) && Number.isFinite(before[i]) && wait >= 0 ? wait : NaN; });
+  const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
+  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite);
+  return { elapsedMs, cpuWaitMs: waits.length ? Math.max(...waits) : NaN, pressureWaitMs, throttledWaitMs };
+}
+const cpuStarved = (elapsedMs, cpuWaitMs) => (cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT");
+const OPENCLAW_PROBE_TIMEOUT_MS = 15000;
+const OPENCLAW_PROBE_CPU_WINDOW = (file) => "try{if(require(\"node:worker_threads\").isMainThread){const fs=require(\"node:fs\");" + cpuCgroupFile + cpuWaitSample +
+  "const a=[cpuWaitSample(fs)];setInterval(()=>a.push(cpuWaitSample(fs)),1000).unref();process.on(\"exit\",()=>{try{const e=cpuWaitSample(fs);fs.writeFileSync(" +
+  JSON.stringify(file) + ",JSON.stringify([...a.slice(Math.max(0,a.findLastIndex((s)=>s[0]<=e[0]-" + OPENCLAW_PROBE_TIMEOUT_MS + "))),e]))}catch{}})}}catch{}";
+function cpuWindowFailure(samples) {
+  const window = cpuWaitBetween(samples[0], samples.at(-1));
+  let idleMs = 0, stretchMs = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const step = cpuWaitBetween(samples[i - 1], samples[i]);
+    stretchMs = step.cpuWaitMs <= step.elapsedMs / 10 ? stretchMs + step.elapsedMs : 0;
+    idleMs = Math.max(idleMs, stretchMs);
+  }
+  return { code: idleMs < 5000 ? cpuStarved(window.elapsedMs, window.cpuWaitMs) : "MODEL_PROBE_TIMEOUT", timeoutWindowMs: window.elapsedMs, timeoutWindowCpuWaitMs: window.cpuWaitMs, timeoutWindowIdleMs: idleMs };
+}
+
 function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();
   const stage = (stage) => console.error(JSON.stringify({ event: "openclaw.model_probe_stage", stage, elapsedMs: Date.now() - stageStartedAt, capMs }));
@@ -2420,11 +2463,14 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     fs.mkdirSync(directory + "/workspace", { mode: 0o700 });
     const configPath = directory + "/openclaw.json";
     fs.writeFileSync(configPath, JSON.stringify(configuration), { mode: 0o600 });
+    const windowPath = directory + "/cpu-window.json";
+    fs.writeFileSync(directory + "/cpu-window.cjs", OPENCLAW_PROBE_CPU_WINDOW(windowPath), { mode: 0o600 });
     stage("spawn");
     const result = spawnSync("node", [
+      "--require", directory + "/cpu-window.cjs",
       "/app/openclaw.mjs", "models", "status", "--json", "--probe",
       "--probe-provider", provider, "--probe-concurrency", "1",
-      "--probe-timeout", "15000", "--probe-max-tokens", "256",
+      "--probe-timeout", String(OPENCLAW_PROBE_TIMEOUT_MS), "--probe-max-tokens", "256",
     ], {
       cwd: directory,
       env: {
@@ -2456,7 +2502,9 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     const status = results[0].status;
     if (status === "ok") return undefined;
     if (status === "auth") return "AUTHENTICATION_FAILED";
-    if (status === "timeout") return "MODEL_PROBE_TIMEOUT";
+    if (status === "timeout") {
+      try { return cpuWindowFailure(JSON.parse(fs.readFileSync(windowPath, "utf8"))); } catch { return "MODEL_PROBE_TIMEOUT"; }
+    }
     return { ...probeFailure("PROBE_STATUS", ["format", "rate_limit", "billing", "unknown", "no_model"].includes(status) ? status : "other"), ...providerErrorSummary(results[0].error) };
   } catch {
     return probeFailure("WRAPPER_ERROR");
@@ -2530,6 +2578,58 @@ const { spawn } = require("node:child_process");
 // OCE upgrades this runtime by rolling out a selected image.
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
+// Kubernetes Compute fails a crash-looping Gateway on the consecutive unexplained exits of
+// its container (finding 3041), which the kubelet does not keep. The wrapper counts them in
+// /tmp, the Pod's runtime-temporary emptyDir, which outlives a container restart but not the
+// Pod, and states the count in the termination message the kubelet records at exit. Each
+// start counts its own exit in advance, so an exit the wrapper never sees (an out-of-memory
+// kill) counts too; readiness counts from 1 again, and a deliberate restart (exit 75) clears
+// the count and states its reason instead. Only Kubernetes creates the termination log.
+const TERMINATION_LOG_PATH = "/dev/termination-log";
+const UNEXPLAINED_EXITS_PATH = "/tmp/.oce-unexplained-exits";
+const countsUnexplainedExits = (() => {
+  try {
+    return require("node:fs").existsSync(TERMINATION_LOG_PATH);
+  } catch {
+    return false;
+  }
+})();
+// Set once readiness or a deliberate restart has set the count for this instance's exit.
+let unexplainedExitsSettled = false;
+
+function writeTerminationMessage(message) {
+  if (!countsUnexplainedExits) return;
+  try {
+    require("node:fs").writeFileSync(TERMINATION_LOG_PATH, message);
+  } catch {}
+}
+
+// A count that cannot be saved only lowers the next start's count. The count is replaced
+// whole, so an exit during the write leaves the previous count, not a torn one.
+function countUnexplainedExits(count) {
+  if (!countsUnexplainedExits) return;
+  const fs = require("node:fs");
+  const pending = UNEXPLAINED_EXITS_PATH + ".pending";
+  try {
+    fs.writeFileSync(pending, String(count));
+    fs.renameSync(pending, UNEXPLAINED_EXITS_PATH);
+  } catch {
+    try {
+      fs.rmSync(pending, { force: true });
+    } catch {}
+  }
+  writeTerminationMessage(${JSON.stringify(UNEXPLAINED_EXITS_MESSAGE)} + count);
+}
+
+if (countsUnexplainedExits) {
+  let previous = 0;
+  try {
+    const saved = String(require("node:fs").readFileSync(UNEXPLAINED_EXITS_PATH, "utf8")).trim();
+    if (/^[0-9]{1,6}$/.test(saved)) previous = Number(saved);
+  } catch {}
+  countUnexplainedExits(previous + 1);
+}
+
 ${PLUGIN_RUNTIME_HELPERS}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
@@ -2580,7 +2680,13 @@ async function gatewayRuntimeReady() {
   }
   const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
   if (answers[1]) gatewayServed = true;
-  return answers.every((ready) => ready);
+  const ready = answers.every((answer) => answer);
+  if (ready && !unexplainedExitsSettled) {
+    // Earlier exits no longer make a crash loop; this instance's own exit would be the first.
+    unexplainedExitsSettled = true;
+    countUnexplainedExits(1);
+  }
+  return ready;
 }
 
 startPluginRuntimeStatusServer(gatewayRuntimeReady);
@@ -2904,12 +3010,22 @@ function pinCodexProviderTransport(config) {
       if (!Array.isArray(provider.models) || !provider.models.every(isPlainObject)) {
         throw new Error("The " + id + " model provider models setting must be a list of objects.");
       }
-      for (const model of provider.models) {
+      pinned.models = provider.models.map((model) => {
+        const kept = keepKeys(model, CODEX_MODEL_KEPT_KEYS);
+        // The pinned native adapter accepts these affirmative capabilities without
+        // declaring a request-transport override. Other compat fields can trigger
+        // a handoff to the Gateway-local runtime, including thinkingLevels.
+        const efforts = isPlainObject(model.compat) ? model.compat.supportedReasoningEfforts : undefined;
+        const keepsEfforts = Array.isArray(efforts) && efforts.length > 0 && efforts.every(
+          (effort) => typeof effort === "string" && /^(minimal|low|medium|high|xhigh|max|ultra)$/u.test(effort),
+        );
+        if (keepsEfforts) kept.compat = { supportedReasoningEfforts: efforts };
         for (const name of Object.keys(model)) {
+          if (name === "compat" && keepsEfforts && Object.keys(model.compat).length === 1) continue;
           if (!CODEX_MODEL_KEPT_KEYS.has(name)) overridden.add(row + "models[]." + name);
         }
-      }
-      pinned.models = provider.models.map((model) => keepKeys(model, CODEX_MODEL_KEPT_KEYS));
+        return kept;
+      });
     }
     // An openai row that names no transport keeps OpenClaw's default, which has
     // no credential in the Gateway, and Codex keeps owning its account's models.
@@ -3189,6 +3305,7 @@ let respawning = false;
 let waitingForPeerDuringOutage = false;
 let verifyingServingReplacement = false;
 let stoppingContainer = false;
+const DELIBERATE_RESTART_EXIT_STATUS = ${DELIBERATE_RESTART_EXIT_STATUS};
 let gatewayGeneration = 0;
 
 // OpenClaw backs up a config file it can write. One OCC mounted read-only is
@@ -3252,30 +3369,42 @@ function startGatewayProcess() {
       if (spawned === child) childRunning = false;
       resolve();
       if (stoppingContainer) {
-        process.exit(1);
+        process.exit(DELIBERATE_RESTART_EXIT_STATUS);
         return;
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
         if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
           return;
         }
-        process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
+        // A native exit never passes as a deliberate restart, which Compute does not count
+        // toward a crash loop.
+        process.exit(code === DELIBERATE_RESTART_EXIT_STATUS ? 1 : (code ?? (signal === "SIGTERM" ? 0 : 1)));
       }
     });
   });
   return Date.now();
 }
 
-// Fall back to a container restart, which the kubelet backs off.
-function stopContainer() {
+// Fall back to a container restart, which the kubelet backs off. The wrapper exits
+// DELIBERATE_RESTART_EXIT_STATUS, which Kubernetes Compute never counts toward a crash loop
+// (finding 3041), and names the reason in its log and in the container's termination message.
+function stopContainer(reason) {
   if (stoppingContainer) return;
   stoppingContainer = true;
+  logStartupPhase("container-restart", startupPhaseOrigin, "failed", reason);
+  unexplainedExitsSettled = true;
+  if (countsUnexplainedExits) {
+    try {
+      require("node:fs").rmSync(UNEXPLAINED_EXITS_PATH, { force: true });
+    } catch {}
+  }
+  writeTerminationMessage(${JSON.stringify(DELIBERATE_RESTART_MESSAGE)} + reason.toLowerCase().replaceAll("_", "-"));
   if (!childRunning) {
-    process.exit(1);
+    process.exit(DELIBERATE_RESTART_EXIT_STATUS);
     return;
   }
   stopNativeGateway(child, "SIGTERM");
-  setTimeout(() => process.exit(1), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
+  setTimeout(() => process.exit(DELIBERATE_RESTART_EXIT_STATUS), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
 }
 
 let pluginResult;
@@ -3354,7 +3483,7 @@ if (workspaceNodeBindingPath !== undefined) {
       stoppingForChangedWorkspaceNode = true;
       clearInterval(workspaceNodePoll);
       logStartupPhase("workspace-node-changed", startupPhaseOrigin);
-      stopContainer();
+      stopContainer("WORKSPACE_NODE_CHANGED");
       return;
     }
     firstSeenAt ??= Date.now();
@@ -3469,7 +3598,11 @@ if (followsPeerStatus) {
   // A changed Harness peer requires a new credential for the replacement and
   // may change the configured plugin result. Respawn only the native process:
   // the container, its volumes and runtime assets stay, and there is no kubelet
-  // crash-loop backoff.
+  // crash-loop backoff. A respawn that fails falls back to a deliberate container
+  // restart, named HARNESS_PEER_CHANGED when the peer kept changing or went away and
+  // HARNESS_PEER_RESPAWN_FAILED otherwise (a replacement that never served). A fresh
+  // container that cannot start then exits on its own, and that exit counts.
+  const peerChangeFailure = (message) => Object.assign(new Error(message), { peerChanged: true });
   const respawnForPeerStatus = async (current) => {
     respawning = true;
     // Mark plugin status unready before replacing the native Gateway.
@@ -3494,7 +3627,7 @@ if (followsPeerStatus) {
         recentRespawns.shift();
       }
       if (recentRespawns.length >= GATEWAY_RESPAWN_LIMIT) {
-        throw new Error("The Harness peer changed too often to respawn the Gateway in place.");
+        throw peerChangeFailure("The Harness peer changed too often to respawn the Gateway in place.");
       }
       recentRespawns.push(respawnStartedAt);
       await stopGatewayProcess();
@@ -3526,11 +3659,11 @@ if (followsPeerStatus) {
       }
       if (gatewayTerminating || !childRunning) return;
       if (verifiedPeer === undefined) {
-        throw new Error("The Harness peer became unavailable during Gateway startup.");
+        throw peerChangeFailure("The Harness peer became unavailable during Gateway startup.");
       }
       if (peerChanged(verifiedPeer)) {
         logStartupPhase("peer-verification-changed", respawnStartedAt, "failed");
-        throw new Error("The Harness peer changed during Gateway startup.");
+        throw peerChangeFailure("The Harness peer changed during Gateway startup.");
       }
       publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
       logStartupPhase("gateway-respawn", respawnStartedAt);
@@ -3539,7 +3672,7 @@ if (followsPeerStatus) {
       if (holdGatewayToolPolicyFailure(error)) {
         clearInterval(peerStatusPoll);
       } else {
-        stopContainer();
+        stopContainer(error?.peerChanged === true ? "HARNESS_PEER_CHANGED" : "HARNESS_PEER_RESPAWN_FAILED");
       }
     } finally {
       waitingForPeerDuringOutage = false;
@@ -3886,22 +4019,65 @@ function codexReadinessFailure(url, token) {
 }
 `;
 
+// Only newly admitted OpenShell PAT launches carry this transcript rule.
+const OPENSHELL_PAT_RECOVERY = String.raw`
+    function openShellPatRecovery(events) {
+      if (!providerManagedPat || protectedStartup || pluginRuntime?.manifest.providerTools === "none" ||
+          pluginRuntime?.manifest.modelEndpoint !== undefined) return;
+      // The released supervisor emits this exact object in either key order.
+      const error = "unsupported_l7_protocol";
+      const detail = "HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules";
+      const refusals = [{ error, detail }, { detail, error }].map(
+        (body) => "unexpected status 403 Forbidden: " + JSON.stringify(body) + ", url: wss://chatgpt.com/backend-api/codex/responses");
+      const errors = events.filter((event) => event.type === "error");
+      const upgrades = new Set(errors.filter(({ message }) => {
+        const retry = typeof message === "string" &&
+          /^Reconnecting\.\.\. ([1-9][0-9]?)\/([1-9][0-9]?) \(/.exec(message);
+        return retry && Number(retry[1]) <= Number(retry[2]) &&
+          Number(retry[2]) <= MAX_RECOVERED_STREAM_RETRIES &&
+          refusals.some((cause) => message === retry[0] + cause + ")");
+      }));
+      const advisories = new Set(events.filter((event) => event.type === "item.completed" &&
+        event.item?.type === "error" && refusals.some(
+          (cause) => event.item.message === "Falling back from WebSockets to HTTPS transport. " + cause)));
+      const advisoryIndex = events.findIndex((event) => advisories.has(event));
+      const singleThread = events[0]?.type === "thread.started" &&
+        !events.slice(1).some((event) => event.type === "thread.started");
+      const answerStart = singleThread && upgrades.size === errors.length && advisories.size === 1 &&
+        advisoryIndex > events.findLastIndex((event) => upgrades.has(event)) ? advisoryIndex + 1 : undefined;
+      return {
+        upgrades,
+        answerStart,
+        afterHttpsAdvisory(event) {
+          const boundary = events.slice(0, events.indexOf(event)).findLast((prior) =>
+            advisories.has(prior) || upgrades.has(prior) ||
+            ["thread.started", "turn.started", "turn.completed"].includes(prior.type));
+          return advisories.has(boundary);
+        },
+      };
+    }
+    const pat = openShellPatRecovery(events);
+    let deniedUpgrade;
+`;
+
 // Nested Codex children use their own plugin lifecycle. Keep standalone commands
 // stable while omitting the unused native installer from the bounded supervisor.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
-function agentRuntimeEntrypoint(
-  disableUnboundedConnectionRetries: boolean,
+function agentRuntimeEntrypoint({
+  protected: disableUnboundedConnectionRetries = false,
   computeOwned = false,
-  includeOpenClawInstaller = true,
-): string {
+  withNode = false,
+  patRecovery = false,
+} = {}): string {
+  const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${pluginRuntimeHelpers(includeOpenClawInstaller)}
+${pluginRuntimeHelpers(!withNode)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
@@ -4344,11 +4520,19 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     // of an attempt that exits 0 with an answer counts as recovered, like a stream notice.
     let transientFailure;
     let unrecoveredTransientFailure = false;
-    for (const event of events) {
+${patRecovery ? OPENSHELL_PAT_RECOVERY : ""}    for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
       const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event", modelId)
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed", modelId) : undefined;
-      // A protected profile (provider tools none) retries nothing, so its transient
+${
+  patRecovery
+    ? `      const upgradeDenied = pat?.upgrades.has(event);
+      if (event.type === "error" && typeof event.message === "string" &&
+          !event.message.startsWith("Reconnecting...") && codexAuthenticationRejected(event.message) &&
+          pat?.afterHttpsAdvisory(event)) return finish("AUTHENTICATION_FAILED");
+`
+    : ""
+}      // A protected profile (provider tools none) retries nothing, so its transient
       // failure is held like any other error event (finding 1599).
       if (failure?.transient === true && pluginRuntime?.manifest.providerTools !== "none") {
         transientFailure ??= failure;
@@ -4356,9 +4540,9 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
         continue;
       }
       if (event.type === "error") {
-        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
+        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || ${patRecovery ? "(!upgradeDenied && !isRecoveredNativeStreamError(event))" : "!isRecoveredNativeStreamError(event)"} ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(failure);
-        continue;
+${patRecovery ? "        if (upgradeDenied) deniedUpgrade = failure;\n" : ""}        continue;
       }
       if (event.type === "turn.failed") return finish(failure);
       if (!allowed.has(event.type) ||
@@ -4370,14 +4554,22 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     const answered = events.filter((event) => event.type === "turn.completed").length === 1 &&
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
-      events.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
+      events${patRecovery ? ".slice(deniedUpgrade === undefined ? 0 : pat.answerStart)" : ""}.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
         typeof event.item.text === "string" && event.item.text.trim().length > 0);
-    if (transientFailure !== undefined &&
-      (unrecoveredTransientFailure || !answered || result.status !== 0 || result.error)) return finish(transientFailure);
+${
+  patRecovery
+    ? `    const cleanExit = result.status === 0 && !result.error && (deniedUpgrade === undefined || !result.signal);
+    if (deniedUpgrade !== undefined && (pat.answerStart === undefined || !answered || !cleanExit)) {
+      return finish(deniedUpgrade);
+    }
+`
+    : ""
+}    if (transientFailure !== undefined &&
+      (unrecoveredTransientFailure || !answered || ${processFailed})) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.
     if (result.error?.code === "ETIMEDOUT") return finish("MODEL_PROBE_TIMEOUT");
     // A probe killed from outside (not by its own timeout) may pass on a second try.
-    if (result.status !== 0 || result.error) {
+    if (${processFailed}) {
       const exit = probeExitFailure(result);
       return finish(result.error === undefined && ["SIGKILL", "SIGTERM"].includes(result.signal) ? { ...exit, transient: true } : exit);
     }
@@ -4580,12 +4772,15 @@ if (!protectedStartup) {
 `;
 }
 
-export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
-export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint();
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ protected: true });
 // Compute owns these mutable Pod/process launches. Provider-owned immutable
 // Sandbox commands keep their existing bytes and provider readiness contract.
-export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false, true);
-export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true, true);
+export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ computeOwned: true });
+export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({
+  computeOwned: true,
+  protected: true,
+});
 
 const WORKSPACE_NODE_SETUP_CODE_HELPER = String.raw`
 // Match OpenShell's provider-file limit and the native connect target-file limit.
@@ -4667,7 +4862,7 @@ function completeSetupCode(payload) {
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 
-function agentWithNodeEntrypoint(entrypoint: string): string {
+function agentWithNodeEntrypoint(childArguments: readonly string[]): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
@@ -4982,7 +5177,7 @@ const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
   {
     name: "Codex",
-    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint)])},
+    args: ${JSON.stringify(["-e", ...childArguments])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
@@ -5115,19 +5310,94 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
+const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
+const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(false, false, false),
+  nodeProgramArguments(providerCodexChild),
 );
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(true, false, false),
+  nodeProgramArguments(protectedProviderCodexChild),
 );
-
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(false, true, false),
+  nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, computeOwned: true })),
 );
 export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(true, true, false),
+  nodeProgramArguments(
+    agentRuntimeEntrypoint({ withNode: true, computeOwned: true, protected: true }),
+  ),
 );
+
+let patEntrypoint: string | undefined;
+let compactPatLaunch: string | undefined;
+let compactProviderLaunch: string | undefined;
+let compactProtectedLaunch: string | undefined;
+
+function compactWorkspaceNodeLaunch(child: string): string {
+  return agentWithNodeEntrypoint(compactNodeChildArguments(child));
+}
+
+export interface CodexLaunch {
+  readonly providerOwned: boolean;
+  readonly protected: boolean;
+  readonly openShellProgram?: "pat" | "ordinary";
+  readonly withNode?: boolean;
+  readonly workspaceSetup?: boolean;
+  readonly publicGithubRead?: boolean;
+}
+
+export function codexLaunchEntrypoint(
+  {
+    providerOwned,
+    protected: protectedLaunch,
+    openShellProgram,
+    withNode,
+    workspaceSetup,
+    publicGithubRead,
+  }: CodexLaunch = { providerOwned: false, protected: false },
+): string {
+  if (publicGithubRead) {
+    const child = publicGithubReadEntrypoint(
+      agentRuntimeEntrypoint({
+        protected: protectedLaunch,
+        computeOwned: !providerOwned,
+        withNode: withNode === true,
+        patRecovery: providerOwned && !protectedLaunch && openShellProgram === "pat",
+      }),
+    );
+    if (!withNode) {
+      return child;
+    }
+    return providerOwned
+      ? compactWorkspaceNodeLaunch(child)
+      : agentWithNodeEntrypoint(nodeProgramArguments(child));
+  }
+  if (!providerOwned) {
+    if (protectedLaunch) {
+      return withNode
+        ? COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+        : COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
+    }
+    return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (!protectedLaunch && openShellProgram === "pat") {
+    if (withNode) {
+      return (compactPatLaunch ??= compactWorkspaceNodeLaunch(
+        agentRuntimeEntrypoint({ withNode: true, patRecovery: true }),
+      ));
+    }
+    return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
+  }
+  if (!withNode) {
+    return protectedLaunch ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (workspaceSetup && openShellProgram !== undefined) {
+    if (protectedLaunch) {
+      return (compactProtectedLaunch ??= compactWorkspaceNodeLaunch(protectedProviderCodexChild));
+    }
+    return (compactProviderLaunch ??= compactWorkspaceNodeLaunch(providerCodexChild));
+  }
+  return protectedLaunch ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT;
+}
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
@@ -5641,32 +5911,54 @@ if (pluginRuntime?.manifest?.publicGithubRead?.endpoint) {
   }
 }
 `;
-  return entrypoint.replace(
-    'const pluginRuntime = readPluginRuntime("codex");',
-    'const pluginRuntime = readPluginRuntime("codex");' + setup,
-  );
+  return entrypoint
+    .replace(PLUGIN_RUNTIME_TRANSLATOR_SOURCE, PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE)
+    .replace(
+      'const pluginRuntime = readPluginRuntime("codex");',
+      'const pluginRuntime = readPluginRuntime("codex");' + setup,
+    );
 }
-export const PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT =
-  publicGithubReadEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
-export const PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = publicGithubReadEntrypoint(
-  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
-);
-export const PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  publicGithubReadEntrypoint(agentRuntimeEntrypoint(false, false, false)),
-);
-export const PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  publicGithubReadEntrypoint(agentRuntimeEntrypoint(true, false, false)),
-);
-
-export const COMPUTE_PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT = publicGithubReadEntrypoint(
-  COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
-);
-export const COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = publicGithubReadEntrypoint(
-  COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
-);
-export const COMPUTE_PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  publicGithubReadEntrypoint(agentRuntimeEntrypoint(false, true, false)),
-);
-export const COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  publicGithubReadEntrypoint(agentRuntimeEntrypoint(true, true, false)),
-);
+export const PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: false,
+  publicGithubRead: true,
+});
+export const PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: true,
+  publicGithubRead: true,
+});
+export const PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: false,
+  publicGithubRead: true,
+  withNode: true,
+});
+export const PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: true,
+  publicGithubRead: true,
+  withNode: true,
+});
+export const COMPUTE_PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: false,
+  publicGithubRead: true,
+});
+export const COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: true,
+  publicGithubRead: true,
+});
+export const COMPUTE_PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: false,
+  publicGithubRead: true,
+  withNode: true,
+});
+export const COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: true,
+  publicGithubRead: true,
+  withNode: true,
+});

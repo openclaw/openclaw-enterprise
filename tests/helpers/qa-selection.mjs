@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "namespace-lifecycle": ["OpenClaw"],
+  "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
+  "scratch-volume": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
   "public-github-git": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
+  "harness-overrides": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
@@ -25,19 +29,22 @@ export function selectQaMatrix(env = process.env) {
   assert.ok(["all", "OpenClaw", "Codex"].includes(preset), "invalid QA preset selection");
   const allScenarios = Object.keys(scenarioPresets);
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
+  const defaultScenarios = allScenarios.filter(
+    (name) =>
+      ![
+        "namespace-lifecycle",
+        "oidc-agent-chat",
+        "sandbox-policy",
+        "scratch-volume",
+        "plugin-install",
+        "openshell-linear-read",
+        "codex-search-config",
+        "harness-overrides",
+        "public-github-git",
+      ].includes(name),
+  );
   const scenarios =
-    input === "all"
-      ? allScenarios.filter(
-          (name) =>
-            ![
-              "sandbox-policy",
-              "plugin-install",
-              "openshell-linear-read",
-              "codex-search-config",
-              "public-github-git",
-            ].includes(name),
-        )
-      : input.split(",").map((name) => name.trim());
+    input === "all" ? defaultScenarios : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
     "invalid QA scenario selection",
@@ -47,6 +54,12 @@ export function selectQaMatrix(env = process.env) {
   if (publicGithubGit) {
     assert.equal(scenarios.length, 1, "public-github-git requires an exclusive QA selection");
     assert.notEqual(installation, "kubernetes", "public-github-git uses a Compose control plane");
+  }
+  const oidcAgentChat = scenarios.includes("oidc-agent-chat");
+  if (oidcAgentChat) {
+    assert.equal(scenarios.length, 1, "oidc-agent-chat requires an exclusive QA selection");
+    assert.equal(installation, "kubernetes", "oidc-agent-chat requires Kubernetes");
+    assert.equal(preset, "OpenClaw", "oidc-agent-chat requires the OpenClaw preset");
   }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
@@ -68,18 +81,26 @@ export function selectQaMatrix(env = process.env) {
       scenarios: scenarios.filter(
         (scenario) =>
           ![
+            "namespace-lifecycle",
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
+            "harness-overrides",
+            "oidc-agent-chat",
             "public-github-git",
           ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
           ![
+            "namespace-lifecycle",
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
+            "harness-overrides",
+            "oidc-agent-chat",
             "public-github-git",
           ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
@@ -88,9 +109,13 @@ export function selectQaMatrix(env = process.env) {
       notApplicable: allScenarios.filter(
         (scenario) =>
           ![
+            "namespace-lifecycle",
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
+            "harness-overrides",
+            "oidc-agent-chat",
             "public-github-git",
           ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
@@ -121,6 +146,24 @@ export function selectQaMatrix(env = process.env) {
       ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
       : "OCC_TEST_QA_OPENAI_KEY_FILE",
   );
+  if (oidcAgentChat) {
+    requiredEnv.push(
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+      "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OPENAI_API_KEY",
+      "OCC_TEST_OPENAI_MODEL",
+      "OCC_TEST_GATEWAY_CA_CERT_PATH",
+      "OCC_TEST_GATEWAY_CA_KEY_PATH",
+      "OCC_TEST_KEYCLOAK_ISSUER",
+      "OCC_TEST_KEYCLOAK_SECRETS_FILE",
+      "OCC_TEST_KEYCLOAK_CA_CERT",
+      "OCC_TEST_KEYCLOAK_CONTAINER",
+      "NODE_EXTRA_CA_CERTS",
+    );
+  }
   if (codexSearchConfig || publicGithubGit) {
     if (publicGithubGit && !requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE")) {
       requiredEnv.push("OCC_TEST_QA_OPENAI_KEY_FILE");
@@ -137,15 +180,35 @@ export function selectQaMatrix(env = process.env) {
   if (publicGithubGit) {
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL");
   }
+  const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
   const sandboxPolicy = scenarios.includes("sandbox-policy");
+  const scratchVolume = scenarios.includes("scratch-volume");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const harnessOverrides = scenarios.includes("harness-overrides");
+  if (harnessOverrides) {
+    assert.notEqual(
+      installation,
+      "compose",
+      "Harness override proof requires Kubernetes with OpenShell",
+    );
+    requiredEnv.push(
+      "OCC_TEST_QA_HARNESS_ENDPOINT_A",
+      "OCC_TEST_QA_HARNESS_ENDPOINT_B",
+      "OCC_TEST_QA_HARNESS_KEY_FILE_A",
+      "OCC_TEST_QA_HARNESS_KEY_FILE_B",
+      "OCC_TEST_QA_HARNESS_MODEL",
+    );
+  }
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
+      namespaceLifecycle ||
       sandboxPolicy ||
+      scratchVolume ||
       pluginInstall ||
-      linearRead,
+      linearRead ||
+      harnessOverrides,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -160,8 +223,28 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (sandboxPolicy || pluginInstall) {
-    if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
+  if (namespaceLifecycle) {
+    assert.notEqual(installation, "compose", "Namespace lifecycle proof requires Kubernetes");
+    for (const key of ["OCC_TEST_QA_OPENAI_KEY_FILE", "OCC_TEST_QA_OPENAI_MODEL"]) {
+      if (!requiredEnv.includes(key)) {
+        requiredEnv.push(key);
+      }
+    }
+  }
+  if (scratchVolume) {
+    assert.notEqual(
+      installation,
+      "compose",
+      "Scratch volume proof requires Kubernetes with OpenShell",
+    );
+    for (const key of ["OCC_TEST_QA_OPENAI_KEY_FILE", "OCC_TEST_QA_OPENAI_MODEL"]) {
+      if (!requiredEnv.includes(key)) {
+        requiredEnv.push(key);
+      }
+    }
+  }
+  if (namespaceLifecycle || sandboxPolicy || pluginInstall || scratchVolume) {
+    if ((sandboxPolicy || pluginInstall) && !requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
     requiredEnv.push("OCC_TEST_QA_SANDBOX_ENV");
@@ -189,10 +272,15 @@ export function selectQaMatrix(env = process.env) {
   return {
     installations,
     exclusions,
+    namespaceLifecycle,
+    oidcAgentChat,
     sandboxPolicy,
+    scratchVolume,
     pluginInstall,
     linearRead,
     publicGithubGit,
+    harnessOverrides,
+    presets,
     cells,
     scenarios,
     requiredEnv,
@@ -202,7 +290,8 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 5
+      scenarios.length === defaultScenarios.length &&
+      defaultScenarios.every((name) => scenarios.includes(name))
         ? "full"
         : "partial:selected",
   };

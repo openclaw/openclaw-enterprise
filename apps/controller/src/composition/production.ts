@@ -1,29 +1,22 @@
+import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
-import type { AuditEvent } from "@openclaw-enterprise/contracts";
-import {
-  validateAuthAccountPrincipalSeed,
-  validatePersistedNativeIAMState,
-  type AuthPrincipalSeed,
-} from "@openclaw-enterprise/iam";
+import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
   createPostgresPool,
   OpenClawController,
-  PostgresHumanAuthentication,
   PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import {
-  betterAuthIssuer,
+  createPostgresAuthAccountProvisioner,
   createPostgresControllerAuth,
   type ClientAddressConfiguration,
-  type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
   type PasswordHasher,
   type PasswordSlowLaneFloors,
-  type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
 import type { ConsoleTheme } from "../console-theme.ts";
@@ -54,7 +47,6 @@ export interface ProductionConfig {
   readonly databaseUrl: string;
   readonly authSecret: string;
   readonly authBaseURL: string;
-  readonly github?: GitHubLoginConfiguration;
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
   /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
@@ -125,14 +117,8 @@ export async function composeProduction(
   }
 
   const driverId = installation.drivers.iam.id;
-  if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("GitHub sign-in does not support native administration.");
-  }
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
-  }
-  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("OIDC sign-in does not support native administration.");
   }
 
   let phaseStartedAt = performance.now();
@@ -162,83 +148,10 @@ export async function composeProduction(
     validatePersistedNativeIAMState(iamState);
     phaseCompleted("database");
     const iamDriver = createIAMDriver(state);
-    const auth = await createPostgresControllerAuth({
-      mode: config.mode,
+    const provisionAuthAccount = createPostgresAuthAccountProvisioner({
+      state,
       installationId: persistedInstallation.id,
-      secret: config.authSecret,
-      baseURL: config.authBaseURL,
-      ...(config.nativeAdmin?.enabled === true
-        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
-        : {}),
-      pool,
-      state,
-      iamDriver,
-      ...(config.github === undefined ? {} : { github: config.github }),
-      ...(config.google === undefined ? {} : { google: config.google }),
-      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
-      ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
-      ...(config.logger === undefined
-        ? {}
-        : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
-      ...(config.clientAddress === undefined ? {} : { clientAddress: config.clientAddress }),
-      ...(config.passwordSlowLaneFloors === undefined
-        ? {}
-        : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
-      ...(dependencies.passwordHasher === undefined
-        ? {}
-        : { passwordHasher: dependencies.passwordHasher }),
-      ...(config.logger === undefined
-        ? {}
-        : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),
-      ...(config.metrics === undefined
-        ? {}
-        : {
-            onUnmatchedCallback: (provider) =>
-              config.metrics!.observeUnmatchedSignInCallback(provider),
-          }),
     });
-    if (config.clientAddress === undefined && config.logger !== undefined) {
-      // No trusted proxy: every browser behind the ingress shares its address, so failed
-      // password sign-ins are limited per email only, and with external sign-in the start
-      // step has no per-client limit (callback and result key on browser cookies).
-      emitOccLogEvent(config.logger, {
-        event: "authentication.sign-in-limit-warning",
-        code: "TRUSTED_PROXY_NOT_CONFIGURED",
-      });
-    }
-    if (auth.activationSkipped !== undefined && config.logger !== undefined) {
-      emitOccLogEvent(config.logger, {
-        event: "authentication.activation-warning",
-        reason: "Accounts without a Principal or exactly one password were not enrolled.",
-        ...skippedUserLogFields(auth.activationSkipped),
-      });
-    }
-    if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
-      // Recovery-only password sign-in: these accounts cannot sign in until an
-      // administrator attaches a GitHub, Google or OIDC identity.
-      emitOccLogEvent(config.logger, {
-        event: "authentication.password-sign-in-warning",
-        code: "EXTERNAL_IDENTITY_MISSING",
-        ...skippedUserLogFields(auth.withoutExternalIdentity),
-      });
-    }
-    phaseCompleted("authentication");
-    const humanAuthentication = new PostgresHumanAuthentication(
-      state,
-      persistedInstallation.id,
-      betterAuthIssuer(persistedInstallation.id),
-    );
-    const provisionAuthAccount = async (
-      seed: AuthPrincipalSeed,
-      auditEvent: AuditEvent,
-      prepared: PreparedAuthAccount,
-      external?: { readonly providerId: string; readonly subject: string },
-    ) => {
-      const current = await state.loadNativeIAMState(persistedInstallation.id);
-      validateAuthAccountPrincipalSeed(seed, current, persistedInstallation.id);
-      // The account, its Principal and bindings, and its enrolment commit together.
-      await humanAuthentication.provisionPasswordAccount(prepared, seed, auditEvent, external);
-    };
 
     const principal = iamState.identities.find((identity) => identity.kind === "principal");
     if (
@@ -300,6 +213,7 @@ export async function composeProduction(
       persistedInstallation,
       {
         ...installationControllerOptions(config.drivers.installation),
+        namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         ...(config.drivers.pluginSourceReader === undefined
@@ -354,6 +268,67 @@ export async function composeProduction(
       controller.selectDriver("repo", repositoryPolicy.id);
     }
     await controller.validateBackendConfiguration();
+    await controller.applyIAMConfiguration();
+    const auth = await createPostgresControllerAuth({
+      mode: config.mode,
+      installationId: persistedInstallation.id,
+      secret: config.authSecret,
+      baseURL: config.authBaseURL,
+      agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
+      pool,
+      state,
+      iamDriver,
+      defaultUserGroupIds: controller.defaultUserGroupIds,
+      ...(config.google === undefined ? {} : { google: config.google }),
+      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
+      ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
+      ...(config.logger === undefined
+        ? {}
+        : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
+      ...(config.clientAddress === undefined ? {} : { clientAddress: config.clientAddress }),
+      ...(config.passwordSlowLaneFloors === undefined
+        ? {}
+        : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
+      ...(dependencies.passwordHasher === undefined
+        ? {}
+        : { passwordHasher: dependencies.passwordHasher }),
+      ...(config.logger === undefined
+        ? {}
+        : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),
+      ...(config.metrics === undefined
+        ? {}
+        : {
+            onUnmatchedCallback: (provider) =>
+              config.metrics!.observeUnmatchedSignInCallback(provider),
+          }),
+    });
+    if (config.clientAddress === undefined && config.logger !== undefined) {
+      // No trusted proxy: every browser behind the ingress shares its address, so failed
+      // password sign-ins are limited per email only, and with external sign-in the start
+      // step has no per-client limit (callback and result key on browser cookies).
+      emitOccLogEvent(config.logger, {
+        event: "authentication.sign-in-limit-warning",
+        code: "TRUSTED_PROXY_NOT_CONFIGURED",
+      });
+    }
+    if (auth.activationSkipped !== undefined && config.logger !== undefined) {
+      emitOccLogEvent(config.logger, {
+        event: "authentication.activation-warning",
+        reason: "Accounts without a Principal or exactly one password were not enrolled.",
+        ...skippedUserLogFields(auth.activationSkipped),
+      });
+    }
+    if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
+      // Recovery-only password sign-in: these accounts cannot sign in until an
+      // administrator attaches a Google or OIDC identity.
+      emitOccLogEvent(config.logger, {
+        event: "authentication.password-sign-in-warning",
+        code: "EXTERNAL_IDENTITY_MISSING",
+        ...skippedUserLogFields(auth.withoutExternalIdentity),
+      });
+    }
+    phaseCompleted("authentication");
     if (config.logger !== undefined) {
       for (const shadowed of config.drivers.shadowedDefaultPresets ?? []) {
         emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });
@@ -414,11 +389,13 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
     await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
+    const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {
-      await pool.query("SELECT 1");
+      await checkDatabaseReadiness();
       return { status: "ready" };
     });
     app.addHook("onClose", () => close(state));

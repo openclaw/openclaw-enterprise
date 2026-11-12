@@ -30,7 +30,7 @@ function revision(ordinal: number, pin: string | null = "plugin-codex"): Revisio
     agentId: "agent-test",
     revision: ordinal,
     compute: { id: "compute-test", implementation: "kubernetes-local" },
-    harness: { id: "codex", mode: "dedicated", version: "1.0.0" },
+    harness: { id: "codex", mode: "dedicated", version: "1.0.0", overrides: {}, configuration: {} },
     ...(pin === null
       ? {}
       : { plugins: { driver: { id: pin, implementation: "occ/codex-plugin" }, plugins: {} } }),
@@ -228,7 +228,16 @@ test("retirement frontiers preserve suspended old grants and separate exact admi
     { ...revision(20), revision: Number.MAX_SAFE_INTEGER + 1 },
     { ...revision(20), compute: { id: "foreign", implementation: "kubernetes-local" } },
     { ...revision(20), compute: { id: "compute-test", implementation: "" } },
-    { ...revision(20), harness: { id: "codex", mode: "embedded" as const, version: "1.0.0" } },
+    {
+      ...revision(20),
+      harness: {
+        id: "codex",
+        mode: "embedded" as const,
+        version: "1.0.0",
+        overrides: {},
+        configuration: {},
+      },
+    },
   ]) {
     const before = f.replacements;
     await assert.rejects(

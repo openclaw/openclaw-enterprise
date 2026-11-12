@@ -995,13 +995,26 @@ test("OpenShell client reports a refused CreateSandbox request_id from its Error
     );
     return { code: grpc.status.FAILED_PRECONDITION, details: `refused ${reason}`, metadata };
   };
+  const labelRefusal = "external resource not admitted by required labels";
+  const plainPreconditions = {
+    PLAIN: "provider 'x' not found",
+    PVC_LABELS: `PersistentVolumeClaim 'fixture/private-claim': ${labelRefusal}`,
+    CLASS_LABELS: `RuntimeClass 'private-class': ${labelRefusal}`,
+    REFLECTED: `reflected PersistentVolumeClaim 'fixture/private-claim': ${labelRefusal}`,
+  };
+  const metadataRefusal =
+    "create sandbox failed: gateway is forbidden from reading metadata for RuntimeClass 'private-class' (Kubernetes 403); check gateway RBAC";
   const server = new grpc.Server();
   server.addService(OpenShell.service, {
     CreateSandbox(call, callback) {
       const [reason, domain, code] = call.request.name.split("|");
+      if (reason === "CLASS_METADATA") {
+        callback({ code: grpc.status.INTERNAL, details: metadataRefusal });
+        return;
+      }
       callback(
-        reason === "PLAIN"
-          ? { code: grpc.status.FAILED_PRECONDITION, details: "provider 'x' not found" }
+        Object.hasOwn(plainPreconditions, reason)
+          ? { code: grpc.status.FAILED_PRECONDITION, details: plainPreconditions[reason] }
           : failure(reason, domain || undefined, code === undefined ? undefined : Number(code)),
       );
     },
@@ -1035,19 +1048,38 @@ test("OpenShell client reports a refused CreateSandbox request_id from its Error
       });
     }
     // Only OpenShell's own replay reasons are refusals; anything else is the handler's error.
-    for (const name of [
-      "REQUEST_OUTCOME_UNCERTAIN|example.com",
+    for (const [name, validationCategory] of [
+      ["REQUEST_OUTCOME_UNCERTAIN|example.com", "UNKNOWN"],
       // The details envelope must carry the same status code.
-      `REQUEST_OUTCOME_UNCERTAIN||${grpc.status.ABORTED}`,
-      "SANDBOX_INVALID",
-      "PLAIN",
+      [`REQUEST_OUTCOME_UNCERTAIN||${grpc.status.ABORTED}`, "UNKNOWN"],
+      ["SANDBOX_INVALID", "UNKNOWN"],
+      ["PLAIN", "UNKNOWN"],
+      ["PVC_LABELS", "PVC_ADMISSION_LABELS"],
+      ["CLASS_LABELS", "CLASS_ADMISSION_LABELS"],
+      ["REFLECTED", "UNKNOWN"],
     ]) {
       await assert.rejects(create(name), (error) => {
         assert.ok(!(error instanceof OpenShellRequestReplayRefusedError));
-        assert.equal(error.code, grpc.status.FAILED_PRECONDITION);
+        assert.ok(error instanceof DependencyUnavailableError);
+        assert.equal(error.message, "OpenShell CreateSandbox failed with gRPC status 9.");
+        assert.deepEqual(error.requestDiagnostic, {
+          method: "CreateSandbox",
+          grpcStatus: grpc.status.FAILED_PRECONDITION,
+          validationCategory,
+        });
         return true;
       });
     }
+    await assert.rejects(create("CLASS_METADATA"), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.equal(error.message, "OpenShell CreateSandbox failed with gRPC status 13.");
+      assert.deepEqual(error.requestDiagnostic, {
+        method: "CreateSandbox",
+        grpcStatus: grpc.status.INTERNAL,
+        validationCategory: "RESOURCE_METADATA_FORBIDDEN",
+      });
+      return true;
+    });
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));

@@ -108,8 +108,17 @@ proof selection, diff cleanup, and requested independent review.
 Maintainers retain their review, merge, and approved bypass permissions. When
 updating an assigned existing PR, keep its head repository and branch.
 
-Before publishing, verify the authenticated GitHub account with
-`gh api user --jq .login` and confirm it matches the requesting contributor.
+Before publishing with a personal credential, verify the authenticated GitHub
+account with `gh api user --jq .login` and confirm it matches the requesting
+contributor. For an explicitly delegated GitHub App installation task, verify the
+operator's approved App, installation and repository scope instead. Use the
+[verified App bot identity](docs/guides/repository-credentials/openshell-git-push.md#3-push-the-first-empty-commit-through-openclaw)
+for repository-local Git author settings. The
+[`/user` endpoint](https://docs.github.com/en/rest/users/users#get-the-authenticated-user)
+does not support installation tokens; its refusal does not establish that the
+repository credential is invalid. App delegation permits only the explicitly
+assigned repositories, branches and PRs.
+
 Inspect the actual fetch and push URLs with `git remote -v`; preserve existing
 remotes. Remote names do not establish ownership or the intended destination.
 Fetch the intended base before comparing or refreshing a branch.
@@ -166,8 +175,10 @@ either in one PR or as linked PRs merged in dependency order. Core team members
 do not wait for an RFC response unless a specific decision or hold requires it.
 
 Use `node scripts/pr-status.ts PR_NUMBER` to inspect a PR before the final
-checks. The command is read-only; it does not establish merge readiness. After
-the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
+checks. The command is read-only; it does not establish merge readiness. If the
+authenticated-user lookup is unavailable, it still reports the PR and checks,
+but marks the actor and account match unknown. Verify publishing authority
+separately. After the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
 PR number and final head, then merge from this checkout:
 
 ```sh
@@ -191,28 +202,46 @@ trailer where needed. Credit material review, documentation, and other non-code
 help in the PR description. Credit follows the work; running the merge does not
 make someone its author. Recognition does not grant repository permissions.
 
-The [contributor workflow](.github/workflows/contributors.yml) refreshes the README
-wall once when a PR merges into the default branch, including fork PRs. It does
-not run on each push or on unmerged closures. You can also run it manually from
-the Actions page. It checks out only the default branch and opens or updates one
-PR on `automation/contributors` when the generated README differs. This branch
-is reserved for generated updates; do not add manual commits to it.
+The [contributor workflow](.github/workflows/contributors.yml) is scheduled for
+Wednesday at 14:17 UTC. To run it before a release or to correct an omission,
+select the default branch on the Actions page. The workflow uses read-only
+repository permissions and stops if the default branch advances during or before
+collection. If the contributor wall is current, the run summary reports no
+changes. If the wall changes, the run uploads a README patch for review.
 
-To enable PR creation, a repository administrator must enable **Allow GitHub
-Actions to create and approve pull requests** under **Settings > Actions >
-General**. The workflow does not approve or merge PRs. PRs created with
-`GITHUB_TOKEN` do not start ordinary PR checks automatically; close and reopen
-the generated PR as a maintainer to start those checks before review and merge.
-No personal token or GitHub App secret is required.
+Download the patch from the run summary within three days. Check the run and
+attempt. In a clean checkout, compare both the upstream default-branch SHA and
+local HEAD with the base SHA in the summary. Start a fresh run if the upstream
+branch has advanced. Compare the patch SHA-256 with the summary.
 
-Before a release, or when correcting an omission, you can refresh the wall from
-the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated GitHub CLI:
+```sh
+git ls-remote --symref https://github.com/openclaw/openclaw-enterprise.git HEAD
+git status --porcelain
+git rev-parse HEAD
+shasum -a 256 /path/to/contributors.patch
+```
+
+Confirm that status is empty and that the patch changes only the README
+contributor block. Check that the patch applies, then apply it.
+
+```sh
+git apply --check --index /path/to/contributors.patch
+git apply --index /path/to/contributors.patch
+```
+
+Submit the change through a normal README-only PR with the usual checks and
+human review. Keep the historical `automation/contributors` branch reserved for
+generated updates.
+
+You can also refresh the wall locally. Run this command from the repository root
+with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated
+GitHub CLI:
 
 ```sh
 pnpm contributors:update
 ```
 
-You can also run `node scripts/update-contributors.ts` directly; the generator
+You can also run `node scripts/update-contributors.ts` directly. The generator
 uses only Node built-ins and does not require installing npm packages.
 
 The command needs only read access to repository metadata, contributors, pull

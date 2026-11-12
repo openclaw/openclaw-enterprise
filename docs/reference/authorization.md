@@ -56,10 +56,10 @@ is disabled. Creating an account does not create a Role or implicitly grant
 administrator rights.
 
 Administrators manage immutable Namespace Roles and exact-resource identity
-AccessBindings through the [Namespace policy APIs](#manage-namespace-policy).
-Group, membership, Restriction, and broad grant management remain unavailable
-through the Namespace policy API. Its creation requests are narrower than the
-internal policy models below.
+AccessBindings through the [Namespace policy APIs](#manage-namespace-policy),
+which do not manage Groups, memberships, Restrictions, or broad grants. The
+Installation configuration declares the
+[Default users](authorization/default-users.md) Groups and bindings.
 
 ## Principals
 
@@ -279,9 +279,11 @@ placeholders with the returned Role's `id`, the Agent's immutable
 ```
 
 The Role permits `operate` on the **Secret kind**; the binding limits that grant
-to **one Secret ID**. Another Secret needs another binding. Neither JSON object
-contains a Secret value. For the CLI steps, see
+to **one Secret ID**. Another Secret needs another binding. For the CLI steps, see
 [Let an Agent use a Secret](../guides/topics/iam.md#let-an-agent-use-a-secret).
+A caller who can
+[operate the Secret](authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
+writes them by deploying.
 
 The subject must be an existing human Principal or a ServicePrincipal in the
 path Namespace, by its ID: an email address is refused with a message that says
@@ -290,7 +292,7 @@ ServicePrincipal.
 The Role and target must exist in the path Namespace. `namespace` Permissions
 support only `read`; for a `namespace` target, `resourceId` must equal the
 Namespace ID in the path.
-Agent revision `read` needs an `agent_revision` target, not its parent Agent. A
+An exact Agent binding also covers that Agent's revisions and sandbox policy. A
 ServiceAccount resource is not an IAM identity. Caller IDs, scope, wildcard
 targets, Groups, and unknown permissions are rejected. An invalid Permission,
 or a subject, Role or target that is not usable in the path Namespace (including an Agent being

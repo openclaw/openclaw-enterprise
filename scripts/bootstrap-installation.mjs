@@ -19,7 +19,7 @@ import {
 } from "../packages/occ/src/index.ts";
 import { isName, NAME_RULE } from "../packages/contracts/src/index.ts";
 import { createOccLogger, emitOccLogEvent } from "../apps/controller/src/logging.ts";
-import { loadOperationalLoggingConfiguration } from "../apps/controller/src/composition/installation-config.ts";
+import { loadOperationalLoggingConfiguration } from "../apps/controller/src/composition/startup-file.ts";
 import {
   bootstrapConfiguration,
   bootstrapFailureCode,
@@ -104,9 +104,9 @@ async function createAuth(pool, config, installationId) {
     mode: config.mode,
     installationId,
     baseURL: config.auth.baseURL,
+    agentDomain: config.auth.agentDomain,
     secret: config.auth.secret,
     pool,
-    secureCookies: config.mode === "production" && !config.auth.baseURL.startsWith("http://"),
   });
 }
 

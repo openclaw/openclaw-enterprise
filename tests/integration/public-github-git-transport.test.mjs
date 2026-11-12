@@ -44,8 +44,9 @@ const helper = fileURLToPath(
 // The launcher verifies the delivered source bytes before running the installer.
 const insertion = 'const pluginRuntime = readPluginRuntime("codex");';
 const setupOffset = AGENT_RUNTIME_ENTRYPOINT.indexOf(insertion) + insertion.length;
+const publicSetupOffset = PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.indexOf(insertion) + insertion.length;
 const materialSetup = PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.slice(
-  setupOffset,
+  publicSetupOffset,
   PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.length - (AGENT_RUNTIME_ENTRYPOINT.length - setupOffset),
 );
 const materialProgram = `const {spawnSync} = require("node:child_process");
@@ -947,15 +948,6 @@ test("managed API uses verified HTTP and HTTPS proxies without bypass or startup
   const env = await fixture.install();
   const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
   const args = [script, "--api-get", "/repos/example/project/pulls/27"];
-  if (process.platform === "linux") {
-    // Reproduce Node's documented runtime state after /proc/self/exe lookup
-    // fails. The real helper, spawn, TLS and authorization remain unmodified.
-    args.unshift(
-      "--input-type=module",
-      "-e",
-      'process.execPath = "node"; await import(process.argv[1]);',
-    );
-  }
   const poisonedPath = path.join(fixture.directory, "poisoned-bin");
   await mkdir(poisonedPath);
   const poisonedNode = path.join(poisonedPath, "node");
@@ -1076,6 +1068,44 @@ test("managed API uses verified HTTP and HTTPS proxies without bypass or startup
           "proxy-only platform roots cannot authenticate the origin",
         );
       }
+    }
+    if (process.platform === "linux") {
+      await t.test(`bare Node executable with ${secure ? "HTTPS" : "HTTP"} proxy`, async () => {
+        // Runtime images install Node in these trusted directories. A development
+        // host may use a version manager instead; that host must refuse the bare
+        // executable without trying the poisoned ambient PATH or an origin.
+        let trustedNode = true;
+        try {
+          await execute("node", ["--version"], {
+            env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
+          });
+        } catch (error) {
+          assert.equal(error.code, "ENOENT");
+          trustedNode = false;
+        }
+        const bareArgs = [
+          "--input-type=module",
+          "-e",
+          'process.execPath = "node"; await import(process.argv[1]);',
+          ...args,
+        ];
+        const requests = fixture.requests.length;
+        if (trustedNode) {
+          const result = await execute(process.execPath, bareArgs, { env: context });
+          assert.equal(JSON.parse(result.stdout).title, "provider-only-pull");
+        } else {
+          await assert.rejects(
+            execute(process.execPath, bareArgs, { env: context }),
+            (error) =>
+              error.code === 1 &&
+              error.stdout === "" &&
+              error.stderr.includes("public-git-refusal:child-dispatch:ENOENT") &&
+              !error.stderr.includes(fixture.token),
+          );
+          assert.equal(fixture.requests.length, requests);
+        }
+        await assert.rejects(readFile(poisonedNode + ".called"), { code: "ENOENT" });
+      });
     }
     // Empty lowercase selection intentionally means direct, even with an invalid
     // higher-priority-looking uppercase value and inherited bypass settings.

@@ -1,3 +1,8 @@
+import {
+  registerStartupDiagnosticsCases,
+  registerStartupPresetCases,
+} from "./configuration-startup-validation-cases.ts";
+import { reconcileNamespaceLifecycle } from "../../packages/occ/src/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import {
   createHash,
@@ -69,7 +74,8 @@ const productionServer = {
   OCC_HOST: "192.0.2.10",
   OCC_PORT: "8080",
   OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-  OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+  OCC_AUTH_BASE_URL: "https://console.example.test",
+  OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
 };
 
 // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
@@ -362,309 +368,7 @@ test("Installation startup validates the optional external observability URL", a
   );
 });
 
-test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
-  const cases = [
-    [
-      (configuration) => {
-        configuration.drivers.compute.configuration.authentication = {
-          mode: "kubeconfig",
-          kubeconfigPath: "/etc/kube/config",
-        };
-      },
-      [
-        {
-          path: "/authentication/context",
-          code: "REQUIRED",
-          message: "Explicit Kubernetes context must be explicitly configured.",
-        },
-      ],
-    ],
-    [
-      (configuration) => {
-        configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
-      },
-      [
-        {
-          path: "/runtime/gatewayStorageClassName",
-          code: "INVALID_FORMAT",
-          message:
-            "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
-        },
-      ],
-    ],
-    [
-      (configuration) => {
-        configuration.sandboxNetworkPolicyCeiling = {};
-      },
-      [
-        {
-          path: "/sandboxNetworkPolicyCeiling",
-          code: "INVALID_TYPE",
-          message: "Configuration does not satisfy type.",
-        },
-      ],
-    ],
-    [
-      (configuration) => {
-        configuration.sandboxNetworkPolicyCeiling = [
-          {
-            id: "ceiling-control",
-            binary: "/usr/bin/python3.11",
-            host: "ceiling.example.test",
-            ports: [{ from: 444, to: 443 }],
-          },
-        ];
-      },
-      [
-        {
-          path: "/sandboxNetworkPolicyCeiling/0/ports/0/to",
-          code: "INVALID_RANGE",
-          message: "The end port must be at least the start port.",
-        },
-      ],
-    ],
-  ];
-  // All three entrypoints map a ConfigurationValidationError to the code and its details with
-  // the same function, so, as in the observability test, the last case boots them for real.
-  // The others reach the loader all three call with the file (production mode) and get that
-  // function's one-line diagnostic.
-  for (const [index, [mutate, details]] of cases.entries()) {
-    const configuration = installation();
-    configuration.occ.cluster = "production-west";
-    mutate(configuration);
-    const path = await fixture(t, configuration);
-    if (index < cases.length - 1) {
-      await assert.rejects(
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: path },
-        }),
-        (error) => {
-          assert.ok(error instanceof ConfigurationValidationError, String(error));
-          const line = formatStartupConfigurationFailure(error);
-          assert.match(line, /^DRIVER_CONFIGURATION_INVALID: /);
-          assert.deepEqual(
-            JSON.parse(line.slice("DRIVER_CONFIGURATION_INVALID: ".length)),
-            details,
-          );
-          assert.ok(!line.includes(path));
-          assert.doesNotMatch(line, /Bad_Class|ceiling\.example\.test|\/additions/);
-          return true;
-        },
-      );
-      continue;
-    }
-    const environment = {
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: path,
-      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-      OCC_HOST: "192.0.2.10",
-      OCC_PORT: "8080",
-      OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-      OCC_AUTH_BASE_URL: "https://console.example.test",
-    };
-    // All three entrypoints reject before persistence. Ceiling errors must name
-    // the Installation input, including its array index, rather than the Agent wrapper.
-    await settled(
-      [
-        ["apps/controller/src/server.mjs", "startup-error"],
-        ["apps/controller/src/worker.mjs", "worker.startup-error"],
-        ["deploy/helm/openclaw-enterprise/files/check-installation.mjs", null],
-      ].map(async ([script, event]) => {
-        const result = await boot(script, environment, 15_000);
-        assert.equal(result.status, 1);
-        if (event === null) {
-          assert.match(result.stderr, /^installation-check:.*DRIVER_CONFIGURATION_INVALID: /);
-        }
-        const diagnostic =
-          event === null
-            ? {
-                code: "DRIVER_CONFIGURATION_INVALID",
-                details: JSON.parse(
-                  result.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1],
-                ),
-              }
-            : startupDiagnostic(result.stderr, event);
-        assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID");
-        assert.deepEqual(diagnostic.details, details);
-        assert.ok(!result.stderr.includes(path));
-        assert.doesNotMatch(
-          result.stderr,
-          /Bad_Class|ceiling\.example\.test|\/additions|PERSISTENCE_UNAVAILABLE/,
-        );
-      }),
-    );
-  }
-});
-
-test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
-  const configuration = installation();
-  configuration.occ.cluster = "production-west";
-  const path = await fixture(t, configuration);
-  const shared = {
-    PATH: process.env.PATH,
-    NODE_ENV: "production",
-    OCC_CONFIG_PATH: path,
-    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-  };
-  const processes = [
-    [
-      "apps/controller/src/server.mjs",
-      "startup-error",
-      {
-        ...shared,
-        OCC_HOST: "192.0.2.10",
-        OCC_PORT: "8080",
-        OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-        OCC_AUTH_BASE_URL: "https://console.oce.example.internal",
-      },
-    ],
-    ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
-  ];
-  // Each real case boots both processes on its own copy of the file, concurrently.
-  const refuses = async (file, code, label) =>
-    settled(
-      processes.map(async ([script, event, env]) => {
-        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file });
-        assert.equal(result.status, 1, script);
-        assert.ok(!result.stderr.includes(file), result.stderr);
-        const diagnostic = startupDiagnostic(result.stderr, event);
-        assert.equal(diagnostic.code, code, `${script} ${label}`);
-        return diagnostic;
-      }),
-    );
-  // One real pair per refusal message the startup code mappings tell apart: the first input
-  // of each family. Its other inputs go through the loader both processes call with the file
-  // (production mode) before they open PostgreSQL; the message is what maps to the code.
-  const cases = [];
-  const check = (code, inputs) => {
-    for (const [index, [label, message, apply]] of inputs.entries()) {
-      apply();
-      cases.push(
-        fixture(t, structuredClone(configuration)).then(async (copy) => {
-          if (index > 0) {
-            await assert.rejects(
-              loadInstallationConfiguration({
-                mode: "production",
-                environment: { OCC_CONFIG_PATH: copy },
-              }),
-              Array.isArray(message)
-                ? (error) => {
-                    assert.ok(error instanceof ConfigurationValidationError, label);
-                    assert.deepEqual(error.error.details, message, label);
-                    return true;
-                  }
-                : message,
-              label,
-            );
-            return;
-          }
-          for (const diagnostic of await refuses(copy, code, label)) {
-            assert.equal(diagnostic.message, undefined, label);
-            if (Array.isArray(message)) {
-              assert.deepEqual(diagnostic.details, message, label);
-            }
-          }
-        }),
-      );
-    }
-  };
-  for (const [message, urls] of [
-    [
-      /observability\.url IPv4 host must be four decimal octets/,
-      ["http://192.168.1", "http://2130706433"],
-    ],
-    [
-      /observability\.url must not contain user info/,
-      ["http://@grafana.example.internal/d", "http://@192.168.1.1"],
-    ],
-    [
-      /observability\.url must be an absolute HTTP/,
-      [
-        "javascript:alert(1)",
-        syntheticCredentialUrl({
-          username: "user",
-          password: "",
-          host: "grafana.example.internal",
-        }),
-      ],
-    ],
-    [
-      /observability\.url must not contain a tab/,
-      [
-        "http://good.example\tevil.com/x",
-        "http://evil.com\\.good.example/path",
-        "http://good.example\nevil.com/x",
-      ],
-    ],
-  ]) {
-    check(
-      "OBSERVABILITY_URL_INVALID",
-      urls.map((url) => [
-        url,
-        message,
-        () => {
-          configuration.observability = { url };
-        },
-      ]),
-    );
-  }
-  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
-  // other reference its parser refuses, such as one with .. in the path. The real pairs take
-  // a Gateway image for one message and an Agent image for the other.
-  configuration.observability = { url: "http://192.168.1.1" };
-  const images = configuration.drivers.compute.configuration.images;
-  const original = { ...images };
-  const uppercase = (image) =>
-    image.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase());
-  const dotted = (image) => image.replace(/^([^/]*\/)/, "$1re..po/");
-  const refusedImage = (role, refuse, message) => [
-    `${role} ${refuse(original[role])}`,
-    [{ path: `/images/${role}`, code: "INVALID_FORMAT", message }],
-    () => {
-      Object.assign(images, original);
-      images[role] = refuse(original[role]);
-      assert.notEqual(images[role], original[role]);
-    },
-  ];
-  check("DRIVER_CONFIGURATION_INVALID", [
-    refusedImage(
-      "gateway",
-      uppercase,
-      "Gateway image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.",
-    ),
-    refusedImage(
-      "agent",
-      uppercase,
-      "Agent image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.",
-    ),
-  ]);
-  check("DRIVER_CONFIGURATION_INVALID", [
-    refusedImage(
-      "agent",
-      dotted,
-      "Agent image must be a container image reference Kubernetes can pull.",
-    ),
-    refusedImage(
-      "gateway",
-      dotted,
-      "Gateway image must be a container image reference Kubernetes can pull.",
-    ),
-  ]);
-  Object.assign(images, original);
-  configuration.observability = { url: "http://192.168.1.1" };
-  cases.push(
-    writeFile(path, JSON.stringify(configuration), "utf8").then(() =>
-      refuses(path, "PERSISTENCE_UNAVAILABLE", "valid"),
-    ),
-  );
-  await settled(cases);
-  const corrected = JSON.parse(await readFile(path, "utf8"));
-  assert.equal(corrected.occ.cluster, "production-west");
-  assert.equal(corrected.observability.url, "http://192.168.1.1");
-});
-
+registerStartupDiagnosticsCases({ boot, fixture, readFile, settled });
 test("Installation startup declares native worker support only as a custom runtime image", async (t) => {
   const configuration = installation();
   const path = await fixture(t, configuration);
@@ -845,21 +549,29 @@ test("repository startup constructs the same local resolver without a private so
     mode: "production",
     environment: { OCC_CONFIG_PATH: path },
   });
-  assert.equal(api.repositoryPolicy.capability, "repo");
-  // The capability name does not replace the operator's opaque Driver identity.
-  assert.equal(api.repositoryPolicy.id, "repository-credentials");
-  assert.equal(worker.repositoryPolicy.id, api.repositoryPolicy.id);
-  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repositoryPolicy.id });
+  for (const runtime of [api, worker]) {
+    assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+    assert.equal(Object.hasOwn(runtime.installation.drivers, "repo"), false);
+    assert.equal(runtime.repositoryAdmission.policyMode, "built-in");
+    assert.equal(runtime.repositoryAdmission.backendId, registry.backendId);
+  }
+  const policy = api.repositoryAdmission.policy;
+  const workerPolicy = worker.repositoryAdmission.policy;
+  assert.equal(policy.capability, "repo");
+  // The capability name does not replace the operator's opaque policy identity.
+  assert.equal(policy.id, "repository-credentials");
+  assert.equal(workerPolicy.id, policy.id);
+  assert.deepEqual(api.installation.backend[0].drivers, { repo: policy.id });
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
-  assert.equal(api.installation.repository.implementation, api.repositoryPolicy.implementation);
+  assert.equal(api.installation.repository.implementation, policy.implementation);
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
-  const resolved = api.repositoryPolicy.resolve(selection);
-  assert.deepEqual(worker.repositoryPolicy.resolve(selection), resolved);
+  const resolved = policy.resolveBindings(selection);
+  assert.deepEqual(workerPolicy.resolveBindings(selection), resolved);
   assert.equal(resolved.bindings[0].profile, "git-write");
   assert.equal(resolved.bindings[0].grant.repositoryId, "34567");
   assert.equal(resolved.sessionDurationSeconds, 600);
   assert.throws(
-    () => api.repositoryPolicy.resolve({ ...selection, namespaceId: "ns_other" }),
+    () => policy.resolveBindings({ ...selection, namespaceId: "ns_other" }),
     /permitted/,
   );
   const chatgpt = chatgptInstallation();
@@ -1421,6 +1133,13 @@ test("production embedded replacements preserve their active Service across fail
     servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
+  predecessor.harness = { ...harness, overrides: {} };
+  predecessor.harness.configuration = computeDriver.resolveHarnessConfiguration(
+    predecessor.harness,
+    predecessor.harnessAuth,
+    predecessor.configuration,
+  );
+  predecessor.compute.admission = computeDriver.admitRevision(predecessor);
   const candidate = {
     ...predecessor,
     id: `rev_production-${harness.mode}-candidate`,
@@ -1816,6 +1535,8 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
     boot("apps/controller/src/server.mjs", {
       PATH: process.env.PATH,
       NODE_ENV: "development",
+      OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_CONFIG_PATH: path,
       OCC_HOST: "127.0.0.1",
       OCC_PORT: "8080",
@@ -1980,287 +1701,12 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
   }
 });
 
-test("Installation default Presets are opt-in and reject ambiguous YAML settings", async (t) => {
-  for (const presets of [undefined, {}, { includeDefaults: false }]) {
-    const configuration = installation();
-    if (presets !== undefined) {
-      configuration.presets = presets;
-    }
-    const loaded = await loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    });
-    assert.deepEqual(loaded.defaultPresets, []);
-  }
-  const enabled = installation();
-  enabled.presets = { includeDefaults: true };
-  const enabledRuntime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, enabled) },
-  });
-  assert.deepEqual(enabledRuntime.defaultPresets.map((preset) => preset.name).sort(), [
-    "Standard Codex",
-    "Standard OpenClaw",
-    "default-codex",
-  ]);
-  for (const presets of [
-    { includeDefaults: "true" },
-    { includeDefaults: 1 },
-    { includeDefault: true },
-    { files: "preset.json" },
-    { files: [1] },
-    { files: [""] },
-    null,
-  ]) {
-    const configuration = installation();
-    configuration.presets = presets;
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      }),
-      /presets/,
-    );
-  }
-});
-
-test("an Installation Preset file named like a bundled default replaces that default", async (t) => {
-  // default-codex became a bundled default after operators could already name a file
-  // default-codex. Startup must keep the operator's file instead of refusing to start.
-  const operatorCodex = {
-    name: "default-codex",
-    template: { agent: { name: "Operator Codex", executionMode: "dedicated" } },
-  };
-  const configuration = installation();
-  configuration.presets = { includeDefaults: true, files: ["presets/codex.json"] };
-  const path = await fixture(t, configuration);
-  await mkdir(join(dirname(path), "presets"), { recursive: true });
-  const presetPath = join(dirname(path), "presets", "codex.json");
-  await writeFile(presetPath, JSON.stringify(operatorCodex));
-  const runtime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.deepEqual(runtime.defaultPresets.map((preset) => preset.name).sort(), [
-    "Standard Codex",
-    "Standard OpenClaw",
-    "default-codex",
-  ]);
-  assert.deepEqual(
-    runtime.defaultPresets.find((preset) => preset.name === "default-codex").template,
-    operatorCodex.template,
-  );
-  // The resolved path names the file the operator must keep or rename.
-  assert.deepEqual(runtime.shadowedDefaultPresets, [
-    { presetName: "default-codex", presetFile: presetPath },
-  ]);
-  // Without includeDefaults nothing is shadowed: the file is an ordinary default.
-  configuration.presets.includeDefaults = false;
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  const filesOnly = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.deepEqual(
-    filesOnly.defaultPresets.map((preset) => preset.name),
-    ["default-codex"],
-  );
-  assert.deepEqual(filesOnly.shadowedDefaultPresets, []);
-});
-
-test("Installation Preset JSON files resolve beside startup YAML and fail closed", async (t) => {
-  const validPreset = {
-    name: "from-file",
-    template: {
-      variables: { name: { type: "string" } },
-      agent: {
-        name: "{{ vars.name }}",
-        initialWorkspaceFiles: {
-          "AGENTS.md": "# Agent\nName: {{ vars.name }}\n",
-          "USER.md": "",
-        },
-      },
-    },
-  };
-  const relativeConfiguration = installation();
-  // Entries are trimmed before they resolve, so whitespace inside a quoted YAML entry does not
-  // change the path.
-  relativeConfiguration.presets = {
-    includeDefaults: false,
-    files: ["  presets/from-file.json\t"],
-  };
-  const relativePath = await fixture(t, relativeConfiguration);
-  const relativeDirectory = dirname(relativePath);
-  await mkdir(join(relativeDirectory, "presets"), { recursive: true });
-  await writeFile(
-    join(relativeDirectory, "presets", "from-file.json"),
-    JSON.stringify(validPreset),
-  );
-  const relativeRuntime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: relativePath },
-  });
-  assert.deepEqual(
-    relativeRuntime.defaultPresets.map((preset) => preset.name),
-    ["from-file"],
-  );
-  assert.equal(
-    relativeRuntime.defaultPresets[0].template.agent.initialWorkspaceFiles["AGENTS.md"],
-    "# Agent\nName: {{ vars.name }}\n",
-  );
-
-  const absoluteConfiguration = installation();
-  const absolutePreset = join(relativeDirectory, "absolute.json");
-  absoluteConfiguration.presets = { includeDefaults: false, files: [absolutePreset] };
-  await writeFile(absolutePreset, JSON.stringify({ ...validPreset, name: "absolute-file" }));
-  const absoluteRuntime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, absoluteConfiguration) },
-  });
-  assert.equal(absoluteRuntime.defaultPresets[0].name, "absolute-file");
-
-  // Editors on Windows often save JSON with a UTF-8 byte order mark. Like Driver package
-  // manifests and the startup YAML, a Preset file may carry one leading mark.
-  const markedConfiguration = installation();
-  const markedPreset = join(relativeDirectory, "marked.json");
-  markedConfiguration.presets = { includeDefaults: false, files: [markedPreset] };
-  await writeFile(markedPreset, `\uFEFF${JSON.stringify({ ...validPreset, name: "marked-file" })}`);
-  const markedRuntime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, markedConfiguration) },
-  });
-  assert.equal(markedRuntime.defaultPresets[0].name, "marked-file");
-
-  for (const [filename, contents, expected] of [
-    ["missing.json", undefined, /Preset file .* is unavailable/],
-    ["malformed.json", '{"name":', /Preset file .* must contain valid JSON/],
-    // Only one leading mark is stripped; a second is not JSON.
-    [
-      "double-mark.json",
-      `\uFEFF\uFEFF${JSON.stringify(validPreset)}`,
-      /Preset file .* must contain valid JSON/,
-    ],
-    [
-      "missing-name.json",
-      JSON.stringify({ template: {} }),
-      /Preset file .*missing-name\.json\.name must be a nonempty string/,
-    ],
-    [
-      "unsupported.json",
-      JSON.stringify({ name: "unsupported", template: {}, unexpected: true }),
-      /unsupported option unexpected/,
-    ],
-    [
-      "invalid-template.json",
-      JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
-      /Preset agent: contains unsupported fields/,
-    ],
-    [
-      "invalid-name.json",
-      JSON.stringify({ name: "edge\u00a0", template: {} }),
-      /Preset file .*invalid-name\.json\.name must follow the Name rule: 1 to 200 characters/,
-    ],
-    [
-      "duplicate.json",
-      JSON.stringify({ name: "Standard Codex", template: {} }),
-      /Default Preset Standard Codex is configured more than once: .*duplicate\.json and .*duplicate-b\.json/,
-    ],
-  ]) {
-    const configuration = installation();
-    // Two operator files may not share a name, even one that shadows a bundled default.
-    configuration.presets = {
-      includeDefaults: filename === "duplicate.json",
-      files:
-        filename === "duplicate.json"
-          ? [`cases/${filename}`, "cases/duplicate-b.json"]
-          : [`cases/${filename}`],
-    };
-    const path = await fixture(t, configuration);
-    const directory = dirname(path);
-    await mkdir(join(directory, "cases"), { recursive: true });
-    if (contents !== undefined) {
-      await writeFile(join(directory, "cases", filename), contents);
-    }
-    if (filename === "duplicate.json") {
-      await writeFile(join(directory, "cases", "duplicate-b.json"), contents);
-    }
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: path },
-      }),
-      expected,
-    );
-  }
-});
-
-test("API and worker name a Preset file failure in their startup error code", async (t) => {
-  // An operator who lists a file the image lacks, or a broken one, needs a cause rather
-  // than STARTUP_FAILED. The file path and the loader message stay out of the log.
-  const duplicate = JSON.stringify({ name: "twice", template: {} });
-  const cases = [
-    ["missing.json", undefined],
-    [
-      "invalid-template.json",
-      JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
-    ],
-    ["invalid-name.json", JSON.stringify({ name: "line\u2028break", template: {} })],
-    ["duplicate.json", duplicate, ["cases/duplicate.json", "cases/duplicate-b.json"]],
-    ["not-a-list.json", undefined, "cases/not-a-list.json"],
-    ["blank-entry", undefined, ["  "]],
-  ];
-  // Both processes map any PresetFileError to the code (`instanceof`), and their logs keep only
-  // the code. One real pair proves that mapping and the log; each other cause must reach the
-  // loader both processes call with the file (production mode) as a PresetFileError.
-  await settled(
-    cases.map(async ([filename, contents, files], index) => {
-      const configuration = installation();
-      configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };
-      const path = await fixture(t, configuration);
-      await mkdir(join(dirname(path), "cases"), { recursive: true });
-      if (contents !== undefined) {
-        await writeFile(join(dirname(path), "cases", filename), contents);
-        await writeFile(join(dirname(path), "cases", "duplicate-b.json"), duplicate);
-      }
-      if (index > 0) {
-        await assert.rejects(
-          loadInstallationConfiguration({
-            mode: "production",
-            environment: { OCC_CONFIG_PATH: path },
-          }),
-          (error) => {
-            assert.ok(error instanceof PresetFileError, `${filename}: ${String(error)}`);
-            return true;
-          },
-        );
-        return;
-      }
-      const shared = {
-        PATH: process.env.PATH,
-        NODE_ENV: "production",
-        OCC_CONFIG_PATH: path,
-        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-      };
-      const [server, worker] = await settled([
-        boot("apps/controller/src/server.mjs", {
-          ...shared,
-          ...productionServer,
-        }),
-        boot("apps/controller/src/worker.mjs", shared),
-      ]);
-      assert.equal(server.status, 1, filename);
-      const apiDiagnostic = startupDiagnostic(server.stderr, "startup-error");
-      assert.equal(apiDiagnostic.code, "PRESET_FILE_INVALID", filename);
-      assert.equal(apiDiagnostic.message, undefined);
-      assert.ok(!server.stderr.includes(dirname(path)), server.stderr);
-
-      assert.equal(worker.status, 1, filename);
-      const workerDiagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
-      assert.equal(workerDiagnostic.code, "PRESET_FILE_INVALID", filename);
-      assert.equal(workerDiagnostic.message, undefined);
-      assert.ok(!worker.stderr.includes(dirname(path)), worker.stderr);
-    }),
-  );
+registerStartupPresetCases({
+  boot,
+  fixture,
+  PresetFileError,
+  productionServer,
+  settled,
 });
 
 test("API and worker name a chart listener mismatch and both values in their startup error", async (t) => {
@@ -2899,7 +2345,16 @@ test("closed Installation observes only its operator-bound Namespace, including 
   policies = [workspacePolicy];
 
   account.automountServiceAccountToken = true;
-  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  // Sandbox validation now runs through the shared lifecycle after Compute observation.
+  const observation = await reconcileNamespaceLifecycle(
+    driver,
+    drivers.namespaceLifecycleBindings.map(({ owner, hooks }) => ({ id: owner.id, hooks })),
+    tenant,
+    "ready",
+    new AbortController().signal,
+    () => {},
+  );
+  assert.equal(observation.namespaceReady, false);
   account.automountServiceAccountToken = false;
   writes.length = 0;
   const before = reads.length;
@@ -2932,4 +2387,42 @@ test("closed Installation observes only its operator-bound Namespace, including 
     message: /Kubernetes Secret namespace verification/,
   });
   assert.deepEqual(writes, []);
+});
+
+// The public startup processes must reject the quota before persistence, while a
+// valid mixed-unit control reaches the deliberately unavailable database.
+test("API and worker startup refuse fractional counted quotas before persistence", async (t) => {
+  for (const [quota, expectedCode] of [
+    [{ pods: "1.5" }, "DRIVER_CONFIGURATION_INVALID"],
+    [{ "count/deployments.apps": "1500m" }, "DRIVER_CONFIGURATION_INVALID"],
+    [{ pods: "1000m", "requests.cpu": "500m" }, "PERSISTENCE_UNAVAILABLE"],
+  ]) {
+    const configuration = installation();
+    configuration.drivers.compute.configuration.resources.namespace.quota = quota;
+    const path = await fixture(t, configuration);
+    for (const [script, event] of [
+      ["server", "startup-error"],
+      ["worker", "worker.startup-error"],
+    ]) {
+      const result = await boot(`apps/controller/src/${script}.mjs`, {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        ...productionServer,
+        OCC_CONFIG_PATH: path,
+        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      });
+      assert.equal(result.status, 1, result.stderr);
+      const diagnostic = startupDiagnostic(result.stderr, event);
+      assert.equal(diagnostic.code, expectedCode, result.stderr);
+      if (expectedCode === "DRIVER_CONFIGURATION_INVALID") {
+        assert.deepEqual(diagnostic.details, [
+          {
+            path: "/resources/namespace/quota",
+            code: "INVALID_FORMAT",
+            message: `Namespace quota resource ${Object.keys(quota)[0]} must satisfy Kubernetes integer precision; use a whole count such as 4.`,
+          },
+        ]);
+      }
+    }
+  }
 });

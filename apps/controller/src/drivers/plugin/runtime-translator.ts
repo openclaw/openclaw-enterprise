@@ -893,11 +893,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       readOnlyPaths:
         publicGithubRead === undefined
           ? readOnlyPaths
-          : [
-              ...readOnlyPaths,
-              publicGithubRead.skillPath,
-              ...(publicGithubRead.endpoint ? ["/home/node/.oce-public-git"] : []),
-            ],
+          : [...readOnlyPaths, publicGithubRead.skillPath],
     };
     return {
       ...pluginApprovalOverlay("codex", selections, pluginApprovers),
@@ -1114,8 +1110,33 @@ export const PLUGIN_RUNTIME_TRANSLATOR_SOURCE = `() => (${createPluginRuntimeTra
 
 type Translator = ReturnType<typeof createPluginRuntimeTranslator>;
 
-export const pluginRuntimeTranslator: Translator =
-  createPluginRuntimeTranslator(OPENCLAW_PLUGIN_CATALOG);
+// Keep the base translator's serialized bytes stable for existing immutable launches.
+// Only selected public-reader launches embed this transport-specific extension.
+function withPublicGithubReadTransport(translator: Translator): Translator {
+  const codexConfiguration = translator.codexOpenClawConfiguration;
+  return {
+    ...translator,
+    codexOpenClawConfiguration(selections, failures, policy) {
+      const configuration = codexConfiguration(selections, failures, policy);
+      if (configuration && policy?.publicGithubRead?.endpoint) {
+        const plugins = configuration.plugins as Record<string, unknown>;
+        const entries = plugins.entries as Record<string, unknown>;
+        const codex = entries.codex as Record<string, unknown>;
+        const config = codex.config as Record<string, unknown>;
+        const appServer = config.appServer as Record<string, unknown>;
+        const proxy = appServer.networkProxy as Record<string, unknown>;
+        proxy.readOnlyPaths = [...(proxy.readOnlyPaths as string[]), "/home/node/.oce-public-git"];
+      }
+      return configuration;
+    },
+  };
+}
+
+export const PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE = `() => (${withPublicGithubReadTransport.toString()})((${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})())`;
+
+export const pluginRuntimeTranslator: Translator = withPublicGithubReadTransport(
+  createPluginRuntimeTranslator(OPENCLAW_PLUGIN_CATALOG),
+);
 
 export function codexRuntimeArtifact(
   selections: PluginDesiredState,

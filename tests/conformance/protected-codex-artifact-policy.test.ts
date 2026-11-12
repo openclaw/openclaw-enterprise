@@ -143,6 +143,14 @@ test("artifact qualification refuses routes that widen destination, process, wri
     ["audit only", { ...original, endpoints: [{ ...endpoint, enforcement: "audit" }] }],
     ["write access", { ...original, endpoints: [{ ...endpoint, access: "read_write" }] }],
     ["another process", { ...original, binaries: [{ path: "/usr/bin/curl" }] }],
+    [
+      "package registry for a non-Codex executable",
+      {
+        ...original,
+        binaries: [{ path: "/usr/local/bin/node" }],
+        endpoints: [{ ...endpoint, host: "registry.npmjs.org" }],
+      },
+    ],
   ];
   for (const [name, rule] of cases) {
     await t.test(name, (context) => {
@@ -186,7 +194,7 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
     configurationGeneration: 1,
     configuration: createHarnessConfiguration("codex", "fixture"),
     gatewayManagedMode: false,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     compute: {
       id: "kubernetes",
       implementation: "kubernetes",
@@ -609,6 +617,7 @@ test("protected public-reader-only compilation preserves default deny and indepe
   });
   assert.deepEqual((governed.network_policies as Record<string, unknown>)["oce-egress-0"], {
     name: "oce-egress-0",
+    binaries: [{ path: "/**" }],
     endpoints: [
       {
         host: "model.example.test",

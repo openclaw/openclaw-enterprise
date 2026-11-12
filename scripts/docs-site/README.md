@@ -12,8 +12,9 @@ from the repository root.
   revision `34bdf6d0321dffff0cc343ee48aa4c051547f70e`. The publisher mirror matched
   the current product parser at implementation time.
 - `vendor/docs-markdown.mjs` retains the shared parser, heading IDs and aliases,
-  frontmatter handling, and Markdown component support. Enterprise also emits GitHub-style heading aliases
-  through the pinned `github-slugger`, preserving existing API deep links.
+  frontmatter handling, and Markdown component support. Enterprise makes the pinned
+  `github-slugger` slug the canonical heading ID and keeps the parser's ID as an alias,
+  preserving existing deep links.
 - `vendor/mdx-ish.mjs` retains the publisher's component renderer, code highlighting,
   and Mermaid source markup. Its shared-parser import points to the sibling copy.
 - The MIT notice is retained in `vendor/LICENSE.openclaw`. The JetBrains Mono OFL notice accompanies
@@ -33,7 +34,10 @@ The configured package registry did not provide the publisher's
 validates links and anchors, emits Enterprise HTML and local assets, and leaves
 Pagefind indexing to the root `docs:build` command. `--check` validates without
 writing output. Paths resolve against Markdown source files; README pages map to
-folder indexes and links outside `docs/` point to the Enterprise GitHub source.
+folder indexes. Non-page files under `docs/assets/` and `docs/snippets/` use
+local URLs because the build copies these directories. Other non-page files,
+including `docs/docs.json`, and links outside `docs/` point to the Enterprise
+GitHub source.
 Fragments on those links must match a GitHub heading slug or HTML anchor in the
 target (`github-anchors.ts`). HTML examples in code and comments do not create
 fragment targets. Parsed HTML elements contribute `id` targets; only `<a>` elements

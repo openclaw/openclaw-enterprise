@@ -1,10 +1,13 @@
-import type { Agent } from "@openclaw-enterprise/contracts";
+import type { Agent } from "../../packages/contracts/src/index.ts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { ProductionTuiRequestError } from "./production-tui-request.ts";
 import {
+  assertProtectedEqual,
   protectedJSON,
   type FixtureRun,
   type LocalRehearsalCluster,
@@ -22,6 +25,59 @@ type ControllerImage = {
   checkout: string;
   revision: string;
 };
+
+type InstallationSecret = {
+  metadata: {
+    name: string;
+    uid: string;
+    annotations: Record<string, string>;
+    deletionTimestamp?: string;
+  };
+  immutable: boolean;
+  type: string;
+  data: Record<string, string> & { "installation.yaml": string };
+};
+
+export async function readImmutableInstallationSecret(
+  run: FixtureRun,
+  kubeArgs: string[],
+  name: string,
+) {
+  const secret = protectedJSON<InstallationSecret>(
+    await run("kubectl", [...kubeArgs, "get", `secret/${name}`, "-o", "json"], {
+      protectedInput: true,
+    }),
+  );
+  assert.equal(secret.metadata.name, name);
+  assert.ok(secret.metadata.uid && !secret.metadata.deletionTimestamp);
+  assert.equal(secret.immutable, true, "the Installation reference must be immutable");
+  return secret;
+}
+
+export function assertInstallationSecretRetained(
+  observed: InstallationSecret,
+  expected: InstallationSecret,
+) {
+  assert.equal(observed.metadata.uid, expected.metadata.uid, "Installation Secret was replaced");
+  assert.equal(observed.type, expected.type);
+  assert.equal(
+    observed.metadata.annotations["openclaw.dev/installation-id"],
+    expected.metadata.annotations["openclaw.dev/installation-id"],
+  );
+  assertProtectedEqual(observed.data, expected.data, "Installation Secret bytes changed");
+}
+
+export function assertInstallationVolume(
+  spec: { volumes?: { name: string; secret?: { secretName: string; items?: unknown } }[] },
+  name: string,
+) {
+  const volumes = spec.volumes?.filter((volume) => volume.name === "installation-startup");
+  assert.equal(volumes?.length, 1, "expected exactly one Installation volume");
+  const volume = volumes?.[0];
+  assert.ok(volume);
+  assert.equal(volume.secret?.secretName, name, "workload uses the wrong Installation Secret");
+  assert.deepEqual(volume.secret?.items, [{ key: "installation.yaml", path: "installation.yaml" }]);
+}
 
 type AgentIdentity = {
   id: string;
@@ -291,8 +347,203 @@ type ExternalRequest = (
   method: "GET",
   path: string,
   body: undefined,
-  options: { authenticated: boolean },
-) => Promise<{ status?: number; body: unknown }>;
+  options: { authenticated: boolean; signal?: AbortSignal },
+) => Promise<{ status: number | undefined; requestId?: string; body: unknown }>;
+
+// These observations describe the fixture's authenticated HTTPS route. They do
+// not establish continuous availability between requests or gate the upgrade.
+export async function measureUpgradeAvailability<T>(
+  request: ExternalRequest,
+  installationId: string,
+  directory: string,
+  upgrade: () => Promise<T>,
+  record: (details: object) => Promise<void>,
+) {
+  const samples: {
+    phase: "before" | "during" | "after";
+    startedAt: string;
+    finishedAt: string;
+    elapsedMs: number;
+    gapMs: number | null;
+    startOffsetMs: number;
+    startGapMs: number | null;
+    scheduledSlot: number | null;
+    scheduleDelayMs: number | null;
+    outcome:
+      "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
+    status: number | undefined;
+    requestId?: string;
+  }[] = [];
+  const origin = performance.now();
+  const nominalIntervalMs = 1_000;
+  let previousStart: number | undefined;
+  let previousFinish: number | undefined;
+  let maxStartGapMs = 0;
+  const cadence: { start?: number; finish?: number } = {};
+  const evidenceErrors: unknown[] = [];
+  const evidence = (upgradeSucceeded: boolean | null) => {
+    // A checkpoint covers only the last completed request. File-write time is
+    // exposed by the next start; an interrupted write cannot extend this boundary.
+    const through = previousFinish ?? origin;
+    const duration = cadence.start === undefined ? 0 : (cadence.finish ?? through) - cadence.start;
+    const scheduledSlots = Math.floor(duration / nominalIntervalMs) + 1;
+    const probedSlots = samples.filter(({ scheduledSlot }) => scheduledSlot !== null).length;
+    return {
+      schemaVersion: 2,
+      requestTimeoutMs: 5_000,
+      // Version 1 slept after each response. Null explicitly retires that policy.
+      intervalAfterResponseMs: null,
+      nominalIntervalMs,
+      upgradeSucceeded,
+      complete: upgradeSucceeded !== null,
+      throughOffsetMs: through - origin,
+      maxStartGapMs,
+      tailGapMs: previousStart === undefined ? 0 : through - previousStart,
+      cadence:
+        cadence.start === undefined
+          ? null
+          : {
+              startOffsetMs: cadence.start - origin,
+              endOffsetMs: (cadence.finish ?? through) - origin,
+              complete: cadence.finish !== undefined,
+              scheduledSlots,
+              probedSlots,
+              unprobedSlots: scheduledSlots - probedSlots,
+            },
+      samples: samples.map((observation) => ({ ...observation })),
+    };
+  };
+  const sample = async (
+    phase: (typeof samples)[number]["phase"],
+    upgradeSucceeded: boolean | null = null,
+  ) => {
+    const startedAt = new Date().toISOString();
+    const start = performance.now();
+    const startGapMs = previousStart === undefined ? null : start - previousStart;
+    const scheduledSlot =
+      phase === "during" ? Math.floor((start - cadence.start!) / nominalIntervalMs) : null;
+    const signal = AbortSignal.timeout(5_000);
+    let outcome: (typeof samples)[number]["outcome"];
+    let status: number | undefined;
+    let requestId: string | undefined;
+    try {
+      const response = await request("GET", "/installation", undefined, {
+        authenticated: true,
+        signal,
+      });
+      status = response.status;
+      const body = response.body as {
+        data?: { id?: unknown };
+      } | null;
+      if (status !== 200) {
+        outcome = "http-error";
+      } else if (typeof body?.data?.id !== "string") {
+        outcome = "invalid-response";
+      } else if (body.data.id !== installationId) {
+        outcome = "wrong-installation";
+      } else {
+        outcome = "ok";
+        requestId = response.requestId;
+      }
+    } catch (error) {
+      // Keep received status even when strict response parsing rejects the body.
+      // Transport errors can contain private bytes; never retain their text.
+      status = error instanceof ProductionTuiRequestError ? error.status : undefined;
+      if (signal.aborted) {
+        outcome = "timeout";
+      } else if (status !== undefined && status !== 200) {
+        outcome = "http-error";
+      } else {
+        outcome = "request-error";
+      }
+    }
+    const finish = performance.now();
+    samples.push({
+      phase,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Math.round(finish - start),
+      gapMs: previousFinish === undefined ? null : Math.round(start - previousFinish),
+      startOffsetMs: start - origin,
+      startGapMs,
+      scheduledSlot,
+      scheduleDelayMs:
+        scheduledSlot === null ? null : start - cadence.start! - scheduledSlot * nominalIntervalMs,
+      outcome,
+      status,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    previousStart = start;
+    previousFinish = finish;
+    maxStartGapMs = Math.max(maxStartGapMs, startGapMs ?? 0);
+    try {
+      // A killed runner leaves the last complete snapshot, never a truncated one.
+      // Null means the action has not been recorded as settled.
+      const path = join(directory, "forward-api-availability.json");
+      await writeFile(`${path}.tmp`, JSON.stringify(evidence(upgradeSucceeded)) + "\n", {
+        mode: 0o600,
+      });
+      await rename(`${path}.tmp`, path);
+    } catch (error) {
+      // Keep observing without rejecting in parallel with the running upgrade.
+      if (evidenceErrors.length === 0) {
+        evidenceErrors.push(error);
+      }
+    }
+  };
+  await sample("before");
+  const stopped = new AbortController();
+  let observing: Promise<void> | undefined;
+  let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
+  cadence.start = performance.now();
+  try {
+    const upgrading = upgrade();
+    observing = (async () => {
+      while (!stopped.signal.aborted) {
+        await sample("during");
+        // Start at most once per nominal slot, with at least one interval between
+        // actual starts. A slow request/write or late wake skips slots, never
+        // queues requests to replay them. Recheck time after early timer wakes.
+        const nextStart = previousStart! + nominalIntervalMs;
+        while (!stopped.signal.aborted && performance.now() < nextStart) {
+          await delay(nextStart - performance.now(), undefined, { signal: stopped.signal }).catch(
+            () => {},
+          );
+        }
+      }
+    })();
+    outcome = { succeeded: true, value: await upgrading };
+  } catch (error) {
+    outcome = { succeeded: false, error };
+  }
+  cadence.finish = performance.now();
+  stopped.abort();
+  // Join the final bounded request before taking the post-upgrade observation.
+  await observing;
+  await sample("after", outcome.succeeded);
+  try {
+    await record(evidence(outcome.succeeded));
+  } catch (error) {
+    evidenceErrors.push(error);
+  }
+  if (!outcome.succeeded) {
+    if (evidenceErrors.length > 0) {
+      throw new AggregateError(
+        [outcome.error, ...evidenceErrors],
+        "Upgrade failed and API availability observations could not be recorded",
+        { cause: outcome.error },
+      );
+    }
+    throw outcome.error;
+  }
+  if (evidenceErrors.length === 1) {
+    throw evidenceErrors[0];
+  }
+  if (evidenceErrors.length > 1) {
+    throw new AggregateError(evidenceErrors, "API availability observations could not be recorded");
+  }
+  return outcome.value;
+}
 
 async function assertReturnedInstallationAuthentication(
   request: ExternalRequest,
@@ -339,16 +590,31 @@ type ContainerStatus = {
   imageID: string;
   containerID: string;
   ready: boolean;
+  state?: { terminated?: { exitCode: number } };
 };
 
 type Pod = {
-  metadata: { name: string; uid: string; labels: Record<string, string> };
+  metadata: {
+    name: string;
+    uid: string;
+    labels: Record<string, string>;
+    annotations?: Record<string, string>;
+    deletionTimestamp?: string;
+    ownerReferences?: { uid: string; controller?: boolean }[];
+  };
   spec: {
     nodeName: string;
     serviceAccountName: string;
     containers: { name: string; image: string }[];
+    initContainers?: { name: string; image: string }[];
+    volumes?: { name: string; secret?: { secretName: string; items?: unknown } }[];
   };
-  status: { phase: string; podIP: string; containerStatuses?: ContainerStatus[] };
+  status: {
+    phase: string;
+    podIP: string;
+    containerStatuses?: ContainerStatus[];
+    initContainerStatuses?: ContainerStatus[];
+  };
 };
 
 export async function assertRunningController(
@@ -426,6 +692,130 @@ export async function verifyCompletedMigrationHistory(
   );
 }
 
+export function rehearsalPlane({
+  kube,
+  get,
+  run,
+  release,
+  localCluster,
+  kubeconfig,
+  context,
+  namespace,
+}: Pick<Rehearsal, "run" | "release" | "localCluster" | "kubeconfig" | "context" | "namespace"> & {
+  kube: Kubectl;
+  get: (resource: string) => Promise<ReturnType<typeof JSON.parse>>;
+}) {
+  const pods = async () =>
+    (
+      JSON.parse(
+        await kube(
+          "get",
+          "pods",
+          "-l",
+          `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${release},app.kubernetes.io/component in (api,worker)`,
+          "-o",
+          "json",
+        ),
+      ) as { items: Pod[] }
+    ).items;
+  const claimIdentity = async () =>
+    Promise.all(
+      ["postgres-data", "bootstrap-password"].map(async (name) => {
+        const { metadata, spec } = await get(`pvc/${name}`);
+        assert.ok(metadata.uid && spec.volumeName, `unbound claim ${name}`);
+        return { name, uid: metadata.uid, volume: spec.volumeName };
+      }),
+    );
+  const verifyPodImage = async (
+    image: ControllerImage,
+    pod: Pod,
+    status: ContainerStatus | undefined,
+  ) => {
+    assert.equal(
+      pod.spec.nodeName,
+      localCluster.node,
+      "controller Pod must use the owned k3d Node",
+    );
+    const node = await get(`node/${pod.spec.nodeName}`);
+    assert.equal(node.metadata.uid, localCluster.nodeUID, "the owned k3d Node was replaced");
+    const { operatingSystem, architecture } = node.status.nodeInfo;
+    assert.ok(status, "the controller container has no runtime status");
+    return assertRunningController(
+      image,
+      `${operatingSystem}/${architecture}`,
+      status.imageID,
+      () => localCluster.runningConfigDigest(status.containerID, pod.metadata.uid),
+    );
+  };
+  const controlPlane = async (image: ControllerImage, database: string, secretName: string) => {
+    const currentPods = await pods();
+    assert.equal(currentPods.length, components.length, "expected one API and one worker Pod");
+    return Promise.all(
+      components.map(async (component) => {
+        const deployment = await get(`deployment/openclaw-enterprise-${component}`);
+        assert.equal(deployment.metadata.labels["app.kubernetes.io/instance"], release);
+        assert.equal(deployment.spec.replicas, 1);
+        assert.ok(deployment.metadata.uid);
+        assertInstallationVolume(deployment.spec.template.spec, secretName);
+        assert.equal(
+          deployment.spec.template.spec.containers.find(
+            (container: { name: string }) => container.name === component,
+          )?.image,
+          image.reference,
+        );
+        const pod = currentPods.find(
+          (item) => item.metadata.labels["app.kubernetes.io/component"] === component,
+        );
+        assert.ok(
+          pod?.metadata.uid && pod.status.podIP && pod.status.phase === "Running",
+          `${component} Pod did not start`,
+        );
+        assert.equal(
+          pod.spec.containers.find((container) => container.name === component)?.image,
+          image.reference,
+        );
+        assertInstallationVolume(pod.spec, secretName);
+        const status = pod.status.containerStatuses?.find((item) => item.name === component);
+        assert.ok(status?.ready, `${component} container is not ready`);
+        const imageDigest = await verifyPodImage(image, pod, status);
+        assert.equal(pod.spec.serviceAccountName, `openclaw-enterprise-${component}`);
+        const account = await get(`serviceaccount/${pod.spec.serviceAccountName}`);
+        assert.ok(account.metadata.uid, `${component} ServiceAccount must have an identity`);
+        const selectedDatabase = await run(
+          "kubectl",
+          [
+            `--kubeconfig=${kubeconfig}`,
+            `--context=${context}`,
+            `--namespace=${namespace}`,
+            "exec",
+            `pod/${pod.metadata.name}`,
+            "-c",
+            component,
+            "--",
+            "node",
+            "-e",
+            "console.log(new URL(process.env.OCC_DATABASE_URL).pathname.slice(1))",
+          ],
+          { protectedInput: true },
+        );
+        assert.equal(selectedDatabase.trim(), database, `${component} uses the wrong database`);
+        return {
+          component,
+          pod: pod.metadata.name,
+          uid: pod.metadata.uid,
+          deploymentUID: deployment.metadata.uid,
+          serviceAccountUID: account.metadata.uid,
+          ip: pod.status.podIP,
+          containerID: status.containerID,
+          imageID: status.imageID,
+          imageDigest,
+        };
+      }),
+    );
+  };
+  return { pods, verifyPodImage, controlPlane, claimIdentity };
+}
+
 export async function rehearsePopulatedReturn({
   controllers,
   kubeconfig,
@@ -461,15 +851,8 @@ export async function rehearsePopulatedReturn({
   ];
   const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
   const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
-  const startupSecret = async () =>
-    protectedJSON<{
-      metadata: { uid: string; annotations: Record<string, string> };
-      data: { "installation.yaml": string };
-    }>(
-      await run("kubectl", [...kubeArgs, "get", "secret/occ-installation-startup", "-o", "json"], {
-        protectedInput: true,
-      }),
-    );
+  const startupSecret = (name = "occ-installation-startup") =>
+    readImmutableInstallationSecret(run, kubeArgs, name);
   const installationPath = "/installation";
   const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
   const agentPath = `${namespacePath}/agents`;
@@ -523,111 +906,16 @@ export async function rehearsePopulatedReturn({
         ),
       ) as unknown[]
     ).map(agentIdentity);
-  const pods = async () =>
-    (
-      JSON.parse(
-        await kube(
-          "get",
-          "pods",
-          "-l",
-          `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${release},app.kubernetes.io/component in (api,worker)`,
-          "-o",
-          "json",
-        ),
-      ) as { items: Pod[] }
-    ).items;
-  const claimIdentity = async () =>
-    Promise.all(
-      ["postgres-data", "bootstrap-password"].map(async (name) => {
-        const { metadata, spec } = await get(`pvc/${name}`);
-        assert.ok(metadata.uid && spec.volumeName, `unbound claim ${name}`);
-        return { name, uid: metadata.uid, volume: spec.volumeName };
-      }),
-    );
-  const verifyPodImage = async (
-    image: ControllerImage,
-    pod: Pod,
-    status: ContainerStatus | undefined,
-  ) => {
-    assert.equal(
-      pod.spec.nodeName,
-      localCluster.node,
-      "controller Pod must use the owned k3d Node",
-    );
-    const node = await get(`node/${pod.spec.nodeName}`);
-    assert.equal(node.metadata.uid, localCluster.nodeUID, "the owned k3d Node was replaced");
-    const { operatingSystem, architecture } = node.status.nodeInfo;
-    assert.ok(status, "the controller container has no runtime status");
-    return assertRunningController(
-      image,
-      `${operatingSystem}/${architecture}`,
-      status.imageID,
-      () => localCluster.runningConfigDigest(status.containerID, pod.metadata.uid),
-    );
-  };
-  const controlPlane = async (image: ControllerImage, database: string) => {
-    const currentPods = await pods();
-    assert.equal(currentPods.length, components.length, "expected one API and one worker Pod");
-    return Promise.all(
-      components.map(async (component) => {
-        const deployment = await get(`deployment/openclaw-enterprise-${component}`);
-        assert.equal(deployment.metadata.labels["app.kubernetes.io/instance"], release);
-        assert.equal(deployment.spec.replicas, 1);
-        assert.ok(deployment.metadata.uid);
-        assert.equal(
-          deployment.spec.template.spec.containers.find(
-            (container: { name: string }) => container.name === component,
-          )?.image,
-          image.reference,
-        );
-        const pod = currentPods.find(
-          (item) => item.metadata.labels["app.kubernetes.io/component"] === component,
-        );
-        assert.ok(
-          pod?.metadata.uid && pod.status.podIP && pod.status.phase === "Running",
-          `${component} Pod did not start`,
-        );
-        assert.equal(
-          pod.spec.containers.find((container) => container.name === component)?.image,
-          image.reference,
-        );
-        const status = pod.status.containerStatuses?.find((item) => item.name === component);
-        assert.ok(status?.ready, `${component} container is not ready`);
-        const imageDigest = await verifyPodImage(image, pod, status);
-        assert.equal(pod.spec.serviceAccountName, `openclaw-enterprise-${component}`);
-        const account = await get(`serviceaccount/${pod.spec.serviceAccountName}`);
-        assert.ok(account.metadata.uid, `${component} ServiceAccount must have an identity`);
-        const selectedDatabase = await run(
-          "kubectl",
-          [
-            `--kubeconfig=${kubeconfig}`,
-            `--context=${context}`,
-            `--namespace=${namespace}`,
-            "exec",
-            `pod/${pod.metadata.name}`,
-            "-c",
-            component,
-            "--",
-            "node",
-            "-e",
-            "console.log(new URL(process.env.OCC_DATABASE_URL).pathname.slice(1))",
-          ],
-          { protectedInput: true },
-        );
-        assert.equal(selectedDatabase.trim(), database, `${component} uses the wrong database`);
-        return {
-          component,
-          pod: pod.metadata.name,
-          uid: pod.metadata.uid,
-          deploymentUID: deployment.metadata.uid,
-          serviceAccountUID: account.metadata.uid,
-          ip: pod.status.podIP,
-          imageID: status.imageID,
-          imageDigest,
-        };
-      }),
-    );
-  };
+  const { pods, controlPlane, verifyPodImage, claimIdentity } = rehearsalPlane({
+    kube,
+    get,
+    run,
+    release,
+    localCluster,
+    kubeconfig,
+    context,
+    namespace,
+  });
   const candidateConnections = () =>
     sql(
       "postgres",
@@ -642,6 +930,14 @@ export async function rehearsePopulatedReturn({
     assert.equal(await candidateConnections(), "0");
   };
   const baselineRelease = await helmStatus();
+  const retiredPolicyName = "openclaw-enterprise-api-channel-directory-egress";
+  const retiredPolicy = await get(`networkpolicy/${retiredPolicyName}`);
+  assert.equal(retiredPolicy.metadata.annotations["meta.helm.sh/release-name"], release);
+  assert.equal(retiredPolicy.metadata.annotations["meta.helm.sh/release-namespace"], namespace);
+  const candidateValuesPath = join(directory, "return-candidate-values.json");
+  const candidateValues = JSON.parse(await readFile(join(directory, "values.json"), "utf8"));
+  assert.equal(candidateValues.api.channelDirectoryProxyUrl, "http://198.51.100.25:3128");
+  candidateValues.api.channelDirectoryProxyUrl = "";
   assert.equal(baselineRelease.info.status, "deployed");
   assert.ok(Number.isSafeInteger(baselineRelease.version) && baselineRelease.version > 0);
   await custody.assertRelease();
@@ -665,6 +961,34 @@ export async function rehearsePopulatedReturn({
     initialStartupSecret.metadata.annotations["openclaw.dev/installation-id"],
     installationId,
   );
+  // The operator stages a new immutable reference; neither the forward upgrade
+  // nor returning to the previous release may rewrite either Secret.
+  const successorName = "occ-installation-successor";
+  const successorObject = {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      ...custody.metadata(successorName),
+      annotations: { "openclaw.dev/installation-id": installationId },
+    },
+    immutable: true,
+    type: initialStartupSecret.type,
+    data: initialStartupSecret.data,
+  };
+  const successorUID = await custody.create(successorObject);
+  const successor = await startupSecret(successorName);
+  assert.equal(successor.metadata.uid, successorUID, "staged Installation Secret was replaced");
+  assert.notEqual(successor.metadata.uid, initialStartupSecret.metadata.uid);
+  assertProtectedEqual(successor.data, initialStartupSecret.data, "staged configuration differs");
+  candidateValues.installation.secretName = successorName;
+  await writeFile(candidateValuesPath, JSON.stringify(candidateValues), {
+    mode: 0o600,
+    flag: "wx",
+  });
+  const retainInstallationSecrets = async () => {
+    assertInstallationSecretRetained(await startupSecret(), initialStartupSecret);
+    assertInstallationSecretRetained(await startupSecret(successorName), successor);
+  };
   const verifyInstallation = async () => {
     const installation = (await api("GET", installationPath)) as { id: string };
     assert.equal(installation.id, installationId);
@@ -672,7 +996,11 @@ export async function rehearsePopulatedReturn({
     assert.equal(saved.id, namespaceId);
     assert.equal(saved.status, "ready");
   };
-  const previousPods = await controlPlane(previous, originalDatabase);
+  const previousPods = await controlPlane(
+    previous,
+    originalDatabase,
+    initialStartupSecret.metadata.name,
+  );
   const writerIdentities = (observed: typeof previousPods) =>
     observed.map(({ deploymentUID, serviceAccountUID }) => ({ deploymentUID, serviceAccountUID }));
   const previousJob = (await get(`job/${release}-initialization`)).spec.template;
@@ -697,6 +1025,72 @@ export async function rehearsePopulatedReturn({
     201,
   )) as { id: string };
   assert.ok(configurationId);
+  const checkMigration = async (
+    image: ControllerImage,
+    template: typeof previousJob,
+    database: string,
+    probeName: string,
+  ) => {
+    const migration = template.spec.initContainers.find(
+      (container: { name: string }) => container.name === "migration",
+    );
+    assert.equal(migration?.image, image.reference, "migration probe must use the selected image");
+    const probeSecret = {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: custody.metadata(probeName),
+      data: { "migration-url": await custody.restoredMigrationURL(database) },
+    };
+    const probe = {
+      apiVersion: "v1",
+      kind: "Pod",
+      // Copy the chart's network policy labels, not the Job's ownership labels.
+      metadata: custody.metadata(probeName, {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": release,
+        "app.kubernetes.io/component": "initialization",
+      }),
+      spec: {
+        restartPolicy: "Never",
+        activeDeadlineSeconds: 120,
+        automountServiceAccountToken: false,
+        securityContext: template.spec.securityContext,
+        volumes: template.spec.volumes?.filter((volume: { name: string }) =>
+          migration.volumeMounts?.some((mount: { name: string }) => mount.name === volume.name),
+        ),
+        containers: [
+          {
+            ...migration,
+            args: ["scripts/migrate-production.mjs", "--check"],
+            env: [
+              ...migration.env.filter(
+                (entry: { name: string }) => entry.name !== "OCC_MIGRATION_DATABASE_URL",
+              ),
+              {
+                name: "OCC_MIGRATION_DATABASE_URL",
+                valueFrom: { secretKeyRef: { name: probeName, key: "migration-url" } },
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await custody.create(probeSecret);
+    const probeUID = await custody.create(probe);
+    const completed = await waitFor<Pod>("controller migration check", async () => {
+      const pod: Pod = await get(`pod/${probeName}`);
+      assert.equal(pod.metadata.uid, probeUID, "the compatibility Pod was replaced");
+      return ["Succeeded", "Failed"].includes(pod.status.phase) ? pod : false;
+    });
+    await verifyPodImage(
+      image,
+      completed,
+      completed.status.containerStatuses?.find(({ name }) => name === "migration"),
+    );
+    assert.equal(completed.status.phase, "Succeeded", "selected image cannot use the database");
+    await verifyCompletedMigrationHistory(run, kubeArgs, probeName);
+  };
+
   const createAgent = async (name: string) => {
     const agent = returnedAgentSnapshot(
       await api("POST", agentPath, { name, configurationId, executionMode: "embedded" }, 201),
@@ -740,6 +1134,8 @@ export async function rehearsePopulatedReturn({
     join(directory, "values.json"),
     "--installation",
     join(directory, "installation.json"),
+    "--candidate-values",
+    candidateValuesPath,
     "--controller-image",
     candidate.reference,
     "--source-revision",
@@ -749,27 +1145,418 @@ export async function rehearsePopulatedReturn({
     "--timeout-seconds",
     "300",
   ];
-  const upgrade = async (args: string[]) => {
+  const upgrade = async (args: string[], env = occEnv, stderrPath?: string) => {
     await localCluster.assertCluster();
     await custody.assertPostgres();
     await custody.assertRelease();
-    return run("bash", ["scripts/upgrade-production-images", ...upgradeArgs, ...args], {
-      cwd: candidate.checkout,
-      env: occEnv,
-      timeout: 720_000,
-    });
+    const command = ["scripts/upgrade-production-images", ...upgradeArgs, ...args];
+    return run(
+      "bash",
+      stderrPath
+        ? ["-c", 'output=$1; shift; exec bash "$@" 2>"$output"', "recovery", stderrPath, ...command]
+        : command,
+      {
+        cwd: candidate.checkout,
+        env,
+        protectedInput: true,
+        timeout: 720_000,
+      },
+    );
   };
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
-  await phase("Upgrade the controller and confirm authenticated OCC recovery", async () => {
-    await upgrade(["--evidence-dir", join(directory, "forward")]);
-    await verifyInstallation();
-  });
+  await phase("Recover the interrupted controller upgrade after committed initialization", () =>
+    measureUpgradeAvailability(
+      externalRequest,
+      installationId,
+      directory,
+      async () => {
+        const evidence = join(directory, "forward");
+        const client = join(directory, "helm-client.json");
+        const shimDirectory = join(directory, "helm-client-bin");
+        const shim = join(shimDirectory, "helm");
+        const controller = fileURLToPath(new URL("./rehearsal-helm-client.py", import.meta.url));
+        const executable = (await run("sh", ["-c", "command -v helm"])).trim();
+        assert.ok(isAbsolute(executable), "the real Helm executable must have an absolute path");
+        await mkdir(shimDirectory, { mode: 0o700 });
+        await copyFile(controller, shim);
+        await chmod(shim, 0o700);
+        const clientAction = (action: string) => run("python3", [controller, client, action]);
+        const readIfPresent = async (path: string) => {
+          try {
+            return await readFile(path, "utf8");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+              return undefined;
+            }
+            throw error;
+          }
+        };
+        const save = (name: string, value: unknown) =>
+          writeFile(join(directory, name), JSON.stringify(value) + "\n", {
+            mode: 0o600,
+            flag: "wx",
+          });
+
+        // The shim execs stock Helm with unchanged arguments. Only its exact PID and
+        // Linux start time can be signalled; no API, chart hook or Helm record is faked.
+        let ended = false;
+        const command = upgrade(["--evidence-dir", evidence], {
+          ...occEnv,
+          PATH: `${shimDirectory}:${occEnv.PATH ?? process.env.PATH}`,
+          OCE_REHEARSAL_HELM: executable,
+          OCE_REHEARSAL_RELEASE: release,
+          OCE_REHEARSAL_HELM_CLIENT: client,
+        }).then(
+          () => {
+            ended = true;
+            return undefined;
+          },
+          (error: unknown) => {
+            ended = true;
+            return error;
+          },
+        );
+        const annotation = "openclaw.dev/upgrade-attempt";
+        let intent = "";
+        let initializer:
+          | {
+              metadata: { uid: string; annotations: Record<string, string> };
+              spec: { template: typeof previousJob };
+            }
+          | undefined;
+        let pending;
+        let completedPod: Pod | undefined;
+        try {
+          initializer = await waitFor("the submitted candidate's initializer", async () => {
+            assert.ok(!ended, "the upgrade ended before its Helm client could be interrupted");
+            const submitted = await readIfPresent(join(evidence, "helm-started"));
+            if (!submitted) {
+              return false;
+            }
+            const { attempt, previousRevision, expectedRevision } = protectedJSON<{
+              attempt: { nonce: string };
+              previousRevision: number;
+              expectedRevision: number;
+            }>(submitted);
+            assert.equal(previousRevision, baselineRelease.version);
+            assert.equal(expectedRevision, baselineRelease.version + 1);
+            const output = await kube(
+              "get",
+              `job/${release}-initialization`,
+              "--ignore-not-found",
+              "-o",
+              "json",
+            );
+            if (!output.trim()) {
+              return false;
+            }
+            const job = JSON.parse(output);
+            if (job.metadata.annotations?.[annotation] !== attempt.nonce) {
+              return false;
+            }
+            assert.equal(job.spec.template.metadata.annotations[annotation], attempt.nonce);
+            intent = submitted;
+            return job;
+          });
+          assert.ok(initializer);
+          await save("helm-client-stopped.json", JSON.parse(await clientAction("stop")));
+          pending = await helmStatus();
+          assert.equal(pending.version, baselineRelease.version + 1);
+          assert.equal(
+            pending.info.status,
+            "pending-upgrade",
+            "the interruption lost the Helm completion race",
+          );
+          assert.equal(
+            pending.config.installation.upgradeAttemptId,
+            initializer.metadata.annotations[annotation],
+          );
+          await custody.bindPendingRelease(pending.version);
+          const initializerUID = initializer.metadata.uid;
+          assertInstallationVolume(initializer.spec.template.spec, successorName);
+          await retainInstallationSecrets();
+
+          // Kubernetes continues the real initialization while Helm is suspended.
+          // A successful Job alone is insufficient: require its owned, successful
+          // Pod, then independently check PostgreSQL with the candidate migrator.
+          completedPod = await waitFor<Pod>("the interrupted initializer to complete", async () => {
+            const job = await get(`job/${release}-initialization`);
+            assert.equal(job.metadata.uid, initializerUID, "initializer Job was replaced");
+            assert.ok(
+              !job.metadata.deletionTimestamp && !job.status?.failed,
+              "initializer failed or is deleting",
+            );
+            const result = JSON.parse(
+              await kube(
+                "get",
+                "pods",
+                "-l",
+                `batch.kubernetes.io/controller-uid=${job.metadata.uid}`,
+                "-o",
+                "json",
+              ),
+            ) as { items: Pod[] };
+            assert.ok(result.items.length <= 1, "initializer unexpectedly retried");
+            const pod = result.items[0];
+            if (
+              !job.status?.conditions?.some(
+                (condition: { type: string; status: string }) =>
+                  condition.type === "Complete" && condition.status === "True",
+              ) ||
+              !pod ||
+              pod.status.phase !== "Succeeded"
+            ) {
+              return false;
+            }
+            assert.ok(!pod.metadata.deletionTimestamp);
+            assertInstallationVolume(pod.spec, successorName);
+            assert.ok(
+              pod.metadata.ownerReferences?.some(
+                (owner) => owner.controller && owner.uid === job.metadata.uid,
+              ),
+            );
+            assert.equal(
+              pod.metadata.annotations?.[annotation],
+              job.metadata.annotations[annotation],
+            );
+            const statuses = [
+              ...(pod.status.initContainerStatuses ?? []),
+              ...(pod.status.containerStatuses ?? []),
+            ];
+            assert.deepEqual(
+              statuses.map(({ name }) => name).sort(),
+              [...(pod.spec.initContainers ?? []), ...pod.spec.containers]
+                .map(({ name }) => name)
+                .sort(),
+            );
+            for (const status of statuses) {
+              assert.equal(
+                status.state?.terminated?.exitCode,
+                0,
+                "initializer container did not complete successfully",
+              );
+              await verifyPodImage(candidate, pod, status);
+            }
+            return pod;
+          });
+          await save("interrupted-initializer.json", {
+            job: await get(`job/${release}-initialization`),
+            pod: completedPod,
+          });
+          assertProtectedEqual(
+            await helmStatus(),
+            pending,
+            "pending Helm state changed during initialization",
+          );
+        } finally {
+          // Always reap this invocation before attempting recovery. If the race or
+          // a real hook fails, leave the owned fixture for diagnosis, never replay.
+          try {
+            if (await readIfPresent(client)) {
+              await save("helm-client-terminated.json", JSON.parse(await clientAction("kill")));
+            }
+          } finally {
+            await command;
+          }
+        }
+        const outcome = await command;
+        assert.ok(
+          outcome instanceof Error && /failed \(137\)/u.test(outcome.message),
+          "the interrupted helper must exit with Helm's SIGKILL status",
+        );
+        await save("helm-client-reaped.json", {
+          ...JSON.parse(await clientAction("absent")),
+          helperExit: 137,
+        });
+        await assert.rejects(
+          lstat(join(evidence, ".upgrade-lock")),
+          { code: "ENOENT" },
+          "the exited helper retained its evidence lock",
+        );
+        assert.ok(completedPod && initializer);
+        await assertNoCandidateWriters();
+        const committedHistory = await migrationReceipts(originalDatabase);
+        assert.ok(
+          committedHistory.length > 0,
+          "the interrupted initializer left no committed history",
+        );
+        await checkMigration(
+          candidate,
+          initializer.spec.template,
+          originalDatabase,
+          "recovery-history",
+        );
+        assert.equal(await migrationReceipts(originalDatabase), committedHistory);
+        await save("interrupted-migration-history.json", {
+          history: committedHistory,
+          check: "completed",
+        });
+
+        const recoveryArgs = [
+          "--evidence-dir",
+          evidence,
+          "--resume",
+          "--recover-helm",
+          "--migration-history-checked",
+          "--recovery-reviewed",
+        ];
+        // The interrupted pre-upgrade hook has not retired the old egress grant.
+        // Automatic recovery must refuse, rather than leave it outside Helm's inventory.
+        assert.deepEqual(await get(`networkpolicy/${retiredPolicyName}`), retiredPolicy);
+        const refusalPath = join(directory, "retired-policy-refusal.stderr");
+        await writeFile(refusalPath, "", { mode: 0o600, flag: "wx" });
+        await assert.rejects(upgrade(recoveryArgs, occEnv, refusalPath), /failed \(1\)/u);
+        assert.ok(
+          /predecessor-only resource still exists/u.test(await readFile(refusalPath, "utf8")),
+          "recovery did not report the retained policy; inspect the private refusal log",
+        );
+        assertProtectedEqual(await helmStatus(), pending, "pending Helm release changed");
+        await assert.rejects(lstat(join(evidence, "helm-recovery")), { code: "ENOENT" });
+        assert.deepEqual(await get(`networkpolicy/${retiredPolicyName}`), retiredPolicy);
+        // This is explicit fixture-owned reconciliation, not product deletion.
+        // Refuse a replacement or intervening edit rather than deleting by name.
+        await run(
+          "kubectl",
+          [
+            ...kubeArgs,
+            "delete",
+            `--raw=/apis/networking.k8s.io/v1/namespaces/${namespace}/networkpolicies/${retiredPolicyName}`,
+            "-f",
+            "-",
+          ],
+          {
+            input: JSON.stringify({
+              apiVersion: "v1",
+              kind: "DeleteOptions",
+              preconditions: {
+                uid: retiredPolicy.metadata.uid,
+                resourceVersion: retiredPolicy.metadata.resourceVersion,
+              },
+            }),
+            protectedInput: true,
+          },
+        );
+        await waitFor(
+          "the retired proxy policy to disappear",
+          async () =>
+            !(
+              await kube(
+                "get",
+                `networkpolicy/${retiredPolicyName}`,
+                "--ignore-not-found",
+                "-o",
+                "json",
+              )
+            ).trim(),
+          30_000,
+        );
+        await save("retired-policy-reconciled.json", {
+          uid: retiredPolicy.metadata.uid,
+          resourceVersion: retiredPolicy.metadata.resourceVersion,
+          removed: true,
+        });
+        // Removing the policy alone is insufficient: an identical Helm candidate
+        // also cannot prune the old named environment entry from the live template.
+        const envRefusalPath = join(directory, "retired-env-refusal.stderr");
+        await writeFile(envRefusalPath, "", { mode: 0o600, flag: "wx" });
+        await assert.rejects(upgrade(recoveryArgs, occEnv, envRefusalPath), /failed \(1\)/u);
+        assert.ok(
+          /live environment differs/u.test(await readFile(envRefusalPath, "utf8")),
+          "recovery did not report the retained environment; inspect the private refusal log",
+        );
+        assertProtectedEqual(await helmStatus(), pending, "pending Helm release changed");
+        await assert.rejects(lstat(join(evidence, "helm-recovery")), { code: "ENOENT" });
+        const stoppedAPI = await get("deployment/openclaw-enterprise-api");
+        const quiescedAPI = JSON.parse(
+          await readFile(join(evidence, "quiescence-api-deployment.json"), "utf8"),
+        );
+        assert.equal(stoppedAPI.metadata.uid, quiescedAPI.metadata.uid);
+        assert.equal(stoppedAPI.spec.replicas, 0);
+        const containerIndex = stoppedAPI.spec.template.spec.containers.findIndex(
+          (item: { name: string }) => item.name === "api",
+        );
+        assert.ok(containerIndex >= 0);
+        const envIndex = stoppedAPI.spec.template.spec.containers[containerIndex].env.findIndex(
+          (item: { name: string }) => item.name === "OCC_CHANNEL_DIRECTORY_PROXY_URL",
+        );
+        assert.ok(envIndex >= 0);
+        const envPointer = `/spec/template/spec/containers/${containerIndex}/env/${envIndex}`;
+        await kube(
+          "patch",
+          "deployment/openclaw-enterprise-api",
+          "--type=json",
+          "-p",
+          JSON.stringify([
+            { op: "test", path: "/metadata/uid", value: stoppedAPI.metadata.uid },
+            {
+              op: "test",
+              path: "/metadata/resourceVersion",
+              value: stoppedAPI.metadata.resourceVersion,
+            },
+            { op: "test", path: "/spec/replicas", value: 0 },
+            {
+              op: "test",
+              path: envPointer,
+              value: {
+                name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
+                value: "http://198.51.100.25:3128",
+              },
+            },
+            { op: "remove", path: envPointer },
+          ]),
+        );
+        await save("retired-env-reconciled.json", {
+          uid: stoppedAPI.metadata.uid,
+          resourceVersion: stoppedAPI.metadata.resourceVersion,
+          removed: true,
+        });
+        await upgrade(recoveryArgs);
+        const recovered = await helmStatus();
+        assert.equal(recovered.version, baselineRelease.version + 2);
+        assert.equal(recovered.info.status, "deployed");
+        assert.equal(recovered.info.description, `Rollback to ${baselineRelease.version + 1}`);
+        for (const field of ["manifest", "config", "hooks"]) {
+          assertProtectedEqual(
+            recovered[field],
+            pending[field],
+            `recovery changed candidate ${field}`,
+          );
+        }
+        assertProtectedEqual(
+          await readFile(join(evidence, "helm-started"), "utf8"),
+          intent,
+          "recovery rewrote the original submission",
+        );
+        assert.equal(
+          (await get(`job/${release}-initialization`)).metadata.uid,
+          initializer.metadata.uid,
+          "recovery reran initialization",
+        );
+        const retainedPod = await get(`pod/${completedPod.metadata.name}`);
+        assert.equal(retainedPod.metadata.uid, completedPod.metadata.uid);
+        assertProtectedEqual(
+          retainedPod.status,
+          completedPod.status,
+          "recovery changed the completed initializer",
+        );
+        assert.equal(
+          await migrationReceipts(originalDatabase),
+          committedHistory,
+          "recovery changed the committed migration history",
+        );
+        await verifyInstallation();
+      },
+      (details) => record("Forward upgrade API availability observations", details),
+    ),
+  );
+  const candidateInitializerUID = (await get(`job/${release}-initialization`)).metadata.uid;
   const candidateRelease = await helmStatus();
   assert.equal(candidateRelease.info.status, "deployed");
   await custody.bindRelease(candidateRelease.version);
-  const candidatePods = await controlPlane(candidate, originalDatabase);
+  await retainInstallationSecrets();
+  const candidatePods = await controlPlane(candidate, originalDatabase, successorName);
   assert.deepEqual(writerIdentities(candidatePods), writerIdentities(previousPods));
   assert.deepEqual(await readAgent(baseline.id), baseline);
   const accepted = await createAgent("acknowledged-after-upgrade");
@@ -827,62 +1614,9 @@ export async function rehearsePopulatedReturn({
     );
   });
 
-  const probeName = "return-compatibility";
-  await phase("Check the restored database with the previous controller", async () => {
-    const probeSecret = {
-      apiVersion: "v1",
-      kind: "Secret",
-      metadata: custody.metadata(probeName),
-      data: { "migration-url": await custody.restoredMigrationURL(restoredDatabase) },
-    };
-    const probe = {
-      apiVersion: "v1",
-      kind: "Pod",
-      // Copy the chart's network policy labels, not the Job's ownership labels.
-      metadata: custody.metadata(probeName, {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": release,
-        "app.kubernetes.io/component": "initialization",
-      }),
-      spec: {
-        restartPolicy: "Never",
-        activeDeadlineSeconds: 120,
-        automountServiceAccountToken: false,
-        securityContext: previousJob.spec.securityContext,
-        containers: [
-          {
-            ...priorMigration,
-            args: ["scripts/migrate-production.mjs", "--check"],
-            env: [
-              { name: "NODE_ENV", value: "production" },
-              {
-                name: "OCC_MIGRATION_DATABASE_URL",
-                valueFrom: { secretKeyRef: { name: probeName, key: "migration-url" } },
-              },
-            ],
-          },
-        ],
-      },
-    };
-    await custody.create(probeSecret);
-    const probeUID = await custody.create(probe);
-    const completed = await waitFor<Pod>("previous controller migration check", async () => {
-      const pod: Pod = await get(`pod/${probeName}`);
-      assert.equal(pod.metadata.uid, probeUID, "the compatibility Pod was replaced");
-      return ["Succeeded", "Failed"].includes(pod.status.phase) ? pod : false;
-    });
-    await verifyPodImage(
-      previous,
-      completed,
-      completed.status.containerStatuses?.find(({ name }) => name === "migration"),
-    );
-    assert.equal(
-      completed.status.phase,
-      "Succeeded",
-      "previous image cannot use the restored database",
-    );
-    await verifyCompletedMigrationHistory(run, kubeArgs, probeName);
-  });
+  await phase("Check the restored database with the previous controller", () =>
+    checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
+  );
 
   await phase("Return to the previous Helm revision on the restored database", async () => {
     await localCluster.assertCluster();
@@ -900,15 +1634,21 @@ export async function rehearsePopulatedReturn({
   assert.deepEqual(await claimIdentity(), claims);
   assert.equal((await get(`namespace/${namespace}`)).metadata.uid, namespaceUID);
   assert.equal((await get(`namespace/${tenant}`)).metadata.uid, tenantUID);
-  const returnedSecret = await startupSecret();
-  assert.equal(returnedSecret.metadata.uid, initialStartupSecret.metadata.uid);
-  assert.ok(
-    returnedSecret.data["installation.yaml"] === initialStartupSecret.data["installation.yaml"],
-    "the original installation startup Secret contents changed",
+  await retainInstallationSecrets();
+  assert.equal(
+    returned.config.installation.secretName ?? "occ-installation-startup",
+    initialStartupSecret.metadata.name,
   );
-  assert.equal(returnedSecret.metadata.annotations["openclaw.dev/installation-id"], installationId);
+  // Rollback has no initialization hook: retain the completed candidate Job.
+  const retainedInitializer = await get(`job/${release}-initialization`);
+  assert.equal(retainedInitializer.metadata.uid, candidateInitializerUID);
+  assertInstallationVolume(retainedInitializer.spec.template.spec, successorName);
   await custody.assertPostgres();
-  const returnedPods = await controlPlane(previous, restoredDatabase);
+  const returnedPods = await controlPlane(
+    previous,
+    restoredDatabase,
+    initialStartupSecret.metadata.name,
+  );
   assert.deepEqual(writerIdentities(returnedPods), writerIdentities(previousPods));
   for (const pod of returnedPods) {
     assert.ok(![...previousPods, ...candidatePods].some((earlier) => earlier.uid === pod.uid));
@@ -957,5 +1697,13 @@ export async function rehearsePopulatedReturn({
     restoredDatabase,
     returnedHelmRevision: returned.version,
     returnedToHelmRevision: baselineRelease.version,
+    installationReferences: {
+      original: {
+        name: initialStartupSecret.metadata.name,
+        uid: initialStartupSecret.metadata.uid,
+      },
+      successor: { name: successorName, uid: successor.metadata.uid },
+      retained: true,
+    },
   });
 }

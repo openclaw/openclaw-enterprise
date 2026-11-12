@@ -5,6 +5,7 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/public-read/runtime-source.ts";
 import { KubernetesPublicGithubReadAuthorizationStore } from "../../apps/controller/src/drivers/compute/kubernetes/public-github-read-authorizations.ts";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
+import { admitRevisionHarness } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -14,7 +15,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { inflateRawSync } from "node:zlib";
+import { inflateRawSync, brotliDecompressSync } from "node:zlib";
 import { createServer } from "node:http";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -26,9 +27,12 @@ import {
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
-import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  SETUP_WRAPPER_COMMAND,
+  codexLaunchEntrypoint,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
@@ -250,6 +254,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       },
     };
   }
+  admitRevisionHarness(driver, revision);
   const objects = new Map();
   const calls = [];
   let pods = [];
@@ -671,6 +676,7 @@ function deepFreeze(value) {
 
 test("Dedicated repository custody and networking belong only to Codex", async () => {
   const f = await fixture("dedicated");
+  f.revision.configuration.tools = { exec: { pathPrepend: ["/operator/bin"] } };
   const original = JSON.stringify(f.revision.configuration);
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const agent = f.consumer();
@@ -682,6 +688,15 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
   const expectedGatewayConfiguration = JSON.parse(original);
   expectedGatewayConfiguration.agents.defaults.workspace = "/home/node/workspace";
+  // Compute requires explicit proxy scopes independently of repository material.
+  expectedGatewayConfiguration.gateway.auth.trustedProxy.requiredHeaders = ["x-openclaw-scopes"];
+  // Compute translates the saved API-key destination into Codex's provider-qualified model.
+  expectedGatewayConfiguration.agents.defaults.model = "codex/openai-compatible/gpt-5";
+  expectedGatewayConfiguration.agents.defaults.models = {
+    "codex/openai-compatible/gpt-5":
+      expectedGatewayConfiguration.agents.defaults.models["codex/gpt-5"],
+  };
+  expectedGatewayConfiguration.models.providers.codex.models[0].id = "openai-compatible/gpt-5";
   assert.deepEqual(
     gatewayConfiguration,
     expectedGatewayConfiguration,
@@ -1586,7 +1601,7 @@ async function publicReaderAdmission() {
     domains: { [publicReader.address]: "allow" },
   };
   const admission = driver.admitRevision(revision);
-  assert.match(admission, /^public-github-read:v1:[a-f0-9]{64}$/);
+  assert.match(admission, /^model-provider:v1:[a-f0-9]{64}:public-github-read:v1:[a-f0-9]{64}$/);
   return { f, revision, driver, admission };
 }
 
@@ -1600,7 +1615,7 @@ test("protected execution cannot acquire the anonymous reader or use it as a fal
     executionAdmission: { version: 3, mode: "protected" },
     egressPlan: { driver: owner.ref, routes: [] },
   };
-  assert.equal(f.driver.admitRevision(protectedRevision), undefined);
+  assert.match(f.driver.admitRevision(protectedRevision), /^model-provider:v1:[a-f0-9]{64}:$/);
   assert.throws(
     () => pluginRuntimeSpecForRevision(protectedRevision, undefined, undefined, publicReader),
     /public GitHub reader cannot be selected for protected execution/,
@@ -1813,22 +1828,55 @@ test("API-admitted protected credential-free metadata projects no inference tool
   const r = f.revision;
   assert.deepEqual(r.executionAdmission, { version: 3, mode: "protected" });
   assert.deepEqual(r.egressPlan.driver, f.installedDriver.ref);
-  assert.equal(r.egressPlan.routes[0].binding.grant.kind, "credential_free_repository_metadata");
+  assert.deepEqual(r.harnessAuth, { method: "runtime" });
+  assert.deepEqual(
+    r.egressPlan.routes.map(({ binding }) => binding.grant.kind),
+    ["credential_free_repository_metadata"],
+  );
+  assert.equal(r.egressPlan.repositoryGit, undefined);
   const { driver: ordinary, admission } = await publicReaderAdmission();
   const driver = new KubernetesComputeDriver(ordinary.options, {
     protectedDriver: f.installedDriver,
   });
-  // The production Compute release gate and the exact projection prepareRevisionWorkloads uses.
-  driver.validateRevisionExecution(r, { currentEgressInstallation: async () => f.installation });
-  assert.equal(driver.admitRevision(r), undefined);
-  const { runtime } = driver.pluginRuntimeSnapshot(r);
+  // The API fixture stores the protected plan. Apply the production Compute admission
+  // to that revision and check the release gate and projection with the saved tag.
+  const launchTag = "openshell-codex-launch:v1:";
+  assert.equal(driver.admitRevision(r), launchTag);
+  assert.equal(ordinary.admitRevision(r), undefined);
+  assert.equal(driver.admitRevision({ ...r, sandboxDriverId: "foreign-sandbox" }), undefined);
+  const tagged = { ...r, compute: { ...r.compute, admission: launchTag } };
+  const context = { currentEgressInstallation: async () => f.installation };
+  driver.validateRevisionExecution(tagged, context);
+  assert.deepEqual(driver.codexLaunch(tagged, f.sandboxDriver), {
+    providerOwned: true,
+    protected: false,
+    openShellProgram: "ordinary",
+  });
+  assert.throws(() => driver.codexLaunch(tagged, undefined), /Compute admission is invalid/);
+  const { runtime } = driver.pluginRuntimeSnapshot(tagged);
+  assert.deepEqual(runtime, driver.pluginRuntimeSnapshot(r).runtime);
   assert.equal(runtime.providerTools, "none");
   assert.equal(runtime.egressEnrollment.inference, false);
+  assert.equal(runtime.egressEnrollment.routeCount, 1);
+  assert.equal(runtime.modelEndpoint, undefined);
+  assert.equal(runtime.repositoryBrokerNetworkPolicy, undefined);
   assert.equal(runtime.publicGithubRead, undefined);
-  const borrowedReader = { ...r, compute: { ...r.compute, admission } };
+  const forgedInference = {
+    ...tagged,
+    compute: { ...tagged.compute, admission: launchTag + "protected-codex-no-connection-retry:v1" },
+  };
+  assert.throws(
+    () => driver.pluginRuntimeSnapshot(forgedInference),
+    /Compute admission is invalid/,
+  );
+  const borrowedReader = { ...tagged, compute: { ...tagged.compute, admission } };
+  assert.throws(
+    () => driver.validateRevisionExecution(borrowedReader, context),
+    /saved model provider does not match/,
+  );
   assert.equal(driver.rejectedExecutionWithdrawal(borrowedReader), undefined);
   assert.equal(driver.pluginRuntimeSnapshot(borrowedReader).runtime.publicGithubRead, undefined);
-  const unknown = structuredClone(r);
+  const unknown = structuredClone(tagged);
   unknown.egressPlan.routes[0].binding.grant.kind = "not_an_admitted_grant";
   assert.throws(
     () => driver.pluginRuntimeSnapshot(unknown),
@@ -1852,7 +1900,7 @@ test("withdrawing a selected reader narrows access and stops only its revision",
     const selected = f.consumer();
     const successor = { ...structuredClone(f.revision), id: "unselected-successor", revision: 2 };
     successor.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {};
-    delete successor.compute.admission;
+    successor.compute.admission = f.driver.admitRevision(successor);
     f.enroll(successor);
     await f.driver.prepareRevision(successor, context);
     const successorDeployment = f
@@ -2433,6 +2481,9 @@ test("Kubernetes projects the repository client into native exec paths without c
   // construction; setting only the Kubernetes container PATH is insufficient.
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const expected = structuredClone(original);
+  expected.models = {
+    providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+  };
   expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
   expected.agents.entries.custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
   expected.agents.entries["own-exec"].tools.exec.pathPrepend = [
@@ -2457,6 +2508,9 @@ test("Kubernetes supplies a native repository exec prefix when no tools configur
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
       assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
         ...original,
+        models: {
+          providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+        },
         tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
       });
       assert.deepEqual(f.revision.configuration, original);
@@ -2464,7 +2518,7 @@ test("Kubernetes supplies a native repository exec prefix when no tools configur
   }
 });
 
-test("Kubernetes preserves native configuration bytes without repository bindings", async (t) => {
+test("Kubernetes preserves native exec settings without repository bindings", async (t) => {
   for (const runtimeBindings of [undefined, []]) {
     await t.test(runtimeBindings === undefined ? "missing" : "empty", async () => {
       const f = await fixture();
@@ -2476,7 +2530,12 @@ test("Kubernetes preserves native configuration bytes without repository binding
       const document = JSON.stringify(f.revision.configuration);
       deepFreeze(f.revision.configuration);
       await f.driver.prepareRevision(f.revision, f.context(runtimeBindings));
-      assert.equal(preparedNativeDocument(f), document);
+      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
+        ...JSON.parse(document),
+        models: {
+          providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+        },
+      });
       assert.equal(JSON.stringify(f.revision.configuration), document);
     });
   }
@@ -3084,7 +3143,7 @@ test("public Git read admission freezes the authored Agent scope and exact servi
 
 test("admitted public Git runtime carries only nonsecret configuration and a distinct launcher", async () => {
   const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
-  const originalLauncher = f.driver.pluginRuntimeSnapshot(f.revision).entrypoint;
+  const originalLauncher = codexLaunchEntrypoint(f.driver.codexLaunch(f.revision));
   Object.assign(f.driver.options.network.publicGithubRead, {
     authorizationConfigMapName: "public-github-authorizations",
     caBundle: "public-ca",
@@ -3100,12 +3159,12 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
     harness: f.revision.harness,
   });
   f.revision.compute.serviceAccess = services;
-  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  admitRevisionHarness(f.driver, f.revision);
   assert.match(f.revision.compute.admission, /^model-provider:v1:[a-f0-9]{64}:public-github-read:/);
   const snapshot = f.driver.pluginRuntimeSnapshot(f.revision);
   assert.equal(snapshot.runtime.publicGithubRead.endpoint, `https://${publicReader.address}:8080`);
   assert.notEqual(
-    snapshot.entrypoint,
+    codexLaunchEntrypoint(f.driver.codexLaunch(f.revision)),
     originalLauncher,
     "new service access requires a separately admitted launcher",
   );
@@ -3153,8 +3212,12 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
   };
   assert.throws(() => f.driver.pluginRuntimeSnapshot(alteredService), /no exact Compute admission/);
   const before = structuredClone(f.calls);
-  f.driver.options.runtime.modelProvider.baseUrl = "https://changed.example.test/v1";
-  await assert.rejects(f.driver.prepareRevision(f.revision, f.context()), /model provider changed/);
+  const alteredProvider = structuredClone(f.revision);
+  alteredProvider.harness.configuration.modelProvider.baseUrl = "https://changed.example.test/v1";
+  assert.throws(
+    () => f.driver.validateRevisionExecution(alteredProvider, f.context()),
+    /saved model provider does not match/,
+  );
   assert.deepEqual(f.calls, before);
 });
 
@@ -3603,33 +3666,36 @@ test("public Git Harness ownership preserves material delivery and Codex initial
           }
           f.revision.compute.admission = f.driver.admitRevision(f.revision);
           const snapshot = f.driver.pluginRuntimeSnapshot(f.revision);
+          assert.equal(f.driver.codexLaunch(f.revision, sandboxDriver).protected, protectedReader);
           const ownership = f.driver.pluginRuntimeOwnership(f.revision);
-          const deployment = f.driver.deployment(
-            "public-reader-harness",
-            ownership,
-            { name: f.namespace, plane: "execution" },
-            "agent:local",
-            "agent",
-            "agent",
-            {},
-            "info",
-            undefined,
-            false,
-            undefined,
-            f.driver.harnessAuthForRevision(f.revision, f.context(), {
-              name: f.namespace,
-              plane: "execution",
-            }),
-            [],
-            [],
-            snapshot,
-            [],
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            providerOwned,
-          );
+          const deploymentFor = (withNode) =>
+            f.driver.deployment(
+              "public-reader-harness",
+              ownership,
+              { name: f.namespace, plane: "execution" },
+              "agent:local",
+              "agent",
+              "agent",
+              {},
+              "info",
+              undefined,
+              false,
+              undefined,
+              f.driver.harnessAuthForRevision(f.revision, f.context(), {
+                name: f.namespace,
+                plane: "execution",
+              }),
+              [],
+              [],
+              snapshot,
+              [],
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              { ...f.driver.codexLaunch(f.revision, sandboxDriver), withNode },
+            );
+          const deployment = deploymentFor(false);
           const spec = deployment.spec.template.spec;
           const container = spec.containers[0];
           const capabilityVolume = spec.volumes.find(
@@ -3690,13 +3756,13 @@ test("public Git Harness ownership preserves material delivery and Codex initial
               );
             });
           });
-          const program = () => {
+          const program = (container) => {
             assert.ok(container.args.every((argument) => Buffer.byteLength(argument) < 131072));
             return inflateRawSync(Buffer.from(container.args.slice(1).join(""), "base64")).toString(
               "utf8",
             );
           };
-          const commandBudget = (kind) => {
+          const commandBudget = (kind, container) => {
             const command = [...container.command, ...container.args];
             const bytes = Buffer.byteLength(JSON.stringify(command));
             assert.ok(bytes <= 65_536, `rendered ${kind} command is ${bytes} bytes`);
@@ -3705,22 +3771,25 @@ test("public Git Harness ownership preserves material delivery and Codex initial
               `${providerOwned ? "provider" : "Compute"} ${protectedReader ? "protected" : "ordinary"} ${kind}: ${bytes} bytes`,
             );
           };
-          commandBudget("standalone");
-          const plain = program();
+          commandBudget("standalone", container);
+          const plain = program(container);
+          const workspaceDeployment = deploymentFor(true);
           f.driver.addWorkspaceNode(
-            deployment,
+            workspaceDeployment,
             "workspace-node",
             undefined,
             f.revision,
             true,
-            undefined,
-            snapshot.workspaceEntrypoint,
           );
-          commandBudget("workspace");
-          const workspace = program();
+          const workspaceContainer = workspaceDeployment.spec.template.spec.containers[0];
+          commandBudget("workspace", workspaceContainer);
+          const workspace = program(workspaceContainer);
           const codexArgs = JSON.parse(workspace.match(/name: "Codex",\s+args: (\[[^\n]*\])/)[1]);
           assert.ok(codexArgs.every((argument) => Buffer.byteLength(argument) < 131072));
-          const workspaceChild = inflateRawSync(
+          const decompress = codexArgs[1].includes("brotliDecompressSync")
+            ? brotliDecompressSync
+            : inflateRawSync;
+          const workspaceChild = decompress(
             Buffer.from(codexArgs.slice(2).join(""), "base64"),
           ).toString("utf8");
           for (const [kind, selected] of [

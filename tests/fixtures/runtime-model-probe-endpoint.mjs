@@ -28,7 +28,9 @@ const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
 const publicReadFixture = publicReadJourney ? await import("./public-read-model.mjs") : undefined;
 const skipperFixture =
   process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
-    ? (await import("./skipper-prepared-compute-model.mjs")).skipperPreparedComputeEvents
+    ? (await import("./skipper-prepared-compute-model.mjs")).createSkipperPreparedComputeEvents(
+        "/fixture/skipper-command.json",
+      )
     : undefined;
 const nativePort = Number(process.env.PROBE_OBSERVE_NATIVE_PORT);
 const statusPort = Number(process.env.PROBE_OBSERVE_STATUS_PORT);

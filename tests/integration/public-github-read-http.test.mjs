@@ -14,7 +14,7 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/public-read/access.ts";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const capability = "revision-http." + Buffer.alloc(32, 7).toString("base64url");

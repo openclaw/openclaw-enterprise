@@ -212,6 +212,7 @@ function main() {
     }
     fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "oce-workspace-setup-"));
+    let completed = false;
     try {
       const configPath = path.join(temporary, "openclaw.json");
       fs.writeFileSync(configPath, JSON.stringify({
@@ -227,7 +228,7 @@ function main() {
           failureExitStatus = result.error?.code === "ETIMEDOUT"
             ? ${WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS}
             : ${WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS};
-          throw new Error("WORKSPACE_SETUP_FAILED");
+          throw result.error ?? new Error("WORKSPACE_SETUP_FAILED");
         }
       };
       nativeSetup();
@@ -244,7 +245,12 @@ function main() {
         if (readRegular(path.join(workspace, name)) !== value) fail();
       }
       atomicWrite(markerPath, JSON.stringify(identity));
-    } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+      completed = true;
+    } finally {
+      try { fs.rmSync(temporary, { recursive: true, force: true }); }
+      // Cleanup must not replace the original setup failure.
+      catch (error) { if (completed) throw error; }
+    }
   }
   // A completed metadata file may be the permanent restart guard; retain it.
   if (delivery !== undefined && !setup.completed) {
@@ -255,7 +261,11 @@ function main() {
 }
 try { main(); }
 catch (error) {
-  process.stderr.write("WORKSPACE_SETUP_FAILED\n");
+  // Native messages, paths and output can contain private setup data. Keep only known codes.
+  const code = ["EACCES", "EPERM", "EROFS", "ENOENT", "ENOTDIR", "ENOSPC", "EDQUOT",
+    "EMFILE", "ENFILE", "EIO", "ERR_ACCESS_DENIED", "ETIMEDOUT"].includes(error?.code)
+    ? " (" + error.code + ")" : "";
+  process.stderr.write("WORKSPACE_SETUP_FAILED" + code + "\n");
   process.exitCode = error instanceof Refusal ? ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS} : failureExitStatus;
 }
 `;

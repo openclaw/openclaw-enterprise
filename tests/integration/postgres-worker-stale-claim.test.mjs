@@ -873,7 +873,12 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       gatewayManagedMode: owner.gatewayManagedMode,
-      harness: { ...PRODUCTION_HARNESS_DESCRIPTOR, mode: "dedicated" },
+      harness: {
+        ...PRODUCTION_HARNESS_DESCRIPTOR,
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
       compute: {
         id: compute.id,
         implementation: compute.implementation,

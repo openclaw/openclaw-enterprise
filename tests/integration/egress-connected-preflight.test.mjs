@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { connect } from "node:net";
+import { connect as connectTls } from "node:tls";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { once } from "node:events";
+import {
+  observeControllerUpgrade,
+  prepareControllerUpgrade,
+} from "../helpers/egress-controller-upgrade.mjs";
+
 import { randomUUID } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
+import { waitFor } from "../helpers/qa-utils.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -11,12 +23,19 @@ import {
   activateRepositoryAgent,
   admitRepositoryAgent,
 } from "../helpers/egress-custody-installed-agent.mjs";
+import {
+  rememberCustodyContext,
+  safeConnectedFailure,
+} from "../helpers/egress-connected-failure.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
 import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   encodeSyntheticEvents,
+  startSyntheticEgressProvider,
   syntheticResponsesEvents,
 } from "../fixtures/synthetic-egress-provider.mjs";
 import {
@@ -33,7 +52,15 @@ import {
   validateConnectedDatabaseUrl,
   validateConnectedInputs,
 } from "../helpers/egress-connected-inputs.mjs";
+import {
+  acceptedSupervisorSessions,
+  requireSupervisorReconnect,
+  supervisorSessionLifecycle,
+} from "../helpers/egress-supervisor-reconnect.mjs";
+import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import { openShellExchangeCapabilities as capabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { listen } from "../helpers/listen.mjs";
+import { registerConnectedEgressGatewayPreflightCases } from "./egress-connected-gateway-preflight-cases.ts";
 
 import {
   assertOpenShellHarnessBinding,
@@ -103,6 +130,62 @@ test("connected workload binding accepts only the maintained launcher identity a
   assertOpenShellHarnessBinding("workspace", revision, sandbox, perAgent);
   assert.throws(() => check(valid, "unknown"), { code: "ERR_ASSERTION" });
 
+  await t.test(
+    "namespace-shared account preserves exact workload ownership without a token",
+    () => {
+      const configuredAccount = openShellAgentName("first_agent");
+      const shared = structuredClone(valid);
+      shared.spec.serviceAccountName = configuredAccount;
+      const checkShared = (pod, expected = configuredAccount) =>
+        assertOpenShellHarnessBinding(
+          "workspace",
+          revision,
+          sandbox,
+          pod,
+          "namespaceShared",
+          expected,
+        );
+      checkShared(shared);
+      assert.throws(() => checkShared(shared, ""), { code: "ERR_ASSERTION" });
+      assert.throws(
+        () =>
+          assertOpenShellHarnessBinding("workspace", revision, sandbox, shared, "namespaceShared"),
+        { code: "ERR_ASSERTION" },
+      );
+      assert.throws(() => checkShared(shared, "wrong-account"), { code: "ERR_ASSERTION" });
+      assert.throws(() => assertOpenShellHarnessBinding("workspace", revision, sandbox, shared), {
+        code: "ERR_ASSERTION",
+      });
+      for (const mutate of [
+        (pod) => {
+          pod.metadata.labels["openclaw.dev/agent"] = "first_agent";
+        },
+        (pod) => {
+          pod.metadata.labels["openclaw.dev/revision"] = "other_revision";
+        },
+        (pod) => {
+          pod.metadata.ownerReferences[0].uid = "replaced-sandbox";
+        },
+        (pod) => {
+          pod.spec.automountServiceAccountToken = true;
+        },
+        (pod) => {
+          delete pod.spec.automountServiceAccountToken;
+        },
+        (pod) => {
+          pod.spec.volumes.push({
+            name: "unexpected-token",
+            projected: { sources: [{ serviceAccountToken: { path: "token" } }] },
+          });
+        },
+      ]) {
+        const changed = structuredClone(shared);
+        mutate(changed);
+        assert.throws(() => checkShared(changed), { code: "ERR_ASSERTION" });
+      }
+    },
+  );
+
   const rejects = (name, overrides) =>
     t.test(name, () => {
       const pod = { ...valid, ...overrides };
@@ -150,6 +233,71 @@ test("connected workload binding accepts only the maintained launcher identity a
   }
 });
 
+test("installed checkout evidence requires clean related product and harness commits in every mode", async (t) => {
+  const directory = await temporaryDirectory(t, "connected-source-");
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: "pipe" }).trim();
+  const commit = (name) => {
+    git("add", "source.txt");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", name);
+    return git("rev-parse", "HEAD");
+  };
+  git("init", "--quiet");
+  await writeFile(`${directory}/source.txt`, "initial");
+  const initial = commit("initial");
+  await writeFile(`${directory}/source.txt`, "product");
+  const product = commit("product");
+  await writeFile(`${directory}/source.txt`, "harness");
+  const harness = commit("harness");
+  git("checkout", "--quiet", "--detach", initial);
+  await writeFile(`${directory}/source.txt`, "unrelated product");
+  const unrelated = commit("unrelated");
+  git("checkout", "--quiet", "--detach", harness);
+  const helper = new URL("../helpers/egress-connected-inputs.mjs", import.meta.url).href;
+  const check = (input) =>
+    spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { assertConnectedCheckout } from ${JSON.stringify(helper)}; assertConnectedCheckout(${JSON.stringify(input)});`,
+      ],
+      { cwd: directory, encoding: "utf8" },
+    );
+  for (const controllerUpgrade of [undefined, { fromCommit: initial }]) {
+    const input = { oceCommit: product, harnessCommit: harness, controllerUpgrade };
+    assert.equal(check(input).status, 0, "clean descendant harness qualifies source provenance");
+    for (const oceCommit of [unrelated, "f".repeat(40)]) {
+      assert.notEqual(
+        check({ ...input, oceCommit }).status,
+        0,
+        "unrelated or missing product fails",
+      );
+    }
+    assert.notEqual(
+      check({ ...input, harnessCommit: product }).status,
+      0,
+      "wrong harness HEAD fails",
+    );
+    // Exercise actual Git dirtiness, including an untracked change excluded by diff alone.
+    await writeFile(`${directory}/source.txt`, "uncommitted");
+    assert.notEqual(check(input).status, 0, "modified source fails");
+    git("checkout", "--", "source.txt");
+    await writeFile(`${directory}/untracked.txt`, "unreviewed");
+    assert.notEqual(check(input).status, 0, "untracked source fails");
+    await rm(`${directory}/untracked.txt`);
+  }
+  assert.equal(check({ oceCommit: harness, harnessCommit: harness }).status, 0);
+  assert.notEqual(
+    check({
+      oceCommit: product,
+      harnessCommit: harness,
+      controllerUpgrade: { fromCommit: unrelated },
+    }).status,
+    0,
+  );
+});
+
 test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS fixtures", () => {
   const input = {
     version: 2,
@@ -164,6 +312,7 @@ test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS
     openShellGatewaySelector: "app=gateway",
     runtimeClass: "openshell",
     oceCommit: "a".repeat(40),
+    harnessCommit: "d".repeat(40),
     supplierCommit: "b".repeat(40),
     images: Object.fromEntries(
       ["agent", "controller", "gateway", "openShellGateway", "sandbox", "supervisor"].map(
@@ -235,10 +384,24 @@ test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS
     ...input,
     credentialConnector: undefined,
     authorityProfile: "fresh-whole-execution",
+    provider: { ...input.provider, origin: "https://provider.test/v1", bindPort: 443 },
   };
   const wholeExecution = (input) =>
-    validateConnectedInputs(input, controller, { wholeExecution: true });
+    validateConnectedInputs(input, selection(input), {
+      wholeExecution: true,
+      allowControllerUpgrade: true,
+    });
+  // The supplier terminal exchange requires HTTPS 443; a valid-looking high
+  // port previously passed preflight and failed only at the real model probe.
   assert.equal(wholeExecution(fresh), fresh);
+  assert.throws(() => wholeExecution({ ...fresh, provider: input.provider }), {
+    code: "ERR_ASSERTION",
+  });
+  for (const harnessCommit of [undefined, "short-sha"]) {
+    assert.throws(() => wholeExecution({ ...fresh, harnessCommit }), {
+      code: "ERR_ASSERTION",
+    });
+  }
   assert.throws(
     () => validate(fresh),
     { code: "ERR_ASSERTION" },
@@ -258,6 +421,35 @@ test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS
   assert.throws(() => wholeExecution({ ...fresh, authorityProfile: undefined }), {
     code: "ERR_ASSERTION",
   });
+  const controllerUpgrade = {
+    fromCommit: "c".repeat(40),
+    fromImage: `fixture/controller@sha256:${"c".repeat(64)}`,
+    timeoutMs: 60_000,
+  };
+  const upgrading = { ...fresh, controllerUpgrade };
+  assert.equal(wholeExecution(upgrading), upgrading);
+  assert.throws(
+    () => validateConnectedInputs(upgrading, selection(upgrading), { wholeExecution: true }),
+    { code: "ERR_ASSERTION" },
+    "the repository-custody caller must reject a cutover it cannot perform",
+  );
+  assert.throws(() => validate({ ...input, controllerUpgrade }), { code: "ERR_ASSERTION" });
+  for (const change of [
+    { fromCommit: input.oceCommit },
+    { fromCommit: "short-sha" },
+    { fromImage: input.images.controller },
+    { fromImage: `other/controller@sha256:${"a".repeat(64)}` },
+    { fromImage: "fixture/controller:mutable" },
+    { timeoutMs: 0 },
+    { timeoutMs: 15 * 60_000 + 1 },
+    { timeoutMs: "60000" },
+    { script: "/unreviewed/upgrade.sh" },
+  ]) {
+    assert.throws(
+      () => wholeExecution({ ...fresh, controllerUpgrade: { ...controllerUpgrade, ...change } }),
+      { code: "ERR_ASSERTION" },
+    );
+  }
   const rejectedAuth = [
     undefined,
     { mode: "unauthenticated" },
@@ -357,6 +549,217 @@ test("the authenticated connected request stays on the runner's exact loopback c
   assert.equal(foreignRequests, 0, "neither request reached the foreign listener");
 });
 
+test("connected response evidence survives cleanup without retaining untrusted fields", async (t) => {
+  const sentinel = `private-diagnostic-${randomUUID()}`;
+  const requestId = `req_${randomUUID()}`;
+  const serviceKey = `fixture-${randomUUID()}`;
+  const cases = [
+    {
+      code: "RESOURCE_CONFLICT",
+      metaId: requestId,
+      headerId: sentinel,
+      expectedCode: "RESOURCE_CONFLICT",
+      expectedId: requestId,
+    },
+    {
+      code: sentinel,
+      metaId: sentinel,
+      headerId: requestId,
+      expectedCode: "UNKNOWN",
+      expectedId: requestId,
+    },
+    {
+      code: { value: sentinel },
+      metaId: requestId + "\n",
+      headerId: sentinel,
+      expectedCode: "UNKNOWN",
+      expectedId: null,
+    },
+  ];
+  let selected;
+  let pending;
+  let evidence;
+  const port = await listen(
+    t,
+    createServer(async (request, response) => {
+      assert.equal(request.headers["x-api-key"], serviceKey);
+      const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+      pending = saved.lastApi;
+      assert.equal(pending.outcome, "unknown", "the attempt must be durable before dispatch");
+      if (request.method === "DELETE") {
+        response.writeHead(204).end();
+        return;
+      }
+      response.writeHead(409, { "x-request-id": selected.headerId, "x-private": sentinel });
+      response.end(
+        JSON.stringify({
+          error: { code: selected.code, message: sentinel, details: [{ value: sentinel }] },
+          meta: { requestId: selected.metaId, private: sentinel },
+          data: sentinel,
+        }),
+      );
+    }),
+  );
+  const progress = {};
+  evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey },
+    },
+    progress,
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  const route = `/namespaces/ns_${randomUUID()}/agents/agt_${randomUUID()}`;
+  let firstFailure;
+  for (selected of cases) {
+    // A real HTTP rejection is recorded before the caller's expected-status assertion.
+    // Later cleanup must not erase its correlation ID or retain arbitrary response material.
+    progress.stage = "deploy-request";
+    await assert.rejects(evidence.api("POST", route + "/deploy", {}, 202), {
+      code: "ERR_ASSERTION",
+    });
+    const expected = {
+      ...pending,
+      outcome: "received-error-status",
+      status: 409,
+      code: selected.expectedCode,
+      requestId: selected.expectedId,
+    };
+    firstFailure ??= expected;
+    await evidence.request("DELETE", route, undefined, true);
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    assert.deepEqual(
+      saved.apiOperations?.at(-2),
+      expected,
+      "the initiating response must remain available after cleanup",
+    );
+    assert.equal(expected.phase, "deploy-request");
+    assert.equal(saved.lastApi.method, "DELETE");
+    assert.equal(saved.lastApi.phase, "cleanup");
+    assert.notEqual(saved.lastApi.operationId, expected.operationId);
+    assert.equal(raw.includes(sentinel), false);
+    assert.equal(raw.includes(serviceKey), false);
+    assert.equal(raw.includes(route), false);
+  }
+  const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.deepEqual(
+    saved.apiOperations.find(({ operationId }) => operationId === firstFailure.operationId),
+    firstFailure,
+    "the first failed POST must survive the entire cleanup sequence",
+  );
+});
+
+test("connected response evidence preserves uncertainty after decoding and transport failures", async (t) => {
+  const requestId = `req_${randomUUID()}`;
+  const sentinel = `private-diagnostic-${randomUUID()}`;
+  let fault;
+  const received = [];
+  const port = await listen(
+    t,
+    createServer(async (request, response) => {
+      received.push(request.method);
+      if (request.method === "DELETE") {
+        const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+        assert.equal(saved.lastApi.method, "DELETE");
+        assert.equal(saved.lastApi.outcome, "unknown", "cleanup must checkpoint before dispatch");
+        response.writeHead(204).end();
+      } else if (fault === "disconnected") {
+        request.socket.destroy();
+      } else {
+        if (fault === "malformed-with-ledger-failure") {
+          await mkdir(evidence.directory + "/observations.pending.json");
+        }
+        response.writeHead(202, { "x-request-id": requestId });
+        // This is a faulting HTTP peer, not a substitute for a valid product response.
+        response.end("{malformed:" + sentinel);
+      }
+    }),
+  );
+  const progress = { stage: "deploy-request" };
+  const evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey: `fixture-${randomUUID()}` },
+    },
+    progress,
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  const route = `/namespaces/ns_${randomUUID()}/agents/agt_${randomUUID()}`;
+  for (fault of ["malformed", "disconnected"]) {
+    await assert.rejects(
+      evidence.request("POST", route + "/deploy", {}),
+      fault === "malformed" ? SyntaxError : TypeError,
+    );
+    await evidence.request("DELETE", route, undefined, true);
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    const operation = saved.apiOperations?.at(-2);
+    assert.ok(operation, "the uncertain initiating operation must survive cleanup");
+    assert.equal(operation.outcome, "unknown", "status alone must not settle write custody");
+    assert.equal(operation.status, fault === "malformed" ? 202 : null);
+    assert.equal(operation.requestId, fault === "malformed" ? requestId : null);
+    assert.equal(operation.code, null);
+    assert.equal(raw.includes(sentinel), false);
+    assert.equal(saved.lastApi.outcome, "received-success-status");
+  }
+  // A second failure while saving diagnostics must not replace the original
+  // decoder error or imply that the already-dispatched write can be replayed.
+  fault = "malformed-with-ledger-failure";
+  await assert.rejects(evidence.request("POST", route + "/deploy", {}), SyntaxError);
+  const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.equal(saved.lastApi.outcome, "unknown");
+  assert.equal(saved.lastApi.status, null, "the durable pre-dispatch record must survive");
+  const failedPostId = saved.lastApi.operationId;
+  const beforeCleanup = [...received];
+  await assert.rejects(evidence.request("DELETE", route, undefined, true), { code: "EISDIR" });
+  assert.deepEqual(received, beforeCleanup, "a failed checkpoint must prevent dispatch");
+  // Repair only the fixture's filesystem obstruction. The next independent cleanup
+  // gets a new checkpoint; the failed POST must never be sent again.
+  await rm(evidence.directory + "/observations.pending.json", { recursive: true });
+  await evidence.request("DELETE", route, undefined, true);
+  assert.deepEqual(received, [...beforeCleanup, "DELETE"]);
+  const recovered = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.equal(
+    recovered.apiOperations.find(({ operationId }) => operationId === failedPostId).outcome,
+    "unknown",
+  );
+});
+
+test("connected response headers cannot retain known credentials as request IDs", async (t) => {
+  // A malformed but accepted runner key can fit inside the canonical ID shape.
+  // Generate both values locally; no real credential or controller is involved.
+  const serviceKey = randomUUID();
+  const protectedValue = randomUUID();
+  let reflected;
+  const port = await listen(
+    t,
+    createServer((_request, response) => {
+      response.writeHead(204, { "x-request-id": `req_${reflected}` }).end();
+    }),
+  );
+  const evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey },
+    },
+    { stage: "request" },
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  evidence.protect(protectedValue);
+  for (reflected of [serviceKey, protectedValue]) {
+    await assert.rejects(evidence.request("GET", "/installation"), { code: "ERR_ASSERTION" });
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    assert.equal(raw.includes(reflected), false);
+    assert.equal(saved.lastApi.requestId, null);
+    assert.equal(saved.lastApi.outcome, "unknown");
+  }
+});
+
 test("connected database selection rejects missing, remote and redirected observers before effects", () => {
   const url = (overrides = {}) =>
     syntheticCredentialUrl({
@@ -446,6 +849,55 @@ test("installed cleanup names an unsettled prepared source and does not wait out
   );
 });
 
+// Use a real TLS socket: HTTP request counts alone miss partially sent headers.
+test(
+  "synthetic provider separates TLS handshakes from partial HTTP bytes",
+  { timeout: 10_000 },
+  async (t) => {
+    const directory = await temporaryDirectory(t, "egress-provider-bytes-");
+    const tls = await selfSigned(directory);
+    const provider = await startSyntheticEgressProvider(
+      t,
+      {
+        bindHost: "127.0.0.1",
+        bindPort: 0,
+        certificatePath: tls.certPath,
+        privateKeyPath: tls.keyPath,
+      },
+      {
+        initial: `SYNTHETIC-OCE-EGRESS-${randomUUID()}-v1`,
+        rotated: `SYNTHETIC-OCE-EGRESS-${randomUUID()}-v2`,
+      },
+    );
+    const client = connectTls({ host: "127.0.0.1", port: provider.port, ca: tls.cert });
+    t.after(() => client.destroy());
+    await once(client, "secureConnect");
+    assert.equal(provider.tcpConnections, 1);
+    assert.equal(provider.applicationBytes, 0, "TLS handshake bytes are not application bytes");
+    assert.equal(provider.observations.length, 0);
+
+    const partial = "GET /v1/responses HTTP/1.1\r\nHost: localhost\r\n";
+    client.write(partial);
+    await waitFor("partial HTTP bytes at origin", () => provider.applicationBytes > 0, 5000, {
+      interval: 10,
+    });
+    assert.equal(provider.applicationBytes, Buffer.byteLength(partial));
+    assert.equal(provider.observations.length, 0, "the HTTP parser has no complete headers yet");
+
+    // Completing the same request must count every byte exactly once. No credential
+    // is supplied, so the real provider rejects it after recording the HTTP request.
+    const ending = "Connection: close\r\n\r\n";
+    client.resume();
+    const closed = once(client, "close");
+    client.end(ending);
+    await closed;
+    assert.equal(provider.applicationBytes, Buffer.byteLength(partial + ending));
+    assert.equal(provider.observations.length, 1);
+    assert.equal(provider.observations[0].status, 403);
+    assert.deepEqual(provider.errors, []);
+  },
+);
+
 test("connected adversarial wire carries split and nested-JSON material without raw reflection", () => {
   const credential = `SYNTHETIC-OCE-EGRESS-${randomUUID()}-v1`;
   for (const mode of ["reflect-split-id", "reflect-encoded-arguments"]) {
@@ -489,7 +941,10 @@ test("connected request bytes pass the real Fastify parser and preserve missing-
     const response = await f.app.inject({
       method: wire.method,
       url: wire.path,
-      headers: authenticatedHeaders(session, wire.headers),
+      headers: {
+        host: new URL(session.origin).host,
+        ...authenticatedHeaders(session, wire.headers),
+      },
       payload: wire.body,
     });
     return assertConnectedResponse(
@@ -734,5 +1189,1142 @@ test("failed custody deployment preserves worker event order across a reused att
       diagnostics.at(-1).includes(JSON.stringify(failure.workerEvents)),
       "public safe projection",
     );
+  }
+});
+
+registerConnectedEgressGatewayPreflightCases();
+
+// These log-shape controls test the observer, not supplier authentication or a
+// live reconnect. UUIDs and lines are synthetic; the real lane supplies evidence.
+test("reconnect observer counts accepted sessions once and preserves uint64 epochs", async () => {
+  const sandboxId = "10000000-0000-4000-8000-000000000001";
+  const instanceId = "20000000-0000-4000-8000-000000000001";
+  const first = "30000000-0000-4000-8000-000000000001";
+  const second = "30000000-0000-4000-8000-000000000002";
+  const line = (session, epoch) =>
+    `2026-01-01T00:00:00.000Z 2026-01-01T00:00:00Z  INFO openshell_server::supervisor_session: supervisor session: accepted sandbox_id=${sandboxId} session_id=${session} instance_id=${instanceId} connection_epoch=${epoch} replica_id=gateway-0 config_push=false`;
+  const accepted = line(first, "9007199254740992");
+  const ansi = accepted.replace("INFO", "\u001b[32mINFO\u001b[0m");
+  const next = line(second, "9007199254740993");
+  assert.deepEqual(
+    acceptedSupervisorSessions(
+      [
+        accepted,
+        ansi,
+        next,
+        accepted.replace("session: accepted", "session: failed"),
+        accepted.replace("openshell_server::supervisor_session:", "untrusted::logger:"),
+        accepted.replace(`sandbox_id=${sandboxId}`, "sandbox_id=foreign"),
+      ].join("\n"),
+      sandboxId,
+      instanceId,
+    ),
+    [
+      { sessionId: first, epoch: "9007199254740992", at: "2026-01-01T00:00:00.000Z" },
+      { sessionId: second, epoch: "9007199254740993", at: "2026-01-01T00:00:00.000Z" },
+    ],
+  );
+  assert.throws(
+    () =>
+      acceptedSupervisorSessions(
+        accepted.replace(
+          "connection_epoch=9007199254740992",
+          "connection_epoch=18446744073709551616",
+        ),
+        sandboxId,
+        instanceId,
+      ),
+    { name: "AssertionError" },
+  );
+  assert.throws(
+    () =>
+      acceptedSupervisorSessions(
+        accepted.replace(`instance_id=${instanceId}`, "instance_id=other"),
+        sandboxId,
+        instanceId,
+      ),
+    { name: "AssertionError", message: /accepted supervisor instance changed/ },
+  );
+  // A real observer failure must retain its source location without copying
+  // the rejected supplier field into terminal diagnostics.
+  let failure;
+  const privateField = "PRIVATE-OBSERVATION-SENTINEL";
+  assert.throws(
+    () =>
+      acceptedSupervisorSessions(
+        accepted.replace(`instance_id=${instanceId}`, `instance_id=${privateField}`),
+        sandboxId,
+        instanceId,
+      ),
+    (error) => {
+      failure = error;
+      return error.code === "ERR_ASSERTION";
+    },
+  );
+  const safe = await safeConnectedFailure(failure, "reconnect-before-policy");
+  assert.match(safe.message, /egress-supervisor-reconnect\.mjs:\d+:\d+/);
+  assert.equal(safe.message.includes(privateField), false);
+  assert.throws(
+    () =>
+      acceptedSupervisorSessions(
+        [accepted, line(first, "9007199254740993")].join("\n"),
+        sandboxId,
+        instanceId,
+      ),
+    { name: "AssertionError", message: /conflicting accepted session event/ },
+  );
+  const closed = `2026-01-01T00:00:01.000Z 2026-01-01T00:00:01Z  INFO openshell_server::supervisor_session: supervisor session: stream closed by supervisor sandbox_id=${sandboxId} session_id=${first}`;
+  const lifecycle = supervisorSessionLifecycle(
+    [accepted, closed].join("\n"),
+    sandboxId,
+    instanceId,
+  );
+  assert.deepEqual(lifecycle, {
+    total: 2,
+    truncated: false,
+    events: [
+      {
+        sessionId: first,
+        epoch: "9007199254740992",
+        at: "2026-01-01T00:00:00.000Z",
+        event: "accepted",
+      },
+      { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "inbound_eof" },
+    ],
+  });
+  assert.deepEqual(
+    supervisorSessionLifecycle(
+      closed.replace("openshell_server::", "untrusted::"),
+      sandboxId,
+      instanceId,
+    ).events,
+    [],
+  );
+  assert.throws(
+    () =>
+      supervisorSessionLifecycle(closed.replace(first, "unchecked-secret"), sandboxId, instanceId),
+    { code: "ERR_ASSERTION" },
+  );
+  const bounded = supervisorSessionLifecycle(
+    Array(12).fill(closed).join("\n"),
+    sandboxId,
+    instanceId,
+  );
+  assert.equal(bounded.total, 12);
+  assert.equal(bounded.truncated, true);
+  assert.equal(bounded.events.length, 9);
+});
+
+// Scripted log replies exercise the real observer and terminal projection, not
+// supplier emission or delivery. A final read failure must retain prior evidence.
+test("custody failures retain bounded last observations without supplier payloads", async (t) => {
+  const marker = "PRIVATE-CUSTODY-DIAGNOSTIC-SENTINEL";
+  const sandboxId = "10000000-0000-4000-8000-000000000001";
+  const supervisor = {
+    metadata: {
+      uid: "20000000-0000-4000-8000-000000000001",
+      namespace: "workspace",
+      labels: {
+        "openshell.ai/sandbox-id": sandboxId,
+        "openshell.ai/boundary-role": "supervisor",
+      },
+    },
+    status: {
+      containerStatuses: [{ containerID: `containerd://${"a".repeat(64)}`, restartCount: 0 }],
+    },
+  };
+  const line = {
+    sandboxId,
+    source: "sandbox",
+    level: "INFO",
+    target: "openshell_supervisor_network::l7::rest::credentials",
+    message: "Protected response custody transition",
+    fields: {
+      request_id: "aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa",
+      response_custody_event: "resolve_accepted",
+      private: marker,
+    },
+  };
+  await t.test(
+    "missing resolution preserves private correlation without accepting the refusal",
+    async (t) => {
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      let lines = [];
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: { getSandboxLogs: async () => ({ lines, bufferTotal: lines.length }) },
+      });
+      const before = await custody.snapshot();
+      lines = ["no_permit", "response_blocked"].map((event) => ({
+        ...line,
+        fields: { ...line.fields, response_custody_event: event },
+      }));
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, ["resolve_refused", "no_permit", "response_blocked"]);
+          } catch (error) {
+            rememberCustodyContext(error, "fresh-iam-revoked", {
+              outcome: "observed",
+              since: "2026-01-01T00:00:00.000Z",
+              raw: marker,
+              gateways: [
+                {
+                  podUid: supervisor.metadata.uid,
+                  containerId: supervisor.status.containerStatuses[0].containerID,
+                  outcome: "observed",
+                  total: 2,
+                  events: [
+                    {
+                      sessionId: sandboxId,
+                      at: "2026-01-01T00:00:01.000Z",
+                      event: "inbound_eof",
+                      raw: marker,
+                    },
+                    { sessionId: marker, at: "2026-01-01T00:00:01.000Z", event: "inbound_eof" },
+                  ],
+                },
+              ],
+            });
+            const safe = await safeConnectedFailure(error, "turn-result", evidence.recordFailure);
+            assert.equal(safe.message.includes(line.fields.request_id), false);
+            assert.equal(safe.message.includes(sandboxId), false);
+            assert.equal(safe.message.includes(marker), false);
+            throw safe;
+          }
+        },
+        { message: /Connected egress assertion failed.*after-custody-observation/ },
+      );
+      const { failure } = JSON.parse(
+        await readFile(evidence.directory + "/observations.json", "utf8"),
+      );
+      assert.deepEqual(
+        failure.custodyEvidence.events,
+        ["no_permit", "response_blocked"].map((event) => ({
+          requestId: line.fields.request_id,
+          event,
+        })),
+      );
+      assert.deepEqual(failure.custodyEvidence.expected, [
+        "resolve_refused",
+        "no_permit",
+        "response_blocked",
+      ]);
+      assert.equal(failure.custodyEvidence.identityCheck, "matched");
+      assert.equal(failure.custodyEvidence.uniqueRequest, true);
+      assert.equal(failure.custodyEvidence.singleRequest, true);
+      assert.equal(failure.custodyEvidence.ordered, false);
+      assert.equal(failure.custodyContext.turnPhase, "fresh-iam-revoked");
+      assert.equal(failure.custodyContext.sessions.requestSessionCorrelation, "unavailable");
+      assert.equal(failure.custodyContext.sessions.gateways[0].events.length, 1);
+      assert.equal(JSON.stringify(failure).includes(marker), false);
+      // A new baseline must not reuse the prior turn's private evidence.
+      const next = await custody.snapshot();
+      lines = [...lines, ...Array(12).fill(line)];
+      let second;
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(next, ["resolve_accepted"]);
+          } catch (error) {
+            throw await safeConnectedFailure(error, "next-turn", async (value) => {
+              second = value;
+            });
+          }
+        },
+        { message: /Connected egress assertion failed.*after-custody-observation/ },
+      );
+      assert.equal(second.custodyEvidence.events.length, 9);
+      assert.equal(second.custodyEvidence.truncated, true);
+      assert.equal(second.custody.freshCount, 12);
+      assert.equal(second.custodyEvidence.uniqueRequest, false);
+      assert.equal(second.custodyContext, undefined);
+    },
+  );
+  await t.test("multiline failure messages cannot choose the reported source frame", async () => {
+    const spoofed = "egress-supplier-custody-transitions.mjs:12345:1234";
+    for (const kind of ["operation", "assertion"]) {
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: {
+          async getSandboxLogs() {
+            const message = marker + "\n    at /untrusted/" + spoofed;
+            if (kind === "assertion") {
+              assert.fail(message);
+            }
+            throw new Error(message);
+          },
+        },
+      });
+      let failure;
+      try {
+        await custody.snapshot();
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      const safe = await safeConnectedFailure(failure, "turn-result");
+      assert.match(safe.message, /egress-supplier-custody-transitions\.mjs:\d+:\d+/);
+      assert.equal(safe.message.includes(spoofed), false);
+      assert.equal(safe.message.includes(marker), false);
+    }
+    // A stack with no usable frame keeps the fixed fallback.
+    assert.match(
+      (await safeConnectedFailure(new Error(marker), "turn-result")).message,
+      /\(external-operation\)/,
+    );
+  });
+
+  await t.test("non-Error rejection stays unchanged", async () => {
+    const custody = createCustodyTransitions({
+      workspace: "workspace",
+      sandbox: "sandbox",
+      sandboxId,
+      supervisor,
+      readSupervisor: async () => {
+        throw marker;
+      },
+      gatewayClient: {
+        getSandboxLogs: async () => {
+          throw new Error("unexpected log read");
+        },
+      },
+    });
+    await assert.rejects(custody.snapshot(), (error) => error === marker);
+  });
+  await t.test("diagnostic write failure does not prevent cleanup recording", async () => {
+    const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+    t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+    // A failed atomic write must not replace the observer's original failure;
+    // the next cleanup checkpoint still persists that failure from memory.
+    await mkdir(evidence.directory + "/observations.pending.json");
+    const custody = createCustodyTransitions({
+      workspace: "workspace",
+      sandbox: "sandbox",
+      sandboxId,
+      supervisor,
+      readSupervisor: async () => {
+        throw new Error(marker);
+      },
+      gatewayClient: {
+        getSandboxLogs: async () => {
+          throw new Error("unexpected log read");
+        },
+      },
+    });
+    await assert.rejects(
+      async () => {
+        try {
+          await custody.snapshot();
+        } catch (error) {
+          const safe = await safeConnectedFailure(error, "turn-result", evidence.recordFailure);
+          assert.equal(safe.message.includes(marker), false);
+          assert.equal(safe.cause, undefined);
+          throw safe;
+        }
+      },
+      {
+        message:
+          /Connected egress operation failed at turn-result \/ before-custody-supervisor-get/,
+      },
+    );
+    await rm(evidence.directory + "/observations.pending.json", { recursive: true });
+    await evidence.checkpoint("cleanup");
+    const { failure } = JSON.parse(
+      await readFile(evidence.directory + "/observations.json", "utf8"),
+    );
+    assert.equal(failure.operation, "before-custody-supervisor-get");
+    assert.equal(failure.custody.readAttempts, 0);
+    assert.equal(failure.custody.lastRead, "unobserved");
+  });
+  await t.test(
+    "continuation retains the acknowledged prefix when its first read fails",
+    async () => {
+      let reads = 0;
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: {
+          async getSandboxLogs() {
+            reads++;
+            if (reads === 1) {
+              return { lines: [], bufferTotal: 0 };
+            }
+            if (reads === 2) {
+              return {
+                lines: [
+                  line,
+                  {
+                    ...line,
+                    fields: { ...line.fields, response_custody_event: "permit_accepted" },
+                  },
+                ],
+                bufferTotal: 2,
+              };
+            }
+            throw new Error(marker);
+          },
+        },
+      });
+      const before = await custody.snapshot();
+      await custody.expectAfter(before, ["resolve_accepted", "permit_accepted"]);
+      let recorded;
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, [
+              "resolve_accepted",
+              "permit_accepted",
+              "response_released",
+            ]);
+          } catch (error) {
+            throw await safeConnectedFailure(error, "turn-result", async (value) => {
+              recorded = value;
+            });
+          }
+        },
+        { message: /Connected egress operation failed at turn-result \/ after-custody-log-read/ },
+      );
+      assert.equal(recorded.custody.lastRead, "error");
+      assert.equal(recorded.custody.ring, "valid");
+      assert.equal(recorded.custody.freshCount, 2);
+      assert.deepEqual(recorded.custody.labels, ["resolve_accepted", "permit_accepted"]);
+      assert.equal(recorded.custody.sequence, "partial");
+      assert.equal(JSON.stringify(recorded).includes(marker), false);
+    },
+  );
+  for (const kind of ["empty", "partial", "ring", "malformed"]) {
+    await t.test(kind, async () => {
+      let reads = 0;
+      const custody = createCustodyTransitions(
+        {
+          workspace: "workspace",
+          sandbox: "sandbox",
+          sandboxId,
+          supervisor,
+          readSupervisor: async () => supervisor,
+          gatewayClient: {
+            async getSandboxLogs(_request, signal) {
+              reads++;
+              if (reads === 1) {
+                return { lines: [], bufferTotal: 0 };
+              }
+              if (reads === 2) {
+                if (kind === "ring") {
+                  return { lines: [line], bufferTotal: 2001 };
+                }
+                if (kind === "malformed") {
+                  return {
+                    lines: [
+                      { ...line, fields: { ...line.fields, response_custody_event: marker } },
+                    ],
+                    bufferTotal: 1,
+                  };
+                }
+                return {
+                  lines: kind === "partial" ? [line] : [],
+                  bufferTotal: kind === "partial" ? 1 : 0,
+                };
+              }
+              try {
+                await delay(10000, undefined, { signal });
+              } catch {
+                throw signal.reason;
+              }
+              throw new Error("deadline did not abort the scripted read");
+            },
+          },
+        },
+        { deliveryTimeoutMs: 1000, pollIntervalMs: 1 },
+      );
+      const before = await custody.snapshot();
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, [
+              "resolve_accepted",
+              "permit_accepted",
+              "response_released",
+            ]);
+          } catch (error) {
+            const safe = await safeConnectedFailure(error, "turn-result", evidence.recordFailure);
+            assert.equal(safe.message.includes(line.fields.request_id), false);
+            assert.equal(safe.message.includes(marker), false);
+            assert.equal(safe.cause, undefined);
+            throw safe;
+          }
+        },
+        {
+          message:
+            /Connected egress (?:assertion|operation) failed at turn-result \/ after-custody-log-read/,
+        },
+      );
+      const { failure: recorded } = JSON.parse(
+        await readFile(evidence.directory + "/observations.json", "utf8"),
+      );
+      await evidence.checkpoint("cleanup");
+      assert.deepEqual(
+        JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8")).failure,
+        recorded,
+      );
+      assert.equal(recorded.custody.successfulReads, 2);
+      assert.equal(recorded.custody.readAttempts, kind === "empty" || kind === "partial" ? 3 : 2);
+      assert.equal(JSON.stringify(recorded).includes(marker), false);
+      // Validated correlation belongs only to the private evidence, never the
+      // terminal error or the counter-only custody summary.
+      assert.equal(JSON.stringify(recorded.custody).includes(line.fields.request_id), false);
+      assert.equal(
+        JSON.stringify(recorded.custodyEvidence ?? {}).includes(line.fields.request_id),
+        kind === "partial",
+      );
+      if (kind === "empty" || kind === "partial") {
+        assert.equal(recorded.custody.lastRead, "deadline");
+        assert.equal(recorded.custody.ring, "valid");
+        assert.equal(recorded.custody.lineCount, kind === "partial" ? 1 : 0);
+        assert.equal(recorded.custody.sequence, kind === "partial" ? "partial" : "none");
+        assert.deepEqual(recorded.custody.labels, kind === "partial" ? ["resolve_accepted"] : []);
+      } else {
+        assert.equal(recorded.custody.lastRead, "returned");
+        assert.equal(recorded.custody.ring, kind === "ring" ? "incomplete" : "invalid-transition");
+        assert.equal(recorded.custody.sequence, "unobserved");
+        assert.equal(recorded.custody.bufferTotal, kind === "ring" ? null : 1);
+      }
+    });
+  }
+});
+
+test(
+  "reconnect checkpoints keep correlation in the private ledger on success and failure",
+  { concurrency: false },
+  async (t) => {
+    for (const failFinalReadiness of [false, true]) {
+      await t.test(
+        failFinalReadiness ? "failed final readiness" : "successful reconnect",
+        async (t) => {
+          const sandboxId = "10000000-0000-4000-8000-000000000001";
+          const instanceId = "20000000-0000-4000-8000-000000000001";
+          const first = "30000000-0000-4000-8000-000000000001";
+          const second = "30000000-0000-4000-8000-000000000002";
+          const agent = { id: "private-agent-id", servicePrincipalId: "private-principal-id" };
+          const revision = { id: "private-revision-id" };
+          const namespace = { id: "private-namespace-id" };
+          const placement = "private-placement";
+          const images = Object.fromEntries(
+            ["supervisor", "agent", "openShellGateway"].map((name) => [
+              name,
+              `registry.example/private-${name}@sha256:${"b".repeat(64)}`,
+            ]),
+          );
+          const pod = (name, image) => ({
+            metadata: {
+              name,
+              uid: `private-${name}-uid`,
+              namespace: placement,
+              labels: {
+                "openshell.ai/sandbox-id": sandboxId,
+                "openshell.ai/boundary-role": "supervisor",
+              },
+            },
+            spec: { containers: [{ name: `private-${name}-container`, image }] },
+            status: {
+              containerStatuses: [
+                {
+                  name: `private-${name}-container`,
+                  ready: true,
+                  containerID: `containerd://private-${name}`,
+                  imageID: `private-${name}-image-id`,
+                  restartCount: 0,
+                  state: { running: { startedAt: "2026-01-01T01:02:03Z" } },
+                },
+              ],
+            },
+          });
+          const supervisor = pod("supervisor", images.supervisor);
+          const harness = pod("harness", images.agent);
+          const supplier = pod("supplier", images.openShellGateway);
+          const pods = [supervisor, harness, supplier];
+          const key = Buffer.alloc(32, 1);
+          const policyHash = "a".repeat(64);
+          // Fixed consistent input for the observer. This case does not test pin derivation.
+          const committed = {
+            sandboxId,
+            plan: {
+              generation: 7,
+              execution: {
+                namespaceId: namespace.id,
+                agentId: agent.id,
+                revisionId: revision.id,
+                installationId: "private-installation-id",
+                servicePrincipalId: agent.servicePrincipalId,
+              },
+            },
+            enforcement: {
+              instanceId,
+              policyHash,
+              peerKeyId: key.toString("base64url"),
+              authorityScope: "execution",
+              configurationId: "b010bc3c3d213c355e43eccffbee704648968a7f42fc973f8ab1a4afe0f33bf5",
+            },
+          };
+          const loaded = {
+            active_version: 7,
+            revision: { version: 7, status: 2, policy_hash: policyHash, policy: {} },
+            loaded_policy_observation: {
+              registered_exchange_public_key: key,
+              source_policy_hash: policyHash,
+              effective_policy: {},
+              enforcement: {
+                sandbox_id: sandboxId,
+                instance_id: instanceId,
+                policy_version: 7,
+                policy_hash: policyHash,
+                config_revision: "1",
+                provider_env_revision: "1",
+                enforced_capabilities: capabilities,
+              },
+            },
+          };
+          let logReads = 0;
+          let policyReads = 0;
+          let reconnectAt;
+          const line = (session, epoch, at) =>
+            `${at} ${at}  INFO openshell_server::supervisor_session: supervisor session: accepted sandbox_id=${sandboxId} session_id=${session} instance_id=${instanceId} connection_epoch=${epoch}`;
+          const f = {
+            resource: async (_kind, name) => {
+              const found = pods.find((value) => value.metadata.name === name);
+              assert.ok(found);
+              return found;
+            },
+            kubectl: async () => {
+              logReads++;
+              const baseline = line(first, "9007199254740992", "2026-01-01T00:00:00.000Z");
+              if (logReads === 1) {
+                return baseline;
+              }
+              reconnectAt ??= new Date().toISOString();
+              return `${baseline}\n${line(second, "9007199254740993", reconnectAt)}`;
+            },
+            waitFor: async (_label, read) => {
+              // Scripted observations exercise pending enrollment as well as the loaded branch.
+              for (let attempt = 0; attempt < 3; attempt++) {
+                await delay(5);
+                const result = await read();
+                if (result) {
+                  return result;
+                }
+              }
+              assert.fail("scripted observations never satisfied the observer");
+            },
+          };
+          const setup = {
+            input: { images, supplierCommit: "c".repeat(40), openShellGatewayNamespace: placement },
+            controller: {},
+            f,
+          };
+          const stack = {
+            pool: {},
+            placement,
+            namespace,
+            namespacePath: "/private-namespace",
+            installation: { id: "private-installation-id" },
+            supplierPods: [supplier],
+            gatewayClient: {
+              getSandboxPolicyStatus: async () =>
+                ++policyReads === 2 ? { ...loaded, loaded_policy_observation: undefined } : loaded,
+            },
+          };
+          const deploymentPath = "/private-deployment";
+          const diagnostics = [];
+          const progress = {};
+          const evidence = await createRunEvidence(
+            { signal: t.signal, diagnostic: (line) => diagnostics.push(line) },
+            setup,
+            progress,
+          );
+          const originalRead = PostgresPlatformState.prototype.read;
+          // Replace only the external state input. Real observer, assertions, checkpoint,
+          // atomic ledger writes and terminal projection run unchanged.
+          PostgresPlatformState.prototype.read = async (read) =>
+            read({ credentialSources: { findRevisionEgressInstallation: () => committed } });
+          let failure;
+          try {
+            await requireSupervisorReconnect(
+              setup,
+              stack,
+              {
+                ...evidence,
+                api: async (_method, path) =>
+                  path === deploymentPath
+                    ? {
+                        deploymentId: revision.id,
+                        namespaceId: namespace.id,
+                        agentId: agent.id,
+                        status: failFinalReadiness ? "private-unexpected-status" : "succeeded",
+                        error: null,
+                        cleanup: null,
+                      }
+                    : { activeRevisionId: revision.id },
+              },
+              { agent, revision, sandboxId, deploymentPath },
+              { supervisor, harness, sandboxName: "private-sandbox-name" },
+            );
+          } catch (error) {
+            failure = error;
+          } finally {
+            PostgresPlatformState.prototype.read = originalRead;
+          }
+          try {
+            if (failFinalReadiness) {
+              assert.equal(failure?.code, "ERR_ASSERTION");
+              const terminal = await safeConnectedFailure(
+                failure,
+                progress.stage,
+                evidence.recordFailure,
+              );
+              diagnostics.push(terminal.message);
+              assert.match(terminal.message, /reconnect-before-turn/);
+            } else {
+              assert.equal(failure, undefined);
+            }
+            const retained = JSON.parse(
+              await readFile(`${evidence.directory}/observations.json`, "utf8"),
+            );
+            const phases = retained.phases;
+            const phase = (name) => phases.find((entry) => entry.phase === name);
+            assert.equal(
+              phase("reconnect-wait-start").supervisor.containerId,
+              supervisor.status.containerStatuses[0].containerID,
+            );
+            assert.equal(phase("reconnect-wait-start").harness.image, images.agent);
+            assert.equal(
+              phase("reconnect-wait-start").supplierProcesses[0].podUid,
+              supplier.metadata.uid,
+            );
+            assert.equal(phase("reconnect-wait-start").sandboxId, sandboxId);
+            assert.equal(phase("reconnect-before-policy").instanceId, instanceId);
+            assert.equal(phase("reconnect-baseline").sessions[0].sessionId, first);
+            assert.equal(phase("reconnect-accepted").reconnect.sessionId, second);
+            assert.equal(phase("reconnect-accepted").reconnect.epoch, "9007199254740993");
+            assert.equal(phase("reconnect-before-turn").deploymentId, revision.id);
+            assert.equal(phase("reconnect-before-turn").deploymentReady, !failFinalReadiness);
+            assert.ok(
+              phases.some(
+                (entry) => entry.phase === "reconnect-after-policy" && entry.loaded === false,
+              ),
+            );
+            const printed = diagnostics.join("\n");
+            const privateValues = [
+              sandboxId,
+              instanceId,
+              first,
+              second,
+              agent.id,
+              revision.id,
+              "c".repeat(40),
+              "9007199254740992",
+              "9007199254740993",
+              "private-unexpected-status",
+              ...Object.values(images),
+              ...pods.flatMap((value) => [
+                value.metadata.name,
+                value.metadata.uid,
+                value.status.containerStatuses[0].containerID,
+                value.status.containerStatuses[0].imageID,
+                value.status.containerStatuses[0].name,
+              ]),
+              phase("reconnect-baseline").baselineAt,
+              phase("reconnect-accepted").logThrough,
+            ];
+            // Generic names can be phase labels, so check their private identity fields instead.
+            for (const value of privateValues.filter(
+              (value) => !["supervisor", "harness", "supplier"].includes(value),
+            )) {
+              assert.equal(
+                printed.includes(value),
+                false,
+                `private reconnect metadata reached reporter: ${value}`,
+              );
+            }
+            const report = diagnostics
+              .filter((line) => line.startsWith("egress-connected reconnect-"))
+              .map((line) => ({
+                phase: line.split(" ")[1],
+                details: JSON.parse(line.slice(line.indexOf("{"))),
+              }));
+            assert.equal(
+              report.find((entry) => entry.phase === "reconnect-accepted").details.sessionCount,
+              2,
+            );
+            assert.equal(
+              report.find((entry) => entry.phase === "reconnect-before-policy").details.equalities
+                .enforcementMatches,
+              true,
+            );
+            assert.equal(
+              report.find((entry) => entry.phase === "reconnect-before-turn").details
+                .deploymentReady,
+              !failFinalReadiness,
+            );
+            const forbidden = [
+              "supplierCommit",
+              "supervisor",
+              "harness",
+              "supplierProcesses",
+              "sandboxId",
+              "agentId",
+              "revisionId",
+              "logSince",
+              "instanceId",
+              "policyVersion",
+              "baselineAt",
+              "sessions",
+              "reconnect",
+              "logThrough",
+              "deploymentId",
+              "status",
+            ];
+            for (const { details } of report) {
+              for (const field of forbidden) {
+                assert.equal(Object.hasOwn(details, field), false, `${field} must remain private`);
+              }
+            }
+          } finally {
+            await rm(evidence.directory, { recursive: true, force: true });
+          }
+        },
+      );
+    }
+  },
+);
+
+// These protocol peers exercise the real upgrade helper's ownership decisions;
+// they do not establish Kubernetes, PostgreSQL, or installed-runtime acceptance.
+async function controllerUpgradePeers(t, fault = {}) {
+  const namespaceId = "ns_11111111-1111-4111-8111-111111111111";
+  const existingId = "cs_11111111-1111-4111-8111-111111111111";
+  const createdId = "cs_22222222-2222-4222-8222-222222222222";
+  const runId = fault.recording?.runId ?? randomUUID();
+  const provider = { observations: [], tcpConnections: 0 };
+  const origin = createServer((_request, response) => {
+    provider.observations.push({});
+    response.end("ok");
+  });
+  origin.on("connection", () => provider.tcpConnections++);
+  const port = await listen(t, origin);
+  async function reachOrigin() {
+    if (fault.traffic === "http") {
+      await fetch(`http://127.0.0.1:${port}`).then((response) => response.text());
+      return;
+    }
+    // Wait for acceptance by the origin, not merely the client's connect event.
+    const accepted = once(origin, "connection");
+    const socket = connect({ host: "127.0.0.1", port });
+    const [serverSocket] = await accepted;
+    socket.destroy();
+    serverSocket.destroy();
+  }
+  function controllerPod(component, generation) {
+    const image = generation === "before" ? "controller:before" : "controller:after";
+    return {
+      metadata: {
+        name: `${component}-${generation}`,
+        uid: `${component}-${generation}`,
+        namespace: "controller",
+        labels: { "app.kubernetes.io/component": component },
+      },
+      spec: {
+        containers: [
+          {
+            name: component,
+            image,
+            args: [`apps/controller/src/${component === "api" ? "server" : "worker"}.mjs`],
+            env: [
+              { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
+            ],
+            volumeMounts: [
+              { name: "installation", mountPath: "/etc/openclaw/installation", readOnly: true },
+            ],
+          },
+        ],
+        volumes: [{ name: "installation", secret: { items: [{ path: "installation.yaml" }] } }],
+      },
+      status: {
+        conditions: [{ type: "Ready", status: "True" }],
+        containerStatuses: [
+          {
+            name: component,
+            containerID: `${component}-${generation}`,
+            imageID: image,
+            restartCount: 0,
+            state: { running: { startedAt: "2026-01-01T00:00:00Z" } },
+          },
+        ],
+      },
+    };
+  }
+  let upgraded = false;
+  let injected = false;
+  const setup = {
+    input: {
+      controllerNamespace: "controller",
+      controllerSelector: "controller",
+      openShellGatewayNamespace: "supplier",
+      openShellGatewaySelector: "supplier",
+      oceCommit: "b".repeat(40),
+      images: { controller: "controller:after" },
+      controllerUpgrade: {
+        fromCommit: "c".repeat(40),
+        fromImage: "controller:before",
+        timeoutMs: 10_000,
+      },
+    },
+    controller: { providerOrigin: "https://provider.example" },
+    f: {
+      async kubectl(...args) {
+        if (args[0] === "exec") {
+          return "a".repeat(64);
+        }
+        if (args.includes("pod")) {
+          return "";
+        }
+        if (args.includes("supplier")) {
+          return JSON.stringify({ items: [] });
+        }
+        if (upgraded && fault.window === "replacement" && !injected) {
+          injected = true;
+          await reachOrigin();
+        }
+        return JSON.stringify({
+          items: ["api", "worker"].map((component) =>
+            controllerPod(component, upgraded ? "after" : "before"),
+          ),
+        });
+      },
+    },
+  };
+  const state = {
+    sources: [{ id: existingId }],
+    revisions: [{ id: "revision" }],
+    installations: [{}],
+    work: [
+      {
+        idempotency_key: "agent_revision:revision:reconcile",
+        agent_id: "agent",
+        revision_id: "revision",
+        agent_target: null,
+        state: "succeeded",
+        reason_code: "REVISION_ACTIVATED",
+      },
+    ],
+  };
+  const stack = {
+    namespace: { id: namespaceId },
+    namespacePath: `/namespaces/${namespaceId}`,
+    installation: { id: "installation" },
+    supplierPods: [],
+    pool: {
+      async query(sql) {
+        return { rows: sql.includes("count(*)") ? [{ pending: 0 }] : [{ state }] };
+      },
+    },
+  };
+  const ledger = fault.recording?.ledger ?? { resources: [] };
+  const sourceReads = [];
+  let requests = 0;
+  const evidence = {
+    runId,
+    credentials: { initial: "synthetic" },
+    ledger,
+    async checkpoint(phase, details, privateDetails) {
+      await fault.recording?.checkpoint(phase, details, privateDetails);
+      // The operator can act as soon as readiness is published, before observe starts.
+      if (phase === "controller-upgrade-ready" && fault.window === "ready") {
+        await reachOrigin();
+      }
+    },
+    async api(method, path) {
+      if (method === "PATCH") {
+        return { id: existingId, state: "ready", egress: { adoption: "live", retention: "none" } };
+      }
+      if (path === "/installation") {
+        return stack.installation;
+      }
+      if (path.endsWith("/iam/access-bindings")) {
+        return [];
+      }
+      sourceReads.push(path);
+      if (fault.readError) {
+        throw new Error("readback unavailable");
+      }
+      return { id: createdId, namespaceId, name: `egress-refused-${runId}`, ...fault.readback };
+    },
+    async request() {
+      const index = requests++;
+      if (fault.window === index) {
+        await reachOrigin();
+      }
+      const meta = { requestId: `request-${index}` };
+      return fault.created !== undefined && index === 0
+        ? { status: 201, body: { data: fault.created, meta } }
+        : {
+            status: 409,
+            body: {
+              meta,
+              error: {
+                code: "RESOURCE_CONFLICT",
+                message:
+                  "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
+              },
+            },
+          };
+    },
+  };
+  const owned = {
+    provider,
+    async create(kind) {
+      return kind === "secrets" ? { ref: "replacement-secret" } : { id: existingId };
+    },
+  };
+  const deployment = {
+    agent: { id: "agent" },
+    revision: { id: "revision" },
+    secret: { ref: "secret" },
+  };
+  const retained = await prepareControllerUpgrade(setup, stack, evidence, owned, deployment, {
+    gatewayPods: [],
+  });
+  upgraded = true;
+  return {
+    ledger,
+    provider,
+    sourceReads,
+    existingId,
+    createdId,
+    run: () => observeControllerUpgrade(setup, stack, evidence, owned, deployment, retained),
+  };
+}
+
+test("unexpected retirement creates require new, read-back run ownership before cleanup", async (t) => {
+  const createdId = "cs_22222222-2222-4222-8222-222222222222";
+  const existingId = "cs_11111111-1111-4111-8111-111111111111";
+  const cases = [
+    { name: "pre-existing", created: { id: existingId }, error: /pre-upgrade baseline/, reads: 0 },
+    { name: "missing", created: {}, error: /valid source ID/, reads: 0 },
+    { name: "malformed", created: { id: "invalid" }, error: /valid source ID/, reads: 0 },
+    { name: "wrong ID", readback: { id: existingId }, error: /returned source ID/ },
+    { name: "wrong Namespace", readback: { namespaceId: "other" }, error: /this Namespace/ },
+    { name: "wrong name", readback: { name: "unrelated" }, error: /run-specific name/ },
+    { name: "failed read", readError: true, error: /readback unavailable/ },
+    { name: "confirmed new source", owned: true, error: /HTTP 201/ },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      const peer = await controllerUpgradePeers(t, { created: { id: createdId }, ...scenario });
+      await assert.rejects(peer.run(), scenario.error);
+      assert.deepEqual(
+        peer.ledger.resources,
+        scenario.owned ? [{ kind: "credential-sources", id: createdId }] : [],
+      );
+      assert.equal(peer.ledger.pendingCreate !== undefined, !scenario.owned);
+      assert.equal(peer.sourceReads.length, scenario.reads ?? 1);
+    });
+  }
+});
+
+test("upgrade and retirement quiet windows reject TCP arrivals without HTTP", async (t) => {
+  await t.test("quiet success", async (t) => {
+    const peer = await controllerUpgradePeers(t);
+    await peer.run();
+    assert.equal(peer.ledger.pendingCreate, undefined);
+    assert.equal(peer.ledger.pendingDeploy, undefined);
+  });
+  for (const window of ["ready", "replacement", 0, 1, 2, 3]) {
+    for (const traffic of ["tcp", "http"]) {
+      await t.test(`${window}: ${traffic}`, async (t) => {
+        const peer = await controllerUpgradePeers(t, { window, traffic });
+        await assert.rejects(
+          peer.run(),
+          traffic === "tcp" ? /provider connections/ : /provider traffic|provider I\/O/,
+        );
+        assert.equal(peer.provider.tcpConnections > 0, true);
+        assert.equal(peer.provider.observations.length, traffic === "tcp" ? 0 : 1);
+      });
+    }
+  }
+});
+
+test("controller upgrade checkpoints keep process identity in the private ledger", async (t) => {
+  const diagnostics = [];
+  const recording = await createRunEvidence(
+    { signal: t.signal, diagnostic: (line) => diagnostics.push(line) },
+    { input: { images: {} }, controller: {} },
+    {},
+  );
+  t.after(() => rm(recording.directory, { recursive: true, force: true }));
+  // Protocol peers supply identity observations; the actual checkpoint writer
+  // decides what reaches public diagnostics and the private on-disk ledger.
+  const peer = await controllerUpgradePeers(t, { recording });
+  await peer.run();
+  const saved = JSON.parse(await readFile(`${recording.directory}/observations.json`, "utf8"));
+  for (const [phase, generation] of [
+    ["controller-upgrade-ready", "before"],
+    ["controller-upgrade-observed", "after"],
+  ]) {
+    const retained = saved.phases.find((entry) => entry.phase === phase);
+    const line = diagnostics.find((entry) => entry.startsWith(`egress-connected ${phase} `));
+    assert.ok(line, "public progress remains observable");
+    const visible = JSON.parse(line.slice(line.indexOf("{")));
+    assert.equal(
+      Object.hasOwn(visible, "controllers"),
+      false,
+      "process identities must stay private",
+    );
+    assert.equal(visible.componentCount, 2);
+    assert.equal(retained.controllers.length, 2);
+    for (const process of retained.controllers) {
+      assert.ok(process.name.endsWith(generation));
+      for (const field of [
+        "name",
+        "uid",
+        "containerID",
+        "imageID",
+        "startedAt",
+        "configurationSha256",
+        "installationSha256",
+      ]) {
+        assert.equal(typeof process[field], "string", `retained ${field}`);
+        assert.equal(line.includes(process[field]), false, `${field} must stay private`);
+      }
+    }
+    if (generation === "before") {
+      for (const field of [
+        "fromCommit",
+        "toCommit",
+        "fromImage",
+        "toImage",
+        "retainedStateSha256",
+      ]) {
+        assert.equal(typeof retained[field], "string", `retained ${field}`);
+        assert.equal(line.includes(retained[field]), false, `${field} must stay private`);
+      }
+      assert.deepEqual(visible.providerBaseline, { httpRequests: 0, tcpConnections: 0 });
+    } else {
+      assert.equal(visible.retainedStateUnchanged, true);
+      assert.equal(visible.providerSends, 0);
+    }
   }
 });

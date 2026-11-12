@@ -156,6 +156,53 @@ export async function attachPostgresToK3d(registerCleanup) {
   const containers = containerOutput.trim().split(/\r?\n/).filter(Boolean);
   assert.equal(containers.length, 1, "prepared PostgreSQL must have exactly one container");
   const postgresContainer = containers[0];
+  return attachContainerToK3d(registerCleanup, {
+    statePath,
+    containerBin,
+    cluster,
+    container: postgresContainer,
+    attachmentName: "postgres",
+  });
+}
+
+// The selected provider belongs to its separately prepared lane. Its attachment
+// shares PostgreSQL's holder accounting, without taking ownership of the server.
+export async function attachKeycloakToK3d(
+  registerCleanup,
+  { container, statePath: providerStatePath },
+) {
+  const statePath = process.env.OPENCLAW_ENTERPRISE_CI_STATE;
+  assert.ok(statePath, "OPENCLAW_ENTERPRISE_CI_STATE is required for in-cluster OIDC");
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  const providerState =
+    providerStatePath === undefined ? state : JSON.parse(await readFile(providerStatePath, "utf8"));
+  const cluster = state.resources?.find(
+    ({ kind, status }) => kind === "k3d-cluster" && status === "ready",
+  );
+  assert.ok(cluster?.name, "prepared state must identify the owned k3d cluster");
+  assert.ok(
+    providerState.resources?.some(
+      ({ kind, status, name, owner }) =>
+        kind === "keycloak-server" &&
+        status === "ready" &&
+        name === container &&
+        owner === providerState.prefix,
+    ),
+    "Keycloak container must belong to the selected prepared provider state",
+  );
+  return attachContainerToK3d(registerCleanup, {
+    statePath,
+    containerBin: process.env.OCC_DOCKER_BIN ?? "docker",
+    cluster,
+    container,
+    attachmentName: container,
+  });
+}
+
+async function attachContainerToK3d(
+  registerCleanup,
+  { statePath, containerBin, cluster, container, attachmentName },
+) {
   const serverContainer = `k3d-${cluster.name}-server-0`;
   const { stdout: serverNetworksOutput } = await executeFile(containerBin, [
     "inspect",
@@ -173,17 +220,17 @@ export async function attachPostgresToK3d(registerCleanup) {
       "inspect",
       "--format",
       "{{json .NetworkSettings.Networks}}",
-      postgresContainer,
+      container,
     ]);
     return Object.hasOwn(JSON.parse(stdout), network);
   };
 
-  const base = join(dirname(statePath), `postgres-k3d-${cluster.name}`);
+  const base = join(dirname(statePath), `${attachmentName}-k3d-${cluster.name}`);
   const lockPath = `${base}.lock`;
   const registryPath = `${base}.json`;
   const holder = randomUUID();
   const disconnect = () =>
-    executeFile(containerBin, ["network", "disconnect", "--force", network, postgresContainer]);
+    executeFile(containerBin, ["network", "disconnect", "--force", network, container]);
   await withAttachmentLock(lockPath, async () => {
     const registry = await readHolders(registryPath);
     const holders = liveHolders(registry);
@@ -191,7 +238,7 @@ export async function attachPostgresToK3d(registerCleanup) {
     let connectedByHarness = registry.connectedByHarness;
     let connectedNow = false;
     if (!(await attached())) {
-      await executeFile(containerBin, ["network", "connect", network, postgresContainer]);
+      await executeFile(containerBin, ["network", "connect", network, container]);
       connectedByHarness = true;
       connectedNow = true;
     }
@@ -225,16 +272,16 @@ export async function attachPostgresToK3d(registerCleanup) {
       });
     } catch (error) {
       // Keep the caller's remaining teardown running; lane cleanup reports a leaked attachment.
-      console.error(`PostgreSQL k3d network release failed: ${error.message}`);
+      console.error(`${attachmentName} k3d network release failed: ${error.message}`);
     }
   });
   const { stdout: attachedOutput } = await executeFile(containerBin, [
     "inspect",
     "--format",
     `{{(index .NetworkSettings.Networks ${JSON.stringify(network)}).IPAddress}}`,
-    postgresContainer,
+    container,
   ]);
   const address = attachedOutput.trim();
-  assert.equal(isIP(address), 4, "PostgreSQL must have an IPv4 address on the k3d network");
+  assert.equal(isIP(address), 4, `${attachmentName} must have an IPv4 address on the k3d network`);
   return address;
 }

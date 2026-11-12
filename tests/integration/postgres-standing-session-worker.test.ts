@@ -202,7 +202,11 @@ test(
         });
       assert.equal(revision.compute.serviceAccess?.length, 1);
       assert.equal(revision.compute.serviceAccess![0]!.driverId, publicOwner.admissionCompute.id);
-      assert.match(revision.compute.admission!, /^public-github-read:v2:/);
+      // The selected model and public-reader grants share one immutable Compute admission.
+      assert.match(
+        revision.compute.admission!,
+        /^model-provider:v1:[a-f0-9]{64}:public-github-read:v2:[a-f0-9]{64}$/,
+      );
       const persisted = await f.state.read((view) =>
         view.revisions.findRevision(f.namespace.id, owner.id, revision.id),
       );

@@ -1,19 +1,16 @@
 ---
 created: "2026-10-15"
-updated: "2026-11-05"
-last_updated_session: authoring-run/dc5ce070-492f-403f-b59f-c29b19511006
+updated: "2026-11-12"
+last_updated_session: authoring-run/c586863f-bae0-4185-b426-025eb94d78e6
 ---
 
 # Public GitHub read flow
 
 ## Overview
 
-A dedicated Codex Agent can clone and fetch public repositories with ordinary
-GitHub HTTPS URLs alongside its protected repository bindings. The Installation
-ceiling intersects the Agent revision's selected public-read policy. Compute
-publishes revision authorization to a private reader, which sends anonymous
-requests to fixed GitHub origins. This flow ends at the Git/API response or
-completed authorization withdrawal; installed-runtime qualification is separate.
+A dedicated Codex Agent clones/fetches public GitHub HTTPS repositories alongside
+protected bindings. Compute freezes the Installation/Agent scope intersection
+and authorizes a private, anonymous reader. Installed qualification is separate.
 
 ## Entry Points
 
@@ -61,10 +58,11 @@ Sandbox must acknowledge the exact descriptor in `SandboxPolicySnapshot`.
 `packages/occ/src/state/postgres-state.ts:revisionFromRow` reloads both saved
 objects unchanged. The PostgreSQL snapshot constraint validates the generic
 service shape, unique IDs and Compute owner, and requires any Sandbox service
-acknowledgement to equal the saved Compute services. Old revisions without
-services remain ungranted.
-Protected execution uses `admitProtectedNetworkPolicy`; both paired OpenShell
-compilers consume the frozen facts, rather than importing new Installation rules.
+acknowledgement to equal the saved Compute services. Revisions without services remain ungranted.
+Protected execution uses `admitProtectedNetworkPolicy`; paired OpenShell compilers
+consume frozen facts. `openshell-request-hook-preview.ts:expectedPolicy` permits
+internal service routes only when the whole rule matches the admitted descriptor.
+Other numeric-host rules still refuse preview.
 
 `publicGithubReadService` requires a valid frozen Installation identity and checks
 the endpoint, peer, registry and public CA against current configuration. The
@@ -110,18 +108,18 @@ Compute's NetworkPolicy grants reader egress to the selected ordinary Harness or
 the exact trusted supervisor peer; a protected workload receives no direct grant.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:pluginRuntimeSnapshot`
-selects Compute's initialize-RPC launcher or the provider's launcher and readiness.
-Both retain the workspace-node wrapper. The Deployment mounts capability Secrets
+selects Compute or provider launch/readiness through `codexLaunchEntrypoint`,
+preserving PAT recovery and workspace-node wrappers. Public transport changes
+only selected launch commands; unselected commands retain their admitted bytes. The Deployment mounts capability Secrets
 only for Compute-owned Harnesses; provider-owned Harnesses use provider delivery.
 `transport.mjs:installProjectedSkill` copies OpenShell's skill to native
 HOME's `.openclaw/skills/public-github-read/SKILL.md`. It refuses unsafe parents
 or differing files; Compute-mounted skills stay unchanged.
 
-Compute ConfigMaps and OpenShell provider files deliver the nonsecret transport.
-`openshell.ts:harnessRuntimeFiles` embeds its source in the profile's
-64 KiB file template, outside provider config's 8 KiB value limit.
-The launcher verifies the file's SHA-256 and 64 KiB bound before execution.
-Missing, stale or altered source fails closed.
+`openshell.ts:harnessRuntimeFiles` embeds transport source in a 64 KiB profile
+template. Reader JSON uses nine UTF-8-safe configuration chunks, each at most
+8 KiB, concatenated by a stable profile template. The launcher verifies source
+SHA-256 and the 64 KiB bound; missing, stale or altered source fails closed.
 The admitted launcher places helper source, combined public CA, transport config
 and Git wrappers below `$HOME/.oce-public-git`, in private generated children.
 It rejects symlinked, foreign-owned or nonprivate material parents. The Gateway's
@@ -280,6 +278,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 10:47: Preserve launch, service preview and provider material limits. (authoring-run/c586863f-bae0-4185-b426-025eb94d78e6 - 1de1eb4ad23a6fdf3c5b51310e7b64dc3b262fb4)
 
 - 2026-11-05 21:48: Install projected skills (accompanying fix; authoring-run/dc5ce070-492f-403f-b59f-c29b19511006 - 9fec5ea0c824d2c9034c1bab7e7aaab09458de1b)
 

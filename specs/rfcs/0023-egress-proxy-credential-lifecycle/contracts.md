@@ -13,6 +13,9 @@ For the MVP's [online authorization profile](online-authorization.md), the trust
 release requirements there apply. The stronger dispatch and response guarantees below
 remain a distinct profile; an existing admission does not change meaning.
 
+See the [proposed public-egress contract](public-egress.md) for mode selection,
+Driver admission and supervisor evidence.
+
 ## Admission and configuration
 
 OpenClaw Control Plane (OCC) records the version 2 `ExecutionAdmission` decision in
@@ -59,29 +62,64 @@ wiring and receipts do not authorize requests.
 
 ### Qualified service access under protection
 
-Proposed amendment for [public Git reads](../0020-anonymous-public-github-reads.md),
-submitted in [PR #4505](https://github.com/openclaw/openclaw-enterprise/pull/4505).
-This section owns the shared admission contract; service-specific policy remains
-in its owning RFC. It does not qualify an installed runtime.
+[PR #4505](https://github.com/openclaw/openclaw-enterprise/pull/4505) proposes
+nonsecret Compute services selected before Sandbox normalization. OCC supplies
+Installation identity and freezes descriptors. `admitProtectedNetworkPolicy` must
+acknowledge exact services and defaults in `SandboxPolicySnapshot`; paired
+compilers recheck them. Missing acknowledgement, unknown services, extra rules
+or governed-route overlap refuse release. Artifact-only admission remains
+without services.
 
-Compute can contribute nonsecret service descriptors from original Configuration
-before Sandbox normalization. OCC supplies the runtime Installation ID as generic
-admission context; startup inputs cannot choose that identity. OCC freezes the
-descriptors on the Agent revision. General
-`admitProtectedNetworkPolicy` admission must acknowledge the exact descriptors
-and qualified defaults in the same `SandboxPolicySnapshot`; artifact-only
-admission below remains available when no services are selected. Both paired
-compilers consume and recheck this frozen authority. Missing acknowledgement,
-unknown services, extra rules or governed-route overlap refuse release.
+[RFC-0020](../0020-anonymous-public-github-reads.md#proposed-extension-public-git-alongside-protected-git)
+owns reader policy, TLS, methods, authorization and withdrawal.
+Destinations require qualification and IAM.
 
-Internal managed services and external catalog destinations require their own
-qualification. The public reader uses a revision capability solely for the OCE
-service and sends no GitHub credentials upstream. It requires verified inspected
-TLS and narrowly selected Git read methods, including POST upload-pack. Its
-independent authorization can survive Git credential expiry. Execution retirement
-or withdrawal of that service authorization must still close its access.
-Per-Agent selection requires explicit authorization; a future catalog must define
-its IAM requirements without creating a second policy producer or snapshot.
+### Classification refusal diagnostics
+
+Proposed amendment for [PR #5448](https://github.com/openclaw/openclaw-enterprise/pull/5448).
+Submitted with the implementation for review under the repository contribution
+policy.
+
+Operators need to identify a provider rule that refused an authenticated request
+before it became an operation. Extend `CredentialProviderDefinition.classify`
+with an optional third argument, `refused?: (rule: number) => void`, retaining its
+`EgressOperation | undefined` return. The selected provider owns rule meanings;
+Credential Proxy owns report selection, and OCC owns audit persistence.
+
+A provider may report synchronously when refusing a matched destination. Each ID
+must be a stable integer from 1 through 255, never reassigned or derived from
+request data. For OpenAI Responses, check destination, method and granted model
+first, then report the first failing root rule. Rule 1 conceals unknown field
+names. No field names, values, bodies or headers enter the diagnostic.
+
+Credential Proxy records a rule only when no operation matches, exactly one
+refused route reports, and that classifier calls the callback exactly once with
+a valid ID. Missing, repeated, invalid or multiple-route reports provide no
+rule; accepted operations discard reports. Existing provider identity and method
+pinning remains binding. Before auditing, the provider must remain current, the
+request must not be cancelled, and its deadline must remain valid for that route.
+
+OCC supplies the optional `classificationRefused` port in its normal composition.
+It verifies the route's execution against the authenticated Installation plan
+and local Installation, then writes through the existing denial audit owner in
+a fresh transaction. The event records `classificationRule`, execution principal,
+source, revision and the original authenticated request ID. It grants no
+operation and reads no Secret. Failure to persist returns `unavailable/authority`;
+success keeps the generic refusal. A composition without the port emits no
+diagnostic. Refusal remains before replay reservation and origin dispatch, so
+repeated refused requests may share an ID; correlate the full audit identity.
+
+Prefer this bounded callback over logging rejected payloads, which exposes
+request data, or provider-side logging, which lacks OCC's authenticated audit
+context. Keeping the current generic refusal alone preserves that debugging gap.
+
+The draft's signed TLS/PostgreSQL case checks persisted attribution and private
+data exclusion, alongside classifier and provider-pinning coverage. Kubernetes,
+supervisor and origin boundaries use fixtures; this is not installed OpenShell
+or live model proof. Require report arbitration, unchanged accepted requests,
+and audit-failure refusal as well. See the
+[Driver contract](../../../docs/reference/drivers/credential-proxy.md) and
+[source-backed flow](../../../docs/flows/credential-source-egress.md#debugging-and-verification).
 
 ### Protected Codex artifact downloads
 

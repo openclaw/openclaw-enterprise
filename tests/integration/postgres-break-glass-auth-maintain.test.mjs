@@ -14,12 +14,12 @@ import {
   consoleOrigin as origin,
   currentSession,
   defaultInstallSettings,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
   onboardPasswordAccounts,
   passwordSignIn,
   signedInHeaders,
-  startFakeGitHub,
+  fakeOidc,
 } from "../helpers/production-sign-in.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -31,8 +31,8 @@ const replacement = "break-glass-replacement-password";
 const authSecret = "break-glass-auth-test-secret-at-least-32-bytes";
 const secrets = {
   "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "break-glass-client-id",
-  "occ-github-login/client-secret": "break-glass-client-secret",
+  "occ-oidc-login/client-id": "break-glass-client-id",
+  "occ-oidc-login/client-secret": "break-glass-client-secret",
 };
 const memberSubject = "9300001";
 
@@ -95,8 +95,8 @@ async function keepControllerConnected(app) {
 }
 
 // Break-glass when the recovery password is lost: with the API stopped, auth:maintain
-// resets it (GitHub may be down), and deactivation returns the Installation to the
-// password-only default, which then starts without any GitHub configuration.
+// resets it (OIDC may be down), and deactivation returns the Installation to the
+// password-only default, which then starts without any OIDC configuration.
 test(
   "stopped-maintenance break-glass resets the recovery password and returns to the password profile",
   {
@@ -110,7 +110,10 @@ test(
     t.after(async () => {
       await app?.close();
     });
-    const github = await startFakeGitHub(t);
+    const oidc = fakeOidc(t, {
+      clientId: secrets["occ-oidc-login/client-id"],
+      clientSecret: secrets["occ-oidc-login/client-secret"],
+    });
     const address = clientAddresses();
     const directory = await privateBootstrapDirectory(t, "openclaw-break-glass-");
     // Every mutating command refuses while any other client is connected, so the suite
@@ -136,13 +139,14 @@ test(
     );
     app = await composeProductionSignIn(t, {
       databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
+      settings: oidcUpgradeSettings(admin.id),
       secrets,
     });
     const adminHeaders = await signedInHeaders(app, origin, admin, address());
-    await assertProviderAttached(app, adminHeaders, member.id, "github", memberSubject);
+    await assertProviderAttached(app, adminHeaders, member.id, "oidc", memberSubject);
     assert.equal(
-      (await githubSignIn(app, origin, memberSubject, address())).callback.headers.location,
+      (await oidcSignIn(app, origin, oidc, { subject: String(memberSubject) }, address())).callback
+        .headers.location,
       "/console/",
     );
     const passwordFile = join(directory, "recovery-password");
@@ -176,7 +180,7 @@ test(
     });
 
     await t.test(
-      "with the controller stopped, a reset password signs the recovery administrator in while GitHub is down",
+      "with the controller stopped, a reset password signs the recovery administrator in while OIDC is down",
       async () => {
         await app.close();
         app = undefined;
@@ -191,10 +195,10 @@ test(
           event: "auth-maintain.reset-recovery-password",
           userId: admin.id,
         });
-        github.mode = "error";
+        oidc.mode = "error";
         app = await composeProductionSignIn(t, {
           databaseUrl,
-          settings: githubUpgradeSettings(admin.id),
+          settings: oidcUpgradeSettings(admin.id),
           secrets,
         });
         assert.equal(await currentSession(app, adminHeaders.cookie), null, "old sessions ended");
@@ -206,10 +210,16 @@ test(
           address(),
         );
         assert.equal((await currentSession(app, signedIn.cookie)).user.id, admin.id);
-        const { callback } = await githubSignIn(app, origin, memberSubject, address());
+        const { callback } = await oidcSignIn(
+          app,
+          origin,
+          oidc,
+          { subject: String(memberSubject) },
+          address(),
+        );
         assert.equal(
           callback.headers.location,
-          "/console/?authError=github&authReason=provider-unavailable",
+          "/console/?authError=oidc&authReason=provider-unavailable",
         );
         assert.equal((await passwordSignIn(app, origin, member, address())).statusCode, 200);
         await app.close();
@@ -218,12 +228,12 @@ test(
     );
 
     await t.test(
-      "deactivation returns to the password profile, which starts without GitHub configuration",
+      "deactivation returns to the password profile, which starts without OIDC configuration",
       async () => {
         await assert.rejects(
           composeProductionSignIn(t, { databaseUrl, settings: defaultInstallSettings, secrets }),
           /requires a configured external sign-in provider/,
-          "an activated Installation refuses to start without GitHub",
+          "an activated Installation refuses to start without OIDC",
         );
         const deactivated = await maintain(["deactivate", "--writers-stopped"]);
         assert.equal(deactivated.code, 0, deactivated.stderr);
@@ -237,7 +247,6 @@ test(
           secrets,
         });
         assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
-          github: false,
           google: false,
           oidc: false,
           password: true,
@@ -253,7 +262,7 @@ test(
         assert.equal((await passwordSignIn(app, origin, member, address())).statusCode, 200);
         const start = await app.inject({
           method: "POST",
-          url: "/api/auth/providers/github/start",
+          url: "/api/auth/providers/oidc/start",
           remoteAddress: address(),
           headers: { origin },
         });
@@ -279,7 +288,7 @@ test(
         assert.deepEqual(
           identities.rows,
           [{ user_id: member.id, account_id: memberSubject }],
-          "deactivation leaves attached GitHub identities in place",
+          "deactivation leaves attached OIDC identities in place",
         );
       });
     });
