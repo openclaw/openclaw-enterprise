@@ -8,7 +8,7 @@ import type {
   RepositoryApprovalScope,
   RepositoryBindingRequest,
 } from "@openclaw-enterprise/contracts";
-import type { GitHubProfile } from "./types.ts";
+import { isGitHubProfile, type GitHubProfile } from "./types.ts";
 import {
   githubCapabilityPolicy,
   draftPullCapabilityPolicy,
@@ -99,12 +99,7 @@ function numericId(value: unknown): string {
 }
 
 function profile(value: unknown): GitHubProfile | "github-repository" {
-  if (
-    value !== "git-read" &&
-    value !== "git-write" &&
-    value !== "git-full" &&
-    value !== "github-repository"
-  ) {
+  if (!isGitHubProfile(value) && value !== "github-repository") {
     return invalid();
   }
   return value;
