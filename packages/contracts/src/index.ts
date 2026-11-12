@@ -570,6 +570,18 @@ export type CredentialSource = CredentialSourceOwner & {
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
+  /**
+   * Per field, the Secrets an unfinished legacy gateway update may have sent to the gateway.
+   * Each counts as a consumer of its Secret until an update's commit after a gateway write
+   * removes them all, or the source is deleted. Absent when there are none; never returned by
+   * the API.
+   */
+  readonly retainedSecrets?: Readonly<Record<string, readonly SecretReference[]>>;
+  /**
+   * The legacy gateway update allowed to write the gateway next. A later update replaces it,
+   * so an earlier one stops before its gateway write. Never returned by the API.
+   */
+  readonly updateAttemptId?: string;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
 };
