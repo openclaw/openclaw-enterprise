@@ -15,8 +15,7 @@ initializes it before activation.
 File operations authorize the exact active Agent through its Compute-resolved
 private Envoy endpoint.
 
-Dedicated execution initializes the Harness workspace for Codex and native
-OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
+Dedicated Codex and native OpenClaw initialize their Harness workspaces; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 
 See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
 
@@ -273,9 +272,8 @@ The chart supplies worker credentials and public trust. Compute installs Envoy
 access. Memory uses node duplex and native file workers. Gateway keeps memory
 index and embedding settings and local Skill sources. Skills use remote discovery,
 reads, and policy-checked dependency installs. `runtime-entrypoints.ts:publishImageTree`
-copies image assets in 64 KiB chunks at startup, preserves modes and links, and
-refuses symlink destinations before cleanup. Native turns can receive temporary
-resource copies. See [storage ownership](../../specs/plans/30-storage-split-integration.md#where-data-lives).
+copies assets in 64 KiB chunks, preserves modes and links, and rejects symlink
+destinations before cleanup. Native turns can receive temporary resource copies. See [storage ownership](../../specs/plans/30-storage-split-integration.md#where-data-lives).
 Remote channel menus await [#241](https://github.com/openclaw/openclaw-enterprise/issues/241).
 
 Harness alone mounts the dedicated workspace, generated images, and Codex rollouts.
@@ -375,7 +373,7 @@ replays it. Cleanup closes the native client.
 
 ## Changelog
 
-- 2026-11-12 00:47: Preserve file modes during restricted worker startup. (authoring-run/74cddb31-4156-4d51-9f9b-2edb6913b3f7 - 9841d23f59c007aa35887d6baff2a2ea6dcd6dc4)
+- 2026-11-12 00:47: Preserve restricted-worker file modes. (authoring-run/74cddb31-4156-4d51-9f9b-2edb6913b3f7 - 9841d23f59c007aa35887d6baff2a2ea6dcd6dc4)
 
 - 2026-11-11 23:51: Copy image assets in chunks. (authoring-run/fa0b1e03-9d65-41eb-a844-7d6e49990dbd - c6aad5bf134ae15bb9abea127b978756f843769f)
 

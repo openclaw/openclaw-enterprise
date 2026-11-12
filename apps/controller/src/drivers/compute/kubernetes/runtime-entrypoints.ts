@@ -2533,46 +2533,43 @@ function clearDirectoryContents(directory) {
   }
 }
 
-// Copy bytes with a fixed buffer: filesystem copy accelerators are not available
-// in every runtime sandbox. Keep the first failure while closing both handles.
-function copyImageFile(source, destination, mode) {
-  let input;
-  let output;
-  let failure;
-  try {
-    input = assetFs.openSync(source, assetFs.constants.O_RDONLY | assetFs.constants.O_NOFOLLOW);
-    output = assetFs.openSync(destination, "wx", 0o600);
-    const buffer = Buffer.allocUnsafe(64 * 1024);
-    for (;;) {
-      const count = assetFs.readSync(input, buffer, 0, buffer.length, null);
-      if (count === 0) break;
-      let offset = 0;
-      while (offset < count) {
-        const written = assetFs.writeSync(output, buffer, offset, count - offset, null);
-        if (written === 0) throw new Error("Runtime asset copy made no write progress");
-        offset += written;
-      }
-    }
-    assetFs.fchmodSync(output, mode);
-  } catch (error) {
-    failure = error;
-  } finally {
-    for (const descriptor of [output, input]) {
-      if (descriptor === undefined) continue;
-      try {
-        assetFs.closeSync(descriptor);
-      } catch (error) {
-        if (failure === undefined) failure = error;
-      }
-    }
+// Always release the resource; a cleanup error must not mask the failure that caused it.
+function withAssetResource(resource, release, use) {
+  try { use(resource); }
+  catch (error) {
+    try { release(resource); } catch {}
+    throw error;
   }
-  if (failure !== undefined) throw failure;
+  release(resource);
+}
+
+function copyImageFile(source, destination, mode, staged) {
+  const { openSync, closeSync, constants, readSync, writeSync } = assetFs;
+  withAssetResource(openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW), closeSync, input => {
+    withAssetResource(openSync(staged ?? destination, "wx", 0o600), closeSync, output => {
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let count;
+      while ((count = readSync(input, buffer, 0, buffer.length, null)) > 0) {
+        let offset = 0;
+        while (offset < count) {
+          const written = writeSync(output, buffer, offset, count - offset, null);
+          if (!written) throw new Error("Runtime asset copy made no write progress");
+          offset += written;
+        }
+      }
+      if (staged === undefined) assetFs.fchmodSync(output, mode);
+    });
+  });
+  if (staged === undefined) return;
+  // Link the completed inode so an intervening file or symlink is never overwritten.
+  assetFs.chmodSync(staged, mode);
+  assetFs.linkSync(staged, destination);
+  assetFs.unlinkSync(staged);
 }
 
 function imageLinkTarget(source) {
   const link = assetFs.readlinkSync(source);
-  const lastComponent = link.split("/").at(-1);
-  const directoryTarget = lastComponent === "" || lastComponent === "." || lastComponent === "..";
+  const directoryTarget = ["", ".", ".."].includes(link.split("/").at(-1));
   let prefix = assetPath.isAbsolute(link) ? link : assetPath.dirname(source) + "/" + link;
   const tail = [];
   for (;;) {
@@ -2592,7 +2589,7 @@ function imageLinkTarget(source) {
   }
 }
 
-function copyImageDirectory(source, destination) {
+function copyImageDirectory(source, destination, staged) {
   // Match the recursive copy's treatment of special files such as FIFOs.
   for (const name of readdirSync(source)) {
     const from = join(source, name);
@@ -2600,12 +2597,12 @@ function copyImageDirectory(source, destination) {
     const info = lstatSync(from);
     if (info.isDirectory()) {
       mkdirSync(to, { mode: 0o700 });
-      copyImageDirectory(from, to);
+      copyImageDirectory(from, to, staged);
       assetFs.chmodSync(to, info.mode & 0o7777);
     } else if (info.isSymbolicLink()) {
       symlinkSync(imageLinkTarget(from), to);
     } else if (info.isFile()) {
-      copyImageFile(from, to, info.mode & 0o7777);
+      copyImageFile(from, to, info.mode & 0o7777, staged);
     }
   }
 }
@@ -2626,7 +2623,15 @@ function publishImageTree(source, destination, required) {
   }
   mkdirSync(runtimeAssetsDirectory, { recursive: true });
   clearDirectoryContents(destination);
-  copyImageDirectory(source, destination);
+  if (!process.permission) {
+    copyImageDirectory(source, destination);
+    return;
+  }
+  // This runtime's private volume contains the staging directory. Creating it
+  // inside the target also preserves its filesystem and inherited group.
+  withAssetResource(assetFs.mkdtempSync(join(destination, ".asset-")),
+    staging => rmSync(staging, { recursive: true, force: true }),
+    staging => copyImageDirectory(source, destination, join(staging, "file")));
 }
 
 function initializeRuntimeAssets() {
@@ -4877,7 +4882,10 @@ function completeSetupCode(payload) {
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 
-function agentWithNodeEntrypoint(entrypoint: string): string {
+function agentWithNodeEntrypoint(
+  entrypoint: string,
+  childCodec: "deflate" | "brotli" = "deflate",
+): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
@@ -5192,7 +5200,7 @@ const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
   {
     name: "Codex",
-    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint)])},
+    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint, childCodec)])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
@@ -5330,6 +5338,7 @@ export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
 );
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   agentRuntimeEntrypoint(true, false, false),
+  "brotli",
 );
 
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(

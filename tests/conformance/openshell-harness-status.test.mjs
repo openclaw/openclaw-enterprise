@@ -1496,7 +1496,10 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
   const servers = [];
   const diagnostics = [];
   let connectStarts = 0;
+  const imageDirectory = join(directory, "image");
   const realFs = nodeRequire("node:fs");
+  realFs.mkdirSync(join(imageDirectory, "skills"), { recursive: true });
+  realFs.writeFileSync(join(imageDirectory, "skills", "instructions"), "fixture");
   const sandbox = {
     URL,
     Buffer,
@@ -1548,19 +1551,6 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
           },
         };
       }
-      if (specifier === "node:fs") {
-        // The image asset trees exist and are non-empty; everything else is real
-        // under the fixture directory.
-        return {
-          ...realFs,
-          existsSync: (path) => String(path).startsWith("/app/") || realFs.existsSync(path),
-          lstatSync: (path) =>
-            String(path).startsWith("/app/") ? { isDirectory: () => true } : realFs.lstatSync(path),
-          readdirSync: (path) => (String(path).startsWith("/app/") ? ["asset"] : []),
-          cpSync() {},
-          chmodSync() {},
-        };
-      }
       if (specifier === "node:child_process") {
         return {
           execFile() {},
@@ -1608,7 +1598,12 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
     },
   };
   try {
-    vm.runInNewContext(NATIVE_WORKER_ENTRYPOINT, sandbox);
+    // Use real asset files so startup observes ordinary filesystem semantics.
+    const entrypoint = NATIVE_WORKER_ENTRYPOINT.replace(
+      /"\/app\/(skills|custodian-skills|plugin-skills)"/g,
+      (_, tree) => JSON.stringify(join(imageDirectory, tree)),
+    );
+    vm.runInNewContext(entrypoint, sandbox);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

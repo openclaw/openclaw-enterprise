@@ -243,3 +243,71 @@ test("runtime asset copy closes both files and preserves the write error over a 
   }
   assert.equal(fs.readFileSync(join(source, "asset"), "utf8"), "asset content");
 });
+
+test("restricted native worker startup publishes file contents and exact modes", (t) => {
+  const home = directory(t);
+  const image = join(home, "image");
+  const skills = join(image, "skills");
+  fs.mkdirSync(skills, { recursive: true });
+  const asset = join(skills, "tool");
+  fs.writeFileSync(asset, "fixture tool");
+  fs.chmodSync(asset, 0o4751);
+
+  const call = "\ninitializeRuntimeAssets();";
+  const end = NATIVE_WORKER_ENTRYPOINT.indexOf(call);
+  assert.ok(end > 0);
+  const startup = NATIVE_WORKER_ENTRYPOINT.slice(0, end + call.length).replace(
+    /"\/app\/(skills|custodian-skills|plugin-skills)"/g,
+    (_, tree: string) => JSON.stringify(join(image, tree)),
+  );
+  const runStartup = (prelude = "") =>
+    execFileSync(
+      process.execPath,
+      [
+        "--permission",
+        `--allow-fs-read=${home}`,
+        `--allow-fs-write=${home}`,
+        "-e",
+        `process.umask(0o077);\n${prelude}\n${startup}`,
+      ],
+      {
+        stdio: "pipe",
+        env: {
+          HOME: home,
+          TMPDIR: join(home, "tmp"),
+          OPENCLAW_WORKSPACE_DIR: join(home, "workspace"),
+          OPENCLAW_NODE_STATE_DIR: join(home, "node"),
+          OPENCLAW_NODE_SETUP_CODE: "fixture",
+          OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
+          OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
+        },
+      },
+    );
+  runStartup();
+  const published = join(home, "openclaw-runtime-assets", "bundled-skills", "tool");
+  assert.equal(fs.readFileSync(published, "utf8"), "fixture tool");
+  assert.equal(fs.statSync(published).mode & 0o7777, 0o4751);
+  assert.equal(fs.statSync(published).uid, fs.statSync(home).uid);
+
+  assert.equal(fs.statSync(published).gid, fs.statSync(home).gid);
+
+  // Install a competing destination entry immediately before exclusive publication.
+  const sentinel = join(home, "sentinel");
+  const pendingLink = join(home, "pending-link");
+  fs.writeFileSync(sentinel, "keep", { mode: 0o600 });
+  fs.symlinkSync(sentinel, pendingLink);
+  const collision = `
+    const io = require("node:fs");
+    const link = io.linkSync;
+    io.linkSync = (staged, destination) => {
+      io.renameSync(${JSON.stringify(pendingLink)}, destination);
+      link(staged, destination);
+    };`;
+  assert.throws(() => runStartup(collision), /EEXIST/);
+  assert.equal(fs.readlinkSync(published), sentinel);
+  assert.equal(fs.readFileSync(sentinel, "utf8"), "keep");
+  assert.equal(fs.statSync(sentinel).mode & 0o7777, 0o600);
+  assert.deepEqual(fs.readdirSync(join(home, "openclaw-runtime-assets", "bundled-skills")), [
+    "tool",
+  ]);
+});
