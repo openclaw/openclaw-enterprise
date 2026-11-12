@@ -70,7 +70,7 @@
     "tests/conformance/credential-source-occ.test.mjs": 600,
     "tests/conformance/docker-compute.test.mjs": 1800,
     "tests/conformance/grafana-overview-dashboard.test.ts": 100,
-    "tests/conformance/hosted-plugin-discovery.test.mjs": 300,
+    "tests/conformance/hosted-plugin-discovery.test.ts": 300,
     "tests/conformance/http-errors.test.mjs": 500,
     "tests/conformance/iam.test.mjs": 1600,
     "tests/conformance/k3d-failure-diagnostics.test.ts": 700,

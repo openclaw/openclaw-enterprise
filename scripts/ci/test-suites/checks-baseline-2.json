@@ -94,7 +94,7 @@
     "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.mjs",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
-    "tests/conformance/hosted-plugin-discovery.test.mjs",
+    "tests/conformance/hosted-plugin-discovery.test.ts",
     "tests/integration/plugin-driver-real-preflight.test.mjs",
     "tests/conformance/postgres-transaction-commit.test.mjs",
     "tests/conformance/plugin-runtime-policy.test.mjs",
@@ -428,7 +428,7 @@
       "path": "tests/conformance/native-admin-websocket-relay.test.mjs"
     },
     {
-      "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
+      "path": "tests/conformance/hosted-plugin-discovery.test.ts"
     },
     {
       "path": "tests/conformance/plugin-runtime-templates.test.ts"
