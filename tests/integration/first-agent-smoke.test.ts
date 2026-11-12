@@ -17,6 +17,7 @@ import {
   smokeSlotNames,
   stoppedGatewaySummary,
   waitFor,
+  waitForDeployment,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
 import { withEnvironment } from "../helpers/environment.ts";
@@ -208,6 +209,78 @@ function virtualClock() {
     },
   };
 }
+
+const agentPath = "/namespaces/smoke/agents/embedded";
+const deploymentPath = `${agentPath}/deployments/${revision}`;
+
+test("deployment poll reports a failed revision while the Agent read is outstanding", async () => {
+  const agent = Promise.withResolvers();
+  const error = { code: "REVISION_STOPPED" };
+  const stack = {
+    namespaceId: "smoke",
+    api: (_method: string, path: string) => {
+      if (path === agentPath) return agent.promise;
+      assert.equal(path, deploymentPath);
+      return Promise.resolve({ status: "failed", error });
+    },
+  };
+  const outcome = waitForDeployment(stack, "embedded", revision, "embedded").catch((e: Error) => e);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const observed = await Promise.race([outcome, Promise.resolve("pending")]);
+  agent.reject(new Error("late Agent read failure"));
+  assert.ok(observed instanceof Error);
+  assert.equal(observed.message, `embedded: deployment failed ${JSON.stringify(error)}`);
+});
+
+test("deployment poll propagates an Agent error while the deployment read is outstanding", async () => {
+  const deployment = Promise.withResolvers();
+  const error = new Error("Agent read failed");
+  const stack = {
+    namespaceId: "smoke",
+    api: (_method: string, path: string) => {
+      if (path === deploymentPath) return deployment.promise;
+      assert.equal(path, agentPath);
+      return Promise.reject(error);
+    },
+  };
+  await assert.rejects(
+    waitForDeployment(stack, "embedded", revision, "embedded"),
+    (e) => e === error,
+  );
+  deployment.resolve({ status: "succeeded" });
+});
+
+test("deployment poll starts both final reads together and enforces its deadline", async () => {
+  for (const latency of [1_500, 3_000]) {
+    const clock = virtualClock();
+    const starts: [string, number][] = [];
+    const stack = {
+      namespaceId: "smoke",
+      api: async (_method: string, path: string) => {
+        const start = clock.now();
+        const finalPoll = start >= 598_000;
+        if (finalPoll) {
+          starts.push([path, start]);
+          await Promise.resolve();
+          clock.advance(Math.max(0, start + latency - clock.now()));
+        }
+        if (path === agentPath) return { activeRevisionId: revision };
+        assert.equal(path, deploymentPath);
+        return { status: finalPoll ? "succeeded" : "queued" };
+      },
+    };
+    const result = waitForDeployment(stack, "embedded", revision, "embedded", clock);
+    if (latency === 1_500) await result;
+    else
+      await assert.rejects(result, {
+        message: `Timed out waiting for embedded revision ${revision}: ${JSON.stringify({ deployment: "succeeded", active: revision })}`,
+      });
+    assert.deepEqual(starts, [
+      [deploymentPath, 598_000],
+      [agentPath, 598_000],
+    ]);
+  }
+});
 
 function stoppedAt(clock: Pick<ReturnType<typeof virtualClock>, "now">, time: number) {
   return async () => ({

@@ -1411,24 +1411,27 @@ async function cliJson(stack, args) {
 
 // A deployment must settle at succeeded with its revision active; a failed
 // status fails the smoke at once. Serving is proven separately by a model turn.
-async function waitForDeployment(stack, agentId, revisionId, label) {
+export async function waitForDeployment(stack, agentId, revisionId, label, clock = {}) {
   const base = `/namespaces/${stack.namespaceId}/agents/${agentId}`;
   await waitFor(
     `${label} revision ${revisionId}`,
     async () => {
       const [deployment, agent] = await Promise.all([
-        stack.api("GET", `${base}/deployments/${revisionId}`),
+        stack.api("GET", `${base}/deployments/${revisionId}`).then((deployment) => {
+          if (deployment.status === "failed") {
+            throw new Error(`${label}: deployment failed ${JSON.stringify(deployment.error)}`);
+          }
+          return deployment;
+        }),
         stack.api("GET", base),
       ]);
-      if (deployment.status === "failed") {
-        throw new Error(`${label}: deployment failed ${JSON.stringify(deployment.error)}`);
-      }
       return {
         done: deployment.status === "succeeded" && agent.activeRevisionId === revisionId,
         state: { deployment: deployment.status, active: agent.activeRevisionId },
       };
     },
     10 * minute,
+    clock,
   );
 }
 
