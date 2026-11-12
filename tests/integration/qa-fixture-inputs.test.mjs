@@ -421,6 +421,44 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     sandbox.cells.every((cell) => cell.scenarios.length === 0),
     "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
   );
+  // This manual fixture owns its synthetic provider; selecting it must neither
+  // demand a live key nor start the ordinary installation matrix alongside it.
+  const continuityInput = {
+    OCC_TEST_QA_SCENARIOS: "native-api-continuity",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  };
+  const continuity = selectQaMatrix(continuityInput);
+  assert.equal(continuity.nativeApiContinuity, true);
+  assert.ok(continuity.cells.every((cell) => cell.scenarios.length === 0));
+  assert.equal(continuity.scope, "partial:selected");
+  assert.deepEqual(continuity.requiredEnv, [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_DATABASE_URL",
+    "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+    "OCC_TEST_GATEWAY_CA_CERT_PATH",
+    "OCC_TEST_GATEWAY_CA_KEY_PATH",
+  ]);
+  const continuityEnv = Object.fromEntries(
+    continuity.requiredEnv.map((name) => [name, "selected"]),
+  );
+  assert.doesNotThrow(() => validateQaInputs(continuity, continuityEnv));
+  for (const name of continuity.requiredEnv) {
+    assert.throws(
+      () => validateQaInputs(continuity, { ...continuityEnv, [name]: " " }),
+      new RegExp(`${name} is required`),
+    );
+  }
+  for (const [override, message] of [
+    [{ OCC_TEST_QA_INSTALLATION: "compose" }, /requires Kubernetes/],
+    [{ OCC_TEST_QA_PRESET: "OpenClaw" }, /requires the Codex preset/],
+    [{ OCC_TEST_QA_SCENARIOS: "native-api-continuity,model-ui" }, /exclusive QA selection/],
+  ]) {
+    assert.throws(() => selectQaMatrix({ ...continuityInput, ...override }), message);
+  }
   const searchConfig = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "codex-search-config",
     OCC_TEST_QA_PRESET: "Codex",
@@ -463,6 +501,8 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
+  assert.equal(full.nativeApiContinuity, false);
+  assert.ok(!full.scenarios.includes("native-api-continuity"));
   // An equally sized selection still omits default coverage if it substitutes a manual scenario.
   assert.equal(
     selectQaMatrix({

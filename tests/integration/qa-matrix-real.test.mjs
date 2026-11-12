@@ -75,6 +75,17 @@ test(
         "oidc-agent-chat",
       );
     }
+    if (selection.nativeApiContinuity) {
+      const { runAcknowledgedChatApiReplacementScenario } =
+        await import("../helpers/native-admin-browser.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex",
+        "acknowledged native chat across API replacement",
+        () => runAcknowledgedChatApiReplacementScenario(context),
+        "native-api-continuity",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

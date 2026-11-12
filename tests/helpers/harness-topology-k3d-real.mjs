@@ -197,9 +197,9 @@ async function slackApi(method, token, body = {}) {
   return result;
 }
 
-async function validatePrerequisites() {
+async function validatePrerequisites(modelKey = process.env.OPENAI_API_KEY) {
   assert.ok(
-    process.env.OPENAI_API_KEY,
+    modelKey,
     "OPENAI_API_KEY is required: an actual production provider turn cannot be mocked or skipped.",
   );
   if (process.env.OCC_TEST_GATEWAY_ROUTING_REAL === "1") {
@@ -1288,7 +1288,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       "Dedicated storage requires the imported controller image for node enrollment through routing.",
     );
   }
-  const kubeconfig = await validatePrerequisites();
+  const modelKey = options.controlledModelProvider?.modelKey ?? process.env.OPENAI_API_KEY;
+  const kubeconfig = await validatePrerequisites(modelKey);
   const identifier = randomUUID();
   const credentials =
     options.credentials ??
@@ -1430,6 +1431,19 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
+  if (options.controlledModelProvider !== undefined) {
+    // Only the controlled-provider browser case supplies this CA-only runtime
+    // derivative. Native readiness and the regular Secret/authentication path remain real.
+    assert.equal(mode, "dedicated");
+    assert.equal(options.harnessId ?? "codex", "codex");
+    assert.match(options.controlledModelProvider.codexImage, /^\S+@sha256:[a-f0-9]{64}$/i);
+    workerConfiguration.drivers.compute.configuration.images.agent =
+      options.controlledModelProvider.codexImage;
+    workerConfiguration.drivers.compute.configuration.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+    };
+  }
   // Cases share an Installation, so keep its policy after the Default user case
   // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.
   workerConfiguration.iam = defaultUsersIAM();
@@ -1847,12 +1861,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     secretAssignmentPrincipalId = secretAssignmentCaller.principalId;
 
     // Namespace-scoped Secrets are provisioned once the Namespace is ready, before any Agent exists.
-    const modelSecret = await createApiSecret(
-      request,
-      namespaceId,
-      "model-key",
-      process.env.OPENAI_API_KEY,
-    );
+    const modelSecret = await createApiSecret(request, namespaceId, "model-key", modelKey);
     secretApi = { assignmentPrincipalId: secretAssignmentPrincipalId, model: modelSecret };
     if (slack !== undefined) {
       const slackAppValue = slack.appToken;
@@ -2184,7 +2193,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     ["AgentRevision", deployed],
   ]) {
     assert.equal(
-      JSON.stringify(response).includes(process.env.OPENAI_API_KEY),
+      JSON.stringify(response).includes(modelKey),
       false,
       `the production ${description} response must never contain provider credential bytes`,
     );
@@ -2233,12 +2242,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     assert.deepEqual(observedRevision.data.secretBindings, secretApi.configuration.secretBindings);
   }
   assert.equal(
-    JSON.stringify(events).includes(process.env.OPENAI_API_KEY),
+    JSON.stringify(events).includes(modelKey),
     false,
     "production worker evidence must never contain provider credential bytes",
   );
   assert.equal(
-    JSON.stringify(await resources("configmaps", placement)).includes(process.env.OPENAI_API_KEY),
+    JSON.stringify(await resources("configmaps", placement)).includes(modelKey),
     false,
     "production ConfigMaps must never contain provider credential bytes",
   );
@@ -2391,7 +2400,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       controllerApiPod = restarted.pod;
       adminRequest = await requestFactory(credentials);
       request = adminRequest;
-      return;
+      return restarted;
     }
     const previousUrl = controllerUrl;
     await productionApp.close();
@@ -2413,6 +2422,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     }
     adminRequest = await requestFactory(credentials);
     request = adminRequest;
+    return { pod: controllerApiPod, url: controllerUrl };
   };
   return {
     mode,
@@ -6257,6 +6267,7 @@ export {
   assertUnauthorizedCodexSocket,
   assertUnboundSecretDeletion,
   hash,
+  gatewayCall,
   inspectProjectedIdentity,
   inspectWorkloadEnvironment,
   kubectl,

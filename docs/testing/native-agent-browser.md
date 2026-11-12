@@ -58,6 +58,58 @@ When Keycloak belongs to a separate prepared state, also set
 owners finish using the resources. The shared-lane setup needs no separate
 Keycloak state variable.
 
+## Check an acknowledged chat turn across API replacement
+
+Select `native-api-continuity` explicitly through the QA matrix. It invokes the
+native-admin browser helper with dedicated Codex and Kubernetes; it is excluded
+from `all` and cannot be combined with other scenarios. There is no new hosted
+job, and the existing `gateway-routing` selection is unchanged.
+
+Prepare an exclusive disposable loopback k3d cluster with enforcing NetworkPolicies,
+Envoy Gateway and cert-manager, plus the [dedicated PostgreSQL database](postgresql.md#other-postgresql-suites).
+Keep the limited application connection in `OCC_TEST_DATABASE_URL` and select the
+cluster with `OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`.
+Set these immutable image references and test CA paths using the
+[Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets):
+
+- `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`
+- `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`
+- `OCC_TEST_KUBERNETES_AGENT_IMAGE`
+- `OCC_TEST_GATEWAY_CA_CERT_PATH` and `OCC_TEST_GATEWAY_CA_KEY_PATH`
+
+The stock images must already be available in host Docker; import the controller
+and Gateway images into the selected cluster as required by that setup. The
+fixture uses the local `/var/run/docker.sock`, creates a CA-only derivative of
+the Agent image, and owns an internal provider network and temporary cluster DNS
+entry. Do not share the cluster while it runs. It generates a synthetic model key
+and provisions it through the ordinary Secret API; no live model key or PAT is
+required. This fixture does not exercise an external model provider or OpenShell.
+
+Install Playwright Chromium and OpenSSL. `OCC_TEST_BROWSER_EXECUTABLE` may select
+an existing Chromium binary; `OCC_TEST_NATIVE_ADMIN_DOMAIN` and
+`OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE` retain the native-browser and dedicated
+Codex fixture settings. From the repository root, with the prepared inputs:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_SCENARIOS=native-api-continuity \
+  OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_INSTALLATION=kubernetes \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+After a seed reply, the test waits for a successful `chat.send` acknowledgement
+and an independently held provider response before replacing only the API Pod.
+The original tab must reconnect without navigation or resending the accepted
+turn, show one reply after the provider releases it, and complete a second turn.
+It checks persisted prompt/reply counts and unchanged worker, Agent, Gateway and
+revision identities. This is a continuity assertion across a socket interruption,
+not an uninterrupted connection or successful worker-transfer guarantee.
+
+The helper prints its private artifact directory and writes `continuity.json`
+after the assertions pass. Fixture cleanup owns its temporary resources; retain
+the result and cleanup outcome, and use the prepared environment's cleanup owner
+for the database and cluster even after failure. Registration or a skipped case
+is not installed acceptance; this new case still needs an actual qualified run.
+
 ## What the test exercises
 
 The browser signs in at the real Keycloak server, returns through the OCC

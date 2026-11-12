@@ -18,13 +18,18 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { chromium } from "playwright";
+import { prepareNativeModelBarrier } from "./native-model-barrier.mjs";
+import { assertAcknowledgedTurnAcrossApiRestart } from "./native-ui-api-continuity.mjs";
+import { withBoundedTeardown } from "./bounded-teardown.ts";
 
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
+  gatewayCall,
   kubectl,
   resource,
+  resources,
   waitFor,
   waitForReadyGatewayPod,
 } from "../helpers/harness-topology-k3d-real.mjs";
@@ -1074,6 +1079,145 @@ async function assertSharedNativeSessions(
   }
   context.diagnostic(
     "Read-only and revoked callers were refused before upstream I/O; an operate-only caller completed a real chat turn while HTTP and WebSocket administration were denied. Both administrator devices remained enrolled with unchanged approved scopes.",
+  );
+}
+
+export async function runAcknowledgedChatApiReplacementScenario(testContext) {
+  const context = withBoundedTeardown(testContext, { label: "acknowledged chat teardown" });
+  const artifacts = await mkdtemp(join(tmpdir(), "oce-native-api-continuity-"));
+  context.diagnostic(`acknowledged chat API replacement artifacts: ${artifacts}`);
+  const nativeDomain = process.env.OCC_TEST_NATIVE_ADMIN_DOMAIN ?? "native.example.test";
+  const ingress = await createNativeIngress(context, { artifacts, nativeDomain });
+  const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
+  assert.match(kubernetesContext ?? "", /^k3d-.+/);
+  const provider = await prepareNativeModelBarrier(context, {
+    directory: join(artifacts, "provider"),
+    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
+    kubernetesContext,
+    cluster: kubernetesContext.slice(4),
+    codexImage:
+      process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE ??
+      process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
+      process.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
+    providerImage:
+      process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ??
+      process.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
+  });
+  const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+    publicOrigin: ingress.origin,
+    gatewayPassword: true,
+    nativeAdmin: { enabled: true, domain: nativeDomain },
+    provisionNativeAdmin: true,
+    nativeOptions: { controlUi: { enabled: true } },
+    workspaceGateway: true,
+    controlledModelProvider: provider,
+  });
+  ingress.setUpstream(topology.controllerUrl);
+  const status = await nativeAdminStatus(topology);
+  assert.equal(status.status, "available");
+  assert.equal(status.activeRevisionId, topology.revision.id);
+  const identity = (pod) => ({
+    uid: pod.metadata.uid,
+    containers: pod.status.containerStatuses.map(({ name, containerID, restartCount }) => ({
+      name,
+      containerID,
+      restartCount,
+    })),
+  });
+  const readIdentities = async () => {
+    const workers = await resources(
+      "pods",
+      topology.platformNamespace,
+      "-l",
+      "app.kubernetes.io/component=worker",
+    );
+    assert.equal(workers.length, 1);
+    return {
+      control: await readOceControlState(topology),
+      worker: identity(workers[0]),
+      gateway: identity(
+        await resource("pod", topology.gatewayPod.metadata.name, topology.gatewayPlacement),
+      ),
+      harness: identity(
+        await resource("pod", topology.harnessPod.metadata.name, topology.placement),
+      ),
+    };
+  };
+  const before = await readIdentities();
+  const beforeApi = { uid: topology.controllerApiPod.metadata.uid, url: topology.controllerUrl };
+  const browser = await launchBrowser(context, ingress);
+  const browserContext = await browser.newContext();
+  context.after(() => browserContext.close());
+  const receivedFrames = [];
+  const sentFrames = [];
+  const socketEvents = [];
+  let nextSocket = 0;
+  browserContext.on("page", (page) => {
+    page.on("websocket", (webSocket) => {
+      if (new URL(webSocket.url()).origin !== status.origin.replace(/^http/, "ws")) {
+        return;
+      }
+      const socket = ++nextSocket;
+      socketEvents.push({ socket, page, type: "open", at: performance.now() });
+      webSocket.on("close", () =>
+        socketEvents.push({ socket, page, type: "close", at: performance.now() }),
+      );
+      webSocket.on("framereceived", (frame) =>
+        receivedFrames.push({ ...frame, socket, page, at: performance.now() }),
+      );
+      webSocket.on("framesent", (frame) =>
+        sentFrames.push({ ...frame, socket, page, at: performance.now() }),
+      );
+    });
+  });
+  const page = await browserContext.newPage();
+  await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
+  await login(page, topology.credentials);
+  await page.getByRole("heading", { name: topology.agent.name }).waitFor();
+  const nativePage = await openNativeAdminConsole(page, status.origin);
+  // A real seed turn proves native readiness before we arm the one-request barrier.
+  const initialReply = await submitChatTurnWithAssistantProof(
+    nativePage,
+    `OCC-API-SEED-${randomUUID()}`,
+    receivedFrames,
+    waitFor,
+  );
+  let successor;
+  const receipt = await assertAcknowledgedTurnAcrossApiRestart({
+    page: nativePage,
+    initialReply,
+    marker: `OCC-API-HELD-${randomUUID()}`,
+    receivedFrames,
+    sentFrames,
+    socketEvents,
+    provider,
+    async restartControllerApi() {
+      successor = await topology.restartControllerApi();
+      assert.notEqual(successor.pod.metadata.uid, beforeApi.uid);
+      assert.equal(successor.url, beforeApi.url, "API replacement must preserve the local port");
+      ingress.setUpstream(successor.url);
+      return successor;
+    },
+    readHistory: (sessionKey) =>
+      gatewayCall(topology, "chat.history", { sessionKey, limit: 100 }, 10_000),
+  });
+  assert.deepEqual(await readIdentities(), before, "only the serving API may be replaced");
+  assert.equal((await nativeAdminStatus(topology)).origin, status.origin);
+  await writeFile(
+    join(artifacts, "continuity.json"),
+    JSON.stringify(
+      {
+        ...receipt,
+        predecessorApiUid: beforeApi.uid,
+        successorApiUid: successor.pod.metadata.uid,
+        sameLocalPort: true,
+        unchangedAgentGatewayAndRevision: true,
+        provider: "controlled fixture; no external inference",
+      },
+      null,
+      2,
+    ) + "\n",
+    { mode: 0o600 },
   );
 }
 

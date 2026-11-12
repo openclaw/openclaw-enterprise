@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 const scenarioPresets = {
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
+  "native-api-continuity": ["Codex"],
   "sandbox-policy": ["Codex"],
   "scratch-volume": ["Codex"],
   "plugin-install": ["Codex"],
@@ -33,6 +34,7 @@ export function selectQaMatrix(env = process.env) {
       ![
         "namespace-lifecycle",
         "oidc-agent-chat",
+        "native-api-continuity",
         "sandbox-policy",
         "scratch-volume",
         "plugin-install",
@@ -53,6 +55,12 @@ export function selectQaMatrix(env = process.env) {
     assert.equal(scenarios.length, 1, "oidc-agent-chat requires an exclusive QA selection");
     assert.equal(installation, "kubernetes", "oidc-agent-chat requires Kubernetes");
     assert.equal(preset, "OpenClaw", "oidc-agent-chat requires the OpenClaw preset");
+  }
+  const nativeApiContinuity = scenarios.includes("native-api-continuity");
+  if (nativeApiContinuity) {
+    assert.equal(scenarios.length, 1, "native-api-continuity requires an exclusive QA selection");
+    assert.equal(installation, "kubernetes", "native-api-continuity requires Kubernetes");
+    assert.equal(preset, "Codex", "native-api-continuity requires the Codex preset");
   }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
@@ -81,6 +89,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-linear-read",
             "harness-overrides",
             "oidc-agent-chat",
+            "native-api-continuity",
           ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
@@ -93,6 +102,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-linear-read",
             "harness-overrides",
             "oidc-agent-chat",
+            "native-api-continuity",
           ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
@@ -107,6 +117,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-linear-read",
             "harness-overrides",
             "oidc-agent-chat",
+            "native-api-continuity",
           ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
@@ -152,6 +163,18 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_KEYCLOAK_CA_CERT",
       "OCC_TEST_KEYCLOAK_CONTAINER",
       "NODE_EXTRA_CA_CERTS",
+    );
+  }
+  if (nativeApiContinuity) {
+    requiredEnv.push(
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+      "OCC_TEST_DATABASE_URL",
+      "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OCC_TEST_GATEWAY_CA_CERT_PATH",
+      "OCC_TEST_GATEWAY_CA_KEY_PATH",
     );
   }
   if (codexSearchConfig) {
@@ -258,6 +281,7 @@ export function selectQaMatrix(env = process.env) {
     exclusions,
     namespaceLifecycle,
     oidcAgentChat,
+    nativeApiContinuity,
     sandboxPolicy,
     scratchVolume,
     pluginInstall,
