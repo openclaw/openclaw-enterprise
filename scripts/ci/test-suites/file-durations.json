@@ -158,7 +158,7 @@
     "tests/docs/docs-site.test.mjs": 6600,
     "tests/docs/generated-api-reference.test.mjs": 2600,
     "tests/integration/agent-create-validate-api.test.mjs": 1000,
-    "tests/integration/auth-maintain.test.mjs": 4700,
+    "tests/integration/auth-maintain.test.ts": 4700,
     "tests/integration/bootstrap-output.test.mjs": 100,
     "tests/integration/bootstrap-volume.test.ts": 5000,
     "tests/integration/caller-denial-api.test.ts": 1200,

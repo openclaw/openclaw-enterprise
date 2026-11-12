@@ -18,7 +18,7 @@
     "tests/integration/postgres-native-iam-policy-barrier.test.ts",
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
     "tests/integration/postgres-worker-harness-exposure.test.ts",
-    "tests/integration/auth-maintain.test.mjs",
+    "tests/integration/auth-maintain.test.ts",
     "tests/integration/occ-metrics.test.mjs"
   ],
   "files": [
@@ -186,7 +186,7 @@
       ]
     },
     {
-      "path": "tests/integration/auth-maintain.test.mjs",
+      "path": "tests/integration/auth-maintain.test.ts",
       "expectedTests": [
         "auth:maintain requires an explicit writers-stopped claim for every change",
         "auth:maintain rejects undeclared commands before configuration",

@@ -4410,7 +4410,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (relativeFile.endsWith("occ-metrics.test.mjs")) {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
-    if (relativeFile.endsWith("auth-maintain.test.mjs")) {
+    if (
+      relativeFile === "tests/integration/auth-maintain.test.ts" ||
+      relativeFile === "tests/integration/postgres-break-glass-auth-maintain.test.ts"
+    ) {
       env.OCC_AUTH_MAINTAIN_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
   }
