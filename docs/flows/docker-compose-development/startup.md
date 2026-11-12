@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-10
-last_updated_session: authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6
+updated: 2026-11-12
+last_updated_session: authoring-run/bd5e5418-5167-4b5f-b5bc-b9047ed8b68b
 ---
 
 # Compose development startup
@@ -235,35 +235,32 @@ beside the URL and public CA path. Stack readiness does not establish browser tr
 `internal/occdev/command.go:podmanEndpoint`,
 `internal/occdev/up.go:Up`.
 
-Without a Sandbox Driver, Kubernetes startup selects Docker or Podman and
-resolves its host socket from Docker's active context or `podman machine inspect`.
-Private state records the socket, Compose project, and `occ-dev-*` cluster for
-validated cleanup despite later context changes.
+Without a Sandbox Driver, startup resolves Docker's context or `podman machine inspect`.
+Private state pins the socket, Compose project, and `occ-dev-*` cluster for cleanup.
 
-Startup refuses existing cluster or project resources.
-`internal/occdev/compose.go:AnalyzeCompose` validates publications;
-`internal/occdev/up.go:validateResourceOwnership` rejects external or unscoped
-networks and volumes. Exclusive `0700` state creation precedes resources.
-`setKubernetesBridgeGateway` preserves an explicit gateway or selects the subnet's
-first usable address for k3d. Startup and cleanup use the privately saved Compose
-snapshot, unaffected by later `.env` edits.
+Startup refuses existing resources. `internal/occdev/compose.go:AnalyzeCompose`
+validates publications; `internal/occdev/up.go:validateResourceOwnership` rejects
+external or unscoped networks and volumes. Exclusive `0700` state creation
+precedes resources. `setKubernetesBridgeGateway` preserves an explicit gateway
+or selects the subnet's first usable address. A private Compose snapshot pins
+startup and cleanup against later `.env` edits.
 
-With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Compute enters
-`internal/occdev/openshell_k3d.go:upK3d` before Compose rendering and uses the
-engine only for k3d and images. Without OpenShell, the Installation selects the
-bundled Presets and Codex Plugin Driver and copies bootstrap credentials privately.
+Before saving the snapshot, `internal/occdev/compose.go:prepareComposeBootstrapSQL`
+copies the default `migrations/init-local.sql` into owned state with mode `0644`,
+so PostgreSQL can read it despite a restrictive umask. Only its exact read-only
+bind is redirected; custom sources, writable overrides, and original permissions
+stay unchanged. State remains `0700`; rollback and shutdown remove the copy.
 
-`internal/occdev/repository_k3d.go` validates selected inputs and waits for
-authenticated bootstrap and Namespace readiness. It binds the server-assigned
-Namespace ID, generates a CA and exact-host broker certificate, creates Kubernetes
-inputs, and upgrades Helm with the Repo Driver and worker sidecar. Discovery must
-match approved references and profiles; it proves no model turn, native sandbox,
-or Git operation. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
+Kubernetes-only mode enters `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering.
+
+`internal/occdev/repository_k3d.go` validates selected inputs. After authenticated
+bootstrap and Namespace readiness, it binds the server-assigned Namespace ID,
+generates CA and exact-host broker certificates, and upgrades Helm with Kubernetes
+inputs, Repo Driver and worker sidecar. Discovery must match approved references
+and profiles; it proves no model, sandbox or Git execution. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
 `OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` for Docker Compute, else
-`kubernetes`; unsupported values fail before resource creation. The
-[OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
-owns both OpenShell control-plane sequences.
+`kubernetes`; unsupported values fail before resource creation.
 
 ### 13. Bootstrap OCC, create k3d, and prepare runtime configuration
 
@@ -419,6 +416,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 00:05: Copy default bootstrap SQL into private owned state with container-readable permissions. (authoring-run/bd5e5418-5167-4b5f-b5bc-b9047ed8b68b - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
 
 - 2026-11-10 17:50: Prepare private browser TLS file ownership for Compose without OpenShell. (authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6 - c40baead7e51977b832d0036518b4f613a68935d)
 
