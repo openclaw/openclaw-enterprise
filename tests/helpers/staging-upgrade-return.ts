@@ -365,25 +365,63 @@ export async function measureUpgradeAvailability<T>(
     finishedAt: string;
     elapsedMs: number;
     gapMs: number | null;
+    startOffsetMs: number;
+    startGapMs: number | null;
+    scheduledSlot: number | null;
+    scheduleDelayMs: number | null;
     outcome:
       "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
     status: number | undefined;
     requestId?: string;
   }[] = [];
+  const origin = performance.now();
+  const nominalIntervalMs = 1_000;
+  let previousStart: number | undefined;
   let previousFinish: number | undefined;
+  let maxStartGapMs = 0;
+  const cadence: { start?: number; finish?: number } = {};
   const evidenceErrors: unknown[] = [];
-  const evidence = (upgradeSucceeded: boolean | null) => ({
-    requestTimeoutMs: 5_000,
-    intervalAfterResponseMs: 1_000,
-    upgradeSucceeded,
-    samples: samples.map((observation) => ({ ...observation })),
-  });
+  const evidence = (upgradeSucceeded: boolean | null) => {
+    // A checkpoint covers only the last completed request. File-write time is
+    // exposed by the next start; an interrupted write cannot extend this boundary.
+    const through = previousFinish ?? origin;
+    const duration = cadence.start === undefined ? 0 : (cadence.finish ?? through) - cadence.start;
+    const scheduledSlots = Math.floor(duration / nominalIntervalMs) + 1;
+    const probedSlots = samples.filter(({ scheduledSlot }) => scheduledSlot !== null).length;
+    return {
+      schemaVersion: 2,
+      requestTimeoutMs: 5_000,
+      // Version 1 slept after each response. Null explicitly retires that policy.
+      intervalAfterResponseMs: null,
+      nominalIntervalMs,
+      upgradeSucceeded,
+      complete: upgradeSucceeded !== null,
+      throughOffsetMs: through - origin,
+      maxStartGapMs,
+      tailGapMs: previousStart === undefined ? 0 : through - previousStart,
+      cadence:
+        cadence.start === undefined
+          ? null
+          : {
+              startOffsetMs: cadence.start - origin,
+              endOffsetMs: (cadence.finish ?? through) - origin,
+              complete: cadence.finish !== undefined,
+              scheduledSlots,
+              probedSlots,
+              unprobedSlots: scheduledSlots - probedSlots,
+            },
+      samples: samples.map((observation) => ({ ...observation })),
+    };
+  };
   const sample = async (
     phase: (typeof samples)[number]["phase"],
     upgradeSucceeded: boolean | null = null,
   ) => {
     const startedAt = new Date().toISOString();
     const start = performance.now();
+    const startGapMs = previousStart === undefined ? null : start - previousStart;
+    const scheduledSlot =
+      phase === "during" ? Math.floor((start - cadence.start!) / nominalIntervalMs) : null;
     const signal = AbortSignal.timeout(5_000);
     let outcome: (typeof samples)[number]["outcome"];
     let status: number | undefined;
@@ -426,11 +464,18 @@ export async function measureUpgradeAvailability<T>(
       finishedAt: new Date().toISOString(),
       elapsedMs: Math.round(finish - start),
       gapMs: previousFinish === undefined ? null : Math.round(start - previousFinish),
+      startOffsetMs: start - origin,
+      startGapMs,
+      scheduledSlot,
+      scheduleDelayMs:
+        scheduledSlot === null ? null : start - cadence.start! - scheduledSlot * nominalIntervalMs,
       outcome,
       status,
       ...(requestId === undefined ? {} : { requestId }),
     });
+    previousStart = start;
     previousFinish = finish;
+    maxStartGapMs = Math.max(maxStartGapMs, startGapMs ?? 0);
     try {
       // A killed runner leaves the last complete snapshot, never a truncated one.
       // Null means the action has not been recorded as settled.
@@ -450,18 +495,28 @@ export async function measureUpgradeAvailability<T>(
   const stopped = new AbortController();
   let observing: Promise<void> | undefined;
   let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
+  cadence.start = performance.now();
   try {
     const upgrading = upgrade();
     observing = (async () => {
       while (!stopped.signal.aborted) {
         await sample("during");
-        await delay(1_000, undefined, { signal: stopped.signal }).catch(() => {});
+        // Start at most once per nominal slot, with at least one interval between
+        // actual starts. A slow request/write or late wake skips slots, never
+        // queues requests to replay them. Recheck time after early timer wakes.
+        const nextStart = previousStart! + nominalIntervalMs;
+        while (!stopped.signal.aborted && performance.now() < nextStart) {
+          await delay(nextStart - performance.now(), undefined, { signal: stopped.signal }).catch(
+            () => {},
+          );
+        }
       }
     })();
     outcome = { succeeded: true, value: await upgrading };
   } catch (error) {
     outcome = { succeeded: false, error };
   }
+  cadence.finish = performance.now();
   stopped.abort();
   // Join the final bounded request before taking the post-upgrade observation.
   await observing;
