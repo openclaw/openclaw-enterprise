@@ -9,7 +9,6 @@ import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspac
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { inflateRawSync } from "node:zlib";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
@@ -33,14 +32,10 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
-  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import {
-  nodeProgramArguments,
-  withoutLineComments,
-} from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import {
   captureOpenShellHarness,
@@ -1900,8 +1895,6 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     runtimeSandboxFixture,
     conformanceKubernetesOptions,
     KubernetesComputeDriver,
-    inflateRawSync,
-    withoutLineComments,
   });
   assert.ok(spec.providers.includes(`oce-cs-${"b".repeat(24)}`));
   const runtimeProvider = spec.providers.find((name) => name.startsWith("oce-runtime-"));
@@ -2059,11 +2052,12 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
         current: admitted,
       });
       if (!admitted) {
-        // Captured from real Compute and OpenShell rendering at 61c73c99.
+        // Stock 0.1.6 Compute and OpenShell at 4d68b3b7 render these exact commands.
+        // Revisions with initial setup embed that release's workspace verifier.
         assert.equal(
           createHash("sha256").update(JSON.stringify(spec.command)).digest("hex"),
           hasSetup
-            ? "8879c9151879bbf3657301260c51c1d0cf722c61caae8216b07f627a70c6037d"
+            ? "b491545115bb907a872b0fe34b56cfc850dd684cd495ec280bb86e4a3f1cf3bc"
             : "a0d8025d10aeb7dbf26ca8271ad2cecb0eacb3ef1cd0bfafbf22ce251d9bd1fa",
         );
       }

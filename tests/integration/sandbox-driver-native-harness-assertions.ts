@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import type { inflateRawSync as inflateDeflate } from "node:zlib";
+import { inflateRawSync } from "node:zlib";
 import type {
   KubernetesComputeDriver as ComputeDriver,
   KubernetesComputeDriverOptions,
@@ -11,7 +11,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   nodeProgramArguments,
-  type withoutLineComments as stripProgramComments,
+  withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import type {
   OpenShellSandboxDriver,
@@ -68,8 +68,6 @@ type Dependencies = {
     runtime: { transportSecretPrefix: string; gatewayStorageClassName: string };
   }) => KubernetesComputeDriverOptions;
   KubernetesComputeDriver: typeof ComputeDriver;
-  inflateRawSync: typeof inflateDeflate;
-  withoutLineComments: typeof stripProgramComments;
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -128,8 +126,6 @@ export async function verifyDedicatedCodexStartup({
   runtimeSandboxFixture,
   conformanceKubernetesOptions,
   KubernetesComputeDriver,
-  inflateRawSync,
-  withoutLineComments,
 }: Dependencies) {
   const requests: OpenShellSandboxCreateRequest[] = [];
   let getServiceCalls = 0;
