@@ -454,7 +454,9 @@ export async function prepareNativeModelBarrier(
     assert.ok(
       Object.keys(current?.binaryData ?? {}).length === 0 &&
         !Object.entries(current?.data ?? {}).some(
-          ([key, value]) => key.endsWith(".server") || /api\.openai\.com/i.test(value),
+          // Corefile fragments can refer to the provider anywhere in a directive.
+          ([key, value]) =>
+            key.endsWith(".server") || value.toLowerCase().includes("api.openai.com"),
         ),
       "Another provider or unsupported custom configuration owns cluster DNS",
     );

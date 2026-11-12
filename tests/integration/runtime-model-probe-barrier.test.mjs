@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { lstat, mkdtemp, rm } from "node:fs/promises";
-import { request } from "node:https";
+import { Agent, request } from "node:https";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -26,8 +26,10 @@ async function fixture(t, overrides = {}) {
   const tls = await harnessTlsFixture(t);
   const directory = await mkdtemp(join(tmpdir(), "model-barrier-"));
   const socketPath = join(directory, "control.sock");
+  const agent = new Agent({ ca: tls.caBundle, keepAlive: true });
   let endpoint;
   t.after(async () => {
+    agent.destroy();
     await endpoint?.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -85,7 +87,7 @@ async function fixture(t, overrides = {}) {
           hostname: "127.0.0.1",
           servername: "localhost",
           port: endpoint.port,
-          ca: tls.caBundle,
+          agent,
           method: "POST",
           path: "/v1/responses",
           headers: { authorization: `Bearer ${authorization}`, "content-type": "application/json" },
@@ -109,7 +111,7 @@ async function fixture(t, overrides = {}) {
   };
   const ws = async () => {
     const socket = new WebSocket(`wss://127.0.0.1:${endpoint.port}/v1/responses`, {
-      ca: tls.caBundle,
+      agent,
       servername: "localhost",
       headers: { authorization: `Bearer ${token}` },
     });
