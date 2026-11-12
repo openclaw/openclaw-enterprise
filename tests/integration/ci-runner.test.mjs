@@ -1,3 +1,4 @@
+import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
 import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.ts";
 import assert from "node:assert/strict";
@@ -2571,6 +2572,334 @@ test("run records a sanitized file failure after all reported cases pass", async
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });
 
+const apiKeyWorkflows = ["upstream", "refresh", "withdrawal", "gateway-tool-policy"];
+
+for (const workflow of apiKeyWorkflows) {
+  test(`OpenShell ${workflow} discovery is opt-in and enabled cases require an API key`, () => {
+    const baseEnv = { PATH: process.env.PATH, HOME: process.env.HOME };
+    const file = join(repositoryRoot, `tests/integration/openshell-${workflow}-real.test.ts`);
+    const discovery = spawnSync(process.execPath, ["--test", file], {
+      env: baseEnv,
+      encoding: "utf8",
+    });
+    assert.equal(discovery.status, 0, discovery.stdout + discovery.stderr);
+    assert.match(discovery.stdout, /skipped 1/u);
+    for (const enabled of ["", "1"]) {
+      // Partial configuration also imports the real shared parser. It must not
+      // echo a malformed private endpoint before prerequisite diagnostics run.
+      const result = spawnSync(process.execPath, ["--test", file], {
+        encoding: "utf8",
+        env: {
+          ...baseEnv,
+          OCC_TEST_OPENSHELL_K3D_REAL: enabled,
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: "malformed-private-endpoint",
+        },
+      });
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stdout + result.stderr,
+        /The OpenShell model endpoint must be a valid absolute URL/u,
+      );
+      assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
+    }
+    // A native provider file belongs to the guided installer. Reject it before
+    // defaulting a foreign provider's key to the public API endpoint.
+    for (const endpoint of ["", "https://custom-model.example.test/v1"]) {
+      const result = spawnSync(process.execPath, ["--test", file], {
+        encoding: "utf8",
+        env: {
+          ...baseEnv,
+          OCC_TEST_OPENSHELL_K3D_REAL: "1",
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+          OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "synthetic-provider-file",
+        },
+      });
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stdout + result.stderr,
+        /The API-key workflow does not accept native provider overrides/u,
+      );
+      assert.doesNotMatch(result.stdout + result.stderr, /synthetic-provider-file/u);
+    }
+    for (const endpoint of ["", "   "]) {
+      for (const credential of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]) {
+        // Real wrapper import stops at existing prerequisites before any Helm,
+        // Kubernetes or model operation. A blank override must not select a PAT.
+        const result = spawnSync(process.execPath, ["--test", file], {
+          encoding: "utf8",
+          env: {
+            ...baseEnv,
+            OCC_TEST_OPENSHELL_K3D_REAL: "1",
+            OCC_TEST_OPENSHELL_HARNESS: "codex",
+            OCC_TEST_OPENAI_MODEL: "fixture-model",
+            OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+            [credential]: "synthetic-model-credential",
+          },
+        });
+        assert.equal(result.status, 1);
+        assert.match(
+          result.stdout + result.stderr,
+          credential === "OPENAI_API_KEY"
+            ? /OCC_TEST_OPENSHELL_HELM must point/u
+            : /The selected Harness requires OPENAI_API_KEY/u,
+        );
+      }
+    }
+  });
+}
+
+for (const selection of [
+  { name: "declared", error: /must be an immutable image@sha256 reference/u },
+  {
+    name: "inherited Codex",
+    harness: "codex",
+    error: /must be an immutable image@sha256 reference/u,
+  },
+  {
+    name: "custom destination",
+    endpoint: "https://custom-model.example.test/v1",
+    error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+  },
+]) {
+  for (const focused of [false, true]) {
+    test(`the Namespace runner selects file model inputs before setup (${selection.name}, focused: ${focused})`, async (t) => {
+      const root = await fixture(t);
+      const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+      const lane = suites.lanes.openshell;
+      const file = lane.files.find(({ path }) =>
+        path.endsWith("/namespace-driver-openshell-k3d-real.test.ts"),
+      );
+      const statePath = join(root, "state/namespace.json");
+      const resultsPath = join(root, "results/namespace.json");
+      await writeRunnerManifest(root, { lanes: { openshell: { ...lane, files: [file] } } });
+      await writeFile(
+        join(root, "scripts/ci/prepare.mjs"),
+        `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};`,
+      );
+      // Preserve real metadata and preparation. Only the unstarted model child is
+      // inert; a regression still stops at the immutable-image gate before setup.
+      await writeFile(join(root, file.path), 'throw new Error("unexpected-model-child");');
+      const env = Object.fromEntries(
+        [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "synthetic-prerequisite"]),
+      );
+      const result = run(
+        root,
+        [
+          ...laneArgs(root, "openshell", statePath, resultsPath),
+          ...(focused ? ["--file", file.path] : []),
+        ],
+        {
+          ...env,
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          CODEX_ACCESS_TOKEN: "",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: selection.endpoint ?? "",
+          OCC_TEST_OPENSHELL_HARNESS: selection.harness ?? "",
+          OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
+          OCC_CI_SUITE_VIEW: "default",
+        },
+      );
+      assert.equal(result.status, 1);
+      const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+      assert.ok(summary.issues.some(({ code }) => code === "prepare-failed"));
+      assert.equal(summary.files[0].nodeExitCode, null);
+      assert.deepEqual(summary.files[0].tests, []);
+      const diagnostics = await readFile(`${statePath}.diagnostics.json`, "utf8");
+      assert.match(diagnostics, selection.error);
+      assert.doesNotMatch(
+        diagnostics + result.stdout + result.stderr,
+        /unexpected-model-child|synthetic-custom-provider-key/u,
+      );
+      await assert.rejects(stat(statePath), { code: "ENOENT" });
+    });
+  }
+}
+
+test("custom native providers require a separate Codex credential before Local Setup", async (t) => {
+  const root = await fixture(t);
+  const file = join(repositoryRoot, "tests/integration/local-first-agent-openshell-real.test.mjs");
+  for (const custom of [false, true]) {
+    for (const pat of [false, true]) {
+      for (const endpoint of [
+        "",
+        "https://custom-model.example.test/v1",
+        "malformed-private-endpoint",
+      ]) {
+        const result = spawnSync(
+          process.execPath,
+          [
+            "--test",
+            "--test-name-pattern=^a local Kubernetes installer can deploy and reuse an Agent",
+            file,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              PATH: process.env.PATH,
+              HOME: process.env.HOME,
+              OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
+              OPENAI_API_KEY: "synthetic-model-credential",
+              OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+              ...(pat ? { CODEX_ACCESS_TOKEN: "synthetic-codex-credential" } : {}),
+              ...(custom
+                ? { OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: join(root, "provider.json") }
+                : {}),
+              // Stop after credential admission, before provisioning a stack.
+              OCC_DEVELOPMENT_STATE_DIRECTORY: join(root, "absent-state"),
+            },
+          },
+        );
+        assert.equal(result.status, 1);
+        let expected =
+          /OCC_DEVELOPMENT_STATE_DIRECTORY must select valid Kubernetes Local Setup state/u;
+        if (endpoint) {
+          expected = /The first-Agent installer requires the public OpenAI endpoint/u;
+        } else if (custom && !pat) {
+          expected = /CODEX_ACCESS_TOKEN is required for the first invocation/u;
+        }
+        assert.match(result.stdout + result.stderr, expected);
+        assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
+      }
+    }
+  }
+});
+
+test("the public browser installer rejects custom providers before setup", async (t) => {
+  const root = await fixture(t);
+  for (const [marker, value] of [
+    ["OCC_TEST_OPENSHELL_MODEL_BASE_URL", "https://custom-model.example.test/v1"],
+    ["OCC_TEST_OPENSHELL_MODEL_BASE_URL", "malformed-private-endpoint"],
+    ["OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE", join(root, "provider.json")],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ["--test", join(repositoryRoot, "tests/integration/dev-up-openshell-k3d-real.test.mjs")],
+      {
+        encoding: "utf8",
+        env: {
+          // Even a regressed check cannot find container tools in this fixture.
+          PATH: root,
+          HOME: root,
+          TMPDIR: root,
+          OCC_TEST_DEV_UP_OPENSHELL_REAL: "1",
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          [marker]: value,
+        },
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stdout + result.stderr,
+      marker.endsWith("BASE_URL")
+        ? /The browser Agent requires the public OpenAI endpoint/u
+        : /The browser Agent does not accept native provider overrides/u,
+    );
+    assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
+  }
+});
+
+for (const workflow of apiKeyWorkflows) {
+  test(`the ${workflow} runner preserves the selected provider URL with its API key`, async (t) => {
+    const root = await fixture(t);
+    const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+    const lane = suites.lanes.openshell;
+    const file = lane.files.find(({ path }) =>
+      path.endsWith(`/openshell-${workflow}-real.test.ts`),
+    );
+    const resultsPath = join(root, "results/provider.json");
+    const endpoint = "https://model-provider.example.test/v1";
+    // Keep canonical input metadata; only replace the model test body. The actual
+    // runner must deliver the selected endpoint and key together to its child.
+    await writeRunnerManifest(root, { lanes: { openshell: lane } });
+    await writeFile(
+      join(root, file.path),
+      `import assert from "node:assert/strict"; import test from "node:test";
+    test(${JSON.stringify(file.expectedTests[0])}, () => {
+      assert.equal(process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL, ${JSON.stringify(endpoint)});
+      assert.equal(process.env.OPENAI_API_KEY, "synthetic-provider-key");
+    });`,
+    );
+    const env = Object.fromEntries(
+      [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "synthetic-prerequisite"]),
+    );
+    const result = run(
+      root,
+      [...laneArgs(root, "openshell", "state/provider.json", resultsPath), "--file", file.path],
+      {
+        ...env,
+        OPENAI_API_KEY: "synthetic-provider-key",
+        CODEX_ACCESS_TOKEN: "",
+        OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+        OCC_CI_SUITE_VIEW: "default",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.equal(receipt.files[0].tests[0].status, "passed");
+  });
+}
+
+for (const view of ["default", "full-integration"]) {
+  for (const selection of ["compose prepared", "compose default", "kubernetes"]) {
+    test(`the ${view} guided installer runner scopes prepared controller inputs (${selection})`, async (t) => {
+      const root = await fixture(t);
+      const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view);
+      const laneName = view === "default" ? "openshell" : "openshell-installers";
+      const lane = suites.lanes[laneName];
+      const path =
+        selection === "kubernetes"
+          ? "tests/integration/local-first-agent-openshell-k3d-real.test.mjs"
+          : "tests/integration/local-first-agent-openshell-real.test.mjs";
+      const file = lane.files.find((entry) => entry.path === path);
+      const controller = "registry.example.test/controller@sha256:" + "1".repeat(64);
+      const runtime = "registry.example.test/runtime@sha256:" + "2".repeat(64);
+      const expectedController = selection === "compose prepared" ? controller : undefined;
+      const resultsPath = join(root, "results/prepared-input.json");
+      // Preserve canonical lane/file metadata and the real runner. The child
+      // only observes its environment, so no image pull or installation occurs.
+      await writeRunnerManifest(root, { lanes: { [laneName]: lane } });
+      await writeFile(
+        join(root, path),
+        [
+          'import assert from "node:assert/strict"; import test from "node:test";',
+          ...file.expectedTests.map(
+            (name) => `test(${JSON.stringify(name)}, () => {
+          assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE, ${JSON.stringify(expectedController)});
+          assert.equal(process.env.OCC_KUBERNETES_RUNTIME_IMAGE, ${JSON.stringify(runtime)});
+          assert.equal(process.env.OCC_TEST_UNLISTED_IMAGE, undefined);
+        });`,
+          ),
+        ].join("\n"),
+      );
+      const env = Object.fromEntries(
+        [...lane.requiredEnv, ...(file.requiredEnv ?? [])].map((name) => [
+          name,
+          "synthetic-prerequisite",
+        ]),
+      );
+      const result = run(
+        root,
+        [...laneArgs(root, laneName, "state/prepared-input.json", resultsPath), "--file", path],
+        {
+          ...env,
+          OCC_CI_SUITE_VIEW: "default",
+          OCC_CI_IMAGE_CACHE: "",
+          OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE:
+            selection === "compose default" ? undefined : controller,
+          OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
+          OCC_TEST_UNLISTED_IMAGE: "unlisted-image-selection",
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
+      assert.equal(receipt.status, "passed");
+      assert.equal(receipt.counts.passed, file.expectedTests.length);
+      assert.equal(receipt.counts.failed, 0);
+      assert.equal(receipt.counts.skipped, 0);
+    });
+  }
+}
+
 test("run fails missing expected tests, skipped expected tests, skips, todos, and missing required env", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/lane.json");
@@ -2941,7 +3270,7 @@ test("receives selected model inputs", () => {
     { env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" }, missing: "CODEX_ACCESS_TOKEN" },
     { env: { OCC_TEST_OPENAI_MODEL: "" }, missing: "OCC_TEST_OPENAI_MODEL" },
     { env: { OCC_TEST_KUBERNETES_CONTEXT: "" }, missing: "OCC_TEST_KUBERNETES_CONTEXT" },
-    { file: sibling, missing: "CODEX_ACCESS_TOKEN" },
+    { file: sibling, env: { OPENAI_API_KEY: "" }, missing: "OPENAI_API_KEY" },
     { lane: "other", missing: "CODEX_ACCESS_TOKEN" },
   ].entries()) {
     const name = value.lane ?? "openshell";
