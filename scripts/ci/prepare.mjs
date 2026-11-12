@@ -4427,7 +4427,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     env.OCC_BOOTSTRAP_FAILURE_MIGRATION_DATABASE_URL = failures.migrationUrl;
   }
 
-  if (relativeFile.endsWith("postgres-production-wireup.test.mjs")) {
+  if (relativeFile.endsWith("postgres-production-wireup.test.ts")) {
     const production = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: "ci",
       label: `${fileStem(relativeFile)}_production`,
