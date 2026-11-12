@@ -1288,7 +1288,6 @@ const productionTopologyCleanupOrder = Object.freeze([
   "postgresNetwork",
   "gatewayRuntimeNamespace",
   "placementNamespace",
-  "temporaryDirectory",
 ]);
 
 function registerProductionTopologyCleanups(context, operations) {
@@ -1499,6 +1498,11 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     );
   }
   const directory = await mkdtemp(join(tmpdir(), `oce-k3d-production-${mode}-`));
+  // Register before configuration writes can fail or observe cancellation. This ordinary
+  // cleanup runs after the later resource group and stays retained on an expired join.
+  context.after(async function temporaryDirectory() {
+    await rm(directory, { recursive: true, force: true });
+  });
   const startupPath = join(directory, "api-installation.yaml");
   const workerStartupPath = join(directory, "worker-installation.yaml");
   const workerConfiguration = installationConfiguration(
@@ -1663,7 +1667,6 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         await deleteNamespaceExplained(kubectl, placement);
       }
     },
-    temporaryDirectory: () => rm(directory, { recursive: true, force: true }),
   });
 
   // Docker may replace published-port connections when another network attaches.
@@ -1671,9 +1674,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   // its registered cleanup runs only after those pools and the workers stop.
   if (workspaceGateway !== undefined) {
     assertActive();
-    databaseAddress = await attachPostgresToK3d((cleanup) => {
-      detachPostgres = cleanup;
-    });
+    databaseAddress = await attachPostgresToK3d(
+      (cleanup) => {
+        detachPostgres = cleanup;
+      },
+      options.controlledModelProvider === undefined ? undefined : { signal, strictCleanup: true },
+    );
     assertActive();
     await options.controlledModelProvider?.assertPostgresBinding();
   }
@@ -1705,6 +1711,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     // Bootstrap establishes IAM and the initial default Namespace; production API/worker owns deployment.
     assertActive();
     await ensureDevelopmentBootstrap(context, {
+      signal,
       databaseUrl,
       email: credentials.email,
       password: credentials.password,

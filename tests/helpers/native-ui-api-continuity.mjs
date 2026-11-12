@@ -183,7 +183,8 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
         ({ record, message }) =>
           record.socket === request.record.socket &&
           message.type === "res" &&
-          message.id === request.message.id,
+          message.id === request.message.id &&
+          (message.ok === false || message.payload?.runId !== undefined),
       ),
     );
     assert.equal(ack.message.ok, true, "the original request must be acknowledged successfully");
@@ -380,17 +381,16 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
         );
       }),
     );
-    assert.ok(
-      socketEvents
-        .slice(firstSocketEvent)
-        .some(
-          (event) =>
-            event.page === page &&
-            event.socket === reconnected.record.socket &&
-            event.type === "open" &&
-            event.at >= closed.at,
-        ),
+    const reconnectOpenIndex = socketEvents.findIndex(
+      (event, index) =>
+        index >= firstSocketEvent &&
+        event.page === page &&
+        event.socket === reconnected.record.socket &&
+        event.type === "open" &&
+        event.at >= closed.at,
     );
+    assert.ok(reconnectOpenIndex >= 0);
+    const connection = { socket: reconnected.record.socket, eventCursor: reconnectOpenIndex + 1 };
     assert.ok(Number.isFinite(reconnected.record.at));
     const scopes = reconnected.message.payload.auth?.scopes;
     assert.ok(Array.isArray(scopes));
@@ -483,9 +483,11 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     assert.equal(finalProvider.completedResponses, 1);
     observer.assertCompletedTurns({
       firstSent,
+      connection,
       turns: [
         {
           requestId: turn.request.message.id,
+          requestSocket: turn.request.record.socket,
           sessionKey,
           runId: turn.runId,
           reply: replyToken,
@@ -493,6 +495,7 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
         },
         {
           requestId: continuation.request.message.id,
+          requestSocket: continuation.request.record.socket,
           sessionKey,
           runId: continuation.runId,
           reply: continuationMarker,

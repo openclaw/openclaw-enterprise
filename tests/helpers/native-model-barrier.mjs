@@ -228,6 +228,10 @@ export async function prepareNativeModelBarrier(
         databaseUrl.hash === "",
       "Selected database must use the prepared limited local connection",
     );
+    assert.ok(
+      /^\/openclaw_k8s_[a-z0-9_]+$/.test(databaseUrl.pathname),
+      "Selected prepared database must be dedicated to Kubernetes integration",
+    );
     const services = state.resources.filter(({ kind }) => kind === "compose-postgres");
     assert.equal(services.length, 1, "Prepared owner must identify one PostgreSQL service");
     const postgres = services[0];

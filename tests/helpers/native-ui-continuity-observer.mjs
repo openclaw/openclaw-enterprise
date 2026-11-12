@@ -103,8 +103,11 @@ export function createNativeContinuityObserver() {
           payload: { type: "hello-ok", auth: { role: auth.role, scopes: [...auth.scopes] } },
         };
       }
-      const payload = { runId: identifier(message.payload?.runId) };
-      if (message.payload.status !== undefined) {
+      const payload = {};
+      if (message.payload?.runId !== undefined) {
+        payload.runId = identifier(message.payload.runId);
+      }
+      if (message.payload?.status !== undefined) {
         assert.equal(typeof message.payload.status, "string");
         assert.match(message.payload.status, /^[a-z_]{1,32}$/);
         payload.status = message.payload.status;
@@ -209,7 +212,7 @@ export function createNativeContinuityObserver() {
         reply: frames.find(({ message }) => message.event === "session.message"),
       };
     },
-    assertCompletedTurns({ firstSent, turns }) {
+    assertCompletedTurns({ firstSent, turns, connection }) {
       this.assertHealthy();
       const sends = sentFrames
         .slice(firstSent)
@@ -220,9 +223,62 @@ export function createNativeContinuityObserver() {
         "Unexpected send during continuity observation",
       );
       for (const turn of turns) {
+        const acknowledgements = receivedFrames.filter(
+          ({ socket, message }) =>
+            socket === turn.requestSocket &&
+            message.type === "res" &&
+            message.id === turn.requestId,
+        );
+        assert.ok(
+          acknowledgements.some(
+            ({ message }) => message.ok === true && message.payload?.runId === turn.runId,
+          ),
+          "Missing selected run acknowledgement",
+        );
+        for (const { message } of acknowledgements) {
+          assert.equal(message.ok, true, "Conflicting failed acknowledgement");
+          if (message.payload?.runId !== undefined) {
+            assert.equal(
+              message.payload.runId,
+              turn.runId,
+              "Conflicting acknowledgement run mapping",
+            );
+          }
+        }
         const sequence = this.terminalSequence(turn);
         assert.ok(sequence.final && sequence.reply, "Incomplete terminal sequence");
       }
+      // Final cached/UI state cannot establish that the measured connection
+      // survived the awaited closeout. Inspect every lifecycle event as well.
+      assert.ok(
+        Number.isSafeInteger(connection.eventCursor) &&
+          connection.eventCursor > 0 &&
+          connection.eventCursor <= socketEvents.length,
+        "Invalid reconnect event cursor",
+      );
+      const opening = socketEvents[connection.eventCursor - 1];
+      assert.ok(
+        opening.type === "open" && opening.socket === connection.socket,
+        "Reconnect cursor must identify the measured socket opening",
+      );
+      assert.equal(
+        socketEvents.length,
+        connection.eventCursor,
+        "Socket lifecycle changed after the measured reconnect",
+      );
+      const openSockets = new Set();
+      for (const event of socketEvents) {
+        if (event.type === "open") {
+          openSockets.add(event.socket);
+        } else {
+          openSockets.delete(event.socket);
+        }
+      }
+      assert.deepEqual(
+        [...openSockets],
+        [connection.socket],
+        "Measured replacement must remain the sole open socket",
+      );
     },
     expect({ name, prompt, reply }) {
       assert.ok(["seed", "target", "continuation"].includes(name));

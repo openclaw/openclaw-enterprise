@@ -126,11 +126,25 @@ test("native continuity observer fails closed on capture overflow or unbounded r
 // Exercise the same cumulative closeout validator used by the browser helper.
 // A previously complete pair of turns cannot hide a later send or failure.
 test("native continuity closeout rejects late sends and conflicting complete-run evidence", () => {
-  for (const late of ["none", "send", "abort", "duplicate-final", "early", "other-socket"]) {
+  for (const late of [
+    "none",
+    "send",
+    "abort",
+    "duplicate-final",
+    "early",
+    "other-socket",
+    "ack-conflict",
+    "ack-failed",
+    "ack-progress",
+    "socket-close",
+    "socket-open",
+    "socket-transient",
+    "socket-preexisting",
+  ]) {
     const observer = createNativeContinuityObserver();
     const page = {};
     observer.open({ page, socket: 1, at: 1 });
-    observer.open({ page, socket: 2, at: 1 });
+    const connection = { socket: 1, eventCursor: 1 };
     const emit = (direction, message, socket = 1, at = 3) =>
       observer.frame({ page, socket, at, direction, payload: JSON.stringify(message) });
     const turns = [];
@@ -143,6 +157,18 @@ test("native continuity closeout rejects late sends and conflicting complete-run
         id: `${name}-send`,
         method: "chat.send",
         params: { sessionKey: "agent:main:one", message: prompt },
+      });
+      emit("received", {
+        type: "res",
+        id: `${name}-send`,
+        ok: true,
+        payload: { status: "queued" },
+      });
+      emit("received", {
+        type: "res",
+        id: `${name}-send`,
+        ok: true,
+        payload: { runId: `${name}-run`, status: "started" },
       });
       const boundary = { index: observer.receivedFrames.length, at: 2, socket: 1 };
       emit("received", {
@@ -157,13 +183,14 @@ test("native continuity closeout rejects late sends and conflicting complete-run
       });
       turns.push({
         requestId: `${name}-send`,
+        requestSocket: 1,
         sessionKey: "agent:main:one",
         runId: `${name}-run`,
         reply,
         boundary,
       });
     }
-    observer.assertCompletedTurns({ firstSent: 0, turns });
+    observer.assertCompletedTurns({ firstSent: 0, turns, connection });
     if (late === "none") {
       continue;
     }
@@ -174,7 +201,45 @@ test("native continuity closeout rejects late sends and conflicting complete-run
         method: "chat.send",
         params: { sessionKey: "agent:main:one", message: "target prompt" },
       });
+    } else if (late.startsWith("ack-")) {
+      emit("received", {
+        type: "res",
+        id: "target-send",
+        ok: late !== "ack-failed",
+        payload: {
+          runId: late === "ack-conflict" ? "other-run" : "target-run",
+          status: "completed",
+        },
+      });
+      if (late === "ack-progress") {
+        emit("received", {
+          type: "res",
+          id: "target-send",
+          ok: true,
+          payload: { status: "completed" },
+        });
+        observer.assertCompletedTurns({ firstSent: 0, turns, connection });
+        continue;
+      }
+    } else if (late.startsWith("socket-")) {
+      if (late === "socket-close") {
+        observer.close({ page, socket: 1, at: 4 });
+      } else {
+        observer.open({ page, socket: 2, at: 4 });
+        if (late === "socket-transient") {
+          observer.close({ page, socket: 2, at: 5 });
+        } else if (late === "socket-preexisting") {
+          // Even a cursor whose last event is the expected opening cannot hide
+          // another still-open connection from the full lifecycle replay.
+          observer.open({ page, socket: 3, at: 5 });
+          connection.socket = 3;
+          connection.eventCursor = observer.socketEvents.length;
+        }
+      }
     } else {
+      if (late === "other-socket") {
+        observer.open({ page, socket: 2, at: 4 });
+      }
       emit(
         "received",
         {
@@ -196,8 +261,14 @@ test("native continuity closeout rejects late sends and conflicting complete-run
       "duplicate-final": /Duplicate run final/,
       early: /Terminal frame timestamp precedes its phase boundary/,
       "other-socket": /Terminal frame must use the authenticated socket/,
+      "ack-conflict": /Conflicting acknowledgement run mapping/,
+      "ack-failed": /Conflicting failed acknowledgement/,
+      "socket-close": /Socket lifecycle changed after the measured reconnect/,
+      "socket-open": /Socket lifecycle changed after the measured reconnect/,
+      "socket-transient": /Socket lifecycle changed after the measured reconnect/,
+      "socket-preexisting": /Measured replacement must remain the sole open socket/,
     };
-    assert.throws(() => observer.assertCompletedTurns({ firstSent: 0, turns }), {
+    assert.throws(() => observer.assertCompletedTurns({ firstSent: 0, turns, connection }), {
       name: "AssertionError",
       message: expected[late],
     });

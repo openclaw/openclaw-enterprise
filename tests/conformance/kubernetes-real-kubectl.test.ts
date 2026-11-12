@@ -1274,7 +1274,6 @@ const attemptedTopologyCleanups = [
   "attempted postgresNetwork",
   "attempted gatewayRuntimeNamespace",
   "attempted placementNamespace",
-  "attempted temporaryDirectory",
 ];
 
 test(

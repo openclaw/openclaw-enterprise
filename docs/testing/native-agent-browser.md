@@ -67,10 +67,13 @@ job, and the existing `gateway-routing` selection is unchanged.
 
 On a Linux host, prepare an exclusive disposable loopback k3d cluster with enforcing NetworkPolicies,
 Envoy Gateway and cert-manager, plus the [dedicated PostgreSQL database](postgresql.md#other-postgresql-suites).
-Keep the limited application connection in `OCC_TEST_DATABASE_URL` and select the
-cluster with `OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`.
-Set `OPENCLAW_ENTERPRISE_CI_STATE` to its prepared owner state; the selected
-cluster and local Docker daemon must match that state and remain exclusively
+Use the preparation's per-file limited application URL in `OCC_TEST_DATABASE_URL`.
+It must name a ready, owned, non-template `openclaw_k8s_*` database recorded in
+`OPENCLAW_ENTERPRISE_CI_STATE`, on the prepared PostgreSQL service's published
+`127.0.0.1` port. A separately created database or a `localhost` alias does not
+meet this fixture's ownership check. Select the matching prepared cluster with
+`OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`. The selected
+cluster and local Docker context must match that state and remain exclusively
 reserved for this run.
 Set these immutable image references and test CA paths using the
 [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets):
@@ -104,7 +107,8 @@ and an independently held provider response before replacing only the API Pod.
 The original tab must reconnect without navigation or resending the accepted
 turn, show one reply after the provider releases it, and complete a second turn.
 Native admission audit records must confirm the same human and parent login
-session on both connections; the receipt records equality without session identifiers.
+session on both connections; the receipt records equality without parent login
+session identifiers. It retains the chat transcript session ID for correlation.
 The held reply contains a nonce supplied only to the provider. A fresh process
 checks stored transcript entries separately from live Gateway history; final
 browser counts and worker, Agent, Gateway and revision identities must agree.

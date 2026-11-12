@@ -12,12 +12,13 @@ import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { request as httpRequest } from "node:http";
-import { connect as connectTcp } from "node:net";
+import { connect as connectTcp, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { chromium } from "playwright";
+import pg from "pg";
 import { prepareNativeModelBarrier } from "./native-model-barrier.mjs";
 import { assertAcknowledgedTurnAcrossApiRestart } from "./native-ui-api-continuity.mjs";
 import { createNativeContinuityObserver } from "./native-ui-continuity-observer.mjs";
@@ -92,7 +93,7 @@ async function createNativeIngress(context, { artifacts, nativeDomain }) {
       resolve();
     });
   });
-  (context.afterLocal ?? context.after)(async () => {
+  (context.afterLocal ?? context.after).call(context, async () => {
     for (const socket of sockets) {
       socket.destroy();
     }
@@ -212,7 +213,7 @@ async function launchBrowser(context, ingress) {
     args: ingress.browserArgs,
     headless: true,
   });
-  (context.afterLocal ?? context.after)(() => browser.close());
+  (context.afterLocal ?? context.after).call(context, () => browser.close());
   return browser;
 }
 
@@ -1221,7 +1222,7 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
   const browser = await launchBrowser(context, ingress);
   assertActive();
   const browserContext = await browser.newContext();
-  (context.afterLocal ?? context.after)(() => browserContext.close());
+  (context.afterLocal ?? context.after).call(context, () => browserContext.close());
   const observer = createNativeContinuityObserver();
   const seedMarker = `OCC-API-SEED-${randomUUID()}`;
   observer.expect({
@@ -1270,9 +1271,56 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
   // open admission, then count every new admission across the API replacement.
   const admissionAction = "openclaw.agents.native_admin.websocket.connect";
   const closeAction = "openclaw.agents.native_admin.websocket.close";
+  const readAuditQuery = async (text, values) => {
+    const deadline = performance.now() + 10_000;
+    const stream = new Socket();
+    let client;
+    let result;
+    let interrupted = false;
+    const stop = () => {
+      interrupted = true;
+      stream.destroy();
+    };
+    const timer = setTimeout(stop, 10_000);
+    context.signal?.addEventListener("abort", stop, { once: true });
+    try {
+      // Own this read's transport: a shared pool checkout cannot be cancelled.
+      client = new pg.Client({
+        connectionString: process.env.OCC_TEST_DATABASE_URL,
+        stream,
+      });
+      client.on("error", stop);
+      if (context.signal?.aborted || performance.now() >= deadline) {
+        stop();
+      } else {
+        await client.connect();
+        if (interrupted || context.signal?.aborted || performance.now() >= deadline) {
+          stop();
+        } else {
+          result = await client.query(text, values);
+        }
+      }
+    } catch {
+      interrupted = true;
+    } finally {
+      clearTimeout(timer);
+      context.signal?.removeEventListener("abort", stop);
+      // Closing the owned socket also ends a stalled handshake or query; merely
+      // racing its promise would leave database work alive after cancellation.
+      stream.destroy();
+      await client?.end().catch(() => {
+        interrupted = true;
+      });
+      client?.removeListener("error", stop);
+    }
+    if (interrupted || context.signal?.aborted || performance.now() >= deadline) {
+      throw new Error("Native admission audit read failed or exceeded its deadline");
+    }
+    return result;
+  };
   const readAdmissions = async () => {
     assertActive();
-    const result = await topology.observerPool.query(
+    const result = await readAuditQuery(
       `SELECT admitted.actor_id,
               admitted.details->'__occAuditMetadata'->'actor' AS actor,
               admitted.details->'nativeAdmin'->>'connectionId' AS connection_id,

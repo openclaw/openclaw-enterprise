@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
+import { runFixtureCommand } from "./production-rehearsal-custody.ts";
+
 const executeFile = promisify(execFile);
 
 function processAlive(pid) {
@@ -63,8 +65,7 @@ async function breakStaleLock(lockPath, deadHolder) {
 
 // One lock per lane state directory: concurrent test files in a lane are separate
 // processes on one runner. A lock left by a dead process is taken over.
-async function withAttachmentLock(lockPath, step) {
-  const deadline = Date.now() + 120_000;
+async function withAttachmentLock(lockPath, step, deadline = Date.now() + 120_000) {
   for (;;) {
     try {
       await writeFile(lockPath, String(process.pid), { flag: "wx", mode: 0o600 });
@@ -89,8 +90,8 @@ async function withAttachmentLock(lockPath, step) {
 }
 
 // A missing registry means no harness file holds the attachment. An unreadable one is
-// treated as harness-owned with no live holders, so the last release still disconnects.
-async function readHolders(registryPath) {
+// treated as harness-owned by ordinary callers; strict callers retain it and fail.
+async function readHolders(registryPath, strict = false) {
   let registry;
   try {
     registry = JSON.parse(await readFile(registryPath, "utf8"));
@@ -98,12 +99,15 @@ async function readHolders(registryPath) {
     if (error.code === "ENOENT") {
       return { connectedByHarness: false, holders: {} };
     }
+    assert.ok(!strict, "PostgreSQL attachment registry is unreadable");
     return { connectedByHarness: true, holders: {} };
   }
   if (registry === null || typeof registry !== "object" || Array.isArray(registry)) {
+    assert.ok(!strict, "PostgreSQL attachment registry is invalid");
     return { connectedByHarness: true, holders: {} };
   }
   return {
+    ...(registry.pendingConnect === true ? { pendingConnect: true } : {}),
     connectedByHarness: registry.connectedByHarness === true,
     holders:
       registry.holders !== null && typeof registry.holders === "object" ? registry.holders : {},
@@ -131,7 +135,12 @@ function liveHolders(registry) {
 // Files that run concurrently in one lane share the attachment: the first connects,
 // and only the last holder disconnects, so no file loses PostgreSQL under a sibling.
 // An attachment that existed before any harness connected it is never removed.
-export async function attachPostgresToK3d(registerCleanup) {
+/**
+ * @param {(cleanup: () => Promise<void>) => unknown} registerCleanup
+ * @param {{ signal?: AbortSignal, strictCleanup?: boolean }} [options]
+ */
+export async function attachPostgresToK3d(registerCleanup, { signal, strictCleanup = false } = {}) {
+  signal?.throwIfAborted();
   const statePath = process.env.OPENCLAW_ENTERPRISE_CI_STATE;
   const containerBin = process.env.OCC_DOCKER_BIN ?? "docker";
   assert.ok(statePath, "OPENCLAW_ENTERPRISE_CI_STATE is required for in-cluster OCC");
@@ -144,7 +153,7 @@ export async function attachPostgresToK3d(registerCleanup) {
   );
   assert.ok(cluster?.name, "prepared state must identify the owned k3d cluster");
   assert.ok(postgres?.name, "prepared state must identify the owned PostgreSQL service");
-  const { stdout: containerOutput } = await executeFile(containerBin, [
+  const discovery = [
     "ps",
     "--filter",
     `label=com.docker.compose.project=${postgres.name}`,
@@ -152,7 +161,16 @@ export async function attachPostgresToK3d(registerCleanup) {
     "label=com.docker.compose.service=postgres",
     "--format",
     "{{.Names}}",
-  ]);
+  ];
+  const containerOutput = strictCleanup
+    ? await runFixtureCommand(
+        containerBin,
+        discovery,
+        { timeout: 30_000 },
+        () => "PostgreSQL attachment discovery failed (output withheld)",
+        true,
+      )
+    : (await executeFile(containerBin, discovery)).stdout;
   const containers = containerOutput.trim().split(/\r?\n/).filter(Boolean);
   assert.equal(containers.length, 1, "prepared PostgreSQL must have exactly one container");
   const postgresContainer = containers[0];
@@ -162,6 +180,8 @@ export async function attachPostgresToK3d(registerCleanup) {
     cluster,
     container: postgresContainer,
     attachmentName: "postgres",
+    signal,
+    strictCleanup,
   });
 }
 
@@ -201,10 +221,30 @@ export async function attachKeycloakToK3d(
 
 async function attachContainerToK3d(
   registerCleanup,
-  { statePath, containerBin, cluster, container, attachmentName },
+  { statePath, containerBin, cluster, container, attachmentName, signal, strictCleanup = false },
 ) {
+  let cleanupDeadline;
+  const execute = async (args) => {
+    if (!strictCleanup) {
+      return executeFile(containerBin, args);
+    }
+    const timeout = Math.min(30_000, (cleanupDeadline ?? Infinity) - Date.now());
+    assert.ok(timeout > 0, "PostgreSQL attachment cleanup deadline elapsed");
+    const stdout = await runFixtureCommand(
+      containerBin,
+      args,
+      { timeout },
+      () => "PostgreSQL attachment command failed (output withheld)",
+      true,
+    );
+    assert.ok(
+      !cleanupDeadline || Date.now() < cleanupDeadline,
+      "PostgreSQL attachment cleanup deadline elapsed",
+    );
+    return { stdout };
+  };
   const serverContainer = `k3d-${cluster.name}-server-0`;
-  const { stdout: serverNetworksOutput } = await executeFile(containerBin, [
+  const { stdout: serverNetworksOutput } = await execute([
     "inspect",
     "--format",
     "{{json .NetworkSettings.Networks}}",
@@ -216,7 +256,7 @@ async function attachContainerToK3d(
   );
   assert.ok(network, "owned k3d server network must be inspectable");
   const attached = async () => {
-    const { stdout } = await executeFile(containerBin, [
+    const { stdout } = await execute([
       "inspect",
       "--format",
       "{{json .NetworkSettings.Networks}}",
@@ -229,16 +269,91 @@ async function attachContainerToK3d(
   const lockPath = `${base}.lock`;
   const registryPath = `${base}.json`;
   const holder = randomUUID();
-  const disconnect = () =>
-    executeFile(containerBin, ["network", "disconnect", "--force", network, container]);
+  const disconnect = () => execute(["network", "disconnect", "--force", network, container]);
+  let releaseRequired = false;
+  const release = async () => {
+    if (strictCleanup && !releaseRequired) {
+      return;
+    }
+    cleanupDeadline = strictCleanup ? Date.now() + 60_000 : undefined;
+    try {
+      await withAttachmentLock(
+        lockPath,
+        async () => {
+          assert.ok(
+            !cleanupDeadline || Date.now() < cleanupDeadline,
+            "PostgreSQL attachment cleanup deadline elapsed",
+          );
+          const registry = await readHolders(registryPath, strictCleanup);
+          assert.ok(
+            !registry.pendingConnect,
+            "Unconfirmed PostgreSQL connect requires manual reconciliation",
+          );
+          assert.ok(
+            !strictCleanup || Object.hasOwn(registry.holders, holder),
+            "PostgreSQL attachment holder record is missing",
+          );
+          const remaining = liveHolders(registry);
+          delete remaining[holder];
+          if (Object.keys(remaining).length > 0) {
+            await writeHolders(registryPath, { ...registry, holders: remaining });
+            return;
+          }
+          if (registry.connectedByHarness) {
+            if (strictCleanup) {
+              if (await attached()) {
+                await disconnect();
+              }
+              assert.equal(await attached(), false, "Owned PostgreSQL attachment remains");
+            } else {
+              await disconnect().catch(() => undefined);
+            }
+          }
+          await rm(registryPath, { force: true });
+        },
+        cleanupDeadline,
+      );
+    } catch (error) {
+      if (strictCleanup) {
+        throw error;
+      }
+      // Keep the caller's remaining teardown running; lane cleanup reports a leaked attachment.
+      console.error(`${attachmentName} k3d network release failed: ${error.message}`);
+    }
+  };
+  if (strictCleanup) {
+    registerCleanup(release);
+  }
   await withAttachmentLock(lockPath, async () => {
-    const registry = await readHolders(registryPath);
+    const registry = await readHolders(registryPath, strictCleanup);
+    assert.ok(
+      !registry.pendingConnect,
+      "Unconfirmed PostgreSQL connect requires manual reconciliation",
+    );
     const holders = liveHolders(registry);
     // An attachment no harness file made (connectedByHarness false) stays with its owner.
     let connectedByHarness = registry.connectedByHarness;
     let connectedNow = false;
-    if (!(await attached())) {
-      await executeFile(containerBin, ["network", "connect", network, container]);
+    const alreadyAttached = await attached();
+    // Do not cancel a dispatched connect: finish its bookkeeping and register
+    // release before reporting cancellation. New acquisition is fenced here.
+    signal?.throwIfAborted();
+    if (!alreadyAttached) {
+      if (strictCleanup) {
+        // Persist before dispatch; a lost reply must not look pre-existing later.
+        await writeHolders(registryPath, {
+          connectedByHarness: true,
+          holders,
+          pendingConnect: true,
+        });
+        releaseRequired = true;
+        if (signal?.aborted) {
+          await writeHolders(registryPath, registry);
+          releaseRequired = false;
+          signal.throwIfAborted();
+        }
+      }
+      await execute(["network", "connect", network, container]);
       connectedByHarness = true;
       connectedNow = true;
     }
@@ -247,35 +362,20 @@ async function attachContainerToK3d(
         connectedByHarness,
         holders: { ...holders, [holder]: process.pid },
       });
+      releaseRequired = true;
     } catch (error) {
       // Without a recorded holder nothing would ever release this connection.
-      if (connectedNow) {
+      if (connectedNow && !strictCleanup) {
         await disconnect().catch(() => undefined);
       }
       throw error;
     }
   });
-  registerCleanup(async () => {
-    try {
-      await withAttachmentLock(lockPath, async () => {
-        const registry = await readHolders(registryPath);
-        const remaining = liveHolders(registry);
-        delete remaining[holder];
-        if (Object.keys(remaining).length > 0) {
-          await writeHolders(registryPath, { ...registry, holders: remaining });
-          return;
-        }
-        if (registry.connectedByHarness) {
-          await disconnect().catch(() => undefined);
-        }
-        await rm(registryPath, { force: true });
-      });
-    } catch (error) {
-      // Keep the caller's remaining teardown running; lane cleanup reports a leaked attachment.
-      console.error(`${attachmentName} k3d network release failed: ${error.message}`);
-    }
-  });
-  const { stdout: attachedOutput } = await executeFile(containerBin, [
+  if (!strictCleanup) {
+    registerCleanup(release);
+  }
+  signal?.throwIfAborted();
+  const { stdout: attachedOutput } = await execute([
     "inspect",
     "--format",
     `{{(index .NetworkSettings.Networks ${JSON.stringify(network)}).IPAddress}}`,
