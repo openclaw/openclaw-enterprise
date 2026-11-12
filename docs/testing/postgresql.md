@@ -59,6 +59,49 @@ retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
 
+## OpenShell stock-Git wire test
+
+From a prepared checkout with built workspace packages, Node.js and Docker Compose,
+run the existing PostgreSQL/OpenShell Git journey with an already-built wire binary:
+
+```sh
+OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY=/absolute/path/to/wire-binary \
+  node scripts/ci/openshell-grant-wire.ts
+```
+
+The command rejects a missing or non-executable binary before preparation. It uses
+the maintained CI prepare, run, and cleanup commands for one `postgres-platform`
+file. It creates an isolated disposable PostgreSQL server; it does not build the
+binary or create an OpenShell cluster. Success requires the case
+`OpenShell inspected Git fetch redeems the active grant and refuses withdrawal`
+to pass, as well as the file and cleanup.
+
+Each run owns a private temporary directory. Cleanup runs after preparation or
+test failure if state exists and preparation reported a natural terminal result
+with its subprocess group settled. On Linux, SIGINT and SIGTERM give preparation
+one second to finish, then send SIGTERM to its owned subprocess group. After another
+second, the command sends SIGKILL if the supervisor is still running. It waits up
+to one more second for the supervisor to close and the group to disappear. Any
+interruption during preparation, or a lost supervisor without a natural terminal
+result, leaves an unknown external outcome: a daemon may finish accepted work
+even after the client group disappears. The command retains state and skips tests
+and automatic cleanup. Unconfirmed group settlement is also reported. Resolve
+both local and daemon operations before manual cleanup with
+`node scripts/ci/cleanup.mjs --state` and the retained `state.json` path.
+
+Interruptions skip tests that have not started; running tests and cleanup retain
+their existing deadlines. The command exits with code 130 or 143 for the original
+SIGINT or SIGTERM. Repeated signals do not interrupt teardown. After forced
+termination, confirm remaining operations have stopped before manual cleanup.
+
+The command reports the failed stage, names missing wire proof, and prints
+prepare, test, cleanup, and overall elapsed milliseconds. Unstarted stages report
+zero. Successful runs remove their directory; failures and interruptions retain
+private logs and results, plus state from unknown preparation outcomes or failed
+cleanup. A cleanup retry command appears only when cleanup failed and state remains.
+Keep failure artifacts private: they can contain database credentials. Existing
+database URLs, CI selectors, and credential environment variables are not forwarded.
+
 ## Subnet pool exhaustion
 
 If Compose reports `all predefined address pools have been fully subnetted`,
