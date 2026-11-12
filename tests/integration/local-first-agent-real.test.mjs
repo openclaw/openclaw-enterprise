@@ -2077,6 +2077,11 @@ test(
         },
       });
       assert.equal(changed.id, original.id, "The edit must preserve the Configuration ID");
+      assert.deepEqual(
+        changed.values.tools,
+        { allow: ["*"] },
+        "The public edit must replace the tool policy",
+      );
       assert.equal(
         changed.generation,
         original.generation + 1,
@@ -2107,12 +2112,13 @@ test(
         0,
         "An externally changed Configuration must block key replacement",
       );
-      // Control UI pins generation 2 and refuses drift before the content comparison.
+      // Control UI checks its pinned generation first. Other profiles use the full
+      // Configuration comparison, which also catches changes to the helper's defaults.
       assert.match(
         `${refused.stdout}\n${refused.stderr}`,
         selectedControlUi
           ? /Configuration generation changed outside this helper/
-          : /Configuration was changed outside this helper/,
+          : /Configuration does not match this version of the helper/,
       );
       assert.equal(
         refused.containedForbiddenOutput,
