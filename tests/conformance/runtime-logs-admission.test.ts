@@ -9,10 +9,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import type { AgentRuntimeLogRequest, ComputeDriver } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
-import {
-  createRuntimeLogComputeDriver,
-  createRuntimeLogFixture,
-} from "../helpers/runtime-logs.ts";
+import { createRuntimeLogComputeDriver, createRuntimeLogFixture } from "../helpers/runtime-logs.ts";
 
 const publicOrigin = "https://console.oce.localhost";
 
