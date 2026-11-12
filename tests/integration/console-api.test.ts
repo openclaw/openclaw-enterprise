@@ -1440,12 +1440,12 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
 // native IAM Driver reads its policy once for all of them, as for the Agent Secret answer
 // (finding 2473). The units the answer opens do not grow with the number of Secrets.
 test("the Namespace Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<boolean>();
+  const unit = new AsyncLocalStorage<symbol>();
   let units = 0;
   const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
     read: (work) => {
       units += 1;
-      return unit.run(true, () => state.read(work));
+      return unit.run(Symbol(), () => state.read(work));
     },
     transact: (work) => state.transact(work),
   });
@@ -1461,11 +1461,11 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     ],
     [],
   );
-  const decisions: { action: PermissionAction; inUnit: boolean }[] = [];
+  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
   const authorize = fixture.iamDriver.authorize;
   fixture.iamDriver.authorize = async (request) => {
     if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, inUnit: unit.getStore() === true });
+      decisions.push({ action: request.action, unitId: unit.getStore() });
     }
     return authorize.call(fixture.iamDriver, request);
   };
@@ -1476,18 +1476,26 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     decisions.length = 0;
     units = 0;
     const denied = await creator.answer();
+    // All Secret decisions for this answer must share the same read unit.
+    const unitId = decisions[0]?.unitId;
+    assert.notEqual(unitId, undefined);
+    assert.ok(decisions.every((decision) => decision.unitId === unitId));
     return { denied, units, decisions: [...decisions] };
   };
   const few = await measure();
-  assert.deepEqual(few.denied, [model.id, bot.id].sort());
+  const expectedDenied = [model.id, bot.id];
+  assert.deepEqual(few.denied, [...expectedDenied].sort());
+  assert.equal(few.decisions.filter(({ action }) => action === "read").length, 2);
+  assert.equal(few.decisions.filter(({ action }) => action === "operate").length, 2);
   for (let index = 0; index < 6; index += 1) {
-    await fixture.createSecret(namespace.id, `Extra key ${index}`, "extra-value");
+    const extra = await fixture.createSecret(namespace.id, `Extra key ${index}`, "extra-value");
+    expectedDenied.push(extra.id);
   }
   const many = await measure();
-  assert.equal(many.denied.length, 8);
-  // Each readable Secret costs a read and an operate decision, all inside a read unit.
+  assert.deepEqual(many.denied, expectedDenied.sort());
+  // Each readable Secret costs a read and an operate decision in the shared read unit.
+  assert.equal(many.decisions.filter(({ action }) => action === "read").length, 8);
   assert.equal(many.decisions.filter(({ action }) => action === "operate").length, 8);
-  assert.ok(many.decisions.every(({ inUnit }) => inUnit));
   assert.equal(many.units, few.units);
 });
 
