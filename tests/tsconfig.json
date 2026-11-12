@@ -95,6 +95,7 @@
     "helpers/ci-prepare-fixture.ts",
     "helpers/ci-runner-held-clock.ts",
     "helpers/ci-runner-kill-window.ts",
+    "fixtures/ci-runner-finite-conversation.ts",
     "helpers/ci-runner-fixture.ts",
     "helpers/ci-runner-k3d-fixture.ts",
     "fixtures/ci-runner-k3d-kubectl.ts",

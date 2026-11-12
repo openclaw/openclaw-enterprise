@@ -33,6 +33,7 @@ import {
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
+import { finiteConversationScenarios } from "../fixtures/ci-runner-finite-conversation.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   prepareK3dDiagnosticsRun,
@@ -5639,216 +5640,24 @@ test("run retains redacted Skill exercise and restoration failures within its me
 test("finite conversation failures retain safe stages through the reporter", async (t) => {
   const root = await fixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "conversation");
-  const fixtureProcess = new URL("../fixtures/repository-credentials/process.mjs", import.meta.url)
-    .href;
-  const helper = new URL("../helpers/finite-git-conversation.ts", import.meta.url).href;
-  // Scripted command responses exercise the real diagnostic producer, not a model or cluster.
-  // Readback cases exercise the Gateway reader after one accepted synthetic model turn.
+  const fixtureUrl = new URL("../fixtures/ci-runner-finite-conversation.ts", import.meta.url).href;
+  // Scripted command responses exercise the real diagnostic producer and Gateway reader.
   await writeSingleFileRunnerLane(
     root,
     "conversation",
     "tests/integration/conversation.test.mjs",
-    `import test from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
-import { run } from ${JSON.stringify(fixtureProcess)};
-import { createHash } from "node:crypto";
-import { createFiniteGitConversation, finiteGitConversationFailureStage } from ${JSON.stringify(helper)};
-const agent = { id: "agent", namespaceId: "namespace", revision: { id: "revision" } };
-const hash = (s) => createHash("sha256").update(s).digest("hex").slice(0, 12);
-const pod = {
-  metadata: {
-    name: "gateway", namespace: "tenant", uid: "pod-uid",
-    labels: {
-      "app.kubernetes.io/managed-by": "openclaw-enterprise",
-      "openclaw.dev/workload-role": "gateway",
-      "openclaw.dev/namespace": agent.namespaceId,
-      "openclaw.dev/agent": agent.id,
-    },
-  },
-  spec: {
-    containers: [{ name: "gateway" }],
-    volumes: [{ configMap: { name: "gateway-" + hash(agent.id) + "-rev-" + hash(agent.revision.id) } }],
-  },
-  status: {
-    phase: "Running", conditions: [{ type: "Ready", status: "True" }],
-    containerStatuses: [{ name: "gateway", containerID: "container", imageID: "image", restartCount: 0,
-      state: { running: { startedAt: "2026-01-01T00:00:00Z" } } }],
-  },
-};
-const privateFailure = () => { throw Object.assign(new Error("private-command-data"), {
-  stdout: "private-command-stdout", stderr: "private-command-stderr",
-  cause: new Error("private-command-cause"),
-}); };
-const interval = { start: 1794140000000, end: 1794140001000 };
-const line = (message, time = interval.start + 500) => new Date(time).toISOString() + " " + message + "\\n";
-const signature = "chat completion failed: WorkspaceAccessUnavailableError: Remote workspace skill discovery failed";
-const warning = (message = signature, time = interval.start + 500) => JSON.stringify({
-  time: new Date(time).toISOString().replace("Z", "+00:00"), level: "warn", subsystem: "openai-compat", message,
-});
-const failureLine = line(warning());
-const observations = [
-  { name: "empty Gateway logs", observation: "no_matching_warning", logs: "" },
-  { name: "unrecognized Gateway failure", observation: "unrecognized_warning", logs: line(warning("chat completion failed: private-command-data")) },
-  { name: "unique Gateway failure", observation: "workspace_skill_discovery_failure_observed", logs: failureLine },
-  { name: "quoted subsystem prefix", observation: "no_matching_warning", logs: line("[workspace] [openai-compat] " + signature) },
-  { name: "missing producer time", observation: "observation_unavailable", logs: failureLine + line(JSON.stringify({level: "warn", subsystem: "openai-compat", message: signature})) },
-  { name: "invalid producer time", observation: "observation_unavailable", logs: line(JSON.stringify({time: "private-command-invalid-time", level: "warn", subsystem: "openai-compat", message: signature})) },
-  { name: "delayed capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.end + 1) },
-  { name: "early capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.start - 1) },
-  { name: "delayed competing warning", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data"), interval.end + 1) },
-  { name: "old producer time", observation: "no_matching_warning", logs: line(warning(signature, interval.start - 1)) },
-  { name: "later producer time", observation: "no_matching_warning", logs: line(warning(signature, interval.end + 1)) },
-  { name: "ambiguous Gateway failure", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data")) },
-  { name: "background disconnect", observation: "no_matching_warning", logs: line("[workspace] " + signature) },
-  { name: "truncated Gateway logs", observation: "observation_unavailable", logs: failureLine + "x".repeat(65536) },
-  { name: "incomplete Gateway record", observation: "observation_unavailable", logs: failureLine.trimEnd() },
-  { name: "log read failure", observation: "observation_unavailable" },
-  { name: "Gateway replaced before read", observation: "observation_unavailable", drift: 2, logs: failureLine },
-  { name: "Gateway restarted during read", observation: "observation_unavailable", drift: 3, logs: failureLine },
-  { name: "invalid request interval", observation: "observation_unavailable", interval: { start: "private-command-data", end: interval.end }, logs: failureLine },
-];
-const [emptyLogs, unknownWarning, ...remainingObservations] = observations.map(item => ({
-  ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
-  output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
-}));
-// Retain the two new observations without displacing private readback controls.
-const cases = [
-  emptyLogs,
-  unknownWarning,
-  ...["execution identity", "target discovery", "gateway identity", "model turn"].map(stage => ({
-    name: stage, stage, detail: stage === "model turn" ? "model turn; probe=execution" : stage,
-  })),
-  ...["command", "timeout", "integrity", "answer_missing", "source", "session_missing", "transcript"].map(read => ({
-    name: "read " + read, stage: "persisted reply", detail: "persisted reply; read=" + read, read,
-  })),
-  ...[
-    ["direct", "success"], ["recovered", "success"], ["foreign answer", "run"],
-    ["foreign prompt", "run"], ["missing run", "run"], ["nonterminal", "run"],
-    ["foreign thread", "source"], ["item suffix", "source"], ["empty turn", "source"],
-    ["duplicate before", "integrity"], ["duplicate after", "integrity"],
-    ["unmarked before", "integrity"], ["unmarked after", "integrity"],
-    ["prior error", "integrity"], ["later answer", "integrity"], ["stale sequence", "sequence"],
-  ].map(([read, outcome]) => ({name: read, read, stage: "persisted reply", detail: "persisted reply; read=" + outcome, outcome})),
-  ...remainingObservations,
-  { name: "unauthenticated HTTP 500", stage: "model turn", detail: "model turn; probe=unauthenticated; HTTP=500", output: JSON.stringify({ error: "unauthenticated", status: 500 }) },
-  { name: "upstream status", stage: "model turn", detail: "model turn; probe=upstream; HTTP=503", output: JSON.stringify({ error: "upstream", status: 503, extra: "private-command-data" }) },
-  { name: "unknown probe", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "private-command-data", status: 503 }) },
-  { name: "invalid status", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "upstream", status: "private-command-data" }) },
-];
-for (const { name, stage, detail, output, logs, drift, observation, read, outcome } of cases) {
-  test(name, async () => {
-    let logReads = 0;
-    let probeCompleted = false;
-    let posts = 0;
-    const runId = "chatcmpl_20000000-0000-4000-8000-000000000001";
-    let guards = 0;
-    const conversation = createFiniteGitConversation({
-      agent, signal: new AbortController().signal, originalIdentity: "original",
-      readExecution: async () => stage === "execution identity" ? privateFailure() : { identity: "original" },
-      kube: async (args, options) => {
-        if (args[0] === "get") {
-          if (stage === "target discovery") return privateFailure();
-          if (args[1] === "namespaces") return JSON.stringify({ items: [{ metadata: { name: "tenant" } }] });
-          if (args[1] === "pods") return JSON.stringify({ items: [pod] });
-          if (stage === "gateway identity") return privateFailure();
-          if (probeCompleted && ++guards === drift) {
-            return JSON.stringify({ ...pod, status: { ...pod.status, containerStatuses: [{ ...pod.status.containerStatuses[0], restartCount: 1 }] } });
-          }
-          return JSON.stringify(pod);
-        }
-        if (args[0] === "logs") {
-          logReads++;
-          assert.deepEqual(args, ["logs", "gateway", "--namespace", "tenant", "-c", "gateway",
-            "--timestamps=true", "--tail=-1", "--limit-bytes=65536", "--since-time=" + new Date(interval.start).toISOString()]);
-          assert.ok(options.timeout > 0 && options.timeout <= 5000);
-          if (logs === undefined) return privateFailure();
-          return logs;
-        }
-        if (args[1] === "-i" && output !== undefined) { probeCompleted = true; return output; }
-        if (args[1] === "-i" && stage === "persisted reply") {
-          posts++;
-          return JSON.stringify({ nonce: options.input.match(/FIRST_AGENT_[0-9a-f-]+/)[0], runId });
-        }
-        if (read && args[0] === "exec") {
-          if (read === "command") return privateFailure();
-          if (read === "timeout") return run(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {timeout: 1});
-          const [script, key, marker] = args.slice(args.indexOf("-e") + 1);
-          if (args.at(-1) === "conversation-reply" && read !== "session_missing") {
-            return JSON.stringify({ sessionId: "session", threadId: "thread" });
-          }
-          if (read === "transcript") return JSON.stringify({failure:"private-command-forged"});
-          const file = name.replaceAll(" ", "-") + ".sqlite";
-          const db = new DatabaseSync(file);
-          db.exec("CREATE TABLE session_nodes(session_key, current_session_id); CREATE TABLE transcript_events(session_id, seq INTEGER, event_json TEXT, event_zstd, event_utf8_bytes)");
-          if (read !== "session_missing") {
-            db.prepare("INSERT INTO session_nodes VALUES (?, 'session')").run(key);
-            const prompt = {role:"user", content:marker, __openclaw:{mirrorOrigin:"codex-app-server",
-              mirrorIdentity:"turn:prompt",mirrorSourceFingerprint:"promptFingerprint",runId:read === "foreign prompt" ? "other" : runId}};
-            const insert = db.prepare("INSERT INTO transcript_events VALUES ('session', ?, ?, null, null)");
-            insert.run(1, read === "integrity" ? "malformed" : JSON.stringify({type:"message",message:prompt}));
-            if (outcome) {
-              const identity = read === "item suffix" ? "turn:assistant:assistant" : read === "empty turn" ? ":assistant" :
-                read === "direct" ? "turn:assistant" : "next:assistant";
-              const answer = {role:"assistant",content:marker,stopReason:"stop",
-                idempotencyKey:"codex-app-server:" + (read === "foreign thread" ? "other" : "thread") + ":" + identity,
-                __openclaw:{mirrorOrigin:"codex-app-server",mirrorSourceFingerprint:"answerFingerprint",mirrorIdentity:identity,
-                  runId:read === "foreign answer" ? "other" : read === "missing run" ? undefined : runId,
-                  runTerminal:read !== "nonterminal"}};
-              if (read.startsWith("duplicate ") || read.startsWith("unmarked ")) {
-                const duplicate = {...answer, content:read.startsWith("duplicate ") ? marker : "earlier or later",
-                  idempotencyKey:"codex-app-server:thread:turn:assistant",
-                  __openclaw:{...answer.__openclaw, mirrorIdentity:"turn:assistant"}};
-                insert.run(read.endsWith("before") ? 2 : 4, JSON.stringify({type:"message",message:duplicate}));
-              }
-              if (read === "prior error") insert.run(2,JSON.stringify({type:"message",message:{role:"assistant",stopReason:"error"}}));
-              insert.run(3, JSON.stringify({type:"message",message:answer}));
-              if (read === "later answer") insert.run(4, JSON.stringify({type:"message",message:{role:"assistant",content:"later"}}));
-            }
-            if (read === "source") insert.run(2, JSON.stringify({type:"message",message:{role:"assistant",content:marker,stopReason:"stop"}}));
-          }
-          db.close();
-          const local = script.replaceAll("/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite", file)
-            .replaceAll("/home/node/.openclaw/state/openclaw.sqlite", file);
-          return execFileSync(process.execPath, ["-e", local, ...args.slice(args.indexOf("-e") + 2)], {encoding:"utf8"});
-        }
-        return privateFailure();
-      },
-    });
-    try {
-      const prior = read === "stale sequence" ? {sessionId:"session",threadId:"thread",userSeq:0,assistantSeq:1} : undefined;
-      const tuple = await conversation.turn(prior, 1000);
-      if (outcome === "success") {
-        assert.equal(posts, 1);
-        assert.deepEqual(tuple, {sessionId:"session",threadId:"thread",userSeq:1,assistantSeq:3});
-        return;
-      }
-    }
-    catch (error) {
-      if (read) assert.equal(posts, 1);
-      assert.equal(finiteGitConversationFailureStage(error), detail);
-      const needsRead = observation && name !== "invalid request interval" && drift !== 2;
-      assert.equal(logReads, needsRead ? 1 : 0, "one bounded read only after an eligible model failure");
-      assert.equal(finiteGitConversationFailureStage({ stage, message: error.message }), undefined);
-      assert.equal(finiteGitConversationFailureStage(new Error(error.message)), undefined);
-      assert.equal(error.cause, undefined);
-      throw error;
-    }
-    assert.fail("Expected the selected diagnostic boundary to fail");
-  });
-}
+    `import { registerFiniteConversationTests } from ${JSON.stringify(fixtureUrl)};
+await registerFiniteConversationTests();
 `,
   );
   const result = run(root, laneArgs(root, "conversation", statePath, resultsPath));
   assert.equal(result.status, 1, result.stderr);
   const summaryText = await readFile(resultsPath, "utf8");
   const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
-  const summary = JSON.parse(summaryText);
-  const detail = JSON.parse(detailText).failures[0];
-  const details = detail.tests;
+  const { tests } = JSON.parse(summaryText).files[0];
+  const { tests: details, omittedTests } = JSON.parse(detailText).failures[0];
   assert.equal(details.length, 20);
-  // Keep both new observations and private readback failures inside the detail cap.
+  // Keep both leading Gateway observations and private readback failures inside the cap.
   for (const name of [
     "empty Gateway logs",
     "unrecognized Gateway failure",
@@ -5860,74 +5669,25 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
       `Missing retained detail: ${name}`,
     );
   }
-  assert.equal(detail.omittedTests, 28);
-  assert.equal(summary.files[0].tests.length, 50);
-  const expected = {
-    ...Object.fromEntries(
-      ["foreign answer", "foreign prompt", "missing run", "nonterminal"].map((name) => [
-        name,
-        "persisted reply; read=run",
-      ]),
-    ),
-    ...Object.fromEntries(
-      ["foreign thread", "item suffix", "empty turn"].map((name) => [
-        name,
-        "persisted reply; read=source",
-      ]),
-    ),
-    ...Object.fromEntries(
-      [
-        "duplicate before",
-        "duplicate after",
-        "unmarked before",
-        "unmarked after",
-        "prior error",
-      ].map((name) => [name, "persisted reply; read=integrity"]),
-    ),
-    "later answer": "persisted reply; read=integrity",
-    "stale sequence": "persisted reply; read=sequence",
-    "model turn": "model turn; probe=execution",
-    "upstream status": "model turn; probe=upstream; HTTP=503",
-    "unauthenticated HTTP 500": "model turn; probe=unauthenticated; HTTP=500",
-    "unknown probe": "model turn; probe=unexpected",
-    "invalid status": "model turn; probe=unexpected",
-  };
-  const observations = {
-    "empty Gateway logs": "no_matching_warning",
-    "unique Gateway failure": "workspace_skill_discovery_failure_observed",
-    "quoted subsystem prefix": "no_matching_warning",
-    "missing producer time": "observation_unavailable",
-    "invalid producer time": "observation_unavailable",
-    "delayed capture": "workspace_skill_discovery_failure_observed",
-    "early capture": "workspace_skill_discovery_failure_observed",
-    "delayed competing warning": "ambiguous",
-    "old producer time": "no_matching_warning",
-    "later producer time": "no_matching_warning",
-    "ambiguous Gateway failure": "ambiguous",
-    "unrecognized Gateway failure": "unrecognized_warning",
-    "background disconnect": "no_matching_warning",
-    "truncated Gateway logs": "observation_unavailable",
-    "incomplete Gateway record": "observation_unavailable",
-    "log read failure": "observation_unavailable",
-    "Gateway replaced before read": "observation_unavailable",
-    "Gateway restarted during read": "observation_unavailable",
-    "invalid request interval": "observation_unavailable",
-  };
+  assert.equal(omittedTests, 28);
+  assert.equal(tests.length, 50);
+  const names = tests.map(({ name }) => name);
+  assert.equal(new Set(names).size, 50, "all 50 synthetic conversation case names must be unique");
+  assert.deepEqual(
+    names,
+    finiteConversationScenarios.map(({ name }) => name),
+    "synthetic conversation cases must appear in registration order",
+  );
   let failures = 0;
-  for (const failure of summary.files[0].tests) {
-    if (["direct", "recovered"].includes(failure.name)) {
-      assert.equal(failure.status, "passed");
+  for (const [index, { name, expected }] of finiteConversationScenarios.entries()) {
+    const observed = tests[index];
+    assert.equal(observed.status, expected.status);
+    if (expected.status === "passed") {
       continue;
     }
-    const detail = observations[failure.name]
-      ? `model turn; probe=upstream; HTTP=500; gateway=${observations[failure.name]}`
-      : failure.name.startsWith("read ")
-        ? "persisted reply; read=" + failure.name.slice(5)
-        : (expected[failure.name] ?? failure.name);
-    const message = `Finite Git conversation verification failed (${detail}).`;
-    assert.equal(failure.status, "failed");
-    assert.equal(failure.error.message, message);
-    const retained = details.find((entry) => entry.name === failure.name);
+    const message = `Finite Git conversation verification failed (${expected.detail}).`;
+    assert.equal(observed.error.message, message);
+    const retained = details.find((entry) => entry.name === name);
     if (++failures <= 20) {
       assert.equal(retained.message, message);
     } else {
