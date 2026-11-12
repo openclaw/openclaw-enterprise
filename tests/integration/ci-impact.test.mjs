@@ -475,8 +475,9 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
     "tests/browser/console-shell.test.ts",
     "tests/browser/console-agents.test.ts",
     "tests/integration/production-image-startup.test.mjs",
-  ])
+  ]) {
     initial[path] = "";
+  }
   const storybookWorkflow = ".github/workflows/console-storybook.yml";
   const preparer = "scripts/console-storybook/prepare-assets.ts";
   const standalone = "scripts/console-storybook/package.json";
@@ -551,7 +552,7 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   assert.deepEqual(mixed.lanes, receipt.lanes);
   assert.deepEqual(mixed.companionJobs, receipt.companionJobs);
   for (const [path, content] of [
-    [storybookWorkflow, initial[storybookWorkflow].replace(/^  build:$/m, "  docs-preview:")],
+    [storybookWorkflow, initial[storybookWorkflow].replace(/^ {2}build:$/m, "  docs-preview:")],
     [preparer, "export {};\n"],
   ]) {
     const changedConsumer = await fixture(

@@ -147,8 +147,9 @@ function broad(reason: string): Prediction {
 
 function hasPackageScript(tested: string, path: string, name: string, command: string) {
   try {
-    if (!git("ls-tree", tested, "--", path).toString("utf8").startsWith("100644 blob "))
+    if (!git("ls-tree", tested, "--", path).toString("utf8").startsWith("100644 blob ")) {
       return false;
+    }
     const manifest: unknown = JSON.parse(
       decoder.decode(git("cat-file", "blob", tested + ":" + path)),
     );
@@ -201,15 +202,22 @@ function assetPrediction({ base, tested }: Identity): Prediction {
     const lanes: string[] = [];
     for (const [name, lane] of Object.entries(manifest.lanes)) {
       const files: unknown = property(lane, "files");
-      if (!Array.isArray(files)) return broad("incomplete_manifest");
+      if (!Array.isArray(files)) {
+        return broad("incomplete_manifest");
+      }
       for (const file of files) {
         const path = property(file, "path");
-        if (typeof path !== "string") return broad("incomplete_manifest");
+        if (typeof path !== "string") {
+          return broad("incomplete_manifest");
+        }
         if (assetTests.includes(path)) {
-          if (!ci.includes(name) || !/^[a-z0-9-]{1,64}$/.test(name))
+          if (!ci.includes(name) || !/^[a-z0-9-]{1,64}$/.test(name)) {
             return broad("incomplete_manifest");
+          }
           found.add(path);
-          if (!lanes.includes(name)) lanes.push(name);
+          if (!lanes.includes(name)) {
+            lanes.push(name);
+          }
         }
       }
     }
@@ -340,10 +348,14 @@ function inspect() {
   let identity: Identity | null = null;
   try {
     const checked = inspectIdentity();
-    if ("status" in checked) return { identity, result: checked };
+    if ("status" in checked) {
+      return { identity, result: checked };
+    }
     identity = checked;
     const paths = changedPaths(checked.base, checked.tested);
-    if (!cleanCheckout()) return { identity, result: unavailable("dirty_checkout") };
+    if (!cleanCheckout()) {
+      return { identity, result: unavailable("dirty_checkout") };
+    }
     let result;
     try {
       result = inspectGraph(checked.base, paths);
@@ -354,13 +366,17 @@ function inspect() {
       return { identity, result };
     }
     const evidence = assetPrediction(checked);
-    if (evidence.reason !== "console_asset_reader") return { identity, result, evidence };
+    if (evidence.reason !== "console_asset_reader") {
+      return { identity, result, evidence };
+    }
     // Known consumers stay visible for mixed changes. They describe only the
     // asset reader; they cannot bound the impact of the rest of the change.
-    if (paths.length > 1)
+    if (paths.length > 1) {
       return { identity, result, evidence: { ...evidence, reason: "mixed_scope" } };
-    if (!("assetOnly" in result && result.assetOnly))
+    }
+    if (!("assetOnly" in result && result.assetOnly)) {
       return { identity, result, evidence: { ...evidence, reason: "unverified_package_scope" } };
+    }
     if (
       git("ls-files", "-t", "-z")
         .toString("binary")
@@ -395,8 +411,9 @@ const shadow = {
 };
 
 if (process.argv[2] === "--summary") {
-  if (process.argv[3])
+  if (process.argv[3]) {
     writeFileSync(process.argv[3], JSON.stringify(shadow) + "\n", { flag: "wx" });
+  }
   console.log("### Affected workspace packages (advisory)\n");
   if (result.status === "affected") {
     console.log(result.packages.map((name) => `- \`${name}\``).join("\n"));
