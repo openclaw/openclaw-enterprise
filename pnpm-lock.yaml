@@ -117,8 +117,8 @@ importers:
         specifier: 2.5.0
         version: 2.5.0
       jose:
-        specifier: 6.2.13
-        version: 6.2.13
+        specifier: 6.2.15
+        version: 6.2.15
       pg:
         specifier: 8.23.1
         version: 8.23.1
