@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import pg from "pg";
-import type {
-  ControllerAuth,
-  PostgresControllerAuthOptions,
+import {
+  betterAuthIssuer,
+  type ControllerAuth,
+  type PostgresControllerAuthOptions,
 } from "../../apps/controller/src/auth/index.ts";
 import type {
   composePostgresDevelopment as composePostgresDevelopmentApp,
@@ -224,12 +225,13 @@ test(
     const installationId = id(installation);
     const activeSession = await admin("GET", "/api/auth/session");
     assert.equal(activeSession.statusCode, 200);
-    const adminAccount = await observer.query<Record<string, unknown>>(
-      "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
-      [stringField(record(data(activeSession)).user, "id")],
+    const adminIdentity = await observer.query<Record<string, unknown>>(
+      `SELECT id AS principal_id FROM occ.iam_identities
+       WHERE kind = 'principal' AND issuer = $1 AND subject = $2`,
+      [betterAuthIssuer(installationId), stringField(record(data(activeSession)).user, "id")],
     );
-    assert.equal(adminAccount.rowCount, 1);
-    const adminPrincipalId = stringField(adminAccount.rows[0], "principal_id");
+    assert.equal(adminIdentity.rowCount, 1);
+    const adminPrincipalId = stringField(adminIdentity.rows[0], "principal_id");
     const servicePrincipalEffects = async (namespaceId: string) => ({
       identities: (
         await observer.query<Record<string, unknown>>(
