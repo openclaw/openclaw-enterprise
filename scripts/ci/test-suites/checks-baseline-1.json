@@ -7,6 +7,7 @@
     "tests/integration/dev-up.test.mjs",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-joint-plugin-deployment.test.ts",
     "tests/integration/stored-document-serialization.test.mjs",
     "tests/integration/precompiled-route-compilers.test.mjs",
     "tests/integration/route-header-names.test.ts",
@@ -407,6 +408,9 @@
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/occ-api-joint-plugin-deployment.test.ts"
     },
     {
       "path": "tests/integration/stored-document-serialization.test.mjs"
