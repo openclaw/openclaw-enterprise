@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-12"
-last_updated_session: "authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973"
+last_updated_session: "authoring-run/eedb034b-cdad-4526-af11-0ce3490e267a"
 ---
 
 # Production Startup Flow
@@ -176,15 +176,16 @@ Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-After verifying SQL source, migration checks the server version before locking
-or reading catalogs. PostgreSQL
-before 17 fails with `MIGRATION_SERVER_UNSUPPORTED` and a fixed recovery message;
-the same guard covers first install, upgrade, and `--check`. See
-[server compatibility](../reference/settings/operations.md#postgresql-server-compatibility).
-Migration then verifies the dedicated role, receipts and catalog under
-one advisory lock on Drizzle's transaction connection. For a recognized history, it accepts the native catalog digest or
-the reviewed restore digest bound to it. Unsupported histories fail before
-migration DDL and bootstrap. See [migration history and recovery](../reference/settings/operations.md#migration-history).
+After source verification, all modes reject PostgreSQL before 17 with
+fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access
+([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
+Under the advisory lock, the same connection verifies roles and receipts,
+then catalogs and grants against native or reviewed restore digests. Unsupported
+history fails before DDL/bootstrap. After option guards, completed apply
+skips Drizzle only when `SHOW transaction_read_only` returns `off`.
+Otherwise Drizzle retains pending migration and read-only refusal.
+`finally` releases the lock and client
+([history](../reference/settings/operations.md#migration-history)).
 
 `scripts/lib/bootstrap-configuration.mjs:authBaseURL` checks HTTP(S) origin before
 database access. Production requires HTTPS except HTTP loopback verification
@@ -389,6 +390,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 09:45: Skip completed writable DDL; preserve read-only refusal. (authoring-run/eedb034b-cdad-4526-af11-0ce3490e267a - 11e22a5dc95b54a4fd7eb05e68a06f732033e7f8)
 
 - 2026-11-12 06:35: Document static Helm template refusal guidance without changing recovery. (authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973 - 64358aae61847dea8a3834fbe06bed079b5727cc)
 
