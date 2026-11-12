@@ -308,6 +308,7 @@ import {
   requireFallbackProviders,
   resolveConfiguredHarnessId,
 } from "./configured-harness.ts";
+import type { ClaimedWork } from "./controller-work.ts";
 import { requireDeployableRoster, withAgentIdentityName } from "./openclaw-roster.ts";
 import {
   capability,
@@ -385,6 +386,7 @@ import {
   SecretReferencedError,
   SecretStorageDriverError,
   SecretValueError,
+  WorkClaimLostError,
 } from "./errors.ts";
 import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
@@ -436,7 +438,6 @@ import {
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
-import { WorkClaimLostError, type ClaimedWork } from "./state/postgres-work-queue.ts";
 import {
   validAdmittedRepositoryBindings,
   validRepositoryAccess,
@@ -578,6 +579,7 @@ export {
   SecretValueError,
   StoredCredentialSourceConfigError,
   TransientDependencyError,
+  WorkClaimLostError,
   type ActivationFailedCode,
   type ActivationPendingCode,
   type CodexPermissionDenial,
@@ -755,17 +757,15 @@ export {
   type PostgresPool,
 } from "./state/postgres-state.ts";
 export {
-  PostgresWorkQueue,
-  WorkClaimLostError,
   isRepositoryCleanupWork,
   isRepositoryExpiryCleanupWork,
-  repositoryWithdrawalStateSql,
-  repositoryCleanupRevisionId,
   isRepositoryRuntimeRetirementWork,
-  type ClaimedWork,
+  repositoryCleanupRevisionId,
+} from "./repository-withdrawal.ts";
+export {
+  PostgresWorkQueue,
+  repositoryWithdrawalStateSql,
   type ClaimRequest,
-  type ControllerWork,
-  type ControllerWorkState,
   type EnqueueWork,
   type PermanentFailure,
   type PostgresQueryClient,
@@ -776,8 +776,9 @@ export {
   type WorkClaim,
   type WorkResult,
 } from "./state/postgres-work-queue.ts";
+export { CREDENTIAL_WITHDRAWAL_TARGET } from "./controller-work.ts";
+export type { ClaimedWork, ControllerWork, ControllerWorkState } from "./controller-work.ts";
 export {
-  CREDENTIAL_WITHDRAWAL_TARGET,
   controllerWorkDeploymentStatus,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
@@ -3354,7 +3355,7 @@ export class OpenClawController {
     if (
       !result ||
       !Array.isArray(result.options) ||
-      result.options.length > 1000 ||
+      result.options.length > 1001 ||
       !result.options.every(validRepositoryOption) ||
       new Set(result.options.map((option) => option.repositoryRef)).size !==
         result.options.length ||
@@ -17608,9 +17609,10 @@ export class OpenClawController {
 
   /**
    * Re-checks the admitted actor inside the policy write's transaction and holds that
-   * authority until COMMIT. The Namespace lock orders this write after, or before, every
-   * other policy write and deletion in the Namespace, so a revocation there cannot commit
-   * in between; the account hold does the same for a disable. The actor's Installation
+   * authority until COMMIT. The shared IAM configuration fence comes before the Namespace
+   * lock, so a configured read grant cannot change between authorization and COMMIT. The
+   * Namespace lock orders this write with other policy writes and deletion there; the
+   * account hold does the same for a disable. The actor's Installation
    * grants have no runtime writer that removes them.
    */
   private async holdIAMPolicyAuthority(
@@ -17619,6 +17621,7 @@ export class OpenClawController {
     namespaceId: string,
     target?: ResourceRef,
   ): Promise<void> {
+    await this.holdAuthority(state);
     await this.lockNamespace(state, namespaceId);
     await this.holdNamespacePolicyActor(state, principalId);
     await this.authorize(principalId, "administer", {

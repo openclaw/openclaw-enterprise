@@ -364,7 +364,9 @@ test("provider transport pins destination and exact issuance scope before receiv
       dispatches++;
     },
   });
-  const observeResponse = () => observations++;
+  const observeResponse = () => {
+    observations++;
+  };
   for (const { name, authorization } of [
     { name: "header injection", authorization: "unsafe\r\nHeader: value" },
     { name: "empty authorization", authorization: "" },
@@ -379,16 +381,20 @@ test("provider transport pins destination and exact issuance scope before receiv
   }
   assert.equal(dispatches, 0);
   assert.equal(fixture.issuesOfTokens.length, 0);
-  const issued = await key.withJwt((jwt, assertCurrent) =>
-    transport.issue(jwt, attempt("acquire"), assertCurrent, observeResponse),
-  );
+  let borrowed;
   let token;
-  try {
-    assert.equal(issued.status, 201);
-    token = JSON.parse(issued.body.toString()).token;
-  } finally {
-    issued.body.fill(0);
-  }
+  await key.withJwt((jwt, assertCurrent) =>
+    transport.issue(jwt, attempt("acquire"), assertCurrent, (response) => {
+      observeResponse();
+      borrowed = response.body;
+      assert.equal(response.status, 201);
+      token = JSON.parse(response.body.toString()).token;
+    }),
+  );
+  assert.ok(
+    borrowed.every((byte) => byte === 0),
+    "transport cleared the borrowed body",
+  );
   assert.equal(observations, 1);
   assert.deepEqual(fixture.issuesOfTokens[0].repositoryIds, [73]);
   assert.deepEqual(fixture.issuesOfTokens[0].permissions, {
@@ -399,14 +405,81 @@ test("provider transport pins destination and exact issuance scope before receiv
     checks: "read",
     statuses: "read",
   });
-  const revoked = await transport.revoke(token, attempt("retire"));
-  try {
-    assert.equal(revoked.status, 204);
-  } finally {
-    revoked.body.fill(0);
-  }
+  assert.equal(await transport.revoke(token, attempt("retire")), true);
   assert.equal(dispatches, 2);
   assert.equal(fixture.tokenState()[0].revoked, true);
+
+  for (const failure of [
+    "consumer throws",
+    "cancel after capture",
+    "thenable result",
+    "late rejection",
+    "decorated late rejection",
+  ]) {
+    await t.test(failure, async () => {
+      const controller = new AbortController();
+      const diagnostics = [];
+      let captured;
+      let body;
+      let consumes = 0;
+      let thenCalls = 0;
+      const asynchronous = failure.includes("late rejection") ? Promise.withResolvers() : undefined;
+      if (failure === "decorated late rejection") {
+        Object.assign(asynchronous.promise, {
+          providerExpiresAt: clock.wallNow() + 60000,
+          usableUntil: clock.wallNow() + 30000,
+        });
+      }
+      const issuing = key.withJwt((jwt, assertCurrent) =>
+        transport.issue(
+          jwt,
+          { ...attempt("acquire"), signal: controller.signal },
+          assertCurrent,
+          (response) => {
+            consumes++;
+            body = response.body;
+            captured = JSON.parse(body.toString()).token;
+            if (failure === "consumer throws") {
+              throw new Error("fixture consumer failure");
+            }
+            if (failure === "thenable result") {
+              return {
+                then() {
+                  thenCalls++;
+                },
+              };
+            }
+            if (asynchronous) {
+              return asynchronous.promise;
+            }
+            // A captured credential survives cancellation, but the verdict must not return.
+            controller.abort();
+            return undefined;
+          },
+          (observation) => diagnostics.push(observation),
+        ),
+      );
+      await assert.rejects(issuing, /provider-unavailable/);
+      if (asynchronous) {
+        // No test-side rejection handler: node:test must report any escaped rejection.
+        asynchronous.reject(new Error("late callback rejection"));
+        await new Promise(setImmediate);
+      }
+      assert.equal(consumes, 1);
+      assert.equal(thenCalls, 0, "transport must not invoke arbitrary thenables");
+      assert.ok(body.every((byte) => byte === 0));
+      assert.equal(
+        diagnostics.find((entry) => entry.error)?.error,
+        failure === "cancel after capture" ? "cancelled" : "observer-error",
+      );
+      assert.equal(await transport.revoke(captured, attempt("retire")), true);
+    });
+  }
+  assert.equal(dispatches, 12, "one issue and retirement per token, with no retry");
+  assert.equal(fixture.issuesOfTokens.length, 6);
+  assert.ok(fixture.tokenState().every((token) => token.revoked));
+
+  assert.equal(clock.pendingTimers(), 0);
   assert.deepEqual(fixture.errors, []);
 });
 test("canonical GitHub responses preserve admitted repository identity", async (t) => {

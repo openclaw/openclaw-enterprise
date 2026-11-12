@@ -1750,7 +1750,7 @@ const statePath = process.argv[2];
 const lane = "postgres-application";
 const selected = await prepareFile({
   lane,
-  file: "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+  file: "tests/integration/postgres-native-iam-policy-barrier.test.ts",
   statePath,
 });
 assert.equal(selected.env.OCC_TEST_NATIVE_IAM_BARRIER_CI, "1");
@@ -1819,7 +1819,7 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
           "--lane",
           "postgres-application",
           "--file",
-          "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+          "tests/integration/postgres-native-iam-policy-barrier.test.ts",
           "--state",
           statePath,
           ...extra,

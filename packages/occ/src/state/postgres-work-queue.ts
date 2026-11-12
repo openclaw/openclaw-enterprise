@@ -1,24 +1,29 @@
 import {
   REPOSITORY_CLEANUP_FORMATS,
+  REPOSITORY_CLEANUP_KEY_PATTERN,
   REPOSITORY_CLEANUP_KEY_PREFIX,
   REPOSITORY_CLEANUP_KEY_SEPARATOR,
+  REPOSITORY_CLEANUP_KEY_TAIL_PATTERN,
+  REVISION_ID_PATTERN,
   repositoryCleanupWorkKey,
   repositoryRemovalWorkKey,
 } from "../repository-withdrawal.ts";
-import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
+import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
-import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
+  type ClaimedWork,
+  type ControllerWork,
+  type ControllerWorkKind,
+  type ControllerWorkState,
+} from "../controller-work.ts";
+import { ResourceConflictError, ScopeViolationError, WorkClaimLostError } from "../errors.ts";
+import {
   nonempty,
   safeFailureCode,
   validateFailureData,
   validateSuccessResultData,
-  type ClaimedWork,
-  type ControllerWork,
   type ControllerWorkAttempt,
-  type ControllerWorkKind,
-  type ControllerWorkState,
   type DeferredWork,
   type EnqueueWork,
   type PermanentFailure,
@@ -27,10 +32,15 @@ import {
   type WorkResult,
 } from "./controller-work.ts";
 
+export {
+  isRepositoryCleanupWork,
+  isRepositoryExpiryCleanupWork,
+  isRepositoryRuntimeRetirementWork,
+  repositoryCleanupRevisionId,
+} from "../repository-withdrawal.ts";
+export { WorkClaimLostError } from "../errors.ts";
+export type { ClaimedWork, ControllerWork, ControllerWorkState } from "../controller-work.ts";
 export type {
-  ClaimedWork,
-  ControllerWork,
-  ControllerWorkState,
   EnqueueWork,
   PermanentFailure,
   RetryableFailure,
@@ -117,11 +127,6 @@ const DEFAULT_RECOVERY_LIMIT = 100;
 const MAX_RECOVERY_LIMIT = 1_000;
 const CLAIM_RACE_CODES = new Set(["23505", "40001", "40P01"]);
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const REVISION_ID_PATTERN =
-  "rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const REPOSITORY_CLEANUP_KEY = new RegExp(
-  `^agent_revision:(${REVISION_ID_PATTERN}):repository_cleanup:(retire:)?[0-9a-f]{64}$`,
-);
 const MAINTENANCE_KEY = new RegExp(
   `^agent_revision:(${REVISION_ID_PATTERN}):maintenance:(0|[1-9][0-9]*)$`,
 );
@@ -140,54 +145,6 @@ function backoffDelayMsSql(
   return `LEAST(${maximum}::double precision,
     ${initial}::double precision * POWER(2::double precision,
       LEAST(GREATEST(${attemptCount} - 1, 0), 30))) * ${jitter}::double precision`;
-}
-
-/** Cleanup dispatch and retry exemption require an exact immutable revision target. */
-export function repositoryCleanupRevisionId(
-  work: Pick<ControllerWork, "idempotencyKey" | "namespaceTarget" | "agentTarget">,
-): string | undefined {
-  if (work.namespaceTarget !== undefined || work.agentTarget !== undefined) {
-    return undefined;
-  }
-  const key = REPOSITORY_CLEANUP_KEY.exec(work.idempotencyKey);
-  return key?.[0] === work.idempotencyKey ? key[1] : undefined;
-}
-
-export function isRepositoryCleanupWork(
-  work: Pick<
-    ControllerWork,
-    "idempotencyKey" | "agentId" | "revisionId" | "namespaceTarget" | "agentTarget"
-  >,
-): boolean {
-  const revisionId = repositoryCleanupRevisionId(work);
-  return (
-    revisionId !== undefined &&
-    ((work.revisionId === revisionId && isNonEmptyString(work.agentId)) ||
-      (work.revisionId === undefined && work.agentId === undefined))
-  );
-}
-
-/** Runtime retirement is distinct from session-only repair and rotation cleanup. */
-export function isRepositoryRuntimeRetirementWork(
-  work: Parameters<typeof isRepositoryCleanupWork>[0],
-): boolean {
-  return (
-    isRepositoryCleanupWork(work) &&
-    REPOSITORY_CLEANUP_KEY.exec(work.idempotencyKey)?.[2] === "retire:"
-  );
-}
-
-/** Expiry can withdraw Git alone. Terminal retirement can never become expiry cleanup. */
-export function isRepositoryExpiryCleanupWork(
-  work: Parameters<typeof isRepositoryCleanupWork>[0],
-): boolean {
-  const revisionId = repositoryCleanupRevisionId(work);
-  return (
-    revisionId !== undefined &&
-    isRepositoryCleanupWork(work) &&
-    (work.idempotencyKey === repositoryCleanupWorkKey(revisionId, "expiry") ||
-      work.idempotencyKey === repositoryRemovalWorkKey(revisionId))
-  );
 }
 
 // Only the trusted revision alias varies; key fragments come from the fixed formats.
@@ -242,11 +199,11 @@ export function repositoryCleanupSql(alias: string): string {
         AND ${alias}.revision_id IS NOT NULL
         AND ${alias}.revision_id ~ '^${REVISION_ID_PATTERN}$'
         AND ${alias}.idempotency_key ~
-          ('^agent_revision:' || ${alias}.revision_id || ':repository_cleanup:(retire:)?[0-9a-f]{64}$'))
+          ('^${REPOSITORY_CLEANUP_KEY_PREFIX}' || ${alias}.revision_id || '${REPOSITORY_CLEANUP_KEY_TAIL_PATTERN}'))
       OR (${alias}.agent_id IS NULL
         AND ${alias}.revision_id IS NULL
         AND ${alias}.idempotency_key ~
-          '^agent_revision:${REVISION_ID_PATTERN}:repository_cleanup:(retire:)?[0-9a-f]{64}$')
+          '^${REPOSITORY_CLEANUP_KEY_PREFIX}${REVISION_ID_PATTERN}${REPOSITORY_CLEANUP_KEY_TAIL_PATTERN}')
     ))`;
 }
 
@@ -593,13 +550,6 @@ function recoveringPredecessorStopsSql(candidates: string, excluded: string): st
     ),`;
 }
 
-export class WorkClaimLostError extends Error {
-  constructor() {
-    super("The controller work claim is missing, expired, or owned by another worker.");
-    this.name = "WorkClaimLostError";
-  }
-}
-
 function positiveInteger(value: number, name: string): number {
   if (!isPositiveSafeInteger(value)) {
     throw new ScopeViolationError(`${name} must be a positive safe integer.`);
@@ -713,7 +663,7 @@ const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text", details = "'
       CASE WHEN ${repositoryCleanupSql("transitioned")} THEN
         substring(
           transitioned.idempotency_key
-          from '^agent_revision:(${REVISION_ID_PATTERN}):repository_cleanup:(retire:)?[0-9a-f]{64}$'
+          from '${REPOSITORY_CLEANUP_KEY_PATTERN}'
         )
       END AS repository_cleanup_revision_id
     FROM transitioned

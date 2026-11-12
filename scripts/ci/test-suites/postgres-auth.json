@@ -11,7 +11,7 @@
     "tests/integration/postgres-google-sign-in.test.ts",
     "tests/integration/postgres-external-session-provider.test.mjs",
     "tests/integration/postgres-human-authentication.test.mjs",
-    "tests/integration/postgres-break-glass-auth-maintain.test.mjs",
+    "tests/integration/postgres-break-glass-auth-maintain.test.ts",
     "tests/integration/postgres-trusted-proxy.test.mjs",
     "tests/integration/postgres-auth-accounts.test.ts",
     "tests/integration/postgres-password-recovery-only.test.ts",
@@ -151,7 +151,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-break-glass-auth-maintain.test.mjs",
+      "path": "tests/integration/postgres-break-glass-auth-maintain.test.ts",
       "expectedTests": [
         "stopped-maintenance break-glass resets the recovery password and returns to the password profile"
       ]

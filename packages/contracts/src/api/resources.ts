@@ -1388,7 +1388,7 @@ export const BackendListResponse = Type.Object(
 
 export const RepositoryOptionListResponse = Type.Object(
   {
-    data: Type.Array(RepositoryOptionSchema, { maxItems: 1000 }),
+    data: Type.Array(RepositoryOptionSchema, { maxItems: 1001 }),
     meta: Type.Object(
       {
         ...Meta.properties,

@@ -8,7 +8,7 @@ import type {
   RepositoryApprovalScope,
   RepositoryBindingRequest,
 } from "@openclaw-enterprise/contracts";
-import type { GitHubProfile } from "./types.ts";
+import { isGitHubProfile, type GitHubProfile } from "./types.ts";
 import {
   githubCapabilityPolicy,
   draftPullCapabilityPolicy,
@@ -99,12 +99,7 @@ function numericId(value: unknown): string {
 }
 
 function profile(value: unknown): GitHubProfile | "github-repository" {
-  if (
-    value !== "git-read" &&
-    value !== "git-write" &&
-    value !== "git-full" &&
-    value !== "github-repository"
-  ) {
+  if (!isGitHubProfile(value) && value !== "github-repository") {
     return invalid();
   }
   return value;
@@ -446,6 +441,20 @@ export function resolveGitHubRepositoryBinding(
   });
 }
 
+/** Re-resolve saved authority and require the entire admitted binding to remain current. */
+export function resolveCurrentGitHubRepositoryBinding(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  binding: AdmittedRepositoryBinding,
+): AdmittedRepositoryBinding | undefined {
+  const current = resolveGitHubRepositoryBinding(registry, {
+    namespaceId,
+    repositoryRef: binding.repositoryRef,
+    profile: binding.profile,
+  });
+  return isDeepStrictEqual(current, binding) ? current : undefined;
+}
+
 /** Resolve the policy ceiling independently of provider token material. */
 export function resolveGitHubStandingApprovalScope(
   registry: GitHubRepositoryRegistry,
@@ -458,12 +467,7 @@ export function resolveGitHubStandingApprovalScope(
   if (!scope) {
     return;
   }
-  const current = resolveGitHubRepositoryBinding(registry, {
-    namespaceId: input.namespaceId,
-    repositoryRef: input.binding.repositoryRef,
-    profile: input.binding.profile,
-  });
-  if (!isDeepStrictEqual(current, input.binding)) {
+  if (!resolveCurrentGitHubRepositoryBinding(registry, input.namespaceId, input.binding)) {
     return;
   }
   return scope;
@@ -559,12 +563,8 @@ export function createGitHubRepositoryDeliveryResolver(
     if (!state || state.bindings.length !== 1 || !binding) {
       throw new Error("Repository Git delivery requires one admitted binding.");
     }
-    const resolved = resolveGitHubRepositoryBinding(registry, {
-      namespaceId: revision.namespaceId,
-      repositoryRef: binding.repositoryRef,
-      profile: binding.profile,
-    });
-    if (!isDeepStrictEqual(binding, resolved)) {
+    const resolved = resolveCurrentGitHubRepositoryBinding(registry, revision.namespaceId, binding);
+    if (!resolved) {
       throw new Error("Repository Git delivery requires the current exact registry grant.");
     }
     if (binding.profile === githubInstallationProfile) {
@@ -633,14 +633,7 @@ export function resolveSelectedRepositoryScope(
     .map((binding) => {
       if (
         binding.profile !== "github-repository" ||
-        !isDeepStrictEqual(
-          binding,
-          resolveGitHubRepositoryBinding(registry, {
-            namespaceId,
-            repositoryRef: binding.repositoryRef,
-            profile: binding.profile,
-          }),
-        )
+        !resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding)
       ) {
         throw new Error("selected-repository-grant-changed");
       }

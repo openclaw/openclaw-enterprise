@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-12
-last_updated_session: authoring-run/bae4d18e-05ed-457e-9c6a-96ef2b959619
+last_updated_session: authoring-run/5c61b5ae-c933-43cd-8aef-ad925fada92c
 ---
 
 # Agent Native Admin UI Flow
@@ -268,16 +268,21 @@ upstream body.
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-Before Fastify routing, the API intercepts derived-host upgrades and tracks sockets for `preClose`. It handles socket errors before awaiting admission, preventing uncaught errors on TCP reset. Refused sockets close without waiting for denial audits, which still run after reset. Admission checks client destruction and shutdown before and after transport resolution; late success cannot connect. Accepted clients use the selected version.
+Before Fastify routing, the API intercepts derived-host upgrades and tracks sockets for `preClose`. Socket error handling covers admission-time resets. Refusals close before denial audits settle; those audits survive resets. Admission checks destruction and shutdown before and after transport resolution; late success cannot connect.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The WebSocket proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects only after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId`. Close records include `closeReason` for lifecycle, revocation, dependency, client, upstream or shutdown. A timer rechecks admission every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session. Cookie replacement cannot transfer an existing socket to another session; reconnect authenticates the current cookie.
+The proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId`. `closeReason` records lifecycle, revocation, dependency, client, upstream or shutdown. Admission renews every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. Reconnects authenticate the current cookie and use the selected version. Cookie replacement cannot transfer a socket to another session. Native chat does not renew the OCE session.
 
-Bridge requests, admission and close audits share one five-second shutdown drain. Bridge handlers stop before subsequent phases or secret delivery after shutdown or client disconnect. Work still pending
-afterwards logs `native_admin.pending_work_unresolved` with its count and keeps its
-audit attempt while the process lives. The drain neither cancels producers nor
-guarantees durable delivery; process exit can prevent or interrupt an audit attempt.
+`apps/controller/src/http/native-admin.ts:drainNativeAdminWork`
+
+Bridge requests, admission, connect and close audits share one five-second shutdown
+drain. `preClose` destroys sockets and drains batches, including follow-on close
+audits, under one deadline. Composition then closes storage in `onClose`. Bridge handlers stop before
+subsequent phases or secret delivery after shutdown or disconnect. Unsettled work
+logs `native_admin.pending_work_unresolved` with its count and retains its audit
+attempt while the process lives. The drain neither cancels producers nor guarantees
+durable delivery; process exit can interrupt attempts.
 
 ### 8. Runtime renders HTML on a separate origin
 
@@ -333,6 +338,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 11:33: Document connect and follow-on close audit draining in the accompanying fix. (authoring-run/5c61b5ae-c933-43cd-8aef-ad925fada92c - 2e2f7efbb0c1d430bc30a0185fc21ae1ffbdf581)
 
 - 2026-11-12 00:02: Shorten relay trace. (authoring-run/bae4d18e-05ed-457e-9c6a-96ef2b959619 - cbca5166c168531ada145c95da19ef04c7a34488)
 

@@ -4118,7 +4118,7 @@ test("Namespace IAM routes fail closed without policy management and roll back a
 });
 
 test("Agent deletion closes every synchronous mutation boundary before teardown", async () => {
-  const controller = await configuredController();
+  const controller = await configuredController({ recordOperations: true });
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "deletion-race");
   const agent = await createAgent(controller, namespace.id, "deletion-race-agent");
@@ -4134,13 +4134,36 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   );
   assert.equal(deployed.status, 202);
 
-  const deletion = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const deletion = await controller.request("DELETE", agentPath);
   assert.equal(deletion.status, 202);
   assert.equal(deletion.data.status, "deleting");
   assert.equal(deletion.data.desiredRuntimeState, "stopped");
+
+  // Repeated deletion must reuse the existing teardown through the memory work lookup.
+  const repeatedDeletion = await controller.request("DELETE", agentPath);
+  assert.equal(repeatedDeletion.status, 202);
+  assert.equal(repeatedDeletion.data.status, "deleting");
+  await controller.fixture.platformState.read(async (view) => {
+    const key = `agent:${agent.id}:reconcile:deleted`;
+    const work = await view.operations.findWork(key);
+    assert.ok(work);
+    assert.equal(work.idempotencyKey, key);
+    assert.equal(work.agentId, agent.id);
+    assert.equal(work.namespaceId, namespace.id);
+    assert.equal(work.actorId, controller.fixture.principal.id);
+    assert.equal(work.agentTarget, "deleted");
+    assert.equal(await view.operations.findWork(`${key}:undefined`), undefined);
+    const teardowns = (await view.operations.list()).filter(
+      (operation) =>
+        operation.kind === "agent" &&
+        operation.resourceId === agent.id &&
+        operation.namespaceId === namespace.id &&
+        operation.action === "reconcile" &&
+        operation.target === "deleted",
+    );
+    assert.equal(teardowns.length, 1);
+  });
 
   for (const mutation of [
     () =>

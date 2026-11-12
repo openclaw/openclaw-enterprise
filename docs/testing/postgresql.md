@@ -146,7 +146,7 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
 OCC_PRODUCTION_WIREUP_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_bootstrap_local \
   node --test --test-concurrency=1 tests/integration/postgres-production-wireup.test.ts
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_singleton_local \
-  node --test --test-concurrency=1 tests/integration/compute-singleton-worker-postgres.test.mjs
+  node --test --test-concurrency=1 tests/integration/compute-singleton-worker-postgres.test.ts
 ```
 
 The bootstrap test uses passive Compute and test Drivers: it does not prove a

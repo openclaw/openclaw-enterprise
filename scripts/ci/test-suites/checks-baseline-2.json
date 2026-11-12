@@ -94,7 +94,7 @@
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/ci-prepare-postgres.test.ts",
-    "tests/integration/runtime-image-failure-output.test.mjs",
+    "tests/integration/runtime-image-failure-output.test.ts",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.ts",
     "tests/integration/plugin-driver-real-preflight.test.mjs",
@@ -341,7 +341,7 @@
       "path": "tests/integration/ci-prepare-postgres.test.ts"
     },
     {
-      "path": "tests/integration/runtime-image-failure-output.test.mjs"
+      "path": "tests/integration/runtime-image-failure-output.test.ts"
     },
     {
       "path": "tests/integration/ci-image-reconciliation.test.ts"
