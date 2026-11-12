@@ -29,13 +29,22 @@ export function openShellRequiredEnv(lane, file, requiredEnv, env) {
   const gatewayFile =
     codexOnlyFiles.has(file) ||
     [
+      ...importedOpenClawTestFiles,
       "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
       "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
     ].includes(file);
   const apiKey =
     isOpenShellLane(lane) &&
-    (importedOpenClawTestFiles.includes(file) ||
+    ([
+      "tests/integration/openshell-upstream-real.test.ts",
+      "tests/integration/openshell-refresh-real.test.ts",
+      "tests/integration/openshell-withdrawal-real.test.ts",
+      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+    ].includes(file) ||
       (env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
         (gatewayFile || (file === undefined && env.OCC_K3D_HARNESS === "openclaw"))) ||
       (gatewayFile && Boolean(env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));

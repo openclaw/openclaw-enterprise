@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-11 10:47"
-last_updated_session: "01a1cbd6-deb9-71a1-bebc-ec5228d76c16"
+updated: "2026-11-11 23:18"
+last_updated_session: "authoring-run/1eb4586e-e5dd-41d2-80e3-338b75d13f6a"
 ---
 
 # GitHub Actions testing flow
@@ -185,7 +185,12 @@ owns credential isolation and historical-pair limits.
 `runFile` merges, per child: filtered inherited values
 with declared inputs restored, `lane.env`, preparation defaults, `file.env`, then
 generated values. Later values win.
-`scripts/ci/prepare.mjs:prepareFile` separates re-resolved defaults from generated outputs. `file.env` affects neither preflight nor resource preparation. Keep differing prerequisites in separate files.
+`scripts/ci/prepare.mjs:prepareFile` separates defaults from generated outputs.
+OpenShell admission includes declared file model selectors:
+`validateLaneInputsBeforeSideEffects` reads the selected manifest entry directly;
+`runFile` forwards inputs overlaid by `file.env`. Unfocused installer admission unions
+the cohort’s credential requirements before setup. Raw custom-destination/provider-file
+guards remain in force. Other file values do not affect preparation.
 
 The reporter retains names, locations, outcomes, failure messages (600 characters) and top frames (240). Redaction removes repository paths, substitutes nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`. Generated values require a matching shape.
 
@@ -286,6 +291,10 @@ awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-11 23:18: Require the complete installer cohort’s credentials before setup. (authoring-run/1eb4586e-e5dd-41d2-80e3-338b75d13f6a - 0e264d010c2f5c80f4077a1e9fee5515216bcfe4)
+
+- 2026-11-11 23:11: Include declared file model selectors in OpenShell credential admission. (authoring-run/0759ff85-9e18-4fc7-b2bb-29e29bb5935a - f63959062058a5e5c630f36318a381e27ac07cf2)
+
 - 2026-11-11 10:47: Fix PostgreSQL topology ordering. (01a1cbd6-deb9-71a1-bebc-ec5228d76c16 - 225ef5203)
 
 - 2026-11-11 16:52: Publish journals atomically. (authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5 - 9209a107a78a5850f7f11b68e1763956d65cde3a)
@@ -380,17 +389,5 @@ awaits an approved resource ledger.
 - 2026-10-29 02:11: Add focused Compose OpenShell selection and sanitized native worker observations. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 
 - 2026-10-23 07:40: Preserve upstream CI selection alongside locale-independent timestamp ordering after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - a6a49a5192fa1c9cc5035801eed7d64b03336491)
-
-- 2026-10-23 03:43: Order Docker timestamps and retain twelve latest retry kinds independently of locale. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 9bca605f5175bb225a522c3d5537a7ee6e1a7751)
-
-- 2026-10-21 04:42: Preserve submillisecond Docker event order. (authoring-run/458f4777-70d1-4992-a922-ab387c6a4aba - e8185dac805b737363c7178d3068b310a53a7c24)
-
-- 2026-10-14 22:31: Complete all selection. (authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c - 9b50982b75a578d6967ee12befb1fa3904e20a38)
-
-- 2026-10-14 14:09: Remove environment approvals. (authoring-run/ff0eb53f-ceb9-43fc-a81a-c1bc88b5c9fb - 909b0b9d4)
-
-- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
-
-- 2026-10-14 16:37: Document hosted QA image cleanup. (authoring-run/0733d076-37af-4fd5-ade5-869487072f47 - 1c406aef)
 
 [GitHub Actions testing documentation history](github-actions-testing/history.md) preserves the older dated entries.

@@ -37,7 +37,6 @@
       "path": "tests/integration/openshell-refresh-real.test.ts",
       "expectedTests": ["OpenShell gateway recovery preserves OAuth refresh and revocation"],
       "requiredEnv": [
-        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -49,13 +48,13 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
     {
       "path": "tests/integration/openshell-withdrawal-real.test.ts",
       "expectedTests": ["OpenShell credential withdrawal revokes live model access"],
       "requiredEnv": [
-        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -67,7 +66,8 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
     {
       "path": "tests/integration/openshell-credentials-real.test.ts",
@@ -91,7 +91,6 @@
       "path": "tests/integration/openshell-upstream-real.test.ts",
       "expectedTests": ["OpenShell model and tool upstream outages fail closed"],
       "requiredEnv": [
-        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -103,15 +102,16 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
     {
       "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "optionalEnv": ["OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE"],
       "expectedTests": [
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
         "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
-      ],
-      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
+      ]
     },
     {
       "path": "tests/integration/dev-up-openshell-k3d-real.test.mjs",
@@ -119,8 +119,7 @@
       "expectedTests": [
         "dev-up installs the pinned OpenShell profile in its owned k3d cluster",
         "dev-up runs OCC in Compose with OpenShell and Kubernetes Compute in k3d"
-      ],
-      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
+      ]
     },
     {
       "path": "tests/integration/openshell-gateway-tool-policy-real.test.ts",
@@ -128,7 +127,6 @@
         "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
       ],
       "requiredEnv": [
-        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -140,7 +138,8 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
     {
       "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
@@ -185,8 +184,7 @@
       "expectedTests": [
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
         "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
-      ],
-      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
+      ]
     },
     {
       "path": "tests/integration/openshell-plugin-install-real.test.ts",
@@ -223,7 +221,8 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "env": { "OCC_TEST_OPENSHELL_HARNESS": "openclaw" }
     },
     {
       "path": "tests/integration/openshell-imported-mcp-real.test.ts",
@@ -240,7 +239,8 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "env": { "OCC_TEST_OPENSHELL_HARNESS": "openclaw" }
     },
     {
       "path": "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
@@ -248,6 +248,7 @@
         "bootstrap reconciles OpenShell gateways and Workspaces before any Agent, then runs Agents in both Namespaces"
       ],
       "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -271,13 +272,15 @@
         "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
         "OpenShell retains its runtime after Git expiry and worker restart",
         "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
-      ]
+      ],
+      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
     },
     {
       "path": "tests/integration/openshell-git-finite-removal-real.test.ts",
       "expectedTests": [
         "OpenShell retains a finite Agent after repository removal until model authority is withdrawn"
-      ]
+      ],
+      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
     }
   ],
   "focusedEnv": ["OCC_TEST_OPENSHELL_HARNESS", "OCC_TEST_OPENSHELL_MODEL_BASE_URL"],
