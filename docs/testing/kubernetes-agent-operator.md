@@ -34,8 +34,10 @@ a read-only deploy key. Follow the [setup guide](../guides/kubernetes-agent-gito
 Record the source and Git commit, Argo sync/health, Configuration generation,
 requested/active revision, runtime observation, duplicate checks after Operator
 restart, Git rollback, Retain prune and real channel behavior. Test stale health
-by stopping only the owned Operator. Preserve service keys, OAuth material,
-bot tokens and private user identifiers outside evidence and Git.
+by stopping only the owned Operator. Keep service keys, OAuth material and bot tokens out of Git and published
+evidence. If the selected native channel requires real sender IDs in its
+allowlist, store that configuration in a private repository. Do not publish
+its history or raw test data.
 
 RFC-0037's first-time creation, credential import/rotation and Delete cleanup
 remain unimplemented and unqualified. The alpha's existing-resource proof must

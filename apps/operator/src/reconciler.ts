@@ -430,25 +430,37 @@ export class AgentReconciler {
       checks: { component: string; check: string; state: string }[];
     }>("POST", `${path}/deployments/${encodeURIComponent(live.activeRevisionId)}/diagnostics`);
     const diagnosticAge = Date.now() - Date.parse(diagnostics.observedAt);
-    const gatewayChecks = ["configuration", "authentication", "connectivity"];
+    // These three Gateway checks currently probe Slack, not general Gateway health.
+    // An Agent without Slack legitimately reports NOT_CONFIGURED. Held startup
+    // failures have separate check names and must still prevent readiness.
+    const slackChecks = ["configuration", "authentication", "connectivity"];
+    const channels = record(input.configuration.values.channels ?? {});
+    const usesSlack = channels.slack !== undefined && record(channels.slack).enabled !== false;
     if (
       diagnostics.revisionId !== live.activeRevisionId ||
       !Number.isFinite(diagnosticAge) ||
       diagnosticAge < -30_000 ||
       diagnosticAge > 90_000 ||
       !Array.isArray(diagnostics.checks) ||
-      diagnostics.checks.some((check) => check.state === "failed") ||
-      gatewayChecks.some(
-        (name) =>
-          !diagnostics.checks.some(
-            (check) =>
-              check.component === "gateway" && check.check === name && check.state === "succeeded",
-          ),
-      )
+      diagnostics.checks.some(
+        (check) =>
+          check.state === "failed" &&
+          (usesSlack || check.component !== "gateway" || !slackChecks.includes(check.check)),
+      ) ||
+      (usesSlack &&
+        slackChecks.some(
+          (name) =>
+            !diagnostics.checks.some(
+              (check) =>
+                check.component === "gateway" &&
+                check.check === name &&
+                check.state === "succeeded",
+            ),
+        ))
     ) {
       throw new ReconcilePending(
         "RuntimeDiagnosticsPending",
-        "The current Gateway configuration, authentication and connectivity checks have not succeeded.",
+        "Runtime startup checks or configured Slack checks have not succeeded.",
         result,
       );
     }

@@ -91,18 +91,21 @@ resume. Release retains a version tombstone that rejects an old adoption request
 `status.observedGeneration` and the Ready condition identify the observed spec.
 Successful running intent requires the requested revision to be active, deployment
 completion, a runtime observation no older than 90 seconds with ready Gateway
-and Agent Pods, and successful current Gateway configuration, authentication and
-connectivity diagnostics. An accepted API write alone is insufficient. Stopped intent waits
+and Agent Pods, and no reported startup failure. The current Gateway configuration,
+authentication and connectivity diagnostics probe Slack and are required only when
+the Agent configures Slack. Ready does not prove a model turn or delivery through
+another native channel; verify those separately. An accepted API write alone is
+insufficient. Stopped intent waits
 for the active pointer to clear and fresh empty runtime observations for the
 Agent versions. Grant revision read on the parent Agent, not a subset of its
 versions. Status contains IDs and sanitized reasons, no credentials
 or private input fingerprints.
 
 The Operator watches its four kinds and resynchronizes every 30 seconds. Writes
-use resource versions. API calls have a 10-second deadline and 2 MiB response
-limit. Stopped-state verification checks every Agent revision at most once per
+use resource versions. Enterprise HTTP requests have a 10-second deadline and
+2 MiB response limit. Stopped-state verification checks every Agent revision at most once per
 600 milliseconds to stay within the runtime API rate limit. Retries back off from 2 to 30 seconds. A 30-second leader Lease renews every
-10 seconds; processing stops and in-flight HTTP calls abort after 20 seconds
+10 seconds; processing stops and in-flight Enterprise HTTP calls abort after 20 seconds
 without renewal. OCC version and source-generation checks also reject stale work.
 
 The supplied Argo health script checks the current generation and observation

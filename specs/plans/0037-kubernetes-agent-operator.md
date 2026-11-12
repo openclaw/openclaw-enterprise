@@ -103,7 +103,10 @@ the prior desired state and reconciler for a reviewed ownership release rollback
 The table lists the full target proof, not completed acceptance. API, PostgreSQL
 and scoped Kubernetes SDK cases have passed locally. Live Argo adoption,
 Git updates, stopped intent and Retain prune/re-adoption have also passed;
-restored live runtime and channel proof remain pending. Document checks are not product proof.
+running-state Operator restart and a Git settings rollback have passed. A real
+model turn and native Telegram outbound delivery passed before and after the
+rollback. Inbound user confirmation remains separate. Document checks are not
+product proof.
 Use [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) and
 [test-audit](../../.agents/skills/test-audit/SKILL.md) when implementing tests.
 Register TypeScript integration tests in the CI lane that actually runs them.
@@ -152,10 +155,26 @@ Configuration and revision count. Stopped verification exposed the runtime API
 rate limit; reads now wait 600 milliseconds between revisions and completed
 against a populated history.
 
-The live channel remains stopped while a compatible runtime is built. Successful
-Gateway/model/Telegram operation after the update, running-state restart and
-Git rollback proof remain pending. Required native image checks, independent
-review and maintainer feedback remain merge requirements.
+Matching, qualified immutable runtime images restored the live Agent after
+completed offline Doctor maintenance on backed-up, stopped node state. Protected
+OpenShell maintenance had refused process-group cleanup; unattended runtime-state
+upgrades under that restriction remain unqualified. No process-signal boundary
+or provenance gate was weakened.
+
+The live workflow then reached Argo Synced/Healthy with the requested revision
+active and fresh ready Pods. A Git settings rollback produced exactly one new
+Configuration generation and revision. Genuine model turns returned unique
+markers and native Telegram reported one successful outbound delivery before
+and after rollback. Running-state Operator restart preserved the source,
+management receipt and revision count. The Telegram bridge remained scaled to
+zero. Inbound confirmation by the operator remains separate.
+
+This proof exposed that current Gateway configuration/authentication/connectivity
+diagnostics describe Slack. The Operator now requires those checks only when
+Slack is configured; held startup failures still block readiness. The same live
+revision became Ready without a new receipt or deployment. The real Kubernetes
+SDK case passed again after the correction. Required native image checks at the
+final PR head, independent review and maintainer feedback remain merge requirements.
 
 The RFC exceeds the 1,500-word review threshold and stays below the 2,500-word
 limit. It remains one document because ownership, credential handling and

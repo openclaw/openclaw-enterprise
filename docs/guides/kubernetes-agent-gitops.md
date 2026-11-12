@@ -35,7 +35,9 @@ source ID, exact credential Secret names, actual Kubernetes API endpoint CIDRs
 and ports, and the exact Enterprise destination.
 
 ```sh
-helm upgrade --install oce-operator deploy/helm/openclaw-enterprise-operator   --namespace oce-agent-operator --create-namespace   --values /private/operator-values.yaml
+helm upgrade --install oce-operator deploy/helm/openclaw-enterprise-operator \
+  --namespace oce-agent-operator --create-namespace \
+  --values /private/operator-values.yaml
 ```
 
 Helm installs CRDs on first installation but does not upgrade existing CRDs.

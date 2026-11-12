@@ -71,7 +71,10 @@ versions/generations conflict. See [deployment worker flow](controller-worker.md
 ### 3. Observe readiness or release
 
 `reconciler.ts:agent` compares the receipt's requested revision with the active
-revision, deployment status, fresh runtime Pods and current Gateway diagnostics. `report` writes status with
+revision, deployment status, fresh runtime Pods and current diagnostics. Held startup
+failures block readiness. The Gateway's configuration, authentication and connectivity
+checks currently probe Slack, so they gate only Agents that configure Slack. Other
+native channels and model turns need separate verification. `report` writes status with
 a resource-version precondition. `argocd-health.lua` rejects stale generations
 and timestamps; failed deployment or ownership conflict is Degraded. Stopped-state
 verification waits for the active pointer to clear and checks every Agent
@@ -102,6 +105,8 @@ and status failures. Test scope and commands are in the [test guide](../testing/
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-12 10:24: Apply Slack diagnostics only to Agents that configure Slack (codex/kubernetes-agent-operator - 95e3b2b)
 
 - 2026-11-12 08:08: Pace stopped-state history checks within the runtime API limit (codex/kubernetes-agent-operator - cdff3a4)
 
