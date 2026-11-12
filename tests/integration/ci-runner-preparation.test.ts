@@ -8,6 +8,7 @@ import {
   laneArgs,
   runnerArtifactPaths,
   runRunnerSync,
+  writeJson,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
@@ -245,9 +246,18 @@ for (const scenario of [
       stack: "secret-canary-stack",
       ...scenario.input,
     };
+    await writeJson(join(root, "scripts/ci/preparation-error.json"), payload);
     await writeFile(
       join(root, "scripts/ci/prepare.mjs"),
-      `export async function prepareFile() { throw Object.assign(new Error(), ${JSON.stringify(payload)}); }\n`,
+      `
+import { readFile } from "node:fs/promises";
+export async function prepareFile() {
+  const payload = JSON.parse(
+    await readFile(new URL("./preparation-error.json", import.meta.url), "utf8"),
+  );
+  throw Object.assign(new Error(), payload);
+}
+`,
     );
     const result = runRunnerSync(
       laneArgs(root, "preparation", "state/lane.json", "results/preparation.json"),
