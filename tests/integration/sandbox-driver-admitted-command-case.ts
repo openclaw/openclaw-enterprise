@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { TestContext } from "node:test";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  OpenShellGateway,
+  openShellProviderName,
+} from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type {
   KubernetesComputeDriver,
   KubernetesComputeDriverOptions,
@@ -14,7 +18,6 @@ import type {
   CredentialGatewayDriver,
   CredentialSource,
   CredentialSourceLoginMode,
-  CredentialSourceType,
 } from "../../packages/contracts/src/index.ts";
 import {
   WORKSPACE_DEFAULTS,
@@ -27,6 +30,7 @@ import {
   tlsPinnedWorkspaceSetupCode,
 } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { admitRevisionHarness as admitRevisionHarnessFixture } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 
 const admitRevisionHarness: (driver: KubernetesComputeDriver, revision: AgentRevision) => void =
   admitRevisionHarnessFixture;
@@ -60,6 +64,20 @@ function commandArguments(value: unknown): string[] {
 // The command budget applies after Compute adds the workspace verifier and
 // OpenShell adds links, setup wait and any account bootstrap to CreateSandbox.
 export async function verifyAdmittedComputeCommands(t: TestContext): Promise<void> {
+  const installation = buildSandboxInstallation();
+  const [backend] = installation.backend;
+  assert.ok(backend);
+  const gateway = installation.drivers.credential_gateway;
+  const catalogDriver = new OpenShellCredentialGatewayDriver(gateway.configuration, {
+    id: gateway.id,
+    backend: {
+      id: backend.id,
+      // OpenShell advertises Codex OAuth only when its Backend provides credential refresh.
+      drivers: { ...backend.drivers, credential_refresh: "openshell-refresh" },
+      client: new OpenShellGateway(backend.configuration),
+    },
+  });
+  const catalog = await catalogDriver.listSourceTypes({ signal: t.signal });
   const cases: ReadonlyArray<{
     loginMode: Extract<CredentialSourceLoginMode, "codex_pat" | "chatgptAuthTokens">;
     hasSetup: boolean;
@@ -96,10 +114,12 @@ export async function verifyAdmittedComputeCommands(t: TestContext): Promise<voi
         config: {},
         secrets: {},
         ownerCapability: "credential_gateway",
-        driverId: "openshell-credentials",
+        driverId: catalogDriver.id,
         state: "ready",
         createdAt: revision.createdAt,
       };
+      const sourceType = catalog.find((entry) => entry.type === source.type);
+      assert.ok(sourceType);
       const ref = openShellProviderName(source.id);
       revision.harnessAuth = {
         method: "credential_source",
@@ -110,18 +130,12 @@ export async function verifyAdmittedComputeCommands(t: TestContext): Promise<voi
       };
       const credentialGateway: Pick<
         CredentialGatewayDriver,
-        "id" | "capability" | "implementation" | "attachForRevision"
-      > & {
-        listSourceTypes: () => Promise<
-          ReadonlyArray<Pick<CredentialSourceType, "type" | "harnessAuth">>
-        >;
-      } = {
+        "id" | "capability" | "implementation" | "listSourceTypes" | "attachForRevision"
+      > = {
         id: source.driverId,
         capability: "credential_gateway",
         implementation: "openshell",
-        listSourceTypes: async () => [
-          { type: source.type, harnessAuth: { loginMode, modelProvider: "openai" } },
-        ],
+        listSourceTypes: async () => [sourceType],
         attachForRevision: async () => [
           {
             sourceId: source.id,
@@ -136,6 +150,7 @@ export async function verifyAdmittedComputeCommands(t: TestContext): Promise<voi
           },
         ],
       };
+      assert.ok(Object.hasOwn(compute, "credentialGatewayDriver"));
       Object.assign(compute, { credentialGatewayDriver: credentialGateway });
       revision.configuration = capture.openshell.configureAgent(
         revision.configuration,
