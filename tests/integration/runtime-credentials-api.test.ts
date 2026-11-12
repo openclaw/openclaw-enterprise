@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import test, { after, type TestContext } from "node:test";
 
 import type {
   AgentDeploymentDiagnostics,
@@ -319,7 +319,7 @@ async function createSharedApp(implementation: string) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
-        recordOperations: false,
+        recordOperations: true,
       });
       return controller;
     },
@@ -475,6 +475,7 @@ async function createSharedApp(implementation: string) {
     bootstrapAgent,
     createPrincipal,
     origin,
+    platformState,
     policy,
     request,
     fixtureResponse,
@@ -599,6 +600,203 @@ test("first draft deployment provisions generated credentials and later revision
       .length,
     2,
   );
+});
+
+type RuntimeSecretDefect = "extra data" | "foreign owner" | "none";
+
+async function createRuntimeSecretClientFixture(t: TestContext, defect: RuntimeSecretDefect) {
+  const directory = await temporaryDirectory(t, "occ-runtime-secret-readback-");
+  const { key, cert, certPath } = await selfSigned(directory);
+  const token = `kubernetes-fixture-${randomUUID()}`;
+  const resources = new Map<string, object>();
+  const mutations: Array<{ method: string; path: string }> = [];
+  const server = createServer({ key, cert }, async (request, response) => {
+    const path = new URL(request.url ?? "", "https://127.0.0.1").pathname;
+    const method = request.method ?? "";
+    const send = (status: number, body: object) =>
+      response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (request.headers.authorization !== `Bearer ${token}`) {
+      send(403, { kind: "Status", code: 403 });
+      return;
+    }
+    if (method === "GET") {
+      if (path.endsWith("/deployments")) {
+        send(200, { apiVersion: "apps/v1", kind: "DeploymentList", items: [] });
+      } else {
+        const resource = resources.get(path);
+        send(resource === undefined ? 404 : 200, resource ?? { kind: "Status", code: 404 });
+      }
+      return;
+    }
+    mutations.push({ method, path });
+    if (method !== "POST" || !path.endsWith("/secrets")) {
+      send(405, { kind: "Status", code: 405 });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const body = record(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    const metadata = record(body.metadata);
+    assert.equal(typeof metadata.name, "string");
+    const secretPath = `${path}/${metadata.name}`;
+    if (resources.has(secretPath)) {
+      send(409, { kind: "Status", code: 409 });
+      return;
+    }
+    const data: Record<string, string> = {};
+    for (const [name, value] of Object.entries(record(body.stringData))) {
+      assert.equal(typeof value, "string");
+      data[name] = Buffer.from(String(value)).toString("base64");
+    }
+    // Model the object stored and returned by successful Kubernetes admission.
+    // The Driver must validate that object through a later read.
+    const labels = { ...record(metadata.labels) };
+    if (String(metadata.name).startsWith("gateway-password-")) {
+      if (defect === "extra data") {
+        data.unexpected = Buffer.from("benign-admission-value").toString("base64");
+      } else if (defect === "foreign owner") {
+        labels["openclaw.dev/agent"] = "another-agent";
+      }
+    }
+    const observed = {
+      apiVersion: "v1",
+      kind: "Secret",
+      type: body.type,
+      metadata: { ...metadata, labels, uid: randomUUID() },
+      data,
+    };
+    resources.set(secretPath, observed);
+    send(201, observed);
+  });
+  const port = await listen(t, server);
+  const kubeconfigPath = join(directory, "kubeconfig");
+  await writeFile(
+    kubeconfigPath,
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "Config",
+      clusters: [
+        {
+          name: "fixture",
+          cluster: { server: `https://127.0.0.1:${port}`, "certificate-authority": certPath },
+        },
+      ],
+      users: [{ name: "controller", user: { token } }],
+      contexts: [{ name: "fixture", context: { cluster: "fixture", user: "controller" } }],
+      "current-context": "fixture",
+    }),
+    { mode: 0o600 },
+  );
+  const computeDriver = createKubernetesComputeDriver({
+    gatewayRuntime: true,
+    routed: false,
+    authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
+  });
+  const bindNamespace = (namespaceId: string) => {
+    const name = kubernetesNamespaceName(namespaceId);
+    const namespace = {
+      apiVersion: "v1",
+      kind: "Namespace",
+      metadata: {
+        name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace": namespaceId,
+        },
+        annotations: { "openclaw.dev/namespace-id": namespaceId },
+      },
+      status: { phase: "Active" },
+    };
+    resources.set("/api/v1/namespaces", { kind: "NamespaceList", items: [namespace] });
+    resources.set(`/api/v1/namespaces/${name}`, namespace);
+  };
+  return { computeDriver, bindNamespace, resources, mutations };
+}
+
+for (const defect of ["extra data", "foreign owner"] as const) {
+  for (const operation of ["runtime-credentials", "deploy"] as const) {
+    test(`Kubernetes ${operation} refuses a created Secret with ${defect}`, async (t) => {
+      const client = await createRuntimeSecretClientFixture(t, defect);
+      const fixture = await createFixture({ computeDriver: client.computeDriver });
+      const { namespace, agent, agentPath, credentialsPath } = await fixture.bootstrapAgent();
+      client.bindNamespace(namespace.id);
+      const workBefore = await fixture.platformState.read((state) => state.operations.list());
+
+      const response = await fixture.request("POST", `${agentPath}/${operation}`, { body: {} });
+      assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(
+        fixture.fixtureResponse(response, 503, ErrorResponse, "failed confirmation").error.message,
+        "A required platform dependency is unavailable.",
+      );
+      const stored = structuredClone([...client.resources]);
+      assert.equal(client.mutations.length, 2, "both initial creates must have succeeded");
+      assert.ok(client.mutations.every(({ method }) => method === "POST"));
+      assertApiError(await fixture.request("GET", credentialsPath), 503, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(
+        fixture.auditSink.events.some(
+          (event) =>
+            event.resource.id === agent.id &&
+            event.action === "openclaw.agents.runtime_credentials.provision" &&
+            event.outcome === "success",
+        ),
+        false,
+      );
+      const revisions = await fixture.request("GET", `${agentPath}/revisions`);
+      assert.equal(
+        fixture.fixtureResponse(revisions, 200, AgentRevisionListResponse, "list revisions").data
+          .length,
+        0,
+      );
+      assert.deepEqual(
+        await fixture.platformState.read((state) => state.operations.list()),
+        workBefore,
+        "failed confirmation must not queue deployment work",
+      );
+      assert.deepEqual([...client.resources], stored, "later reads must preserve stored Secrets");
+      assert.equal(client.mutations.length, 2, "no rotation, overwrite, delete, or replay");
+    });
+  }
+}
+
+test("Kubernetes runtime credential confirmation preserves healthy and existing groups", async (t) => {
+  const client = await createRuntimeSecretClientFixture(t, "none");
+  const fixture = await createFixture({ computeDriver: client.computeDriver });
+  const { namespace, agentPath, credentialsPath } = await fixture.bootstrapAgent();
+  client.bindNamespace(namespace.id);
+  const first = await fixture.request("POST", credentialsPath, { body: {} });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.deepEqual(first.data, { transportConfigured: true });
+  const stored = structuredClone([...client.resources]);
+  const second = await fixture.request("POST", credentialsPath, { body: {} });
+  assert.equal(second.status, 200);
+  assert.deepEqual(second.data, first.data);
+  const admitted = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const revision = fixture.fixtureResponse(
+    admitted,
+    202,
+    AgentRevisionResponse,
+    "deploy Agent",
+  ).data;
+  assert.ok(
+    (await fixture.platformState.read((state) => state.operations.list())).some(
+      (work) => work.kind === "agent_revision" && work.resourceId === revision.id,
+    ),
+    "the healthy control must record real reconcile work",
+  );
+  assert.deepEqual([...client.resources], stored);
+  assert.equal(client.mutations.length, 2);
+
+  // After a historical revision, missing sources require operator recovery.
+  for (const path of client.resources.keys()) {
+    if (path.includes("/secrets/")) {
+      client.resources.delete(path);
+    }
+  }
+  assertApiError(await fixture.request("POST", `${agentPath}/deploy`), 409, "RESOURCE_CONFLICT");
+  assert.equal(client.mutations.length, 2);
 });
 
 test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod proxy read", async (t) => {
