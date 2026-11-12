@@ -1258,6 +1258,25 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     join(root, "state/failed-measurements.json.diagnostics.json"),
     "utf8",
   );
+  assert.equal(failure.file.nodeExitCode, 1);
+  const diagnosticReport: unknown = JSON.parse(diagnostics);
+  assert.ok(
+    isJsonObject(diagnosticReport) &&
+      Array.isArray(diagnosticReport.failures) &&
+      diagnosticReport.failures.some(
+        (entry: unknown) =>
+          isJsonObject(entry) &&
+          entry.file === "tests/integration/measurements.test.mjs" &&
+          Array.isArray(entry.tests) &&
+          entry.tests.some(
+            (test: unknown) =>
+              isJsonObject(test) &&
+              test.name === "fails after receipts" &&
+              test.message === "controlled failure",
+          ),
+      ),
+    "Expected the deliberate child failure in diagnostics",
+  );
   assert.deepEqual(failure.receipts, receipts);
   for (const output of [failed.stdout, failed.stderr, failure.artifact, diagnostics]) {
     assert.ok(!output.includes(forbidden));
