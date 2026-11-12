@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { registryImage } from "../../scripts/ci/fixture-support-images.mjs";
 import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import { availablePort } from "./available-port.ts";
 import {
@@ -15,8 +16,6 @@ import {
 
 const repository = resolve(import.meta.dirname, "../..");
 const ownerLabel = "dev.openclaw.model-provider-owner";
-const registryImage =
-  "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
 const nodeBaseImage =
   "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a";
 
