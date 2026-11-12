@@ -516,7 +516,10 @@ test(
     assert.ok(owner);
     const controller = new OpenClawController(
       { id: "image-smoke", name: "image-smoke", createdAt: new Date().toISOString() },
-      installationControllerOptions(loaded.installation),
+      {
+        ...installationControllerOptions(loaded.installation),
+        namespaceLifecycleBindings: loaded.namespaceLifecycleBindings,
+      },
     );
     controller.installDriver(owner, ["sandbox", "credential_proxy"]);
     const ca = await readFile("/tmp/oce-production-image/tls.crt");
