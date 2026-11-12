@@ -296,6 +296,13 @@ export interface ClaimedWork extends ControllerWork {
   readonly ageMs: number;
 }
 
+export class WorkClaimLostError extends Error {
+  constructor() {
+    super("The controller work claim is missing, expired, or owned by another worker.");
+    this.name = "WorkClaimLostError";
+  }
+}
+
 /**
  * Whether a revision was admitted no later than `work` was created: the revisions a stop or
  * deletion owns. The PostgreSQL store stamps both on its own clock, so controller clock skew

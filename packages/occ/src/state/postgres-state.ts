@@ -141,7 +141,6 @@ import {
 } from "./platform-state.ts";
 import {
   asWork,
-  WorkClaimLostError,
   PostgresWorkQueue,
   repositoryCleanupSql,
   type PostgresQueryClient,
@@ -150,6 +149,7 @@ import {
 import { beginProvisioningEffectProgress } from "../provisioning-effects.ts";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
+  WorkClaimLostError,
   credentialWithdrawalOperationId,
   credentialWithdrawalWorkKey,
 } from "./controller-work.ts";
