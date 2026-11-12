@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-10
-last_updated_session: authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6
+updated: 2026-11-11
+last_updated_session: authoring-run/1189518e-cadf-4a8f-aabe-bcdbff4d434e
 ---
 
 # Compose development startup
@@ -211,12 +211,12 @@ Probe Pods use short grace periods and UID-preconditioned deletes. Cleanup waits
 for selector-matching Pods before removing their egress policy; probe or cleanup
 failure fails startup. Checks are point-in-time and single-node.
 
-Before writing the Installation, `scripts/prepare-development-codex-seccomp.mjs`
-probes the runtime in a credential-free Pod. If `RuntimeDefault` blocks it, the
-reviewed generator derives and verifies a content-addressed Localhost profile
-for dedicated Codex; failure rolls back the cluster. The
-[local Kubernetes guide](../../guides/deploy/local-kubernetes-development.md#start-the-profile)
-owns the verified boundaries and provenance.
+Before Installation, `scripts/prepare-development-codex-seccomp.mjs` probes
+`RuntimeDefault` in a credential-free Pod. Confirmed denial triggers
+[verified, content-addressed Localhost profile derivation](../../guides/deploy/local-kubernetes-development.md#start-the-profile).
+Failure triggers cluster rollback. On readiness failure, writable stderr receives
+`OCE_CODEX_SECCOMP_READINESS_FAILURE` before cleanup with operation
+`runtime-default-pod-readiness` and a recognized waiting reason or `null`.
 
 Startup waits for the Gateway, certificate, and proxy Pods before reporting
 success. Envoy source addresses must fall inside the selected node's Pod CIDR;
@@ -419,6 +419,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 23:56: Report probe readiness. (authoring-run/1189518e-cadf-4a8f-aabe-bcdbff4d434e - c6aad5bf134ae15bb9abea127b978756f843769f)
 
 - 2026-11-10 17:50: Prepare private browser TLS file ownership for Compose without OpenShell. (authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6 - c40baead7e51977b832d0036518b4f613a68935d)
 

@@ -144,10 +144,9 @@ cannot prove a Linear tool call.
 
 See [host relay diagnostics](docker.md#verify-host-routing-relay-diagnostics).
 
-Stop the reusable environment before running these tests. Each creates and
-removes its own disposable cluster. Install Docker or Podman, k3d, kubectl,
-Helm, and the dependencies in the [testing prerequisites](README.md#requirements-and-credentials).
-Build the local CLI first with `pnpm cli:build`.
+Stop reusable environments first. Each test creates and removes its own cluster.
+Install the [prerequisites](README.md#requirements-and-credentials), Docker or
+Podman, k3d, kubectl and Helm, then run `pnpm cli:build`.
 
 ```sh
 # Kubernetes control plane, including a real first-Agent deployment and browser access checks.
@@ -162,11 +161,11 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
 
-Each command selects one case and skips the other. Both check setup, Workspace
-reconciliation, and cleanup. Kubernetes also checks browser access and a model
-reply from a real Agent, using an OIDC protocol fixture. Compose uses a
-synthetic credential without calling a model. Both default to Docker. Set
-`OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
+Both cases verify setup, Workspaces and cleanup. Kubernetes also checks browser
+access and a model reply through an OIDC fixture. Its Agent uses `OPENAI_API_KEY`
+or `OPENAI_API_KEY_FILE`; any PAT is excluded. Compose registers a synthetic
+credential. Docker is default;
+set `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
 
 Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory to
 retain the successful check's source, image identities, and assertion results.
@@ -210,9 +209,9 @@ official operator-mTLS access-token retrieval. Synthetic issuer results do not
 prove real ChatGPT login or model execution; repeat credentialed qualification
 against the exact selected images.
 
-The CI lane requires authorized `CODEX_ACCESS_TOKEN` for Codex and
-`OPENAI_API_KEY` for native OpenClaw, both permitting `OCC_TEST_OPENAI_MODEL`.
-Keep them separate: a Codex PAT cannot authenticate native OpenClaw. Never put
+General installers, including focused runs, and native OpenClaw use `OPENAI_API_KEY`.
+Dedicated PAT cases require `CODEX_ACCESS_TOKEN` and retain managed permission checks.
+Both must permit `OCC_TEST_OPENAI_MODEL`. Never put
 either value in commands, logs, or shell history. Docker, k3d, kubectl, Helm,
 `openssl`, and network access to pinned assets are required. Preparation creates
 a disposable cluster, installs OpenShell and Agent Sandbox prerequisites, imports
@@ -288,14 +287,16 @@ OCC_K3D_CONTAINER_ENGINE=podman ./scripts/k3d test --harness openclaw \
   --base-url https://models.example.com/v1 --model-id vendor/model
 ```
 
-Set `OPENAI_API_KEY` privately to the endpoint's authorized key. The URL must
-use HTTPS port 443 and end in `/v1`. Use the provider's exact model ID, including
-its namespace. Both `test` and `demo` accept these flags. Without flags,
+Set `OPENAI_API_KEY` privately to the endpoint's authorized key. Use HTTPS port 443,
+a URL ending in `/v1`, and the provider's exact namespaced model ID. Without flags,
 `OCC_TEST_OPENSHELL_MODEL_BASE_URL` and `OCC_TEST_OPENAI_MODEL` select the endpoint
 and model. Explicit flags override inherited and prepared settings. Native helper
 bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_TOKEN`.
-Full OpenShell lane preparation and the first-Agent workflows still require their
-Codex token.
+Full OpenShell lane preparation still requires a token for its dedicated PAT cases.
+The local helper retains its destination through resource preparation and reset.
+In CI, custom endpoints require focused upstream, refresh, withdrawal, or Gateway
+tool-policy tests; native provider files require a guided first-Agent test.
+Whole-lane CI preparation rejects either override before setup.
 
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
@@ -324,31 +325,33 @@ OpenClaw Control UI URLs. Trust startup's browser CA first. Finish with
 
 ### Guided native OpenClaw redeployment
 
-`tests/integration/local-first-agent-real.test.mjs` runs in both Compose-plus-k3d
-and Kubernetes-only first-Agent stacks. Each stack is created by the public Local
-Setup installer, including OpenShell installation. Hosted focused jobs prepare
-current-source images through the [CI image path](ci.md); local runs retain source
-builds in the installer.
-The first run checks a fresh nonce and custom prompt. Reuse checks a new nonce
+`tests/integration/local-first-agent-real.test.mjs` provisions Compose-plus-k3d and
+Kubernetes-only stacks through public Local Setup. Hosted jobs prepare
+[current-source images](ci.md); local runs build by default. Only the Compose file
+accepts `OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE` for a verified development
+controller, paired with `OCC_KUBERNETES_RUNTIME_IMAGE`.
+Installer tests use `OPENAI_API_KEY` and verify exact CredentialSource access.
+The first run checks a nonce and custom prompt. Reuse checks a new nonce
 without that prompt or helper-environment credentials, retaining the exact Agent,
 revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret-timing-and-proof)
 retain stage timings.
 
 After checking Local Setup's ready default Namespace, the test runs distinct
-Codex and native Agents concurrently. Codex uses its `codex-pat` source. Native
-OpenClaw uses a separate `openai` source from `OPENAI_API_KEY`, the pinned runtime,
+Codex and native Agents concurrently with separate `openai` sources using
+`OPENAI_API_KEY`. Native OpenClaw uses the pinned runtime,
 and production Drivers without the k3d helper's compatibility bridge. Both
 operations drain before shared denial checks and teardown.
 
-To exercise an OpenAI-compatible service, set
+For a custom service, set
 `OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
-`baseUrl`, `api` (`openai-responses` or `openai-completions`), and a `models` array
-with explicit native model metadata. The first model ID selects the native Agent's
-model; it can differ from the Codex starter model. Supply that service's key as
-`OPENAI_API_KEY`, while retaining the separate `CODEX_ACCESS_TOKEN` for Codex.
+`baseUrl`, `api` (`openai-responses` or `openai-completions`), and native `models`
+metadata. The first model selects the native Agent and can differ from Codex.
+Supply that service's key as
+`OPENAI_API_KEY`; this custom-provider case requires a separate
+`CODEX_ACCESS_TOKEN` and `codex-pat` source for Codex.
 Configure the Installation `runtime.modelProvider` with that URL and API first.
-The native source authorizes the same destination. The same provisioning,
-model-and-exec, and retained-session redeployment assertions run with this input;
+The native source authorizes that destination. Provisioning, model-and-exec,
+and retained-session assertions still run;
 changing only the embedded QA preset does not exercise this path.
 
 The case edits `USER.md` through the workspace API, verifies its marker through
@@ -375,9 +378,9 @@ an API-key Secret; the Codex PAT used by the starter is a separate credential.
 
 ## Troubleshooting
 
-- If a Docker subnet overlaps, run `dev-down` for the owned partial setup and
-  select an unused `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` before retrying. Do not
-  remove unrelated networks or clusters.
+- First-Agent and QA Compose fixtures avoid occupied Docker ranges without
+  reserving subnets or checking host routes. On overlap, clean owned resources
+  with `dev-down`, select an unused `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR`, and retry.
 - If setup times out, inspect the Pods and events in `openshell-system` and
   `agent-sandbox-system`, then clean up the owned environment before retrying.
 - If the model turn fails, check that the key can access the selected model and

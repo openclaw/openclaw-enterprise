@@ -11,6 +11,7 @@ import {
   redactFailureDetail,
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.mjs";
+import { selectComposeSubnet } from "./compose-network.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const cli = join(root, "bin", "occ");
@@ -300,8 +301,9 @@ function run(
           if (known) {
             phase = known[1];
           }
-          const point = context && setupPoints.find(([prefix]) => line.startsWith(prefix));
-          if (startup && point && !lineClipped) {
+          const point =
+            context && !lineClipped && setupPoints.find(([prefix]) => line.startsWith(prefix));
+          if (startup && point) {
             lastSetupPoint = point[1];
           }
           if (point && !observed.has(point[1])) {
@@ -623,6 +625,20 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
     OCC_SERVICE_KEY_FILE: join(directory, "initial-admin-service-key.json"),
     OCC_URL: "http://127.0.0.1:" + controller,
   };
+  if (controlPlane === "compose") {
+    environment.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = await selectComposeSubnet({
+      runDocker: (args) =>
+        run(
+          "docker",
+          args,
+          withoutModelCredentials(environment),
+          "Read Compose network inventory",
+          minute,
+          true,
+        ),
+      subnet: environment.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR,
+    });
+  }
   const subprocessEnvironment = withoutModelCredentials(environment);
   const startupArguments = ["dev", "up"];
   if (sandboxDriver === "openshell") {
