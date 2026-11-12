@@ -99,6 +99,7 @@
     "helpers/ci-runner-k3d-fixture.ts",
     "fixtures/ci-runner-k3d-kubectl.ts",
     "fixtures/ci-runner-k3d-cases.ts",
+    "fixtures/ci-runner-first-agent-startup-child.ts",
     "helpers/fixture-command-server.ts",
     "helpers/node-test-summary.ts",
     "helpers/reuse-port-preload.ts",
