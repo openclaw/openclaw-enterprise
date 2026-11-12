@@ -833,11 +833,17 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         const requested = JSON.parse(await io.readInput());
         const key = `${requested.kind}/${requested.metadata.name}`;
         if (args.includes("--ignore-not-found")) {
-          state.retiredResourceReads = (state.retiredResourceReads ?? 0) + 1;
-          if (state.retiredResourceAppearsAt === state.retiredResourceReads) {
-            state.recoveryResources[key] = state.recoveryBaselineResources[0];
+          const recreation = state.retiredResourceRecreation;
+          if (
+            recreation?.key === key &&
+            (recreation.stage === "before dispatch"
+              ? existsSync(join(root, "evidence", "helm-recovery", "intent.json"))
+              : state.rollbackSubmissions > 0)
+          ) {
+            state.recoveryResources[key] = recreation.resource;
+            delete state.retiredResourceRecreation;
+            save();
           }
-          save();
           if (state.retiredResourceReadError) {
             return fail(1, "Forbidden: cannot read selected retired resource");
           }
@@ -6342,12 +6348,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       }
       return true;
     });
-    // Each Pod read the Namespaces itself; nothing was stopped or migrated.
-    assert.equal(f.databaseSessions.length, 2);
-    for (const session of f.databaseSessions) {
-      assert.equal(session.user, "candidate_app");
-      assert.equal(session.queries[0], "BEGIN READ ONLY");
-    }
+    // Each Pod refused the layout during Compute preflight, before the database identity check.
+    assert.equal(f.databaseSessions.length, 0);
     assert.equal(f.kubernetesReads.filter((path) => path === "/api/v1/namespaces").length, 2);
     const state = await f.state();
     assert.equal(state.api, 1);
@@ -7616,16 +7618,19 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
   });
 
-  for (const [stage, read, rollbacks] of [
-    ["before dispatch", 2, 0],
-    ["after rollback", 3, 1],
+  for (const [stage, rollbacks] of [
+    ["before dispatch", 0],
+    ["after rollback", 1],
   ]) {
     test(`same-candidate recovery refuses a predecessor resource recreated ${stage}`, async (t) => {
-      const { f, run, pending } = await interruptedProxyRemoval(t);
-      pending.retiredResourceAppearsAt = read;
+      const { f, run, pending, key, policy } = await interruptedProxyRemoval(t);
+      const originalIntent = await readFile(join(f.evidence, "helm-started"), "utf8");
+      pending.retiredResourceRecreation = { stage, key, resource: policy };
       await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
       await assert.rejects(run(...recoverHelm), /predecessor-only resource still exists/);
       assert.equal((await f.state()).rollbackSubmissions ?? 0, rollbacks);
+      assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+      assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), originalIntent);
       assert.ok(existsSync(join(f.evidence, "helm-recovery", "intent.json")));
       assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
       assert.equal(existsSync(join(f.evidence, "completed")), false);
