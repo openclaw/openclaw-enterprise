@@ -103,6 +103,7 @@
     "helpers/fake-commands.ts",
     "helpers/ci-prepare-fixture.ts",
     "integration/ci-cleanup-process-cases.ts",
+    "integration/ci-runner-complete-lifecycle-cases.ts",
     "helpers/ci-runner-held-clock.ts",
     "helpers/ci-runner-kill-window.ts",
     "fixtures/ci-runner-finite-conversation.ts",
