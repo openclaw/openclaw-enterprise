@@ -142,7 +142,11 @@ test("unplanned known slots in a migration attempt cannot be silently ignored", 
   assert.equal(result.stdout, "");
 });
 
-for (const attempt of [".", "migration-preflight-resume.ABCD1234"]) {
+for (const attempt of [
+  ".",
+  "migration-preflight-resume.ABCD1234",
+  "upgrade-preflight-resume.ABCD1234",
+]) {
   test(`create evidence outside the attempt index is refused for ${attempt}`, (t) => {
     const state = fixture(t);
     const path = attempt === "." ? state.root : join(state.root, attempt);
@@ -150,7 +154,7 @@ for (const attempt of [".", "migration-preflight-resume.ABCD1234"]) {
       mkdirSync(path, { mode: 0o700 });
     }
     state.success("register", [attempt, "abcd0123", "false"]);
-    const slot = attempt === "." ? "api" : "migration";
+    const slot = attempt.startsWith("migration-") ? "migration" : "api";
     state.success("started", [attempt, slot]);
     const startedPath = join(path, `preflight-${slot}-started.json`);
     const started = JSON.parse(readFileSync(startedPath, "utf8"));
