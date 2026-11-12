@@ -48,6 +48,14 @@ export function json(value: string): unknown {
   return JSON.parse(value);
 }
 
+export function parsePrivateJson(value: string, label: string): unknown {
+  try {
+    return json(value);
+  } catch {
+    assert.fail(`${label} must be valid JSON`);
+  }
+}
+
 export type Session = { cookie: string; origin: string; setCookie: string[] };
 export type App = Awaited<ReturnType<typeof composeProduction>>;
 export type Request = (
@@ -293,7 +301,7 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
     const admitted = Promise.withResolvers<string>();
     bodyAdmission = { marker, resolve: admitted.resolve };
     const encoded = JSON.stringify(grant);
-    const response = Promise.withResolvers<{ status: number | undefined; body: string }>();
+    const response = Promise.withResolvers<number | undefined>();
     const upload = httpRequest(
       `${fixture.endpoint}${policyPath}/access-bindings`,
       {
@@ -306,12 +314,9 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
         }),
       },
       (received) => {
-        let body = "";
-        received.setEncoding("utf8");
-        received.on("data", (chunk: unknown) => {
-          body += text(chunk);
-        });
-        received.on("end", () => response.resolve({ status: received.statusCode, body }));
+        received.once("error", response.reject);
+        received.once("end", () => response.resolve(received.statusCode));
+        received.resume();
       },
     );
     upload.on("error", response.reject);
@@ -323,8 +328,8 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
       assert.equal((await request("POST", "/api/auth/sign-out", undefined, assigning)).status, 200);
       assert.equal((await request("GET", `${policyPath}/roles`, undefined, assigning)).status, 401);
       upload.end(encoded.slice(1));
-      const denied = await response.promise;
-      assert.equal(denied.status, 403, denied.body);
+      const deniedStatus = await response.promise;
+      assert.equal(deniedStatus, 403, "the revoked assigning session must be denied");
       assert.equal(
         (await request("GET", `${agentsPath}/${agentId}`, undefined, recipient.session)).status,
         403,
@@ -345,7 +350,7 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
       t.diagnostic(
         JSON.stringify({
           scenario: "revoked-after-http-admission",
-          status: denied.status,
+          status: deniedStatus,
           persistedGrants: persisted.rowCount,
           denialAudit: events.filter(({ kind }) => kind === "authorization_denial").length,
           successAudit: events.filter(({ kind }) => kind === "mutation").length,
@@ -529,11 +534,14 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
         });
         proxy.resumeCommit();
         const denied = await pending;
-        const responseBody: unknown = await denied.json();
         if (denied.status === 201) {
+          // Keep the unexpected grant ID so teardown can remove a leaked binding.
+          const responseBody = parsePrivateJson(await denied.text(), "sharing grant response");
           committedBindingId = recordId(record(responseBody).data);
+        } else {
+          await denied.body?.cancel();
         }
-        assert.equal(denied.status, 403, JSON.stringify(responseBody));
+        assert.equal(denied.status, 403, "the expired assigning session must be denied");
         const persisted = await pool.query(
           "SELECT id FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_id=$3",
           [namespaceId, recipient.principalId, agentId],

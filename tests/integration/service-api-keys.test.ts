@@ -642,7 +642,7 @@ test("service API keys authenticate scoped automation without replacing sessions
 
     // An Installation administrator creates a Namespace ServicePrincipal for a member's CLI.
     // It holds no grant until an AccessBinding names it (proved with PostgreSQL policy in
-    // postgres-service-api-keys.test.mjs).
+    // postgres-service-api-keys.test.ts).
     const principalCreated = await run(
       occCli,
       ["iam", "service-principal", "create", "-o", "json"],

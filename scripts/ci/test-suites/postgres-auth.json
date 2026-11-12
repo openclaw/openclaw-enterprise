@@ -13,7 +13,7 @@
     "tests/integration/postgres-human-authentication.test.mjs",
     "tests/integration/postgres-break-glass-auth-maintain.test.mjs",
     "tests/integration/postgres-trusted-proxy.test.mjs",
-    "tests/integration/postgres-auth-accounts.test.mjs",
+    "tests/integration/postgres-auth-accounts.test.ts",
     "tests/integration/postgres-password-recovery-only.test.ts",
     "tests/integration/postgres-oidc-sign-in.test.mjs",
     "tests/integration/postgres-oidc-tab-binding.test.mjs",
@@ -25,7 +25,7 @@
     "tests/integration/postgres-sign-in-result-processes.test.ts",
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
     "tests/integration/postgres-human-session-cookie.test.mjs",
-    "tests/integration/postgres-service-api-keys.test.mjs",
+    "tests/integration/postgres-service-api-keys.test.ts",
     "tests/integration/postgres-auth-binding.test.mjs",
     "tests/integration/postgres-oidc-enrollment.test.ts",
     "tests/integration/postgres-native-host-only-browser.test.ts"
@@ -91,7 +91,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-auth-accounts.test.mjs",
+      "path": "tests/integration/postgres-auth-accounts.test.ts",
       "expectedTests": [
         "fresh PostgreSQL development bootstrap writes a usable administrator service key",
         "PostgreSQL auth account provisioning is visible to another controller without rebuilding IAM Driver",
@@ -99,7 +99,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-service-api-keys.test.mjs",
+      "path": "tests/integration/postgres-service-api-keys.test.ts",
       "expectedTests": [
         "PostgreSQL Better Auth keys remain hashed, scoped, and revocable across instances"
       ]
