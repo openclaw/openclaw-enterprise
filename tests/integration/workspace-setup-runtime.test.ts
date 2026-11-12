@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from "node:child_process";
 import {
   mkdirSync,
   readFileSync,
@@ -11,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import type { TestContext } from "node:test";
 import {
   WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
   WORKSPACE_SETUP_RUNTIME,
@@ -26,7 +28,15 @@ import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 const executable = process.env.OCC_TEST_WORKSPACE_OPENCLAW_PATH;
 const image = executable === undefined ? process.env.OCC_TEST_RUNTIME_IMAGE : undefined;
 const identity = { id: "setup-one", namespaceId: "namespace-one", agentId: "agent-one" };
-function fixture(t) {
+type Environment = Record<string, string | undefined>;
+type Fixture = {
+  root: string;
+  workspace: string;
+  execute: (script: string, input: string, extraEnv?: Environment) => SpawnSyncReturns<string>;
+  run: (payload: unknown, extraEnv?: Environment) => SpawnSyncReturns<string>;
+};
+
+function fixture(t: TestContext): Fixture {
   const root = temporaryDirectorySync(t, "oce-workspace-test-");
   mkdirSync(join(root, "home"));
   const workspace = join(root, "workspace");
@@ -38,15 +48,21 @@ function fixture(t) {
       executable ?? (image === undefined ? join(root, "absent-runtime.mjs") : "/app/openclaw.mjs"),
     OPENCLAW_WORKSPACE_SETUP_PATH: undefined,
   };
-  const execute = (script, input, extraEnv = {}) => {
+  const execute: Fixture["execute"] = (script, input, extraEnv = {}) => {
     const runtimeEnv = { ...env, ...extraEnv };
-    const options = { input, encoding: "utf8", timeout: 300000 };
+    const options: SpawnSyncOptionsWithStringEncoding = {
+      input,
+      encoding: "utf8",
+      timeout: 300000,
+    };
     if (image === undefined) {
       return spawnSync(process.execPath, ["-e", script], {
         ...options,
         env: { ...process.env, ...runtimeEnv },
       });
     }
+    assert.ok(process.getuid);
+    assert.ok(process.getgid);
     return spawnSync(
       "docker",
       [
@@ -79,18 +95,25 @@ function fixture(t) {
     root,
     workspace,
     execute,
-    run: (payload, extraEnv = {}) =>
-      execute(WORKSPACE_SETUP_RUNTIME, JSON.stringify(payload), extraEnv),
+    run: (payload, extraEnv = {}) => {
+      const input = JSON.stringify(payload);
+      assert.equal(typeof input, "string");
+      return execute(WORKSPACE_SETUP_RUNTIME, input, extraEnv);
+    },
   };
 }
 // A refusal exits WORKSPACE_SETUP_REFUSED_EXIT_STATUS, which Kubernetes Compute fails at once;
 // a failure a restart may clear, and the completion verifier, exit 1 (finding 1677).
-function failed(result, status = WORKSPACE_SETUP_REFUSED_EXIT_STATUS) {
+function failed(
+  result: SpawnSyncReturns<string>,
+  status = WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
+  code?: string,
+) {
   assert.equal(result.status, status);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "WORKSPACE_SETUP_FAILED\n");
+  assert.equal(result.stderr, `WORKSPACE_SETUP_FAILED${code ? ` (${code})` : ""}\n`);
 }
-function passed(result) {
+function passed(result: SpawnSyncReturns<string>) {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { completed: true, id: identity.id });
 }
@@ -124,7 +147,7 @@ test("workspace setup distinguishes refusal, retryable failure, and native setup
   assert.equal(WORKSPACE_SETUP_REFUSED_EXIT_STATUS, 2);
   // The runtime it sets up with is missing: not a refusal of this workspace, so it keeps the
   // retrying wait.
-  failed(f.run(setup, { OPENCLAW_EXECUTABLE: join(f.root, "absent-runtime.mjs") }), 1);
+  failed(f.run(setup, { OPENCLAW_EXECUTABLE: join(f.root, "absent-runtime.mjs") }), 1, "ENOENT");
   assert.equal(existsSync(f.workspace), false);
   // Native setup itself failed, here in a stand-in OpenClaw with the pinned release and
   // templates: a restart may pass.
@@ -143,14 +166,32 @@ test("workspace setup distinguishes refusal, retryable failure, and native setup
     'import { writeFileSync } from "node:fs"; writeFileSync(new URL("ran", import.meta.url), ""); process.stderr.write("private native output"); process.exit(7);',
   );
   const standIn = { OPENCLAW_EXECUTABLE: join(runtime, "openclaw.mjs") };
+  // The real initializer must retain a filesystem cause without exposing the temporary
+  // path or file contents. An invalid TMPDIR fails before the native child can start.
+  const temporaryFile = join(f.root, "private-temporary-path");
+  writeFileSync(temporaryFile, "private temporary contents");
+  failed(f.run(setup, { ...standIn, TMPDIR: temporaryFile }), 1, "ENOTDIR");
+  assert.equal(existsSync(join(runtime, "ran")), false, "native setup must not start");
+  assert.equal(existsSync(join(f.workspace, ".oce-workspace-setup.json")), false);
   failed(f.run(setup, standIn), 3);
   assert.equal(existsSync(join(runtime, "ran")), true, "native setup ran");
-  // Simulate only the native process's timeout result; no wall-clock timeout is exercised.
+  // A cleanup failure must not replace the first native failure. These faults are simulated;
+  // the filesystem admission failure above uses the real initializer and filesystem.
   const timeout = `require("node:child_process").spawnSync = () => ({
     error: Object.assign(new Error("private native output"), { code: "ETIMEDOUT" }),
     status: null, stdout: "private native output", stderr: "private native output",
-  });\n`;
-  failed(f.execute(timeout + WORKSPACE_SETUP_RUNTIME, JSON.stringify(setup), standIn), 4);
+  });
+  require("node:fs").rmSync = () => {
+    throw Object.assign(new Error("private cleanup output"), { code: "EACCES" });
+  };\n`;
+  failed(
+    f.execute(timeout + WORKSPACE_SETUP_RUNTIME, JSON.stringify(setup), {
+      ...standIn,
+      TMPDIR: f.root,
+    }),
+    4,
+    "ETIMEDOUT",
+  );
   assert.equal(existsSync(join(f.workspace, ".oce-workspace-setup.json")), false);
   // Templates that differ from the Console's defaults fail every restart the same way.
   writeFileSync(join(templates, "USER.md"), "changed");
@@ -296,9 +337,15 @@ test(
     assert.equal(copied.status, 0, copied.stderr);
     const manifestPath = join(changedRuntime, "package.json");
     const manifest = readFileSync(manifestPath, "utf8");
+    const parsedManifest: unknown = JSON.parse(manifest);
+    assert.ok(
+      typeof parsedManifest === "object" &&
+        parsedManifest !== null &&
+        !Array.isArray(parsedManifest),
+    );
     writeFileSync(
       manifestPath,
-      JSON.stringify({ ...JSON.parse(manifest), version: "unsupported-runtime" }),
+      JSON.stringify({ ...parsedManifest, version: "unsupported-runtime" }),
     );
     const changedEnv = { OPENCLAW_EXECUTABLE: join(changedRuntime, "openclaw.mjs") };
     const rawSetup = { ...identity, completed: false, files: { "USER.md": "private" } };

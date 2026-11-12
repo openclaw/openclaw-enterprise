@@ -1,5 +1,6 @@
 // Print one runnable Bash example from the checked-out quickstart. A moved or
 // duplicated marker must fail the lane rather than silently testing another step.
+import { ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const [guide, marker] = process.argv.slice(2);
@@ -8,15 +9,20 @@ if (!guide || !marker) {
 }
 const markdown = readFileSync(guide, "utf8").replaceAll("\r\n", "\n");
 const fences = [...markdown.matchAll(/^([ \t]*)```bash[ \t]*\n([\s\S]*?)^\1```[ \t]*$/gm)];
-const matches = fences.filter(([, , body]) => body.includes(marker));
-if (matches.length !== 1) {
+const matches = fences.filter(([, , body]) => {
+  ok(body !== undefined);
+  return body.includes(marker);
+});
+const [match] = matches;
+if (matches.length !== 1 || !match) {
   throw new Error(
     `Expected one Bash example containing ${JSON.stringify(marker)} in ${guide}; found ${matches.length}.`,
   );
 }
 // Markdown list examples indent the fences and their contents. Remove that
 // enclosing indent so shell heredoc terminators remain at column one.
-const [, indent, body] = matches[0];
+const [, indent, body] = match;
+ok(indent !== undefined && body !== undefined);
 process.stdout.write(
   body
     .split("\n")

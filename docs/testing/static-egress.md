@@ -309,17 +309,15 @@ Killing a local client does not establish remote termination. Never replay an un
 
 Retain `.build/egress-connected/runtime-<uuid>/`. `apiOperations` records operation
 IDs, phases, HTTP statuses, allowlisted error codes (`UNKNOWN` otherwise), and
-canonical request IDs checked for known credentials. Bodies, messages and other
-headers are excluded. Interrupted or undecodable responses remain `unknown`.
-Cleanup preserves earlier entries and requires its own successful checkpoint.
-`lastApi` identifies the latest attempt.
+canonical request IDs checked for credentials. It excludes bodies, messages and
+other headers. Interrupted or undecodable responses remain `unknown`. Cleanup
+preserves entries and requires its own success checkpoint. `lastApi` identifies the latest attempt.
 
-Gateway selection has a two-minute polling budget, subject to the existing
-command and overall deadlines. It requires exactly one nondeleting Pod for the
-Agent revision, with its pinned `gateway` container running and ready and the
-Pod Ready. The ledger records selection counts and pre-exec checks. After each
-custody snapshot, the fixture rechecks UID and readiness, then targets `gateway`.
-Name-based exec can still race replacement; the fixture never selects a replacement.
+Gateway selection polls for two minutes within command and overall deadlines.
+It requires exactly one nondeleting Ready Pod for the revision with its pinned
+`gateway` container running and ready. The ledger records counts and pre-exec
+checks. After each custody snapshot, recheck UID and readiness before targeting
+`gateway`. Name-based exec can race replacement. Never retarget.
 
 Public APIs create resources; the worker deploys. Authenticated supplier and persisted
 receipts prove installation. Packaged Codex uses a fresh source with
@@ -352,14 +350,19 @@ reachability before and after. Hostile responses require native HTTP status 403
 cover Agent/Codex environments, responses, logs, diagnostics, audit, Pod specs
 and ConfigMaps.
 
-Controller attempts record operation IDs and uncertain outcomes; responses alone
-do not prove effects. Failures retain the operation and `failure.kubectl`.
+Before assertions, `gateway-turn-result` records expected and actual status.
+Correlated fields include acknowledged `turn/start`, `turn/completed`, available
+error classification and HTTP status, and up to four matching error notifications.
+It omits messages, output, headers and RPC IDs.
+
+Controller attempts retain operation IDs and uncertain outcomes. Responses cannot
+prove effects. Failures retain the operation and `failure.kubectl`.
 `failure.nativeExec` records bounded client progress, or `absent`/`invalid`; absent
 frames leave startup uncertain. Pod declarations do not prove effective inputs.
 `failure.custody` retains counts/categories. Private evidence adds bounded
 request-ID/event pairs, identity checks and uncorrelated session observations.
-Errors omit IDs/payloads. Failed reads preserve prior evidence; missing events
-never establish refusal.
+Errors omit IDs/payloads. Failed reads preserve evidence; missing events never
+establish refusal.
 Deployment records public owner capability.
 
 Cleanup deletes owned Agents, confirms API/Sandbox/Pod absence, removes supporting

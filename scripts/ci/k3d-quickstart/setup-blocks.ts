@@ -5,11 +5,14 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = process.argv[2];
+if (root === undefined) {
+  throw new TypeError("Output directory argument is required");
+}
 
-function step(file, command) {
+function step(file: string, command: string): string {
   return execFileSync(
     process.execPath,
-    ["scripts/ci/k3d-quickstart/guide-bash.mjs", file, command],
+    ["scripts/ci/k3d-quickstart/guide-bash.ts", file, command],
     {
       encoding: "utf8",
     },
@@ -35,9 +38,10 @@ const before = [
   step(agent, "deploy_and_wait"),
 ];
 const after = [step(agent, "save_session")];
-for (const [file, blocks] of [
+const outputs: [string, string[]][] = [
   ["setup-before-browser.sh", before],
   ["setup-after-browser.sh", after],
-]) {
+];
+for (const [file, blocks] of outputs) {
   writeFileSync(join(root, file), blocks.join("\n"), { mode: 0o600, flag: "wx" });
 }

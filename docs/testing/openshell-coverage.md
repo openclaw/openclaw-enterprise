@@ -6,17 +6,17 @@ last_verified: "2026-11-04"
 
 # What the OpenShell Sandbox suite proves
 
-These checks share [OpenShell workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs)
-and run through the separate files listed in [advisory coverage](ci/qa-advisory.md#openshell-file-coverage).
-Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
-Unless a section says otherwise, the checks run in the default Codex scenario.
+Use [OpenShell tests](openshell.md#openshell-sandbox) to run the files in
+[advisory coverage](ci/qa-advisory.md#openshell-file-coverage). They share
+[workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs).
+Unless stated otherwise, checks use the default Codex scenario.
 
 ## Gateway tool policy
 
 The dedicated Agent policy scenario uses the existing production deployment owner
-for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. With an explicit
-`OCC_TEST_OPENSHELL_MODEL_BASE_URL`, both use `OPENAI_API_KEY`; the full lane still
-requires `CODEX_ACCESS_TOKEN` for its other owners.
+for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. Both use
+`OPENAI_API_KEY`; the full lane still requires `CODEX_ACCESS_TOKEN` for its
+PAT-specific owners.
 
 The scenario deploys the first revision with Gateway managed mode off so a human
 administrator can run the command-job control. The dedicated model tool policy
@@ -67,9 +67,11 @@ credential redaction. Queue rows print separately to avoid line clipping.
 Both modes compose the `openshell` Backend with the Sandbox and Credential
 Gateway Drivers. Through the production API they register a `codex-pat` source
 from `CODEX_ACCESS_TOKEN` for Codex, or an `openai` source from `OPENAI_API_KEY`
-for native OpenClaw and custom model endpoints. They check its live
+for native OpenClaw and API-key workflows. They check its live
 `ready` status, and bind the Agent with `credential_source`. The Agent service
 principal receives `operate` on the source only, not on the Secret.
+
+The refresh, withdrawal, and Gateway tool-policy files select the API-key endpoint before loading their shared workflow. They retain the native Codex Harness and their lifecycle and policy checks. Credential-route, Sandbox-policy, and curated-plugin files retain PAT coverage.
 
 The default Codex scenario uses the production Driver path. Compute sends only
 `APP_TOKEN_SHA`; OpenShell supplies `runtime.json`, `config.toml`, and the

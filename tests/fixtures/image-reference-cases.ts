@@ -5,9 +5,12 @@
 // Profile preflight, the chart, Compute and the image tools must all agree with it; fields that
 // need an immutable image also require a lowercase SHA-256 digest (`immutableImageAccepted`).
 
+type ImageReferenceProblem = "uppercase-repository" | "invalid";
+type ImageReferenceCase = [label: string, image: string, problem?: ImageReferenceProblem];
+
 const digest = `@sha256:${"a".repeat(64)}`;
 
-export const imageReferenceCases = [
+export const imageReferenceCases: ImageReferenceCase[] = [
   ["registry host and path", `registry.example.invalid/openclaw-enterprise/controller${digest}`],
   ["IPv6 registry host", `[fd00::1]:5000/repo${digest}`],
   ["IPv6 loopback registry host", `[::1]:5000/img${digest}`],
@@ -110,6 +113,6 @@ export const imageReferenceCases = [
 ];
 
 /** Whether a field that needs an immutable image takes the reference. */
-export function immutableImageAccepted(image, problem) {
+export function immutableImageAccepted(image: string, problem: ImageReferenceProblem | undefined) {
   return problem === undefined && /@sha256:[a-f0-9]{64}$/.test(image);
 }

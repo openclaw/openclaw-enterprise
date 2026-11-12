@@ -24,7 +24,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { listen } from "../helpers/listen.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";

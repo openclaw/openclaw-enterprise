@@ -253,6 +253,11 @@ if [ -n "$base_url$model_id" ]; then
     fail "--base-url and --model-id are supported only for demo and test"
 fi
 
+# Retain an inherited native destination when resource preparation reloads its env.
+if [ "$harness" = openclaw ]; then
+  base_url="${base_url:-${OCC_TEST_OPENSHELL_MODEL_BASE_URL:-}}"
+fi
+
 apply_model_options() {
   # Add the outer provider so normalization preserves namespaced native IDs.
   if [ "$harness" = openclaw ]; then
@@ -282,6 +287,15 @@ export OPENCLAW_CI_K3D_BIN="$k3d_bin"
 export OCC_KUBECTL_BIN="$kubectl_bin"
 export OCC_TEST_OPENAI_MODEL="${OCC_TEST_OPENAI_MODEL:-gpt-4o-mini}"
 apply_model_options
+if [ "$harness" = openclaw ] && { [ "$action" = demo ] || [ "$action" = test ]; }; then
+  node -e '
+    const endpoint = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+    if (endpoint && !URL.parse(endpoint)) {
+      console.error("The OpenShell model endpoint must be a valid absolute URL.");
+      process.exit(1);
+    }
+  '
+fi
 
 # This local workflow always builds the current checkout. Do not let selectors
 # exported by an earlier test turn its generated localhost references into
@@ -725,6 +739,16 @@ export NODE_RUNTIME_BASE_IMAGE
 [ -n "$NODE_RUNTIME_BASE_IMAGE" ] ||
   fail "deploy/runtime/Dockerfile does not declare NODE_RUNTIME_BASE_IMAGE"
 
+# These subprocesses prepare resources only. The direct model tests below retain
+# the selected destination; they do not use the CI runner's file env projection.
+prepare_resources() {
+  if [ "$harness" = openclaw ]; then
+    OCC_TEST_OPENSHELL_MODEL_BASE_URL= node scripts/ci/prepare.mjs "$@"
+  else
+    node scripts/ci/prepare.mjs "$@"
+  fi
+}
+
 if [ ! -f "$state_file" ]; then
   info "Preparing a disposable k3d cluster, PostgreSQL database, and runtime images."
   for base_image in "$NODE_BASE_IMAGE" "$NODE_RUNTIME_BASE_IMAGE"; do
@@ -732,12 +756,12 @@ if [ ! -f "$state_file" ]; then
       "$container_bin" pull "$base_image"
     fi
   done
-  node scripts/ci/prepare.mjs \
+  prepare_resources \
     --lane "$prepared_lane" \
     --state "$state_file" \
     --github-env "$env_file"
   info "Creating and migrating the isolated Kubernetes test database."
-  node scripts/ci/prepare.mjs \
+  prepare_resources \
     --lane "$prepared_lane" \
     --file "$integration_file" \
     --state "$state_file" \
@@ -746,7 +770,7 @@ if [ ! -f "$state_file" ]; then
 elif [ -f "$reset_file" ] && [ ! -f "$ready_file" ]; then
   info "Creating and migrating a fresh isolated Kubernetes test database."
   : > "$env_file"
-  node scripts/ci/prepare.mjs \
+  prepare_resources \
     --lane "$prepared_lane" \
     --file "$integration_file" \
     --state "$state_file" \
