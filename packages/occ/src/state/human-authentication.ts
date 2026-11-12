@@ -553,10 +553,32 @@ export class PostgresHumanAuthentication {
     seed: PersistedNativeIAMPrincipalSeed,
     auditEvent?: AuditEvent,
     external?: { readonly providerId: string; readonly subject: string },
+    authority?: {
+      readonly holdSession: (unit: PlatformUnitOfWork) => Promise<void>;
+      readonly authorize: (unit: PlatformUnitOfWork) => Promise<AuditEvent>;
+    },
   ): Promise<void> {
-    await this.state.transact((unit) =>
-      this.insertPasswordAccount(unit, prepared, seed, auditEvent, external),
-    );
+    // Trusted setup can omit authority; a supplied authority must be complete.
+    if (
+      authority !== undefined &&
+      (typeof authority.holdSession !== "function" || typeof authority.authorize !== "function")
+    ) {
+      throw new ScopeViolationError("Account provisioning requires complete assigning authority.");
+    }
+    await this.state.transactReadCommitted(async (unit) => {
+      let currentAuditEvent = auditEvent;
+      if (authority !== undefined) {
+        // Preserve user/session, configuration, then policy lock order. A policy writer
+        // that wins first is visible to the selected IAM decision under READ COMMITTED.
+        await authority.holdSession(unit);
+        await unit.installations.holdIAMConfiguration("shared");
+        await this.query(unit, "SELECT occ.hold_account_administration_policy($1)", [
+          this.installationId,
+        ]);
+        currentAuditEvent = await authority.authorize(unit);
+      }
+      await this.insertPasswordAccount(unit, prepared, seed, currentAuditEvent, external);
+    });
   }
 
   private async insertPasswordAccount(

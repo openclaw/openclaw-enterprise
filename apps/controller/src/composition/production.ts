@@ -3,27 +3,20 @@ import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.t
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
-import type { AuditEvent } from "@openclaw-enterprise/contracts";
-import {
-  validateAuthAccountPrincipalSeed,
-  validatePersistedNativeIAMState,
-  type AuthPrincipalSeed,
-} from "@openclaw-enterprise/iam";
+import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
   createPostgresPool,
   OpenClawController,
-  PostgresHumanAuthentication,
   PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import {
-  betterAuthIssuer,
+  createPostgresAuthAccountProvisioner,
   createPostgresControllerAuth,
   type ClientAddressConfiguration,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
   type PasswordHasher,
   type PasswordSlowLaneFloors,
-  type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
 import type { ConsoleTheme } from "../console-theme.ts";
@@ -155,22 +148,10 @@ export async function composeProduction(
     validatePersistedNativeIAMState(iamState);
     phaseCompleted("database");
     const iamDriver = createIAMDriver(state);
-    const humanAuthentication = new PostgresHumanAuthentication(
+    const provisionAuthAccount = createPostgresAuthAccountProvisioner({
       state,
-      persistedInstallation.id,
-      betterAuthIssuer(persistedInstallation.id),
-    );
-    const provisionAuthAccount = async (
-      seed: AuthPrincipalSeed,
-      auditEvent: AuditEvent,
-      prepared: PreparedAuthAccount,
-      external?: { readonly providerId: string; readonly subject: string },
-    ) => {
-      const current = await state.loadNativeIAMState(persistedInstallation.id);
-      validateAuthAccountPrincipalSeed(seed, current, persistedInstallation.id);
-      // The account, its Principal and bindings, and its enrolment commit together.
-      await humanAuthentication.provisionPasswordAccount(prepared, seed, auditEvent, external);
-    };
+      installationId: persistedInstallation.id,
+    });
 
     const principal = iamState.identities.find((identity) => identity.kind === "principal");
     if (

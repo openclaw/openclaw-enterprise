@@ -185,6 +185,10 @@
       "expectedTests": [
         "PostgreSQL service-key admission distinguishes invalid credentials from a key-store outage"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-auth-account-session.test.ts",
+      "expectedTests": ["PostgreSQL account creation retains assigning authority through COMMIT"]
     }
   ]
 }
