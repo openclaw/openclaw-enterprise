@@ -30,12 +30,15 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 	previous := syscall.Umask(0077)
 	defer syscall.Umask(previous)
 	for _, tc := range []struct {
-		name             string
-		custom, writable bool
+		name                                                string
+		custom, customAlias, writable, logicalRoot, missing bool
 	}{
 		{name: "default"},
 		{name: "custom source", custom: true},
+		{name: "custom symlink to default source", customAlias: true},
 		{name: "writable override", writable: true},
+		{name: "logical checkout with physical bind", logicalRoot: true},
+		{name: "missing SQL with retention and retry", missing: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repository, err := filepath.EvalSymlinks(t.TempDir())
@@ -53,8 +56,22 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 			if err := os.WriteFile(source, []byte(sql), 0600); err != nil {
 				t.Fatal(err)
 			}
+			if tc.customAlias {
+				alias := filepath.Join(repository, "custom.sql")
+				if err := os.Symlink(source, alias); err != nil {
+					t.Fatal(err)
+				}
+				source = alias
+			}
 			state := filepath.Join(repository, "state")
 			captured := filepath.Join(repository, "captured")
+			if tc.logicalRoot {
+				alias := filepath.Join(t.TempDir(), "checkout")
+				if err := os.Symlink(repository, alias); err != nil {
+					t.Fatal(err)
+				}
+				repository = alias
+			}
 			rendered := fmt.Sprintf(`{"networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{"postgres":{"volumes":[{"type":"bind","source":%q,"target":"/docker-entrypoint-initdb.d/00-occ-roles.sql","read_only":%t,"bind":{"selinux":"Z"}}]},"controller":{"ports":["127.0.0.1:4000:3000"]},"worker-kubernetes":{}}}`, source, !tc.writable)
 			// Record the real launcher's snapshot at the engine boundary, then fail
 			// startup to exercise rollback. This does not simulate PostgreSQL access.
@@ -63,9 +80,21 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 "version --format {{json .Server}}") echo '{"Platform":{"Name":"Docker Engine - Community"}}' ;;
 "info"|"compose version"|"info --format "*) ;;
 "ps --all --quiet --filter "*|"volume ls --quiet --filter "*|"network ls --quiet --filter "*) ;;
+"volume ls --filter "*) ;;
 "volume inspect "*|"network inspect "*) exit 1 ;;
 "compose --project-name "*" config") echo ` + shellQuote(rendered) + ` ;;
-"compose "*" up --build -d postgres migrate bootstrap") cp -Rp ` + shellQuote(state) + ` ` + shellQuote(captured) + `; exit 41 ;;
+"compose "*" up --build -d postgres migrate bootstrap")
+  snapshot=
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = -f ]; then
+      [ -z "$snapshot" ] || exit 42
+      shift; snapshot=$1
+    fi
+    shift
+  done
+  [ "$snapshot" = ` + shellQuote(filepath.Join(state, "compose.yaml")) + ` ] || exit 42
+  cp -Rp "$(dirname "$snapshot")" ` + shellQuote(captured) + ` || exit 43
+  exit 41 ;;
 "compose "*" stop controller worker-kubernetes"|"compose "*" down --volumes") ;;
 `,
 				"k3d": `"cluster list -o json") echo '[]' ;;`, "kubectl": "", "node": "",
@@ -78,6 +107,27 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 				"OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY": "", "OCC_DEVELOPMENT_REPOSITORY_IMAGE": "", developmentImageRegistrySetting: "", "DOCKER_CONTEXT": "",
 			} {
 				t.Setenv(key, value)
+			}
+			if tc.missing {
+				// A failed read must release incomplete state even when inspection
+				// retention is enabled, so repairing the source permits a retry.
+				t.Setenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE", "1")
+				if err := os.Remove(source); err != nil {
+					t.Fatal(err)
+				}
+				err = Up(context.Background(), Options{Repository: repository})
+				if err == nil || !strings.Contains(err.Error(), "read Compose bootstrap SQL") {
+					t.Fatalf("expected SQL read failure, got %v", err)
+				}
+				if _, err := os.Stat(state); !os.IsNotExist(err) {
+					t.Fatalf("failed preparation stranded state: %v", err)
+				}
+				if _, err := os.Stat(captured); !os.IsNotExist(err) {
+					t.Fatalf("failed preparation reached database startup: %v", err)
+				}
+				if err := os.WriteFile(source, []byte(sql), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			err = Up(context.Background(), Options{Repository: repository})
 			if err == nil || !strings.Contains(err.Error(), "exit status 41") {
@@ -101,7 +151,7 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 			}
 			volume := snapshot.Services["postgres"].Volumes[0]
 			wantSource := filepath.Join(state, "init-local.sql")
-			if tc.custom || tc.writable {
+			if tc.custom || tc.customAlias || tc.writable {
 				wantSource = source
 				if _, err := os.Stat(filepath.Join(captured, "init-local.sql")); !os.IsNotExist(err) {
 					t.Fatalf("custom mount created an unnecessary SQL copy: %v", err)
@@ -114,6 +164,16 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 			}
 			if info, err := os.Stat(captured); err != nil || info.Mode().Perm() != 0700 {
 				t.Fatalf("state directory lost private permissions: %v (%v)", info, err)
+			}
+			if tc.missing {
+				// Once startup has begun, retention leaves recoverable state and
+				// the supported shutdown command removes the owned SQL copy.
+				if _, err := readState(state); err != nil {
+					t.Fatalf("retained startup state is not recoverable: %v", err)
+				}
+				if err := Down(context.Background(), Options{Repository: repository}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			assertBootstrapSQLFile(t, source, sql, 0600)
 			if _, err := os.Stat(state); !os.IsNotExist(err) {

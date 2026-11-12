@@ -240,7 +240,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if result == nil {
 			return
 		}
-		if os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
+		if started && os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
 			// Inspection override: keep the failed stack, the state directory, and
 			// any copied service key for diagnosis; occ dev down with the same
 			// state directory performs the cleanup.

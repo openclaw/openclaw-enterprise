@@ -24,11 +24,20 @@ func prepareComposeBootstrapSQL(rendered any, state *developmentState) error {
 	services, _ := config["services"].(map[string]any)
 	postgres, _ := services["postgres"].(map[string]any)
 	volumes, _ := postgres["volumes"].([]any)
-	source := filepath.Join(state.Repository, "migrations", "init-local.sql")
+	defaultSource := filepath.Join(state.Repository, "migrations", "init-local.sql")
 	for _, raw := range volumes {
 		volume, _ := raw.(map[string]any)
-		if volume["type"] != "bind" || volume["source"] != source || volume["target"] != "/docker-entrypoint-initdb.d/00-occ-roles.sql" || volume["read_only"] != true {
+		if volume["type"] != "bind" || volume["target"] != "/docker-entrypoint-initdb.d/00-occ-roles.sql" || volume["read_only"] != true {
 			continue
+		}
+		source, _ := volume["source"].(string)
+		if source != defaultSource {
+			// Compose may render a symlinked checkout's physical working directory.
+			// Resolve only the repository, never an arbitrary custom bind source.
+			repository, err := filepath.EvalSymlinks(state.Repository)
+			if err != nil || source != filepath.Join(repository, "migrations", "init-local.sql") {
+				continue
+			}
 		}
 		data, err := os.ReadFile(source)
 		if err != nil {

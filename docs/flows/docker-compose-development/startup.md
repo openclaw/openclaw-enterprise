@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-12
-last_updated_session: authoring-run/bd5e5418-5167-4b5f-b5bc-b9047ed8b68b
+last_updated_session: authoring-run/40b08b7d-d158-4f4d-8a93-1e53f45a5999
 ---
 
 # Compose development startup
@@ -246,18 +246,20 @@ or selects the subnet's first usable address. A private Compose snapshot pins
 startup and cleanup against later `.env` edits.
 
 Before saving the snapshot, `internal/occdev/compose.go:prepareComposeBootstrapSQL`
-copies the default `migrations/init-local.sql` into owned state with mode `0644`,
-so PostgreSQL can read it despite a restrictive umask. Only its exact read-only
-bind is redirected; custom sources, writable overrides, and original permissions
-stay unchanged. State remains `0700`; rollback and shutdown remove the copy.
+copies default SQL as `0644` for PostgreSQL despite restrictive umasks. It redirects
+only the default read-only bind, including checkout aliases; custom and writable
+mounts and original permissions stay unchanged. State remains `0700`. Cleanup
+removes the copy. Pre-start failures remove incomplete state even with
+`OCC_DEVELOPMENT_KEEP_ON_FAILURE`; retention requires a recoverable snapshot and
+resource startup.
 
 Kubernetes-only mode enters `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering.
 
-`internal/occdev/repository_k3d.go` validates selected inputs. After authenticated
-bootstrap and Namespace readiness, it binds the server-assigned Namespace ID,
-generates CA and exact-host broker certificates, and upgrades Helm with Kubernetes
-inputs, Repo Driver and worker sidecar. Discovery must match approved references
-and profiles; it proves no model, sandbox or Git execution. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
+`internal/occdev/repository_k3d.go` validates inputs, waits for authenticated bootstrap
+and Namespace readiness, binds the server-assigned Namespace ID, generates CA and
+exact-host certificates, then upgrades Helm with Kubernetes inputs, Repo Driver and
+worker sidecar. Discovery checks approved references and profiles; execution remains
+unverified. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
 `OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` for Docker Compute, else
 `kubernetes`; unsupported values fail before resource creation.
@@ -356,10 +358,9 @@ generated CA and console name.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
-`internal/occdev/state.go:exclusiveWrite` removes a newly created output when
-permission setting, writing, or closing fails, including a partial external key
-before startup records a successful copy. Existing targets stay untouched; a
-removal failure is returned with the original file-operation error.
+`internal/occdev/state.go:exclusiveWrite` removes new outputs, including partial
+external keys, when chmod, writing or closing fails. Existing targets stay untouched;
+errors include failed removal.
 
 Failure triggers cleanup. Shutdown validates the marker, state and Compose
 snapshot, then stops API/worker and deletes owned k3d and Compose resources through
@@ -416,6 +417,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 00:18: Handle checkout aliases and clean incomplete pre-start state. (authoring-run/40b08b7d-d158-4f4d-8a93-1e53f45a5999 - 2d5cf2bf7138c2d7bd40b3fa630a4c9d8b9dafe4)
 
 - 2026-11-12 00:05: Copy default bootstrap SQL into private owned state with container-readable permissions. (authoring-run/bd5e5418-5167-4b5f-b5bc-b9047ed8b68b - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
 
