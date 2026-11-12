@@ -163,8 +163,10 @@ async function productionDrivers({
   files,
   configurationRoot,
 }: DriverOptions = {}): Promise<InstallationRuntimeDrivers> {
+  const base = createInstallationDriverConfiguration();
   const configuration = {
-    ...createInstallationDriverConfiguration(),
+    ...base,
+    drivers: { ...base.drivers, plugin: [{ id: "occ-plugin", configuration: {} }] },
     presets: { includeDefaults, ...(files === undefined ? {} : { files }) },
   };
   configuration.drivers.compute.id = "compute-production-wireup";
@@ -181,6 +183,7 @@ async function productionDrivers({
   const { installation } = runtime;
   return {
     installation,
+    pluginDrivers: runtime.pluginDrivers ?? [],
     ...(runtime.defaultPresets === undefined ? {} : { defaultPresets: runtime.defaultPresets }),
     ...(runtime.shadowedDefaultPresets === undefined
       ? {}

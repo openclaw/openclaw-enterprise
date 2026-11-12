@@ -9,6 +9,7 @@ import type { Permission } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
 import { composeProduction } from "../helpers/password-hasher.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
@@ -684,7 +685,7 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
     ];
     // Use the same configuration application that production startup calls, on
     // another controller and transaction. Its Group binding stays unchanged;
-    // only the configured Role's supported read permissions change.
+    // only the configured Role's permissions change.
     const configurationController = (permissions: readonly Permission[]) => {
       const configurationState = new PostgresPlatformState(pool);
       const iam = new NativeIAMDriver(configurationState, { id: `configuration-${randomUUID()}` });
@@ -782,6 +783,62 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
         configuredBindings.rows,
       );
     };
+    await t.test(
+      "plugin publication holds its configured Namespace grant through COMMIT",
+      async (t) => {
+        await configurationController([
+          ...granted,
+          { action: "publish_plugins", resourceKind: "namespace" },
+        ]).controller.applyIAMConfiguration();
+        const path = `/namespaces/${namespaceId}/plugin-releases`;
+        const archiveBase64 = await importedPluginPackage(t, "configured-publisher");
+        const preview = await request("POST", `${path}/preview`, { archiveBase64 }, assigning);
+        assert.equal(preview.status, 200);
+        const { digest, archiveSha256 } = record(preview.data);
+        const publication = { archiveBase64, digest, archiveSha256 };
+
+        // Pause publication at the Namespace row. Its authorized transaction must
+        // hold the configuration writer until the release and its audit commit.
+        const blocker = await pool.connect();
+        let publishing: ReturnType<Request> | undefined;
+        let withdrawing: Promise<void> | undefined;
+        try {
+          await blocker.query("BEGIN");
+          const locked = await blocker.query<Record<string, unknown>>(
+            "SELECT pg_backend_pid() AS pid FROM occ.namespaces WHERE id=$1 FOR UPDATE",
+            [namespaceId],
+          );
+          publishing = request("POST", path, publication, assigning);
+          const publisherPid = integer(
+            await waitForLockWaiter(
+              pool,
+              integer(row(locked).pid),
+              "publication waiting for its Namespace",
+            ),
+          );
+          withdrawing = grantConfiguration.controller.applyIAMConfiguration();
+          await Promise.race([
+            waitForLockWaiter(pool, publisherPid, "configuration waiting for publication", {
+              queryLike: "SELECT pg_advisory_xact_lock(%",
+            }),
+            withdrawing.then(() =>
+              assert.fail("configuration changed while publication held authority"),
+            ),
+          ]);
+        } finally {
+          await blocker.query("ROLLBACK");
+          blocker.release();
+          await Promise.allSettled([publishing, withdrawing]);
+        }
+        assert.ok(publishing);
+        const published = await publishing;
+        assert.equal(published.status, 200);
+        assert.equal(record(published.data).digest, digest);
+        await withdrawing;
+        assert.equal((await request("POST", path, publication, assigning)).status, 403);
+      },
+    );
+
     type MutationKind =
       "create Role" | "delete Role" | "create AccessBinding" | "delete AccessBinding";
     const prepareMutation = async (kind: MutationKind) => {

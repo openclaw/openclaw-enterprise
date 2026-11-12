@@ -10525,6 +10525,7 @@ export class OpenClawController {
         );
       }
       await this.mutate(async (state) => {
+        await this.holdAuthority(state);
         const namespace = await this.lockNamespace(state, namespaceId);
         await this.authorize(principalId, "publish_plugins", resource);
         if (namespace.status !== "ready" && namespace.status !== "provisioning") {

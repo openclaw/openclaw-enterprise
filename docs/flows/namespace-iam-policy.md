@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
 updated: 2026-11-12
-last_updated_session: "authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63"
+last_updated_session: "authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e"
 ---
 
 # Namespace IAM Policy Flow
@@ -112,6 +112,10 @@ the shared configuration fence before the Namespace lock and final checks.
 A configured-read withdrawal therefore commits before authorization or after
 the policy write. A denied write saves no policy change or success audit.
 Configured Roles still cannot grant Installation permissions.
+
+[Plugin publication](agent-plugins.md) takes the same locks and rechecks
+`publish_plugins` before saving the release and audit event. PostgreSQL also
+holds any caller session through commit.
 
 Roles require nonempty, duplicate-free Namespace resource permissions.
 The Namespace itself supports `read` and `publish_plugins`. `iamRolePermissions`
@@ -302,6 +306,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-12 17:21: Fence plugin publication. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 3f20c38c249b0558a143eb4df0ae4b6a46c760e6)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)
 - 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)

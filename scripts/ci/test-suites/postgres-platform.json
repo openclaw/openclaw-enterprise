@@ -131,6 +131,7 @@
       "expectedTests": [
         "production bootstrap creates a generated-password administrator that can authenticate",
         "configured read grants fence Namespace IAM mutations through COMMIT",
+        "plugin publication holds its configured Namespace grant through COMMIT",
         "create Role: configuration first",
         "create Role: policy first",
         "delete Role: configuration first",
