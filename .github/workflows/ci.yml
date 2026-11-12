@@ -188,6 +188,42 @@ jobs:
           matrix=$(jq -c '[.[] | select(.lane | startswith("images-") | not)]' <<<"$matrix")
           printf 'matrix=%s\nimage-matrix=%s\nfixture=%s\nhas-matrix=%s\nhas-images=%s\n' "$matrix" "$images" "$fixture" "$(jq 'length > 0' <<<"$matrix")" "$(jq 'length > 0' <<<"$images")" >> "$GITHUB_OUTPUT"
 
+      - name: Report main test advisory
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        continue-on-error: true
+        env:
+          GIT_NO_LAZY_FETCH: "1"
+          SELECTION: ${{ steps.select.outcome }}-${{ steps.select.outputs.mode }}-${{ steps.select.outputs.reason }}
+          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
+          MATRIX: ${{ steps.matrix.outputs.matrix }}
+          IMAGES: ${{ steps.matrix.outputs.image-matrix }}
+        run: |
+          # Both selection results follow the before-policy push identity and ancestry checks.
+          # Report the same event's endpoints only while that policy is unchanged.
+          predict() (
+            [ "$GITHUB_EVENT_NAME" = push ] && [ "$MATRIX_OUTCOME" = success ] || return 1
+            case "$SELECTION" in success-full-ineligible_change|success-docs-docs_only) ;; *) return 1 ;; esac
+            before=$(jq -er --arg after "$GITHUB_SHA" 'select(.after == $after) | .before' "$GITHUB_EVENT_PATH") || return 1
+            oid='^[0-9a-f]{40}$'
+            [[ $before =~ $oid && $GITHUB_SHA =~ $oid && $before != "$GITHUB_SHA" ]] || return 1
+            git diff --quiet "$before" "$GITHUB_SHA" -- scripts/ci/impact.ts || return 1
+            lanes='[]'
+            if [ "$SELECTION" = success-full-ineligible_change ]; then
+              policy=$(mktemp "$RUNNER_TEMP/ci-main-test.XXXXXX.ts") || return 1
+              trap 'rm -f "$policy"' EXIT
+              git cat-file blob "$before:scripts/ci/impact.ts" > "$policy" || return 1
+              lanes=$(timeout -k 2s 20s env -u GITHUB_OUTPUT node "$policy" --main-test-advisory) || return 1
+            fi
+            jq -cen --arg before "$before" --arg after "$GITHUB_SHA" --argjson lanes "$lanes" --argjson matrix "$MATRIX" --argjson images "$IMAGES" '
+              (($matrix + $images | map(.lane)) + ["runtime-image-fixture"]) as $allowed |
+              $lanes | select(type == "array" and . == unique and
+                (length == 0 or length < ($allowed | length)) and
+                all(.[]; . as $lane | test("^[a-z0-9-]+$") and ($allowed | index($lane) != null))) |
+              {prediction:(if length == 0 then "broad" else "one_modified_test" end),lanes:.,before:$before,after:$after}'
+          )
+          if ! prediction=$(predict 2>/dev/null); then prediction='{"prediction":"broad","lanes":[]}'; fi
+          printf '::notice title=CI main test advisory v2::%s\n' "$prediction"
+
       - name: Summarize impact selection
         if: ${{ always() }}
         env:
