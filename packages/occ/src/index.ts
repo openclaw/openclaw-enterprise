@@ -3332,7 +3332,7 @@ export class OpenClawController {
     if (
       !result ||
       !Array.isArray(result.options) ||
-      result.options.length > 1000 ||
+      result.options.length > 1001 ||
       !result.options.every(validRepositoryOption) ||
       new Set(result.options.map((option) => option.repositoryRef)).size !==
         result.options.length ||
