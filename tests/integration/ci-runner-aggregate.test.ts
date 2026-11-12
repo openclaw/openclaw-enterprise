@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 
 import {
   aggregateArgs,
+  createRunnerFixture as fixture,
   currentSha,
   laneArgs,
   runRunnerSync,
   writeJson,
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 interface AggregateReceipt {
   status: string;
@@ -28,15 +28,6 @@ interface FileEvidence {
 interface LaneReceipt {
   scope: string;
   files: FileEvidence[];
-}
-
-async function fixture(t: TestContext) {
-  const root = await temporaryDirectory(t, "ci-runner-");
-  await mkdir(join(root, "scripts/ci"), { recursive: true });
-  await mkdir(join(root, "tests/integration"), { recursive: true });
-  await mkdir(join(root, "results"), { recursive: true });
-  await mkdir(join(root, "state"), { recursive: true });
-  return root;
 }
 
 function writePassedBaselineResult(root: string, sourceSha: string, filePath: string) {

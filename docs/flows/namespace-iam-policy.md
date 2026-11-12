@@ -276,7 +276,7 @@ behavior.
   and expiry after the final client check with COMMIT paused at the transport. It uses
   real authentication, IAM and PostgreSQL; its passive Compute does not prove a native Gateway.
 - The guarded activation case in
-  `tests/integration/postgres-password-default-activation.test.mjs` checks a
+  `tests/integration/postgres-password-default-activation.test.ts` checks a
   Namespace wait beyond five seconds, an independent session's write, and
   subsequent account revocation. These cases emit credential-free execution
   diagnostics for review evidence.

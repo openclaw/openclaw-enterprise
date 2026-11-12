@@ -1,20 +1,33 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Pool } from "pg";
+import type { AuditEvent } from "../../packages/contracts/src/index.ts";
+import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,
-  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
-  oidcSignIn,
   oidcUpgradeSettings,
-  readAccount,
-  signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import {
+  onboarded,
+  readAccount,
+  type SignInApp,
+  changeAccount,
+  oidcSignIn,
+  signedInHeaders,
+  recordData,
+  record,
+  text,
+  integer,
+  type SessionHeaders,
+  type FixtureAccount,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 
 const limitedSubject = "9200001";
 const takeoverSubject = "9200002";
@@ -26,10 +39,10 @@ test(
   "an exact-scope Installation administrator cannot manage an account with broader grants",
   requiresPostgres,
   async (t) => {
-    let app;
+    const apps: SignInApp[] = [];
     const { pool, state, oidc, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
-      () => [app],
+      () => apps,
       {
         oidc: true,
         email: "scope-recovery@example.test",
@@ -41,20 +54,25 @@ test(
         },
       },
     );
+    assert.ok(oidc);
     const address = clientAddresses("198.19");
     const {
       admin,
       accounts: { limited, member },
-    } = await onboard({
-      remoteAddress: address(),
-      accounts: {
-        limited: { email: "scope-limited@example.test", role: "admin" },
-        member: { email: "scope-member@example.test" },
-      },
-    });
+    } = onboarded(
+      await onboard({
+        remoteAddress: address(),
+        accounts: {
+          limited: { email: "scope-limited@example.test", role: "admin" },
+          member: { email: "scope-member@example.test" },
+        },
+      }),
+      ["limited", "member"],
+    );
 
     // Account creation binds the Role to the exact Installation only.
     const installation = await state.loadInstallation();
+    assert.ok(installation);
     const { rows: bindings } = await pool.query(
       `SELECT resource_kind, resource_id FROM occ.iam_access_bindings
        WHERE identity_subject_id = (SELECT principal_id FROM occ.human_authentication_accounts
@@ -63,15 +81,17 @@ test(
     );
     assert.deepEqual(bindings, [{ resource_kind: "installation", resource_id: installation.id }]);
 
-    app = await composeApp(oidcUpgradeSettings(admin.id));
+    const app = await composeApp(oidcUpgradeSettings(admin.id));
+    apps.push(app);
     const adminHeaders = await signedInHeaders(app, origin, admin, address());
     const limitedHeaders = await signedInHeaders(app, origin, limited, address());
-    const post = (headers, url, payload) => app.inject({ method: "POST", url, headers, payload });
+    const post = (headers: SessionHeaders, url: string, payload: Record<string, unknown>) =>
+      app.inject({ method: "POST", url, headers, payload });
 
     // The exact-scope binding still administers the Installation.
     const recovery = await app.inject({ url: "/api/auth/recovery", headers: limitedHeaders });
     assert.equal(recovery.statusCode, 200, recovery.body);
-    assert.equal(recovery.json().data.userId, admin.id);
+    assert.equal(recordData(recovery.json<unknown>()).userId, admin.id);
     const target = await readAccount(app, limitedHeaders, admin.id);
 
     const attached = await post(limitedHeaders, `/api/auth/accounts/${admin.id}/providers/oidc`, {
@@ -95,19 +115,19 @@ test(
 
     // Each refusal is audited against the account it targeted, with the coverage reason, so an
     // investigator can tell a blocked takeover of this account from any other denial.
-    const coverageDenials = async (actions) =>
+    const coverageDenials = async (actions: string[]) =>
       (await state.transact((unit) => unit.audit.list())).filter(
         (event) => event.kind === "authorization_denial" && actions.includes(event.action),
       );
-    const assertCoverageDenials = (events, count) => {
+    const assertCoverageDenials = (events: readonly AuditEvent[], count: number) => {
       assert.equal(events.length, count);
       for (const denied of events) {
         assert.equal(denied.outcome, "denied");
         assert.equal(denied.resource.kind, "installation");
         assert.equal(denied.reasonCode, "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED");
-        assert.match(denied.decisionReason, /every grant of the target account's Principal/);
-        assert.equal(denied.details.userId, admin.id);
-        assert.equal(denied.details.principalId, target.principalId);
+        assert.match(text(denied.decisionReason), /every grant of the target account's Principal/);
+        assert.equal(record(denied.details).userId, admin.id);
+        assert.equal(record(denied.details).principalId, target.principalId);
       }
     };
     assertCoverageDenials(
@@ -136,8 +156,16 @@ test(
     // Taking the recovery designation acts against its holder: disabling a holder returns 409,
     // so a narrower administrator must not move it onto itself and lock the broader one out.
     const recoveryHolder = async () =>
-      (await app.inject({ url: "/api/auth/recovery", headers: adminHeaders })).json().data.userId;
-    const moveRecovery = async (headers, userId, expectedCurrentUserId) =>
+      text(
+        recordData(
+          (await app.inject({ url: "/api/auth/recovery", headers: adminHeaders })).json<unknown>(),
+        ).userId,
+      );
+    const moveRecovery = async (
+      headers: SessionHeaders,
+      userId: string,
+      expectedCurrentUserId: string,
+    ) =>
       post(headers, "/api/auth/recovery", {
         userId,
         expectedCurrentUserId,
@@ -160,7 +188,7 @@ test(
     );
     assert.equal(stale.statusCode, 409, stale.body);
     assert.equal(
-      stale.json().error.message,
+      record(record(stale.json()).error).message,
       "The authentication account version changed. Read its current state before a new action.",
     );
     const disabled = await changeAccount(app, adminHeaders, limited.id, "disable");
@@ -192,16 +220,18 @@ test(
       const before = await recoveryHolder();
       const auditsBefore = await state.transact((unit) => unit.audit.list());
       const locker = await pool.connect();
-      let pending;
+      let pending: Promise<Response> | undefined;
       try {
         await locker.query("BEGIN");
         const held = (
-          await locker.query(
+          await locker.query<{ pid: unknown }>(
             'SELECT pg_backend_pid() AS pid FROM occ."user" WHERE id=$1 FOR UPDATE',
             [limited.id],
           )
         ).rows[0];
-        pending = fetch(`http://127.0.0.1:${app.server.address().port}/api/auth/recovery`, {
+        const serverAddress = app.server.address();
+        assert.ok(serverAddress && typeof serverAddress !== "string");
+        pending = fetch(`http://127.0.0.1:${serverAddress.port}/api/auth/recovery`, {
           method: "POST",
           headers: { ...adminHeaders, "content-type": "application/json" },
           body: JSON.stringify({
@@ -210,9 +240,14 @@ test(
             expectedVersion: target.version,
           }),
         });
-        await waitForLockWaiter(pool, held.pid, "recovery replacement reached the successor lock", {
-          timeoutMs: 3000,
-        });
+        await waitForLockWaiter(
+          pool,
+          integer(held?.pid),
+          "recovery replacement reached the successor lock",
+          {
+            timeoutMs: 3000,
+          },
+        );
         // A database policy writer removes only the successor's grant after the
         // real HTTP preflight. The initiating administrator remains authorized.
         const removed = await pool.query(
@@ -224,6 +259,7 @@ test(
         await locker.query("ROLLBACK");
         locker.release();
       }
+      assert.ok(pending);
       const response = await pending;
       assert.equal(response.status, 409, await response.text());
       assert.equal(await recoveryHolder(), before);
@@ -235,24 +271,40 @@ test(
 );
 
 async function assertAccountMutationFence(
-  t,
-  { app, pool, state, adminHeaders, operatorHeaders, member },
+  t: TestContext,
+  {
+    app,
+    pool,
+    state,
+    adminHeaders,
+    operatorHeaders,
+    member,
+  }: {
+    app: SignInApp;
+    pool: Pool;
+    state: PostgresPlatformState;
+    adminHeaders: SessionHeaders;
+    operatorHeaders: SessionHeaders;
+    member: FixtureAccount;
+  },
 ) {
   const address = await app.listen({ host: "127.0.0.1", port: 0 });
   const before = await readAccount(app, adminHeaders, member.id);
-  const namespace = (await pool.query("SELECT id FROM occ.namespaces WHERE name='default'")).rows[0]
-    .id;
+  const namespace = text(
+    (await pool.query<{ id: unknown }>("SELECT id FROM occ.namespaces WHERE name='default'"))
+      .rows[0]?.id,
+  );
   // The sign-in fixture uses passive Compute; finish the real Namespace prerequisite.
   await state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(namespace, "provisioning", "ready"),
   );
-  async function request(headers, path, body) {
+  async function request(headers: SessionHeaders, path: string, body: Record<string, unknown>) {
     const response = await fetch(address + path, {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    return { status: response.status, body: await response.json() };
+    return { status: response.status, body: record(await response.json()) };
   }
   const role = await request(adminHeaders, `/namespaces/${namespace}/iam/roles`, {
     name: "Namespace reader",
@@ -273,16 +325,17 @@ async function assertAccountMutationFence(
   t.after(release);
   await locker.query("BEGIN");
   const held = (
-    await locker.query('SELECT pg_backend_pid() AS pid FROM occ."user" WHERE id=$1 FOR UPDATE', [
-      member.id,
-    ])
+    await locker.query<{ pid: unknown }>(
+      'SELECT pg_backend_pid() AS pid FROM occ."user" WHERE id=$1 FOR UPDATE',
+      [member.id],
+    )
   ).rows[0];
-  let pending;
+  let pending: ReturnType<typeof request> | undefined;
   try {
     pending = request(operatorHeaders, `/api/auth/accounts/${member.id}/disable`, {
       expectedVersion: before.version,
     });
-    await waitForLockWaiter(pool, held.pid, "account mutation reached target row", {
+    await waitForLockWaiter(pool, integer(held?.pid), "account mutation reached target row", {
       timeoutMs: 3000,
     });
     // Grant new authority through the supported IAM API while the target row is held.
@@ -290,7 +343,7 @@ async function assertAccountMutationFence(
     const grant = await request(adminHeaders, `/namespaces/${namespace}/iam/access-bindings`, {
       subjectKind: "identity",
       subjectId: before.principalId,
-      roleId: role.body.data.id,
+      roleId: text(recordData(role.body).id),
       resourceKind: "namespace",
       resourceId: namespace,
     });
@@ -298,6 +351,7 @@ async function assertAccountMutationFence(
   } finally {
     await release();
   }
+  assert.ok(pending);
   const result = await pending;
   const after = await readAccount(app, adminHeaders, member.id);
   t.diagnostic(
@@ -318,7 +372,7 @@ async function assertAccountMutationFence(
     (event) => event.kind === "authorization_denial" && event.details?.userId === member.id,
   );
   assert.equal(denied.length, 1, "the rolled-back request has exactly one attributable denial");
-  assert.equal(denied[0].reasonCode, "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED");
+  assert.equal(denied[0]?.reasonCode, "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED");
   assert.ok(
     !events.some(
       (event) =>

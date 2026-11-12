@@ -4,7 +4,10 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { temporaryDirectory } from "./temporary-directory.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -13,6 +16,15 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 // checkout. Stop Git's repository search at tmpdir() so the runner never reads
 // that checkout's HEAD as the fixture's source SHA.
 export const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
+
+export async function createRunnerFixture(t: TestContext) {
+  const root = await temporaryDirectory(t, "ci-runner-");
+  await mkdir(join(root, "scripts/ci"), { recursive: true });
+  await mkdir(join(root, "tests/integration"), { recursive: true });
+  await mkdir(join(root, "results"), { recursive: true });
+  await mkdir(join(root, "state"), { recursive: true });
+  return root;
+}
 
 export function currentSha() {
   const result = spawnSync("git", ["rev-parse", "HEAD"], {

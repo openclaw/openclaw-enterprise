@@ -323,13 +323,13 @@ traces, or credentials.
 
 For the separate `k3d-otel` model lane, set `OCC_TEST_OPENAI_MODEL`, a
 digest-pinned `NODE_BASE_IMAGE`, and an existing authorized `OPENAI_API_KEY`.
-Use a matching installed dependency graph and a fresh state directory:
+Run from the checkout root with a fresh state directory.
 
 ```sh
 OBS_LANE=k3d-otel
 OBS_RUN_DIR=$(mktemp -d)
-pnpm_config_verify_deps_before_run=false node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
-  pnpm_config_verify_deps_before_run=false node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+corepack pnpm exec node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+  corepack pnpm exec node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
 Inspect results and clean up as above. The model lane checks embedded and
