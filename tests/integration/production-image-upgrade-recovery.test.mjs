@@ -7554,18 +7554,31 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   });
 
   test("a staged retry cannot replace the published Helm attempt and an actual retry gets a fresh nonce", async (t) => {
-    const f = await fixture(t);
+    const f = await fixture(t, { controllerOnly: true });
+    const valuesPath = join(f.directory, "values.json");
+    async function assertProtectedValues(evidence, intent, image) {
+      const bytes = await readFile(valuesPath);
+      const values = JSON.parse(bytes.toString("utf8"));
+      assert.equal(values.images.controller, image);
+      assert.equal(values.installation.upgradeAttemptId, intent.attempt.nonce);
+      assert.deepEqual(
+        await readFile(join(evidence, "helm-attempts", intent.attempt.nonce, "values.yaml")),
+        bytes,
+      );
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), intent.attempt.valuesSha256);
+      return bytes;
+    }
     await f.failNext("fail-migration");
     await assert.rejects(f.run(), injectedFault);
     const original = await assertHelmIntent(f, 1, 2);
+    const originalValues = await assertProtectedValues(f.evidence, original, newController);
     const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
-    const values = await readFile(join(f.directory, "values.json"), "utf8");
     // The retry's dry-run fails after staging values, before replacing the local
     // values or publishing a new intent. The failed submission stays authoritative.
     await f.failNext("fail-server-dry-run");
     await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
     assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
-    assert.equal(await readFile(join(f.directory, "values.json"), "utf8"), values);
+    assert.deepEqual(await readFile(valuesPath), originalValues);
     await assert.rejects(f.run("--resume"), /migration --check/);
     assert.equal((await f.state()).helmSubmissions, 1);
     await f.failNext("lost-helm-response");
@@ -7583,6 +7596,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     );
     assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
     await f.run("--resume");
+    await assertProtectedValues(f.evidence, retry, newController);
+
+    const nextEvidence = join(f.directory, "next-evidence");
+    await f.run("--controller-image", controller, "--evidence-dir", nextEvidence);
+    const next = await assertHelmIntent({ evidence: nextEvidence }, 3, 4);
+    assert.notEqual(next.attempt.nonce, retry.attempt.nonce);
+    await assertProtectedValues(nextEvidence, next, controller);
   });
 
   test("a retry published before Helm accepts it can resume from its exact predecessor", async (t) => {

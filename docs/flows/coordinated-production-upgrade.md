@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-12"
-last_updated_session: "authoring-run/db7ef311-7726-453b-b06c-e048bc6054ac"
+last_updated_session: "authoring-run/9680374b-51c1-4f5e-a3d5-a7c0c1006b92"
 ---
 
 # Production image upgrade flow
@@ -227,10 +227,10 @@ remain operator attestations.
 
 `scripts/upgrade-production-images:quiescence_remaining` bounds shutdown.
 Validate both Deployments. Before either stop, check named patch permission for
-a running worker. Refuse confirmed denial. Warn on inconclusive review.
-Recheck inventory while the worker runs, including resume. Refuse changes. Restore
-stopped API access under exclusive maintenance ownership before retry.
-Skip stopped writers. Stopped workers have no prospective guarantee.
+running workers. Refuse denial and warn on inconclusive review.
+While the worker runs, refuse inventory drift, including on resume. Restore stopped
+API access under exclusive maintenance ownership before retry.
+Skip stopped writers. Stopped workers lack prospective checks.
 Sequential patches test UID, resource version and replicas. Conflicts can leave
 the API stopped. Verify Pod absence and original Deployments at zero. Operators
 stop other writers/autoscalers and keep nodes reachable.
@@ -241,24 +241,24 @@ Protected files change atomically. Resource-version checks preserve unrelated
 mutable Secret data. Reference switches preserve both Secrets; both OCC templates
 select the successor and checksum.
 
-`upgrade-helm-state.py:new_attempt` renders and dry-runs immutable values with a
-fresh `installation.upgradeAttemptId`, copied to hooks and the initializer Pod.
+`upgrade-helm-state.py:new_attempt` renders and dry-runs immutable values. Hooks
+and the initializer Pod receive the fresh `installation.upgradeAttemptId`.
+Upgrade and recovery preserve `.json` format.
 `record_submission` saves intent and predecessor before publishing `helm-started`.
-Identical interrupted staging can finish; staged retries cannot replace published
-intent. In separate mode,
-`scripts/migration-history.mjs:migrateWithHistory` verifies the completed candidate
-ledger, catalog and grants under the migration lock. Pending or unsupported history
-fails the hook. Hook mode applies pending SQL.
+Identical interrupted staging can finish. Published intent survives staged retries.
+In separate mode, `scripts/migration-history.mjs:migrateWithHistory` verifies the
+completed candidate ledger, catalog and grants under lock. Pending or unsupported
+history fails the hook. Hook mode applies pending SQL.
 
 ### 4. Verify control-plane recovery
 
 `scripts/upgrade-helm-state.py:verify_installation_consumers`
 
 Verify images, replicas and changed Installation checksums.
-Reference switches verify both Secret identities and actual Installation mounts in
+Reference switches verify both Secret identities and Installation mounts in
 controllers and the owned initializer Pod. Each component needs one named container.
-Broker-enabled workers permit restartable init containers; other placements fail. Authenticated OCC
-access is retried and must return the same Installation ID.
+Only broker-enabled workers permit restartable init containers. Authenticated OCC
+retries must return the same Installation ID.
 Worker preparation re-renders current launch requirements.
 Repository-bound Agents receive maintenance every 30 seconds until their session
 deadline; other Agents are re-prepared if deployment remains unfinished.
@@ -367,6 +367,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 03:35: Preserve JSON values. (authoring-run/9680374b-51c1-4f5e-a3d5-a7c0c1006b92 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
 
 - 2026-11-12 00:11: Precheck worker patch access. (authoring-run/db7ef311-7726-453b-b06c-e048bc6054ac - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
 
