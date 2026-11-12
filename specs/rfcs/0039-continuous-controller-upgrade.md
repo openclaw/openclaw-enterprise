@@ -39,8 +39,13 @@ one replica and the other is empty. Helm remains the sole owner of both slots.
    mutation if the pair is ineligible.
 2. **Start the candidate.** Stage a Helm revision that retains the incumbent API
    and worker. The [initialization hook](../../deploy/helm/openclaw-enterprise/templates/jobs.yaml)
-   must verify current schema and existing bootstrap identity without creating
-   either. Keep candidate startup effects, including IAM and authentication
+   must verify current schema and bootstrap state with read-only database access
+   and unwritable bootstrap outputs. Compare the Installation ID read from the
+   candidate database with the ID the command already binds through the authenticated
+   API and the live startup Secret. A different Installation can have the same
+   name and administrator and pass the existing bootstrap check. A missing or
+   mismatched ID stops the handoff before the candidate serves.
+   Keep candidate startup effects, including IAM and authentication
    initialization, preset updates and repository observers, under their existing
    owners. An unready Pod can already perform these actions today. Each owner
    must serialize or defer them before overlap is eligible.
@@ -97,8 +102,11 @@ Agent. Collect evidence from before preflight through worker replacement.
 - **AC-3.** Acknowledge one chat submission before drain. Reconnect through the
   same public route and recover one terminal reply. Verify the original Agent
   revision, Gateway Pod and conversation, then complete a distinct continuation.
-- **AC-4.** Exercise an ineligible image pair, pending migration, failed
-  candidate, incomplete ingress drain and interruption after Helm submission.
+- **AC-4.** Point the candidate at a second valid database with the same
+  administrator and a different Installation ID. Require refusal with both
+  databases and the bootstrap outputs unchanged while the incumbent serves.
+  Exercise an ineligible pair, pending migration, failed candidate, incomplete
+  ingress drain and interruption after Helm submission.
   Verify the documented refusal or recovery at the stage where it applies.
   Exercise both a compatible reverse handoff after a write and refusal of
   an incompatible rollback.
