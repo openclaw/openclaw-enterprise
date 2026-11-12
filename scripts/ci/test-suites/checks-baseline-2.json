@@ -71,6 +71,9 @@
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
+    "tests/conformance/bootstrap-installation.test.mjs",
+    "tests/integration/native-ui-continuity-observer.test.mjs",
+    "tests/integration/runtime-model-probe-barrier.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
     "tests/integration/repository-runtime-materialization.test.mjs",
@@ -181,6 +184,15 @@
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
+    },
+    {
+      "path": "tests/conformance/bootstrap-installation.test.mjs"
+    },
+    {
+      "path": "tests/integration/native-ui-continuity-observer.test.mjs"
+    },
+    {
+      "path": "tests/integration/runtime-model-probe-barrier.test.mjs"
     },
     {
       "path": "tests/integration/compose-network.test.ts"
