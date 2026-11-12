@@ -10,6 +10,7 @@ import type { RepositoryCredentialClientConfiguration } from "../../repo/access/
 import {
   hasControlCharacter,
   isValidGitClientConnection,
+  isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
 } from "../../repo/access/client-contracts.ts";
 import { createHash } from "node:crypto";
@@ -157,10 +158,7 @@ function validateClient(value: unknown): RepositoryCredentialClientConfiguration
     !isValidGitClientConnection(origin, remote, client) ||
     !/^\/[A-Za-z0-9._/-]+\.git$/.test(remote.pathname) ||
     remote.pathname.includes("..") ||
-    !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) ||
-    client.apiHost !== origin.hostname ||
+    !isValidGitClientUsernameAndHosts(origin, client) ||
     !/^[A-Za-z0-9._/-]{1,512}$/.test(client.repository)
   ) {
     return invalid();

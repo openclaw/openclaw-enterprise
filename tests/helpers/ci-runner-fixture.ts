@@ -4,7 +4,10 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { temporaryDirectory } from "./temporary-directory.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -13,6 +16,15 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 // checkout. Stop Git's repository search at tmpdir() so the runner never reads
 // that checkout's HEAD as the fixture's source SHA.
 export const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
+
+export async function createRunnerFixture(t: TestContext) {
+  const root = await temporaryDirectory(t, "ci-runner-");
+  await mkdir(join(root, "scripts/ci"), { recursive: true });
+  await mkdir(join(root, "tests/integration"), { recursive: true });
+  await mkdir(join(root, "results"), { recursive: true });
+  await mkdir(join(root, "state"), { recursive: true });
+  return root;
+}
 
 export function currentSha() {
   const result = spawnSync("git", ["rev-parse", "HEAD"], {
@@ -50,6 +62,70 @@ export function runRunnerSync(
     env: runnerEnv(env),
     timeout,
   });
+}
+
+// Run the CLI without blocking tests that wait out time limits side by side.
+// The result has spawnSync's shape, including its ETIMEDOUT error when `timeout` ends the runner.
+interface AsyncRunnerResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  error: NodeJS.ErrnoException | undefined;
+}
+
+export function runRunnerAsync(
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = {},
+  { timeout, execArgv = [] }: { timeout?: number; execArgv?: readonly string[] } = {},
+) {
+  return new Promise<AsyncRunnerResult>((resolvePromise) => {
+    const child = spawn(process.execPath, [...execArgv, runnerPath, ...args], {
+      cwd: repositoryRoot,
+      env: runnerEnv(env),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let error: NodeJS.ErrnoException | undefined;
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    const timer =
+      timeout === undefined
+        ? undefined
+        : setTimeout(() => {
+            error ??= Object.assign(new Error(`runner exceeded ${timeout} ms`), {
+              code: "ETIMEDOUT",
+            });
+            child.kill("SIGTERM");
+          }, timeout);
+    const settle = (status: number | null, signal: NodeJS.Signals | null) => {
+      clearTimeout(timer);
+      resolvePromise({ status, signal, stdout, stderr, error });
+    };
+    child.on("error", (spawnError) => {
+      error ??= spawnError;
+      settle(null, null);
+    });
+    child.on("close", settle);
+  });
+}
+
+// Node arguments that give the runner a clock that stands still at holdAt (Unix epoch
+// milliseconds) until every gate path exists (tests/helpers/ci-runner-held-clock.ts). A test
+// that needs its fixture in some state before the lane deadline creates a gate there, so a
+// busy host delays the deadline instead of reaching it first (finding 2164).
+export function heldClock(holdAt: number, gates: readonly string[]) {
+  const preload = new URL("./ci-runner-held-clock.ts", import.meta.url);
+  preload.searchParams.set("hold", String(holdAt));
+  for (const gate of gates) {
+    preload.searchParams.append("gate", gate);
+  }
+  return ["--import", preload.href];
 }
 
 export async function writeJson(path: string, value: unknown) {

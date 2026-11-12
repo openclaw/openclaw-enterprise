@@ -14,9 +14,9 @@ import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/ac
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
-  type AlternateFixtureFactory,
   type AlternateFixtureOptions,
   createAlternateFixtureFactory,
+  fixtureEvents,
   requireFixtureDriver,
 } from "../fixtures/repository-credentials/alternate-shape.ts";
 import {
@@ -70,18 +70,6 @@ const send: ExchangeSender = async (_request, context) =>
     () => ({ kind: "completed", status: 200 }),
   );
 
-type FixtureEvent = { kind: string; sessionId: string; attemptId?: string };
-function isFixtureEvent(value: unknown): value is FixtureEvent {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "kind" in value &&
-    typeof value.kind === "string" &&
-    "sessionId" in value &&
-    typeof value.sessionId === "string" &&
-    (!("attemptId" in value) || typeof value.attemptId === "string")
-  );
-}
 function isObservation(value: unknown): value is { kind: string; attemptId?: string } {
   return (
     typeof value === "object" &&
@@ -90,12 +78,6 @@ function isObservation(value: unknown): value is { kind: string; attemptId?: str
     typeof value.kind === "string" &&
     (!("attemptId" in value) || typeof value.attemptId === "string")
   );
-}
-function fixtureEvents(factory: AlternateFixtureFactory): FixtureEvent[] {
-  return factory.events.map((value) => {
-    assert.ok(isFixtureEvent(value));
-    return value;
-  });
 }
 function requireStatus(service: CredentialServiceOwner, sessionId: string) {
   const result = service.status(sessionId);

@@ -6,30 +6,24 @@ import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
-import { brotliDecompressSync, inflateRawSync } from "node:zlib";
+import { inflateRawSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import {
-  AGENT_RUNTIME_ENTRYPOINT,
-  AGENT_WITH_NODE_ENTRYPOINT,
-  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
-  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
-  RUNTIME_WRAPPER_COMMAND,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import {
-  nodeProgramArguments,
-  withoutLineComments,
-} from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -40,7 +34,13 @@ import {
   InstalledDriver,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
+import { createCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
+import {
+  captureOpenShellHarness,
+  providerEndpointFixture,
+  tlsPinnedWorkspaceSetupCode,
+} from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import {
   tenant,
@@ -158,6 +158,48 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
     ),
     false,
   );
+});
+
+test("OpenShell native workers keep admitted commands across the asset-copy upgrade", async () => {
+  const fixture = providerEndpointFixture({
+    servicePrincipalCredentials: { mode: "disabled" },
+    revisionOverrides: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      configuration: admitLoggingConfiguration(
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        "info",
+      ),
+    },
+  });
+  const { revision, sandbox, provisions } = fixture;
+  sandbox.facets = ["networking", "filesystem", "process"];
+  sandbox.supportsHarnessExecutionMode = DEDICATED_OPENCLAW_SUPPORT;
+  const { admission } = revision.compute;
+  assert.match(admission, /(?:^|:)runtime-asset-copy:v1:$/);
+  const oldRevision = {
+    ...revision,
+    compute: {
+      ...revision.compute,
+      admission: admission.replace("runtime-asset-copy:v1:", "") || undefined,
+    },
+  };
+
+  await endpointWithGateway(fixture);
+  for (const target of [oldRevision, revision]) {
+    await fixture.prepare(target);
+    const { command } = provisions.at(-1).requirements;
+    const program = inflateRawSync(Buffer.from(command.slice(8).join(""), "base64")).toString();
+    if (target === oldRevision) {
+      // Pin the Compute argv observed before the asset-copy admission at 3b0efb21.
+      assert.equal(
+        createHash("sha256").update(JSON.stringify(command)).digest("hex"),
+        "61b6c84be857be802efc1e6908d6a5c232859316ae35eaa7c00e1bbba0b6db6d",
+      );
+      assert.match(program, /cpSync\(source, destination, \{ recursive: true \}\)/);
+    } else {
+      assert.match(program, /function copyImageFile\(/);
+    }
+  }
 });
 
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {
@@ -881,7 +923,16 @@ test("provider Harness verified endpoint trust is projected before rollout and i
 });
 
 test("provider Harness protected execution is released only on current signed installation and warmth", async (t) => {
-  const fixture = await preparedEndpoint();
+  const fixture = await preparedEndpoint(
+    providerEndpointFixture({
+      servicePrincipalCredentials: { mode: "disabled" },
+      revisionOverrides: {
+        id: "rev_2c9250cd-6aa2-4493-a73e-2422ec6c1537",
+        agentId: "agt_9bee809d-62ec-4d41-b68d-25ead74b3a4d",
+        servicePrincipalId: "spn_02aa5adc-0b5c-417d-b8d4-1a1de5157809",
+      },
+    }),
+  );
   const { revision, provisions, objects, save, core } = fixture;
   let harnessAnswer = { state: "serving" };
   // A separately admitted protected revision waits for the installation commit.
@@ -1473,25 +1524,40 @@ test("provider Harness protected execution is released only on current signed in
     },
   );
   await t.test(
-    "an admitted protected Codex launch renders its no-connection-retry command; a stored revision keeps its bytes",
-    async () => {
+    "protected admission publishes complete asset copies and preserves historical command bytes",
+    async (t) => {
       // Pin the commands the Driver renders, not only the exported entrypoints (#3310,
       // finding 2256): the Sandbox launch carries the workspace node; activation renders
       // the same Harness without it for the endpoint and status reads.
       const admission = driver.admitRevision(protectedRevision);
       assert.match(
         admission,
-        /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+        /^model-provider:v1:[a-f0-9]{64}:runtime-asset-copy:v1:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
       );
       const admitted = {
         ...protectedRevision,
         compute: { ...protectedRevision.compute, admission },
       };
-      // Check each rendered loader before decoding the command it carries.
-      const program = ([loader, ...pieces], codec = "deflate") => {
-        assert.equal(loader, nodeProgramArguments("", codec)[0]);
-        const decompress = codec === "brotli" ? brotliDecompressSync : inflateRawSync;
-        return decompress(Buffer.from(pieces.join(""), "base64")).toString("utf8");
+      const beforeAssetCopy = {
+        ...admitted,
+        compute: {
+          ...admitted.compute,
+          admission: admission.replace("runtime-asset-copy:v1:", ""),
+        },
+      };
+      const beforeOpenShellUpgrade = {
+        ...admitted,
+        compute: {
+          ...admitted.compute,
+          admission: beforeAssetCopy.compute.admission.replace("openshell-codex-launch:v1:", ""),
+        },
+      };
+      const beforeRetryProtection = {
+        ...protectedRevision,
+        compute: {
+          ...protectedRevision.compute,
+          admission: protectedRevision.compute.admission?.replace("runtime-asset-copy:v1:", ""),
+        },
       };
       const pod = fixture.pod("protected-revision");
       pod.metadata.labels["openclaw.dev/revision"] = protectedRevision.id;
@@ -1506,67 +1572,150 @@ test("provider Harness protected execution is released only on current signed in
       observation = installed;
       current = true;
       try {
-        for (const target of [admitted, protectedRevision]) {
-          const rendered = [];
-          sandbox.enrollHarness = async ({ requirements }) => {
-            rendered.push([requirements.command, true]);
+        for (const [target, disabled] of [
+          [admitted, true],
+          [beforeAssetCopy, true],
+          [beforeOpenShellUpgrade, true],
+          [beforeRetryProtection, false],
+        ]) {
+          const commands = [];
+          const captureCommand = async ({ requirements }) => {
+            commands.push(requirements.command);
             throw released;
           };
-          sandbox.harnessEndpoint = async ({ requirements }) => {
-            rendered.push([requirements.command, false]);
-            throw released;
-          };
+          sandbox.enrollHarness = captureCommand;
+          sandbox.harnessEndpoint = captureCommand;
           for (const lifecycle of ["prepareRevision", "activateRevision"]) {
             await assert.rejects(
               driver[lifecycle](target, protectedContext),
               (error) => error === released,
             );
           }
-          assert.equal(rendered.length, 2);
-          const disabled = target === admitted;
-          for (const [command, node] of rendered) {
-            const legacy = node ? AGENT_WITH_NODE_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
-            const updated = node
-              ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
-              : PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
-            // A stored revision without the marker keeps its exact immutable command.
-            assert.deepEqual(command, [
-              ...RUNTIME_WRAPPER_COMMAND,
-              ...nodeProgramArguments(disabled ? updated : legacy),
-            ]);
-            const outer = program(command.slice(RUNTIME_WRAPPER_COMMAND.length));
-            const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
-            assert.equal(child !== null, node);
-            const childCodec = disabled ? "brotli" : "deflate";
-            const codex = node ? program(JSON.parse(child[1]).slice(1), childCodec) : outer;
-            // Standalone commands retain their full source. The nested child
-            // omits unused native helpers; both must preserve the admission below.
-            if (!node) {
-              assert.equal(
-                codex,
-                withoutLineComments(
-                  disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-                ),
-              );
-            }
-            // Only the two model-calling invocations: the authentication probe and app-server.
-            assert.equal(
-              codex.match(/unbounded_connection_retries/g)?.length ?? 0,
-              disabled ? 2 : 0,
-            );
-            if (disabled) {
-              assert.match(
-                codex,
-                /spawnSync\(codexExecutable\(\), \[\s+\.\.\.nativeTelemetryArguments,\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
-              );
-              assert.match(codex, /"--disable", "unbounded_connection_retries",\s+"app-server",/);
-            }
+          const [prepare, activate] = commands;
+          assert.equal(commands.length, 2);
+          const hash = (command) =>
+            createHash("sha256").update(JSON.stringify(command)).digest("hex");
+          // Historical argv matches 61c73c99 with Node 24.22.1. Activation has no
+          // workspace node, so new admission still leaves that program byte-identical.
+          const historical = disabled
+            ? [
+                "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d",
+                "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
+              ]
+            : [
+                "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf",
+                "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
+              ];
+          if (target === admitted) {
+            assert.equal(hash(activate), historical[1]);
+            const { supervisor, codex } = inspectOpenShellCodexCommand(t, prepare, {
+              compact: true,
+            });
+            assert.match(supervisor, /function copyImageFile\(/);
+            assert.equal(codex.match(/unbounded_connection_retries/g)?.length, 2);
+            continue;
           }
+          assert.deepEqual(commands.map(hash), historical);
         }
       } finally {
         core.listNamespacedPod = originalList;
         sandbox.enrollHarness = enrollHarness;
         sandbox.harnessEndpoint = harnessEndpoint;
+      }
+    },
+  );
+  await t.test(
+    "OpenShell provisions a protected API-key revision with workspace setup",
+    async (t) => {
+      const egress = { middlewareName: "fixture-authority", authorityScope: "execution" };
+      const capture = captureOpenShellHarness(fixture, sandbox, egress);
+
+      // A real protected inference route selects API-key auth. The OAuth account
+      // bootstrap belongs to the ordinary OpenShell case.
+      const id = "rev_7b620136-6184-4fe4-a0e4-12d4e9a41b55";
+      const execution = {
+        ...plan.execution,
+        revisionId: id,
+        executionId: "7e373ed8-fc1d-4fd7-a19f-f83b146f1dc5",
+      };
+      const target = {
+        ...protectedRevision,
+        id,
+        revision: protectedRevision.revision + 1,
+        configuration: capture.openshell.configureAgent(
+          protectedRevision.configuration,
+          protectedRevision.harness,
+        ),
+        compute: { ...protectedRevision.compute },
+        egressPlan: {
+          ...plan,
+          id: "80df91f7-e8e1-43da-b1db-579ad56598be",
+          execution,
+          routes: plan.routes.map((route) => ({
+            ...route,
+            binding: { ...route.binding, execution },
+          })),
+        },
+      };
+      target.compute.admission = driver.admitRevision(target);
+      const workspaceSetup = {
+        id: "workspace-setup-1f8d6823-aa87-4cba-ae3e-62352e892d12",
+        namespaceId: target.namespaceId,
+        agentId: target.agentId,
+        defaultsId: WORKSPACE_DEFAULTS_ID,
+        completed: false,
+        files: { "USER.md": "Private protected setup" },
+      };
+      seedNode(target);
+      const name = driver.workspaceNodeName(target);
+      const node = fixture.read("Secret", name);
+      node.data.setupCode = Buffer.from(
+        tlsPinnedWorkspaceSetupCode(
+          `wss://agents.example.internal/namespaces/${target.namespaceId}/agents/${target.agentId}/node`,
+          Date.now() + 600_000,
+        ),
+      ).toString("base64");
+      save(node);
+
+      proxy.configureRevision = async ({ plan, revision }) => ({
+        plan,
+        configuration: openShellEgressConfiguration(plan, egress, revision),
+      });
+      await assert.rejects(
+        driver.prepareRevision(target, { ...protectedContext, workspaceSetup }),
+        (error) => error === capture.provisioned,
+      );
+      const { command, environment } = capture.request.spec;
+      assert.equal(environment.CODEX_LOGIN_MODE, "api_key");
+      assert.equal(environment.OCE_CODEX_CREDENTIAL_SOURCE, undefined);
+      assert.ok(environment[COMPUTE_RELEASE_PUBLIC_KEY]);
+      const { loader, supervisor, codex } = inspectOpenShellCodexCommand(t, command, {
+        compact: true,
+      });
+      assert.match(loader, /\.oce-workspace-setup\.json/);
+      assert.match(supervisor, new RegExp(workspaceSetup.id));
+      assert.match(supervisor, /function copyImageFile\(/);
+      // Use the exact nested program delivered by CreateSandbox. The fixture
+      // verifies the signature gate and both native invocations' no-retry flags.
+      const answered = probe([
+        { type: "turn.started" },
+        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+        { type: "turn.completed" },
+      ]);
+      for (const [result, failure] of [
+        [answered, undefined],
+        [probe([], timedOut, 30000), "MODEL_PROBE_TIMEOUT"],
+      ]) {
+        const runtime = createCodexStartup(t, {
+          protectedInference: "signed",
+          native: [login(), result],
+        });
+        runtime.start(codex);
+        await runtime.releaseProtectedExecution();
+        runtime.assertNativeScriptConsumed();
+        assert.equal(runtime.retryTimers.length, 0);
+        assert.equal(runtime.appServerStarts, failure === undefined ? 1 : 0);
+        assert.equal(runtime.status().runtimeFailure?.code, failure);
       }
     },
   );

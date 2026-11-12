@@ -1,7 +1,7 @@
 ---
 created: "2026-11-11"
-updated: "2026-11-11"
-last_updated_session: "authoring-run/9239da57-dcad-427a-82aa-c7d64376fdc5"
+updated: "2026-11-12"
+last_updated_session: "authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057"
 ---
 
 # Interrupted preflight cleanup flow
@@ -21,7 +21,7 @@ migration recovery.
 ## Entry Points
 
 - `scripts/upgrade-production-images:preflight_startup` and
-  `scripts/upgrade-production-images:preflight_migration` register creation plans
+  `scripts/upgrade-production-images:preflight_resume` register creation plans
   during the normal upgrade workflow.
 - `scripts/upgrade-production-images` selects cleanup mode after argument parsing.
 - `scripts/upgrade-preflight-state.py:inspect` validates original evidence and
@@ -58,8 +58,10 @@ recovery.
 
 `preflight_startup` renders resources and registers a complete
 `preflight-plan.json`: API, worker and migration Jobs, a Secret and an optional
-NetworkPolicy. `preflight_migration` registers a separate plan under each
-`migration-preflight-resume.*` directory. Each registry entry binds the physical
+NetworkPolicy. `preflight_resume` registers the same resource slots under each
+`upgrade-preflight-resume.*` directory; API/worker Jobs run identity-only checks.
+Historical `migration-preflight-resume.*` plans retain their single migration slot;
+cleanup still requires the original helper hashes. Each registry entry binds the physical
 attempt directory and plan hash. The plan is synced before the updated root
 registry is published and synced.
 
@@ -153,5 +155,7 @@ reconciling database, release and workload state. Cleanup never authorizes resum
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 07:07: Register three-Job resume attempts and retain historical migration-only cleanup. (authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057 - c7da19f78a8125fe0a7dec649b5417a23ded1d8e)
 
 - 2026-11-11 12:30: Document durable preflight plans and explicit cleanup after interruption. (authoring-run/9239da57-dcad-427a-82aa-c7d64376fdc5 - e961361d56537b17f361347b097d075f5e608fb1)

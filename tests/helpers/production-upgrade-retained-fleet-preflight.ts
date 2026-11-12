@@ -448,9 +448,9 @@ export function registerRetainedFleetPreflightTests(
         assert.equal(existsSync(join(f.evidence, "helm-started")), false);
         await f.run("--resume");
         const [retry] = (await readdir(f.evidence)).filter((name) =>
-          name.startsWith("migration-preflight-resume."),
+          name.startsWith("upgrade-preflight-resume."),
         );
-        assert.ok(retry && existsSync(join(f.evidence, retry, "migration-preflight-passed")));
+        assert.ok(retry && existsSync(join(f.evidence, retry, "startup-preflight-passed")));
         assert.equal((await f.state()).inventoryReadCount, count);
         assert.equal((await f.events()).filter((event) => event.startsWith("scale-")).length, 2);
         assert.equal((await f.state()).dispatches, 0);

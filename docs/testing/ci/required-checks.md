@@ -26,6 +26,12 @@ test-only pull requests select affected lanes, including TypeScript test checks.
 Other changes run the ordinary lane matrix. Failed main-push CI also prevents release workflows
 that require successful CI for that source.
 
+For a main push that modifies one registered test, the `CI main test advisory v2`
+notice in `CI Impact` can list the predicted lanes and the verified before and
+after commits. A broad notice without commit IDs leaves the range unverified.
+If the notice is missing, no prediction was received. Test-only main pushes
+still run full CI.
+
 Documentation-only changes include regular, non-executable `.png` illustrations
 under `specs/rfcs/`. Images elsewhere and other image extensions still select full
 CI. Mixing an RFC image with runtime or tooling changes also selects full CI.
@@ -58,6 +64,46 @@ lint, format, OpenAPI, documentation checks, and the documentation build.
 Affected Packages reports impact; `CI Required` aggregates required results. Manual Native Container Verification calls the
 [native image workflow](../../../.github/workflows/container-check.yml). The [CI flow](../../flows/github-actions-testing.md)
 explains these jobs; the PR-controlled workflow is not independent trusted enforcement.
+
+### Compare a shadow prediction with the jobs that ran
+
+On a full pull-request run, download the `affected-lanes-ATTEMPT` artifact from
+Affected Packages. The JSON identifies the tested merge, its first parent
+(`base`), and its second parent (`head`). A change confined to the Controller's
+`console-assets.ts` reader can report candidate CI lanes and the standalone
+Console Storybook build. Other paths, additional affected packages, or missing
+evidence produce a broad prediction. A mixed change that touches the reader can
+still list its known consumers. These hints cover only that module. A changed
+Storybook workflow, asset preparer, or either package script that connects them
+requires fresh verification before the report can list Storybook again. A missing artifact
+leaves the prediction unknown. CI still executes its ordinary checks.
+
+For a completed run, set `run` and `attempt` to its numeric IDs. From the
+repository checkout, use GitHub CLI, jq, and yq (v4) to compare the artifact
+with the original attempt. Independently confirm the workflow commit from the
+original job before attributing its matrix to the run. The artifact is produced
+by pull-request code. If the workflow commit cannot be confirmed, the lane
+comparison remains unverified.
+
+```sh
+gh run download "$run" --name "affected-lanes-$attempt" --dir "shadow-$run-$attempt"
+receipt="shadow-$run-$attempt/affected-lanes.json"
+head=$(gh api "repos/{owner}/{repo}/actions/runs/$run/attempts/$attempt" --jq '.head_sha') || exit 1
+workflow=$(jq -er --arg run "$run" --arg attempt "$attempt" --arg head "$head" '
+  select(.run.runId == $run and .run.attempt == $attempt and .identity.head == $head)
+  | .run.workflowSha | select(type == "string" and test("\\A([0-9a-f]{40}|[0-9a-f]{64})\\z"))' "$receipt") || exit 1
+git show "$workflow:.github/workflows/ci.yml" |
+  yq -r '.jobs.impact.steps[] | select(.id == "matrix") | .env.LANE_TABLE' |
+  jq --slurpfile r "$receipt" '[.[] | select(.lane as $id | $r[0].lanes | index($id)) | .title]' > "shadow-$run-$attempt/titles.json"
+gh api --paginate "repos/{owner}/{repo}/actions/runs/$run/attempts/$attempt/jobs?per_page=100" |
+  jq --slurpfile titles "shadow-$run-$attempt/titles.json" '.jobs[] | {name, conclusion, started_at, completed_at, listed_consumer: (.name as $name | $titles[0] | index($name) != null)}'
+```
+
+Inspect every failed or incomplete job, including those outside the candidate
+set. For the separate Storybook workflow, match the original pull-request head
+and base against its run before comparing the build conclusion and timestamps.
+The timestamps measure the original jobs. A candidate prediction alone supplies
+no measurement of time saved.
 
 <a id="run-it"></a>
 

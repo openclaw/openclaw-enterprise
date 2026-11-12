@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { Script } from "node:vm";
 import {
-  AGENT_WITH_NODE_ENTRYPOINT,
+  COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -16,7 +16,7 @@ const require = createRequire(import.meta.url);
 
 // Execute the actual emitted asset initialization definitions, before startup can
 // open listeners or run child processes. No production-only export is needed.
-function publisher(home: string, io: object = fs, entrypoint = AGENT_WITH_NODE_ENTRYPOINT) {
+function publisher(home: string, io: object = fs, entrypoint = COMPUTE_AGENT_WITH_NODE_ENTRYPOINT) {
   const end = entrypoint.indexOf("\nconst startupPhaseOrigin =");
   assert.ok(end > 0);
   return new Script(`${entrypoint.slice(0, end)}\npublishImageTree;`).runInNewContext({
@@ -180,10 +180,10 @@ test("runtime asset publication refuses a destination symlink before clearing it
   // Run the emitted supervisor through its startup call. Map only image paths
   // into the fixture and stop before the supervisor starts its child processes.
   const startupCall = "\ninitializeRuntimeAssets();";
-  const start = AGENT_WITH_NODE_ENTRYPOINT.indexOf(startupCall);
+  const start = COMPUTE_AGENT_WITH_NODE_ENTRYPOINT.indexOf(startupCall);
   assert.ok(start > 0);
   const startup = new Script(
-    AGENT_WITH_NODE_ENTRYPOINT.slice(0, start + startupCall.length)
+    COMPUTE_AGENT_WITH_NODE_ENTRYPOINT.slice(0, start + startupCall.length)
       .replace('"/app/skills"', JSON.stringify(source))
       .replace('"/app/custodian-skills"', JSON.stringify(join(home, "missing-custodian")))
       .replace('"/app/plugin-skills"', JSON.stringify(join(home, "missing-plugin"))),

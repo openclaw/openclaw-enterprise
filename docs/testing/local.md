@@ -47,6 +47,23 @@ pnpm cli:build
 node --test tests/integration/first-agent-startup.test.mjs
 ```
 
+## Check packaged OpenShell Workspace resources
+
+With Helm and `jq` installed, point the test at a directory containing the
+stock OpenShell `0.1.8` packages `helm-chart-0.1.8.tgz` and
+`openshell-workspace-0.1.8.tgz`.
+
+```sh
+OCC_TEST_OPENSHELL_STOCK_CHART_DIRECTORY=/path/to/stock/charts \
+  go test -count=1 -tags openshell_chart_integration ./internal/occdev \
+  -run '^TestOpenShellPackagedWorkspaceResources$'
+```
+
+The test checks both package versions and compares the Workspace chart rendered
+by the launcher with the quickstart resources, including RBAC and RoleBinding.
+The tagged run fails if its inputs are missing. It uses local files and Helm
+rendering without a cluster. The baseline Go lane runs without this build tag.
+
 ## Linting and formatting
 
 Use `pnpm lint:fix` and `pnpm format:fix` to apply fixes; review the diff and
@@ -323,13 +340,13 @@ traces, or credentials.
 
 For the separate `k3d-otel` model lane, set `OCC_TEST_OPENAI_MODEL`, a
 digest-pinned `NODE_BASE_IMAGE`, and an existing authorized `OPENAI_API_KEY`.
-Use a matching installed dependency graph and a fresh state directory:
+Run from the checkout root with a fresh state directory.
 
 ```sh
 OBS_LANE=k3d-otel
 OBS_RUN_DIR=$(mktemp -d)
-pnpm_config_verify_deps_before_run=false node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
-  pnpm_config_verify_deps_before_run=false node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+corepack pnpm exec node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+  corepack pnpm exec node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
 Inspect results and clean up as above. The model lane checks embedded and
@@ -359,7 +376,7 @@ real native sender image and requires `OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE` in
 its prepared state. To run both installed cases in that environment:
 
 ```sh
-OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.mjs
+OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.ts
 ```
 
 Both cases must pass. The receiver writes decoded OTLP to a temporary volume.

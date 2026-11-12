@@ -45,19 +45,17 @@ function render(loginMode, node, initialSetup, environment = {}, scratch) {
     undefined,
     undefined,
     undefined,
-    scratch !== undefined,
+    {
+      providerOwned: scratch !== undefined,
+      protected: false,
+      withNode: node === "setup-file",
+      workspaceSetup: initialSetup,
+    },
     scratch,
   );
   const revision = { agentId: owner.agentId, configuration: { agents: { defaults: {} } } };
   if (node === "setup-file") {
-    driver.addWorkspaceNode(
-      deployment,
-      nodeName,
-      undefined,
-      revision,
-      true,
-      initialSetup ? setup : undefined,
-    );
+    driver.addWorkspaceNode(deployment, nodeName, undefined, revision, true);
   }
   if (node === "native") {
     driver.addNativeWorker(deployment, nodeName, undefined);
@@ -250,6 +248,12 @@ test("scratch projection keeps the durable workspace and requires its exact admi
     claimName: "operator-scratch",
     claimUid: "scratch-uid",
   };
+  const command = (binding) => render("api_key", "none", false, {}, binding).pod.containers[0].args;
+  assert.notDeepEqual(
+    command(scratch),
+    command(),
+    "scratch must exercise the provider-owned Harness",
+  );
   const { driver, deployment, pod } = render("api_key", "native", false, {}, scratch);
   const mounts = pod.containers[0].volumeMounts;
   const projected = driver.harnessRequirementsFromDeployment(
@@ -377,6 +381,11 @@ test("scratch admission pins exact scope and never inherits a later operator sel
   ]);
   const withoutScratch = scratchRevision(scratchCompute());
   assert.deepEqual(replacement.scratchAdmission(admitted).binding, operatorBinding);
+  assert.equal(
+    replacement.codexLaunch(admitted, replacement.sandboxDriver).openShellProgram,
+    "ordinary",
+  );
+  assert.equal(replacement.runtimeAdmission(admitted), undefined);
   assert.equal(original.scratchAdmission(withoutScratch).binding, undefined);
   assert.equal(
     scratchCompute().scratchAdmission(admitted).runtime,
@@ -395,6 +404,41 @@ test("scratch admission pins exact scope and never inherits a later operator sel
     () => original.scratchAdmission({ ...admitted, agentId: "foreign" }),
     /scratch volume admission is invalid/,
   );
+});
+
+test("saved scratch admissions preserve legacy launch selection and reject misordered launch markers", () => {
+  const driver = scratchCompute([operatorBinding]);
+  const revision = scratchRevision(driver);
+  const prefix = "scratch:v1:";
+  const { runtime, binding } = JSON.parse(revision.compute.admission.slice(prefix.length));
+  const marker = "openshell-codex-launch:v1:";
+  assert.match(runtime, /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:$/);
+  const provider = runtime.slice(0, -marker.length);
+  const saved = (value) => ({
+    ...revision,
+    compute: {
+      ...revision.compute,
+      admission: prefix + JSON.stringify({ binding, runtime: value }),
+    },
+  });
+
+  const legacy = saved(provider);
+  assert.deepEqual(driver.scratchAdmission(legacy).binding, operatorBinding);
+  assert.equal(driver.codexLaunch(legacy, driver.sandboxDriver).openShellProgram, undefined);
+  const protectedRuntime = "protected-codex-no-connection-retry:v1";
+  for (const launch of [provider, runtime]) {
+    assert.equal(driver.runtimeAdmission(saved(launch + protectedRuntime)), protectedRuntime);
+  }
+  for (const invalid of [
+    marker + provider,
+    runtime + marker,
+    provider + "openshell-codex-launch:v2:",
+  ]) {
+    assert.throws(
+      () => driver.scratchAdmission(saved(invalid)),
+      /scratch volume admission is invalid/,
+    );
+  }
 });
 
 test("scratch configuration rejects shared allocation and malformed identity before admission", () => {

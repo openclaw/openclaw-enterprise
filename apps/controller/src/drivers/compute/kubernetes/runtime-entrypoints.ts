@@ -15,7 +15,7 @@ import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
-import { nodeProgramArguments } from "../node-program.ts";
+import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
@@ -2510,16 +2510,68 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 }
 `;
 
-const WORKSPACE_ASSET_HELPERS = String.raw`
-const assetFs = require("node:fs");
-const { existsSync, lstatSync, readdirSync, symlinkSync } = assetFs;
-const assetPath = require("node:path");
-const runtimeHomeDirectory = process.env.HOME || "/home/node";
+const WORKSPACE_ASSET_PATHS = String.raw`const runtimeHomeDirectory = process.env.HOME || "/home/node";
 if (!runtimeHomeDirectory.startsWith("/")) {
   throw new Error("The runtime HOME must be an absolute path.");
 }
 const runtimeAssetsDirectory = runtimeHomeDirectory + "/openclaw-runtime-assets";
-const runtimeOpenClawDirectory = runtimeHomeDirectory + "/.openclaw";
+const runtimeOpenClawDirectory = runtimeHomeDirectory + "/.openclaw";`;
+
+const WORKSPACE_ASSET_VALIDATION = String.raw`function publishImageTree(source, destination, required) {
+  if (!existsSync(source)) {
+    if (required) {
+      throw new Error("Required runtime asset tree is missing: " + source);
+    }
+    clearDirectoryContents(destination);
+    return;
+  }
+  if (!lstatSync(source).isDirectory()) {
+    throw new Error("Runtime asset tree is not a directory: " + source);
+  }
+  if (required && readdirSync(source).length === 0) {
+    throw new Error("Required runtime asset tree is empty: " + source);
+  }
+  mkdirSync(runtimeAssetsDirectory, { recursive: true });
+  clearDirectoryContents(destination);`;
+
+const WORKSPACE_ASSET_INITIALIZATION = String.raw`function initializeRuntimeAssets() {
+  publishImageTree("/app/skills", runtimeAssetsDirectory + "/bundled-skills", true);
+  publishImageTree("/app/custodian-skills", runtimeAssetsDirectory + "/custodian-skills", false);
+  publishImageTree("/app/plugin-skills", runtimeAssetsDirectory + "/plugin-skills", false);
+  process.env.OPENCLAW_BUNDLED_SKILLS_DIR = runtimeAssetsDirectory + "/bundled-skills";
+}
+
+function publishAgentPluginSkillPath() {
+  mkdirSync(runtimeOpenClawDirectory, { recursive: true });
+  rmSync(runtimeOpenClawDirectory + "/plugin-skills", { recursive: true, force: true });
+  symlinkSync(runtimeAssetsDirectory + "/plugin-skills", runtimeOpenClawDirectory + "/plugin-skills", "dir");
+}`;
+
+// Stored Sandbox commands must keep the exact asset helper bytes they were admitted with.
+const LEGACY_WORKSPACE_ASSET_HELPERS = String.raw`
+const { cpSync, existsSync, lstatSync, readdirSync, symlinkSync } = require("node:fs");
+${WORKSPACE_ASSET_PATHS}
+
+function clearDirectoryContents(directory) {
+  mkdirSync(directory, { recursive: true });
+  for (const entry of readdirSync(directory)) {
+    rmSync(join(directory, entry), { recursive: true, force: true });
+  }
+}
+
+${WORKSPACE_ASSET_VALIDATION}
+  cpSync(source, destination, { recursive: true });
+}
+
+${WORKSPACE_ASSET_INITIALIZATION}
+
+`;
+
+const WORKSPACE_ASSET_HELPERS = String.raw`
+const assetFs = require("node:fs");
+const { existsSync, lstatSync, readdirSync, symlinkSync } = assetFs;
+const assetPath = require("node:path");
+${WORKSPACE_ASSET_PATHS}
 
 function clearDirectoryContents(directory) {
   const existing = lstatSync(directory, { throwIfNoEntry: false });
@@ -2606,22 +2658,7 @@ function copyImageDirectory(source, destination, staged) {
   }
 }
 
-function publishImageTree(source, destination, required) {
-  if (!existsSync(source)) {
-    if (required) {
-      throw new Error("Required runtime asset tree is missing: " + source);
-    }
-    clearDirectoryContents(destination);
-    return;
-  }
-  if (!lstatSync(source).isDirectory()) {
-    throw new Error("Runtime asset tree is not a directory: " + source);
-  }
-  if (required && readdirSync(source).length === 0) {
-    throw new Error("Required runtime asset tree is empty: " + source);
-  }
-  mkdirSync(runtimeAssetsDirectory, { recursive: true });
-  clearDirectoryContents(destination);
+${WORKSPACE_ASSET_VALIDATION}
   // Keep incomplete files private on both ordinary and restricted Node.
   // This runtime's private volume contains the staging directory. Creating it
   // inside the target also preserves its filesystem and inherited group.
@@ -2630,18 +2667,7 @@ function publishImageTree(source, destination, required) {
     staging => copyImageDirectory(source, destination, join(staging, "file")));
 }
 
-function initializeRuntimeAssets() {
-  publishImageTree("/app/skills", runtimeAssetsDirectory + "/bundled-skills", true);
-  publishImageTree("/app/custodian-skills", runtimeAssetsDirectory + "/custodian-skills", false);
-  publishImageTree("/app/plugin-skills", runtimeAssetsDirectory + "/plugin-skills", false);
-  process.env.OPENCLAW_BUNDLED_SKILLS_DIR = runtimeAssetsDirectory + "/bundled-skills";
-}
-
-function publishAgentPluginSkillPath() {
-  mkdirSync(runtimeOpenClawDirectory, { recursive: true });
-  rmSync(runtimeOpenClawDirectory + "/plugin-skills", { recursive: true, force: true });
-  symlinkSync(runtimeAssetsDirectory + "/plugin-skills", runtimeOpenClawDirectory + "/plugin-skills", "dir");
-}
+${WORKSPACE_ASSET_INITIALIZATION}
 
 `;
 
@@ -4097,22 +4123,65 @@ function codexReadinessFailure(url, token) {
 }
 `;
 
+// Only newly admitted OpenShell PAT launches carry this transcript rule.
+const OPENSHELL_PAT_RECOVERY = String.raw`
+    function openShellPatRecovery(events) {
+      if (!providerManagedPat || protectedStartup || pluginRuntime?.manifest.providerTools === "none" ||
+          pluginRuntime?.manifest.modelEndpoint !== undefined) return;
+      // The released supervisor emits this exact object in either key order.
+      const error = "unsupported_l7_protocol";
+      const detail = "HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules";
+      const refusals = [{ error, detail }, { detail, error }].map(
+        (body) => "unexpected status 403 Forbidden: " + JSON.stringify(body) + ", url: wss://chatgpt.com/backend-api/codex/responses");
+      const errors = events.filter((event) => event.type === "error");
+      const upgrades = new Set(errors.filter(({ message }) => {
+        const retry = typeof message === "string" &&
+          /^Reconnecting\.\.\. ([1-9][0-9]?)\/([1-9][0-9]?) \(/.exec(message);
+        return retry && Number(retry[1]) <= Number(retry[2]) &&
+          Number(retry[2]) <= MAX_RECOVERED_STREAM_RETRIES &&
+          refusals.some((cause) => message === retry[0] + cause + ")");
+      }));
+      const advisories = new Set(events.filter((event) => event.type === "item.completed" &&
+        event.item?.type === "error" && refusals.some(
+          (cause) => event.item.message === "Falling back from WebSockets to HTTPS transport. " + cause)));
+      const advisoryIndex = events.findIndex((event) => advisories.has(event));
+      const singleThread = events[0]?.type === "thread.started" &&
+        !events.slice(1).some((event) => event.type === "thread.started");
+      const answerStart = singleThread && upgrades.size === errors.length && advisories.size === 1 &&
+        advisoryIndex > events.findLastIndex((event) => upgrades.has(event)) ? advisoryIndex + 1 : undefined;
+      return {
+        upgrades,
+        answerStart,
+        afterHttpsAdvisory(event) {
+          const boundary = events.slice(0, events.indexOf(event)).findLast((prior) =>
+            advisories.has(prior) || upgrades.has(prior) ||
+            ["thread.started", "turn.started", "turn.completed"].includes(prior.type));
+          return advisories.has(boundary);
+        },
+      };
+    }
+    const pat = openShellPatRecovery(events);
+    let deniedUpgrade;
+`;
+
 // Nested Codex children use their own plugin lifecycle. Keep standalone commands
 // stable while omitting the unused native installer from the bounded supervisor.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
-function agentRuntimeEntrypoint(
-  disableUnboundedConnectionRetries: boolean,
+function agentRuntimeEntrypoint({
+  protected: disableUnboundedConnectionRetries = false,
   computeOwned = false,
-  includeOpenClawInstaller = true,
-): string {
+  withNode = false,
+  patRecovery = false,
+} = {}): string {
+  const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${pluginRuntimeHelpers(includeOpenClawInstaller)}
+${pluginRuntimeHelpers(!withNode)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
@@ -4555,11 +4624,19 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     // of an attempt that exits 0 with an answer counts as recovered, like a stream notice.
     let transientFailure;
     let unrecoveredTransientFailure = false;
-    for (const event of events) {
+${patRecovery ? OPENSHELL_PAT_RECOVERY : ""}    for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
       const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event", modelId)
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed", modelId) : undefined;
-      // A protected profile (provider tools none) retries nothing, so its transient
+${
+  patRecovery
+    ? `      const upgradeDenied = pat?.upgrades.has(event);
+      if (event.type === "error" && typeof event.message === "string" &&
+          !event.message.startsWith("Reconnecting...") && codexAuthenticationRejected(event.message) &&
+          pat?.afterHttpsAdvisory(event)) return finish("AUTHENTICATION_FAILED");
+`
+    : ""
+}      // A protected profile (provider tools none) retries nothing, so its transient
       // failure is held like any other error event (finding 1599).
       if (failure?.transient === true && pluginRuntime?.manifest.providerTools !== "none") {
         transientFailure ??= failure;
@@ -4567,9 +4644,9 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
         continue;
       }
       if (event.type === "error") {
-        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
+        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || ${patRecovery ? "(!upgradeDenied && !isRecoveredNativeStreamError(event))" : "!isRecoveredNativeStreamError(event)"} ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(failure);
-        continue;
+${patRecovery ? "        if (upgradeDenied) deniedUpgrade = failure;\n" : ""}        continue;
       }
       if (event.type === "turn.failed") return finish(failure);
       if (!allowed.has(event.type) ||
@@ -4581,14 +4658,22 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     const answered = events.filter((event) => event.type === "turn.completed").length === 1 &&
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
-      events.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
+      events${patRecovery ? ".slice(deniedUpgrade === undefined ? 0 : pat.answerStart)" : ""}.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
         typeof event.item.text === "string" && event.item.text.trim().length > 0);
-    if (transientFailure !== undefined &&
-      (unrecoveredTransientFailure || !answered || result.status !== 0 || result.error)) return finish(transientFailure);
+${
+  patRecovery
+    ? `    const cleanExit = result.status === 0 && !result.error && (deniedUpgrade === undefined || !result.signal);
+    if (deniedUpgrade !== undefined && (pat.answerStart === undefined || !answered || !cleanExit)) {
+      return finish(deniedUpgrade);
+    }
+`
+    : ""
+}    if (transientFailure !== undefined &&
+      (unrecoveredTransientFailure || !answered || ${processFailed})) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.
     if (result.error?.code === "ETIMEDOUT") return finish("MODEL_PROBE_TIMEOUT");
     // A probe killed from outside (not by its own timeout) may pass on a second try.
-    if (result.status !== 0 || result.error) {
+    if (${processFailed}) {
       const exit = probeExitFailure(result);
       return finish(result.error === undefined && ["SIGKILL", "SIGTERM"].includes(result.signal) ? { ...exit, transient: true } : exit);
     }
@@ -4791,12 +4876,15 @@ if (!protectedStartup) {
 `;
 }
 
-export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
-export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint();
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ protected: true });
 // Compute owns these mutable Pod/process launches. Provider-owned immutable
 // Sandbox commands keep their existing bytes and provider readiness contract.
-export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false, true);
-export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true, true);
+export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ computeOwned: true });
+export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({
+  computeOwned: true,
+  protected: true,
+});
 
 const WORKSPACE_NODE_SETUP_CODE_HELPER = String.raw`
 // Match OpenShell's provider-file limit and the native connect target-file limit.
@@ -4878,16 +4966,13 @@ function completeSetupCode(payload) {
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 
-function agentWithNodeEntrypoint(
-  entrypoint: string,
-  childCodec: "deflate" | "brotli" = "deflate",
-): string {
+function agentWithNodeEntrypoint(childArguments: readonly string[], assetHelpers: string): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
-${WORKSPACE_ASSET_HELPERS}
+${assetHelpers}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
 // The Codex child serves this container's runtime status, and it starts only after the
@@ -5196,7 +5281,7 @@ const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
   {
     name: "Codex",
-    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint, childCodec)])},
+    args: ${JSON.stringify(["-e", ...childArguments])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
@@ -5329,29 +5414,114 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
+const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
+const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(false, false, false),
+  nodeProgramArguments(providerCodexChild),
+  LEGACY_WORKSPACE_ASSET_HELPERS,
 );
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(true, false, false),
-  "brotli",
+  nodeProgramArguments(protectedProviderCodexChild),
+  LEGACY_WORKSPACE_ASSET_HELPERS,
 );
-
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(false, true, false),
+  nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, computeOwned: true })),
+  WORKSPACE_ASSET_HELPERS,
 );
 export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(true, true, false),
+  nodeProgramArguments(
+    agentRuntimeEntrypoint({ withNode: true, computeOwned: true, protected: true }),
+  ),
+  WORKSPACE_ASSET_HELPERS,
 );
 
-export const NATIVE_WORKER_ENTRYPOINT = String.raw`
+let patEntrypoint: string | undefined;
+const providerNodeLaunches = new Map<string, string>();
+
+function providerNodeLaunch(
+  mode: "pat" | "ordinary" | "protected",
+  completeAssetCopies: boolean,
+): string {
+  const key = `${mode}:${completeAssetCopies}`;
+  const cached = providerNodeLaunches.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  let child = mode === "protected" ? protectedProviderCodexChild : providerCodexChild;
+  if (mode === "pat") {
+    child = agentRuntimeEntrypoint({ withNode: true, patRecovery: true });
+  }
+  const rendered = agentWithNodeEntrypoint(
+    compactNodeChildArguments(child),
+    completeAssetCopies ? WORKSPACE_ASSET_HELPERS : LEGACY_WORKSPACE_ASSET_HELPERS,
+  );
+  providerNodeLaunches.set(key, rendered);
+  return rendered;
+}
+
+export interface CodexLaunch {
+  readonly providerOwned: boolean;
+  readonly protected: boolean;
+  readonly openShellProgram?: "pat" | "ordinary";
+  readonly completeAssetCopies?: boolean;
+  readonly withNode?: boolean;
+  readonly workspaceSetup?: boolean;
+}
+
+export function codexLaunchEntrypoint(
+  {
+    providerOwned,
+    protected: protectedLaunch,
+    openShellProgram,
+    completeAssetCopies = false,
+    withNode,
+    workspaceSetup,
+  }: CodexLaunch = { providerOwned: false, protected: false },
+): string {
+  if (!providerOwned) {
+    if (protectedLaunch) {
+      return withNode
+        ? COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+        : COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
+    }
+    return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
+  }
+  const pat = !protectedLaunch && openShellProgram === "pat";
+  if (!withNode) {
+    if (pat) {
+      return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
+    }
+    return protectedLaunch ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (pat) {
+    return providerNodeLaunch("pat", completeAssetCopies);
+  }
+  // A new copier also adds to the command budget when no workspace setup is needed.
+  if (completeAssetCopies || (workspaceSetup && openShellProgram !== undefined)) {
+    const mode = protectedLaunch ? "protected" : "ordinary";
+    return providerNodeLaunch(mode, completeAssetCopies);
+  }
+  return protectedLaunch ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT;
+}
+
+export function nativeWorkerEntrypoint(launch: CodexLaunch | undefined): string {
+  return launch?.providerOwned && launch.completeAssetCopies !== true
+    ? LEGACY_NATIVE_WORKER_ENTRYPOINT
+    : NATIVE_WORKER_ENTRYPOINT;
+}
+
+const LEGACY_NATIVE_WORKER_ENTRYPOINT = renderNativeWorker(LEGACY_WORKSPACE_ASSET_HELPERS);
+export const NATIVE_WORKER_ENTRYPOINT = renderNativeWorker(WORKSPACE_ASSET_HELPERS);
+
+function renderNativeWorker(assetHelpers: string): string {
+  return String.raw`
 const { join } = require("node:path");
 const { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${MANAGED_INSTALL_HELPERS}
 ${MANAGED_PLUGIN_CREDENTIAL_HELPER}
-${WORKSPACE_ASSET_HELPERS}
+${assetHelpers}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
 
@@ -5663,6 +5833,7 @@ if (initialSetupCode !== undefined) startWorker(initialSetupCode);
 });
 }
 `;
+}
 
 // Docker Compute runs the remaining Codex readiness program as a healthcheck.
 // It emits only a fixed-vocabulary reason when the container is unready.

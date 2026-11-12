@@ -4,6 +4,7 @@ import type { RepositoryCredentialSessionFiles } from "@openclaw-enterprise/cont
 import type { RepositoryCredentialClientConfiguration } from "../../../access/client-contracts.ts";
 import {
   isValidGitClientConnection,
+  isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
 } from "../../../access/client-contracts.ts";
 import type { RepositoryCredentialSessionResult } from "../../../access/service-contracts.ts";
@@ -69,10 +70,7 @@ function validateClient(client: RepositoryCredentialClientConfiguration): void {
     !isValidGitClientConnection(origin, remote, client) ||
     !/^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\.git$/.test(remote.pathname) ||
     remote.pathname.includes("..") ||
-    !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) ||
-    client.apiHost !== origin.hostname ||
+    !isValidGitClientUsernameAndHosts(origin, client) ||
     !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(client.repository) ||
     client.repository.length > 512 ||
     client.repository.includes("..") ||
@@ -114,9 +112,11 @@ export function encodeRepositoryCredentialSessionFiles(
       "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n",
     "gh/hosts.yml": ghHosts(opened.client, opened.bearer),
     "gh/config.yml": "version: 1\nprompt: disabled\ngit_protocol: https\n",
+    // Git loads this file as sslCAInfo. A leading UTF-8 BOM is not part of the
+    // certificate; keeping it makes Git reject the file before the handshake.
     ...(publicCa === undefined
       ? {}
-      : { "ca.pem": new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(publicCa) }),
+      : { "ca.pem": new TextDecoder("utf-8", { fatal: true }).decode(publicCa) }),
   };
 }
 

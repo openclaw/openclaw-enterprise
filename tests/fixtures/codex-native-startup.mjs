@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { codexLaunchEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
@@ -300,6 +300,7 @@ export function createCodexStartup(
               } else {
                 assert.ok(args.includes("exec"));
                 if (protectedInference) {
+                  assert.equal(args[args.indexOf("unbounded_connection_retries") - 1], "--disable");
                   for (const argument of [
                     "--ignore-user-config",
                     "model_providers.openai-compatible.request_max_retries=0",
@@ -342,6 +343,9 @@ export function createCodexStartup(
           spawn(command, args, options) {
             assert.equal(command, "codex");
             assert.ok(args.includes("app-server"));
+            if (protectedInference) {
+              assert.equal(args[args.indexOf("unbounded_connection_retries") - 1], "--disable");
+            }
             // Plugin reviewer validation must observe the admitted model, not a native default.
             assert.ok(args.includes('model="gpt-4.1"'));
             assert.equal(args[args.indexOf("--ws-token-sha256") + 1], tokenDigest);
@@ -368,8 +372,14 @@ export function createCodexStartup(
       return appServerStarts;
     },
     appServerSpawns,
-    start() {
-      vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+    start(
+      entrypoint = codexLaunchEntrypoint({
+        providerOwned: true,
+        protected: Boolean(protectedInference),
+        ...(providerPat && { openShellProgram: "pat" }),
+      }),
+    ) {
+      vm.runInNewContext(entrypoint, sandbox);
     },
     async releaseProtectedExecution() {
       // Exercise the generated Harness. Even an authenticated peer cannot release it by

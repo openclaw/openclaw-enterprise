@@ -14,10 +14,7 @@ import {
   redactFailureDetail,
 } from "../../scripts/ci/failure-redaction.mjs";
 import {
-  k3sImage,
-  kubectlVersion,
   prepareOpenShell,
-  prepareOpenShellClusterBootstrap,
   selectKubectlAsset,
   validateOpenShellSelection,
 } from "../../scripts/ci/openshell.mjs";
@@ -33,7 +30,7 @@ import {
   workerDiagnosticLines,
   workerFailureDetail,
   rethrowOpenShellFailure,
-} from "../helpers/k3d-failure-diagnostics.mjs";
+} from "../helpers/k3d-failure-diagnostics.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   createOpenShellInstallationConfiguration,
@@ -46,6 +43,10 @@ import {
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import {
+  registerOpenShellBootstrapCases,
+  registerOpenShellPreparationCases,
+} from "./ci-openshell-bootstrap-cases.ts";
 
 async function fixture(t, prefix = "ci-openshell-test") {
   const root = await temporaryDirectory(t, `${prefix}-`);
@@ -408,7 +409,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values use the v0.1.6 registry and digest contract", () => {
+test("OpenShell Helm chart image values use the registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
@@ -542,6 +543,54 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
     { activeRevisionId: revisionId },
     "initial activation keeps its existing pointer-first behavior",
   );
+});
+
+test("the OpenShell policy replacement timeout reports only the last recognized deployment status", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const agentPath = "/agents/agent";
+  const revisionId = "replacement";
+  const description = `Timed out waiting for OpenShell revision ${revisionId} activation`;
+  for (const [status, label] of [
+    ["queued", "queued"],
+    ["running", "running"],
+    ["succeeded", "succeeded"],
+    ["unrecognized status", undefined],
+    [{ value: "running" }, undefined],
+    [undefined, undefined],
+  ]) {
+    const deadline = Date.now() + 1;
+    let reads = 0;
+    await assert.rejects(
+      waitForOpenShellRevisionActivation(
+        (description, read) => waitFor(description, read, { timeoutMs: 1, intervalMs: 0 }),
+        {
+          request: async (method, path) => {
+            assert.equal(method, "GET");
+            if (path === agentPath) {
+              return { status: 200, data: { activeRevisionId: "previous" } };
+            }
+            assert.equal(path, `${agentPath}/deployments/${revisionId}`);
+            if (++reads === 1) {
+              return { status: 200, data: { status: "running" } };
+            }
+            t.mock.timers.setTime(deadline);
+            return { status: 200, data: { status } };
+          },
+          agentPath,
+          revisionId,
+          checkDeploymentBeforeActivation: true,
+          reportDeploymentStatusOnTimeout: true,
+        },
+      ),
+      {
+        message:
+          label === undefined
+            ? `${description}.`
+            : `${description} (last deployment status: ${label}).`,
+      },
+    );
+    assert.equal(reads, 2);
+  }
 });
 
 // Finding 1846: the worker can claim the work again between reads. The status is read only once
@@ -1467,100 +1516,7 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   }
 });
 
-test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl with runc", async (t) => {
-  const root = await fixture(t, "openshell-cluster-bootstrap-test");
-  const calls = [];
-
-  async function execFile(command, args) {
-    calls.push([command, args]);
-    return { stdout: "", stderr: "" };
-  }
-
-  const result = await prepareOpenShellClusterBootstrap({
-    directory: root,
-    execFile,
-    hostPlatform: "darwin",
-    hostArch: "arm64",
-    downloadArtifact: async (url, destination, sha256) => {
-      assert.match(url, /kubectl$/);
-      assert.equal(sha256.length, 64);
-      await writeFile(destination, "fake kubectl", { mode: 0o700 });
-    },
-  });
-
-  assert.deepEqual(result, {
-    k3sImage,
-    runtimeClass: "openshell-sandbox",
-    runtimeHandler: "runc",
-    kubectl: join(root, "bin", `kubectl-darwin-arm64-${kubectlVersion}`),
-    kubectlVersion,
-  });
-  assert.deepEqual(
-    calls.map(([command]) =>
-      command.endsWith("kubectl-darwin-arm64-v1.36.4") ? "kubectl" : command,
-    ),
-    ["kubectl"],
-  );
-  assert.deepEqual(calls[0][1], ["version", "--client=true"]);
-});
-
-test("prepareOpenShell rejects foreign clusters before kubectl, Docker, or image registration", async (t) => {
-  const root = await fixture(t, "foreign-openshell-test");
-  const calls = [];
-  let registerCalls = 0;
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster: {
-          name: "foreign",
-          directory: root,
-          kubeconfig: join(root, "kubeconfig"),
-          context: "foreign",
-        },
-        execFile: async (command, args) => {
-          calls.push([command, args]);
-          return { stdout: "", stderr: "" };
-        },
-        registerImage: async () => {
-          registerCalls += 1;
-        },
-        env: {},
-      }),
-    /unowned cluster|cluster\.name must be a Kubernetes DNS label/,
-  );
-
-  assert.deepEqual(calls, []);
-  assert.equal(registerCalls, 0);
-});
-
-test("prepareOpenShell rejects mutable OpenShell image overrides before kubectl or Docker", async (t) => {
-  const clusterName = "openclaw-k8s-openshell-test";
-  const root = await fixture(t, clusterName);
-  const calls = [];
-  let registerCalls = 0;
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster: ownedCluster(root, clusterName),
-        execFile: async (command, args) => {
-          calls.push([command, args]);
-          return { stdout: "", stderr: "" };
-        },
-        registerImage: async () => {
-          registerCalls += 1;
-        },
-        env: {
-          OCC_TEST_OPENSHELL_GATEWAY_IMAGE: "ghcr.io/nvidia/openshell/gateway:latest",
-        },
-      }),
-    /OCC_TEST_OPENSHELL_GATEWAY_IMAGE must be an immutable image@sha256 reference/,
-  );
-
-  assert.deepEqual(calls, []);
-  assert.equal(registerCalls, 0);
-});
+registerOpenShellBootstrapCases({ fixture, ownedCluster });
 
 const execFileAsync = promisify(execFileCallback);
 
@@ -1622,11 +1578,11 @@ test("OpenShell stock selection accepts empty selectors and mirrors of released 
     },
     {
       OCC_TEST_OPENSHELL_GATEWAY_IMAGE:
-        "localhost/mirror/gateway@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+        "localhost/mirror/gateway@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
       OCC_TEST_OPENSHELL_SANDBOX_IMAGE:
-        "localhost/mirror/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+        "localhost/mirror/sandbox@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE:
-        "localhost/mirror/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+        "localhost/mirror/supervisor@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
     },
   ]) {
     assert.equal(await validateOpenShellSelection(env, execFile), null);
@@ -1887,141 +1843,4 @@ test("prepareOpenShell rejects source, chart, and image mismatches before cluste
   assert.equal(registerImage.mock.callCount(), 0);
 });
 
-test("prepareOpenShell fails before downloads when the RuntimeClass smoke Pod fails", async (t) => {
-  const clusterName = "openclaw-k8s-openshell-test";
-  const root = await fixture(t, clusterName);
-  const calls = [];
-  let registerCalls = 0;
-  const cluster = ownedCluster(root, clusterName);
-  const agentImage =
-    "localhost/openclaw-k8s-openshell-test/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-  async function execFile(command, args) {
-    calls.push([command, args]);
-    if (command === "docker" && args[0] === "exec") {
-      return {
-        stdout: "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.'runc']\n",
-        stderr: "",
-      };
-    }
-    if (
-      command === "kubectl" &&
-      args.includes("--dry-run=server") &&
-      args.some((arg) => arg.endsWith("openshell-psa-restricted-rejection.yaml"))
-    ) {
-      throw new Error(
-        'Error from server (Forbidden): pods "openshell-psa-violation" is forbidden: violates PodSecurity "restricted:latest": privileged',
-      );
-    }
-    if (command === "kubectl" && args.includes("--for=jsonpath={.status.phase}=Succeeded")) {
-      throw new Error("pod reached Failed phase");
-    }
-    if (command === "kubectl" && args.includes("describe")) {
-      return { stdout: "FailedCreatePodSandBox runc unavailable", stderr: "" };
-    }
-    return { stdout: "", stderr: "" };
-  }
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster,
-        execFile,
-        registerImage: async () => {
-          registerCalls += 1;
-        },
-        env: {
-          OCC_KUBECTL_BIN: "kubectl",
-          OCC_HELM_BIN: "helm",
-          OCC_DOCKER_BIN: "docker",
-          OCC_TEST_KUBERNETES_AGENT_IMAGE: agentImage,
-        },
-      }),
-    /FailedCreatePodSandBox runc unavailable/,
-  );
-
-  assert.equal(registerCalls, 0);
-  assert.equal(
-    calls.some(([command]) => command === "tar"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "helm" && args[0] === "pull"),
-    false,
-  );
-  assert.ok(
-    calls.some(
-      ([command, args]) =>
-        command === "kubectl" &&
-        args.includes("delete") &&
-        args.includes("openshell-runtimeclass-smoke"),
-    ),
-  );
-
-  const manifest = await readFile(
-    join(root, "openshell", "openshell-runtimeclass-smoke.yaml"),
-    "utf8",
-  );
-  assert.match(manifest, /runtimeClassName: openshell-sandbox/);
-  assert.match(manifest, new RegExp(`image: "${agentImage}"`));
-  assert.match(manifest, /imagePullPolicy: Never/);
-});
-
-test("prepareOpenShell fails before downloads when the k3d node lacks the selected handler", async (t) => {
-  const clusterName = "openclaw-k8s-openshell-test";
-  const root = await fixture(t, clusterName);
-  const calls = [];
-  let registerCalls = 0;
-  const cluster = ownedCluster(root, clusterName);
-
-  async function execFile(command, args) {
-    calls.push([command, args]);
-    if (command === "docker" && args[0] === "exec") {
-      return { stdout: "", stderr: "" };
-    }
-    return { stdout: "", stderr: "" };
-  }
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster,
-        execFile,
-        registerImage: async () => {
-          registerCalls += 1;
-        },
-        env: {
-          OCC_KUBECTL_BIN: "kubectl",
-          OCC_HELM_BIN: "helm",
-          OCC_DOCKER_BIN: "docker",
-        },
-      }),
-    /does not advertise that handler/,
-  );
-
-  assert.equal(registerCalls, 0);
-  assert.equal(
-    calls.some(([command]) => command === "tar"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "helm" && args[0] === "pull"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "docker" && args[0] !== "exec"),
-    false,
-  );
-  assert.deepEqual(
-    calls.filter(([command]) => command === "docker").map(([, args]) => args[1]),
-    [`k3d-${cluster.name}-server-0`],
-  );
-  for (const [, args] of calls.filter(([command]) => command === "kubectl")) {
-    assert.deepEqual(args.slice(0, 4), [
-      "--kubeconfig",
-      cluster.kubeconfig,
-      "--context",
-      cluster.context,
-    ]);
-  }
-});
+registerOpenShellPreparationCases({ fixture, ownedCluster });
