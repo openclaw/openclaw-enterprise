@@ -5,6 +5,13 @@ import { access, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  failureInputLimit,
+  failureSecrets,
+  redactFailureDetail,
+  redactLogLine,
+} from "../../scripts/ci/failure-redaction.mjs";
+import { selectComposeSubnet } from "./compose-network.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const cli = join(root, "bin", "occ");
@@ -138,7 +145,7 @@ export function startupFailureObservation() {
         }
         candidates++;
         const match =
-          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
+          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|controller-image-import|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
             line,
           );
         if (
@@ -186,6 +193,7 @@ function run(
     command === cli && args[0] === "dev" && args[1] === "up"
       ? startupFailureObservation()
       : undefined;
+  const startupSecrets = startup ? failureSecrets([process.env, environment]) : [];
   const observed = new Set();
   const commands = new Map();
   return new Promise((resolve, reject) => {
@@ -197,7 +205,10 @@ function run(
     });
     const output = [];
     let outputSize = 0;
+    let startupStderr = "";
+    let stderrTruncated = false;
     let phase;
+    let lastSetupPoint;
     let timedOut = false;
     let spawnCode;
     let killTimer;
@@ -215,6 +226,10 @@ function run(
       stream.on("data", (chunk) => {
         if (index === 0) {
           startup?.write(chunk);
+        } else if (startup) {
+          // Keep a bounded prefix: a tail could start inside a secret or PEM block.
+          stderrTruncated ||= startupStderr.length + chunk.length > failureInputLimit;
+          startupStderr = (startupStderr + chunk).slice(0, failureInputLimit);
         }
         if (collect && index === 0) {
           outputSize += Buffer.byteLength(chunk);
@@ -282,12 +297,15 @@ function run(
               previousFailedStage = timing[1];
             }
           }
-          lineClipped = false;
           const known = phases.find(([prefix]) => line.startsWith(prefix));
           if (known) {
             phase = known[1];
           }
-          const point = context && setupPoints.find(([prefix]) => line.startsWith(prefix));
+          const point =
+            context && !lineClipped && setupPoints.find(([prefix]) => line.startsWith(prefix));
+          if (startup && point) {
+            lastSetupPoint = point[1];
+          }
           if (point && !observed.has(point[1])) {
             observed.add(point[1]);
             context.diagnostic(
@@ -299,6 +317,7 @@ function run(
                 }),
             );
           }
+          lineClipped = false;
         }
       });
     }
@@ -345,9 +364,40 @@ function run(
                 : /^SIG[A-Z0-9]+$/.test(signal ?? "")
                   ? signal
                   : "an unknown signal");
-      const progress = phase ? "; last stage: " + phase : "";
-      // Raw output is never included: Compose and bootstrap can emit credentials.
-      reject(new Error(label + " " + status + progress + "; raw output withheld."));
+      const progress =
+        (phase ? "; last stage: " + phase : "") +
+        (lastSetupPoint ? "; last setup point: " + lastSetupPoint : "");
+      // Keep only complete lines before either redactor changes any text. Dropping
+      // that line and its suffix also withholds orphaned multiline secret values.
+      let safeEnd = startupStderr.length;
+      for (const redacted of [
+        redactLogLine(startupStderr, startupSecrets, failureInputLimit),
+        redactFailureDetail({ message: startupStderr }, startupSecrets, root)?.message ?? "",
+      ]) {
+        let index = 0;
+        while (index < safeEnd && startupStderr[index] === redacted[index]) {
+          index += 1;
+        }
+        if (index < safeEnd) {
+          safeEnd = startupStderr.lastIndexOf("\n", index - 1) + 1;
+        }
+      }
+      const detail = startupStderr.slice(0, safeEnd);
+      let diagnostic = "";
+      if (startup) {
+        diagnostic = detail
+          ? "\nStartup stderr (redacted): " +
+            detail.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/u, "")
+          : "\nStartup stderr: " +
+            (startupStderr ? "withheld at a redaction boundary." : "no output captured.");
+        if (detail && safeEnd < startupStderr.length) {
+          diagnostic += " [remaining stderr withheld at a redaction boundary]";
+        }
+        if (stderrTruncated || detail.length > 2_000) {
+          diagnostic += " [stderr truncated]";
+        }
+      }
+      reject(new Error(label + " " + status + progress + "; raw output withheld." + diagnostic));
     });
   });
 }
@@ -575,6 +625,20 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
     OCC_SERVICE_KEY_FILE: join(directory, "initial-admin-service-key.json"),
     OCC_URL: "http://127.0.0.1:" + controller,
   };
+  if (controlPlane === "compose") {
+    environment.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = await selectComposeSubnet({
+      runDocker: (args) =>
+        run(
+          "docker",
+          args,
+          withoutModelCredentials(environment),
+          "Read Compose network inventory",
+          minute,
+          true,
+        ),
+      subnet: environment.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR,
+    });
+  }
   const subprocessEnvironment = withoutModelCredentials(environment);
   const startupArguments = ["dev", "up"];
   if (sandboxDriver === "openshell") {

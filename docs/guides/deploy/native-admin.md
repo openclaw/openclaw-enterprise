@@ -21,7 +21,7 @@ browser onboarding and reopening the same conversation.
 
 ## Production requirements
 
-- Use password or OIDC sign-in with shared cookies, or guarded GitHub sign-in with host-only exchange. Google does not support native access; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
+- Use password or OIDC sign-in. Native access remains unavailable with Google; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
 - Private workspace routing already works for the target Agents. Private routing is enabled by default, but its controllers, GatewayClass, service-key Secret, and matching Installation settings must be ready. Helm rejects an explicit routing opt-out while native admin is enabled.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
@@ -45,7 +45,7 @@ agentNativeAdmin:
   domain: agents.oce.example.com
 ```
 
-For an installation that already uses guarded GitHub sign-in, select host-only
+For an installation that already uses guarded OIDC sign-in, select host-only
 exchange explicitly to keep the Console cookie off Agent hosts:
 
 ```yaml
@@ -55,7 +55,7 @@ agentNativeAdmin:
   domain: agents.oce.example.com
 ```
 
-Keep the existing GitHub sign-in and recovery-user settings. Console and Agent
+Keep the existing OIDC sign-in and recovery-user settings. Console and Agent
 hosts must use HTTPS on the same registrable site. Google sign-in, OIDC and
 sandbox preview cannot be combined with this mode. The exchange creates no user
 or grant; the signed-in person needs `operate` for chat or `administer` for
@@ -93,7 +93,7 @@ spec:
 
 The API refuses protected requests carrying `X-Forwarded-*` or `X-Real-IP`
 headers, which ingress-nginx adds, unless the sender is a trusted proxy: set
-[`api.trustedProxy`](../../reference/settings/production.md#github-sign-in-and-trusted-proxies)
+[`api.trustedProxy`](../../reference/settings/production.md#external-sign-in-and-trusted-proxies)
 to preset `ingress-nginx` with the ingress-nginx Pod CIDR (profile installs:
 [`controlPlane.trustedProxy`](installation-profiles.md#external-sign-in-and-trusted-proxies)),
 or strip those headers at the ingress.
@@ -275,7 +275,11 @@ Open the console, choose a running Agent with a selected version, and verify **O
 
 Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and completes an authorized action against a disposable Agent. A native configuration edit requires [Gateway managed mode](../../reference/agents/gateway-managed-mode.md) to be off.
 
+For retained overlong domains, follow [domain recovery](native-admin-domain-recovery.md).
+
 ## Troubleshooting
+
+Match the refused request’s ID to `http.completed`. HTTP admission refusals carry `nativeAdmissionReason`; early guards and post-admission failures may omit it.
 
 | Symptom                                             | Check                                                                                                                                                                                                                     |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -288,6 +292,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Console panel is hidden                             | Feature enablement and exact Agent `operate` or `administer` permission.                                                                                                                                                  |
 | Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                                                   |
 | Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy.                                    |
+| Panel says browser chat is off                      | The selected version's Configuration does not turn on the browser UI. Add the settings in [Configure each Agent](#configure-each-agent), then deploy.                                                                     |
 | Panel reports unsupported                           | Check the selected version's [native configuration requirements](../../reference/agent-native-admin.md#requirements) and Compute support for `getGatewayChatEndpoint` in chat mode or `getGatewayEndpoint` in admin mode. |
 | Native tab cannot load                              | Browser wildcard DNS/TLS to API, the selected session mode, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                                                     |
 | Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                                                               |
@@ -301,11 +306,17 @@ with external sign-in enabled last eight hours. Native Agent activity does not
 refresh them. An Agent revision change closes native WebSockets without expiring
 the OCE login.
 
+If a refreshed tab says **Agent version changed**, choose **Return to console**,
+then open the Agent again. The old session cannot cross a deployment.
+
 If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
 may have expired, or your access may have changed. If OCE asks you to sign in,
 it checks your access again and returns you to that Agent’s detail page. Select
 **Open Agent UI** to continue. With an older runtime, open the Agent root
 or its console page to start the same recovery.
+
+If the Agent host returns `503 DEPENDENCY_UNAVAILABLE`, check the controller and
+session store and retry after they recover.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear

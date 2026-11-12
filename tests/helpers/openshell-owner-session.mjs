@@ -10,11 +10,50 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.mjs";
 import { chromium } from "playwright";
-import { launchTrustingBrowser, publishedJSON } from "./dev-up-keycloak.mjs";
-import { enableInstalledGithubNativeAdmin } from "./native-admin-github-k3d.mjs";
+import { publishedJSON } from "./dev-up-keycloak.mjs";
+import { launchTrustingBrowser, preflightTrustingBrowser } from "./trusted-chromium.ts";
+import { enableInstalledOidcNativeAdmin } from "./native-admin-oidc-k3d.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
 const execute = promisify(execFile);
+
+export function assertOpenShellOwnerModelSelection(environment) {
+  const endpoint = environment.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+  assert.ok(
+    !endpoint || URL.parse(endpoint)?.href.replace(/\/$/u, "") === "https://api.openai.com/v1",
+    "The browser Agent requires the public OpenAI endpoint",
+  );
+  assert.ok(
+    !environment.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE,
+    "The browser Agent does not accept native provider overrides",
+  );
+}
+
+function ownerBrowserRouting(cluster) {
+  const consoleHost = `console.${cluster}.oce.localhost`;
+  const agentDomain = `agents.${cluster}.oce.localhost`;
+  return {
+    consoleHost,
+    agentDomain,
+    hosts: [
+      { host: consoleHost, address: "127.0.0.1" },
+      { host: `*.${agentDomain}`, address: "127.0.0.1" },
+      { host: "*", address: "~NOTFOUND" },
+    ],
+  };
+}
+
+export async function preflightOpenShellOwnerBrowser(root, cluster) {
+  try {
+    await preflightTrustingBrowser(chromium, root, ownerBrowserRouting(cluster).hosts);
+  } catch (error) {
+    throw new Error(
+      "OpenShell browser preflight failed before dev-up. Check certutil, sandbox support for " +
+        "OCC_TEST_BROWSER_EXECUTABLE, and use a short TMPDIR for Chromium sockets.",
+      { cause: error },
+    );
+  }
+}
 
 export async function verifyOpenShellOwnerSession({
   t,
@@ -25,19 +64,15 @@ export async function verifyOpenShellOwnerSession({
   kubectl,
   environment,
 }) {
-  const consoleHost = `console.${cluster}.oce.localhost`;
+  assertOpenShellOwnerModelSelection(environment);
+  const { consoleHost, agentDomain, hosts } = ownerBrowserRouting(cluster);
   const consoleOrigin = `https://${consoleHost}:${browserPort}`;
-  const agentDomain = `agents.${cluster}.oce.localhost`;
   const scope = `/namespaces/${namespaceId}`;
   // Install the public CA in the fixture browser's private trust database before
   // startup. Chromium verifies both hostnames and manages the HttpOnly cookies.
   const browser = await launchTrustingBrowser(chromium, dirname(stateDirectory), {
     caFiles: [join(stateDirectory, "browser-ca.crt")],
-    hosts: [
-      { host: consoleHost, address: "127.0.0.1" },
-      { host: "*." + agentDomain, address: "127.0.0.1" },
-      { host: "*", address: "~NOTFOUND" },
-    ],
+    hosts,
   });
   t.after(() => browser.close());
   const origins = new Set([consoleOrigin]);
@@ -117,27 +152,31 @@ export async function verifyOpenShellOwnerSession({
     ...environment,
     OPENCLAW_FIRST_AGENT_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
   };
-  delete modelEnvironment.OPENAI_API_KEY;
-  delete modelEnvironment.OPENAI_API_KEY_FILE;
+  // General browser proof uses the API-key path even when CI also supplies a PAT.
+  // Dedicated PAT cases retain their account-policy checks separately.
+  delete modelEnvironment.CODEX_ACCESS_TOKEN;
+  delete modelEnvironment.CODEX_ACCESS_TOKEN_FILE;
   assert.ok(
-    modelEnvironment.CODEX_ACCESS_TOKEN || modelEnvironment.CODEX_ACCESS_TOKEN_FILE,
-    "Set the existing Codex service-account token or its private file for the real browser Agent",
+    modelEnvironment.OPENAI_API_KEY || modelEnvironment.OPENAI_API_KEY_FILE,
+    "Set OPENAI_API_KEY or OPENAI_API_KEY_FILE for the real browser Agent",
   );
   assert.ok(
     modelEnvironment.OPENCLAW_FIRST_AGENT_MODEL,
     "Set OCC_TEST_OPENAI_MODEL for the selected account",
   );
-  await execute(
-    process.execPath,
-    [
-      fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url)),
-      name,
-      "--harness",
-      "codex",
-      "--control-ui",
-    ],
-    { env: modelEnvironment, timeout: 600_000, maxBuffer: 1024 * 1024 },
-  );
+  const runFirstAgent = () =>
+    execute(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url)),
+        name,
+        "--harness",
+        "codex",
+        "--control-ui",
+      ],
+      { env: modelEnvironment, timeout: 600_000, maxBuffer: 1024 * 1024 },
+    );
+  await runFirstAgent();
   const agents = (await api("GET", scope + "/agents")).filter((a) => a.name === name);
   assert.equal(agents.length, 1, "the helper created one Agent in its own default Namespace");
   const agent = agents[0];
@@ -170,6 +209,18 @@ export async function verifyOpenShellOwnerSession({
   const access = await api("GET", agentPath + "/native-admin");
   assert.equal(access.origin, origin);
   assert.equal(access.status, "available");
+  // A second invocation must recognize the current saved template and frozen
+  // revision, complete its real model check, and leave their configuration intact.
+  const configurationPath = scope + "/configurations/" + agent.configurationId;
+  const beforeRepeat = await api("GET", configurationPath);
+  await runFirstAgent();
+  const repeatedAgents = (await api("GET", scope + "/agents")).filter((a) => a.name === name);
+  assert.equal(repeatedAgents.length, 1);
+  assert.equal(repeatedAgents[0].id, agent.id);
+  assert.equal(repeatedAgents[0].activeRevisionId, rev.id);
+  const afterRepeat = await api("GET", configurationPath);
+  assert.equal(afterRepeat.generation, beforeRepeat.generation);
+  assert.deepEqual(afterRepeat.values, beforeRepeat.values);
   const instructions = await api("GET", agentPath + "/workspace/files/AGENTS.md");
   assert.ok(instructions.content.trim(), "fresh workspace has its real bootstrap instructions");
   const { stdout: pods } = await execute(
@@ -404,9 +455,9 @@ export async function verifyOpenShellOwnerSession({
   );
 
   // The earlier phase proves the shared-cookie/password path. Switch only this
-  // disposable installation to guarded GitHub; all native runtime I/O stays real.
+  // disposable installation to guarded OIDC; all native runtime I/O stays real.
   const recoverySession = await api("GET", "/api/auth/session");
-  const github = await enableInstalledGithubNativeAdmin({
+  const oidc = await enableInstalledOidcNativeAdmin({
     t,
     cluster,
     stateDirectory,
@@ -440,8 +491,8 @@ export async function verifyOpenShellOwnerSession({
     },
   );
   const currentAccount = accountResponse.data;
-  await api("POST", `/api/auth/accounts/${account.id}/providers/github`, {
-    subject: github.subject,
+  await api("POST", `/api/auth/accounts/${account.id}/providers/oidc`, {
+    subject: oidc.subject,
     expectedVersion: currentAccount.version,
   });
   await grant(account.principalId, "agent", agent.id, ["administer"]);
@@ -484,18 +535,18 @@ export async function verifyOpenShellOwnerSession({
     });
   });
   const consolePage = await guarded.newPage();
-  await consolePage.route("https://github.com/login/oauth/authorize*", github.authorizeRoute);
+  await consolePage.route("https://idp.example.test/authorize*", oidc.authorizeRoute);
   await consolePage.goto(consoleOrigin + "/console/");
   const callback = consolePage.waitForResponse(
-    (res) => new URL(res.url()).pathname === "/api/auth/providers/github/callback",
+    (res) => new URL(res.url()).pathname === "/api/auth/providers/oidc/callback",
   );
-  await consolePage.getByRole("button", { name: "Continue with GitHub", exact: true }).click();
+  await consolePage.getByRole("button", { name: "Continue with Test SSO", exact: true }).click();
   assert.equal((await callback).status(), 302);
   await consolePage.waitForURL(consoleOrigin + "/console/");
   const session = await consoleRequest(consolePage, "GET", "/api/auth/session");
-  assert.equal(session.data.user.id, account.id, "GitHub authenticated the attached collaborator");
+  assert.equal(session.data.user.id, account.id, "OIDC authenticated the attached collaborator");
   const parent = (await guarded.cookies(consoleOrigin)).find(
-    (cookie) => cookie.name === github.parentCookieName,
+    (cookie) => cookie.name === oidc.parentCookieName,
   );
   assert.ok(parent?.secure && parent.httpOnly);
   assert.equal(parent.domain, consoleHost, "the guarded parent cookie is host-only");
@@ -551,6 +602,9 @@ export async function verifyOpenShellOwnerSession({
   assert.ok(!terminal.socket.isClosed());
   const replySelector = `.chat-group.assistant [data-message-text="${marker}"]`;
   await first.locator(replySelector).waitFor({ state: "visible" });
+  const sessionKey = JSON.parse(String(terminal.payload)).payload.sessionKey;
+  assert.equal(typeof sessionKey, "string");
+  assert.ok(sessionKey.length > 0);
   const conversation = first.url();
   assert.match(new URL(conversation).pathname, /^\/chat\//);
   assert.equal(sends.length, 1, "one real turn was submitted");
@@ -564,7 +618,14 @@ export async function verifyOpenShellOwnerSession({
   const secondHello = await hello(second, beforeReopen);
   assert.notEqual(secondHello.socket, terminal.socket, "each tab owns its Gateway socket");
   await second.locator(replySelector).waitFor({ state: "visible" });
-  assert.equal(second.url(), conversation, "the second tab reopened the existing conversation");
+  // The UI can add a display-name slug when it resolves the saved URL. Verify
+  // the committed conversation identity, not that mutable presentation text.
+  await second.waitForFunction((key) => {
+    const snapshot = globalThis.openclawControlUi?.snapshot();
+    return snapshot?.routeReady === true && snapshot.sessionKey === key;
+  }, sessionKey);
+  assert.equal(new URL(second.url()).origin, origin);
+  assert.match(new URL(second.url()).pathname, /^\/chat\//);
   // The production native proxy renews every 25 seconds. Keep both exact
   // sockets untouched for two intervals; reconnects cannot satisfy this check.
   await delay(55_000);
@@ -604,15 +665,15 @@ export async function verifyOpenShellOwnerSession({
         observedAt: new Date().toISOString(),
         source: source.stdout.trim(),
         trackedChanges: changes.stdout.trim().length > 0,
-        releaseRevision: github.releaseRevision,
-        controllerImage: github.controllerImage,
+        releaseRevision: oidc.releaseRevision,
+        controllerImage: oidc.controllerImage,
         agentId: agent.id,
         revisionId: rev.id,
         runtimeImagesBeforeUpgrade: native[0].status.containerStatuses.map(({ name, imageID }) => ({
           name,
           imageID,
         })),
-        provider: "GitHub protocol fixture; runtime and model are real",
+        provider: "OIDC protocol fixture; runtime and model are real",
         reopenedSameConversation: true,
         chatSubmissions: sends.length,
         originalReplySocketSurvivedRepeatLaunchAndRenewals: true,
@@ -627,6 +688,6 @@ export async function verifyOpenShellOwnerSession({
   );
   t.diagnostic(`Guarded native browser receipt: ${receiptPath}`);
   t.diagnostic(
-    "Guarded GitHub provider fixture: real host-only browser exchange, Gateway hello and model reply; repeated launch reopened the same conversation without a turn, the original socket survived two renewals, and parent sign-out closed both sockets.",
+    "Guarded OIDC provider fixture: real host-only browser exchange, Gateway hello and model reply; repeated launch reopened the same conversation without a turn, the original socket survived two renewals, and parent sign-out closed both sockets.",
   );
 }

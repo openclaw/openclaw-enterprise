@@ -33,6 +33,7 @@ the Go version in [`go.mod`](../../go.mod), Git, and `tar`:
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm cli:build
 ```
 
 Browser tests also need Chromium; see [browser setup](local.md#console-browser-checks).
@@ -67,7 +68,7 @@ pnpm test:files --test-name-pattern='the Driver contract exposes' -- tests/confo
 ```
 
 The second command selects one named case. `test:files` does not prepare
-fixtures or run the workspace check. Run `node scripts/test-files.mjs --help`
+fixtures or run the workspace check. Run `node scripts/test-files.ts --help`
 for options.
 
 ## Integration tests

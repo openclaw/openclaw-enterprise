@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, posix, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, posix, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { assertInsideDirectory } from "./assert-inside-directory.ts";
 import { privateOwned } from "./private-owned-path.mjs";
 import {
   assertReviewedCodexVersion,
@@ -76,13 +79,6 @@ function requireExecFile(execFile) {
     throw new Error("Codex seccomp preparation requires execFile.");
   }
   return execFile;
-}
-
-function assertInsideDirectory(parent, child, description) {
-  const relativePath = relative(parent, resolve(child));
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`${description} must stay inside ${parent}.`);
-  }
 }
 
 function assertSelectedK3dCluster(cluster) {
@@ -359,6 +355,84 @@ async function execCodexSandboxProbe(selection, namespace, podName, options) {
   );
 }
 
+function safeProbeField(value, pattern) {
+  return typeof value === "string" && value.length <= 253 && value.match(pattern)?.[0] === value
+    ? value
+    : null;
+}
+
+function probeImageDigest(value) {
+  return typeof value === "string"
+    ? (value.match(/(?:^|@|:\/\/)(sha256:[a-f0-9]{64})$/i)?.[1] ?? null)
+    : null;
+}
+
+function safeProbeSecurity(pod) {
+  const podSecurity = pod.spec?.securityContext;
+  const container = pod.spec?.containers?.find((entry) => entry.name === "probe")?.securityContext;
+  const bool = (value) => (typeof value === "boolean" ? value : null);
+  const id = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+  return {
+    runAsNonRoot: bool(container?.runAsNonRoot ?? podSecurity?.runAsNonRoot),
+    runAsUser: id(container?.runAsUser ?? podSecurity?.runAsUser),
+    runAsGroup: id(container?.runAsGroup ?? podSecurity?.runAsGroup),
+    allowPrivilegeEscalation: bool(container?.allowPrivilegeEscalation),
+    readOnlyRootFilesystem: bool(container?.readOnlyRootFilesystem),
+    dropAllCapabilities: Array.isArray(container?.capabilities?.drop)
+      ? container.capabilities.drop.includes("ALL") && !container.capabilities.add?.length
+      : null,
+  };
+}
+
+async function withProbeFailureReport(pod, mode, image, options, operation) {
+  const startedAt = new Date().toISOString();
+  const profile = { profileVerification: "not-checked", effectiveProfileSha256: null };
+  try {
+    return await operation(profile);
+  } catch (error) {
+    try {
+      const status = pod.status?.containerStatuses?.find((entry) => entry.name === "probe");
+      const codexProbe = error?.codexSandboxProbe;
+      const probe =
+        ["VERSION", "PREPARE", "SANDBOX", "ASSERTIONS", "CLEANUP"].includes(codexProbe?.stage) &&
+        Number.isInteger(codexProbe.exit) &&
+        codexProbe.exit >= 1 &&
+        codexProbe.exit <= 255 &&
+        typeof codexProbe.entered === "boolean"
+          ? { stage: codexProbe.stage, exit: codexProbe.exit, entered: codexProbe.entered }
+          : null;
+      const report = {
+        mode,
+        podUid: safeProbeField(pod.metadata?.uid, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i),
+        containerId: safeProbeField(
+          typeof status?.containerID === "string"
+            ? status.containerID.replace(/^[^:]+:\/\//, "")
+            : null,
+          /^[a-f0-9]{64}$/i,
+        ),
+        node: safeProbeField(pod.spec?.nodeName, /^[a-z0-9][a-z0-9.-]*$/),
+        runtimeImageDigest: probeImageDigest(image),
+        observedImageDigest: probeImageDigest(status?.imageID),
+        ...profile,
+        expectedCodexVersion: options.codexVersion,
+        verifiedCodexVersion:
+          probe !== null && probe.stage !== "VERSION" ? options.codexVersion : null,
+        security: safeProbeSecurity(pod),
+        probe,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        guide: "docs/guides/deploy/codex-sandbox.md#identify-the-restriction",
+      };
+      // Emit while the probe's resources still exist; leave teardown and the
+      // original failure authoritative even when diagnostic output is unavailable.
+      process.stderr.write(`OCE_CODEX_SECCOMP_PROBE_FAILURE ${JSON.stringify(report)}\n`);
+    } catch {
+      // Diagnostic collection is best effort.
+    }
+    throw error;
+  }
+}
+
 function isRuntimeDefaultSandboxDenial(error) {
   const probe = error.codexSandboxProbe;
   if (
@@ -405,7 +479,7 @@ async function listOwnedK3dNodes(selection, cluster, options) {
   return names;
 }
 
-async function waitForPodReady(selection, namespace, name, options) {
+async function waitForPodReady(selection, namespace, name, options, observe) {
   return waitFor(
     `Pod ${namespace}/${name} to become ready`,
     async () => {
@@ -414,6 +488,7 @@ async function waitForPodReady(selection, namespace, name, options) {
         ["get", "pod", name, "--namespace", namespace],
         options,
       );
+      observe?.(pod);
       if (
         pod.status?.containerStatuses?.some(
           (status) => status.name === "probe" && status.ready === true,
@@ -471,15 +546,57 @@ async function runtimeDefaultProfileForNode(selection, namespace, nodeName, imag
     restrictedProbePod({ name: podName, namespace, nodeName, image }),
     options,
   );
-  const pod = await waitForPodReady(selection, namespace, podName, options);
-  if (await verifyRuntimeDefaultDeniesCodexSandbox(selection, namespace, podName, options)) {
-    if (options.allowRuntimeDefault) {
-      return null;
+  let pod;
+  let lastPod;
+  try {
+    pod = await waitForPodReady(selection, namespace, podName, options, (observed) => {
+      lastPod = observed;
+    });
+  } catch (error) {
+    if (options.reportRuntimeDefaultReadinessFailure) {
+      try {
+        const statuses = lastPod?.status?.containerStatuses;
+        const waitingReason = Array.isArray(statuses)
+          ? statuses.find((status) => status?.name === "probe")?.state?.waiting?.reason
+          : null;
+        const reason = [
+          "ErrImageNeverPull",
+          "ErrImagePull",
+          "ImagePullBackOff",
+          "CreateContainerConfigError",
+          "CreateContainerError",
+          "ContainerCreating",
+        ].includes(waitingReason)
+          ? waitingReason
+          : null;
+        // A stream write can emit EPIPE after this catch, interrupting cleanup.
+        writeSync(
+          2,
+          `OCE_CODEX_SECCOMP_READINESS_FAILURE ${JSON.stringify({
+            operation: "runtime-default-pod-readiness",
+            reason,
+          })}\n`,
+        );
+      } catch {
+        // Diagnostic failure must not replace the original readiness error.
+      }
     }
-    throw new Error("RuntimeDefault unexpectedly allowed the Codex sandbox probe.");
+    throw error;
   }
-  const runtimeSpec = await inspectContainerRuntimeSpec(nodeName, extractContainerId(pod), options);
-  return runtimeSpec.linux.seccomp;
+  return withProbeFailureReport(pod, "RuntimeDefault", image, options, async () => {
+    if (await verifyRuntimeDefaultDeniesCodexSandbox(selection, namespace, podName, options)) {
+      if (options.allowRuntimeDefault) {
+        return null;
+      }
+      throw new Error("RuntimeDefault unexpectedly allowed the Codex sandbox probe.");
+    }
+    const runtimeSpec = await inspectContainerRuntimeSpec(
+      nodeName,
+      extractContainerId(pod),
+      options,
+    );
+    return runtimeSpec.linux.seccomp;
+  });
 }
 
 async function installProfileOnNode(nodeName, profileName, profile, directory, options) {
@@ -551,13 +668,22 @@ async function verifyInstalledProfile(
     options,
   );
   const pod = await waitForPodReady(selection, namespace, podName, options);
-  const runtimeSpec = await inspectContainerRuntimeSpec(nodeName, extractContainerId(pod), options);
-  assert.deepEqual(
-    runtimeSpec.linux.seccomp,
-    profile,
-    `Effective seccomp profile on ${nodeName} must equal the installed profile.`,
-  );
-  await execCodexSandboxProbe(selection, namespace, podName, options);
+  await withProbeFailureReport(pod, "Localhost", image, options, async (observation) => {
+    const runtimeSpec = await inspectContainerRuntimeSpec(
+      nodeName,
+      extractContainerId(pod),
+      options,
+    );
+    const effective = runtimeSpec.linux.seccomp;
+    observation.effectiveProfileSha256 = sha256Hex(stableJson(effective));
+    const matches = isDeepStrictEqual(effective, profile);
+    observation.profileVerification = matches ? "passed" : "failed";
+    assert.ok(
+      matches,
+      `Effective seccomp profile on ${nodeName} must equal the installed profile.`,
+    );
+    await execCodexSandboxProbe(selection, namespace, podName, options);
+  });
 }
 
 async function verifyMissingProfileFailsClosed(
@@ -902,6 +1028,7 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
     directory: temporaryDirectory,
     codexVersion,
     allowRuntimeDefault: true,
+    reportRuntimeDefaultReadinessFailure: true,
   };
   let namespaceCreated = false;
   return withProbeCleanup(

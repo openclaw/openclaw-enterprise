@@ -19,13 +19,13 @@ import {
   validatePreparedImage,
   verifyGhcr,
 } from "../../scripts/ci/container-release.mjs";
-import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.mjs";
+import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import {
   chartArchiveContent,
   stageReleaseChart,
   validateImageReceipt,
-} from "../../scripts/ci/chart-release.mjs";
+} from "../../scripts/ci/chart-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -868,6 +868,65 @@ test("native platform exports verify offline and assemble into a digest-bound ar
       },
     );
   }
+  // Build handoff retains bytes and provenance but cannot qualify an image before native smoke.
+  const untested = await prepare("untested");
+  function buildCommand(command, arch, overrides = {}) {
+    return execFileSync(
+      process.execPath,
+      ["scripts/ci/container-release.mjs", command, join(untested.output, arch)],
+      {
+        env: {
+          ...untested.env,
+          PLATFORM: `linux/${arch}`,
+          IMAGE_DIGEST:
+            command === "record-build" ? untested.roots[arch === "amd64" ? 0 : 1] : undefined,
+          ...overrides,
+        },
+        encoding: "utf8",
+        stdio: "pipe",
+      },
+    );
+  }
+  for (const arch of ["amd64", "arm64"]) {
+    await unlink(join(untested.output, arch, "platform.json"));
+    buildCommand("record-build", arch);
+    const buildPath = join(untested.output, arch, "build.json");
+    const originalBuild = await readFile(buildPath);
+    assert.equal(JSON.parse(originalBuild).native, false);
+    buildCommand("verify-build", arch);
+    await assert.rejects(readFile(join(untested.output, arch, "platform.json")), {
+      code: "ENOENT",
+    });
+    for (const overrides of [
+      { SOURCE_SHA: "d".repeat(40) },
+      { GITHUB_WORKFLOW_SHA: "e".repeat(40) },
+      { GITHUB_RUN_ID: "124" },
+      { GITHUB_RUN_ATTEMPT: "2" },
+      { CI_RUN_ID: "457" },
+      { CI_ATTEMPT: "2" },
+      { NODE_BASE_IMAGE: `node@sha256:${"d".repeat(64)}` },
+      { PLATFORM: arch === "amd64" ? "linux/arm64" : "linux/amd64" },
+    ]) {
+      assert.throws(() => buildCommand("verify-build", arch, overrides), /mismatch/);
+    }
+    await writeFile(buildPath, JSON.stringify({ ...JSON.parse(originalBuild), native: true }));
+    assert.throws(() => buildCommand("verify-build", arch), /Untested builds/);
+    await writeFile(buildPath, originalBuild);
+    const rootPath = join(
+      untested.output,
+      arch,
+      "blobs/sha256",
+      untested.roots[arch === "amd64" ? 0 : 1].slice(7),
+    );
+    const originalRoot = await readFile(rootPath);
+    await writeFile(rootPath, Buffer.alloc(originalRoot.length));
+    assert.throws(() => buildCommand("verify-build", arch), /blob digest mismatch/);
+    await writeFile(rootPath, originalRoot);
+    await writeFile(join(untested.output, arch, "platform.json"), "{}");
+    assert.throws(() => buildCommand("verify-build", arch), /must not contain platform.json/);
+    await unlink(join(untested.output, arch, "platform.json"));
+  }
+  assert.throws(() => run(untested), /platform.json/);
   const valid = await prepare("valid");
   function verify(arch, overrides = {}) {
     const i = arch === "amd64" ? 0 : 1;
@@ -946,7 +1005,12 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   }
   run(valid);
   const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
-  assert.deepEqual(readArchivePlatforms(join(valid.output, "image.tar"), digest), valid.expected);
+  execFileSync(process.execPath, ["scripts/ci/container-release.mjs", "seal", valid.output], {
+    env: { ...valid.env, IMAGE_DIGEST: digest },
+  });
+  const sealed = JSON.parse(await readFile(join(valid.output, "metadata.json"), "utf8"));
+  assert.deepEqual(sealed.platformDigests, valid.expected);
+  assert.equal(sealed.digest, digest);
   const index = JSON.parse(
     execFileSync("tar", [
       "-xOf",
@@ -1008,8 +1072,8 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     "tests/integration/runtime-image-failure-output.test.mjs": null,
     // Model probe files: the release smoke has never run them. The contention case runs
     // in Image Runtime Startup 3 and the outcomes in Image Runtime Startup 2.
-    "tests/integration/runtime-image-model-probe.test.mjs": "images-runtime-startup-3",
-    "tests/integration/runtime-image-model-probe-outcomes.test.mjs": "images-runtime-startup-2",
+    "tests/integration/runtime-image-model-probe.test.ts": "images-runtime-startup-3",
+    "tests/integration/runtime-image-model-probe-outcomes.test.ts": "images-runtime-startup-2",
   };
   for (const [path, lane] of Object.entries(notInSmoke)) {
     const holders = Object.keys(lanes).filter((name) =>
@@ -1022,10 +1086,15 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   }
   // Image Runtime Startup files outside the runtime-image-* names.
   const otherSmokeFiles = [
+    "tests/helpers/workspace-gateway-relay-container.test.ts",
     "tests/integration/codex-plugin-stdio-real.test.ts",
     // Its OpenShell initializer case executes the pinned native workspace initializer.
     "tests/integration/sandbox-driver-startup.test.mjs",
-    "tests/integration/workspace-files-native.test.mjs",
+    "tests/integration/sandbox-driver-startup-validation.test.ts",
+    "tests/integration/sandbox-driver-installation-configuration.test.ts",
+    "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
+    "tests/integration/sandbox-driver-codex-app-server.test.ts",
+    "tests/integration/workspace-files-native.test.ts",
   ];
   assert.deepEqual(
     [...runtimeImageSmokeTests].sort(),

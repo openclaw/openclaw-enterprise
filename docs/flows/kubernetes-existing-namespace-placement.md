@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-11-06
-last_updated_session: authoring-run/22fe6796-3f06-49bf-bb59-d9ac13bb66f7
+updated: 2026-11-07
+last_updated_session: authoring-run/0e565cf9-f7ee-4e08-8c3f-e680ea2b0b94
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -27,6 +27,12 @@ in place when their tenant markers and OpenClaw manager label are exact.
   restricted Pod Security labels, and tenant-local RoleBindings before the API
   request. The worker cannot verify foreign-Pod absence. The caller holds both
   Namespace-create and Installation-`administer` authorization.
+
+Before this flow starts, API and worker startup load the Installation YAML and
+Kubernetes Compute validates `resources.namespace.quota`. Counted resources
+must pass the native integer-precision rule: `pods: "1.5"` is refused with a
+quota diagnostic before persistence or namespace operations. CPU `"500m"` and
+whole-count suffixes retain their values. See the [configuration reference](../reference/drivers/kubernetes-compute/configuration.md#images-and-resources).
 
 ## Flow
 
@@ -84,6 +90,12 @@ metadata. Missing targets, termination, foreign ownership or additive policies,
 ambiguous identity, and revoked authorization fail closed without managed
 fallback. A missing worker RoleBinding keeps provisioning pending; a missing
 API RoleBinding instead makes subsequent Configuration operations return `503`.
+`KubernetesComputeDriver.validateConfiguration` checks counted quota precision
+through `resource-quantities.ts:hasIntegerQuotaPrecision` during startup, before
+`ensureNamespace` can copy these values into the ResourceQuota. Invalid counts
+therefore do not enter this adoption phase. This does not validate quota capacity
+or establish that a cluster is reachable.
+
 Compute reconciles its owned quota, limit range, and isolation policies; no
 worker pause, restart, or Installation setting is needed.
 
@@ -202,6 +214,8 @@ complete-deletion lifecycle.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 22:02: Trace the startup quota precision prerequisite before namespace placement. (authoring-run/0e565cf9-f7ee-4e08-8c3f-e680ea2b0b94 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)
 
 - 2026-11-06 17:40: Trace admitted empty NetworkPolicy rule lists in both operator-owned checks. (authoring-run/22fe6796-3f06-49bf-bb59-d9ac13bb66f7 - eb1ea7a5a6bf1bc706a41e00246cb795ed8dd703)
 

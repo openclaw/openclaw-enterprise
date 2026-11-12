@@ -291,12 +291,12 @@ test(
       ],
       ["missing env Secret", { ...loggingValues, "logging.collector.envSecretName": "" }],
       [
-        "shared GitHub sign-in Secret",
+        "shared Google sign-in Secret",
         {
           ...loggingValues,
-          "auth.github.enabled": "true",
+          "auth.google.enabled": "true",
           "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
-          "logging.collector.envSecretName": "occ-github-login",
+          "logging.collector.envSecretName": "occ-google-login",
         },
       ],
     ]) {

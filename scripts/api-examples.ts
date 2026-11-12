@@ -402,7 +402,6 @@ export const requestExamples = {
   disableAuthAccount: { expectedVersion: 1 },
   enableAuthAccount: { expectedVersion: 2 },
   detachAuthMethod: { expectedVersion: 1 },
-  attachGitHubIdentity: { expectedVersion: 1, subject: "12345678" },
   attachGoogleIdentity: { expectedVersion: 1, subject: "123456789012345678901" },
   attachOidcIdentity: { expectedVersion: 1, subject: "provider-subject-docs-admin" },
   revokeAuthAccountSessions: { expectedVersion: 1 },
@@ -417,7 +416,6 @@ export const requestExamples = {
     namespaceId,
     expiresIn: 86400,
   },
-  confirmGitHubSignIn: { attemptId: "example".padEnd(43, "0") },
   confirmGoogleSignIn: { attemptId: "example".padEnd(43, "0") },
   confirmOidcSignIn: { attemptId: "example".padEnd(43, "0") },
 };
@@ -710,13 +708,11 @@ export const responseExamples = {
   disableAuthAccount: { userId },
   enableAuthAccount: { userId },
   detachAuthMethod: { userId },
-  attachGitHubIdentity: { userId },
   attachGoogleIdentity: { userId },
   attachOidcIdentity: { userId },
   revokeAuthAccountSessions: { userId },
   enrolAuthAccount: { userId, principalId: authAccount.principalId, version: 1, created: true },
   getAuthProviders: {
-    github: false,
     google: false,
     oidc: false,
     password: true,
@@ -741,10 +737,6 @@ export const responseExamples = {
     expiresAt: "2026-10-02T12:00:00.000Z",
   },
   revokeServiceKey: { id: "key-docs-automation", revoked: true },
-  startGitHubSignIn: {
-    attemptId: "example".padEnd(43, "0"),
-    url: "https://github.com/login/oauth/authorize?client_id=example&state=example-browser-bound-state",
-  },
   startGoogleSignIn: {
     attemptId: "example".padEnd(43, "0"),
     url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=example&state=example-browser-bound-state",
@@ -753,7 +745,6 @@ export const responseExamples = {
     attemptId: "example".padEnd(43, "0"),
     url: "https://identity.example.com/authorize?client_id=example&state=example-browser-bound-state",
   },
-  confirmGitHubSignIn: { sessionKey },
   confirmGoogleSignIn: { sessionKey },
   confirmOidcSignIn: { sessionKey },
   resolveAgentNativeAdminReturn: { agentId, namespaceId },

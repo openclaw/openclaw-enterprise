@@ -51,12 +51,12 @@ routes stay templates. Methods are `GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|OTHER
 status classes are `1xx|2xx|3xx|4xx|5xx|other`. Status classes cannot distinguish
 401/403 from other 4xx failures. These are not model-turn or WebSocket durations.
 
-`provider` is `github|google|oidc`; all three start at zero. A callback counts
+`provider` is `google|oidc`; both start at zero. A callback counts
 when it is malformed or its state and browser cookie match no pending, unexpired
 attempt (unknown, replayed or expired). Its sender is unauthenticated and can mint
 both values, so these callbacks write no audit event; this counter is their only
 aggregate record. Callbacks that match an attempt are audited, not counted. See
-[external sign-in](authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+[external sign-in](authentication/external-sign-in.md#external-sign-in-profile).
 
 Work kinds are `namespace_ensure|namespace_delete|agent_revision|agent_stop|agent_delete|agent_credential_withdrawal`. Outcomes are
 `success|pending|retry|permanent|claim_lost|error`. Pending convergence, retries,
@@ -109,7 +109,8 @@ lose a sample; observations are operational metrics, not durable audit evidence.
 
 Worker startup supplies a separate read-only application-role pool with maximum
 one connection, a 500 ms connection deadline, and 1500 ms query/statement
-deadlines. Concurrent scrapes share collection. Failed collections destroy the
+deadlines. These settings take precedence over conflicting database URL parameters.
+Concurrent scrapes share collection. Failed collections destroy the
 affected connection and return 503 without partial exposition or a stale-value
 fallback. Reconciliation uses its own pool and continues. API scrapes do not
 query the database.

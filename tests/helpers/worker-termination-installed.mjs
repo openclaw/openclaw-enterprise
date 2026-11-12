@@ -4,7 +4,7 @@ import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
-import { availablePort } from "./available-port.mjs";
+import { availablePort } from "./available-port.ts";
 
 const attributes = (entries = []) =>
   Object.fromEntries(

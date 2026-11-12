@@ -5,7 +5,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { RepositoryServiceFactory, Clock } from "../backend-contracts.ts";
 import type { ServiceConfig } from "../service-contracts.ts";
-import type { ExchangeRef, ExchangeService, SessionLogIdentity } from "../internal-contracts.ts";
+import type {
+  ExchangeRef,
+  ExchangeService,
+  SessionLogIdentity,
+  UpstreamConnectFailure,
+} from "../internal-contracts.ts";
 import { inspectRequestHead } from "./request.ts";
 import { createUpstreamSender } from "./upstream.ts";
 import { refuseUnreadInput, sendError } from "./errors.ts";
@@ -37,7 +42,9 @@ export type RefusalReason =
 
 /**
  * One operator log record per refused request that carried credentials. `reasonCode` is the
- * code the Agent receives. It never carries a bearer, credential, URL, ref or request body.
+ * code the Agent receives. A `not_dispatched` refusal whose provider connection failed before
+ * TLS names it in `upstreamConnect`. It never carries a bearer, credential, URL, ref or
+ * request body.
  */
 export type RefusalRecord = Readonly<
   {
@@ -46,6 +53,7 @@ export type RefusalRecord = Readonly<
     reasonCode: string;
     reason: RefusalReason;
     operation?: string;
+    upstreamConnect?: UpstreamConnectFailure;
   } & Partial<SessionLogIdentity>
 >;
 
@@ -157,12 +165,18 @@ export function createAgentHandler(
         : presentedToken(parsed.authorization);
     const identity = token === undefined ? undefined : service.identify(token);
     let operation: string | undefined;
-    const report = (status: number, code: string, reason: RefusalReason) =>
+    const report = (
+      status: number,
+      code: string,
+      reason: RefusalReason,
+      upstreamConnect?: UpstreamConnectFailure,
+    ) =>
       writeRefusal(options.log, {
         status,
         reasonCode: code,
         reason,
         ...(operation === undefined ? {} : { operation }),
+        ...(upstreamConnect === undefined ? {} : { upstreamConnect: { ...upstreamConnect } }),
         ...identity,
       });
     if (typeof bearer !== "string") {
@@ -323,7 +337,7 @@ export function createAgentHandler(
         if (recorded?.error === "operation_conflict") {
           report(outcome.status, "operation_conflict", "operation_conflict");
         } else if (recorded?.error === "not-submitted") {
-          report(outcome.status, "not-submitted", "not_dispatched");
+          report(outcome.status, "not-submitted", "not_dispatched", outcome.upstreamConnect);
         }
         response.writeHead(outcome.status, {
           "content-type": "application/json",
@@ -332,7 +346,7 @@ export function createAgentHandler(
         response.end(JSON.stringify(outcome.body));
       } else if (outcome.kind !== "completed") {
         if (outcome.kind === "not-dispatched") {
-          report(503, "unavailable", "not_dispatched");
+          report(503, "unavailable", "not_dispatched", outcome.upstreamConnect);
         }
         sendError(
           response,

@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { chmod, lstat, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
+import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { downloadPinnedArtifact } from "./routing.mjs";
+import { preloadAgentSandboxController } from "./agent-sandbox.ts";
+import { selectOpenShellCandidate, verifyOpenShellCandidate } from "./openshell-candidate.ts";
 
 const openShellVersion = "0.1.6";
 const openShellRevision = "ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47";
@@ -68,13 +71,6 @@ function assertCluster(cluster) {
     throw new Error("cluster.context must select the owned k3d context.");
   }
   return { ...cluster, directory, kubeconfig };
-}
-
-function assertInsideDirectory(parent, child, description) {
-  const relativePath = relative(parent, resolve(child));
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`${description} must stay inside ${parent}.`);
-  }
 }
 
 function assertPrivateDirectory(info, path) {
@@ -273,7 +269,7 @@ async function acquireOpenShellCharts(execFile, helm, directory) {
   return { gateway: chartPath, workspace: workspaceChartPath };
 }
 
-async function installAgentSandbox(execFile, kubectl, cluster, directory) {
+async function installAgentSandbox(execFile, kubectl, cluster, directory, registerImage) {
   const manifestPath = await downloadPinnedArtifact({
     artifact: {
       name: "Agent Sandbox",
@@ -284,7 +280,11 @@ async function installAgentSandbox(execFile, kubectl, cluster, directory) {
     },
     directory,
   });
-  await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", manifestPath]));
+  const nodes = JSON.parse(
+    (await execFile(kubectl, kubectlArgs(cluster, ["get", "nodes", "-o", "json"]))).stdout,
+  );
+  const localManifest = await preloadAgentSandboxController(manifestPath, nodes, registerImage);
+  await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", localManifest]));
   await execFile(kubectl, kubectlArgs(cluster, ["get", "crd", "sandboxes.agents.x-k8s.io"]));
   await execFile(
     kubectl,
@@ -606,6 +606,28 @@ async function prepareOpenShellClusterBootstrap({
   };
 }
 
+async function validateOpenShellSelection(env, execFile, snapshotParent) {
+  const releasedImages = {
+    gateway: openShellGatewayImage,
+    sandbox: openShellSandboxImage,
+    supervisor: openShellSupervisorImage,
+  };
+  for (const role of Object.keys(releasedImages)) {
+    const name = `OCC_TEST_OPENSHELL_${role.toUpperCase()}_IMAGE`;
+    assertImmutableImageReference(env[name] || releasedImages[role], name);
+  }
+  const candidate = selectOpenShellCandidate(env, releasedImages);
+  if (candidate) {
+    return await verifyOpenShellCandidate(candidate, {
+      execFile,
+      docker: env.OCC_DOCKER_BIN ?? "docker",
+      helm: env.OCC_HELM_BIN ?? "helm",
+      snapshotParent,
+    });
+  }
+  return candidate;
+}
+
 async function prepareOpenShell({ cluster, execFile, registerImage, env = process.env }) {
   const selectedCluster = assertCluster(cluster);
   if (typeof execFile !== "function") {
@@ -615,7 +637,9 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
     throw new Error("OpenShell bootstrap requires a registerImage callback.");
   }
 
-  await assertPrivateDirectory(await stat(selectedCluster.directory), selectedCluster.directory);
+  // Keep verified candidate charts under the owned cluster directory for lane cleanup.
+  assertPrivateDirectory(await lstat(selectedCluster.directory), selectedCluster.directory);
+  const candidate = await validateOpenShellSelection(env, execFile, selectedCluster.directory);
   const directory = join(selectedCluster.directory, "openshell");
   await ensurePrivateDirectory(directory);
 
@@ -629,9 +653,6 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
   const supervisorSourceImage = env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE || openShellSupervisorImage;
   assertKubernetesName(runtimeClass, "OpenShell RuntimeClass");
   assertRuntimeHandler(runtimeHandler);
-  assertImmutableImageReference(gatewaySourceImage, "OCC_TEST_OPENSHELL_GATEWAY_IMAGE");
-  assertImmutableImageReference(sandboxSourceImage, "OCC_TEST_OPENSHELL_SANDBOX_IMAGE");
-  assertImmutableImageReference(supervisorSourceImage, "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE");
 
   await execFile(kubectl, kubectlArgs(selectedCluster, ["version", "--client=true"]));
   await execFile(helm, ["version", "--short"]);
@@ -661,8 +682,10 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
     assertRuntimeSmokeImage(env.OCC_TEST_KUBERNETES_AGENT_IMAGE),
   );
 
-  const charts = await acquireOpenShellCharts(execFile, helm, directory);
-  await installAgentSandbox(execFile, kubectl, selectedCluster, directory);
+  const charts = candidate
+    ? { gateway: candidate.gatewayChart, workspace: candidate.workspaceChart }
+    : await acquireOpenShellCharts(execFile, helm, directory);
+  await installAgentSandbox(execFile, kubectl, selectedCluster, directory, registerImage);
 
   const gatewayImage = chartDeployableImageReference(
     await registerImage(gatewaySourceImage, "OCC_TEST_OPENSHELL_GATEWAY_IMAGE"),
@@ -682,7 +705,8 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
     OCC_TEST_OPENSHELL_HELM: helm,
     OCC_TEST_OPENSHELL_HELM_CHART: charts.gateway,
     OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: charts.workspace,
-    OCC_TEST_OPENSHELL_CHART_VERSION: openShellVersion,
+    OCC_TEST_OPENSHELL_CHART_VERSION: candidate?.gatewayAppVersion ?? openShellVersion,
+    ...(candidate && { OCC_TEST_OPENSHELL_SOURCE_REVISION: candidate.sourceRevision }),
     OCC_TEST_OPENSHELL_GATEWAY_IMAGE: gatewayImage,
     OCC_TEST_OPENSHELL_SANDBOX_IMAGE: sandboxImage,
     OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: supervisorImage,
@@ -700,4 +724,5 @@ export {
   prepareOpenShellClusterBootstrap,
   prepareOpenShellPodSecurityAdmission,
   selectKubectlAsset,
+  validateOpenShellSelection,
 };
