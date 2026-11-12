@@ -21,7 +21,6 @@ import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/sr
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   authenticatedHeaders,
@@ -604,7 +603,6 @@ const configurationHttpLifecycleFixtures = {
   updateSaved,
   assertRefused,
   literalModelKey,
-  FlakyConfigurationCoreV1Api,
 };
 registerConfigurationCrudCases(configurationHttpLifecycleFixtures);
 

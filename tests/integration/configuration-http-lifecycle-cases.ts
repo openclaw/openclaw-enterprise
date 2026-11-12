@@ -14,14 +14,26 @@ import {
   ConfigurationValues,
   ErrorResponse,
   JsonValue,
+  PluginApproversSchema,
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolDefaultsSchema,
+  PluginToolPolicySchema,
+  type AccessBinding,
   type ComputeDriver,
   type Configuration,
   type ConfigurationDriver,
+  type Identity,
   type NamespaceWire,
   type OpenClawConfigurationDocument,
   type OpenClawConfigurationValue,
   type Permission,
+  type Principal,
+  type Role,
 } from "../../packages/contracts/src/index.ts";
+import type { OpenClawController } from "../../packages/occ/src/index.ts";
+import type { resolveKubernetesControlNamespace } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import {
@@ -30,16 +42,42 @@ import {
 } from "../helpers/admitted-configuration.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-const schemaContext = { SafeJsonValue: JsonValue };
+const schemaContext = {
+  SafeJsonValue: JsonValue,
+  PluginDriverIdentity: PluginDriverIdentitySchema,
+  PluginApprovers: PluginApproversSchema,
+  PluginToolPolicy: PluginToolPolicySchema,
+  PluginToolDefaults: PluginToolDefaultsSchema,
+  PluginDesiredSelection: PluginDesiredSelectionSchema,
+  PluginDesiredState: PluginDesiredStateSchema,
+};
+
+type ConfigurationCoreApi = Pick<
+  Parameters<typeof resolveKubernetesControlNamespace>[0],
+  | "listNamespace"
+  | "createNamespacedConfigMap"
+  | "readNamespacedConfigMap"
+  | "replaceNamespacedConfigMap"
+  | "deleteNamespacedConfigMap"
+>;
 
 interface HttpResponse {
   status: number;
   body: unknown;
 }
 
-interface ConfigurationContext {
+interface AgentReadinessContext {
+  controller: OpenClawController;
+  principal: Principal;
+  identities: Identity[];
+  roles: Role[];
+  bindings: AccessBinding[];
+}
+
+interface ConfigurationContext extends AgentReadinessContext {
   app: ControllerApp;
   auditSink: InMemoryAuditSink;
 }
@@ -59,7 +97,7 @@ interface ConfigurationHttpLifecycleFixtures {
     options?: { body?: unknown; authorization?: boolean },
   ): Promise<HttpResponse>;
   readyAgent(
-    context: ConfigurationContext,
+    context: AgentReadinessContext,
     namespace: NamespaceWire,
     agentId: string,
     configurationId: string,
@@ -73,21 +111,10 @@ interface ConfigurationHttpLifecycleFixtures {
   ): Promise<HttpResponse>;
   assertRefused(response: HttpResponse, message: string, options: { sentinel: string }): void;
   literalModelKey(field: string): string;
-  FlakyConfigurationCoreV1Api: new () => {
-    addNamespace(namespaceId: string): void;
-    called(method: string): Promise<void>;
-    calls: Record<string, number>;
-  };
 }
 
 export function registerConfigurationCrudCases(fixtures: ConfigurationHttpLifecycleFixtures): void {
-  const {
-    createConfigurationBackend,
-    fixture,
-    createOpenClawConfiguration,
-    request,
-    FlakyConfigurationCoreV1Api,
-  } = fixtures;
+  const { createConfigurationBackend, fixture, createOpenClawConfiguration, request } = fixtures;
 
   test("native OpenClaw Configuration HTTP CRUD preserves documents, SecretRefs, exact scope, and audit", async () => {
     const configurationDriver = createConfigurationBackend();
@@ -239,10 +266,11 @@ export function registerConfigurationCrudCases(fixtures: ConfigurationHttpLifecy
     // limit, committed after the Console ingress had answered 504 at 15 s, so the caller thought
     // the save had failed. The real Kubernetes Configuration Driver runs here over an in-memory
     // CoreV1Api (not cluster proof); the Fastify, IAM, OCC and transaction paths are real.
-    const client = new FlakyConfigurationCoreV1Api();
+    const client = new FlakyConfigurationCoreV1Api() satisfies ConfigurationCoreApi;
     const configurationDriver = new KubernetesConfigurationDriver({
       authentication: { mode: "inCluster" },
     });
+    assert.ok(Object.hasOwn(configurationDriver, "client"));
     Object.assign(configurationDriver, { client: Promise.resolve(client) });
     const { collection, namespace, ...context } = await fixture({ configurationDriver });
     client.addNamespace(namespace.id);
@@ -259,7 +287,7 @@ export function registerConfigurationCrudCases(fixtures: ConfigurationHttpLifecy
     const clock = Date.now;
     t.mock.method(Date, "now", () => clock() + lag);
     const called = client.called.bind(client);
-    client.called = (method) => {
+    client.called = (method: string) => {
       lag += 4_000;
       return called(method);
     };
@@ -512,7 +540,7 @@ export function registerConfigurationOwnershipCases(
         body: { name: "Configuration consumer", configurationId },
       });
       assert.equal(agent.status, 201, JSON.stringify(agent.body));
-      assert.ok(Check(AgentResponse, agent.body));
+      assert.ok(Check(schemaContext, AgentResponse, agent.body));
       assert.equal(agent.body.data.configurationId, configurationId);
       const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
 
