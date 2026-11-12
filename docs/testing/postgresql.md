@@ -24,7 +24,11 @@ bootstrap SQL, so restrictive checkout permissions do not need changing. Cleanup
 removes this copy with the disposable server; unexpected files in its directory
 are preserved and reported as a cleanup failure. If directory or SQL creation was
 not durably confirmed, cleanup preserves any unconfirmed contents and state.
-Inspect their ownership before manual removal; a competing process may own the directory. With Docker Compose available, run:
+Inspect their ownership before manual removal; a competing process may own the directory.
+
+Use Docker Compose, or set `OCC_DOCKER_BIN` to the `podman` executable and
+configure its Compose provider. If you use standalone `podman-compose`, use a
+release that accepts `up --wait`, such as 1.6.0. Then run:
 
 ```sh
 (
@@ -59,9 +63,10 @@ retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
 
-Docker assigns each prepared server a loopback host port. Preparation records the
+The container engine assigns each prepared server a loopback host port.
+Preparation records the
 verified mapping before connecting; it does not use the shared development port
-`55432`. The caller must be able to reach the Docker host's loopback interface.
+`55432`. The caller must be able to reach the container host's loopback interface.
 A sandbox with a separate network namespace can still receive `ECONNREFUSED`
 after successful container startup. Run preparation and its test client in a
 supported host environment; changing port allocation does not bridge namespaces.
