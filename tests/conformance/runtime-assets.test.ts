@@ -344,16 +344,24 @@ test("restricted native worker startup preserves baseline file contents and mode
     );
   runStartup();
   const publishedDirectory = join(home, "openclaw-runtime-assets", "bundled-skills");
+  function readAsset(path: string) {
+    const fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      return { stat: fs.fstatSync(fd), contents: fs.readFileSync(fd, "utf8") };
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
   for (const [name, mode, contents] of fixtures) {
-    const publishedAsset = join(publishedDirectory, name);
-    const publishedStat = fs.statSync(publishedAsset);
-    assert.equal(fs.readFileSync(publishedAsset, "utf8"), contents);
-    assert.equal(publishedStat.mode & 0o7777, fs.statSync(join(legacy, name)).mode & 0o7777);
-    assert.equal(publishedStat.mode & 0o777, mode & 0o777);
-    assert.equal(publishedStat.uid, fs.statSync(home).uid);
-    assert.equal(publishedStat.gid, fs.statSync(home).gid);
-    assert.equal(fs.readFileSync(join(skills, name), "utf8"), contents);
-    assert.equal(fs.statSync(join(skills, name)).mode & 0o7777, mode);
+    const published = readAsset(join(publishedDirectory, name));
+    assert.equal(published.contents, contents);
+    assert.equal(published.stat.mode & 0o7777, fs.statSync(join(legacy, name)).mode & 0o7777);
+    assert.equal(published.stat.mode & 0o777, mode & 0o777);
+    assert.equal(published.stat.uid, fs.statSync(home).uid);
+    assert.equal(published.stat.gid, fs.statSync(home).gid);
+    const source = readAsset(join(skills, name));
+    assert.equal(source.contents, contents);
+    assert.equal(source.stat.mode & 0o7777, mode);
   }
 
   // Keep one source for the independent exclusive-publication collision check.

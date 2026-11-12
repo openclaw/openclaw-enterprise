@@ -411,9 +411,13 @@ test("saved scratch admissions preserve legacy launch selection and reject misor
   const revision = scratchRevision(driver);
   const prefix = "scratch:v1:";
   const { runtime, binding } = JSON.parse(revision.compute.admission.slice(prefix.length));
+  const assetMarker = "runtime-asset-copy:v1:";
   const marker = "openshell-codex-launch:v1:";
-  assert.match(runtime, /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:$/);
-  const provider = runtime.slice(0, -marker.length);
+  assert.match(
+    runtime,
+    /^model-provider:v1:[a-f0-9]{64}:runtime-asset-copy:v1:openshell-codex-launch:v1:$/,
+  );
+  const provider = runtime.slice(0, -(assetMarker + marker).length);
   const saved = (value) => ({
     ...revision,
     compute: {
@@ -425,13 +429,20 @@ test("saved scratch admissions preserve legacy launch selection and reject misor
   const legacy = saved(provider);
   assert.deepEqual(driver.scratchAdmission(legacy).binding, operatorBinding);
   assert.equal(driver.codexLaunch(legacy, driver.sandboxDriver).openShellProgram, undefined);
+  assert.equal(driver.codexLaunch(legacy, driver.sandboxDriver).completeAssetCopies, false);
+  const previous = driver.codexLaunch(saved(provider + marker), driver.sandboxDriver);
+  const current = driver.codexLaunch(revision, driver.sandboxDriver);
+  assert.equal(previous.openShellProgram, current.openShellProgram);
+  assert.equal(previous.completeAssetCopies, false);
+  assert.equal(current.completeAssetCopies, true);
   const protectedRuntime = "protected-codex-no-connection-retry:v1";
-  for (const launch of [provider, runtime]) {
+  for (const launch of [provider, provider + marker, runtime]) {
     assert.equal(driver.runtimeAdmission(saved(launch + protectedRuntime)), protectedRuntime);
   }
   for (const invalid of [
     marker + provider,
     runtime + marker,
+    provider + marker + assetMarker,
     provider + "openshell-codex-launch:v2:",
   ]) {
     assert.throws(
