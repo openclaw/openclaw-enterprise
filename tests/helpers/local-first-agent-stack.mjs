@@ -300,8 +300,9 @@ function run(
           if (known) {
             phase = known[1];
           }
-          const point = context && setupPoints.find(([prefix]) => line.startsWith(prefix));
-          if (startup && point && !lineClipped) {
+          const point =
+            context && !lineClipped && setupPoints.find(([prefix]) => line.startsWith(prefix));
+          if (startup && point) {
             lastSetupPoint = point[1];
           }
           if (point && !observed.has(point[1])) {
