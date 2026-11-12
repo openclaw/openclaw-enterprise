@@ -10,25 +10,43 @@
 // runtime-image-gateway-workspace.test.ts).
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { availableParallelism, loadavg } from "node:os";
 import { basename, join } from "node:path";
-import { promisify } from "node:util";
-import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
-import { followContainer } from "./docker-follow.ts";
-import { withTestOwnerLabel } from "./docker-test-owner.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { productionGatewayMemoryLimitGi } from "./kubernetes-real.mjs";
-import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import { commandOutput, failureTail, runDocker } from "./runtime-image-docker.ts";
+import {
+  listGatewayPlugins,
+  waitForGatewayReady,
+  waitForGatewaySpawn,
+} from "./runtime-image-gateway-observations.ts";
 
-export const execute = promisify(execFile);
-export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+export {
+  commandOutput,
+  docker,
+  execute,
+  failureTail,
+  runDocker,
+  runDockerCommand,
+  waitForDockerLog,
+} from "./runtime-image-docker.ts";
+export {
+  containerLogTail,
+  gatewayReadinessReport,
+  jsonLogEntries,
+  listGatewayPlugins,
+  openClawGatewaySpawnedRequest,
+  openClawProcessRunningRequest,
+  waitForContainerReady,
+  waitForGatewayReady,
+  waitForGatewaySpawn,
+} from "./runtime-image-gateway-observations.ts";
+
 export const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 export const runtimeImageModel = defaultAgentModel;
 // The production Gateway memory limit (productionGatewayMemoryLimitGi), with
@@ -114,204 +132,6 @@ export const imageTestOptions =
       }
     : {};
 
-// `options.redact` lists extra values (synthetic credentials) a failure message must not show.
-export async function runDocker(args, options = {}, input) {
-  return runDockerCommand(docker, args, options, input);
-}
-
-// Runs a docker command. A failure rejects with dockerCommandFailure's error. A command that
-// creates a container, volume or network labels it with this process as owner, so a signal
-// that stops the test still removes it (docker-test-owner.mjs). Failures name the caller's
-// arguments, without the label.
-export async function runDockerCommand(dockerBin, dockerArgs, options = {}, input) {
-  const args = withTestOwnerLabel(dockerBin, dockerArgs);
-  const { redact = [], ...execOptions } = options;
-  const timeout = execOptions.timeout ?? 60_000 * imageSmokeTimeoutMultiplier;
-  const startedAt = Date.now();
-  const command = execute(dockerBin, args, { maxBuffer: 1_000_000, ...execOptions, timeout });
-  // A stdin error (EPIPE when docker exits early) waits for the command, whose failure
-  // says more; it is thrown only when the command itself succeeded.
-  let inputError;
-  const inputComplete =
-    input === undefined
-      ? undefined
-      : new Promise((resolve) => {
-          command.child.stdin.once("error", (error) => {
-            inputError = error;
-            resolve();
-          });
-          command.child.stdin.end(input, resolve);
-        });
-  let result;
-  try {
-    [result] = await Promise.all([command, inputComplete]);
-  } catch (error) {
-    throw dockerCommandFailure(error, dockerArgs, {
-      timeout,
-      elapsedMs: Date.now() - startedAt,
-      redact,
-    });
-  }
-  if (inputError !== undefined) {
-    throw inputError;
-  }
-  return result;
-}
-
-const dockerArgumentLimit = 120;
-const dockerStdoutTailLimit = 4 * 1024;
-const dockerStderrTailLimit = 8 * 1024;
-
-// Replaces each value in `redact`. Run on the whole text, before any cut can split a value.
-function withoutRedactValues(text, redact) {
-  let result = String(text);
-  for (const value of redact) {
-    if (typeof value === "string" && value.length > 0) {
-      result = result.replaceAll(value, "[redacted]");
-    }
-  }
-  return result;
-}
-
-// Then redacts like CI's failure report: token shapes such as the sk- keys these tests plant,
-// secret assignments, URL passwords.
-function redactDockerText(text) {
-  return redactLogLine(text, [], Number.POSITIVE_INFINITY);
-}
-
-// Node's own error for a failed command names the whole command line (which can carry
-// synthetic credentials and multi-line scripts) and keeps no exit code, signal or timeout in
-// its message. Finding 2184's failure had empty output, so its message was empty and its
-// cause was lost. This error's message names the command (long or multi-line arguments
-// elided), the exit code, the signal, whether the timeout stopped it and how long it ran,
-// then the redacted ends of stdout and of stderr. stderr comes last so a caller's own tail
-// cut keeps it. The error keeps code, signal, killed and timedOut, and the raw stdout and
-// stderr (not enumerable, so printing the error shows only the redacted message) for
-// callers that check them. Node's error is not kept as the cause: its message is the raw
-// command line.
-export function dockerCommandFailure(error, args, { timeout, elapsedMs, redact = [] } = {}) {
-  const shown = args.map((arg) => {
-    const text = String(arg);
-    return text.includes("\n") || text.length > dockerArgumentLimit
-      ? `<${text.length}-char argument>`
-      : text;
-  });
-  const fullCommand = withoutRedactValues(`docker ${shown.join(" ")}`, redact);
-  const command = redactDockerText(
-    fullCommand.length > 512 ? `${fullCommand.slice(0, 512)}...` : fullCommand,
-  );
-  const timedOut =
-    error.killed === true &&
-    error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" &&
-    error.name !== "AbortError" &&
-    timeout > 0 &&
-    elapsedMs >= timeout;
-  const outcome = [
-    typeof error.code === "number"
-      ? `exit code ${error.code}`
-      : `no exit code${typeof error.code === "string" ? ` (${error.code})` : ""}`,
-    `signal ${error.signal ?? "none"}`,
-    timedOut ? `timed out after ${timeout} ms` : "not timed out",
-    `ran ${elapsedMs ?? "?"} ms`,
-  ];
-  if (error.killed === true && !timedOut) {
-    outcome.push("killed");
-  }
-  const sections = [`${command} failed (${outcome.join(", ")}).`];
-  const stdout = withoutRedactValues(error.stdout ?? "", redact);
-  const stderr = withoutRedactValues(error.stderr ?? "", redact);
-  if (stdout.trim() !== "") {
-    sections.push(`stdout:\n${redactDockerText(failureTail(stdout, dockerStdoutTailLimit))}`);
-  }
-  if (stderr.trim() !== "") {
-    sections.push(`stderr:\n${redactDockerText(failureTail(stderr, dockerStderrTailLimit))}`);
-  }
-  if (stdout.trim() === "" && stderr.trim() === "") {
-    sections.push("(no stdout or stderr)");
-  }
-  const failure = new Error(sections.join("\n"));
-  Object.assign(failure, {
-    code: error.code,
-    signal: error.signal ?? null,
-    killed: error.killed === true,
-    timedOut,
-    elapsedMs,
-  });
-  for (const [name, value] of [
-    ["stdout", error.stdout],
-    ["stderr", error.stderr],
-  ]) {
-    Object.defineProperty(failure, name, { value, enumerable: false, writable: true });
-  }
-  return failure;
-}
-
-export async function waitForDockerLog(containerName, pattern) {
-  const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
-  const logs = followContainer(undefined, containerName, { docker, exit: false });
-  let output = "";
-  try {
-    for (;;) {
-      const seen = logs.changes.version;
-      let state;
-      try {
-        state = logs.read();
-      } catch (error) {
-        throw new Error(
-          `Could not follow ${containerName} logs waiting for ${pattern}.
-${failureTail(`${error.message}\n${output}`)}`,
-          { cause: error },
-        );
-      }
-      output = `${state.stdout}\n${state.stderr}`;
-      if (pattern.test(output)) {
-        return output;
-      }
-      if (!state.following) {
-        throw new Error(`${containerName} stopped before ${pattern} appeared in its logs.
-${failureTail(output)}`);
-      }
-      if (Date.now() >= deadline) {
-        break;
-      }
-      const checkedAt = Date.now();
-      await logs.changes.wait(seen, deadline - checkedAt);
-      // At most one check per 100 ms while the container writes.
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.max(0, checkedAt + 100 - Date.now())),
-      );
-    }
-  } finally {
-    await logs.stop();
-  }
-  throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.
-${failureTail(output)}`);
-}
-
-export function commandOutput(error) {
-  return `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
-}
-
-// CI keeps only the first 16 KiB of a failure message (scripts/ci/reporter.mjs),
-// so a whole container log in an error loses its end: the wrapper's stderr and
-// the actual failure (finding 976 misread a cut log as a Doctor stall). Errors
-// carry at most the last `limit` characters of process output instead, from a
-// line start when one is near, so the cut does not split a value the reporter
-// would redact.
-export const failureOutputLimit = 12 * 1024;
-
-export function failureTail(output, limit = failureOutputLimit) {
-  if (output.length <= limit) {
-    return output;
-  }
-  let tail = output.slice(-limit);
-  const lineEnd = tail.indexOf("\n");
-  if (lineEnd !== -1 && lineEnd < 1024) {
-    tail = tail.slice(lineEnd + 1);
-  }
-  return `[... ${output.length - tail.length} earlier chars omitted ...]\n${tail}`;
-}
-
 export async function temporaryGatewayConfiguration(
   t,
   harnessId,
@@ -359,301 +179,6 @@ export function createAdmittedRuntimeImageConfiguration(harnessId, options = {})
     createRuntimeImageConfiguration(harnessId, runtimeImageModel, options),
     "info",
   );
-}
-
-// A `node -e` program that calls `request` (an async function's source that resolves
-// to an HTTP status) every 250 ms until it answers 2xx or `process.argv[1]`
-// milliseconds pass, then names the last failure. One `docker exec` runs the whole
-// wait, instead of a Node start per attempt, which the lane's other files would
-// share CPUs with (finding 2448); it dies with the container if the Gateway exits.
-function readinessProbe(request) {
-  return `(async () => {
-  const request = ${request};
-  const deadline = Date.now() + Number(process.argv[1]);
-  let last = "no attempt";
-  for (;;) {
-    try {
-      const status = await request();
-      if (status >= 200 && status < 300) process.exit(0);
-      last = "HTTP " + status;
-    } catch (error) {
-      last = String(error?.cause?.code ?? error?.cause?.message ?? error?.code ?? error?.message ?? error);
-    }
-    if (Date.now() >= deadline) break;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  console.error("Last /readyz attempt: " + last);
-  process.exit(1);
-})();`;
-}
-
-// Each readiness attempt used to be a `docker inspect` and a `docker exec`
-// 250 ms apart: about 460 ms on an idle runner, longer under load. 1.5 s per
-// attempt keeps at least that time on 8 CPUs; the wait grows on fewer CPUs,
-// where the lane's other files start runtimes at the same time (finding 2460).
-const readinessAttemptMs = 1_500;
-
-export async function waitForGatewayReady(containerName, readinessAttempts = 60) {
-  return waitForContainerReady(containerName, {
-    label: "Gateway",
-    request:
-      '() => fetch("http://127.0.0.1:8080/readyz", { signal: AbortSignal.timeout(5000) }).then((response) => response.status)',
-    timeoutMs: cpuScaledImageTimeoutMs(readinessAttempts * readinessAttemptMs),
-  });
-}
-
-// The source of a request (see readinessProbe) that answers 200 while a matching
-// OpenClaw process runs in the container, else 503. Launchers start
-// `/app/openclaw.mjs gateway`; OpenClaw then retitles itself "openclaw" (which its
-// other commands share) and, once its run loop starts, "openclaw-gateway". An
-// idle respawn parent keeps the original argv.
-function openClawProcessRequest(match) {
-  return `async () => {
-  const fs = require("node:fs");
-  const launched = ["/app/openclaw.mjs", "gateway", ""].join(String.fromCharCode(0));
-  const match = ${match};
-  for (const pid of fs.readdirSync("/proc")) {
-    if (!/^[0-9]+$/.test(pid)) continue;
-    let cmdline;
-    try {
-      cmdline = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8");
-    } catch {
-      continue;
-    }
-    if (match(cmdline, launched)) return 200;
-  }
-  return 503;
-}`;
-}
-
-// 200 once a launcher has spawned the OpenClaw Gateway. Both launchers spawn it
-// only after their pre-launch steps (state migration decision, approver and tool
-// policy checks), so a case that asserts only those steps can stop there instead
-// of paying for the full start: about 21 of a start's 24 CPU-seconds to /readyz
-// are OpenClaw's own (4 CPUs, 2026-10-27).
-export const openClawGatewaySpawnedRequest = openClawProcessRequest(
-  '(cmdline, launched) => cmdline.includes(launched) || cmdline.startsWith("openclaw-gateway")',
-);
-
-// 200 while any OpenClaw Gateway process, or an OpenClaw command, still runs.
-export const openClawProcessRunningRequest = openClawProcessRequest(
-  '(cmdline, launched) => cmdline.includes(launched) || cmdline.startsWith("openclaw")',
-);
-
-export async function waitForGatewaySpawn(containerName) {
-  return waitForContainerReady(containerName, {
-    label: "OpenClaw Gateway spawn",
-    request: openClawGatewaySpawnedRequest,
-    timeoutMs: cpuScaledImageTimeoutMs(60_000),
-  });
-}
-
-// Waits until `request` (see readinessProbe) answers 2xx inside the running
-// container, failing early when the container stops.
-export async function waitForContainerReady(containerName, { label, request, timeoutMs }) {
-  const probe = readinessProbe(request);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const budgetMs = Math.max(0, deadline - Date.now());
-    const ready = await runDocker(["exec", containerName, "node", "-e", probe, String(budgetMs)], {
-      timeout: budgetMs + 30_000 * imageSmokeTimeoutMultiplier,
-    }).catch((error) => error);
-    if (!(ready instanceof Error)) {
-      return;
-    }
-    const inspect = await runDocker([
-      "inspect",
-      containerName,
-      "--format",
-      "{{.State.Running}} {{.State.ExitCode}}",
-    ]);
-    const [running, exitCode] = inspect.stdout.trim().split(/\s+/);
-    if (running !== "true") {
-      throw new Error(`${label} container exited before readiness with code ${exitCode}.`);
-    }
-    // The probe ran out its budget, or its exec failed while the container still
-    // ran (a dying PID 1 can end the exec before Docker marks the container
-    // stopped): try again until the deadline, as each attempt used to.
-    if (Date.now() >= deadline) {
-      throw new Error(`${label} readiness timed out.\n${failureTail(commandOutput(ready), 2048)}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-}
-
-// `openclaw plugins list --json` builds its own plugin registry snapshot: about 3 CPU-seconds
-// and 2.4-9.1 s beside a just-ready Gateway on 1, 2 or 4 shared CPUs (measured 2026-10). On a
-// CI runner busy with four image files it still once passed runDocker's 60 s default, so only
-// cases that assert on the list run it (runGatewaySmoke's collectPlugins).
-export async function listGatewayPlugins(containerName) {
-  const { stdout } = await runDocker([
-    "exec",
-    containerName,
-    "node",
-    "/app/openclaw.mjs",
-    "plugins",
-    "list",
-    "--json",
-  ]);
-
-  try {
-    return JSON.parse(stdout);
-  } catch (error) {
-    throw new Error(
-      `OpenClaw plugin list output was not valid JSON.\n${failureTail(stdout, 2048)}`,
-      { cause: error },
-    );
-  }
-}
-
-export function jsonLogEntries(output) {
-  return output
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((entry) => entry !== undefined);
-}
-
-// Merges a container's newest `lines` log lines from both streams in time order, newest last,
-// and keeps at most `limit` characters from the end. A whole `docker logs` read in an error
-// spends the 600 characters CI shows, and the 16 KiB its diagnostics keep, on the oldest
-// lines: across a container restart those are the previous run's (finding 2784).
-export async function containerLogTail(containerName, { lines = 200, limit = 8 * 1024 } = {}) {
-  const logs = await runDocker([
-    "logs",
-    "--timestamps",
-    "--tail",
-    String(lines),
-    containerName,
-  ]).catch((error) => error);
-  const merged = ["stdout", "stderr"].flatMap((stream) =>
-    String(logs[stream] ?? "")
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line) => {
-        const [, stamp = "", text = line] = /^(\S+) (.*)$/.exec(line) ?? [];
-        // RFC 3339 with up to 9 fraction digits: pad them so the strings sort as times.
-        const time = stamp.replace(/(?:\.(\d+))?Z$/, (_, digits = "") => {
-          return `.${digits.padEnd(9, "0")}Z`;
-        });
-        return { time, text: `${stamp} ${stream}: ${text}` };
-      }),
-  );
-  merged.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
-  const text = merged.map((line) => line.text).join("\n");
-  if (logs instanceof Error) {
-    return `${logs.message.split("\n")[0]}\n${failureTail(text, limit)}`;
-  }
-  return failureTail(text, limit);
-}
-
-// Probed inside the container by gatewayReadinessReport: the wrapper's /readyz (Compute's
-// readiness), its plugin and runtime status, and the native OpenClaw /startupz and /readyz
-// that the wrapper's readiness also requires. Each answer keeps its status, time and the
-// status fields readiness depends on, else the start of its body; a failed request keeps its
-// error code.
-const gatewayReadinessProbe = `(async () => {
-  const limit = 300;
-  // The status fields readiness depends on, kept whole when the body is cut.
-  const keys = ["phase", "startupId", "successfulPluginIds", "failures", "runtimeFailure", "workspaceNodeFailure"];
-  const statusPort = process.env.OPENCLAW_RUNTIME_STATUS_PORT ?? process.env.OPENCLAW_PLUGIN_STATUS_PORT;
-  const gatewayPort = process.env.OPENCLAW_GATEWAY_PORT;
-  const read = async (port, path) => {
-    if (!port) return { error: "no port" };
-    const started = Date.now();
-    try {
-      const response = await fetch("http://127.0.0.1:" + port + path, { signal: AbortSignal.timeout(5000), redirect: "manual" });
-      const body = await response.text();
-      let fields;
-      try {
-        const json = JSON.parse(body);
-        fields = Object.fromEntries(keys.filter((key) => json?.[key] !== undefined).map((key) => [key, json[key]]));
-      } catch {}
-      const shown = fields !== undefined && Object.keys(fields).length > 0
-        ? { fields }
-        : { body: body.length > limit ? body.slice(0, limit) + "..." : body };
-      return { status: response.status, ms: Date.now() - started, ...shown };
-    } catch (error) {
-      return { error: String(error?.cause?.code ?? error?.cause?.message ?? error?.code ?? error?.message ?? error), ms: Date.now() - started };
-    }
-  };
-  const [wrapperReady, plugin, runtime, nativeStartup, nativeReady] = await Promise.all([
-    read(statusPort, "/readyz"),
-    read(statusPort, "/openclaw/plugin-runtime/status"),
-    read(statusPort, "/openclaw/runtime/status"),
-    read(gatewayPort, "/startupz"),
-    read(gatewayPort, "/readyz"),
-  ]);
-  console.log(JSON.stringify({ wrapperReady, plugin, runtime, nativeStartup, nativeReady }));
-})();`;
-
-function answerSummary(answer) {
-  if (answer === undefined) {
-    return "unread";
-  }
-  return answer.error === undefined ? `${answer.status}` : `error ${answer.error}`;
-}
-
-// A bounded account of why a Gateway is not ready, read when a readiness wait times out.
-// `headline` fits in the 600 characters of a failure that CI's job log shows; `detail` adds
-// each probe's answer, the container state and the wrapper's startup phases since the
-// container last started. The test process's load average tells contention from a stall.
-export async function gatewayReadinessReport(containerName) {
-  const inspect = await runDocker(["inspect", containerName])
-    .then(({ stdout }) => JSON.parse(stdout)[0].State)
-    .catch((error) => ({ error: error.message.split("\n")[0] }));
-  const probe = await runDocker(["exec", containerName, "node", "-e", gatewayReadinessProbe], {
-    timeout: 30_000 * imageSmokeTimeoutMultiplier,
-  })
-    .then(({ stdout }) => JSON.parse(stdout.trim().split("\n").at(-1)))
-    .catch((error) => ({ error: error.message.split("\n")[0].slice(0, 300) }));
-  const phaseLogs =
-    typeof inspect.StartedAt === "string"
-      ? await runDocker(["logs", "--since", inspect.StartedAt, containerName]).catch(
-          (error) => error,
-        )
-      : {};
-  const phases = jsonLogEntries(commandOutput(phaseLogs))
-    .filter((entry) => entry?.event === "runtime.startup_phase")
-    .map(
-      (entry) =>
-        `${entry.phase}:${entry.outcome}${entry.code ? ` ${entry.code}` : ""} ${entry.ms}/${entry.sinceStartMs} ms`,
-    );
-  const plugin = probe.plugin?.fields;
-  const runtime = probe.runtime?.fields;
-  const pluginFailures = (plugin?.failures ?? []).map((failure) => failure.code).join(",");
-  const runtimeFailure = runtime?.runtimeFailure
-    ? `${runtime.runtimeFailure.check}/${runtime.runtimeFailure.code}`
-    : "none";
-  const container =
-    inspect.error === undefined
-      ? `${inspect.Status}, started ${Math.round((Date.now() - Date.parse(inspect.StartedAt)) / 1000)} s ago, exit ${inspect.ExitCode}, OOMKilled ${inspect.OOMKilled}`
-      : inspect.error;
-  const load = loadavg()
-    .map((value) => value.toFixed(1))
-    .join("/");
-  const headline = [
-    probe.error === undefined
-      ? `wrapper /readyz ${answerSummary(probe.wrapperReady)}`
-      : `status probe failed: ${probe.error}`,
-    `plugin phase ${plugin?.phase ?? answerSummary(probe.plugin)}${pluginFailures ? ` (failures ${pluginFailures})` : ""}`,
-    `runtime failure ${probe.runtime?.status === 200 ? runtimeFailure : answerSummary(probe.runtime)}`,
-    `native /startupz ${answerSummary(probe.nativeStartup)}, /readyz ${answerSummary(probe.nativeReady)}`,
-    `last phase ${phases.at(-1) ?? "none"}`,
-    `container ${container}`,
-    `test host load ${load} on ${availableParallelism()} CPUs`,
-  ].join("; ");
-  const detail = [
-    `status probe: ${JSON.stringify(probe)}`,
-    `wrapper phases since start (duration/since start): ${phases.slice(-16).join(", ") || "none"}`,
-  ].join("\n");
-  return { headline, detail };
 }
 
 // A new volume owned by the Gateway user, for mounting at `mountPath` (the
