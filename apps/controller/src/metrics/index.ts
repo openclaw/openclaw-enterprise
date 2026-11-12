@@ -94,6 +94,12 @@ export function createOccMetrics(
             labelNames: ["lifecycle_state"],
             registers: [registry],
           }),
+          agentsByDeploymentState: new Gauge({
+            name: "occ_agents_by_deployment_state",
+            help: "Persisted Agents by selected revision presence, not live workload health.",
+            labelNames: ["deployment_state"],
+            registers: [registry],
+          }),
           pending: new Gauge({
             name: "occ_work_pending",
             help: "Shared database count of queued and claimed OCC work, including delayed retries.",
@@ -159,6 +165,12 @@ export function createOccMetrics(
           const values = await snapshot();
           for (const [lifecycle_state, count] of Object.entries(values.agents)) {
             worker.agents.set({ lifecycle_state }, count);
+          }
+          for (const deployment_state of ["draft", "active"] as const) {
+            worker.agentsByDeploymentState.set(
+              { deployment_state },
+              values.agentsByDeploymentState[deployment_state],
+            );
           }
           worker.pending.set(values.pending);
           worker.oldestPendingAge.set(values.oldestPendingAgeSeconds);
