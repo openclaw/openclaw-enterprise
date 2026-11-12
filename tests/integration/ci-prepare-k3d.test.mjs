@@ -1997,6 +1997,22 @@ test("node log retry summaries retain the latest kinds within one millisecond", 
   assert.match(excerpt, /omitted 1 earlier kinds of kubectl retry lines/u);
 });
 
+test("node log retry summaries omit credential-bearing endpoints", () => {
+  const endpoint = syntheticCredentialUrl({
+    username: "fixture-user",
+    password: "fixture-value",
+    host: "diagnostic.example.test",
+  });
+  // Retry summaries may echo the endpoint and error detail into the published report.
+  const stdout = `2026-10-21T00:00:00Z The connection to the server ${endpoint} was refused`;
+  const stderr = `2026-10-21T00:00:01Z Unable to connect to the server: Get ${endpoint}`;
+  assert.equal(
+    nodeLogExcerpt(stdout, stderr),
+    "2026-10-21T00:00:00Z [redacted credential-bearing line]\n" +
+      "2026-10-21T00:00:01Z [redacted credential-bearing line]",
+  );
+});
+
 test("node log chronology and retry retention do not depend on the process locale", () => {
   const moduleUrl = new URL("../../scripts/ci/k3d-diagnostics.mjs", import.meta.url).href;
   const script = `
