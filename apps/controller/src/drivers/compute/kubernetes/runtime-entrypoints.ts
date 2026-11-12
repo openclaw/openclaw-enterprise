@@ -2546,7 +2546,9 @@ function withAssetResource(resource, release, use) {
 function copyImageFile(source, destination, mode, staged) {
   const { openSync, closeSync, constants, readSync, writeSync } = assetFs;
   withAssetResource(openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW), closeSync, input => {
-    withAssetResource(openSync(staged ?? destination, "wx", 0o600), closeSync, output => {
+    withAssetResource(openSync(staged, "wx", 0o600), closeSync, output => {
+      // Match native copy: content writes may clear set-ID bits from the source mode.
+      assetFs.chmodSync(staged, mode);
       const buffer = Buffer.allocUnsafe(64 * 1024);
       let count;
       while ((count = readSync(input, buffer, 0, buffer.length, null)) > 0) {
@@ -2557,12 +2559,9 @@ function copyImageFile(source, destination, mode, staged) {
           offset += written;
         }
       }
-      if (staged === undefined) assetFs.fchmodSync(output, mode);
     });
   });
-  if (staged === undefined) return;
   // Link the completed inode so an intervening file or symlink is never overwritten.
-  assetFs.chmodSync(staged, mode);
   assetFs.linkSync(staged, destination);
   assetFs.unlinkSync(staged);
 }
@@ -2623,10 +2622,7 @@ function publishImageTree(source, destination, required) {
   }
   mkdirSync(runtimeAssetsDirectory, { recursive: true });
   clearDirectoryContents(destination);
-  if (!process.permission) {
-    copyImageDirectory(source, destination);
-    return;
-  }
+  // Keep incomplete files private on both ordinary and restricted Node.
   // This runtime's private volume contains the staging directory. Creating it
   // inside the target also preserves its filesystem and inherited group.
   withAssetResource(assetFs.mkdtempSync(join(destination, ".asset-")),

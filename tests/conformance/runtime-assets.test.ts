@@ -209,49 +209,108 @@ test("runtime asset publication refuses a destination symlink before clearing it
   assert.equal(fs.readFileSync(join(destination, "asset"), "utf8"), "new publication");
 });
 
-test("runtime asset copy closes both files and preserves the write error over a close error", (t) => {
+test("runtime asset copy keeps incomplete files private and preserves the first error", (t) => {
+  for (const prefix of [0, 2, null]) {
+    const home = directory(t);
+    const source = join(home, "image");
+    const destination = join(home, "published");
+    fs.mkdirSync(source);
+    fs.writeFileSync(join(source, "asset"), "asset content");
+    fs.chmodSync(join(source, "asset"), 0o4751);
+    const descriptors: number[] = [];
+    const writeError = Object.assign(new Error("write failed"), { code: "EIO" });
+    const closeError = new Error("close failed");
+    let writes = 0;
+    let outputPath = "";
+    const io = {
+      ...fs,
+      openSync(path: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) {
+        const fd = fs.openSync(path, flags, mode);
+        descriptors.push(fd);
+        if (flags === "wx") {
+          outputPath = String(path);
+        }
+        return fd;
+      },
+      writeSync(
+        fd: number,
+        buffer: Uint8Array,
+        offset: number,
+        length: number,
+        position: number | null,
+      ) {
+        assert.equal(fs.existsSync(join(destination, "asset")), false);
+        assert.equal(fs.statSync(join(outputPath, "..")).mode & 0o777, 0o700);
+        if (prefix !== null && (prefix === 0 || writes > 0)) {
+          throw writeError;
+        }
+        writes += 1;
+        const count = prefix === null ? length : Math.min(prefix, length);
+        return fs.writeSync(fd, buffer, offset, count, position);
+      },
+      closeSync(fd: number) {
+        fs.closeSync(fd);
+        throw closeError;
+      },
+    };
+    assert.throws(
+      () => publisher(home, io)(source, destination, true),
+      (error) => error === (prefix === null ? closeError : writeError),
+    );
+    assert.equal(descriptors.length, 2);
+    for (const fd of descriptors) {
+      assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+    }
+    assert.deepEqual(fs.readdirSync(destination), []);
+    assert.equal(fs.readFileSync(join(source, "asset"), "utf8"), "asset content");
+    assert.equal(fs.statSync(join(source, "asset")).mode & 0o7777, 0o4751);
+  }
+});
+
+test("ordinary runtime asset publication does not replace a competing symlink", (t) => {
   const home = directory(t);
   const source = join(home, "image");
   const destination = join(home, "published");
+  const sentinel = join(home, "sentinel");
   fs.mkdirSync(source);
-  fs.writeFileSync(join(source, "asset"), "asset content");
-  const descriptors: number[] = [];
-  const writeError = Object.assign(new Error("write failed"), { code: "EIO" });
-  const closeError = new Error("close failed");
+  fs.writeFileSync(join(source, "asset"), "complete asset");
+  fs.writeFileSync(sentinel, "preserved");
   const io = {
     ...fs,
-    openSync(path: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) {
-      const fd = fs.openSync(path, flags, mode);
-      descriptors.push(fd);
-      return fd;
-    },
-    writeSync() {
-      throw writeError;
-    },
-    closeSync(fd: number) {
-      fs.closeSync(fd);
-      throw closeError;
+    linkSync(staged: fs.PathLike, target: fs.PathLike) {
+      assert.equal(fs.readFileSync(staged, "utf8"), "complete asset");
+      fs.symlinkSync(sentinel, target);
+      fs.linkSync(staged, target);
     },
   };
-  assert.throws(
-    () => publisher(home, io)(source, destination, true),
-    (error) => error === writeError,
-  );
-  assert.equal(descriptors.length, 2);
-  for (const fd of descriptors) {
-    assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
-  }
-  assert.equal(fs.readFileSync(join(source, "asset"), "utf8"), "asset content");
+  assert.throws(() => publisher(home, io)(source, destination, true), { code: "EEXIST" });
+  assert.equal(fs.readlinkSync(join(destination, "asset")), sentinel);
+  assert.equal(fs.readFileSync(sentinel, "utf8"), "preserved");
+  assert.deepEqual(fs.readdirSync(destination), ["asset"]);
 });
 
-test("restricted native worker startup publishes file contents and exact modes", (t) => {
+test("restricted native worker startup preserves baseline file contents and modes", (t) => {
   const home = directory(t);
   const image = join(home, "image");
   const skills = join(image, "skills");
   fs.mkdirSync(skills, { recursive: true });
-  const asset = join(skills, "tool");
-  fs.writeFileSync(asset, "fixture tool");
-  fs.chmodSync(asset, 0o4751);
+  // Regular fixtures are copied, never executed. Native copy's set-ID behavior
+  // depends on the writing identity and whether the file has content.
+  const fixtures = [
+    ["tool", 0o4751, "fixture tool"],
+    ["ordinary", 0o644, "ordinary asset"],
+    ["executable", 0o755, "executable asset"],
+    ["setgid", 0o2751, "setgid asset"],
+    ["sticky", 0o1751, "sticky asset"],
+    ["setgid-without-exec", 0o2641, "non-executable group"],
+    ["empty-setuid", 0o4751, ""],
+  ] as const;
+  for (const [name, mode, contents] of fixtures) {
+    fs.writeFileSync(join(skills, name), contents);
+    fs.chmodSync(join(skills, name), mode);
+  }
+  const legacy = join(home, "legacy-copy");
+  fs.cpSync(skills, legacy, { recursive: true });
 
   const call = "\ninitializeRuntimeAssets();";
   const end = NATIVE_WORKER_ENTRYPOINT.indexOf(call);
@@ -284,13 +343,26 @@ test("restricted native worker startup publishes file contents and exact modes",
       },
     );
   runStartup();
-  const published = join(home, "openclaw-runtime-assets", "bundled-skills", "tool");
-  assert.equal(fs.readFileSync(published, "utf8"), "fixture tool");
-  assert.equal(fs.statSync(published).mode & 0o7777, 0o4751);
-  assert.equal(fs.statSync(published).uid, fs.statSync(home).uid);
+  const publishedDirectory = join(home, "openclaw-runtime-assets", "bundled-skills");
+  for (const [name, mode, contents] of fixtures) {
+    const publishedAsset = join(publishedDirectory, name);
+    const publishedStat = fs.statSync(publishedAsset);
+    assert.equal(fs.readFileSync(publishedAsset, "utf8"), contents);
+    assert.equal(publishedStat.mode & 0o7777, fs.statSync(join(legacy, name)).mode & 0o7777);
+    assert.equal(publishedStat.mode & 0o777, mode & 0o777);
+    assert.equal(publishedStat.uid, fs.statSync(home).uid);
+    assert.equal(publishedStat.gid, fs.statSync(home).gid);
+    assert.equal(fs.readFileSync(join(skills, name), "utf8"), contents);
+    assert.equal(fs.statSync(join(skills, name)).mode & 0o7777, mode);
+  }
 
-  assert.equal(fs.statSync(published).gid, fs.statSync(home).gid);
-
+  // Keep one source for the independent exclusive-publication collision check.
+  for (const [name] of fixtures) {
+    if (name !== "tool") {
+      fs.unlinkSync(join(skills, name));
+    }
+  }
+  const published = join(publishedDirectory, "tool");
   // Install a competing destination entry immediately before exclusive publication.
   const sentinel = join(home, "sentinel");
   const pendingLink = join(home, "pending-link");
