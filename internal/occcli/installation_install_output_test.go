@@ -14,10 +14,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Helm and kubectl are real subprocesses. The loopback Kubernetes API fixture
-// stores only Helm release Secrets; this does not establish cluster deployment.
+// stores Helm release Secrets and serves initialization Job evidence; this does
+// not establish cluster deployment.
 func TestInstallationInstallOutputFailure(t *testing.T) {
 	for _, tool := range []string{"helm", "kubectl"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -29,13 +31,16 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 		failNotice      bool
 		failResult      bool
 		failHelm        bool
+		completeJob     bool
 		templateFailure string
 	}{
 		{name: "healthy"},
+		{name: "healthy-completed-job", completeJob: true},
 		{name: "healthy-inherited-stderr"},
 		{name: "intent", failNotice: true},
 		{name: "result", failResult: true},
 		{name: "helm-failed", failHelm: true},
+		{name: "helm-failed-completed-job", failHelm: true, completeJob: true},
 		{name: "stock-suffix-refusal", templateFailure: "stock"},
 		{name: "template-canary-refusal", templateFailure: "canary"},
 		{name: "template-overflow", templateFailure: "overflow"},
@@ -132,6 +137,23 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 						if err := readInstallationRecord(receipt, "dispatch.json", &dispatch); err != nil || dispatch["outcome"] != "unknown" {
 							t.Errorf("original dispatch marker before Helm create: %v, err=%v", dispatch, err)
 						}
+						if phase.completeJob {
+							// Keep Helm running until the real kubectl observer captures
+							// the original UID, rather than racing Helm's empty-chart exit.
+							deadline := time.Now().Add(10 * time.Second)
+							for {
+								var job installationJobReceipt
+								if err := readInstallationRecord(receipt, "job.json", &job); err == nil {
+									break
+								}
+								if time.Now().After(deadline) || r.Context().Err() != nil {
+									t.Error("observer did not capture the original Job")
+									w.WriteHeader(http.StatusInternalServerError)
+									return
+								}
+								time.Sleep(10 * time.Millisecond)
+							}
+						}
 						// A failed response after storage makes the real Helm process
 						// exit nonzero while retaining evidence of the initial dispatch.
 						if phase.failHelm {
@@ -148,6 +170,18 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 					return
 				}
 				if r.URL.Path == "/apis/batch/v1/namespaces/operations/jobs/demo-initialization" && r.Method == "GET" {
+					if phase.completeJob {
+						var intent installationIntent
+						if err := readInstallationRecord(receipt, "intent.json", &intent); err != nil {
+							t.Error(err)
+							w.WriteHeader(http.StatusInternalServerError)
+							return
+						}
+						// Match the actual persisted attempt and the supported chart's
+						// install steps, labels, release, name and stable original UID.
+						fmt.Fprintf(w, `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"original-job","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade","openclaw.dev/installation-attempt":%q}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`, intent.Attempt)
+						return
+					}
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprint(w, `{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","details":{"name":"demo-initialization","group":"batch","kind":"jobs"},"code":404}`)
 					return
@@ -265,6 +299,21 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 				}
 				if !strings.Contains(outputAttempt.String(), "Helm outcome: "+wantOutcome+".") {
 					t.Errorf("missing reported Helm outcome %q in %q", wantOutcome, outputAttempt.String())
+				}
+			}
+			const nextStep = "After verifying the API and worker rollouts, follow “Authenticate to the production API” in docs/guides/deploy/production-installation.md to sign in and prepare your first Namespace."
+			wantNextStep := phase.completeJob && !phase.failHelm
+			if got := strings.Contains(outputAttempt.String(), nextStep); got != wantNextStep {
+				t.Errorf("next-step guidance on stdout=%v, want %v: %q", got, wantNextStep, outputAttempt.String())
+			}
+			if strings.Contains(stderr.String(), nextStep) || (err != nil && strings.Contains(err.Error(), nextStep)) {
+				t.Error("next-step guidance escaped to stderr or the returned error")
+			}
+			if phase.completeJob {
+				for _, evidence := range []string{"Initialization Job (install hook): complete", `UID "original-job" matches the recorded UID`, "Use installation doctor or plan with --receipt"} {
+					if !strings.Contains(outputAttempt.String(), evidence) {
+						t.Errorf("missing original Job diagnostic %q in stdout", evidence)
+					}
 				}
 			}
 			text := outputAttempt.String() + stderr.String()

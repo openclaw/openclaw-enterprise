@@ -178,6 +178,9 @@ func (app *application) installationInstallCommand() *cobra.Command {
 				}
 				return &ExitStatusError{Code: 1}
 			}
+			if outputErr == nil && result.state == initializationComplete && result.original != nil {
+				_, outputErr = fmt.Fprintln(cmd.OutOrStdout(), "After verifying the API and worker rollouts, follow “Authenticate to the production API” in docs/guides/deploy/production-installation.md to sign in and prepare your first Namespace.")
+			}
 			return outputErr
 		},
 	}
