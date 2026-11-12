@@ -45,6 +45,8 @@ export function createQaReport(path, metadata) {
       if (reportCleanup) {
         const { boundedTeardown, teardownStepLimitMs } = await import("./bounded-teardown.ts");
         let cleanupOutcome = "incomplete";
+        let retained = false;
+        const localCleanups = new WeakSet();
         // Observe the existing teardown's one final hook; do not create another
         // cleanup queue or change the native fixture's reverse registration order.
         const owner = new Proxy(context, {
@@ -53,7 +55,6 @@ export function createQaReport(path, metadata) {
               return (hook) =>
                 target.after(async () => {
                   let cleanupError;
-                  let retained = false;
                   try {
                     // Cancellation starts after-hooks before the test body necessarily
                     // settles. Do not dispose dependencies under an in-flight mutation.
@@ -74,8 +75,8 @@ export function createQaReport(path, metadata) {
                     }
                     if (!settled) {
                       retained = true;
-                      throw new Error(
-                        `QA work did not settle within ${teardownStepLimitMs} ms; cleanup retained`,
+                      context.diagnostic(
+                        `QA work did not settle within ${teardownStepLimitMs} ms; dependencies retained`,
                       );
                     }
                     await hook();
@@ -115,12 +116,19 @@ export function createQaReport(path, metadata) {
                   }
                 });
             }
+            if (property === "afterLocal") {
+              return (cleanup) => {
+                localCleanups.add(cleanup);
+                workContext.after(cleanup);
+              };
+            }
             const result = Reflect.get(target, property, target);
             return typeof result === "function" ? result.bind(target) : result;
           },
         });
         workContext = boundedTeardown(owner, {
           label: `${name} teardown`,
+          canRunCleanup: (cleanup) => !retained || localCleanups.has(cleanup),
           onOutcome: (result) => {
             cleanupOutcome = result;
           },

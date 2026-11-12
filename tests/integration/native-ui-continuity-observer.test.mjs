@@ -122,3 +122,84 @@ test("native continuity observer fails closed on capture overflow or unbounded r
   });
   assert.equal(invalidId.sentFrames.length, 0);
 });
+
+// Exercise the same cumulative closeout validator used by the browser helper.
+// A previously complete pair of turns cannot hide a later send or failure.
+test("native continuity closeout rejects late sends and conflicting complete-run evidence", () => {
+  for (const late of ["none", "send", "abort", "duplicate-final", "early", "other-socket"]) {
+    const observer = createNativeContinuityObserver();
+    const page = {};
+    observer.open({ page, socket: 1, at: 1 });
+    observer.open({ page, socket: 2, at: 1 });
+    const emit = (direction, message, socket = 1, at = 3) =>
+      observer.frame({ page, socket, at, direction, payload: JSON.stringify(message) });
+    const turns = [];
+    for (const name of ["target", "continuation"]) {
+      const prompt = `${name} prompt`;
+      const reply = `${name}-reply`;
+      observer.expect({ name, prompt, reply });
+      emit("sent", {
+        type: "req",
+        id: `${name}-send`,
+        method: "chat.send",
+        params: { sessionKey: "agent:main:one", message: prompt },
+      });
+      const boundary = { index: observer.receivedFrames.length, at: 2, socket: 1 };
+      emit("received", {
+        type: "event",
+        event: "chat",
+        payload: { sessionKey: "agent:main:one", runId: `${name}-run`, state: "final" },
+      });
+      emit("received", {
+        type: "event",
+        event: "session.message",
+        payload: { sessionKey: "agent:main:one", message: { role: "assistant", content: reply } },
+      });
+      turns.push({
+        requestId: `${name}-send`,
+        sessionKey: "agent:main:one",
+        runId: `${name}-run`,
+        reply,
+        boundary,
+      });
+    }
+    observer.assertCompletedTurns({ firstSent: 0, turns });
+    if (late === "none") {
+      continue;
+    }
+    if (late === "send") {
+      emit("sent", {
+        type: "req",
+        id: "late-send",
+        method: "chat.send",
+        params: { sessionKey: "agent:main:one", message: "target prompt" },
+      });
+    } else {
+      emit(
+        "received",
+        {
+          type: "event",
+          event: "chat",
+          payload: {
+            sessionKey: "agent:main:one",
+            runId: "target-run",
+            state: late === "abort" ? "aborted" : "final",
+          },
+        },
+        late === "other-socket" ? 2 : 1,
+        late === "early" ? 1 : 4,
+      );
+    }
+    const expected = {
+      send: /Unexpected send during continuity observation/,
+      abort: /Conflicting terminal outcome/,
+      "duplicate-final": /Duplicate run final/,
+      early: /Terminal frame timestamp precedes its phase boundary/,
+      "other-socket": /Terminal frame must use the authenticated socket/,
+    };
+    assert.throws(() => observer.assertCompletedTurns({ firstSent: 0, turns }), {
+      name: "AssertionError",
+      message: expected[late],
+    });
+  }
+});

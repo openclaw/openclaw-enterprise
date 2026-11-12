@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,17 @@ const ownerLabel = "dev.openclaw.native-model-barrier";
 const clusterLabel = "dev.openclaw.native-model-cluster";
 const pointer = (value) => value.replaceAll("~", "~0").replaceAll("/", "~1");
 
+// Publish a complete replacement without truncating the last recovery record.
+async function writeOwnership(path, value) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
 // This is a controlled provider, not external model acceptance. The caller owns
 // an exclusive disposable k3d cluster and stops its Agent before this teardown.
 export async function prepareNativeModelBarrier(
@@ -47,6 +58,10 @@ export async function prepareNativeModelBarrier(
   const statePath = resolve(process.env.OPENCLAW_ENTERPRISE_CI_STATE);
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
   let preparedCluster;
+  let preparedPostgres;
+  let preparedDatabase;
+  let postgresContainerId;
+  let dnsRolloutPending = false;
   let clusterUid;
   let consumers;
   let consumerOutcome = "not-bound";
@@ -133,30 +148,26 @@ export async function prepareNativeModelBarrier(
   };
   const dnsValue = `api.openai.com:53 {\n    hosts {\n        ${address} api.openai.com\n    }\n}\n`;
   const record = () =>
-    writeFile(
-      join(root, "ownership.json"),
-      JSON.stringify(
-        {
-          owner,
-          cluster,
-          networkId,
-          providerId,
-          trustedId,
-          reference,
-          dnsUid,
-          dnsProbeUid,
-          clusterUid,
-          consumerOutcome,
-          mutations,
-          unsettled: [...unsettled],
-          nodes: nodes.map(({ id, name, uid }) => ({ id, name, uid })),
-          obligations: [...obligations],
-        },
-        null,
-        2,
-      ),
-      { mode: 0o600 },
-    );
+    writeOwnership(join(root, "ownership.json"), {
+      owner,
+      cluster,
+      networkId,
+      providerId,
+      trustedId,
+      reference,
+      dnsUid,
+      dnsProbeUid,
+      clusterUid,
+      consumerOutcome,
+      mutations,
+      dnsRolloutPending,
+      postgresContainerId,
+      postgresResourceId: preparedPostgres?.id,
+      databaseResourceId: preparedDatabase?.id,
+      unsettled: [...unsettled],
+      nodes: nodes.map(({ id, name, uid }) => ({ id, name, uid })),
+      obligations: [...obligations],
+    });
   const reserve = async (kind) => {
     obligations.add(kind);
     await record();
@@ -176,26 +187,85 @@ export async function prepareNativeModelBarrier(
       await record();
       assert.fail("Fixture closed before mutation dispatch");
     }
+    let value;
     try {
-      const value = await action();
-      mutation.outcome = "acknowledged";
-      await record();
-      return value;
+      value = await action();
     } catch (error) {
+      // Even a normal nonzero client exit can mean the server accepted the write
+      // but its response was lost. Redacted CLI failures carry no server rejection.
+      mutation.clientSettled = error instanceof FixtureCommandError && error.settled;
       mutation.outcome =
-        error instanceof FixtureCommandError && error.settled ? "settled-failure" : "unsettled";
+        error instanceof FixtureCommandError && !error.outcome.spawned
+          ? "not-dispatched"
+          : "unsettled";
       if (mutation.outcome === "unsettled") {
         unsettled.add(kind);
       }
       await record().catch(() => {});
       throw error;
     }
+    mutation.clientSettled = true;
+    mutation.outcome = "acknowledged";
+    await record();
+    return value;
   }
   async function assertPrepared() {
     const state = protectedJSON(await readFile(statePath, "utf8"));
     assert.equal(state.version, 1);
     assert.equal(resolve(state.repositoryRoot), resolve(repositoryRoot));
     assert.equal(resolve(state.statePath), statePath);
+    let databaseUrl;
+    try {
+      databaseUrl = new URL(process.env.OCC_TEST_DATABASE_URL);
+    } catch {
+      assert.fail("Selected prepared database URL is invalid");
+    }
+    assert.ok(
+      databaseUrl.protocol === "postgresql:" &&
+        databaseUrl.hostname === "127.0.0.1" &&
+        databaseUrl.username === "occ_app" &&
+        databaseUrl.search === "" &&
+        databaseUrl.hash === "",
+      "Selected database must use the prepared limited local connection",
+    );
+    const services = state.resources.filter(({ kind }) => kind === "compose-postgres");
+    assert.equal(services.length, 1, "Prepared owner must identify one PostgreSQL service");
+    const postgres = services[0];
+    assert.ok(
+      postgres.status === "ready" && postgres.owner === state.prefix,
+      "PostgreSQL service must be ready and owned by prepared state",
+    );
+    assert.ok(
+      Number.isSafeInteger(postgres.port) &&
+        postgres.port > 0 &&
+        postgres.port <= 65535 &&
+        postgres.port !== 55432,
+    );
+    assert.equal(resolve(postgres.composeFile), join(repositoryRoot, "compose.postgres.yaml"));
+    assert.ok(
+      databaseUrl.port === String(postgres.port),
+      "Prepared PostgreSQL port differs from selected database",
+    );
+    const databases = state.resources.filter(
+      ({ kind, name }) => kind === "postgres-database" && `/${name}` === databaseUrl.pathname,
+    );
+    assert.equal(databases.length, 1, "Selected database must belong to prepared state");
+    const database = databases[0];
+    assert.ok(
+      database.status === "ready" &&
+        database.owner === state.prefix &&
+        database.composeProject === postgres.name &&
+        database.port === postgres.port &&
+        database.laneTemplate === undefined,
+      "Selected database must be a ready owned non-template database on the prepared service",
+    );
+    if (preparedPostgres) {
+      assert.deepEqual(postgres, preparedPostgres, "Prepared PostgreSQL reservation changed");
+      assert.deepEqual(database, preparedDatabase, "Prepared database reservation changed");
+    } else {
+      preparedPostgres = postgres;
+      preparedDatabase = database;
+    }
     const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
     assert.equal(clusters.length, 1, "Prepared owner must have exactly one cluster");
     const selected = clusters[0];
@@ -209,6 +279,97 @@ export async function prepareNativeModelBarrier(
       assert.deepEqual(selected, preparedCluster, "Prepared cluster reservation changed");
     } else {
       preparedCluster = selected;
+    }
+  }
+  async function assertPostgresBinding() {
+    context.signal?.throwIfAborted();
+    assert.ok(!closing, "Fixture is closing");
+    await assertPrepared();
+    assert.ok(
+      !process.env.OCC_DOCKER_BIN || process.env.OCC_DOCKER_BIN === "docker",
+      "Attachment requires the verified Docker client",
+    );
+    assert.ok(
+      !process.env.DOCKER_HOST || process.env.DOCKER_HOST === "unix:///var/run/docker.sock",
+      "Attachment Docker host must be local",
+    );
+    for (const key of ["DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"]) {
+      assert.ok(!process.env[key], "Attachment must not use Docker TLS overrides");
+    }
+    // The attachment helper inherits ambient configuration, unlike command().
+    const ambient = (args) =>
+      runFixtureCommand(
+        "docker",
+        args,
+        { timeout: 15_000 },
+        () => "attachment metadata unavailable (output withheld)",
+        true,
+      );
+    const endpoint = protectedJSON(
+      await ambient(["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"]),
+    );
+    assert.ok(
+      endpoint === "unix:///var/run/docker.sock",
+      "Attachment context must select the verified local daemon",
+    );
+    const localDaemon = (await docker(["info", "--format", "{{.ID}}"])).trim();
+    assert.ok(
+      localDaemon && (await ambient(["info", "--format", "{{.ID}}"])).trim() === localDaemon,
+      "Ambient attachment daemon differs from provider daemon",
+    );
+    const ids = (
+      await docker([
+        "ps",
+        "-aq",
+        "--no-trunc",
+        "--filter",
+        `label=com.docker.compose.project=${preparedPostgres.name}`,
+        "--filter",
+        "label=com.docker.compose.service=postgres",
+      ])
+    )
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    assert.equal(ids.length, 1, "Prepared PostgreSQL must have one container");
+    assert.match(ids[0], idPattern);
+    const format =
+      '{"id":{{json .Id}},"running":{{json .State.Running}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"ports":{{json .NetworkSettings.Ports}}}';
+    const postgres = protectedJSON(await docker(["inspect", "--format", format, ids[0]]));
+    assert.ok(
+      postgres.running &&
+        postgres.project === preparedPostgres.name &&
+        postgres.service === "postgres",
+      "Prepared PostgreSQL identity is unavailable",
+    );
+    assert.deepEqual(
+      postgres.ports?.["5432/tcp"],
+      [{ HostIp: "127.0.0.1", HostPort: String(preparedPostgres.port) }],
+      "Prepared PostgreSQL published port changed",
+    );
+    assert.ok(
+      (await ambient(["inspect", "--format", "{{.Id}}", ids[0]])).trim() === postgres.id,
+      "Ambient PostgreSQL attachment identity differs",
+    );
+    const server = nodes.find(({ name }) => name === `k3d-${cluster}-server-0`);
+    assert.ok(server);
+    assert.ok(
+      (await ambient(["inspect", "--format", "{{.Id}}", server.name])).trim() === server.id,
+      "Ambient selected server differs from provider server",
+    );
+    const networks = protectedJSON(
+      await docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", server.id]),
+    );
+    const matching = Object.keys(networks).filter((name) => name.startsWith(`k3d-${cluster}`));
+    assert.deepEqual(
+      matching,
+      [`k3d-${cluster}`],
+      "PostgreSQL attachment network must be unambiguous",
+    );
+    if (postgresContainerId) {
+      assert.equal(postgres.id, postgresContainerId, "Prepared PostgreSQL container was replaced");
+    } else {
+      postgresContainerId = postgres.id;
     }
   }
   async function assertCluster(cleanup = false) {
@@ -379,6 +540,29 @@ export async function prepareNativeModelBarrier(
       await delay(100);
     }
   }
+  async function waitForResolver() {
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      const remaining = deadline - Date.now();
+      assert.ok(remaining > 0, "Cluster resolver did not converge");
+      const current = protectedJSON(
+        await kube(["get", "pods", "-n", "kube-system", "-l", "k8s-app=kube-dns", "-o", "json"], {
+          timeout: Math.min(15_000, remaining),
+        }),
+      );
+      assert.ok(Date.now() < deadline, "Cluster resolver read exceeded deadline");
+      if (
+        current.items.length === 1 &&
+        !current.items[0].metadata.deletionTimestamp &&
+        current.items[0].status.conditions?.some(
+          ({ type, status }) => type === "Ready" && status === "True",
+        )
+      ) {
+        return;
+      }
+      await delay(250);
+    }
+  }
   async function verifyDns() {
     assert.equal(
       (
@@ -426,7 +610,20 @@ export async function prepareNativeModelBarrier(
             command: [
               "node",
               "-e",
-              `require("node:dns").promises.lookup("api.openai.com", {family:4}).then(({address}) => { process.stdout.write(address); process.exitCode = address === ${JSON.stringify(address)} ? 0 : 1; }, () => { process.exitCode = 1; });`,
+              `const dns = require("node:dns").promises;
+const delay = require("node:timers/promises").setTimeout;
+const deadline = setTimeout(() => process.exit(1), 25000);
+(async () => {
+  for (;;) {
+    const result = await dns.lookup("api.openai.com", {family:4}).catch(() => undefined);
+    if (result?.address === ${JSON.stringify(address)}) {
+      clearTimeout(deadline);
+      process.stdout.write(result.address);
+      return;
+    }
+    await delay(250);
+  }
+})().catch(() => process.exit(1));`,
             ],
             securityContext: {
               readOnlyRootFilesystem: true,
@@ -615,6 +812,7 @@ export async function prepareNativeModelBarrier(
             { clusterWrite: true },
           );
         }
+        const removedValue = current.data?.[dnsKey] !== undefined;
         const after = await dns(true);
         assert.equal(after.metadata.uid, current.metadata.uid);
         assert.equal(after.data?.[dnsKey], undefined);
@@ -650,21 +848,24 @@ export async function prepareNativeModelBarrier(
             { clusterWrite: true },
           );
         }
-        await mutate(
-          "dns",
-          () =>
-            kube(
-              ["-n", "kube-system", "rollout", "restart", "deployment/coredns"],
-              undefined,
-              true,
-            ),
-          { clusterWrite: true },
-        );
-        await kube(
-          ["-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=25s"],
-          undefined,
-          true,
-        );
+        if (removedValue || dnsRolloutPending) {
+          await mutate(
+            "dns",
+            () =>
+              kube(
+                ["-n", "kube-system", "rollout", "restart", "deployment/coredns"],
+                undefined,
+                true,
+              ),
+            { clusterWrite: true },
+          );
+          await kube(
+            ["-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=25s"],
+            undefined,
+            true,
+          );
+          dnsRolloutPending = false;
+        }
       });
     }
     if (obligations.has("provider")) {
@@ -771,6 +972,7 @@ export async function prepareNativeModelBarrier(
     }
     assert.deepEqual(nodes.map(({ name }) => name).sort(), [...preparedCluster.nodes].sort());
     await assertCluster();
+    await assertPostgresBinding();
     await refuseRetainedProvider();
     await record();
     const platform = `linux/${process.arch === "x64" ? "amd64" : process.arch}`;
@@ -1028,9 +1230,14 @@ export async function prepareNativeModelBarrier(
       () => kube(["-n", "kube-system", "rollout", "restart", "deployment/coredns"]),
       { clusterWrite: true },
     );
+    dnsRolloutPending = true;
+    await record();
     await kube(["-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=120s"], {
       timeout: 150_000,
     });
+    await waitForResolver();
+    dnsRolloutPending = false;
+    await record();
     await verifyDns();
     return {
       bindConsumers(read) {
@@ -1040,6 +1247,7 @@ export async function prepareNativeModelBarrier(
         consumerOutcome = "bound";
       },
       modelKey,
+      assertPostgresBinding,
       codexImage: reference,
       providerImage,
       directory: root,

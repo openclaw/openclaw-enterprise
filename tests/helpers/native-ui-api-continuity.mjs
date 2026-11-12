@@ -35,10 +35,21 @@ function decoded(records, page, start = 0) {
     }));
 }
 
+function identifier(value) {
+  assert.ok(
+    typeof value === "string" && /^[A-Za-z0-9_.:/-]{1,256}$/.test(value),
+    "Invalid continuity identifier",
+  );
+  return value;
+}
+
 async function until(label, observe) {
   const deadline = performance.now() + 120_000;
   while (performance.now() < deadline) {
-    const result = await observe();
+    const result = await observe(Math.max(1, Math.floor(deadline - performance.now())));
+    if (performance.now() >= deadline) {
+      break;
+    }
     if (result) {
       return result;
     }
@@ -63,6 +74,8 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   restartControllerApi,
   readHistory,
   readStoredHistory,
+  assertConnectionAdmission,
+  closeout,
   signal,
 }) {
   signal?.throwIfAborted();
@@ -70,14 +83,16 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   assert.equal(observer.page, page);
   const { receivedFrames, sentFrames, socketEvents } = observer;
   const waitFor = (label, read) =>
-    until(label, () => {
+    until(label, async (remainingMs) => {
       signal?.throwIfAborted();
       observer.assertHealthy();
-      return read();
+      const result = await read(remainingMs);
+      signal?.throwIfAborted();
+      return result;
     });
-  async function readHistoryAttempt() {
+  async function readHistoryAttempt(remainingMs) {
     try {
-      return await readHistory(sessionKey);
+      return await readHistory(sessionKey, { timeoutMs: Math.min(10_000, remainingMs), signal });
     } catch (error) {
       const failure = error?.cause;
       if (
@@ -96,9 +111,7 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   assert.equal(initial.type, "event");
   assert.equal(initial.event, "session.message");
   assert.ok(terminal(initial.payload?.message));
-  const sessionKey = initial.payload.sessionKey;
-  assert.equal(typeof sessionKey, "string");
-  assert.ok(sessionKey.length > 0);
+  const sessionKey = identifier(initial.payload.sessionKey);
   assert.ok(typeof marker === "string" && marker.length > 0);
   assert.equal(text(initial.payload.message).includes(marker), false);
   const initialHello = decoded(receivedFrames, page).find(
@@ -121,8 +134,7 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   assert.ok(Array.isArray(initialAuth.scopes));
   assert.ok(initialAuth.scopes.includes("operator.admin"));
   const initialHistory = await waitFor("the seed session's wire history", readHistoryAttempt);
-  const sessionId = initialHistory.sessionId;
-  assert.ok(typeof sessionId === "string" && sessionId.length > 0);
+  const sessionId = identifier(initialHistory.sessionId);
   const sessionUrl = page.url();
   const firstSent = sentFrames.length;
   const firstReceived = receivedFrames.length;
@@ -160,7 +172,7 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     );
     assert.equal(chatRequests().length, expectedCount, "no automatic or manual resend");
     assert.equal(request.message.type, "req");
-    assert.match(request.message.id, /^[A-Za-z0-9_.:/-]{1,256}$/);
+    identifier(request.message.id);
     assert.equal(request.message.params.sessionKey, sessionKey);
     assert.ok(Number.isFinite(request.record.at));
     if (expectedSocket !== undefined) {
@@ -175,9 +187,7 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
       ),
     );
     assert.equal(ack.message.ok, true, "the original request must be acknowledged successfully");
-    assert.ok(
-      typeof ack.message.payload?.runId === "string" && ack.message.payload.runId.length > 0,
-    );
+    identifier(ack.message.payload?.runId);
     assert.ok(Number.isFinite(ack.record.at) && ack.record.at >= request.record.at);
     assert.ok(ack.index >= firstReply);
     return {
@@ -216,42 +226,21 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   }
 
   async function proveReply(token, prompt, turn, boundary) {
-    const scopedFrames = () => {
-      const frames = terminalFrames(token, turn);
-      // Reject early/stale or other-socket evidence instead of merely filtering
-      // it out and accepting a later copy of an already-completed reply.
-      for (const { record, index, message } of frames) {
-        if (message.payload.runId !== undefined) {
-          assert.equal(message.payload.runId, turn.runId);
-        }
-        assert.ok(index >= boundary.index, "terminal frame arrived before its phase boundary");
-        assert.ok(
-          Number.isFinite(record.at) && record.at >= boundary.at,
-          "terminal frame timestamp precedes its phase boundary",
-        );
-        assert.equal(
-          record.socket,
-          boundary.socket,
-          "terminal frame must use the authenticated socket",
-        );
-      }
-      return frames;
-    };
-    const event = await waitFor("the acknowledged run's final chat event", () =>
-      scopedFrames().find(({ message }) => message.event === "chat"),
-    );
-    assert.equal(event.message.payload.state, "final");
-    const reply = await waitFor("the same conversation's terminal assistant message", () =>
-      scopedFrames().find(({ message }) => message.event === "session.message"),
+    const sequence = () =>
+      observer.terminalSequence({ sessionKey, runId: turn.runId, reply: token, boundary });
+    await waitFor("the acknowledged run's final chat event", () => sequence().final);
+    const reply = await waitFor(
+      "the same conversation's terminal assistant message",
+      () => sequence().reply,
     );
     await assertVisibleReply(token);
-    await waitFor("one persisted assistant reply and user prompt", async () => {
-      const history = await readHistoryAttempt();
+    await waitFor("one persisted assistant reply and user prompt", async (remainingMs) => {
+      const history = await readHistoryAttempt(remainingMs);
       if (!history) {
         return undefined;
       }
       assert.equal(
-        history.sessionId,
+        identifier(history.sessionId),
         sessionId,
         "the original persisted session must remain selected",
       );
@@ -265,15 +254,23 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
       assert.ok(assistants.length <= 1 && users.length <= 1, "no duplicate persisted turn");
       return assistants.length === 1 && users.length === 1;
     });
-    scopedFrames();
+    sequence();
     unchangedTab();
     return reply;
   }
 
-  async function storedTurn(token, prompt) {
-    const stored = await readStoredHistory(sessionKey, sessionId);
-    assert.equal(stored.sessionKey, sessionKey);
-    assert.equal(stored.sessionId, sessionId);
+  async function readStored() {
+    signal?.throwIfAborted();
+    const deadline = performance.now() + 60_000;
+    const stored = await readStoredHistory(sessionKey, sessionId, { timeoutMs: 60_000, signal });
+    signal?.throwIfAborted();
+    assert.ok(performance.now() < deadline, "Stored transcript read exceeded its deadline");
+    assert.equal(identifier(stored.sessionKey), sessionKey);
+    assert.equal(identifier(stored.sessionId), sessionId);
+    return stored;
+  }
+
+  function storedTurn(stored, token, prompt) {
     assert.ok(Array.isArray(stored.messages));
     const users = stored.messages.filter(
       (message) => message.role === "user" && message.text.trim() === prompt,
@@ -286,7 +283,7 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     const [user] = users;
     const [assistant] = assistants;
     for (const entry of [user, assistant]) {
-      assert.ok(typeof entry.entryId === "string" && entry.entryId.length > 0);
+      identifier(entry.entryId);
       assert.ok(Number.isSafeInteger(entry.seq) && entry.seq >= 0);
       assert.equal(
         stored.messages.filter((message) => message.entryId === entry.entryId).length,
@@ -305,9 +302,11 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   try {
     const prompt = promptFor(marker);
     unchangedTab();
+    await assertConnectionAdmission("initial");
+    unchangedTab();
     const gate = await provider.arm({ marker, timeoutMs: 300_000 });
     assert.equal(gate.state, "armed");
-    assert.ok(typeof gate.gateId === "string" && gate.gateId.length > 0);
+    identifier(gate.gateId);
     const replyToken = gate.replyToken;
     assert.ok(typeof replyToken === "string" && /^[A-Za-z0-9_-]{1,256}$/.test(replyToken));
     assert.equal(
@@ -399,6 +398,8 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     assert.deepEqual([...new Set(scopes)].sort(), [...new Set(initialAuth.scopes)].sort());
     unchangedTab();
     assert.equal(chatRequests().length, 1, "reconnect must not resend the accepted turn");
+    await assertConnectionAdmission("reconnected");
+    unchangedTab();
     const stillHeld = await provider.status({ gateId: gate.gateId });
     assert.equal(stillHeld.state, "held");
     assert.equal(stillHeld.matchingRequests, 1);
@@ -416,7 +417,7 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     };
     await provider.release({ gateId: gate.gateId });
     const targetReply = await proveReply(replyToken, prompt, turn, releaseBoundary);
-    const storedTarget = await storedTurn(replyToken, prompt);
+    const storedTarget = storedTurn(await readStored(), replyToken, prompt);
     const completed = await waitFor("the original provider response completing", async () => {
       const state = await provider.status({ gateId: gate.gateId });
       assert.notEqual(state.state, "failed");
@@ -440,39 +441,68 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
       continuation,
       continuation.replyBoundary,
     );
+    // Keep every observer active through the caller's final resource reads.
+    const closeoutReceipt = await closeout();
+    const finalHistory = await waitFor("final wire history", readHistoryAttempt);
+    assert.equal(identifier(finalHistory.sessionId), sessionId);
+    assert.ok(Array.isArray(finalHistory.messages));
+    for (const [token, selectedPrompt] of [
+      [replyToken, prompt],
+      [continuationMarker, continuationPrompt],
+    ]) {
+      assert.equal(
+        finalHistory.messages.filter(
+          (message) => terminal(message) && text(message).trim() === token,
+        ).length,
+        1,
+      );
+      assert.equal(
+        finalHistory.messages.filter(
+          (message) => message.role === "user" && text(message).trim() === selectedPrompt,
+        ).length,
+        1,
+      );
+    }
+    const finalStored = await readStored();
+    const storedContinuation = storedTurn(finalStored, continuationMarker, continuationPrompt);
+    assert.deepEqual(
+      storedTurn(finalStored, replyToken, prompt),
+      storedTarget,
+      "the original stored target entries must survive the continuation unchanged",
+    );
     const transcript = page.getByRole("log");
     await transcript.press("ControlOrMeta+Home");
     await assertVisibleReply(replyToken);
     await transcript.press("ControlOrMeta+End");
     await assertVisibleReply(continuationMarker);
-    const storedContinuation = await storedTurn(continuationMarker, continuationPrompt);
-    assert.deepEqual(
-      await storedTurn(replyToken, prompt),
-      storedTarget,
-      "the original stored target entries must survive the continuation unchanged",
-    );
-    assert.equal(chatRequests().length, 2);
+    // Last awaited observation: nothing may reopen the measurement window after
+    // these synchronous checks of every send and terminal outcome for both turns.
     const finalProvider = await provider.status({ gateId: gate.gateId });
     assert.equal(finalProvider.state, "completed");
     assert.equal(finalProvider.matchingRequests, 1);
     assert.equal(finalProvider.completedResponses, 1);
-    const finalHistory = await waitFor("final wire history", readHistoryAttempt);
-    assert.equal(finalHistory.sessionId, sessionId);
-    assert.ok(Array.isArray(finalHistory.messages));
-    assert.equal(
-      finalHistory.messages.filter(
-        (message) => terminal(message) && text(message).trim() === replyToken,
-      ).length,
-      1,
-    );
-    assert.equal(
-      finalHistory.messages.filter(
-        (message) => message.role === "user" && text(message).trim() === prompt,
-      ).length,
-      1,
-    );
+    observer.assertCompletedTurns({
+      firstSent,
+      turns: [
+        {
+          requestId: turn.request.message.id,
+          sessionKey,
+          runId: turn.runId,
+          reply: replyToken,
+          boundary: releaseBoundary,
+        },
+        {
+          requestId: continuation.request.message.id,
+          sessionKey,
+          runId: continuation.runId,
+          reply: continuationMarker,
+          boundary: continuation.replyBoundary,
+        },
+      ],
+    });
     unchangedTab();
     return {
+      closeout: closeoutReceipt,
       sessionKey,
       sessionId,
       storedTarget,

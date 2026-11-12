@@ -103,6 +103,8 @@ After a seed reply, the test waits for a successful `chat.send` acknowledgement
 and an independently held provider response before replacing only the API Pod.
 The original tab must reconnect without navigation or resending the accepted
 turn, show one reply after the provider releases it, and complete a second turn.
+Native admission audit records must confirm the same human and parent login
+session on both connections; the receipt records equality without session identifiers.
 The held reply contains a nonce supplied only to the provider. A fresh process
 checks stored transcript entries separately from live Gateway history; final
 browser counts and worker, Agent, Gateway and revision identities must agree.
@@ -114,8 +116,9 @@ The helper prints its private artifact directory and writes `continuity.json`
 after the assertions pass. The QA stage records assertions and cleanup separately;
 overall success requires both to finish successfully. Fixture cleanup owns its temporary resources; retain
 the result and cleanup outcome, and use the prepared environment's cleanup owner
-for the database and cluster even after failure. Unresolved mutations or remaining
-consumers retain the provider and its private journal for reconciliation. The
+for the database and cluster even after failure. Unsettled cancelled work,
+unresolved mutations, or remaining consumers retain dependencies and the private
+journal for reconciliation; independently safe local handles still close. The
 state lock covers the stage and its teardown, not an indefinite reservation after
 failure: keep the cluster exclusive until retained resources are reconciled.
 Registration or a skipped case

@@ -315,6 +315,98 @@ test("QA cleanup-aware stages publish only settled assertion and cleanup outcome
   assert.equal(row("cancelled").cleanup.outcome, "incomplete", row("cancelled").cleanup.reason);
 });
 
+test(
+  "QA expired joins retain dependencies and stop resumed setup",
+  { timeout: 15_000 },
+  async (t) => {
+    const directory = await temporaryDirectory(t, "qa-expired-join-");
+    const output = join(directory, "matrix.json");
+    const observation = join(directory, "observation.json");
+    const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
+    const teardownModule = new URL("../helpers/bounded-teardown.ts", import.meta.url).href;
+    const source = `
+    import assert from 'node:assert/strict';
+    import test, { mock } from 'node:test';
+    import { writeFile, rm } from 'node:fs/promises';
+    import { setImmediate as immediate, setTimeout as delay } from 'node:timers/promises';
+    import { join } from 'node:path';
+    import { createQaReport } from ${JSON.stringify(reportModule)};
+    import { withBoundedTeardown, teardownStepLimitMs } from ${JSON.stringify(teardownModule)};
+    const root = ${JSON.stringify(directory)};
+    const report = createQaReport(${JSON.stringify(output)}, { scope: 'partial:selected' });
+    await report.save();
+    const cancellation = new AbortController();
+    let ready;
+    const started = new Promise((resolve) => { ready = resolve; });
+    let resume;
+    const paused = new Promise((resolve) => { resume = resolve; });
+    let localClosed = false;
+    let advanced = false;
+    let bodyEnded = false;
+    // A real handle deliberately outlives the test: bounded teardown must end
+    // the process after late setup is stopped, rather than silently hanging.
+    setInterval(() => {}, 1_000);
+    const running = test('paused setup', { signal: cancellation.signal }, async (parent) => {
+      await report.stage(parent, 'kubernetes/Codex', 'expired join', async (context) => {
+        assert.equal(withBoundedTeardown(context), context);
+        await writeFile(join(root, 'dependency'), 'owned dependency');
+        await writeFile(join(root, 'ownership.json'), '{}');
+        context.after(async () => {
+          await rm(join(root, 'dependency'));
+          await rm(join(root, 'ownership.json'));
+        });
+        const localHandle = setInterval(() => {}, 1_000);
+        const closeLocal = () => { clearInterval(localHandle); localClosed = true; };
+        // The old reporter lacks this opt-in; use its ordinary registrar only
+        // for the regression comparison, without replacing the real teardown.
+        (context.afterLocal ?? context.after)(closeLocal);
+        ready();
+        try {
+          await paused;
+          await writeFile(join(root, 'late-dependency'), 'late owned dependency');
+          context.after(() => rm(join(root, 'late-dependency')));
+          advanced = true;
+        } finally {
+          bodyEnded = true;
+        }
+      }, 'native-api-continuity', { reportCleanup: true });
+    });
+    await started;
+    // Advance only the join's wall timer. The real node:test cancellation,
+    // teardown callbacks, resumed body and process-exit policy still execute.
+    mock.timers.enable({ apis: ['setTimeout'] });
+    cancellation.abort(new Error('controlled cancellation during paused setup'));
+    await immediate();
+    mock.timers.tick(teardownStepLimitMs);
+    mock.timers.reset();
+    await running;
+    resume();
+    for (let i = 0; i < 100 && !bodyEnded; i += 1) await delay(1);
+    await writeFile(${JSON.stringify(observation)}, JSON.stringify({ localClosed, advanced, bodyEnded }));
+  `;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", source], {
+      encoding: "utf8",
+      timeout: 8_000,
+    });
+    const observed = JSON.parse(await readFile(observation, "utf8"));
+    assert.deepEqual(observed, { localClosed: true, advanced: false, bodyEnded: true });
+    assert.ifError(child.error);
+    assert.equal(child.status, 1, child.stdout + child.stderr);
+    assert.equal(await readFile(join(directory, "dependency"), "utf8"), "owned dependency");
+    assert.equal(await readFile(join(directory, "ownership.json"), "utf8"), "{}");
+    assert.equal(
+      await readFile(join(directory, "late-dependency"), "utf8"),
+      "late owned dependency",
+    );
+    const { outcomes } = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].outcome, "failed");
+    assert.equal(outcomes[0].cleanup.outcome, "incomplete");
+    assert.match(child.stderr, /setup outlived its test|came after the teardown ran/);
+    assert.match(child.stderr, /retained because its owner has unsettled work/);
+  },
+);
+
 test("QA matrix summary refuses malformed evidence without printing its contents", async (t) => {
   const directory = await temporaryDirectory(t, "qa-summary-");
   const evidenceDirectory = join(directory, "qa-matrix-evidence");

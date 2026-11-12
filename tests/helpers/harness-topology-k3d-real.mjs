@@ -239,7 +239,7 @@ async function createAuthenticatedControllerUrlRequest(origin, credentials, requ
   };
 }
 
-async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
+async function createScopedController(context, identifier, platformNamespace, kubeconfig, signal) {
   const suffix = hash(identifier);
   const account = "openclaw-production-controller";
   const namespaceRole = `oce-production-namespaces-${suffix}`;
@@ -265,6 +265,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     await rm(directory, { recursive: true, force: true });
   });
 
+  signal?.throwIfAborted();
   await kubectl(
     "create",
     "clusterrole",
@@ -272,6 +273,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     "--verb=create,get,list,patch,update,delete",
     "--resource=namespaces",
   );
+  signal?.throwIfAborted();
   await kubectl(
     "create",
     "clusterrole",
@@ -279,6 +281,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     "--verb=create,get,list,patch,update,delete",
     "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges",
   );
+  signal?.throwIfAborted();
   await kubectl(
     "patch",
     "clusterrole",
@@ -342,6 +345,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     ]),
   );
   const identity = await createControllerIdentity({
+    signal,
     directory,
     platformNamespace,
     kubeconfig,
@@ -350,6 +354,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     clusterRoleBinding: binding,
     context: `scoped-production-${suffix}`,
   });
+  signal?.throwIfAborted();
   await kubectl(
     "create",
     "clusterrole",
@@ -357,6 +362,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     "--verb=get,list",
     "--resource=namespaces",
   );
+  signal?.throwIfAborted();
   await kubectl(
     "create",
     "clusterrole",
@@ -366,6 +372,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
   );
   // Match Helm's tenant-api role: credential creation verifies that this exact
   // Agent has no existing Deployment before creating its runtime Secrets.
+  signal?.throwIfAborted();
   await kubectl(
     "patch",
     "clusterrole",
@@ -380,6 +387,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
       },
     ]),
   );
+  signal?.throwIfAborted();
   await kubectl(
     "create",
     "clusterrole",
@@ -388,6 +396,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     "--resource=configmaps",
   );
   const apiIdentity = await createControllerIdentity({
+    signal,
     directory,
     platformNamespace,
     kubeconfig,
@@ -502,6 +511,7 @@ async function startInClusterControllers(
     platformNamespace,
     workerOptions,
     workspaceGateway,
+    signal,
   },
 ) {
   const databaseServiceName = "occ-test-postgres";
@@ -565,6 +575,7 @@ async function startInClusterControllers(
       workspaceGateway,
     });
   }
+  signal?.throwIfAborted();
   await applyManifest(JSON.stringify(manifests), {
     redactions: [
       databaseUrl,
@@ -587,12 +598,13 @@ async function startInClusterControllers(
       .join(","),
   );
   assert.equal(pods.length, 1, "in-cluster OCC API Deployment must have one Pod");
+  signal?.throwIfAborted();
   let forwarding = await startPortForwardTarget(
     platformNamespace,
     `pod/${pods[0].metadata.name}`,
     `${controllerPort ?? 0}:18080`,
   );
-  context.after(() => forwarding.stop());
+  (context.afterLocal ?? context.after).call(context, () => forwarding.stop());
   await waitForDeploymentAvailable(
     context,
     { kubeconfigPath, kubernetesContext },
@@ -603,6 +615,7 @@ async function startInClusterControllers(
       labels: workerLabels,
     },
   );
+  signal?.throwIfAborted();
   const logs = spawn(
     "kubectl",
     kubectlArguments([
@@ -645,6 +658,13 @@ async function startInClusterControllers(
       }
     }
   });
+  (context.afterLocal ?? context.after).call(context, async () => {
+    stopping = true;
+    logs.kill("SIGTERM");
+    await logExit;
+    lines.close();
+  });
+  let workerStopped = false;
   const worker = {
     assertHealthy() {
       if (logError !== undefined) {
@@ -652,9 +672,10 @@ async function startInClusterControllers(
       }
     },
     async stop() {
-      if (stopping) {
+      if (workerStopped) {
         return;
       }
+      workerStopped = true;
       stopping = true;
       try {
         await kubectl(
@@ -701,9 +722,11 @@ async function startInClusterControllers(
     url: forwarding.url,
     worker,
     async restart() {
+      signal?.throwIfAborted();
       const previousUid = activeApiPod.metadata.uid;
       const port = Number(new URL(forwarding.url).port);
       await forwarding.stop();
+      signal?.throwIfAborted();
       await kubectl("rollout", "restart", `deployment/${name}`, "--namespace", platformNamespace);
       await kubectl(
         "rollout",
@@ -723,6 +746,7 @@ async function startInClusterControllers(
             status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
         );
       });
+      signal?.throwIfAborted();
       forwarding = await startPortForwardTarget(
         platformNamespace,
         `pod/${pod.metadata.name}`,
@@ -1015,7 +1039,9 @@ async function createSecretAssignmentCallerRequest({
   installation,
   namespaceId,
   baseURL,
+  signal,
 }) {
+  signal?.throwIfAborted();
   const identifier = randomUUID();
   const credentials = {
     email: `secret-assignment-${hash(identifier)}@example.test`,
@@ -1031,6 +1057,7 @@ async function createSecretAssignmentCallerRequest({
     agentDomain: `agents.${new URL(baseURL).hostname}`,
     pool,
   });
+  signal?.throwIfAborted();
   const account = await auth.createAccount({
     email: credentials.email,
     password: credentials.password,
@@ -1052,6 +1079,7 @@ async function createSecretAssignmentCallerRequest({
 
   const client = await pool.connect();
   try {
+    signal?.throwIfAborted();
     await client.query("BEGIN");
     await client.query(
       `INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
@@ -1089,7 +1117,9 @@ async function ensureHarnessAdminPrincipal(
   installation,
   credentials,
   baseURL,
+  signal,
 ) {
+  signal?.throwIfAborted();
   const auth = await createPostgresControllerAuth({
     mode: "development",
     installationId: installation.id,
@@ -1103,6 +1133,7 @@ async function ensureHarnessAdminPrincipal(
   ]);
   assert.ok(existing.rows.length <= 1, "the harness administrator email must be unique");
   if (existing.rows.length === 1) {
+    signal?.throwIfAborted();
     try {
       await auth.auth.api.signInEmail({
         body: { email: credentials.email, password: credentials.password },
@@ -1114,6 +1145,7 @@ async function ensureHarnessAdminPrincipal(
       );
     }
   }
+  signal?.throwIfAborted();
   const account =
     existing.rows[0] ??
     (await auth.createAccount({
@@ -1138,6 +1170,7 @@ async function ensureHarnessAdminPrincipal(
   const seed = auth.principalSeed(account, { grant: "administrator" });
   const client = await pool.connect();
   try {
+    signal?.throwIfAborted();
     await client.query("BEGIN");
     for (const role of seed.roles) {
       await client.query(
@@ -1266,7 +1299,9 @@ function registerProductionTopologyCleanups(context, operations) {
     // Named for the teardown log: every registration comes from this line. Registered after its
     // test's teardown, each runs at once and throws to stop the setup; register them all first.
     try {
-      context.after({ [name]: () => operation() }[name]);
+      const register =
+        name === "gatewayForward" ? (context.afterLocal ?? context.after) : context.after;
+      register.call(context, { [name]: () => operation() }[name]);
     } catch (error) {
       stopped ??= error;
     }
@@ -1279,6 +1314,9 @@ function registerProductionTopologyCleanups(context, operations) {
 async function arrangeProductionTopology(testContext, mode, slack, options = {}) {
   // node:test would run these cleanups oldest-first and stop at the first failure (finding 1711).
   const context = withBoundedTeardown(testContext, { label: "production topology teardown" });
+  const signal = options.controlledModelProvider === undefined ? undefined : context.signal;
+  const assertActive = () => signal?.throwIfAborted();
+  assertActive();
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
   if (mode === "dedicated") {
@@ -1345,6 +1383,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       }
     }
   });
+  assertActive();
   await kubectl("create", "namespace", platformNamespace);
   context.after(async () => {
     try {
@@ -1365,18 +1404,35 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     identifier,
     platformNamespace,
     kubeconfig,
+    signal,
   );
   // Shared infrastructure and API credentials exist before any Agent is created.
   // The production Compute Driver alone supplies each Agent's route and endpoint.
   let workspaceGateway;
   if (mode === "dedicated" || options.workspaceGateway === true) {
     const gatewayHelpers = {
-      kubectl,
-      applyManifest,
+      kubectl: (...args) => {
+        if (
+          ["create", "apply", "patch", "replace", "run", "scale", "label", "annotate"].includes(
+            args[0],
+          ) ||
+          (args[0] === "rollout" && args[1] === "restart")
+        ) {
+          assertActive();
+        }
+        return kubectl(...args);
+      },
+      applyManifest: (...args) => {
+        assertActive();
+        return applyManifest(...args);
+      },
       resource,
       resources,
       waitFor,
-      startPortForwardTarget,
+      startPortForwardTarget: (...args) => {
+        assertActive();
+        return startPortForwardTarget(...args);
+      },
     };
     await ensureEnvoyGatewayControllers(gatewayHelpers);
     workspaceGateway = await createEnvoyWorkspaceGatewayPlan(
@@ -1386,6 +1442,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     );
   }
   const approvedClient = "approved-gateway-client";
+  assertActive();
   await kubectl(
     "run",
     approvedClient,
@@ -1493,7 +1550,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   } else {
     apiConfiguration.drivers.secret.configuration.authentication = controller.apiAuthentication;
   }
+  assertActive();
   await writeFile(startupPath, JSON.stringify(apiConfiguration), { mode: 0o600 });
+  assertActive();
   await writeFile(workerStartupPath, JSON.stringify(workerConfiguration), { mode: 0o600 });
   const drivers =
     workspaceGateway === undefined
@@ -1611,15 +1670,19 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   // Complete that topology change before opening the observer/bootstrap pools;
   // its registered cleanup runs only after those pools and the workers stop.
   if (workspaceGateway !== undefined) {
+    assertActive();
     databaseAddress = await attachPostgresToK3d((cleanup) => {
       detachPostgres = cleanup;
     });
+    assertActive();
+    await options.controlledModelProvider?.assertPostgresBinding();
   }
   if (options.oidc !== undefined) {
     assert.ok(
       workspaceGateway,
       "real OIDC browser proof requires the in-cluster routed controller",
     );
+    assertActive();
     const address = await attachKeycloakToK3d((cleanup) => {
       detachKeycloak = cleanup;
     }, options.oidc);
@@ -1635,10 +1698,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       activeInstallation,
       credentials,
       controllerAuthBaseURL,
+      signal,
     );
     context.diagnostic(`reusing pre-initialized Installation ${activeInstallation.id}`);
   } else {
     // Bootstrap establishes IAM and the initial default Namespace; production API/worker owns deployment.
+    assertActive();
     await ensureDevelopmentBootstrap(context, {
       databaseUrl,
       email: credentials.email,
@@ -1656,6 +1721,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       activeInstallation,
       credentials,
       controllerAuthBaseURL,
+      signal,
     );
     createdFreshInstallation = true;
   }
@@ -1686,6 +1752,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       platformNamespace,
       workerOptions,
       workspaceGateway,
+      signal,
     });
     inClusterWorker = controllerApi.worker;
     restartInClusterApi = controllerApi.restart;
@@ -1720,6 +1787,15 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     assert.ok(address && typeof address === "object");
     controllerUrl = `http://127.0.0.1:${address.port}`;
   }
+  const unguardedRequestFactory = requestFactory;
+  requestFactory = async (...args) => {
+    assertActive();
+    const call = await unguardedRequestFactory(...args);
+    return (...requestArgs) => {
+      assertActive();
+      return call(...requestArgs);
+    };
+  };
   let workspaceRequest;
   if (workspaceGateway !== undefined) {
     const controllerRequest = await requestFactory(credentials);
@@ -1767,6 +1843,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     );
   }
   if (workspaceGateway === undefined) {
+    assertActive();
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     worker = createControllerWorker({
       mode: "production",
@@ -1789,6 +1866,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       throw error;
     }
   });
+  assertActive();
   await kubectl(
     "create",
     "rolebinding",
@@ -1798,6 +1876,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     `--clusterrole=${controller.tenantRole}`,
     `--serviceaccount=${platformNamespace}:${controller.account}`,
   );
+  assertActive();
   await kubectl(
     "create",
     "rolebinding",
@@ -1807,6 +1886,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     `--clusterrole=${controller.apiSecretRole}`,
     `--serviceaccount=${platformNamespace}:${controller.apiAccount}`,
   );
+  assertActive();
   await kubectl(
     "create",
     "rolebinding",
@@ -1886,6 +1966,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
             installation: activeInstallation,
             namespaceId,
             baseURL: controllerAuthBaseURL,
+            signal,
           });
     request = secretAssignmentCaller.request;
     secretAssignmentPrincipalId = secretAssignmentCaller.principalId;
@@ -2412,18 +2493,21 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     );
   }
 
-  const startGatewayForward = () =>
-    options.gatewayPort === undefined
+  const startGatewayForward = () => {
+    assertActive();
+    return options.gatewayPort === undefined
       ? startPortForward(gatewayPlacement, gatewayServiceName)
       : startPortForwardTarget(
           gatewayPlacement,
           `service/${gatewayServiceName}`,
           `${options.gatewayPort}:8080`,
         );
+  };
   if (slack === undefined) {
     forwarding = await startGatewayForward();
   }
   const restartControllerApi = async () => {
+    assertActive();
     if (workspaceGateway !== undefined) {
       const restarted = await restartInClusterApi();
       controllerUrl = restarted.url;
@@ -3338,7 +3422,20 @@ async function assertGatewayPrivateResources(topology) {
   return claim;
 }
 
-async function gatewayCall(topology, method, params, timeoutMs = 180_000) {
+async function gatewayCall(topology, method, params, timeoutMs = 180_000, readOptions) {
+  if (readOptions !== undefined) {
+    assert.ok(
+      Number.isFinite(readOptions.timeoutMs) && readOptions.timeoutMs > 0,
+      "Gateway read requires a positive elapsed budget",
+    );
+    const deadline = Date.now() + readOptions.timeoutMs;
+    const result = await withinDiagnosticDeadline(
+      () => gatewayCall(topology, method, params, timeoutMs),
+      { ...readOptions, timedOut: null },
+    );
+    assert.ok(result !== null && Date.now() < deadline, "Gateway read deadline elapsed");
+    return result;
+  }
   // The real CLI authenticates from the Pod's env/config; credentials never enter kubectl args.
   const result = JSON.parse(
     await execNode(
@@ -3594,7 +3691,16 @@ function artifactSummaryForDiagnostics({
   };
 }
 
+function assertStoredIdentifier(value) {
+  assert.ok(
+    typeof value === "string" && new RegExp("^[A-Za-z0-9_.:/-]{1,256}$").test(value),
+    "Invalid stored transcript identifier",
+  );
+}
+
 async function inspectGatewayPersistence(topology, imageDigest, sessionKey, sessionId) {
+  assertStoredIdentifier(sessionKey);
+  assertStoredIdentifier(sessionId);
   // Read existing persisted state only. Missing/corrupt storage fails; the probe never creates it.
   const prefix = "OCE_GATEWAY_PERSISTENCE=";
   const output = await execNode(
@@ -3647,6 +3753,14 @@ async function inspectGatewayPersistence(topology, imageDigest, sessionKey, sess
         sessionKey: canonicalSessionKey,
       });
       const entries = await readVisibleSessionTranscriptMessageEntries(target);
+      const checkIdentifier = (value) => {
+        if (typeof value !== "string" || !new RegExp("^[A-Za-z0-9_.:/-]{1,256}$").test(value)) throw new Error("Invalid stored transcript identifier");
+      };
+      for (const value of [target.sessionId, target.sessionKey]) checkIdentifier(value);
+      for (const entry of entries) {
+        checkIdentifier(entry.entryId);
+        if (entry.parentId != null) checkIdentifier(entry.parentId);
+      }
       const transcript = {
         agentId: target.agentId,
         memoryKey: target.memoryKey,
@@ -3681,12 +3795,25 @@ async function inspectGatewayPersistence(topology, imageDigest, sessionKey, sess
 }
 
 // Read durable state independently of the live Gateway's chat.history response.
-async function readGatewayTranscript(topology, sessionKey, sessionId) {
+async function readGatewayTranscript(
+  topology,
+  sessionKey,
+  sessionId,
+  { timeoutMs = 60_000, signal } = {},
+) {
+  assert.ok(
+    Number.isFinite(timeoutMs) && timeoutMs > 0,
+    "Stored read requires a positive elapsed budget",
+  );
+  const deadline = Date.now() + timeoutMs;
   const persisted = await withinDiagnosticDeadline(
     () => inspectGatewayPersistence(topology, undefined, sessionKey, sessionId),
-    { timeoutMs: 60_000, timedOut: null },
+    { timeoutMs, signal, timedOut: null },
   );
-  assert.ok(persisted, "Stored transcript read must finish within its deadline");
+  assert.ok(
+    persisted && Date.now() < deadline,
+    "Stored transcript read must finish within its deadline",
+  );
   for (const database of persisted.databases) {
     assert.deepEqual(database.integrity, ["ok"], "Persisted Gateway database must be intact");
   }

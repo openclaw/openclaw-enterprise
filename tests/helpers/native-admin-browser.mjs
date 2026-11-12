@@ -84,6 +84,7 @@ async function createNativeIngress(context, { artifacts, nativeDomain }) {
     }
     proxyUpgrade(upstream, request, socket, head, trackSocket);
   });
+  context.signal?.throwIfAborted();
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -91,7 +92,7 @@ async function createNativeIngress(context, { artifacts, nativeDomain }) {
       resolve();
     });
   });
-  context.after(async () => {
+  (context.afterLocal ?? context.after)(async () => {
     for (const socket of sockets) {
       socket.destroy();
     }
@@ -205,12 +206,13 @@ async function launchBrowser(context, ingress) {
     process.env.OCC_TEST_BROWSER_EXECUTABLE.length === 0
       ? undefined
       : process.env.OCC_TEST_BROWSER_EXECUTABLE;
+  context.signal?.throwIfAborted();
   const browser = await chromium.launch({
     ...(browserExecutable === undefined ? {} : { executablePath: browserExecutable }),
     args: ingress.browserArgs,
     headless: true,
   });
-  context.after(() => browser.close());
+  (context.afterLocal ?? context.after)(() => browser.close());
   return browser;
 }
 
@@ -1217,8 +1219,9 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
   assert.equal(initialApi.uid, beforeApi.uid);
   assertActive();
   const browser = await launchBrowser(context, ingress);
+  assertActive();
   const browserContext = await browser.newContext();
-  context.after(() => browserContext.close());
+  (context.afterLocal ?? context.after)(() => browserContext.close());
   const observer = createNativeContinuityObserver();
   const seedMarker = `OCC-API-SEED-${randomUUID()}`;
   observer.expect({
@@ -1243,6 +1246,7 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
       );
     });
   });
+  assertActive();
   const page = await browserContext.newPage();
   await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
   await login(page, topology.credentials);
@@ -1262,6 +1266,173 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
         return observe();
       }),
   );
+  // The seed navigation can leave closed startup admissions. Select its sole
+  // open admission, then count every new admission across the API replacement.
+  const admissionAction = "openclaw.agents.native_admin.websocket.connect";
+  const closeAction = "openclaw.agents.native_admin.websocket.close";
+  const readAdmissions = async () => {
+    assertActive();
+    const result = await topology.observerPool.query(
+      `SELECT admitted.actor_id,
+              admitted.details->'__occAuditMetadata'->'actor' AS actor,
+              admitted.details->'nativeAdmin'->>'connectionId' AS connection_id,
+              admitted.details->'nativeAdmin'->>'parentSessionId' AS parent_session_id,
+              EXISTS (
+                SELECT 1 FROM occ.audit_events AS closed
+                WHERE closed.namespace_id = admitted.namespace_id
+                  AND closed.resource_kind = admitted.resource_kind
+                  AND closed.resource_id = admitted.resource_id
+                  AND closed.action = $6 AND closed.outcome = 'success'
+                  AND closed.details->'nativeAdmin'->>'host' = $4
+                  AND closed.details->'nativeAdmin'->>'connectionId' =
+                      admitted.details->'nativeAdmin'->>'connectionId'
+              ) AS closed
+       FROM occ.audit_events AS admitted
+       WHERE admitted.namespace_id = $1
+         AND admitted.resource_kind = 'agent' AND admitted.resource_id = $2
+         AND admitted.action = $3 AND admitted.outcome = 'success'
+         AND admitted.details->'nativeAdmin'->>'host' = $4
+         AND admitted.details->'nativeAdmin'->>'revisionId' = $5
+         AND admitted.details->'nativeAdmin'->>'mode' = 'admin'
+       ORDER BY admitted.occurred_at, admitted.id
+       LIMIT 129`,
+      [
+        topology.agent.namespaceId,
+        topology.agent.id,
+        admissionAction,
+        status.host,
+        topology.revision.id,
+        closeAction,
+      ],
+    );
+    assertActive();
+    assert.ok(result.rows.length <= 128, "Native admission audit exceeded its observation bound");
+    for (const row of result.rows) {
+      const identityFields = [
+        row.actor_id,
+        row.actor?.principalId,
+        row.actor?.issuer,
+        row.actor?.subject,
+        row.parent_session_id,
+      ];
+      assert.ok(
+        identityFields.every(
+          (value) => typeof value === "string" && value.length > 0 && value.length <= 4_096,
+        ) &&
+          typeof row.connection_id === "string" &&
+          /^naws_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+            row.connection_id,
+          ) &&
+          row.actor.principalId === row.actor_id,
+        "Native admission audit must retain a valid human and parent session",
+      );
+    }
+    assert.ok(
+      new Set(result.rows.map((row) => row.connection_id)).size === result.rows.length,
+      "Native admission audit contains duplicate connection admissions",
+    );
+    return result.rows;
+  };
+  const activeBrowserSocket = () => {
+    observer.assertHealthy();
+    const open = new Set();
+    for (const event of observer.socketEvents) {
+      if (event.page !== nativePage) {
+        continue;
+      }
+      if (event.type === "open") {
+        open.add(event.socket);
+      } else if (event.type === "close") {
+        open.delete(event.socket);
+      }
+    }
+    assert.ok(open.size === 1, "Native admission must match one open browser connection");
+    return [...open][0];
+  };
+  let initialAdmissions;
+  let initialAdmission;
+  let replacementAdmission;
+  let replacementSocket;
+  const assertConnectionAdmission = async (phase) => {
+    if (phase === "initial") {
+      assert.ok(initialAdmission === undefined, "Initial admission must be observed once");
+      assert.ok(
+        activeBrowserSocket() === initialReply.socket,
+        "Initial admission must serve the seed socket",
+      );
+      initialAdmissions = await waitFor(
+        "the seed connection's unique native admission",
+        async () => {
+          const rows = await readAdmissions();
+          return rows.filter((row) => !row.closed).length === 1 ? rows : undefined;
+        },
+      );
+      initialAdmission = initialAdmissions.find((row) => !row.closed);
+      return;
+    }
+    assert.ok(
+      phase === "reconnected" &&
+        initialAdmission !== undefined &&
+        replacementAdmission === undefined,
+      "Replacement admission must follow the initial admission once",
+    );
+    replacementSocket = activeBrowserSocket();
+    assert.ok(
+      replacementSocket !== initialReply.socket,
+      "Replacement admission must serve a new browser connection",
+    );
+    replacementAdmission = await waitFor(
+      "the replacement connection's unique native admission",
+      async () => {
+        const rows = await readAdmissions();
+        const added = rows.filter(
+          (row) =>
+            !initialAdmissions.some((initial) => initial.connection_id === row.connection_id),
+        );
+        assert.ok(
+          added.length <= 1,
+          "API replacement must admit exactly one new native connection",
+        );
+        return added[0];
+      },
+    );
+    assert.ok(!replacementAdmission.closed, "Replacement admission must remain open");
+    assert.ok(
+      replacementAdmission.actor_id === initialAdmission.actor_id &&
+        replacementAdmission.actor.principalId === initialAdmission.actor.principalId &&
+        replacementAdmission.actor.issuer === initialAdmission.actor.issuer &&
+        replacementAdmission.actor.subject === initialAdmission.actor.subject,
+      "API replacement must preserve the admitted human identity",
+    );
+    assert.ok(
+      replacementAdmission.parent_session_id === initialAdmission.parent_session_id,
+      "API replacement must preserve the parent login session",
+    );
+  };
+  const readConnectionAdmissionProof = async () => {
+    assert.ok(
+      replacementAdmission !== undefined,
+      "Replacement admission must be verified before closeout",
+    );
+    const rows = await readAdmissions();
+    assert.ok(
+      rows.length === initialAdmissions.length + 1 &&
+        initialAdmissions.every((initial) =>
+          rows.some((row) => row.connection_id === initial.connection_id),
+        ) &&
+        rows.some((row) => row.connection_id === replacementAdmission.connection_id && !row.closed),
+      "Native connection admissions must remain unchanged through closeout",
+    );
+    assert.ok(
+      activeBrowserSocket() === replacementSocket,
+      "The verified replacement connection must still serve",
+    );
+    return {
+      distinctConnectionAdmissions: true,
+      sameHumanPrincipal: true,
+      sameParentLoginSession: true,
+    };
+  };
   let successor;
   const receipt = await assertAcknowledgedTurnAcrossApiRestart({
     page: nativePage,
@@ -1270,6 +1441,7 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
     observer,
     signal: context.signal,
     provider,
+    assertConnectionAdmission,
     async restartControllerApi() {
       assertActive();
       successor = await topology.restartControllerApi();
@@ -1278,33 +1450,39 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
       ingress.setUpstream(successor.url);
       return successor;
     },
-    readHistory: (sessionKey) =>
-      gatewayCall(topology, "chat.history", { sessionKey, limit: 100 }, 10_000),
-    readStoredHistory: (sessionKey, sessionId) =>
-      readGatewayTranscript(topology, sessionKey, sessionId),
+    readHistory: (sessionKey, options) =>
+      gatewayCall(topology, "chat.history", { sessionKey, limit: 100 }, 10_000, options),
+    readStoredHistory: (sessionKey, sessionId, options) =>
+      readGatewayTranscript(topology, sessionKey, sessionId, options),
+    async closeout() {
+      const after = await readIdentities();
+      assert.deepEqual(after, before, "only the serving API may be replaced");
+      const finalApi = identity(await readApi());
+      assert.equal(finalApi.uid, successor.pod.metadata.uid);
+      assert.notEqual(finalApi.uid, initialApi.uid);
+      assert.deepEqual(
+        finalApi.containers.map(({ name }) => name),
+        initialApi.containers.map(({ name }) => name),
+      );
+      assert.deepEqual(
+        finalApi,
+        identity(successor.pod),
+        "The observed successor API must still serve",
+      );
+      assert.equal(
+        (await resources("pods", topology.platformNamespace)).some(
+          ({ metadata }) => metadata.uid === beforeApi.uid,
+        ),
+        false,
+        "The predecessor API Pod must be gone",
+      );
+      assert.equal((await nativeAdminStatus(topology)).origin, status.origin);
+      return {
+        workloadIdentities: { before, after, initialApi, finalApi },
+        connectionAdmission: await readConnectionAdmissionProof(),
+      };
+    },
   });
-  const after = await readIdentities();
-  assert.deepEqual(after, before, "only the serving API may be replaced");
-  const finalApi = identity(await readApi());
-  assert.equal(finalApi.uid, successor.pod.metadata.uid);
-  assert.notEqual(finalApi.uid, initialApi.uid);
-  assert.deepEqual(
-    finalApi.containers.map(({ name }) => name),
-    initialApi.containers.map(({ name }) => name),
-  );
-  assert.deepEqual(
-    finalApi,
-    identity(successor.pod),
-    "The observed successor API must still serve",
-  );
-  assert.equal(
-    (await resources("pods", topology.platformNamespace)).some(
-      ({ metadata }) => metadata.uid === beforeApi.uid,
-    ),
-    false,
-    "The predecessor API Pod must be gone",
-  );
-  assert.equal((await nativeAdminStatus(topology)).origin, status.origin);
   await writeFile(
     join(artifacts, "continuity.json"),
     JSON.stringify(
@@ -1314,7 +1492,6 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
         successorApiUid: successor.pod.metadata.uid,
         sameLocalPort: true,
         unchangedAgentGatewayAndRevision: true,
-        workloadIdentities: { before, after, initialApi, finalApi },
         processScope: "Kubernetes containers; no native child-process continuity assertion",
         provider: "controlled fixture; no external inference",
       },

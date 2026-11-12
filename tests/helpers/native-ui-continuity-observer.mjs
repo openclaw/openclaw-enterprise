@@ -170,6 +170,60 @@ export function createNativeContinuityObserver() {
         throw failure;
       }
     },
+    terminalSequence({ sessionKey, runId, reply, boundary }) {
+      this.assertHealthy();
+      const frames = receivedFrames
+        .map((record, index) => ({ record, index, message: record.message }))
+        .filter(
+          ({ message }) =>
+            message.type === "event" &&
+            ((message.event === "chat" && message.payload.runId === runId) ||
+              (message.event === "session.message" && message.payload.message.content === reply)),
+        );
+      for (const { record, index, message } of frames) {
+        assert.equal(message.payload.sessionKey, sessionKey, "Terminal frame changed session");
+        assert.ok(index >= boundary.index, "Terminal frame arrived before its phase boundary");
+        assert.ok(record.at >= boundary.at, "Terminal frame timestamp precedes its phase boundary");
+        assert.equal(
+          record.socket,
+          boundary.socket,
+          "Terminal frame must use the authenticated socket",
+        );
+        if (message.payload.runId !== undefined) {
+          assert.equal(message.payload.runId, runId);
+        }
+        if (message.event === "chat") {
+          assert.equal(message.payload.state, "final", "Conflicting terminal outcome");
+        } else {
+          assert.ok(
+            !message.payload.message.isError &&
+              !["toolUse", "error", "aborted"].includes(message.payload.message.stopReason),
+            "Unsuccessful terminal assistant message",
+          );
+        }
+      }
+      const finals = frames.filter(({ message }) => message.event === "chat");
+      assert.ok(finals.length <= 1, "Duplicate run final");
+      return {
+        final: finals[0],
+        reply: frames.find(({ message }) => message.event === "session.message"),
+      };
+    },
+    assertCompletedTurns({ firstSent, turns }) {
+      this.assertHealthy();
+      const sends = sentFrames
+        .slice(firstSent)
+        .filter(({ message }) => message.method === "chat.send");
+      assert.deepEqual(
+        sends.map(({ message }) => message.id),
+        turns.map(({ requestId }) => requestId),
+        "Unexpected send during continuity observation",
+      );
+      for (const turn of turns) {
+        const sequence = this.terminalSequence(turn);
+        assert.ok(sequence.final && sequence.reply, "Incomplete terminal sequence");
+      }
+    },
     expect({ name, prompt, reply }) {
       assert.ok(["seed", "target", "continuation"].includes(name));
       assert.equal(expectations.has(name), false);

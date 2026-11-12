@@ -26,6 +26,8 @@ type TeardownOptions = {
   exit?: () => unknown;
   failFile?: () => void;
   settled?: (quietMs: number) => PromiseLike<unknown>;
+  // An unsettled owner may retain dependencies while permitting safe local cleanup.
+  canRunCleanup?: (cleanup: Cleanup) => boolean;
   onOutcome?: (outcome: "failed" | "incomplete" | "passed") => void;
 };
 
@@ -182,6 +184,7 @@ export function boundedTeardown(
     },
     settled = testsSettled,
     onOutcome,
+    canRunCleanup,
   }: TeardownOptions = {},
 ): Teardown<TeardownContext> {
   // A second call for one context, in either order with withBoundedTeardown, shares the first
@@ -214,6 +217,9 @@ export function boundedTeardown(
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abandoned = false;
     try {
+      if (canRunCleanup?.(cleanup) === false) {
+        throw new Error("retained because its owner has unsettled work");
+      }
       await Promise.race([
         runningCleanup.run(true, () => Promise.resolve().then(cleanup)),
         new Promise<never>((_, reject) => {

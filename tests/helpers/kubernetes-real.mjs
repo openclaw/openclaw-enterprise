@@ -106,15 +106,25 @@ export const diagnosticDeadlineMs = 60_000;
 // writes (finding 1557). A diagnostic nested in another one also stops at the outer deadline.
 export async function withinDiagnosticDeadline(
   diagnostic,
-  { timeoutMs = diagnosticDeadlineMs, timedOut = "Diagnostic timed out", sleep = delay } = {},
+  {
+    timeoutMs = diagnosticDeadlineMs,
+    timedOut = "Diagnostic timed out",
+    sleep = delay,
+    signal: callerSignal = /** @type {AbortSignal | undefined} */ (undefined),
+  } = {},
 ) {
   const deadline = new AbortController();
   const outer = diagnosticDeadline.getStore();
-  const signal = outer === undefined ? deadline.signal : AbortSignal.any([outer, deadline.signal]);
+  const signal = AbortSignal.any([deadline.signal, outer, callerSignal].filter(Boolean));
+  signal.throwIfAborted();
   const timer = new AbortController();
   try {
     return await Promise.race([
-      diagnosticDeadline.run(signal, () => diagnostic(signal)),
+      diagnosticDeadline.run(signal, async () => {
+        const result = await diagnostic(signal);
+        signal.throwIfAborted();
+        return result;
+      }),
       sleep(timeoutMs, undefined, { signal: timer.signal }).then(() => {
         deadline.abort();
         return timedOut;
@@ -683,8 +693,11 @@ export function createRealKubernetesFixture({
     clusterRole,
     clusterRoleBinding,
     context,
+    signal,
   }) {
+    signal?.throwIfAborted();
     await kubectl("create", "serviceaccount", account, "--namespace", platformNamespace);
+    signal?.throwIfAborted();
     await kubectl(
       "create",
       "clusterrolebinding",
@@ -692,6 +705,7 @@ export function createRealKubernetesFixture({
       `--clusterrole=${clusterRole}`,
       `--serviceaccount=${platformNamespace}:${account}`,
     );
+    signal?.throwIfAborted();
     const token = (
       await kubectl("create", "token", account, "--namespace", platformNamespace)
     ).trim();
