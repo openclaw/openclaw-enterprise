@@ -76,6 +76,11 @@ spec:
     values:
       gateway:
         mode: local
+        auth:
+          password:
+            source: env
+            provider: default
+            id: OPENCLAW_GATEWAY_PASSWORD
       agents:
         defaults:
           model: codex/gpt-5.1-codex

@@ -196,9 +196,28 @@ new managed creation, API restart/replay, no duplicate initial deployment,
 competing input refusal, role delegation and revocation case. Configuration and
 runtime effects use the existing test Drivers. The Kubernetes branch of QA
 `external-management` now creates another Agent through provisioning and checks a
-real model turn; that credentialed QA lane has not run for this phase. Live Argo
-creation proof is pending. Namespace creation, Secret import/rotation, Delete
-cleanup and cancellation of an unobserved initial create remain outside this phase.
+real model turn; that credentialed QA lane has not run for this phase.
+
+Live creation used normal Git polling in the existing private Argo Application.
+An `OCEAgent` without `adopt` created one provisioning job, one Agent, one
+Configuration and one initial revision. The new Gateway and dedicated Harness
+became Ready; an actual model turn returned the exact unique marker. No Telegram
+channel or bot credential was copied. The existing Agent kept its active revision
+and native Telegram bridge stayed off. Clearing the new CR status and restarting
+the Operator recovered the same Agent, Configuration, management receipt and
+single revision. Argo returned Synced/Healthy. Runtime credential projection,
+UID/GID 10001 without extra groups, and denied Operator/Argo access to runtime
+Pods and cluster admission policy updates were checked. The new YAML requires the ordinary
+`OPENCLAW_GATEWAY_PASSWORD` environment reference; the initial omission was
+refused before a provisioning record or Agent existed. Updating the YAML let
+normal Argo polling start provisioning.
+
+This local installation used public source `ad88739` with the existing native
+Telegram overlay. Updating the CRD exposed stale Argo OpenAPI diff state; a
+controller restart and hard refresh restored Synced/Healthy. This is local
+ARM64 deployment proof, not a published release or the final native image matrix.
+Namespace creation, Secret import/rotation, Delete cleanup and cancellation of
+an unobserved initial create remain outside this phase.
 
 ## Manual Notes
 

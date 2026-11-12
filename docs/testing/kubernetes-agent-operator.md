@@ -51,3 +51,8 @@ its history or raw test data.
 RFC-0037's Namespace creation, credential import/rotation and Delete cleanup
 remain unimplemented and unqualified. The alpha's existing-resource proof must
 not be reported as completion of those acceptance criteria.
+
+First-time creation was also exercised on the local installed Argo workflow:
+a Git declaration without adoption created one job, Agent and initial revision,
+then a genuine Gateway model turn returned an exact unique marker. The delivery
+record and deployment limits are in the [Operator plan](../../specs/plans/0037-kubernetes-agent-operator.md#creation-phase).
