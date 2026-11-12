@@ -233,7 +233,9 @@ export async function runPasswordFallbackCases(t: TestContext, context: Password
     assert.fail("the email key is spent");
   };
   const assertAccountChanged = async (userId: string, operation: string) => {
-    const response = await changeAccount(app, adminHeaders, userId, operation);
+    const response = await authOperation(`apply the password fallback account ${operation}`, () =>
+      changeAccount(app, adminHeaders, userId, operation),
+    );
     assert.equal(response.statusCode, 200);
   };
 

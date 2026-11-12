@@ -114,9 +114,11 @@ test(
     const { member, disabled, both } = accounts;
 
     // A Google-only upgrade: no OCC_AUTH_GITHUB_CLIENT_*, hosted domain restricted.
-    const app = (apps.app = await composeApp(googleUpgradeSettings(admin.id, [hostedDomain]), {
-      passwordSlowLaneFloors: slowLane,
-    }));
+    const app = (apps.app = await authOperation("compose the Google-only installation", () =>
+      composeApp(googleUpgradeSettings(admin.id, [hostedDomain]), {
+        passwordSlowLaneFloors: slowLane,
+      }),
+    ));
     const activeApp = () => {
       assert.ok(apps.app);
       return apps.app;
@@ -265,7 +267,9 @@ test(
     await t.test("a disabled account is refused Google sign-in", async () => {
       await attach(disabled.id, "google", disabledSubject);
       const { cookie } = await assertGoogleSignIn(disabledSubject, disabled.id);
-      const disable = await changeAccount(app, adminHeaders, disabled.id, "disable");
+      const disable = await authOperation("disable the Google account", () =>
+        changeAccount(app, adminHeaders, disabled.id, "disable"),
+      );
       assert.equal(disable.statusCode, 200);
       const session = await authOperation<unknown>("read the revoked Google session", () =>
         currentSession(app, cookie),
@@ -286,12 +290,16 @@ test(
         clientId: secrets["occ-oidc-login/client-id"],
         clientSecret: secrets["occ-oidc-login/client-secret"],
       });
-      const dualApp = (apps.app = await composeApp(
-        {
-          ...oidcUpgradeSettings(admin.id),
-          ...googleUpgradeSettings(admin.id, [hostedDomain]),
-        },
-        { passwordSlowLaneFloors: slowLane },
+      const dualApp = (apps.app = await authOperation(
+        "compose the dual-provider installation",
+        () =>
+          composeApp(
+            {
+              ...oidcUpgradeSettings(admin.id),
+              ...googleUpgradeSettings(admin.id, [hostedDomain]),
+            },
+            { passwordSlowLaneFloors: slowLane },
+          ),
       ));
       adminHeaders = await authOperation("sign in administrator", () =>
         signedInHeaders(dualApp, origin, admin, address()),
