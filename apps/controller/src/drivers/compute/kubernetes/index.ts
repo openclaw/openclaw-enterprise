@@ -14709,7 +14709,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         !(record.runtime === null || typeof record.runtime === "string") ||
         (typeof record.runtime === "string" &&
           (record.runtime.length === 0 ||
-            !/^(?:model-provider:v1:[a-f0-9]{64}:)?(?:protected-codex-no-connection-retry:v1|public-github-read:v1:[a-f0-9]{64})?$/.test(
+            !/^(?:model-provider:v1:[a-f0-9]{64}:)?(?:openshell-codex-launch:v1:)?(?:protected-codex-no-connection-retry:v1|public-github-read:v1:[a-f0-9]{64})?$/.test(
               record.runtime,
             )))
       ) {

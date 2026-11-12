@@ -406,6 +406,41 @@ test("scratch admission pins exact scope and never inherits a later operator sel
   );
 });
 
+test("saved scratch admissions preserve legacy launch selection and reject misordered launch markers", () => {
+  const driver = scratchCompute([operatorBinding]);
+  const revision = scratchRevision(driver);
+  const prefix = "scratch:v1:";
+  const { runtime, binding } = JSON.parse(revision.compute.admission.slice(prefix.length));
+  const marker = "openshell-codex-launch:v1:";
+  assert.match(runtime, /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:$/);
+  const provider = runtime.slice(0, -marker.length);
+  const saved = (value) => ({
+    ...revision,
+    compute: {
+      ...revision.compute,
+      admission: prefix + JSON.stringify({ binding, runtime: value }),
+    },
+  });
+
+  const legacy = saved(provider);
+  assert.deepEqual(driver.scratchAdmission(legacy).binding, operatorBinding);
+  assert.equal(driver.codexLaunch(legacy, driver.sandboxDriver).openShellProgram, undefined);
+  const protectedRuntime = "protected-codex-no-connection-retry:v1";
+  for (const launch of [provider, runtime]) {
+    assert.equal(driver.runtimeAdmission(saved(launch + protectedRuntime)), protectedRuntime);
+  }
+  for (const invalid of [
+    marker + provider,
+    runtime + marker,
+    provider + "openshell-codex-launch:v2:",
+  ]) {
+    assert.throws(
+      () => driver.scratchAdmission(saved(invalid)),
+      /scratch volume admission is invalid/,
+    );
+  }
+});
+
 test("scratch configuration rejects shared allocation and malformed identity before admission", () => {
   for (const bindings of [
     [operatorBinding, { ...operatorBinding, claimName: "another", claimUid: "another-uid" }],
