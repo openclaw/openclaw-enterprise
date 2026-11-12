@@ -7449,6 +7449,18 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       agentPodsAbsent: true,
     },
   ];
+  const workerRestart = {
+    event: "worker-restarted",
+    beforeUid: "12345678-1234-1234-1234-123456789001",
+    afterUid: "12345678-1234-1234-1234-123456789002",
+    controllerImageDigest: `sha256:${sha256}`,
+    controllerConfigDigest: `sha256:${"b".repeat(64)}`,
+    beforeImageDigest: `sha256:${"b".repeat(64)}`,
+    afterImageDigest: `sha256:${sha256}`,
+    databaseUid: "12345678-1234-1234-1234-123456789003",
+    custodyUid: "12345678-1234-1234-1234-123456789004",
+    custodyVersion: "234",
+  };
   const retentionReceipts = [
     ...finiteRemoval.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...withdrawalWitnesses.map((receipt) => ({ ...receipt, error: forbidden, token: forbidden })),
@@ -7521,18 +7533,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         output: forbidden,
       },
     },
-    {
-      event: "worker-restarted",
-      beforeUid: uuid,
-      afterUid: uuid,
-      controllerImageDigest: `sha256:${sha256}`,
-      controllerConfigDigest: `sha256:${"b".repeat(64)}`,
-      beforeImageDigest: `sha256:${"b".repeat(64)}`,
-      afterImageDigest: `sha256:${sha256}`,
-      databaseUid: uuid,
-      custodyUid: uuid,
-      custodyVersion: "234",
-    },
+    workerRestart,
     ...["after-expiry", "after-worker-restart"].map((event) => ({
       event,
       ...runtimeReceipt,
@@ -7565,16 +7566,13 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       "controllerConfigDigest",
       "beforeImageDigest",
       "afterImageDigest",
-    ].flatMap((field) => [
-      {
-        ...retentionReceipts.find(({ event }) => event === "worker-restarted"),
-        [field]: forbidden,
-      },
-      {
-        ...retentionReceipts.find(({ event }) => event === "worker-restarted"),
-        [field]: undefined,
-      },
-    ]),
+    ].flatMap((field) =>
+      [forbidden, undefined].map((value) => ({
+        ...workerRestart,
+        [field]: value,
+        unexpected: forbidden,
+      })),
+    ),
     { ...finiteRemoval[0], signer: "unexercised" },
     { ...finiteRemoval[0], requestId: null },
     { ...finiteRemoval[1], requestId: opaque },
@@ -8191,20 +8189,9 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     ],
   );
   assert.deepEqual(
-    receipts.find(({ event }) => event === "worker-restarted"),
-    {
-      kind: retentionKind,
-      event: "worker-restarted",
-      beforeUid: uuid,
-      afterUid: uuid,
-      controllerImageDigest: `sha256:${sha256}`,
-      controllerConfigDigest: `sha256:${"b".repeat(64)}`,
-      beforeImageDigest: `sha256:${"b".repeat(64)}`,
-      afterImageDigest: `sha256:${sha256}`,
-      databaseUid: uuid,
-      custodyUid: uuid,
-      custodyVersion: "234",
-    },
+    receipts.filter(({ event }) => event === workerRestart.event),
+    [{ kind: retentionKind, ...workerRestart }],
+    "expected exactly one allowlisted worker restart projection with the original identities",
   );
   assert.deepEqual(
     receipts.filter(({ event }) => event === "withdrawal-origin-witness"),
