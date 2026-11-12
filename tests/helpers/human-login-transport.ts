@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createRequire } from "node:module";
 import type { TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
-import { betterAuth } from "../../apps/controller/node_modules/better-auth/dist/index.mjs";
-import { memoryAdapter } from "../../apps/controller/node_modules/better-auth/dist/adapters/memory-adapter/index.mjs";
+import type { ControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import {
   PostgresHumanAuthentication,
   PostgresPlatformState,
@@ -18,6 +18,40 @@ import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logg
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 import { listen } from "./listen.ts";
 import { waitUntil } from "./wait-for.mjs";
+
+type TransportAuth = Pick<ControllerAuth["auth"], "handler" | "$context">;
+type TransportAuthOptions = Omit<ControllerAuth["auth"]["options"], "plugins"> & {
+  plugins: [ReturnType<typeof createHumanLogin>["plugin"]];
+};
+type TransportDatabase = Record<
+  "user" | "session" | "account" | "verification",
+  Record<string, unknown>[]
+>;
+type MemoryAdapter = (
+  database: TransportDatabase,
+) => Parameters<ReturnType<typeof createHumanLogin>["database"]>[0];
+
+function hasBetterAuth(value: unknown): value is {
+  betterAuth: (options: TransportAuthOptions) => TransportAuth;
+} {
+  return record(value) && typeof value.betterAuth === "function";
+}
+
+function hasMemoryAdapter(value: unknown): value is { memoryAdapter: MemoryAdapter } {
+  return record(value) && typeof value.memoryAdapter === "function";
+}
+
+const controllerRequire = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+);
+const authModule: unknown = await import(controllerRequire.resolve("better-auth"));
+const memoryModule: unknown = await import(
+  controllerRequire.resolve("better-auth/adapters/memory")
+);
+assert.ok(hasBetterAuth(authModule), "Better Auth did not expose its factory");
+assert.ok(hasMemoryAdapter(memoryModule), "Better Auth did not expose its memory adapter");
+const { betterAuth } = authModule;
+const { memoryAdapter } = memoryModule;
 
 export type ProviderHandler = (request: IncomingMessage, response: ServerResponse) => unknown;
 export type LoginFixtureOptions = {
@@ -172,7 +206,7 @@ export function createLoginFixture({
   const subjects: [string, string][] = [];
   const denials: Parameters<PostgresHumanAuthentication["recordDenied"]>[] = [];
   const unmatched: ExternalProviderName[] = [];
-  const errors: unknown[] = [];
+  const recordedErrors: unknown[] = [];
   const authLogs: unknown[][] = [];
   const operationalLines: Record<string, unknown>[] = [];
   // Operational events go through the production logger and sanitizer.
@@ -241,7 +275,7 @@ export function createLoginFixture({
   if (recoveryEmail !== undefined) {
     login.designateRecovery(recoveryEmail);
   }
-  const db: Record<"user" | "session" | "account" | "verification", Record<string, unknown>[]> = {
+  const db: TransportDatabase = {
     user: [],
     session: [],
     account: [],
@@ -266,8 +300,8 @@ export function createLoginFixture({
   // The controller wrapper sets x-occ-client-ip from the socket peer or a trusted ingress.
   // It also owns a thrown dependency error and answers it as an outage; that mapping is
   // proved through the real controller (postgres-oidc-outage, postgres-oidc-cookie-commit).
-  // This boundary records the error and rethrows it, as the handler does, so tests prove the
-  // endpoint passed it on unchanged without asserting an answer of the fixture's own.
+  // Retain the handler's original error for the secret check without exposing its contents
+  // through a rejected fixture call or a failed assertion.
   const call = async (path: string, init: RequestInit, ip = "10.0.0.1") => {
     try {
       return await auth.handler(
@@ -277,8 +311,8 @@ export function createLoginFixture({
         }),
       );
     } catch (error) {
-      errors.push(error);
-      throw error;
+      recordedErrors.push(error);
+      throw new Error("Authentication transport call failed");
     }
   };
   return {
@@ -289,7 +323,13 @@ export function createLoginFixture({
     subjects,
     denials,
     unmatched,
-    errors,
+    recordedErrorIncludes(value: string): boolean {
+      try {
+        return recordedErrors.some((error) => String(error).includes(value));
+      } catch {
+        throw new Error("Authentication transport error could not be inspected");
+      }
+    },
     authLogs,
     // Operational log records without their timestamp.
     operationalLogs: () => operationalLines.map(({ time, ...line }) => line),

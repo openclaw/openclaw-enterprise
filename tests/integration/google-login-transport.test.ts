@@ -148,14 +148,13 @@ test(
     }
     // Neither the client secret nor any provider token may reach logs or errors.
     function assertNoSecrets(login: ReturnType<typeof loginFixture>, ...bodies: string[]) {
-      const text = JSON.stringify([
-        login.authLogs,
-        login.operationalLogs(),
-        login.errors.map(String),
-        ...bodies,
-      ]);
+      const text = JSON.stringify([login.authLogs, login.operationalLogs(), ...bodies]);
       for (const value of [clientSecret, accessToken, ...minted]) {
-        assert.equal(text.includes(value), false, "a credential reached logs or errors");
+        assert.equal(
+          text.includes(value) || login.recordedErrorIncludes(value),
+          false,
+          "a credential reached logs or errors",
+        );
       }
     }
 
