@@ -208,7 +208,7 @@
       ]
     },
     {
-      "path": "tests/integration/first-agent-smoke.test.mjs",
+      "path": "tests/integration/first-agent-smoke.test.ts",
       "expectedTests": [
         "chat proof accepts the deterministic assistant answer",
         "chat proof rejects a prompt echo, missing role, and other non-assistant replies",
