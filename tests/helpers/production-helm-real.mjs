@@ -29,6 +29,9 @@ export async function prepareProductionHelmControlPlane({
   executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
+  databaseTLS = /** @type {{caSecretName: string, serverSecretName: string, imagePullPolicy?: "Never" | "IfNotPresent"} | undefined} */ (
+    undefined
+  ),
   run,
   kubernetes,
   createSecretValue,
@@ -42,6 +45,11 @@ export async function prepareProductionHelmControlPlane({
     return value;
   };
   assert.match(databaseName, /^[a-z][a-z0-9_]+$/);
+  if (databaseTLS) {
+    assert.match(databaseTLS.caSecretName, /^[a-z0-9-]+$/);
+    assert.match(databaseTLS.serverSecretName, /^[a-z0-9-]+$/);
+    assert.notEqual(databaseTLS.caSecretName, databaseTLS.serverSecretName);
+  }
   const { kubectl, waitFor } = kubernetes;
   const apply = (object) =>
     run("kubectl", kubernetes.kubectlArguments(["apply", "-f", "-"]), {
@@ -146,12 +154,48 @@ export async function prepareProductionHelmControlPlane({
       ...(controlPlane?.nodeSelector === undefined
         ? {}
         : { nodeSelector: controlPlane.nodeSelector }),
-      securityContext: { ...podSecurity, runAsUser: 999, runAsGroup: 999, fsGroup: 999 },
+      securityContext: {
+        ...podSecurity,
+        runAsUser: 999,
+        runAsGroup: 999,
+        fsGroup: 999,
+      },
+      ...(databaseTLS && {
+        initContainers: [
+          {
+            name: "prepare-database-tls",
+            image: images.postgres,
+            imagePullPolicy: databaseTLS.imagePullPolicy ?? "IfNotPresent",
+            securityContext,
+            resources,
+            command: [
+              "sh",
+              "-ec",
+              "umask 077; cp /tls-source/server.pem /tls/server.pem; cp /tls-source/server.key /tls/server.key; chmod 600 /tls/server.key",
+            ],
+            volumeMounts: [
+              { name: "tls-source", mountPath: "/tls-source", readOnly: true },
+              { name: "tls", mountPath: "/tls" },
+            ],
+          },
+        ],
+      }),
       containers: [
         {
           name: "postgres",
           image: images.postgres,
-          imagePullPolicy: "IfNotPresent",
+          ...(databaseTLS && {
+            args: [
+              "postgres",
+              "-c",
+              "ssl=on",
+              "-c",
+              "ssl_cert_file=/etc/postgresql/tls/server.pem",
+              "-c",
+              "ssl_key_file=/etc/postgresql/tls/server.key",
+            ],
+          }),
+          imagePullPolicy: databaseTLS?.imagePullPolicy ?? "IfNotPresent",
           securityContext,
           resources,
           env: [
@@ -163,7 +207,20 @@ export async function prepareProductionHelmControlPlane({
           ],
           volumeMounts: [
             { name: "data", mountPath: "/var/lib/postgresql" },
-            { name: "init", mountPath: "/docker-entrypoint-initdb.d", readOnly: true },
+            {
+              name: "init",
+              mountPath: "/docker-entrypoint-initdb.d",
+              readOnly: true,
+            },
+            ...(databaseTLS
+              ? [
+                  {
+                    name: "tls",
+                    mountPath: "/etc/postgresql/tls",
+                    readOnly: true,
+                  },
+                ]
+              : []),
           ],
           readinessProbe: {
             exec: {
@@ -176,6 +233,18 @@ export async function prepareProductionHelmControlPlane({
       ],
       volumes: [
         { name: "data", persistentVolumeClaim: { claimName: "postgres-data" } },
+        ...(databaseTLS
+          ? [
+              {
+                name: "tls-source",
+                secret: {
+                  secretName: databaseTLS.serverSecretName,
+                  defaultMode: 0o440,
+                },
+              },
+              { name: "tls", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } },
+            ]
+          : []),
         {
           name: "init",
           secret: {
@@ -197,9 +266,16 @@ export async function prepareProductionHelmControlPlane({
   await createSecret("occ-installation-startup", {
     "installation.yaml": JSON.stringify(configuration),
   });
+  const databaseQuery = databaseTLS
+    ? "?" +
+      new URLSearchParams({
+        sslmode: "verify-full",
+        sslrootcert: "/etc/openclaw/database-ca/ca.pem",
+      })
+    : "";
   await createSecret("occ-database", {
-    "application-url": `postgresql://occ_app:${appPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}`,
-    "migration-url": `postgresql://occ_migrator:${migrationPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}`,
+    "application-url": `postgresql://occ_app:${appPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}${databaseQuery}`,
+    "migration-url": `postgresql://occ_migrator:${migrationPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}${databaseQuery}`,
   });
   await createSecret("occ-auth", { secret: secret() });
   const endpoint = (await get("endpoints", "kubernetes", "default")).subsets[0];
@@ -210,8 +286,18 @@ export async function prepareProductionHelmControlPlane({
     auth: { baseUrl: authBaseURL },
     agentNativeAdmin: { domain: agentNativeAdminDomain },
     bootstrap: { adminEmail, password: { claimName: "bootstrap-password" } },
-    database: { cidrs: [`${postgresIP}/32`] },
-    cluster: { cidrs: [`${endpoint.addresses[0].ip}/32`], port: endpoint.ports[0].port },
+    database: {
+      cidrs: [`${postgresIP}/32`],
+      ...(databaseTLS && {
+        caSecretName: databaseTLS.caSecretName,
+        caKey: "ca.pem",
+        caMountPath: "/etc/openclaw/database-ca",
+      }),
+    },
+    cluster: {
+      cidrs: [`${endpoint.addresses[0].ip}/32`],
+      port: endpoint.ports[0].port,
+    },
     api: {
       clients: apiClients,
       ...(channelDirectoryProxyUrl !== undefined && { channelDirectoryProxyUrl }),

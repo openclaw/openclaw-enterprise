@@ -417,11 +417,12 @@ async function deployableAgent(context, namespace, { values, name, secretName, e
 
 // A ready Agent whose Configuration holds `valid`, with the Driver that stores it, for
 // refusedAtSaveAndDeploy.
-async function storedRowAgent(context, valid, { name, secretName }) {
+async function storedRowAgent(context, valid, { name, secretName, executionMode }) {
   const agent = await deployableAgent(context, context.namespace, {
     values: valid,
     name,
     secretName,
+    executionMode,
   });
   return { ...agent, configurationDriver: context.configurationDriver, valid };
 }
@@ -3020,19 +3021,13 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
   // deploy, and the new Gateway never started. Now every save of a Configuration whose model
   // policy selects Codex refuses it, naming the setting and the fix, and deployment refuses a row
   // stored before the rule, before any revision exists.
-  const configurationDriver = createConfigurationBackend();
-  const context = await fixture({
-    configurationDriver,
-    computeDriver: kubernetesRules("compute-codex-plugin-policy", ...configurationRules),
-  });
+  const context = await kubernetesRuleFixture("compute-codex-plugin-policy", ...configurationRules);
   const valid = createHarnessConfiguration("codex", "gpt-5");
-  const agent = await deployableAgent(context, context.namespace, {
-    values: valid,
+  const agent = await storedRowAgent(context, valid, {
     name: "Codex plugin policy consumer",
     secretName: "codex-plugin-policy-key",
     executionMode: "dedicated",
   });
-  const storedRow = { ...agent, configurationDriver, valid };
   const withPlugins = (plugins) => ({ ...valid, plugins: { ...valid.plugins, ...plugins } });
   const refused = [
     [{ enabled: false }, ["plugins.enabled", "must not be false", "Remove it"]],
@@ -3043,7 +3038,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
   for (const [plugins, refusal] of refused) {
     await refusedAtSaveAndDeploy(
       context,
-      storedRow,
+      agent,
       withPlugins(plugins),
       codexPluginRefusal(...refusal),
     );
@@ -3052,7 +3047,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
   // the rule for every Configuration names it first (finding 3101).
   await refusedAtSaveAndDeploy(
     context,
-    storedRow,
+    agent,
     withPlugins({ allow: ["codex", 1] }),
     pluginPolicyListRefusal("allow"),
   );
@@ -3062,7 +3057,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
     body: { kind: "agent", values: valid },
   });
   assert.equal(other.status, 201, JSON.stringify(other.body));
-  await writePastOcc(configurationDriver, other.body.data.id, withPlugins(storedPlugins));
+  await writePastOcc(context.configurationDriver, other.body.data.id, withPlugins(storedPlugins));
   assertRefused(
     await agentSave(context, agent, other.body.data.id),
     codexPluginRefusal(...storedRefusal),
@@ -3093,9 +3088,8 @@ test("Configuration save and Kubernetes deployment refuse a Dedicated Codex Conf
   // which signs in with the generated gateway password. Without gateway.auth.password the
   // Configuration saved, passed Create Agent's preflight and deploy admission, and every
   // activation then failed AGENT_GATEWAY_UNAUTHORIZED after the running revision had stopped.
-  const configurationDriver = createConfigurationBackend();
   const context = await fixture({
-    configurationDriver,
+    configurationDriver: createConfigurationBackend(),
     computeDriver: kubernetesRulesOn(
       "compute-workspace-node-password",
       { gatewayRuntime: true, privateStatus: true },
@@ -3103,15 +3097,13 @@ test("Configuration save and Kubernetes deployment refuse a Dedicated Codex Conf
     ),
   });
   const valid = createHarnessConfiguration("codex", "gpt-5");
-  const agent = await deployableAgent(context, context.namespace, {
-    values: valid,
+  const agent = await storedRowAgent(context, valid, {
     name: "Workspace node password consumer",
     secretName: "workspace-node-password-key",
     executionMode: "dedicated",
   });
   // The generated password reference saves and deploys.
   await deployAccepted(context, agent.agentPath, "generated password");
-  const storedRow = { ...agent, configurationDriver, valid };
   const withoutPassword = (auth) => {
     const { auth: _omitted, ...gateway } = valid.gateway;
     return { ...valid, gateway: auth === undefined ? gateway : { ...gateway, auth } };
@@ -3127,7 +3119,7 @@ test("Configuration save and Kubernetes deployment refuse a Dedicated Codex Conf
   for (const values of [trustedProxyOnly, withoutPassword(undefined), withoutPassword({})]) {
     await refusedAtSaveAndDeploy(
       context,
-      storedRow,
+      agent,
       values,
       KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
     );
@@ -3135,7 +3127,7 @@ test("Configuration save and Kubernetes deployment refuse a Dedicated Codex Conf
   // The refusal offers the reference on the Configuration's default env alias.
   await refusedAtSaveAndDeploy(
     context,
-    storedRow,
+    agent,
     { ...withoutPassword(undefined), secrets: { defaults: { env: "custom" } } },
     kubernetesWorkspaceNodePasswordRefusal("custom"),
   );

@@ -1062,7 +1062,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     harnessError: Error | undefined;
   } = sandbox.state;
   const { fixture, namespace } = await readyNamespace(t, "Lost Sandbox", {
-    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" }),
+    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespaceName: () => "tenant-console" }),
     sandboxDriver,
   });
   const agent = await fixture.createAgent(
@@ -2866,7 +2866,12 @@ for (const viewport of [
     const now = await page.evaluate(() => Date.now());
     await page.clock.pauseAt(new Date(now + 1000));
     await page.evaluate(() => globalThis.document.fonts.ready);
-    await page.evaluate(() => {
+    const summaryNote = page
+      .getByRole("region", { name: "Agent state at a glance" })
+      .getByText("Latest visible deployment", { exact: true })
+      .locator("..")
+      .locator("p");
+    await summaryNote.evaluate((note) => {
       globalThis.pollChanges = [];
       new globalThis.MutationObserver((records) => {
         for (const change of records) {
@@ -2874,6 +2879,10 @@ for (const viewport of [
             change.target instanceof Element ? change.target : change.target.parentElement;
           if (!where) {
             throw new Error("Expected a mutation element");
+          }
+          if (where === note && change.type === "childList") {
+            globalThis.pollChanges.push("childList latest deployment summary note");
+            continue;
           }
           const region = where.closest(
             ".version-diagnostics, .version-deployment-record, .deployment-evidence, .agent-overview-status",
@@ -2919,18 +2928,21 @@ for (const viewport of [
       attempt: { at: new Date("2026-10-16T12:00:20.000Z"), code: "REVISION_INCOMPLETE" },
     };
     await poll();
-    await page.getByText("Waiting for the runtime to become ready.").waitFor({ state: "attached" });
+    const wait = "Waiting for the runtime to become ready.";
+    const activityWait = deploymentActivity(page).getByText(wait, { exact: true });
+    await activityWait.waitFor({ state: "attached" });
+    assert.equal(await summaryNote.textContent(), wait);
     // A patched row drops the attributes the new one lacks: the result is no longer muted.
-    assert.equal(
-      await page.getByText("Waiting for the runtime to become ready.").getAttribute("class"),
-      null,
-    );
+    assert.equal(await activityWait.getAttribute("class"), null);
     const changed = await page.evaluate(() => globalThis.pollChanges.splice(0));
-    assert.ok(changed.length > 0);
-    // Only the activity's details changed: the version's record and diagnostics read the same.
+    const summaryMutation = "childList latest deployment summary note";
+    assert.equal(changed.filter((entry) => entry === summaryMutation).length, 1);
+    assert.ok(changed.some((entry) => entry.includes("deployment-evidence")));
+    // The attempt updates the summary note and activity details. The record and diagnostics
+    // still read the same, and the rest of the overview stays in place.
     assert.ok(
-      changed.every((entry) => entry.includes("deployment-evidence")),
-      `only the changed details were written: ${changed.join(" | ")}`,
+      changed.every((entry) => entry === summaryMutation || entry.includes("deployment-evidence")),
+      `only the summary note and activity were written: ${changed.join(" | ")}`,
     );
     const attemptTop = await shareTop();
 
@@ -2961,6 +2973,7 @@ for (const viewport of [
     await poll();
     await expectDeploymentOutcome(page, "Completed", { folded: false });
     await waitForIdleFetches(page);
+    assert.equal(await summaryNote.textContent(), "Latest update received.");
     // The settled details end just under the outcome, their last line: only the details' own
     // padding is left, not the reserved band of about 150 px.
     const band = await page.evaluate(() => {

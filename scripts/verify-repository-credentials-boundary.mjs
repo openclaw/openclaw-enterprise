@@ -12,11 +12,13 @@ const credentialDirectories = [
   "backends/token-service",
 ];
 const sharedConfigurationFields = "composition/installation-fields.ts";
+const sharedJsonMembers = "drivers/json-members.ts";
 const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
   ...processEntrypoints,
   sharedConfigurationFields,
+  sharedJsonMembers,
   openShellEvidence,
   "composition/repository-credentials/check-config.ts",
   "composition/repository-credentials/projected-inputs.ts",
@@ -188,7 +190,11 @@ const reviewedImports = {
   // AES-GCM binds encrypted material to family and attempt; readiness selects no sealed bytes.
   "drivers/repo/github/access/prepared-postgres.ts": {
     // Reuse the platform transaction's metadata predicates; no new material or I/O authority.
-    "@openclaw-enterprise/occ": ["preparedGitHubLive", "readPreparedGitHubMetadata"],
+    "@openclaw-enterprise/occ": [
+      "preparedGitHubLive",
+      "readPreparedGitHubMetadata",
+      "preparedGitHubRejectedMaterialMatch",
+    ],
     "node:crypto": ["createCipheriv", "createDecipheriv", "randomBytes", "randomUUID"],
     "node:util": ["isDeepStrictEqual"],
   },
@@ -724,7 +730,12 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     }
     files.push(...owned.sort());
   }
-  for (const entrypoint of [...processEntrypoints, sharedConfigurationFields, openShellEvidence]) {
+  for (const entrypoint of [
+    ...processEntrypoints,
+    sharedConfigurationFields,
+    sharedJsonMembers,
+    openShellEvidence,
+  ]) {
     const path = join(root, entrypoint);
     const stat = await lstat(path).catch((error) => {
       if (error.code !== "ENOENT") {

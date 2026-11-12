@@ -26,6 +26,10 @@ test-only pull requests select affected lanes, including TypeScript test checks.
 Other changes run the ordinary lane matrix. Failed main-push CI also prevents release workflows
 that require successful CI for that source.
 
+Documentation-only changes include regular, non-executable `.png` illustrations
+under `specs/rfcs/`. Images elsewhere and other image extensions still select full
+CI. Mixing an RFC image with runtime or tooling changes also selects full CI.
+
 ## Scenarios
 
 `pr-safe` runs the selected matrix jobs below; `runtime-image-fixture` runs
@@ -63,6 +67,11 @@ Open or update a pull request for automatic selection. For local reproduction,
 use the linked suite guide and exact manifest in the table; prerequisites differ
 between browser, PostgreSQL, container, and Kubernetes lanes. Follow the shared
 [prepare, run, and cleanup procedure](run-lanes.md#results-and-cleanup).
+
+`checks-baseline-2` requires full Git history for its sign-in qualification profile
+tests. CI and Full Integration fetch that history during checkout for this lane;
+other matrix lanes keep a shallow checkout. Local runs need the reviewed profile
+commit available before starting; the tests do not fetch missing history.
 
 Runtime-image bridge tests and typechecks write temporary compiler artifacts to
 disk so memory pressure can reclaim their page cache. Each verification step

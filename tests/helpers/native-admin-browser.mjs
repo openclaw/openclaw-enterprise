@@ -1464,7 +1464,10 @@ export async function runOidcAgentChatScenario(context) {
     workspaceGateway: true,
     oidc: {
       issuer,
-      enrollment: { admission: { groupsClaim: "groups", anyOf: [groupName] } },
+      enrollment: {
+        admission: { groupsClaim: "groups", anyOf: [groupName] },
+        createAccount: { enabled: true, role: null },
+      },
       clientId,
       clientSecret,
       caCert,
@@ -1490,29 +1493,6 @@ export async function runOidcAgentChatScenario(context) {
   const browser = await launchBrowser(context, ingress);
   const namespacePath = `/namespaces/${topology.agent.namespaceId}`;
   const policyPath = `${namespacePath}/iam`;
-  // The supported account API enrolls both people in the configured Default
-  // user group, which permits creation in this fresh default Namespace.
-  const enroll = async (username, subject) => {
-    const account = await topology.adminRequest("POST", "/api/auth/accounts", {
-      email: `${username}@example.test`,
-      password: randomUUID() + randomUUID(),
-    });
-    assert.equal(account.status, 201, JSON.stringify(account.error));
-    const current = await topology.adminRequest("GET", `/api/auth/accounts/${account.data.id}`);
-    assert.equal(current.status, 200);
-    const attached = await topology.adminRequest(
-      "POST",
-      `/api/auth/accounts/${account.data.id}/providers/oidc`,
-      {
-        subject,
-        expectedVersion: current.data.version,
-      },
-    );
-    assert.equal(attached.status, 200, JSON.stringify(attached.error));
-    return account.data;
-  };
-  const alice = await enroll("alice", "6f1c1e9a-3d4b-4c55-9a2e-0a11ce000001");
-  const carol = await enroll("carol", "6f1c1e9a-3d4b-4c55-9a2e-0ca201000002");
   const role = async (name, permissions) => {
     const result = await topology.adminRequest("POST", `${policyPath}/roles`, {
       name,
@@ -1531,11 +1511,6 @@ export async function runOidcAgentChatScenario(context) {
     });
     assert.equal(result.status, 201, JSON.stringify(result.error));
   };
-  const secretRole = await role("Use selected model", [
-    { action: "operate", resourceKind: "secret" },
-  ]);
-  await bind(alice, secretRole, "secret", topology.secretApi.model.ref.id);
-
   const signIn = async (username) => {
     const browserContext = await browser.newContext();
     context.after(() => browserContext.close());
@@ -1571,9 +1546,31 @@ export async function runOidcAgentChatScenario(context) {
       },
       { method, path, body },
     );
+  // Real OIDC first login creates both accounts and applies the configured
+  // Default user Group. No account creation or attachment API seeds these identities.
+  const readAccount = async (userId) => {
+    const response = await topology.adminRequest("GET", `/api/auth/accounts/${userId}`);
+    assert.equal(response.status, 200, JSON.stringify(response.error));
+    assert.equal(response.data.userId, userId);
+    return response.data;
+  };
   const ownerPage = await signIn("alice");
   const ownerRequest = requestFor(ownerPage);
-  assert.equal((await ownerRequest("GET", "/api/auth/session")).data.user.id, alice.id);
+  const aliceSession = (await ownerRequest("GET", "/api/auth/session")).data;
+  const alice = await readAccount(aliceSession.user.id);
+  const firstOperatorPage = await signIn("carol");
+  const carolSession = (await requestFor(firstOperatorPage)("GET", "/api/auth/session")).data;
+  const carol = await readAccount(carolSession.user.id);
+  const returningOwnerPage = await signIn("alice");
+  assert.equal(
+    (await requestFor(returningOwnerPage)("GET", "/api/auth/session")).data.user.id,
+    alice.userId,
+  );
+  const secretRole = await role("Use selected model", [
+    { action: "operate", resourceKind: "secret" },
+  ]);
+  await bind(alice, secretRole, "secret", topology.secretApi.model.ref.id);
+
   assert.equal((await ownerRequest("GET", "/installation")).status, 403);
   const capabilities = await ownerRequest("GET", `${namespacePath}/agent-capabilities`);
   assert.equal(capabilities.status, 200);
@@ -1618,7 +1615,7 @@ export async function runOidcAgentChatScenario(context) {
   await bind(carol, operatorRole, "agent", created.data.id);
   const operatorPage = await signIn("carol");
   const operatorRequest = requestFor(operatorPage);
-  assert.equal((await operatorRequest("GET", "/api/auth/session")).data.user.id, carol.id);
+  assert.equal((await operatorRequest("GET", "/api/auth/session")).data.user.id, carol.userId);
   assert.equal(
     (await operatorRequest("GET", `${namespacePath}/agents/${topology.agent.id}`)).status,
     403,
@@ -1645,37 +1642,46 @@ export async function runOidcAgentChatScenario(context) {
     new URL(agentDetailPath({ agent: created.data, revision: deployed.data }), ingress.origin).href,
   );
   const nativePage = await openNativeAdminConsole(operatorPage, status.data.origin, "chat");
-  const initialMarker = `oidc-chat-${randomUUID()}`;
-  let initialReply;
+  // Retain the real browser/model exchange without recording IdP credentials.
+  const recording = await nativePage.screencast.start({
+    path: join(artifacts, "oidc-operator-chat.webm"),
+    size: { width: 1280, height: 720 },
+  });
   try {
-    initialReply = await submitChatTurnWithAssistantProof(
+    const initialMarker = `oidc-chat-${randomUUID()}`;
+    const initialReply = await submitChatTurnWithAssistantProof(
       nativePage,
       initialMarker,
       frames,
       waitFor,
     );
+    const lifecycle = await assertChatStreamStopAndResume({
+      page: nativePage,
+      initialReply,
+      initialMarker,
+      receivedFrames: frames,
+      sentFrames,
+      waitFor,
+    });
+    context.diagnostic(
+      `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
+    );
+    await assertChatAdministrationDenied(nativePage);
+    const siblingTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
+    const probe = await operatorPage.context().newPage();
+    assert.equal((await probe.goto(siblingTarget.origin + "/healthz")).status(), 403);
+    await probe.close();
+    await nativePage.screenshot({
+      path: join(artifacts, "oidc-operator-chat.png"),
+      fullPage: true,
+    });
+    context.diagnostic(
+      "Real Keycloak sign-in enabled ordinary-owner create/deploy and an exact-Agent operator model turn; native HTTP/WS administration and sibling access were denied.",
+    );
   } catch (error) {
     await nativePage.screenshot({ path: join(artifacts, "oidc-chat-failure.png"), fullPage: true });
     throw error;
+  } finally {
+    await recording.dispose();
   }
-  const lifecycle = await assertChatStreamStopAndResume({
-    page: nativePage,
-    initialReply,
-    initialMarker,
-    receivedFrames: frames,
-    sentFrames,
-    waitFor,
-  });
-  context.diagnostic(
-    `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
-  );
-  await assertChatAdministrationDenied(nativePage);
-  const siblingTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
-  const probe = await operatorPage.context().newPage();
-  assert.equal((await probe.goto(siblingTarget.origin + "/healthz")).status(), 403);
-  await probe.close();
-  await nativePage.screenshot({ path: join(artifacts, "oidc-operator-chat.png"), fullPage: true });
-  context.diagnostic(
-    "Real Keycloak sign-in enabled ordinary-owner create/deploy and an exact-Agent operator model turn; native HTTP/WS administration and sibling access were denied.",
-  );
 }

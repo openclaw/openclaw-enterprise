@@ -110,6 +110,7 @@
     },
     {
       "path": "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"],
       "expectedTests": [
         "dev-up installs the pinned OpenShell profile in its owned k3d cluster",
         "dev-up runs OCC in Compose with OpenShell and Kubernetes Compute in k3d"
@@ -152,6 +153,25 @@
       ]
     },
     {
+      "path": "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
+      "expectedTests": [
+        "OpenShell mounts the admitted operator scratch PVC through the Agent workflow"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
       "path": "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
       "expectedTests": [
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
@@ -176,8 +196,32 @@
       ]
     },
     {
+      "path": "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+      "expectedTests": [
+        "bootstrap reconciles OpenShell gateways and Workspaces before any Agent, then runs Agents in both Namespaces"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ],
+      "env": {
+        "OCC_TEST_NAMESPACE_OPENSHELL_REAL": "1",
+        "OCC_TEST_OPENSHELL_HARNESS": "openclaw"
+      }
+    },
+    {
       "path": "tests/integration/openshell-git-retention-real.test.ts",
       "expectedTests": [
+        "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
         "OpenShell retains its runtime after Git expiry and worker restart",
         "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
       ]
@@ -189,6 +233,7 @@
       ]
     }
   ],
+  "focusedEnv": ["OCC_TEST_OPENSHELL_HARNESS", "OCC_TEST_OPENSHELL_MODEL_BASE_URL"],
   "optionalEnv": [
     "OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE",
     "OCC_TEST_CODEX_INSTALL_PLUGIN_ID",

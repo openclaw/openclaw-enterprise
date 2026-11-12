@@ -54,6 +54,9 @@ export async function registerCleanupAndStartProvider(
   // remains in the ledger for the parent; never replay a mutation to hide it.
   t.after(async () => {
     const failures = ledger.pendingCreate ? ["unconfirmed create; reconcile ledger"] : [];
+    if (ledger.pendingDeploy) {
+      failures.push("unreconciled deployment; inspect exact Agent operation in ledger");
+    }
     const clean = async (name, action) => {
       try {
         await action();
@@ -507,13 +510,21 @@ export async function observeInstalledProtection(
     if (!input.credentialConnector) {
       assert.equal(middleware.execution_authority, true);
       assert.equal(middleware.credential_authority, true);
-      const policies = Object.entries(observation.effective_policy.network_policies).filter(
-        ([name]) => name.startsWith("oce-egress-"),
+      const policies = Object.fromEntries(
+        Object.entries(observation.effective_policy.network_policies)
+          .filter(([name]) => name.startsWith("oce-egress-"))
+          .map(([name, policy]) => [name, policy.binaries ?? []]),
       );
-      assert.ok(policies.length > 0, "fresh operation must have an actual managed route");
-      for (const [, policy] of policies) {
-        assert.deepEqual(policy.binaries ?? [], [], "no caller executable allowlist");
-      }
+      assert.deepEqual(
+        policies,
+        Object.fromEntries(
+          installed.plan.routes.map((route, index) => [
+            `oce-egress-${index}`,
+            route.binding.grant.kind === "inference" ? [{ path: "/**" }] : [],
+          ]),
+        ),
+        "loaded managed routes must match the admitted routes and their binary scopes",
+      );
     }
     assert.equal(installed.enforcement.policyHash, receipt.policy_hash);
     const effective = structuredClone(observation.effective_policy);

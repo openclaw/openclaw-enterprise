@@ -39,7 +39,10 @@ To stop even a partially started environment, run:
 ```
 
 This deletes only the owned cluster and its database. For a Compose control
-plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
+plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup: an unset
+control plane follows the Compute Driver, so
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
+alone starts Kubernetes-only.
 
 ## Finite repository removal
 
@@ -73,12 +76,12 @@ runtime. Finally, withdrawing required model authority must clear the active
 revision and remove the original Sandbox and Agent Pods before the same deadline.
 Queued retirement and fixture teardown do not satisfy this final assertion.
 
-In `openshell-git-retention-real.test.ts`, the natural-expiry case reads scoped
-and unscoped npm metadata from the protected Sandbox before expiry. In the
-two-Agent case, B reads after A's live denial and before worker replacement.
-After replacement, A remains denied before origin and continues its
-conversation on the same runtime. Exact-scope `retire-runtime` fails expiry
-immediately. Retain image digests, case results, and cleanup evidence.
+`openshell-git-retention-real.test.ts` tests natural expiry separately. In its
+two-Agent case, B reads with its original grant after A's live denial, before
+worker replacement. After replacement, A must remain denied before origin and
+continue its conversation on the same runtime. This case does not qualify B's
+grant after replacement. Exact-scope `retire-runtime` fails expiry immediately;
+retain the selected image digests, case results and cleanup evidence.
 
 Finite-removal and two-Agent failures identify the failed conversation check:
 `execution identity`, `target discovery`, `gateway identity`, `model turn`, or
@@ -139,6 +142,8 @@ cannot prove a Linear tool call.
 
 ## Test setup and cleanup
 
+See [host relay diagnostics](docker.md#verify-host-routing-relay-diagnostics).
+
 Stop the reusable environment before running these tests. Each creates and
 removes its own disposable cluster. Install Docker or Podman, k3d, kubectl,
 Helm, and the dependencies in the [testing prerequisites](README.md#requirements-and-credentials).
@@ -147,8 +152,8 @@ Build the local CLI first with `pnpm cli:build`.
 ```sh
 # Kubernetes control plane, including a real first-Agent deployment and browser access checks.
 # Install certutil and sandboxed Chromium as in the Kubernetes testing prerequisites.
-# Select an existing authorized Codex service account and its model.
-CODEX_ACCESS_TOKEN_FILE=/secure/oce/codex-token OCC_TEST_OPENAI_MODEL="$MODEL" \
+# Select an authorized public OpenAI API key and model.
+OPENAI_API_KEY_FILE=/secure/oce/openai-api-key OCC_TEST_OPENAI_MODEL="$MODEL" \
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 
@@ -173,10 +178,9 @@ separately requires screenshots and video. This check records no video.
 
 ## OpenShell Sandbox
 
-The real Sandbox suite checks a dedicated Codex Agent's authenticated Gateway
-access, model and tool turns, credential delivery, filesystem and network
-restrictions, replacement, and cleanup. Local fixtures alone do not prove these
-outcomes; see [OpenShell coverage](openshell-coverage.md).
+The real Sandbox suite checks Codex Gateway access, model/tool turns, credentials,
+filesystem/network restrictions, replacement and cleanup. Local fixtures alone
+are insufficient; see [OpenShell coverage](openshell-coverage.md).
 
 If the credential-route check's allowed endpoint fails, the suite captures one
 bounded tail from the Harness's exact supervisor before cleanup: source type,
@@ -240,13 +244,18 @@ The Codex account must permit `:danger-full-access`; OpenShell supplies the oute
 sandbox. The live probe checks the effective profile before starting inference
 and fails immediately if managed policy selects a restricted sandbox.
 
-The lane runs both setup tests, the Sandbox test, and first-Agent tests for both
-control planes. Missing selected prerequisites fail the lane. Clean up even
-after preparation or test failures:
+Missing prerequisites fail the lane. Always clean up:
 
 ```sh
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
+
+For scratch, select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts`
+with preparation `--selected-file` and execution `--file`. Both require
+`OCC_TEST_OPENSHELL_HARNESS=codex`,
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL=https://api.openai.com/v1`,
+`OPENAI_API_KEY`, and `OCC_TEST_OPENAI_MODEL`.
+The case checks writes, frozen selection, and claim refusals. NVMe and node loss are separate.
 
 The [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
 checks finite-grant expiry and worker restart after installation.

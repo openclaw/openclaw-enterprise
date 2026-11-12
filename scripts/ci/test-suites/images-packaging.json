@@ -22,6 +22,7 @@
     "tests/integration/production-upgrade-signal-lock.test.ts",
     "tests/integration/codex-model-probe.test.mjs",
     "tests/integration/production-image-upgrade-recovery.test.mjs",
+    "tests/integration/upgrade-preflight-state.test.mjs",
     "tests/integration/docker-compute-token-retry.test.mjs",
     "tests/integration/workspace-setup-runtime.test.mjs",
     "tests/integration/production-kubernetes-packaging.test.mjs",
@@ -33,7 +34,7 @@
     "tests/integration/development-packaging.test.mjs",
     "tests/integration/container-publication-workflow.test.ts",
     "tests/integration/oidc-ca-trust.test.mjs",
-    "tests/integration/ci-runtime-artifact.test.mjs"
+    "tests/integration/ci-runtime-artifact.test.ts"
   ],
   "files": [
     {
@@ -74,11 +75,15 @@
       "path": "tests/integration/production-image-upgrade-recovery.test.mjs"
     },
     {
+      "path": "tests/integration/upgrade-preflight-state.test.mjs"
+    },
+    {
       "path": "tests/integration/production-image-qualification.test.mjs"
     },
     {
       "path": "tests/integration/production-kubernetes-packaging.test.mjs",
       "expectedTests": [
+        "OpenShell Envoy cleanup reports rejected deletes and continues remaining cleanup",
         "database CA mounts stay distinct from active production volume mounts",
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
@@ -152,7 +157,7 @@
       ]
     },
     {
-      "path": "tests/integration/ci-runtime-artifact.test.mjs",
+      "path": "tests/integration/ci-runtime-artifact.test.ts",
       "expectedTests": [
         "same-run runtime artifact prepares an owned image and supplies a real OCI build context"
       ]

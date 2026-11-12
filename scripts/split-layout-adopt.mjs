@@ -273,7 +273,7 @@ export function planTenant(
   plan.tenant = tenant.metadata.name;
   plan.tenantUid = tenant.metadata.uid;
   if (tenant.metadata.annotations?.[LIFECYCLE_ANNOTATION] === "external") {
-    refuse(`${plan.tenant} is an existing namespace; use scripts/split-layout-tenants.mjs`);
+    refuse(`${plan.tenant} is an existing namespace; use scripts/split-layout-tenants.ts`);
   } else if (
     tenant.metadata.annotations?.[ID_ANNOTATION] !== id ||
     labelsOf(tenant)[MANAGED_BY] !== MANAGER

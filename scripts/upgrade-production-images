@@ -28,7 +28,13 @@ with the operator. Preserve it separately from backups of the evidence directory
 Use --preflight-only to check the candidate before the maintenance window. It
 creates temporary Jobs and requires confirmed cleanup before quiescence;
 its evidence cannot be resumed. To deploy, omit the flag and use a fresh evidence directory.
-After interruption, inspect final preflight-*-identity.json files alongside this run's parameters.json.
+After interruption, settle the original helper, children and remote operations.
+Then, from the original checkout, clean up only its recorded preflight resources:
+  scripts/upgrade-production-images --cleanup-preflight \
+    --kubeconfig FILE --context NAME --namespace NAME --release NAME \
+    --evidence-dir DIRECTORY --previous-process-settled --evidence-unrestored
+This preserves the upgrade lock and never resumes deployment. Uncertain creates
+remain incomplete; original, unrestored evidence is required.
 OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connection.
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
@@ -160,14 +166,16 @@ json_fields() {
   done
 }
 
-# Prints OCC's refusal from a failed `occ agent deploy`'s stderr FILE and
-# succeeds only when OCC answered with a 4xx error code (occ prints
-# "OCC operation failed (HTTP 4xx): CODE: message") or refused the service key.
-# OCC admits a deploy in one transaction, so such a refusal saved no revision.
-# Anything else, such as a lost connection, a timeout, HTTP 408 or a 5xx, leaves
-# the outcome unknown. occ prints its error once, as its last output, on a line
-# that starts with "Error: ". Only that line is read: when stderr has any other
-# such line, for example inside a notice or OCC's message, the outcome is unknown.
+# Prints the refusal from a failed `occ agent deploy`'s stderr FILE and succeeds
+# only when OCC answered with a 4xx error code (occ prints "OCC operation failed
+# (HTTP 4xx): CODE: message"), OCC refused the service key, or occ refused to send
+# the deploy request because it could not establish the selected revision's
+# Harness overrides. OCC admits a deploy in one transaction, so none of these
+# saved a revision. Anything else, such as a lost connection, a timeout, HTTP 408
+# or a 5xx, leaves the outcome unknown. occ prints its error once, as its last
+# output, on a line that starts with "Error: ". Only that line is read: when
+# stderr has any other such line, for example inside a notice or OCC's message,
+# the outcome is unknown.
 deploy_refusal() {
   python3 - "$1" <<'PYTHON'
 import re, sys
@@ -179,13 +187,32 @@ errors = [index for index, line in enumerate(lines) if line.startswith("Error: "
 if len(errors) != 1:
     sys.exit(1)
 index = errors[0]
-pattern = re.compile(r"Error: (OCC operation failed \(HTTP 4(?!08)[0-9]{2}\): [A-Z][A-Z0-9_]*: |OCC rejected the service key )")
+pattern = re.compile(
+    r"Error: (OCC operation failed \(HTTP 4(?!08)[0-9]{2}\): [A-Z][A-Z0-9_]*: |OCC rejected the service key "
+    # occ's refusals for --retain-harness-overrides, before the deploy request.
+    r"|the selected revision (is unavailable|has no Harness settings|has no requested Harness overrides)$"
+    r"|revision rev_[0-9a-f-]+ has unreadable saved settings \([A-Z_]+: [A-Za-z]+\) and )"
+)
 if not pattern.match(lines[index]):
     sys.exit(1)
 # occ indents the rejected fields' JSON details under its message.
 details = [detail.strip() for detail in lines[index + 1 : index + 4] if detail.startswith("  ")]
 refusal = " ".join([lines[index].removeprefix("Error: ")] + details)
 print(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "?", refusal)[:600])
+PYTHON
+}
+
+# Prints the "notice: " lines from an `occ agent deploy`'s stderr FILE, without
+# that prefix and with control characters replaced, so the run output shows them.
+deploy_notices() {
+  python3 - "$1" <<'PYTHON'
+import re, sys
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except OSError:
+    sys.exit(0)
+for line in [line for line in lines if line.startswith("notice: ")][:5]:
+    print(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "?", line.removeprefix("notice: "))[:600])
 PYTHON
 }
 
@@ -399,9 +426,20 @@ migration_history_checked=0
 recover_helm=0
 recovery_reviewed=0
 collector_config_reviewed=0
+cleanup_only=0
+previous_process_settled=0
+evidence_unrestored=0
+cleanup_conflicting_args=0
 
 while (($#)); do
   case "$1" in
+    --kubeconfig | --context | --namespace | --release | --evidence-dir | --cleanup-preflight | --previous-process-settled | --evidence-unrestored | -h | --help) ;;
+    *) cleanup_conflicting_args=1 ;;
+  esac
+  case "$1" in
+    --cleanup-preflight) cleanup_only=1; shift ;;
+    --previous-process-settled) previous_process_settled=1; shift ;;
+    --evidence-unrestored) evidence_unrestored=1; shift ;;
     --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --controller-compatibility-results | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib | --verify-agent | --verify-agent-namespace)
       (($# >= 2)) || die "$1 requires a value."
       if [[ "$1" == --verify-agent || "$1" == --verify-agent-namespace ]]; then
@@ -467,6 +505,62 @@ while (($#)); do
       ;;
   esac
 done
+
+# The cleanup path consumes original identity evidence only. It never prepares or
+# resumes an upgrade and needs no OCC credential or candidate image inputs.
+if ((cleanup_only)); then
+  ((cleanup_conflicting_args == 0)) || die "--cleanup-preflight accepts only target and evidence arguments plus its two attestations." 2
+  ((previous_process_settled && evidence_unrestored)) ||
+    die "cleanup requires --previous-process-settled and --evidence-unrestored; first settle the prior helper, children and remote operations, and confirm the original evidence was not restored or modified." 2
+  for input in kubeconfig context namespace release evidence_dir; do
+    [[ -n "${!input}" ]] || die "--${input//_/-} is required for cleanup." 2
+  done
+  [[ -d "$evidence_dir" && ! -L "$evidence_dir" ]] ||
+    die "the evidence path must be a directory, not a symbolic link." 2
+  for command in python3 jq kubectl node mktemp; do
+    require_command "$command"
+  done
+  umask 077
+  exec 8<"$evidence_dir" || die "cannot open the original evidence directory." 2
+  python3 scripts/upgrade-preflight-state.py lock "$evidence_dir" 8 ||
+    die "cannot lock the original evidence directory; a helper or child may still be running." 2
+  cleanup_state=$(python3 scripts/upgrade-preflight-state.py inspect "$evidence_dir" \
+    "$kubeconfig" "$context" "$namespace" "$release") ||
+    die "invalid preflight recovery evidence; no Kubernetes cleanup was attempted." 2
+  resources_text=$(jq -r '.resources[]' <<<"$cleanup_state") || die "cannot read cleanup resources." 2
+  children_text=$(jq -r '.children[]' <<<"$cleanup_state") || die "cannot read cleanup children." 2
+  unknown_count=$(jq '.unknown | length' <<<"$cleanup_state") || die "cannot read uncertain creates." 2
+  preflight_consumer_unknown=$(jq -r 'if .consumerUnknown then 1 else 0 end' <<<"$cleanup_state") ||
+    die "cannot read cleanup consumer state." 2
+  preflight_resources=()
+  preflight_children=()
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] || preflight_resources+=("$entry")
+  done <<<"$resources_text"
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] || preflight_children+=("$entry")
+  done <<<"$children_text"
+  kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
+  # Keep each cleanup's result and observations separate from original receipts.
+  evidence_dir=$(mktemp -d "$evidence_dir/preflight-cleanup.XXXXXXXX")
+  # Do not rerun cleanup in an EXIT trap: a signal may leave a remote operation
+  # outstanding. A subsequent invocation requires the same settlement attestation.
+  cleanup_status=0
+  source scripts/lib/upgrade-preflight-cleanup.sh
+  cleanup_preflight || cleanup_status=1
+  ((unknown_count == 0)) || cleanup_status=1
+  jq --argjson complete "$([[ $cleanup_status == 0 ]] && echo true || echo false)" \
+    '{version: 1, complete: $complete, unknown: .unknown}' <<<"$cleanup_state" \
+    >"$evidence_dir/preflight-cleanup-result.json"
+  if ((cleanup_status)); then
+    warn "preflight cleanup is incomplete; inspect $evidence_dir/preflight-cleanup-result.json and preflight-cleanup.err. Original upgrade lock and history are unchanged."
+  else
+    warn "recorded preflight Kubernetes resources are gone; result: $evidence_dir/preflight-cleanup-result.json. This does not authorize upgrade resume or remove the original upgrade lock."
+  fi
+  exit "$cleanup_status"
+fi
+((previous_process_settled == 0 && evidence_unrestored == 0)) ||
+  die "--previous-process-settled and --evidence-unrestored require --cleanup-preflight." 2
 
 # Helm reads these independently of --kubeconfig/--kube-context. Keep its
 # endpoint and TLS settings bound to the same selected file as kubectl.
@@ -674,6 +768,9 @@ if ((resume == 0)); then
   mkdir -m 700 "$evidence_dir"
 fi
 upgrade_evidence_dir=$evidence_dir
+exec 8<"$evidence_dir"
+python3 scripts/upgrade-preflight-state.py lock "$evidence_dir" 8 ||
+  die "the evidence directory is locked by another helper or child."
 mkdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
 trap 'rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
@@ -697,7 +794,7 @@ def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -745,6 +842,7 @@ if [[ -n "$runtime_image" ]] && ((preflight_only == 0)); then
 fi
 if ((resume == 0)); then
   printf '%s\n' "$parameters" >"$evidence_dir/parameters.json"
+  python3 scripts/upgrade-preflight-state.py init "$evidence_dir"
 fi
 
 kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
@@ -762,7 +860,9 @@ unconfirmed_preflight() {
   local resource=$1 errors=$2 status=$3 reason
   # A lost Job acknowledgement may leave a running Secret consumer.
   [[ "$resource" != job.batch/* ]] || preflight_consumer_unknown=1
-  if ((status == 2)); then
+  if ((status == 3)); then
+    reason="The durable creation marker could not be confirmed; no create was launched by this call."
+  elif ((status == 2)); then
     reason="The create returned no usable UID; kubectl's error output, if any, is in $errors in the evidence directory."
   else
     reason="kubectl reported an error for the create; see $errors in the evidence directory."
@@ -774,10 +874,15 @@ unconfirmed_preflight() {
   fi
   die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted for this name. $reason Check whether this object remains in the selected namespace. Correct the failure and use a fresh evidence directory. This run stopped no OCC writer."
 }
-# create_preflight FILE ERRORS [scrub] prints guarded DeleteOptions for the
+# create_preflight SLOT FILE ERRORS [scrub] prints guarded DeleteOptions for the
 # created object. It returns 1 when kubectl failed and 2 when kubectl succeeded
 # without a usable UID.
 create_preflight() {
+  local slot=$1
+  shift
+  local attempt=.
+  [[ "$evidence_dir" == "$upgrade_evidence_dir" ]] || attempt=${evidence_dir##*/}
+  python3 scripts/upgrade-preflight-state.py started "$upgrade_evidence_dir" "$attempt" "$slot" || return 3
   local errors="$evidence_dir/$2"
   local statuses
   # Validate the opaque UID before Bash can strip newlines or NULs, and build
@@ -808,7 +913,8 @@ PYTHON
 }
 # Register cleanup before local publication: a disk failure is not a failed create.
 # Child identities are observed through their acknowledged Job owner.
-# These records are identity evidence only; they are never read for replay.
+# A later cleanup may use a validated final record even if publication failed
+# after linking it. Records authorize deletion only, never create or upgrade replay.
 acknowledge_preflight() {
   local slot=$1 resource=$2 delete_options=$3
   preflight_resources+=("$resource $delete_options")
@@ -846,102 +952,7 @@ finally:
 PYTHON
     die "preflight create acknowledged, but local identity evidence could not be confirmed; no OCC writer was stopped."
 }
-preflight_cleanup_error() {
-  local resource=$1 errors=$2
-  printf '%s\n%s\n' "${resource:0:300}:" "$errors" >>"$evidence_dir/preflight-cleanup.err"
-  if [[ "$errors" == *"Precondition failed: UID in precondition"* ]]; then
-    warn "could not confirm cleanup of ${resource:0:300}: an object with a different UID now holds this name, so it was left in place; see preflight-cleanup.err in the evidence directory."
-  else
-    warn "could not confirm cleanup of ${resource:0:300}: the delete request failed; see preflight-cleanup.err in the evidence directory."
-  fi
-}
-cleanup_preflight() {
-  local entry resource name uri delete_options errors uid deadline remaining child child_name child_uid
-  local consumers_stopped=1 cleanup_failed=0
-  ((preflight_consumer_unknown == 0)) || consumers_stopped=0
-  # Stop controllers first. Foreground deletion keeps each Job until its dependent Pods end.
-  for entry in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
-    resource=${entry%% *}
-    [[ "$resource" == job.batch/* ]] || continue
-    name=${resource#*/}
-    delete_options=${entry#* }
-    if ! uid=$(jq -er '.preconditions.uid' <<<"$delete_options") ||
-      ! delete_options=$(jq -ce '.propagationPolicy = "Foreground"' <<<"$delete_options"); then
-      printf 'Cannot build UID-guarded deletion for %s.\n' "$resource" >>"$evidence_dir/preflight-cleanup.err"
-      consumers_stopped=0
-      continue
-    fi
-    uri="/apis/batch/v1/namespaces/$namespace/jobs/$name"
-    if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
-      <<<"$delete_options" 2>&1 >/dev/null); then
-      preflight_cleanup_error "$resource" "$errors"
-      consumers_stopped=0
-      continue
-    fi
-    child_name= child_uid=
-    for child in ${preflight_children[@]+"${preflight_children[@]}"}; do
-      [[ "${child%% *}" == "$uid" ]] || continue
-      child=${child#* }
-      child_name=${child%% *}
-      child_uid=${child#* }
-    done
-    deadline=$((SECONDS + 30))
-    while true; do
-      : >"$evidence_dir/preflight-cleanup-child.json"
-      if ! "${kube[@]}" --request-timeout=10s --namespace "$namespace" get "$resource" \
-        --ignore-not-found -o json >"$evidence_dir/preflight-cleanup-job.json" 2>>"$evidence_dir/preflight-cleanup.err" ||
-        ! "${kube[@]}" --request-timeout=10s --namespace "$namespace" get pods \
-          --selector "batch.kubernetes.io/controller-uid=$uid" -o json \
-          >"$evidence_dir/preflight-cleanup-pods.json" 2>>"$evidence_dir/preflight-cleanup.err"; then
-        consumers_stopped=0
-        break
-      fi
-      if [[ -n "$child_name" ]] && ! "${kube[@]}" --request-timeout=10s --namespace "$namespace" \
-        get "pod/$child_name" --ignore-not-found -o json \
-        >"$evidence_dir/preflight-cleanup-child.json" 2>>"$evidence_dir/preflight-cleanup.err"; then
-        consumers_stopped=0
-        break
-      fi
-      if ! remaining=$(node scripts/upgrade-startup-preflight.mjs remaining \
-        "$evidence_dir/preflight-cleanup-job.json" "$uid" "$evidence_dir/preflight-cleanup-pods.json" \
-        "$evidence_dir/preflight-cleanup-child.json" "$child_uid" 2>>"$evidence_dir/preflight-cleanup.err"); then
-        consumers_stopped=0
-        break
-      fi
-      [[ "$remaining" != false ]] || break
-      if ((SECONDS >= deadline)); then
-        printf 'Timed out stopping %s and its child Pods.\n' "$resource" >>"$evidence_dir/preflight-cleanup.err"
-        consumers_stopped=0
-        break
-      fi
-      sleep 1
-    done
-  done
-  if ((consumers_stopped == 0)); then
-    warn "preflight Job or child Pod cleanup is unconfirmed; retained the candidate Secret and NetworkPolicy. Reconcile identities and preflight-cleanup.err before proceeding."
-    preflight_resources=()
-    return 1
-  fi
-  for entry in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
-    resource=${entry%% *}
-    delete_options=${entry#* }
-    name=${resource#*/}
-    case "$resource" in
-      job.batch/* | pod/*) continue ;;
-      secret/*) uri="/api/v1/namespaces/$namespace/secrets/$name" ;;
-      networkpolicy.networking.k8s.io/*)
-        uri="/apis/networking.k8s.io/v1/namespaces/$namespace/networkpolicies/$name" ;;
-    esac
-    # Compare the original UID atomically; leave same-name replacements untouched.
-    if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
-      <<<"$delete_options" 2>&1 >/dev/null); then
-      preflight_cleanup_error "$resource" "$errors"
-      cleanup_failed=1
-    fi
-  done
-  preflight_resources=()
-  return "$cleanup_failed"
-}
+source scripts/lib/upgrade-preflight-cleanup.sh
 trap 'cleanup_preflight || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
 # Read the current Job and validate the child against its original controller and UID.
@@ -975,7 +986,7 @@ run_preflight_jobs() {
       "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
       >"$evidence_dir/preflight-$component-job.json" ||
       die "cannot build the $component startup preflight Job from the rendered chart; no ${writer_qualifier}OCC writer was stopped."
-    delete_options=$(create_preflight "$evidence_dir/preflight-$component-job.json" \
+    delete_options=$(create_preflight "$component" "$evidence_dir/preflight-$component-job.json" \
       "preflight-$component-job-create.err") ||
       unconfirmed_preflight "job.batch/$job" "preflight-$component-job-create.err" $?
     acknowledge_preflight "$component" "job.batch/$job" "$delete_options"
@@ -1030,33 +1041,29 @@ run_preflight_jobs() {
       esac
       sleep 2
     done
-    # The logs API addresses a name, so retain output only while that name still
-    # identifies the validated child before and after the request.
-    if [[ -n "$pod" ]] && ((identity_valid)); then
-      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
-        message="cannot bind the $component startup preflight logs to the original child Pod; no ${writer_qualifier}OCC writer was stopped."
-      else
-        logs_status=0
-        # Bash drops NUL bytes; reject them before they can change a result marker.
-        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
-          2>"$evidence_dir/preflight-$component-logs.err" |
-          python3 -c 'import sys
+    # The last successful poll supplies the pre-log identity check. No remote
+    # operation intervenes; recheck after the name-based request before retaining logs.
+    if [[ -n "$pod" && -n "$child" ]] && ((identity_valid)); then
+      logs_status=0
+      # Bash drops NUL bytes; reject them before they can change a result marker.
+      logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
+        2>"$evidence_dir/preflight-$component-logs.err" |
+        python3 -c 'import sys
 data = sys.stdin.buffer.read()
 if b"\0" in data:
     sys.exit(1)
 sys.stdout.buffer.write(data)') || logs_status=$?
-        if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
-          logs=
-          message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
-        else
-          printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
-          printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
-          logs=
-          phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
-            "$evidence_dir/preflight-$component-job-status.json")
-          if ((logs_status != 0)) && [[ -z "$message" && "$phase" == Succeeded ]]; then
-            message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
-          fi
+      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        logs=
+        message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
+      else
+        printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
+        printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
+        logs=
+        phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
+          "$evidence_dir/preflight-$component-job-status.json")
+        if ((logs_status != 0)) && [[ -z "$message" && "$phase" == Succeeded ]]; then
+          message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
         fi
       fi
     fi
@@ -1184,15 +1191,19 @@ preflight_startup() {
   node scripts/upgrade-startup-preflight.mjs networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
     "$secret" "$namespace" "$release" >"$evidence_dir/preflight-networkpolicy.json" ||
     die "cannot build the startup preflight NetworkPolicy from the rendered chart; no OCC writer was stopped."
-  if [[ "$(cat "$evidence_dir/preflight-networkpolicy.json")" != null ]]; then
-    delete_options=$(create_preflight "$evidence_dir/preflight-networkpolicy.json" \
+  local network_policy=false
+  [[ "$(cat "$evidence_dir/preflight-networkpolicy.json")" == null ]] || network_policy=true
+  python3 scripts/upgrade-preflight-state.py register "$upgrade_evidence_dir" . "$suffix" "$network_policy" ||
+    die "cannot record the startup preflight creation plan; no preflight resources were created."
+  if [[ "$network_policy" == true ]]; then
+    delete_options=$(create_preflight networkpolicy "$evidence_dir/preflight-networkpolicy.json" \
       preflight-networkpolicy-create.err) ||
       unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret" preflight-networkpolicy-create.err $?
     acknowledge_preflight networkpolicy "networkpolicy.networking.k8s.io/$secret" "$delete_options"
   fi
   delete_options=$(node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
     "$installation_key" "$secret" "$namespace" "$release" "$drafts" |
-    create_preflight - preflight-secret-create.err scrub) ||
+    create_preflight secret - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
   acknowledge_preflight secret "secret/$secret" "$delete_options"
   run_preflight_jobs api worker migration
@@ -1211,6 +1222,8 @@ preflight_migration() {
   preflight_consumer_unknown=0
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for migration preflight; no additional OCC writer was stopped."
+  python3 scripts/upgrade-preflight-state.py register "$upgrade_evidence_dir" "${evidence_dir##*/}" "$suffix" false ||
+    die "cannot record the migration preflight creation plan; no migration preflight Job was created."
   run_preflight_jobs migration
   cleanup_preflight || die "migration preflight cleanup is incomplete; no additional OCC writer was stopped."
   touch "$evidence_dir/migration-preflight-passed"
@@ -1593,15 +1606,23 @@ matches_yaml "${candidate_installation}.requested" "${candidate_installation}.re
 values_guard='del(.api.channelDirectoryProxyUrl, .installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .api == {} then del(.api) else . end | if .installation == {} then del(.installation) else . end'
 project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
+# The chart refuses the retired agentNativeAdmin.sharedCookieDomain whatever its
+# value and derives the cookie scope from auth.baseUrl and agentNativeAdmin.domain.
+# Earlier charts checked or rendered the override only when native admin was
+# enabled, and then required it to contain both hosts, so the derived scope
+# equals it or is narrower. A candidate may omit it; nothing else changes.
 # Compare resolved values so YAML aliases have the same meaning as ordinary scalars.
 if jq -e --slurpfile candidate "$evidence_dir/candidate-values-guard.json" '
-  .agentNativeAdmin.sharedCookieDomain == "" and
-  ($candidate[0].agentNativeAdmin | has("sharedCookieDomain") | not)
+  (.agentNativeAdmin | type == "object" and has("sharedCookieDomain")) and
+  ($candidate[0].agentNativeAdmin | type == "object" and (has("sharedCookieDomain") | not))
 ' "$evidence_dir/values-guard.json" >/dev/null; then
   project_yaml "$evidence_dir/before-values.yaml" "$values_guard | del(.agentNativeAdmin.sharedCookieDomain)" "$evidence_dir/values-guard.json"
 fi
 cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||
-  die "candidate values change a protected setting; only database.upgradeMigration, api.channelDirectoryProxyUrl or a validated immutable Installation Secret reference may change; an empty agentNativeAdmin.sharedCookieDomain may be removed."
+  die "candidate values change a protected setting; only database.upgradeMigration, api.channelDirectoryProxyUrl or a validated immutable Installation Secret reference may change; the retired agentNativeAdmin.sharedCookieDomain may be removed."
+jq -e '.agentNativeAdmin | type == "object" and has("sharedCookieDomain") | not' \
+  "$evidence_dir/candidate-values-guard.json" >/dev/null ||
+  die "the chart no longer accepts agentNativeAdmin.sharedCookieDomain; it derives the session cookie scope from auth.baseUrl and agentNativeAdmin.domain. Pass --candidate-values with a private copy of the values that omits only that key. No cluster changes were made."
 project_yaml "$evidence_dir/before-installation.yaml" '.' "$evidence_dir/installation-guard.json"
 project_yaml "${candidate_installation}.requested" '.' "$evidence_dir/candidate-installation-guard.json"
 if ! cmp -s "$evidence_dir/installation-guard.json" "$evidence_dir/candidate-installation-guard.json"; then
@@ -2312,6 +2333,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
 
   refused=()
   key_refused=()
+  not_sent=()
   unknown=()
   for index in "${!pids[@]}"; do
     json_fields "${ready[index]}" namespace_id=namespaceId agent_id=agentId
@@ -2319,6 +2341,9 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
     attempt=${attempts[index]}
     status=0
     wait "${pids[index]}" || status=$?
+    while IFS= read -r notice; do
+      warn "Agent $agent_id in Namespace $namespace_id: $notice"
+    done < <(deploy_notices "$attempt/error")
     if ((status == 0)) && revision=$(read_dispatch_response "$attempt/response" '.id'); then
       dispatch_state accept "$targets" "$namespace_id" "$agent_id" "$revision"
       mv "$attempt/error" "$prefix.error"
@@ -2345,8 +2370,10 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
       unknown+=("  - $agent")
     elif [[ "$refusal" == "OCC rejected the service key "* ]]; then
       key_refused+=("  - $agent")
-    else
+    elif [[ "$refusal" == "OCC operation failed "* ]]; then
       refused+=("  - $agent: $refusal")
+    else
+      not_sent+=("  - $agent: $refusal")
     fi
   done
   if ((${#key_refused[@]})); then
@@ -2359,9 +2386,14 @@ The key is invalid, expired or revoked; the Agents are not at fault. Ask an Inst
 $(printf '%s\n' "${refused[@]}")
 Correct what each refusal names, such as a Configuration setting the new release refuses, then repeat this command with --resume and the same evidence directory. The resume deploys each refused Agent once; do not deploy it yourself. The refusals are in dispatch/*.rejected."
   fi
+  if ((${#not_sent[@]})); then
+    warn "occ sent no deployment request for ${#not_sent[@]} recorded Agent(s), so OCC saved no revision for them:
+$(printf '%s\n' "${not_sent[@]}")
+occ could not establish the Harness overrides that each Agent's active revision requested. Correct what each error names, then repeat this command with --resume and the same evidence directory. The resume deploys each of these Agents once; do not deploy it yourself. The errors are in dispatch/*.rejected."
+  fi
   ((${#unknown[@]} == 0)) || die "at least one Agent deployment outcome is unknown; inspect $evidence_dir/dispatch and reconcile it before resuming:
 $(printf '%s\n' "${unknown[@]}")"
-  if ((${#key_refused[@]} || ${#refused[@]})); then
+  if ((${#key_refused[@]} || ${#refused[@]} || ${#not_sent[@]})); then
     exit 1
   fi
 fi

@@ -1,8 +1,9 @@
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { createSecureContext } from "node:tls";
 import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
 import { record, string, validateServiceConfig } from "../../drivers/repo/access/configuration.ts";
+import { isCanonicalUnixSocketPath } from "../../drivers/repo/access/client-contracts.ts";
 import {
   GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
   validateGitHubRepositoryRegistry,
@@ -65,6 +66,20 @@ export async function loadConfiguration(
       }
       return gateway;
     }
+    type TlsPair = Readonly<{ cert: Buffer; key: Buffer }>;
+    const loadTlsAndFactoryOptions = async (gateway: Record<string, unknown>) => {
+      cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
+      tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
+      const tls: TlsPair = { cert, key: tlsKey };
+      createSecureContext({ ...tls, minVersion: "TLSv1.2" });
+      return {
+        tls,
+        gatewayOrigin: config.gateway.publicOrigin,
+        limits: config.limits,
+        clock,
+      };
+    };
+    let tls: TlsPair;
     let factory: LoadedConfiguration["factory"] &
       Pick<GitHubDriverFactory, "trustedUpstreamOrigins">;
     if (backendInput.kind === "github-prepared-git-registry") {
@@ -105,9 +120,7 @@ export async function loadConfiguration(
           ? join(dirname(config.gateway.controlSocket), "prepared-git-use.sock")
           : string(backendInput.socketPath);
       if (
-        !isAbsolute(socketPath) ||
-        resolve(socketPath) !== socketPath ||
-        Buffer.byteLength(socketPath) > 103 ||
+        !isCanonicalUnixSocketPath(socketPath) ||
         socketPath === config.gateway.controlSocket ||
         socketPath === join(dirname(config.gateway.controlSocket), "receipt.sock")
       ) {
@@ -123,14 +136,8 @@ export async function loadConfiguration(
       const apiOrigin =
         backendInput.apiOrigin === undefined ? {} : { apiOrigin: string(backendInput.apiOrigin) };
       const gateway = validateGateway();
-      cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
-      tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
-      createSecureContext({ cert, key: tlsKey, minVersion: "TLSv1.2" });
-      const factoryOptions = {
-        gatewayOrigin: config.gateway.publicOrigin,
-        limits: config.limits,
-        clock,
-      };
+      const { tls: loadedTls, ...factoryOptions } = await loadTlsAndFactoryOptions(gateway);
+      tls = loadedTls;
       const { createPreparedGitHubRegistryFactory } =
         await import("../../drivers/repo/github/access/warm-registry-factory.ts");
       factory = createPreparedGitHubRegistryFactory({
@@ -163,14 +170,8 @@ export async function loadConfiguration(
       const { createGitHubStaticTokenOwner } =
         await import("../../drivers/repo/github/access/static-token.ts");
       owner = createGitHubStaticTokenOwner({ token: token.subarray(0, length) });
-      cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
-      tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
-      createSecureContext({ cert, key: tlsKey, minVersion: "TLSv1.2" });
-      const factoryOptions = {
-        gatewayOrigin: config.gateway.publicOrigin,
-        limits: config.limits,
-        clock,
-      };
+      const { tls: loadedTls, ...factoryOptions } = await loadTlsAndFactoryOptions(gateway);
+      tls = loadedTls;
       const { createGitHubDriverFactory } =
         await import("../../drivers/repo/github/access/factory.ts");
       factory = createGitHubDriverFactory({
@@ -179,12 +180,11 @@ export async function loadConfiguration(
         configuration,
       });
     }
-    const ownedCert = cert;
-    const ownedTlsKey = tlsKey;
+    const ownedTls = tls;
     const ownedAuthority = owner;
     return Object.freeze({
       config,
-      tls: Object.freeze({ cert: ownedCert, key: ownedTlsKey }),
+      tls: Object.freeze(ownedTls),
       factory,
       trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
       ...(upstreamCa === undefined ? {} : { upstreamCa }),
@@ -193,8 +193,8 @@ export async function loadConfiguration(
         : { authority: "github-prepared-git-registry" as const }),
       close() {
         ownedAuthority?.close();
-        ownedCert.fill(0);
-        ownedTlsKey.fill(0);
+        ownedTls.cert.fill(0);
+        ownedTls.key.fill(0);
       },
     });
   } catch (error) {

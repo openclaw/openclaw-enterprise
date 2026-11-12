@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -23,10 +22,19 @@ import {
   waitForProtectedAgentActivation,
 } from "../helpers/egress-installed-agent.mjs";
 import {
+  prepareControllerUpgrade,
+  observeControllerUpgrade,
+} from "../helpers/egress-controller-upgrade.mjs";
+import {
   describeGatewayAppServerDeclaration,
   observeConnectedOperation,
+  rememberCustodyContext,
   safeConnectedFailure,
 } from "../helpers/egress-connected-failure.mjs";
+import {
+  observeFailedTurnSessions,
+  requireSupervisorReconnect,
+} from "../helpers/egress-supervisor-reconnect.mjs";
 import { tryDirectTcp } from "../helpers/egress-custody-observations.mjs";
 import {
   encodeSyntheticEvents,
@@ -50,7 +58,7 @@ test(
   "protected Codex and a sibling share bounded execution authority through IAM revocation and live rotation",
   {
     skip: selected ? false : "Select OCC_TEST_EGRESS_CONNECTED=1 with a prepared protected stack.",
-    timeout: 30 * 60_000,
+    timeout: 45 * 60_000,
   },
   async (t) => {
     const progress = { stage: "input-preflight" };
@@ -58,20 +66,42 @@ test(
     try {
       const setup = await arrangeRealPrerequisites(t, progress, inputsPath, {
         wholeExecution: true,
+        allowControllerUpgrade: true,
       });
-      assert.equal(
-        execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-        setup.input.oceCommit,
-        "run this qualification from the selected candidate checkout",
-      );
+      const upgrade = setup.input.controllerUpgrade;
       evidence = await createRunEvidence(t, setup, progress);
-      const stack = await observePreparedStack(t, setup, evidence, progress);
+      const initialSetup = upgrade
+        ? {
+            ...setup,
+            input: {
+              ...setup.input,
+              images: { ...setup.input.images, controller: upgrade.fromImage },
+            },
+          }
+        : setup;
+      const stack = await observePreparedStack(t, initialSetup, evidence, progress);
       const owned = await registerCleanupAndStartProvider(t, setup, stack, evidence);
       const deployment = await deployProtectedAgent(setup, stack, evidence, owned);
       const installed = await observeInstalledProtection(setup, stack, evidence, deployment);
       const turns = await observeRunningAgent(setup, stack, evidence, owned, deployment, installed);
 
+      await requireSupervisorReconnect(setup, stack, evidence, deployment, installed);
       await verifyManagedClientsAndDirectBypass(setup, evidence, owned, installed, turns);
+      if (upgrade) {
+        const retained = await prepareControllerUpgrade(
+          setup,
+          stack,
+          evidence,
+          owned,
+          deployment,
+          installed,
+        );
+        await observeControllerUpgrade(setup, stack, evidence, owned, deployment, retained);
+        await turns.successfulTurn("retained-after-controller-upgrade", "initial");
+        // Isolate the IAM phase after a fresh authenticated session without
+        // changing the retained process, key, configuration or denial assertions.
+        await requireSupervisorReconnect(setup, stack, evidence, deployment, installed);
+      }
       await revokeExactGrantAndObserveDenial(stack, evidence, owned, deployment, turns);
       await regrantAndObserveRecovery(owned, deployment, turns);
       const rotatedSecret = await rotateSecretOnly(setup, stack, evidence, deployment, turns);
@@ -80,8 +110,8 @@ test(
       await withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployment, installed);
       assert.equal(
         owned.provider.observations.length,
-        19,
-        "one startup probe, seventeen measured Codex sends and one managed sibling send; no retries",
+        upgrade ? 20 : 19,
+        "one startup probe, seventeen measured Codex sends, one sibling send and an optional retained turn; no retries",
       );
     } catch (error) {
       throw await safeConnectedFailure(error, progress.stage, evidence?.recordFailure);
@@ -275,7 +305,8 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
       "the same registered supervisor must remain installed",
     );
   };
-  const turn = async (phase, expected = "completed") => {
+  const turn = async (phase, expected = "completed", expectedHttpStatus = null) => {
+    const startedAt = new Date().toISOString();
     const nonce = `OCE-EGRESS-${randomUUID()}`;
     await checkpoint("turn-start", {
       gatewayAppServerDeclaration: describeGatewayAppServerDeclaration(gatewayPods[0], "gateway"),
@@ -318,12 +349,16 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
           assert.equal(result.assistant, nonce);
         } else {
           assertNoConnectedAssistantOutput(result);
-          // The selected supplier returns an empty HTTP 502. Its private, content-free
-          // transitions distinguish refusal before access from a blocked provider response.
-          assert.match(
-            JSON.stringify(result.error),
-            /\b502\b/,
-            "expected the supplier's public refusal",
+          assert.ok(
+            Number.isInteger(expectedHttpStatus),
+            "failed scenario requires an HTTP status",
+          );
+          // Native status distinguishes incomplete capture from a fixed refusal.
+          // Origin counts and custody transitions distinguish the two refusal paths.
+          assert.deepEqual(
+            result.error?.codexErrorInfo,
+            { httpConnectionFailed: { httpStatusCode: expectedHttpStatus } },
+            "expected the scenario's structured supplier refusal",
           );
         }
       },
@@ -337,7 +372,17 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
           "permit_accepted",
           expected === "completed" ? "response_released" : "response_blocked",
         ];
-    const requestId = await custodyTransitions.expectAfter(before, transitions);
+    let requestId;
+    try {
+      requestId = await custodyTransitions.expectAfter(before, transitions);
+    } catch (error) {
+      // Preserve the exact failed observation without retrying the model request.
+      // Session events provide timing context, not a request/session binding.
+      const sessions = await observeFailedTurnSessions(setup, stack, installed, startedAt).catch(
+        () => ({ outcome: "unavailable", gateways: [] }),
+      );
+      throw rememberCustodyContext(error, phase, { ...sessions, since: startedAt });
+    }
     assert.deepEqual(provider.errors, [], "synthetic provider failed independently of enforcement");
     await checkpoint("turn-complete", {
       turnPhase: phase,
@@ -476,11 +521,29 @@ async function revokeExactGrantAndObserveDenial(stack, evidence, owned, deployme
   );
   const knownDenials = new Set(beforeDenials.rows.map(({ id }) => id));
   const beforeDenied = provider.observations.length;
-  const { requestId } = await turn("fresh-iam-revoked", "failed");
+  const beforeConnections = provider.tcpConnections;
+  const beforeApplicationBytes = provider.applicationBytes;
+  const { requestId } = await turn("fresh-iam-revoked", "failed", 403);
+  // The supervisor may establish TCP/TLS before authorizing the captured HTTP
+  // request. Record transport activity separately from the forbidden request send.
+  const observed = {
+    httpRequestsBefore: beforeDenied,
+    httpRequestsAfter: provider.observations.length,
+    tcpConnectionsBefore: beforeConnections,
+    tcpConnectionsAfter: provider.tcpConnections,
+    applicationBytesBefore: beforeApplicationBytes,
+    applicationBytesAfter: provider.applicationBytes,
+  };
+  await checkpoint("fresh-iam-provider-observed", observed);
   assert.equal(
-    provider.observations.length,
-    beforeDenied,
+    observed.httpRequestsAfter,
+    observed.httpRequestsBefore,
     "fresh IAM denial must precede every provider send",
+  );
+  assert.equal(
+    observed.applicationBytesAfter,
+    observed.applicationBytesBefore,
+    "fresh IAM denial must precede every provider application byte",
   );
   const denials = await pool.query(
     "SELECT id, actor_id, resource_kind, resource_id, details, outcome FROM occ.audit_events WHERE namespace_id = $1 AND actor_id = $2 AND resource_id = $3 AND action = 'openclaw.egress.authorize'",
@@ -584,18 +647,19 @@ async function rotateSecretOnly(setup, stack, evidence, deployment, turns) {
 async function verifyHostileResponsesAndRecovery(owned, turns) {
   const { provider } = owned;
   const { turn, unchanged, successfulTurn } = turns;
-  for (const mode of [
-    "reflect-body",
-    "reflect-header",
-    "reflect-split-id",
-    "reflect-encoded-arguments",
-    "reflect-message-citation",
-    "oversize",
-    "incomplete",
+  // Oversize fails during HTTP capture; incomplete is finite HTTP with unfinished SSE.
+  for (const [mode, expectedHttpStatus] of [
+    ["reflect-body", 403],
+    ["reflect-header", 403],
+    ["reflect-split-id", 403],
+    ["reflect-encoded-arguments", 403],
+    ["reflect-message-citation", 403],
+    ["oversize", 409],
+    ["incomplete", 403],
   ]) {
     provider.setMode(mode);
     const before = provider.observations.length;
-    const { nonce } = await turn(mode, "failed");
+    const { nonce } = await turn(mode, "failed", expectedHttpStatus);
     assert.equal(
       provider.observations.length,
       before + 1,
@@ -671,37 +735,121 @@ async function observeCredentialLeaks(setup, stack, evidence, owned, deployment,
  */
 async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployment, installed) {
   const {
-    f: { waitFor },
+    f: { waitFor, resources, customResources },
   } = setup;
-  const { namespacePath, placement, gatewayClient } = stack;
+  const { namespace, namespacePath, placement, gatewayClient, pool } = stack;
   const { api, checkpoint } = evidence;
-  const { agent, source } = deployment;
-  const { sandboxName } = installed;
-  // Initial withdrawal destroys the owned single-binding Sandbox. This is a
-  // separate lifecycle limitation, not proof of fresh central grant revocation.
-  await api(
-    "POST",
-    `${namespacePath}/agents/${agent.id}/credential-sources/${source.id}/withdraw`,
-    undefined,
-    202,
-  );
-  await waitFor(
-    "owned stop-based withdrawal",
+  const { agent, source, revision, sandbox, sandboxId } = deployment;
+  const { sandboxName, harness, supervisor, gatewayPods } = installed;
+  const agentPath = `${namespacePath}/agents/${agent.id}`;
+  await api("POST", `${agentPath}/credential-sources/${source.id}/withdraw`, undefined, 202);
+  const withdrawal = await waitFor(
+    "the recorded owner's withdrawal outcome",
     async () => {
-      const status = await api(
-        "GET",
-        `${namespacePath}/agents/${agent.id}/credential-sources/${source.id}/withdrawal`,
-      );
-      return status.state === "revoked" ? status : undefined;
+      const status = await api("GET", `${agentPath}/credential-sources/${source.id}/withdrawal`);
+      assert.equal(status.revisionId, revision.id);
+      assert.equal(status.credentialSourceId, source.id);
+      if (status.withdrawalInProgress) {
+        return undefined;
+      }
+      if (status.state === "revoked") {
+        assert.ok(!setup.input.controllerUpgrade, "the bundled retirement owner requires a stop");
+      } else {
+        assert.equal(status.state, "pending");
+        assert.equal(status.reason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+      }
+      return status;
     },
     180_000,
   );
-  assert.equal(
-    await gatewayClient.getSandbox(
-      { workspace: placement, name: sandboxName },
-      AbortSignal.timeout(10_000),
-    ),
-    undefined,
+  await checkpoint("withdrawal-outcome", {
+    revisionId: revision.id,
+    state: withdrawal.state,
+    reason: withdrawal.reason,
+  });
+  // This Driver cannot reduce the retained policy in place. Stop through the
+  // Agent API; neither an accepted stop nor a pending withdrawal proves fencing.
+  const stopWork = () =>
+    pool.query(
+      "SELECT idempotency_key, state, actor_id FROM occ.controller_work WHERE namespace_id = $1 AND agent_id = $2 AND agent_target = 'stopped'",
+      [namespace.id, agent.id],
+    );
+  const stopAudit = () =>
+    pool.query(
+      "SELECT id, actor_id, outcome, details->>'reasonCode' AS reason_code, details->>'revisionId' AS revision_id FROM occ.audit_events WHERE namespace_id = $1 AND resource_kind = 'agent' AND resource_id = $2 AND action = 'openclaw.agents.lifecycle.stop'",
+      [namespace.id, agent.id],
+    );
+  assert.equal((await stopWork()).rowCount, 0, "this owned Agent has not been stopped before");
+  assert.equal((await stopAudit()).rowCount, 0);
+  await checkpoint("stop-request", { agentId: agent.id, revisionId: revision.id });
+  await api("POST", `${agentPath}/stop`, undefined, 202);
+  const stopped = await waitFor(
+    "owned Agent stop completion",
+    async () => {
+      const work = await stopWork();
+      if (work.rowCount === 0) {
+        return undefined;
+      }
+      assert.equal(work.rowCount, 1);
+      assert.notEqual(work.rows[0].state, "failed_permanent", "the supported stop must succeed");
+      return work.rows[0].state === "succeeded" ? work.rows[0] : undefined;
+    },
+    180_000,
   );
-  await checkpoint("stop-based-withdrawal", { sandboxAbsent: true });
+  // Successful queue completion also covers an already-stopped Agent. The
+  // lifecycle audit attributes actual retirement to this stop and revision.
+  const audit = await stopAudit();
+  assert.equal(audit.rowCount, 1);
+  assert.equal(audit.rows[0].reason_code, "AGENT_STOPPED");
+  assert.equal(audit.rows[0].outcome, "success");
+  assert.equal(audit.rows[0].revision_id, revision.id);
+  assert.equal(audit.rows[0].actor_id, stopped.actor_id);
+  const current = await api("GET", agentPath);
+  assert.equal(current.desiredRuntimeState, "stopped");
+  assert.equal(current.activeRevisionId, undefined);
+  const podUids = new Set(
+    [harness, supervisor, ...gatewayPods].map(({ metadata }) => metadata.uid),
+  );
+  await waitFor(
+    "original Sandbox and all owned runtime Pods absent",
+    async () => {
+      const observed = await gatewayClient.getSandbox(
+        { workspace: placement, name: sandboxName },
+        AbortSignal.timeout(10_000),
+      );
+      const pods = await resources("pods", placement);
+      const sandboxes = await customResources("sandboxes.agents.x-k8s.io", placement);
+      const owned = ({ metadata }) =>
+        podUids.has(metadata.uid) ||
+        metadata.uid === sandbox.metadata.uid ||
+        metadata.name === sandbox.metadata.name ||
+        metadata.labels?.["openclaw.dev/agent"] === agent.id ||
+        metadata.labels?.["openshell.ai/sandbox-id"] === sandboxId;
+      return observed === undefined && !pods.some(owned) && !sandboxes.some(owned)
+        ? true
+        : undefined;
+    },
+    180_000,
+  );
+  // Stop clears the active pointer, so the public withdrawal GET no longer
+  // selects this revision. Observe its retained row without manufacturing revoked.
+  const retained = await pool.query(
+    "SELECT state, last_reason, completed_at FROM occ.credential_withdrawals WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3 AND credential_source_id = $4",
+    [namespace.id, agent.id, revision.id, source.id],
+  );
+  assert.equal(retained.rowCount, 1);
+  assert.equal(retained.rows[0].state, withdrawal.state);
+  assert.equal(retained.rows[0].last_reason, withdrawal.reason ?? null);
+  if (withdrawal.state === "pending") {
+    assert.equal(retained.rows[0].completed_at, null);
+  }
+  await checkpoint("stop-based-withdrawal", {
+    sandboxAbsent: true,
+    runtimePodsAbsent: true,
+    stopOperation: stopped.idempotency_key,
+    stopAuditId: audit.rows[0].id,
+    stopReason: audit.rows[0].reason_code,
+    withdrawalState: retained.rows[0].state,
+    withdrawalReason: retained.rows[0].last_reason,
+  });
 }

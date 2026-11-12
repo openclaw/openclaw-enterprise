@@ -1,5 +1,5 @@
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import {
   OpenShellGateway,
   openShellProviderName,
@@ -275,6 +275,7 @@ test("startup composes both OpenShell members from one Backend for static source
     {
       ...installationControllerOptions(loaded.installation),
       state: admissionState,
+      namespaceLifecycleBindings: loaded.namespaceLifecycleBindings,
       createId(kind) {
         if (kind === "namespace") {
           return tenant.id;

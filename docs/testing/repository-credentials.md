@@ -22,7 +22,7 @@ node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs 
   tests/conformance/repository-credentials-backend-conformance.test.mjs
 node --test tests/integration/repository-credentials-git.test.mjs \
   tests/integration/repository-credentials-native-paths.test.mjs \
-  tests/integration/repository-credentials-service-loss.test.mjs
+  tests/integration/repository-credentials-service-loss.test.ts
 ```
 
 The source Git tests require a `node:24-bookworm` image and `gh` **2.103.2**
@@ -184,6 +184,15 @@ output and do not replace the Git assertions or qualify the release.
 The failure summary prefers the runner's failed-case or file-failure record over
 generic lane issues. It publishes only known source coordinates and fixed error
 categories; absent or malformed records retain the bounded fallback summary.
+
+Receiver failures distinguish transport, interrupted response bodies, and invalid
+JSON without printing response content. A failed `kubectl exec` reports
+`gateway-exec` with its available exit code or signal. Model observations are
+best-effort: unavailable or replaced log history appears as `unknown`, and each
+optional model or Pod log read has a ten-second timeout. Diagnostic failures do
+not replace the failed request. The receiver category and HTTP status remain in
+the runner summary even when the optional journey log cannot be written or parsed. These categories identify where the check failed;
+they do not establish why the Gateway or native command failed.
 
 To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
 prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)

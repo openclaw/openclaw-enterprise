@@ -1,3 +1,4 @@
+import { reconcileNamespaceLifecycle } from "../../packages/occ/src/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import {
   createHash,
@@ -2943,7 +2944,16 @@ test("closed Installation observes only its operator-bound Namespace, including 
   policies = [workspacePolicy];
 
   account.automountServiceAccountToken = true;
-  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  // Sandbox validation now runs through the shared lifecycle after Compute observation.
+  const observation = await reconcileNamespaceLifecycle(
+    driver,
+    drivers.namespaceLifecycleBindings.map(({ owner, hooks }) => ({ id: owner.id, hooks })),
+    tenant,
+    "ready",
+    new AbortController().signal,
+    () => {},
+  );
+  assert.equal(observation.namespaceReady, false);
   account.automountServiceAccountToken = false;
   writes.length = 0;
   const before = reads.length;

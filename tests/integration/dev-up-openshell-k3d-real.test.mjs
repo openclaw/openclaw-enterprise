@@ -13,7 +13,11 @@ import { promisify } from "node:util";
 import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { verifyOpenShellOwnerSession } from "../helpers/openshell-owner-session.mjs";
+import {
+  assertOpenShellOwnerModelSelection,
+  preflightOpenShellOwnerBrowser,
+  verifyOpenShellOwnerSession,
+} from "../helpers/openshell-owner-session.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { attachDevUpStartupDisposition } from "../helpers/dev-up-startup-disposition.ts";
@@ -209,6 +213,7 @@ test(
     timeout: 1_200_000,
   },
   async (t) => {
+    assertOpenShellOwnerModelSelection(process.env);
     await access(occ);
     // LocalSetup requires a canonical parent; macOS temporary roots may be symlinks.
     const root = await mkdtemp(join(await realpath(tmpdir()), "oce-dev-up-openshell-real-"));
@@ -264,6 +269,7 @@ test(
       await rm(root, { recursive: true, force: true });
     });
 
+    await preflightOpenShellOwnerBrowser(root, cluster);
     const result = await startDevelopment(environment);
     assert.match(result.stdout, /Sandbox Driver: openshell/);
     assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
@@ -342,6 +348,185 @@ test(
     );
     assert.equal(namespaceList.items.length, 1);
     const namespace = namespaceList.items[0].metadata.name;
+    // The controller can disappear after Local Setup has reported success. Exercise
+    // first-agent's real preflight before any credential or Agent write, then restore
+    // only this test-owned Deployment and continue the normal managed workflow.
+    const listResourceIds = async (resource) => {
+      const items = JSON.parse(
+        (
+          await execute(
+            occ,
+            [
+              "--namespace",
+              namespaceList.items[0].metadata.labels["openclaw.dev/namespace"],
+              resource,
+              "list",
+              "--output",
+              "json",
+            ],
+            {
+              cwd: repository,
+              env: {
+                ...environment,
+                OCC_URL: `http://127.0.0.1:${apiPort}`,
+                OCC_SERVICE_KEY_FILE: state.keyPath,
+              },
+            },
+          )
+        ).stdout,
+      );
+      assert.ok(Array.isArray(items));
+      return items.map((item) => item.id).sort();
+    };
+    const inventory = () =>
+      Promise.all(["agent", "secret", "credential-source"].map(listResourceIds));
+    const resourcesBefore = await inventory();
+    const controllerArgs = ["-n", "agent-sandbox-system", "deployment/agent-sandbox-controller"];
+    const controller = JSON.parse(
+      (
+        await execute("kubectl", [...kubectl, "get", ...controllerArgs, "-o", "json"], {
+          env: environment,
+        })
+      ).stdout,
+    );
+    const original = controller.spec.template.spec.containers[0];
+    const patchController = async (container) =>
+      execute(
+        "kubectl",
+        [
+          ...kubectl,
+          "patch",
+          ...controllerArgs,
+          "--type=strategic",
+          "-p",
+          JSON.stringify({ spec: { template: { spec: { containers: [container] } } } }),
+        ],
+        { env: environment, timeout: 30_000 },
+      );
+    const scaleController = (replicas) =>
+      execute("kubectl", [...kubectl, "scale", ...controllerArgs, `--replicas=${replicas}`], {
+        env: environment,
+        timeout: 30_000,
+      });
+    try {
+      // Remove the old ready Pod first: a normal rolling update can retain it
+      // while the replacement fails, which would not reproduce a controller outage.
+      await scaleController(0);
+      await execute(
+        "kubectl",
+        [
+          ...kubectl,
+          "wait",
+          "--for=delete",
+          "pod",
+          "-n",
+          "agent-sandbox-system",
+          "-l",
+          "app=agent-sandbox-controller",
+          "--timeout=30s",
+        ],
+        { env: environment, timeout: 35_000 },
+      );
+      await patchController({
+        name: original.name,
+        image: `registry.invalid/missing-controller:${suffix}`,
+        imagePullPolicy: "Never",
+      });
+      await scaleController(controller.spec.replicas);
+      const deadline = Date.now() + 30_000;
+      let imageUnavailable = false;
+      while (Date.now() < deadline && !imageUnavailable) {
+        const pods = JSON.parse(
+          (
+            await execute(
+              "kubectl",
+              [
+                ...kubectl,
+                "--request-timeout=3s",
+                "get",
+                "pods",
+                "-n",
+                "agent-sandbox-system",
+                "-l",
+                "app=agent-sandbox-controller",
+                "-o",
+                "json",
+              ],
+              {
+                env: environment,
+                timeout: Math.min(5000, Math.max(1, deadline - Date.now())),
+                maxBuffer: 1024 * 1024,
+              },
+            )
+          ).stdout,
+        );
+        imageUnavailable = pods.items.some((pod) =>
+          pod.status.containerStatuses?.some(
+            (container) => container.state?.waiting?.reason === "ErrImageNeverPull",
+          ),
+        );
+        if (!imageUnavailable) {
+          await delay(250);
+        }
+      }
+      assert.ok(imageUnavailable, "The test controller must hit a real image availability failure");
+      // This refusal must reach readiness even when the hosted lane has both
+      // credential families. Keep credentials for the later owner-session proof.
+      const refusalEnvironment = { ...environment };
+      for (const key of [
+        "OPENAI_API_KEY",
+        "OPENAI_API_KEY_FILE",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN_FILE",
+      ]) {
+        delete refusalEnvironment[key];
+      }
+      await assert.rejects(
+        execute(
+          process.execPath,
+          [
+            join(repository, "scripts", "first-agent.mjs"),
+            `dependency-${suffix}`,
+            "--harness",
+            "codex",
+          ],
+          { cwd: repository, env: refusalEnvironment, timeout: 45_000, maxBuffer: 256 * 1024 },
+        ),
+        (error) => {
+          assert.match(error.stderr, /Agent Sandbox controller readiness could not be verified/);
+          assert.match(error.stderr, /ErrImageNeverPull/);
+          assert.doesNotMatch(
+            error.stderr,
+            /Saving the model credential|Registering the model credential/,
+          );
+          return true;
+        },
+      );
+      assert.deepEqual(
+        await inventory(),
+        resourcesBefore,
+        "Dependency refusal must not create an Agent, Secret, or Credential Source",
+      );
+    } finally {
+      await patchController({
+        name: original.name,
+        image: original.image,
+        imagePullPolicy: original.imagePullPolicy,
+      });
+      await scaleController(controller.spec.replicas);
+      await execute(
+        "kubectl",
+        [...kubectl, "rollout", "status", ...controllerArgs, "--timeout=120s"],
+        { env: environment, timeout: 125_000 },
+      );
+    }
+    const checked = await execute(occ, ["dev", "check"], {
+      cwd: repository,
+      env: environment,
+      timeout: 45_000,
+    });
+    assert.match(checked.stdout, /Agent Sandbox controller is ready/);
+
     assert.equal(namespaceList.items[0].metadata.labels["openshell.ai/openclaw-workspace"], "true");
     const service = JSON.parse(
       (

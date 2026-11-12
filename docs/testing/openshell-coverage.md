@@ -49,6 +49,19 @@ that excluded declarations are omitted, not that an old callback was retained an
 denied. The retained/fallback callback paths also have focused OpenClaw owner tests.
 Harness-local configuration, credentials and process protection remain separate work.
 
+The tool-policy proof reports structured worker failures while it runs. If an
+initial or replacement revision fails to activate, it also reports persisted
+work state and a bounded summary of recent worker events before cleanup. Compute
+preparation summaries retain the step, error class, status, and cleanup cause;
+they exclude provider responses and chat text. Its bounded teardown attempts every
+registered cleanup and emits an `openshell-fixture-teardown` outcome, so a failed
+deployment and an incomplete cleanup remain distinguishable.
+Cached provisioning failures print before diagnostic reads; a fixed notice reports budget expiry.
+Both failure paths use one 60-second diagnostic budget and preserve the original
+error if evidence collection fails. Printed `ACCESS_DENIED` means the worker's
+fixed `AUTHORIZATION_DENIED` code; this spelling survives the log exporter's
+credential redaction. Queue rows print separately to avoid line clipping.
+
 ## Credential source and Harness
 
 Both modes compose the `openshell` Backend with the Sandbox and Credential
@@ -98,6 +111,12 @@ No matching turnover is `unexercised`; unavailable reads or incomplete correlati
 are `incomplete`. These observations use synchronized host and container clocks.
 They do not prove that a particular workspace read was pending or retried, and
 ordinary refresh success alone is not evidence of read recovery.
+
+## Native permission refusals
+
+A refused Codex PAT revision collects a bounded diagnostic before preserving the
+original failure. See [native permission diagnostics](openshell-permission-diagnostics.md)
+for requirement/grant comparisons, fallback-source observations and proof limits.
 
 ## Agent network policy
 
@@ -245,3 +264,32 @@ The selected workflow must pass without skips. Its sanitized runtime log is
 written to the matrix artifacts directory. Cleanup remains with the owner of the
 prepared OpenShell lane; run the documented cleanup even on failure. The existing
 OpenShell advisory job exercises this workflow with the rest of its runtime suite.
+
+## Namespace bootstrap
+
+`namespace-driver-openshell-k3d-real.test.ts` uses shipped Installation bootstrap,
+PostgreSQL and the queued worker. It renders gateway configuration without
+installing gateway workloads. Selected Drivers create the gateway, signing key,
+and Workspace. The test checks zero persisted Agents, actual Pod readiness,
+gateway health, Workspace ownership, and distinct resources for a later Namespace.
+Operator-installed CRDs, RuntimeClass, RBAC and Envoy Agent routing are prerequisites.
+They do not create the namespace-owned OpenShell gateway or Workspace.
+
+Select `OCC_TEST_NAMESPACE_OPENSHELL_REAL=1` with the prepared `openshell` lane
+file environment, or QA scenario `namespace-lifecycle` with
+`OCC_TEST_QA_SANDBOX_ENV`. The advisory matrix includes the file on `main` and
+trusted `full-qa` PRs. Missing preparation fails the selected case.
+After both checkpoints, the test creates a native OpenClaw Agent in each Namespace
+through the API, deploys it through the same worker and OpenShell gateway, and
+checks a real model reply through authenticated Agent routing. It deletes each
+Agent through the API before Namespace cleanup. This uses the existing OpenShell
+Credential Gateway topology; it does not prove projected workload identity.
+
+The selected file requires `OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`. The QA
+entry point requires `OCC_TEST_QA_OPENAI_KEY_FILE`, `OCC_TEST_QA_OPENAI_MODEL` and
+`OCC_TEST_QA_SANDBOX_ENV`, with the `OpenClaw` preset and Kubernetes installation.
+It also checks pending setup, graceful worker restart, IAM denial and revocation,
+quota refusal, unavailable gateway cleanup, and deletion of an unclaimed external
+Namespace while preserving its operator-owned resources. Active database-lease
+loss remains outside this live case. See the [implementation plan](../../specs/plans/0035-namespace-driver-lifecycle.md)
+for recorded run results and remaining delivery checks.
