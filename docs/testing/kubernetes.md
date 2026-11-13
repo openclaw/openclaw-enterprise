@@ -63,6 +63,11 @@ Missing selectors or database skip cases; partial selectors fail. Coverage:
 API, worker, Driver, RBAC, storage, lifecycle and network isolation.
 Verify cloud volume detach and node fencing separately.
 
+The [State and Lifecycle check](ci/required-checks.md#scenarios) runs the OCC API
+and worker processes with a fixture workload. It verifies audit access denial
+without a direct Agent grant and traces a deploy request through the queue,
+claim, and success after the grant.
+
 For live OAuth, use [OpenShell OAuth](openshell-oauth.md) and
 [credentialed runtime](openshell.md). Delete only your disposable cluster:
 
