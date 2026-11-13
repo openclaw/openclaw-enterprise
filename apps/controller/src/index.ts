@@ -468,6 +468,28 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   }
 }
 
+function validateOperationBody(request: FastifyRequest, operation: OccApiRoute): void {
+  const hasRequestBody =
+    request.body !== undefined ||
+    Number(request.headers["content-length"] ?? 0) > 0 ||
+    request.headers["transfer-encoding"] !== undefined;
+  if (operation.operationId === "deployAgent" && !hasRequestBody) {
+    request.body = {};
+  }
+  if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
+    throw failure(
+      400,
+      "INVALID_REQUEST",
+      "The request does not match the operation contract: this operation accepts no request body.",
+    );
+  }
+  const unstorable =
+    unstorableTextFailure("params", request.params) ?? unstorableTextFailure("body", request.body);
+  if (unstorable !== undefined) {
+    throw unstorable;
+  }
+}
+
 /** Preset and Configuration routes that share the pre-body grant check. */
 function authorizesBeforeBody(operation: OccApiRoute): boolean {
   return (
@@ -4810,33 +4832,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      const routeOptions = {
-        schema,
-        preValidation: async (request: FastifyRequest) => {
-          const hasRequestBody =
-            request.body !== undefined ||
-            Number(request.headers["content-length"] ?? 0) > 0 ||
-            request.headers["transfer-encoding"] !== undefined;
-          if (operation.operationId === "deployAgent" && !hasRequestBody) {
-            request.body = {};
-          }
-          if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
-            throw failure(
-              400,
-              "INVALID_REQUEST",
-              "The request does not match the operation contract: this operation accepts no request body.",
-            );
-          }
-          const unstorable =
-            unstorableTextFailure("params", request.params) ??
-            unstorableTextFailure("body", request.body);
-          if (unstorable !== undefined) {
-            throw unstorable;
-          }
-        },
-      };
-      const handler = (request: FastifyRequest, reply: FastifyReply) =>
-        performFenced(request, reply, operation);
       if (
         operation.operationId === "previewPluginRelease" ||
         operation.operationId === "publishPluginRelease"
@@ -4844,7 +4839,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
           operation.path,
           {
-            ...routeOptions,
+            schema,
+            preValidation: async (request) => validateOperationBody(request, operation),
             bodyLimit: options.maxBodyBytes ?? 4 * Math.ceil((16 * 1024 * 1024) / 3) + 1024,
             config: { rateLimit: pluginUploadRateLimit },
             onRequest: async (request, reply) => {
@@ -4870,12 +4866,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               await controller.authorizePluginPublication(context.actorId, namespaceId);
             },
           },
-          handler,
+          async (request, reply) => performFenced(request, reply, operation),
         );
         continue;
       }
       routes.route({
-        ...routeOptions,
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
@@ -4890,6 +4885,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   operation.operationId === "updateConfiguration"
                 ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
                 : {}),
+        schema,
         onRequest: async (request) => {
           await admit(request, operation);
           if (authorizesBeforeBody(operation)) {
@@ -4897,10 +4893,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             await authorizeBeforeBody(request, operation);
           }
         },
+        preValidation: async (request) => validateOperationBody(request, operation),
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler,
+        handler: async (request, reply) => performFenced(request, reply, operation),
       });
     }
   });
