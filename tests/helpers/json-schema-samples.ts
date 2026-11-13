@@ -296,8 +296,7 @@ function randomJson(random: Random, depth: number): JsonSample {
 function sampleString(random: Random, schema: Record<string, unknown>): string {
   const minLength = numberKeyword(schema.minLength) ?? 0;
   const maxLength = numberKeyword(schema.maxLength) ?? Infinity;
-  const source = typeof schema.pattern === "string" ? schema.pattern : undefined;
-  const pattern = source === undefined ? undefined : new RegExp(source, "u");
+  const pattern = typeof schema.pattern === "string" ? new RegExp(schema.pattern, "u") : undefined;
   const fits = (text: string) =>
     ucs2Length(text) >= minLength &&
     ucs2Length(text) <= maxLength &&
@@ -312,8 +311,8 @@ function sampleString(random: Random, schema: Record<string, unknown>): string {
   }
   for (let attempt = 0; attempt < 30; attempt += 1) {
     let text: string;
-    if (source !== undefined) {
-      text = synthesize(random, source);
+    if (typeof schema.pattern === "string") {
+      text = synthesize(random, schema.pattern);
     } else {
       const length = integer(random, minLength, Math.min(maxLength, minLength + 12));
       text = Array.from({ length }, () => pick(random, ALPHABET.slice(0, 62))).join("");
