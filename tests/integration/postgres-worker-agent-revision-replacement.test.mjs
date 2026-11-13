@@ -5,6 +5,9 @@ import {
   SandboxGatewayUnavailableError,
   SandboxRevisionUnsupportedError,
 } from "../../packages/occ/src/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -1516,7 +1519,46 @@ async function recordPlannedReplacement(fixture, owner, previous, candidate) {
 
 revisionTest(
   "planned completion preserves work and maintenance while idle Agents advance, across retry and candidate replacement",
-  async (fixture) => {
+  async (fixture, t) => {
+    const credentials = {
+      email: "completion-progress@openclaw.local",
+      name: "Deployment operator",
+      password: randomUUID(),
+    };
+    const auth = await createPostgresControllerAuth({
+      mode: "development",
+      installationId: fixture.installation.id,
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
+      secret: `${randomUUID()}${randomUUID()}`,
+      pool: fixture.observerPool,
+    });
+    const account = await auth.createAccount(credentials);
+    const { roles } = await fixture.state.loadNativeIAMState();
+    const adminRole = roles.find(({ name }) => name === "Installation administrator");
+    assert.ok(adminRole);
+    await fixture.state.appendNativeIAMPrincipal(
+      auth.principalSeed(account, { roleId: adminRole.id, scope: "all" }),
+    );
+    const app = createFastifyApp({
+      controller: fixture.controller,
+      iamDriver: fixture.controller.selectedDriver("iam"),
+      resolveHarness: resolveApprovedHarness,
+      auditSink: fixture.state.auditSink,
+      auth,
+      development: { enabled: false },
+    });
+    t.after(() => app.close());
+    const request = await createAuthenticatedControllerRequest(app, credentials);
+    const readDeployment = async (agent, revision) => {
+      const { status, data } = await request(
+        "GET",
+        `/namespaces/${fixture.namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+      );
+      assert.equal(status, 200);
+      return data;
+    };
+
     const owner = await fixture.agent("completion-busy", { executionMode: "dedicated" });
     const idle = await fixture.agent("completion-idle", { executionMode: "dedicated" });
     let completed = false;
@@ -1544,11 +1586,25 @@ revisionTest(
     await fixture.stop();
     const second = await fixture.revision(owner, 2);
     await recordPlannedReplacement(fixture, owner, first, second);
+    const queued = await readDeployment(owner, second);
+    assert.equal(queued.status, "queued");
+    assert.equal(queued.progress.lastAttempt, null);
     await fixture.start(driver.compute, { emit: (event) => events.push(event) });
     await waitFor(
       "completion waiting",
       () => events.some((event) => event.code === "PREDECESSOR_COMPLETION_WAITING") || undefined,
     );
+    // A committed Worker deferral must explain the wait to a signed-in operator.
+    const waiting = await readDeployment(owner, second);
+    assert.equal(waiting.status, "running");
+    assert.equal(waiting.error, null);
+    const expectedWait = {
+      code: "PREDECESSOR_COMPLETION_WAITING",
+      message:
+        "Waiting for the previous version to finish its active work and deliver its results before this version starts.",
+    };
+    const { code, message } = waiting.progress.lastAttempt;
+    assert.deepEqual({ code, message }, expectedWait);
     const originalDeadline = deadlines[0];
     const idleRevision = await fixture.revision(idle, 1);
     await fixture.work(idleRevision, "succeeded");
@@ -1577,6 +1633,10 @@ revisionTest(
       driver.preparations(first) > preparationsBeforeChurnMaintenance,
       "candidate churn must preserve predecessor maintenance",
     );
+    const replacementWait = await readDeployment(owner, third);
+    const { code: replacementCode, message: replacementMessage } =
+      replacementWait.progress.lastAttempt;
+    assert.deepEqual({ code: replacementCode, message: replacementMessage }, expectedWait);
     // Spend longer in completion than the ordinary convergence budget.
     await new Promise((resolve) => setTimeout(resolve, 1200));
     assert.equal(driver.count(first), 0);
@@ -1598,6 +1658,9 @@ revisionTest(
     candidateReady = true;
     await waitForWorkStateDue(fixture, third, "succeeded");
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, third.id);
+    const deployed = await readDeployment(owner, third);
+    assert.equal(deployed.status, "succeeded");
+    assert.equal(deployed.progress, null);
   },
 );
 
