@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-12
-last_updated_session: "authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63"
+updated: 2026-11-13
+last_updated_session: "authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7"
 ---
 
 # Namespace IAM Policy Flow
@@ -49,7 +49,8 @@ graph TD
   G -->|COMMIT validates held session| H
   G -->|held session expired| X
   M["Startup applies the iam configuration"] --> P["IAM Driver writes configured Roles, Groups, and Group bindings"]
-  N["Caller creates a resource or deploys an Agent"] --> O["OCC writes the Owner binding or missing Agent operate grants"]
+  N["Caller creates a resource in an existing Namespace or deploys an Agent"] --> AC["OCC authorizes the exact operation under the Namespace lock"]
+  AC --> O["OCC writes the Owner binding or missing Agent operate grants"]
   P --> Q["Policy and audit commit in the same transaction"]
   O --> Q
 ```
@@ -231,10 +232,17 @@ behavior.
   mutations, the create paths below, and `deployAgentWithAuthorization` call
   `holdAuthority` first, which holds the
   session through COMMIT and takes the IAM configuration lock shared. Each
-  create in a Namespace and the deploy authorize again after `lockNamespace`,
-  which AccessBinding deletes also take.
+  create in an existing Namespace and the deploy authorize again after
+  `lockNamespace`, which AccessBinding deletes also take. `createNamespace`
+  instead authorizes `create` on the Namespace collection at the Installation
+  before it creates the Namespace.
   `fenceAgentProvisioning` also takes the IAM configuration lock before
   `lockNamespace`.
+- **Agent Backend selection.** `createAgent` resolves a supplied Backend ID and
+  checks its type only after the second `agent:create` authorization. A caller
+  without that grant receives `403` for both configured and unknown valid IDs.
+  An authorized creator can select a compatible Backend without Installation
+  `administer`; that permission still protects `GET /backends`.
 - **Owner bindings.** Each create path calls `bindCreator` after it inserts the
   resource row, in the same unit: `createNamespace`, `createAgent`,
   `createConfiguration`, `createSecret`, `createCredentialSource`,
@@ -261,7 +269,11 @@ behavior.
 
 - `node --test tests/integration/occ-api.test.mjs` checks the HTTP contract and
   API admission behavior for Namespace IAM policy, including refusal of all five
-  writes without declared transaction participation.
+  writes without declared transaction participation. The Agent Backend case
+  also checks equal create denials for configured and unknown valid Backend IDs,
+  request-correlated authorization audit, unchanged process-local Agent,
+  Configuration, IAM policy, ServicePrincipal, and operation State, and creation
+  by a non-administrator with the required grants.
 - `node --test tests/integration/postgres-default-users.test.ts` checks, with
   real PostgreSQL and HTTP admission, the configured rows, membership, Owner
   bindings in `default`, refusal of a second member, deploy-time grants, a
@@ -302,6 +314,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-13 05:56: Authorize Agent creation before configured Backend lookup; preserve creator and catalog permissions, distinguish Namespace creation admission, and cover denial audit and unchanged State. (authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)
 - 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)

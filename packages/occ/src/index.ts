@@ -12105,7 +12105,6 @@ export class OpenClawController {
       input.gatewayManagedMode,
       this.gatewayManagedModeSupported(),
     );
-    const backendId = this.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
@@ -12123,6 +12122,7 @@ export class OpenClawController {
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this write waited stops it before it leaves a durable Owner binding or grant.
       await this.authorize(principalId, "create", target);
+      const backendId = this.backendId(input.backendId);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new Agents.");
