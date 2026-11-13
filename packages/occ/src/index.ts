@@ -6879,11 +6879,16 @@ export class OpenClawController {
     if (this.defaultPresets.length === 0) {
       return;
     }
-    const existing = new Map(
-      (await state.presets.listPresets(namespace.id)).map((preset) => [preset.name, preset]),
-    );
+    const existing = this.refreshBundledDefaultPresets
+      ? new Map(
+          (await state.presets.listPresets(namespace.id)).map((preset) => [preset.name, preset]),
+        )
+      : undefined;
+    const existingNames = existing
+      ? undefined
+      : new Set((await state.presets.listPresetSummaries(namespace.id)).map(({ name }) => name));
     for (const preset of this.defaultPresets) {
-      const copy = existing.get(preset.name);
+      const copy = existing?.get(preset.name);
       if (copy !== undefined) {
         await this.refreshSupersededDefaultPreset(
           state,
@@ -6893,6 +6898,9 @@ export class OpenClawController {
           copy,
           refresh,
         );
+        continue;
+      }
+      if (existingNames?.has(preset.name)) {
         continue;
       }
       try {
@@ -6971,12 +6979,8 @@ export class OpenClawController {
       readonly skipped: SkippedDefaultPreset[];
     },
   ): Promise<void> {
-    // Only bundled defaults have a history. A `presets.files` entry is refreshed only while
-    // `includeDefaults` is on and the file equals the current bundled version of its name;
-    // a file that repeats a bundled default with `includeDefaults` off never is.
-    if (!this.refreshBundledDefaultPresets) {
-      return;
-    }
+    // Only bundled defaults have a history. Even with refresh enabled, a `presets.files`
+    // entry is refreshed only if it equals the current bundled version of its name.
     const current = this.bundledPresetVersions.find(
       (version) =>
         version.current &&
