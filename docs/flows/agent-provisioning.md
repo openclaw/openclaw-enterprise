@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-10
-last_updated_session: authoring-run/33560e14-9724-4c9d-922d-049dfdace344
+updated: 2026-11-12
+last_updated_session: authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec
 ---
 
 # Agent provisioning flow
@@ -83,17 +83,17 @@ For Harness authentication from a credential source, OCC reads the catalog entry
 from the recorded Gateway. Compute validates that same entry and its login mode
 for this admission. A later provisioning request reads the catalog again.
 
-OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority, then refuses a taken Agent name with Agent create's `409`. Reserved Secret destinations, cross-Namespace Secret references, and missing or `runtime` Harness authentication give `400 INVALID_REQUEST` naming the rule; a Secret absent from the Namespace stays `404`. Before the Compute plan check, a Secret binding gets Agent save's Harness authentication check and its named `400`.
+OCC first authorizes Agent `create`, Configuration `create`, and Installation `administer` for the Namespace. Status and retry use the same grants; absence gives `403` regardless of the body. It validates Configuration, references, workspace inputs, execution mode, and current authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
 
 A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
 After an Installation selects another Secret Driver, request, status and retry answer `503` for a Secret owned by the previous Driver, after authorization and lookup. The message asks the caller to save replacement Secrets and submit a new request. The worker fails that attempt with `PROVISIONING_REJECTED`; an unavailable Secret Driver still retries.
 
-Before admission, OCC applies Configuration rules, then the ChannelDriver checks credentials through authorized Secret callbacks. Slack reads a token that is one whole `${NAME}` as the env reference to NAME, and checks token roles and bot authentication without pinning Secret versions or adding worker revalidation. OCC validates repository selections against the Namespace before queueing. Undeliverable repository bindings, including Sandbox repositories, keep Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup` capability; Compute delegates validation or refuses unsupported placement before staging files. Deployment checks the exact Harness topology.
+OCC applies Configuration rules before Channel credential validation. Its Secret callbacks recheck provisioning grants before storage and after I/O, then confirm current same-Namespace backend and selected-Driver ownership before provider use. Slack accepts whole `${NAME}` environment references and checks token roles and bot authentication. This does not pin Secret versions or revalidate queued work. OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
-OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
+OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation follow. Reusing actor, Namespace and request ID returns existing work; changed input conflicts.
 
-The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
+`202` returns the work ID and status URL in `data.provisioning`. Public progress exposes result IDs and safe errors without input values or backend credentials.
 
 ### 3. The worker creates resources and credentials
 
@@ -111,22 +111,20 @@ Admission, replay, retry and execution recheck caller authority, source readines
 ownership. Queued or running work prevents source deletion.
 
 Compute prepares runtime credentials without loopback HTTP. Kubernetes
-`kubernetesGatewayConfigurationDocument` renders trusted-proxy configuration
-and preserves explicit human identities/scopes alongside
-machine administration, defaulting to machine-only. Provisioning and deploy
-admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Configuration
-save also refuses both), unknown or padded operator scopes, blank or padded identity keys,
-grants for identities outside `allowUsers`, and human admission with admin device
-scopes, including whitespace. Human allowlists require `x-openclaw-scopes`.
-Compute checks resolved `requiredHeaders` entries during provisioning and deploy
-admission and again when it renders Gateway configuration. With private status,
-`validateConfiguration` also refuses a Codex Configuration without
-`gateway.auth.password`, which the workspace node check signs in with.
-These refusals precede workload replacement.
-Human ingress and its network policy remain operator-managed; no OCE human
-account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
-Provisioning supplies no Gateway token or trust override. Losing its claim cancels
-Kubernetes Configuration requests, freeing the worker.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:provisionAgentRuntimeCredentials` confirms complete owned Secrets after
+create-only provisioning. Failure retains them and blocks configured success or
+first revision admission.
+`kubernetesGatewayConfigurationDocument` defaults to machine-only trusted-proxy
+administration and preserves explicit human identities/scopes. Configuration save,
+provisioning and deploy admission reject invalid `allowUsers` or `deviceAutoApprove`.
+Admission rejects unknown or padded operator scopes, blank or padded identity keys,
+grants outside `allowUsers`, and human admission with admin device scopes, even with whitespace.
+Human allowlists require `x-openclaw-scopes`. Compute validates resolved `requiredHeaders`
+at provisioning, deployment admission and Gateway rendering. For private status, `validateConfiguration` requires
+`gateway.auth.password` for Codex workspace node sign-in. Refusals precede workload replacement. Operators manage human ingress
+and network policy without OCE human accounts. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
+Provisioning supplies neither Gateway token nor trust override. Claim loss cancels
+Kubernetes Configuration requests.
 
 ### 4. Deployment becomes the lifecycle owner
 
@@ -144,6 +142,10 @@ for progress, Stop, and recovery. A 403 or 404 keeps Create on the job with gene
 ends deployment checks for this attempt. If the read is unavailable or times out, Create shows
 any wait reported by the job and checks the deployment again on the next poll. A 401 sends the
 caller to sign in again. If Create sees job success before opening Deployment, it opens Configuration.
+
+The **Latest visible deployment** summary shows the version's recorded wait, even with Deployment
+details folded. A temporary read failure labels a retained wait as last recorded. A refused read
+clears it.
 
 Admission, status, and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
@@ -219,6 +221,12 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
+
+- 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
+
+- 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
 
 - 2026-11-10 20:02: Trace validation of resolved trusted-proxy header names at admission and Gateway rendering. (authoring-run/33560e14-9724-4c9d-922d-049dfdace344 - 7db6741a6e6eadb48ef0fcb059ae7224b3485782)
 

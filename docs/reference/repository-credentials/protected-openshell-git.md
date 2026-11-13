@@ -195,17 +195,18 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
-The Sandbox sets process-scoped `safe.directory` for its approved mount,
-allowing root-owned workspaces without trusting nested repositories or changing
-persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
+Process-scoped `safe.directory` permits the Sandbox's root-owned mount without trusting
+nested repositories or changing persistent Git configuration. `push.negotiate=true`
+reduces transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
 
 With `github-repository`, use selected HTTPS Git URLs; API operations use token
 permissions. Both API scopes refuse runner-token and deploy-key creation.
+Both allow read-only API-root discovery for `gh auth status` under current grants.
 Selected-repository requests to `api.github.com` accept `Time-Zone: Etc/UTC`;
 GraphQL POSTs also accept `Graphql-Features: merge_queue` and bounded
 `X-GH-CACHE-TTL` hints (such as `24h0m0s`).
-Hints support `gh pr list --search`; OCE ignores their values and checks current
-authorization. Duplicate headers are refused.
+For `gh pr list --search`, OCE ignores hint values, checks current authorization
+and refuses duplicate headers.
 
 With `git-write`, use exactly
 `https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
@@ -221,10 +222,10 @@ Removal during incomplete activation can fail deployment while retaining the ind
 verified runtime; workspace setup stays pending.
 See [withdrawal and retained supervision](../../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership).
 
-With `git-write`, the allowed draft POST to `api.github.com` accepts one
+With `git-write`, draft POSTs to `api.github.com` accept one
 `Time-Zone: Etc/UTC` header. `draftPullLimit: one-per-grant` allows one draft
-across Agents and versions sharing the grant. To allow more drafts from the same
-ref, set `draftPullLimit: none` in the Namespace policy and deploy a new version.
+across Agents and versions sharing the grant. For more drafts from that ref,
+set `draftPullLimit: none` in the Namespace policy and deploy a new version.
 OCE still records each draft use and checks draft status, head and base.
 
 A one-draft grant spends its allowance at authorization, before
@@ -234,14 +235,17 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
+GitHub App `permissions` flags alone prove neither write access nor denial.
+[Verify the authorized operation and remote result](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal);
+Git push success does not prove pull-request API access.
+
 Git hides JSON error bodies. A refused clone, fetch, `ls-remote` or initial push
 reports HTTP 403 (exit 128). Refused push uploads, usually for another branch or
 tag (`request_not_allowed`), report `error: RPC failed; HTTP 403` and
 `fatal: the remote end hung up unexpectedly`. Even with `Everything up-to-date`
 (exit 1), GitHub received nothing.
 
-After a known pre-send refusal, trace a fresh read for the reason. Git redacts
-the authorization header.
+After a known pre-send refusal, trace a fresh read. Git redacts authorization:
 
 ```bash
 GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
@@ -263,10 +267,9 @@ The draft helper reports
 | `route_not_ready`             | The route is starting, verifying or briefly unavailable                                                                      | Retry in a minute                                                                  |
 | `online_authorization_denied` | The worker did not answer in time, matched no route, or had too many decisions in flight for the Sandbox or in total         | Retry once, then ask an operator                                                   |
 
-Retry advice above applies only to a known pre-send refusal, never an uncertain send.
+Retry advice applies only to known pre-send refusals, never uncertain sends.
 
-A deploying version has no credential, so requests answer
-`route_not_ready` until it is active.
+Deploying versions lack credentials; requests answer `route_not_ready` until activation.
 
 ### Worker log
 

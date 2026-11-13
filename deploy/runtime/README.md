@@ -157,7 +157,8 @@ Local assembly omits broad suites. Run [source verification](../../docs/flows/co
 
 ## Build a local runtime image
 
-After [resolving the build arguments](#resolve-openclaw-build-arguments), run:
+For paired builds, see [QA prebuilds and caching](../../docs/testing/ci/qa-advisory.md#prebuild-local-qa-images).
+Otherwise [resolve build arguments](#resolve-openclaw-build-arguments) and run:
 
 ```bash
 docker build -f deploy/runtime/Dockerfile \
@@ -314,13 +315,13 @@ set -a
 set +a
 OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
   node --test tests/integration/runtime-image-startup.test.mjs \
-    tests/integration/runtime-image-gateway-workspace.test.mjs \
+    tests/integration/runtime-image-gateway-workspace.test.ts \
     tests/integration/runtime-image-state-migration.test.mjs \
-    tests/integration/runtime-image-managed-files.test.mjs \
+    tests/integration/runtime-image-managed-files.test.ts \
     tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
-    tests/integration/runtime-image-startup-termination.test.mjs \
-    tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.ts \
+    tests/integration/runtime-image-gateway-unclean-restart.test.ts \
     tests/integration/runtime-image-gateway-retained-state.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs

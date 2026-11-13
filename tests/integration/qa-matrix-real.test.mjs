@@ -65,12 +65,22 @@ test(
         verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
       );
     }
+    if (selection.gitModel) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "fresh Gateway model delivery with and without Git access",
+        () => verifyQaSandboxPolicy(artifacts, "openshell-git-model"),
+        "openshell-git-model",
+      );
+    }
     if (selection.oidcAgentChat) {
       const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
       await stage(
         context,
         "kubernetes/OpenClaw",
-        "OIDC sign-in, owner setup, real chat and administrative denial",
+        "OIDC enrollment, returning sign-in, owner setup, real chat and administrative denial",
         () => runOidcAgentChatScenario(context),
         "oidc-agent-chat",
       );
@@ -82,6 +92,16 @@ test(
         "kubernetes/Codex/OpenShell",
         "shared Driver configuration and real network enforcement",
         () => verifyQaSandboxPolicy(artifacts),
+      );
+    }
+    if (selection.scratchVolume) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "admitted scratch and workspace access with invalid claim refusal",
+        () => verifyQaSandboxPolicy(artifacts, "scratch-volume"),
+        "scratch-volume",
       );
     }
     if (selection.pluginInstall) {

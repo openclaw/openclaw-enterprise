@@ -1,11 +1,17 @@
 import type { AuthorityIdentity, ResolvedGrant } from "../../access/backend-contracts.ts";
 import { createHash } from "node:crypto";
+import { createGitHubClientEndpoint } from "./client-endpoint.ts";
 import {
   permissionsForProfile,
   staticTokenCapabilityPolicy,
   staticTokenGraphqlPolicy,
 } from "./profiles.ts";
-import type { GitHubTokenConfiguration, GitHubTokenProfile } from "./types.ts";
+import {
+  GITHUB_SESSION_PROFILES,
+  isGitHubProfile,
+  type GitHubTokenConfiguration,
+  type GitHubTokenProfile,
+} from "./types.ts";
 import { sameAuthority } from "./driver/state.ts";
 
 type GrantDependencies = Readonly<{
@@ -30,7 +36,7 @@ function grantIdentity(config: GitHubTokenConfiguration, profile: GitHubTokenPro
 export function createGrantResolver({ config, gatewayOrigin }: GrantDependencies) {
   const { pushRefAllowlist } = config;
   function resolve(profile: string): ResolvedGrant {
-    if (profile !== "git-read" && profile !== "git-write" && profile !== "git-full") {
+    if (!isGitHubProfile(profile)) {
       throw new Error("unsupported-profile");
     }
     return Object.freeze({
@@ -42,18 +48,14 @@ export function createGrantResolver({ config, gatewayOrigin }: GrantDependencies
           .digest("hex")}`,
       }),
       client: Object.freeze({
-        gatewayOrigin,
-        gitRemote: `${gatewayOrigin}/${config.repository}.git`,
-        gitUsername: "gateway-session",
-        canonicalApiHost: "github.com",
-        apiHost: new URL(gatewayOrigin).hostname,
+        ...createGitHubClientEndpoint(gatewayOrigin, config.repository),
         repository: config.repository,
         pushRefAllowlist,
       }),
     });
   }
   function forAuthority(authority: AuthorityIdentity) {
-    for (const profile of ["git-read", "git-write", "git-full"] as const) {
+    for (const profile of GITHUB_SESSION_PROFILES) {
       const grant = resolve(profile);
       if (!sameAuthority({ ...grant.binding, sessionId: authority.sessionId }, authority)) {
         continue;

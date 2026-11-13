@@ -37,7 +37,9 @@ type WorkerStatementHook = (
 ) => void | Promise<void>;
 
 interface FixtureOptions extends Partial<FixtureDrivers> {
+  slackFetch?: typeof fetch;
   nativeAdmin?: boolean;
+  nativeAdminDomain?: string;
   beforeWorkerStatement?: WorkerStatementHook;
   leaseDurationMs?: number;
   onWorkerEvent?: WorkerEventListener;
@@ -270,7 +272,9 @@ export async function createProvisioningFixture(
         (init as { headers: { authorization: string } }).headers.authorization,
         /^Bearer xoxb-/,
       );
-      return Response.json({ ok: true, bot_id: "B0123456789", team_id: "T0123456789" });
+      return options.slackFetch === undefined
+        ? Response.json({ ok: true, bot_id: "B0123456789", team_id: "T0123456789" })
+        : options.slackFetch(url, init);
     }
     return originalFetch(url, init);
   }) satisfies typeof originalFetch);
@@ -310,7 +314,7 @@ export async function createProvisioningFixture(
     nativeAdminSettings = {
       nativeAdmin: {
         enabled: true,
-        domain: "agents.oce.localhost",
+        domain: options.nativeAdminDomain ?? "agents.oce.localhost",
       },
       gatewayApiKeyPath,
     };

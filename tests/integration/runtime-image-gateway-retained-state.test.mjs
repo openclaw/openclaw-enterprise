@@ -1,7 +1,7 @@
 // The embedded Gateway restarted on its retained state: after an operator
 // confirms recovery from an unclean stop, and after Docker Compute stops or
 // replaces it. The other unclean-stop recoveries are in
-// runtime-image-gateway-unclean-restart.test.mjs, which CI runs in another lane.
+// runtime-image-gateway-unclean-restart.test.ts, which CI runs in another lane.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -11,7 +11,7 @@ import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
 } from "../helpers/harness-configuration.mjs";
-import { uncleanStopRestartTest } from "../helpers/runtime-image-gateway-restart.mjs";
+import { uncleanStopRestartTest } from "../helpers/runtime-image-gateway-restart.ts";
 import { image, imageTestOptions, runtimeImageModel } from "../helpers/runtime-image-startup.mjs";
 
 uncleanStopRestartTest(
@@ -25,7 +25,7 @@ uncleanStopRestartTest(
 // the replacement, in a new PID namespace, cannot prove that owner stopped, so it
 // refused the state and exited before readiness. A Gateway stopped with SIGTERM
 // releases the lock. A Gateway the Driver observed is handed off instead
-// (runtime-image-gateway-restart.mjs).
+// (runtime-image-gateway-restart.ts).
 test(
   "runtime image Docker Compute replaces a Gateway on retained state after a controller restart and on redeploy",
   { ...imageTestOptions, timeout: 600_000 },

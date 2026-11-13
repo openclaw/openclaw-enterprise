@@ -13,7 +13,6 @@
     {
       "path": "tests/integration/logging-collector.test.mjs",
       "expectedTests": [
-        "native Collector filters actual Docker forwarding, binds transport identity, and survives exporter outage",
         "native Collector preserves Kubernetes identity after a dropped record sharing Pod metadata",
         "native Collector keeps bounded runtime wrapper diagnostics from Gateway and Codex Pods",
         "the Collector exports every OCC API and worker event the docs name",
@@ -23,7 +22,13 @@
       ]
     },
     {
-      "path": "tests/integration/ci-logging-collector.test.mjs",
+      "path": "tests/integration/logging-collector-docker.test.ts",
+      "expectedTests": [
+        "native Collector filters actual Docker forwarding, binds transport identity, and survives exporter outage"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-logging-collector.test.ts",
       "expectedTests": ["prepareLogging backend receives real OTLP/HTTP logs and writes JSONL"]
     },
     {

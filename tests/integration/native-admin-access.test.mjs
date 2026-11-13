@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:https";
+import { request as httpRequest } from "node:http";
+import { createConnection } from "node:net";
 import { once } from "node:events";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
+import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { type: "json" };
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
@@ -84,7 +87,7 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
   });
 }
 
-async function startNativeHttpsUpstream(t) {
+async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
   const directory = await temporaryDirectory(t, "openclaw-native-admin-upstream-");
   const { key, cert } = await selfSigned(directory, {
     keyPem: sharedRsaPrivateKeyPem("native-admin-upstream"),
@@ -92,7 +95,56 @@ async function startNativeHttpsUpstream(t) {
   });
 
   const requests = [];
+  const parsedRequests = [];
+  const wire = [];
+  const streams = new Map();
+  const parserErrors = [];
+  const sockets = new Set();
+  const startStream = (response, name, statusCode, { contentLength, continuous = false } = {}) => {
+    let resolveClosed;
+    const control = {
+      closed: false,
+      finished: false,
+      writes: 0,
+      close: new Promise((resolve) => {
+        resolveClosed = resolve;
+      }),
+      reset: () => response.destroy(),
+    };
+    streams.set(name, control);
+    const prefix = `native-${name}-prefix\n`;
+    let interval;
+    const deadline = setTimeout(() => response.destroy(), 4_000);
+    response.once("close", () => {
+      clearTimeout(deadline);
+      clearInterval(interval);
+      control.closed = true;
+      control.finished = response.writableFinished;
+      resolveClosed({ finished: control.finished, writes: control.writes });
+    });
+    response.writeHead(statusCode, {
+      "content-type": "text/plain; charset=utf-8",
+      ...(contentLength === undefined ? {} : { "content-length": String(contentLength) }),
+    });
+    response.write(prefix);
+    control.writes++;
+    if (continuous) {
+      interval = setInterval(() => {
+        if (control.writes >= 100) {
+          response.end();
+          return;
+        }
+        response.write(`native-${name}-tick\n`);
+        control.writes++;
+      }, 20);
+    }
+  };
   const server = createServer({ key, cert }, async (request, response) => {
+    parsedRequests.push({
+      method: request.method,
+      url: request.url,
+      headers: { ...request.headers },
+    });
     const chunks = [];
     for await (const chunk of request) {
       chunks.push(chunk);
@@ -103,6 +155,42 @@ async function startNativeHttpsUpstream(t) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (request.url?.endsWith("/integrity-response-reset")) {
+      startStream(response, "response-reset", 200);
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-short")) {
+      startStream(response, "response-short", 200, { contentLength: 512 });
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-pre-header")) {
+      request.socket.destroy();
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-complete")) {
+      response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      response.end("native-complete-body\n");
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-headers")) {
+      response.writeHead(200, {
+        "clear-site-data": '"cookies"',
+        "set-cookie": "invented_native_integrity=never-publish; Path=/",
+        "content-security-policy": "default-src 'self'",
+        "content-type": "text/plain; charset=utf-8",
+        "x-native-upstream": "integrity-headers",
+      });
+      response.end("native-header-body\n");
+      return;
+    }
+    if (request.url?.endsWith("/api/users/integrity-avatar-stream/avatar")) {
+      startStream(response, "avatar-stream", 502, { continuous: true });
+      return;
+    }
+    if (request.url?.endsWith("/integrity-client-stream")) {
+      startStream(response, "client-stream", 200, { continuous: true });
+      return;
+    }
     if (request.url?.includes("/upstream-unavailable")) {
       // OpenClaw's answer when a Gravatar fallback cannot be fetched.
       response.writeHead(502, { "content-type": "application/json" });
@@ -139,28 +227,60 @@ async function startNativeHttpsUpstream(t) {
     });
     response.end("native admin upstream\n");
   });
+  // Register after HTTPS installs its parser: Node's data-listener wrapper then
+  // leaves optimized socket consumption and exposes the same decrypted bytes.
+  server.on("secureConnection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    if (!captureWire) {
+      return;
+    }
+    const observation = { chunks: [], bytes: 0, overflow: false };
+    wire.push(observation);
+    socket.prependListener("data", (chunk) => {
+      if (observation.bytes + chunk.length > 65_536) {
+        observation.overflow = true;
+        return;
+      }
+      observation.chunks.push(Buffer.from(chunk));
+      observation.bytes += chunk.length;
+    });
+  });
+  if (captureWire) {
+    server.on("clientError", (error, socket) => {
+      parserErrors.push({ code: error.code });
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    });
+  }
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(
     () =>
-      new Promise((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
+      new Promise((resolve, reject) => {
+        for (const control of streams.values()) {
+          control.reset();
+        }
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
   );
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, cert };
+  return { port: address.port, requests, parsedRequests, wire, streams, parserErrors, cert };
 }
 
 async function createNativeAdminFixture(t, options = {}) {
-  const upstream = await startNativeHttpsUpstream(t);
+  const upstream = await startNativeHttpsUpstream(t, options.upstream);
   const fixture = await createConsoleAppFixture(t, {
     ...(options.state === undefined ? {} : { state: options.state }),
     publicOrigin: options.publicOrigin ?? publicOrigin,
     authBaseURL: options.authBaseURL ?? authBaseURL,
     development: options.development ?? { enabled: false },
     auditSink: options.auditSink,
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.recordOperations === undefined
       ? {}
       : { recordOperations: options.recordOperations }),
@@ -213,7 +333,7 @@ async function createLiveNativeAgent(fixture, namespace, name, options = {}) {
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
-    nativeAdminHarnessConfiguration(nativeOrigin),
+    (options.configure ?? nativeAdminHarnessConfiguration)(nativeOrigin),
   );
   const revision = await fixture.controller.deployAgent(
     adminPrincipal(fixture).id,
@@ -390,6 +510,8 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   try {
     const unsupported = await nativeStatus(context, { session: operatorSession });
     assert.equal(unsupported.data.status, "unsupported");
+    // The Configuration is complete; the Compute Driver gives no chat endpoint (finding 3168).
+    assert.equal(unsupported.data.reason, "compute");
     assert.equal(unsupported.data.mode, "chat");
   } finally {
     driver.getGatewayChatEndpoint = chatEndpoint;
@@ -469,6 +591,42 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   assert.equal(restored.status, 200);
   assert.equal(restored.data.status, "available");
   assert.equal(restored.data.activeRevisionId, pending.id);
+});
+
+// What Create Agent saves from the shipped default Preset (Console `configurationTemplate`):
+// its gateway, with Control UI on for loopback port-forward origins only, and the selected
+// model. `nativeOrigin` is added to the allowed origins when given.
+function defaultPresetConfiguration(nativeOrigin) {
+  const { gateway } = structuredClone(defaultCodexPreset.template.configuration.values);
+  if (nativeOrigin !== undefined) {
+    gateway.controlUi.allowedOrigins.push(nativeOrigin);
+  }
+  return { ...createHarnessConfiguration("openclaw", "gpt-4.1"), gateway };
+}
+
+// Findings 3168 and 3189: an unsupported status names its cause, so the console can say what to
+// change. A Configuration without the browser chat opt-in is not-enabled: Control UI off, or on
+// without this Agent's origin and trusted-proxy auth. A browser chat setup that refuses for
+// another reason is configuration. All Agents are deployed and running.
+test("native browser status names why a Configuration is unsupported", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  for (const [name, configure, reason] of [
+    ["Browser chat off", () => createHarnessConfiguration("openclaw", "gpt-4.1"), "not-enabled"],
+    // Create Agent from the default Preset with Enable browser chat unchecked (finding 3189).
+    ["Default Preset", () => defaultPresetConfiguration(), "not-enabled"],
+    // Browser chat is on, but its allowed origin is the console, not this Agent.
+    ["Other origin", () => nativeAdminHarnessConfiguration(publicOrigin), "configuration"],
+    // This Agent's origin is allowed, but the gateway keeps password auth.
+    ["Password auth", defaultPresetConfiguration, "configuration"],
+  ]) {
+    const { agent } = await createLiveNativeAgent(context.fixture, context.namespace, name, {
+      configure,
+    });
+    const status = await nativeStatus({ ...context, agent });
+    assert.equal(status.status, 200, name);
+    assert.equal(status.data.status, "unsupported", name);
+    assert.equal(status.data.reason, reason, name);
+  }
 });
 
 test("native admin status is unavailable while a newer revision replaces the active workload", async (t) => {
@@ -561,6 +719,80 @@ async function issueServiceKeyForNativeAgent(context) {
   assert.match(issued.data.key, /^occ_/);
   return issued.data.key;
 }
+
+// Retained installation settings must not take ordinary Console and API access down.
+test("native admin retained domains preserve controller access and refuse unusable targets", async (t) => {
+  const longest = `${"a.".repeat(99)}oce.example.test`;
+  assert.equal(longest.length, 214);
+  for (const length of [214, 215]) {
+    const domain = `${"a".repeat(length - longest.length)}${longest}`;
+    const context = await createNativeAdminFixture(t, { nativeDomain: domain });
+    const { fixture, namespace, agent } = context;
+    assert.equal(deriveNativeAdminHost("installation", agent, domain).length, length + 39);
+    const ordinary = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.equal(ordinary.status, 200);
+    const consolePage = await fixture.app.inject({
+      method: "GET",
+      url: "/console/",
+      headers: { host: new URL(publicOrigin).host },
+    });
+    assert.equal(consolePage.statusCode, 200);
+    const status = await nativeStatus(context);
+    assert.equal(status.status, 200);
+    assert.equal(status.data.status, length === 214 ? "available" : "unavailable");
+    if (length === 215) {
+      assert.equal(status.data.host, undefined);
+      assert.equal(status.data.url, undefined);
+      const configurations = `/namespaces/${namespace.id}/configurations`;
+      const config = await fixture.request("POST", configurations, {
+        body: { kind: "agent", values: {} },
+      });
+      assert.equal(config.status, 201);
+      const before = await fixture.request("GET", `${configurations}/${config.data.id}`);
+      const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+        body: {
+          name: "refused-native-opt-in",
+          configurationId: config.data.id,
+          nativeAdmin: true,
+          expectedConfigurationGeneration: config.data.generation,
+        },
+      });
+      assert.equal(created.status, 400, JSON.stringify(created.body));
+      const after = await fixture.request("GET", `${configurations}/${config.data.id}`);
+      assert.deepEqual(after.data, before.data);
+    }
+  }
+  const options = (domain) => ({
+    publicOrigin,
+    authBaseURL,
+    development: { enabled: false },
+    nativeAdmin: { enabled: true, domain },
+    nativeAdminGatewayApiKey: async () => randomUUID(),
+  });
+  // Retained settings still identify disabled native hosts, which must be denied
+  // instead of preventing startup or falling through to ordinary Console routes.
+  const domain = `aaa${longest}`;
+  const disabled = await createConsoleAppFixture(t, {
+    ...options(domain),
+    nativeAdmin: { enabled: false, domain },
+    nativeAdminGatewayApiKey: async () => {
+      assert.fail("disabled native administration must not read the gateway key");
+    },
+  });
+  for (const host of [
+    `agent-${"a".repeat(32)}.${domain}`,
+    `agent-invalid.${domain}`,
+    `agent-${"a".repeat(32)}.other.${domain}`,
+  ]) {
+    const denied = await disabled.app.inject({
+      method: "GET",
+      url: "/console/",
+      headers: { host },
+    });
+    assert.equal(denied.statusCode, 403);
+    assert.equal(denied.json().error.code, "FORBIDDEN");
+  }
+});
 
 test("native admin shared session configuration validates cookie scope and rejects keys", async (t) => {
   const context = await createNativeAdminFixture(t);
@@ -838,6 +1070,74 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   assert.deepEqual(resumed.json().data, found.json().data);
 });
 
+test("native browser admission reports a failed session lookup and accepts the same session after recovery", async (t) => {
+  const logLines = [];
+  const context = await createNativeAdminFixture(t, {
+    logger: createOccLogger({
+      component: "native-admin-test",
+      level: "info",
+      destination: {
+        write(chunk) {
+          logLines.push(...String(chunk).split("\n").filter(Boolean));
+          return true;
+        },
+      },
+    }),
+  });
+  const status = await nativeStatus(context);
+  const headers = {
+    host: nativeAuthority(status.data),
+    cookie: context.session.cookie,
+    accept: "text/html,application/xhtml+xml",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  // Fail the backing session store below Better Auth while leaving the issued session intact.
+  const sessions = context.fixture.memoryDatabase.session;
+  Object.defineProperty(sessions, "filter", {
+    configurable: true,
+    value() {
+      throw new Error("Session store unavailable");
+    },
+  });
+  try {
+    const page = await injectJson(context.fixture, "GET", "/chat/main", { headers });
+    assert.equal(page.statusCode, 503);
+    assert.equal(page.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(page.headers.location, undefined);
+    assert.equal(page.headers["set-cookie"], undefined);
+    const completed = logLines
+      .map((line) => JSON.parse(line))
+      .find(
+        (line) =>
+          line.event === "http.completed" && line.requestId === page.headers["x-request-id"],
+      );
+    assert.equal(completed?.nativeAdmissionReason, "dependency_failure");
+    assert.equal(completed?.status, 503);
+    assert.ok(!JSON.stringify(completed).includes("Session store unavailable"));
+    // The Control UI probes this route before offering a browser reconnect on 401 or 403.
+    const probe = await injectJson(context.fixture, "GET", "/healthz", {
+      headers: {
+        host: headers.host,
+        cookie: headers.cookie,
+        "x-openclaw-reachability-probe": "1",
+      },
+    });
+    assert.equal(probe.statusCode, 503);
+    assert.equal(probe.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(probe.headers["set-cookie"], undefined);
+    assert.equal(context.upstream.requests.length, 0);
+  } finally {
+    Reflect.deleteProperty(sessions, "filter");
+  }
+
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const recovered = await injectJson(context.fixture, "GET", "/chat/main", { headers });
+  assert.equal(recovered.statusCode, 200);
+  assert.equal(recovered.headers["x-native-upstream"], "reached");
+});
+
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);
@@ -1057,16 +1357,59 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   const installationId = fixture.controller.installation.id;
   // The installation administrator's session administers every Agent, so each refusal below
   // comes from host resolution, not from IAM.
-  const proxied = (namespaceId, agentId) => {
+  const proxied = (namespaceId, agentId, cookie = context.session.cookie) => {
     const origin = nativeOriginForAgent(installationId, namespaceId, agentId);
     return injectJson(fixture, "GET", "/settings/profile", {
-      headers: { host: new URL(origin).host, origin, cookie: context.session.cookie },
+      headers: { host: new URL(origin).host, origin, cookie },
     });
   };
 
-  const own = await proxied(namespace.id, agent.id);
-  assert.equal(own.statusCode, 200, own.body);
-  assert.equal(upstream.requests.length, 1);
+  const resolveReference = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const shapeLookups = t.mock.method(fixture.controller, "resolveAgentReference", (...args) =>
+    resolveReference(...args),
+  );
+  try {
+    const own = await proxied(namespace.id, agent.id);
+    assert.equal(own.statusCode, 200, own.body);
+    assert.equal(upstream.requests.length, 1);
+    assert.equal(shapeLookups.mock.callCount(), 1, "a valid host uses the real reference lookup");
+
+    const account = await fixture.createAccountWithPolicy("native-host-no-access", () => {});
+    const limited = await fixture.signIn(account.credentials);
+    const unknown = await proxied(namespace.id, `agt_${randomUUID()}`, limited.cookie);
+    const inaccessible = await proxied(namespace.id, agent.id, limited.cookie);
+    assert.equal(unknown.statusCode, 403, unknown.body);
+    assert.equal(inaccessible.statusCode, 403, inaccessible.body);
+    assert.deepEqual(unknown.json().error, inaccessible.json().error);
+    assert.equal(shapeLookups.mock.callCount(), 3, "well-formed hosts retain the real lookup");
+
+    const key = deriveNativeAdminHost(installationId, agent, nativeDomain)
+      .split(".", 1)[0]
+      .slice(6);
+    for (const malformedHost of [
+      `agent-.${nativeDomain}`,
+      `agent-${key.slice(1)}.${nativeDomain}`,
+      `agent-${key}0.${nativeDomain}`,
+      `agent-${"g".repeat(32)}.${nativeDomain}`,
+      `agent-${key}.other.${nativeDomain}`,
+    ]) {
+      const before = shapeLookups.mock.callCount();
+      const denied = await injectJson(fixture, "GET", "/console/", {
+        headers: { host: malformedHost, cookie: limited.cookie },
+      });
+      assert.equal(denied.statusCode, 403, denied.body);
+      assert.equal(denied.json().error.code, "FORBIDDEN");
+      assert.equal(denied.headers.location, undefined);
+      assert.equal(
+        shapeLookups.mock.callCount() - before,
+        0,
+        `malformed native hosts must not enumerate Agent references: ${malformedHost}`,
+      );
+      assert.equal(upstream.requests.length, 1, "a malformed host must not reach a native gateway");
+    }
+  } finally {
+    shapeLookups.mock.restore();
+  }
 
   const other = await fixture.createNamespace("Native admin other", { ready: true });
   const otherAgent = await fixture.createAgent(
@@ -1089,13 +1432,43 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   assert.notEqual(otherHost.statusCode, 200, otherHost.body);
   assert.equal(upstream.requests.length, 1, "no refused host may reach a native gateway");
 
-  // A deleted Agent's host names nothing.
+  const chat = await createAgentPermissionSession(context, "deleting-agent-chat", {
+    agent: ["operate"],
+  });
+  const beforeDeletion = await proxied(namespace.id, agent.id, chat.cookie);
+  assert.equal(beforeDeletion.statusCode, 200, beforeDeletion.body);
   const deleted = await fixture.request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(deleted.status, 202);
-  assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+  const { response: deleting, denials: deletingDenials } = await denialsDuring(
+    fixture.auditSink,
+    () => proxied(namespace.id, agent.id, chat.cookie),
+  );
+
+  // Commit real deletion after the real host lookup, before admission's exact Agent read.
+  // The wrapper changes only ordering: no lookup result or failure is invented.
+  const resolve = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const lookup = t.mock.method(fixture.controller, "resolveAgentReference", async (...args) => {
+    const selected = await resolve(...args);
+    assert.equal(selected?.id, agent.id);
+    assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+    return selected;
+  });
+  let racing;
+  try {
+    racing = await denialsDuring(fixture.auditSink, () => proxied(namespace.id, agent.id));
+  } finally {
+    lookup.mock.restore();
+  }
   const afterDeletion = await proxied(namespace.id, agent.id);
-  assert.equal(afterDeletion.statusCode, 403, afterDeletion.body);
-  assert.equal(upstream.requests.length, 1);
+  assert.deepEqual(
+    [deleting.statusCode, racing.response.statusCode, afterDeletion.statusCode],
+    [403, 403, 403],
+    "deleting and deleted Agents are refusals, not temporary dependency outages",
+  );
+  assert.deepEqual(racing.response.json().error, afterDeletion.json().error);
+  assert.deepEqual(deletingDenials, []);
+  assert.deepEqual(racing.denials, [], "deletion does not invent an attributable IAM denial");
+  assert.equal(upstream.requests.length, 2);
 });
 
 test("native admin status decodes only the revisions it uses", async (t) => {
@@ -1349,9 +1722,36 @@ for (const changedField of [undefined, "id", "implementation"]) {
     );
     const host = new URL(nativeOriginForAgent(controller.installation.id, namespace.id, agent.id))
       .host;
+    const proxyLogStart = logLines.length;
     const proxy = await injectJson({ app }, "GET", "/", {
       headers: { ...headers, host, origin: `https://${host}` },
     });
+    if (changedField === undefined) {
+      const proxyCompletions = logLines
+        .slice(proxyLogStart)
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      assert.equal(proxyCompletions.length, 1);
+      assert.equal(proxyCompletions[0].status, 200);
+      assert.ok(proxyCompletions[0].requestId);
+      assert.equal(proxyCompletions[0].nativeAdmissionReason, undefined);
+      const refused = await app.inject({
+        method: "GET",
+        url: "/?private=discard-query-marker",
+        headers: { host, cookie: "discard-cookie-marker=private" },
+      });
+      assert.equal(refused.statusCode, 403);
+      const completions = logLines
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      const completed = completions.find(
+        (line) => line.requestId === refused.headers["x-request-id"],
+      );
+      assert.ok(completed, "the refusal must correlate to its existing HTTP request ID");
+      assert.equal(completed.nativeAdmissionReason, "session_invalid");
+      assert.equal(completed.status, 403);
+      assert.ok(!JSON.stringify(completed).includes("discard-"));
+    }
     // A console poll repeats the status read; the mismatch is still warned only once.
     const repeated = await injectJson(
       { app },
@@ -1446,4 +1846,570 @@ test("a browser Back to a denied Agent gateway stays 403 and links to the consol
   assert.match(api.headers["content-type"], /^application\/json/);
   // The JSON refusal names the grant but not the Agent, which the host named, not the caller.
   assert.deepEqual(api.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
+});
+
+async function liveNativeAdminFixture(t, options = {}) {
+  const context = await createNativeAdminFixture(t, options);
+  const native = (await nativeStatus(context)).data;
+  const session = await createExactAgentAdministerSession(context, "native-http-integrity");
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const address = context.fixture.app.server.address();
+  assert.equal(typeof address, "object");
+  assert.notEqual(address, null);
+  return {
+    ...context,
+    native,
+    port: address.port,
+    nativeHeaders: {
+      host: nativeAuthority(native),
+      origin: native.origin,
+      cookie: session.cookie,
+    },
+  };
+}
+
+function liveNativeRequest(context, path, options = {}) {
+  return new Promise((resolve) => {
+    const result = {
+      statusCode: null,
+      headers: {},
+      body: "",
+      complete: false,
+      ended: false,
+      aborted: false,
+      error: null,
+    };
+    let receivedResponse = false;
+    let settled = false;
+    let actedOnData = false;
+    const chunks = [];
+    let size = 0;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(deadline);
+      result.body = Buffer.concat(chunks).toString("utf8");
+      resolve(result);
+    };
+    const request = httpRequest(
+      {
+        hostname: "127.0.0.1",
+        port: context.port,
+        path,
+        method: options.method ?? "GET",
+        agent: false,
+        headers: { ...context.nativeHeaders, ...options.headers },
+      },
+      (response) => {
+        receivedResponse = true;
+        result.statusCode = response.statusCode;
+        result.headers = { ...response.headers };
+        response.on("data", (chunk) => {
+          size += chunk.length;
+          if (size > 65_536) {
+            result.error = "response-bound-exceeded";
+            response.destroy();
+            return;
+          }
+          chunks.push(Buffer.from(chunk));
+          if (!actedOnData) {
+            actedOnData = true;
+            options.onFirstData?.(response, request);
+          }
+        });
+        response.once("aborted", () => {
+          result.aborted = true;
+        });
+        response.once("error", (error) => {
+          result.error = error.code ?? error.name;
+        });
+        response.once("end", () => {
+          result.ended = true;
+        });
+        response.once("close", () => {
+          result.complete = response.complete;
+          finish();
+        });
+      },
+    );
+    const deadline = setTimeout(() => {
+      result.error = "request-deadline";
+      request.destroy();
+      finish();
+    }, 6_000);
+    request.once("error", (error) => {
+      result.error ??= error.code ?? error.name;
+      if (!receivedResponse) {
+        finish();
+      }
+    });
+    for (const chunk of options.chunks ?? []) {
+      request.write(chunk);
+    }
+    request.end();
+  });
+}
+
+function rawNativeRequest(context, method, path, headers, body = "") {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let socketError;
+    const socket = createConnection({ host: "127.0.0.1", port: context.port });
+    const deadline = setTimeout(() => socket.destroy(new Error("raw request deadline")), 6_000);
+    socket.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > 65_536) {
+        socket.destroy(new Error("raw response bound exceeded"));
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
+    socket.once("error", (error) => {
+      socketError = error;
+    });
+    socket.once("close", () => {
+      clearTimeout(deadline);
+      if (socketError) {
+        reject(socketError);
+      } else {
+        resolve(Buffer.concat(chunks).toString("latin1"));
+      }
+    });
+    socket.once("connect", () => {
+      const fields = { ...context.nativeHeaders, connection: "close", ...headers };
+      socket.write(
+        [
+          method + " " + path + " HTTP/1.1",
+          ...Object.entries(fields).map(([name, value]) => name + ": " + value),
+          "",
+          body,
+        ].join("\r\n"),
+      );
+    });
+  });
+}
+
+async function waitForNativeIntegrity(predicate, message, milliseconds = 2_000) {
+  const deadline = Date.now() + milliseconds;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, message);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function nativeIntegrityDiagnostic(t, findingId, observedBehavior, positiveControls) {
+  t.diagnostic(
+    "NATIVE_HTTP_INTEGRITY " + JSON.stringify({ findingId, observedBehavior, positiveControls }),
+  );
+}
+
+function streamResult(result) {
+  return {
+    statusCode: result.statusCode,
+    body: result.body,
+    complete: result.complete,
+    ended: result.ended,
+    aborted: result.aborted,
+    error: result.error,
+  };
+}
+
+test("native HTTP framing preserves bodyless requests and nominated lengths", async (t) => {
+  const context = await liveNativeAdminFixture(t, { upstream: { captureWire: true } });
+  const targetPrefix = "/namespaces/" + context.namespace.id + "/agents/" + context.agent.id;
+  const bodyless = [];
+  for (const method of ["GET", "HEAD"]) {
+    const path = "/integrity-bodyless-" + method.toLowerCase();
+    const expectedTarget = targetPrefix + path;
+    const beforeParsed = context.upstream.parsedRequests.length;
+    // Send no body framing on the genuine incoming wire. Ordinary page and asset
+    // requests must retain that shape after the controller admits the Agent host.
+    const downstream = await rawNativeRequest(context, method, path, {});
+    assert.match(downstream, /^HTTP\/1\.1 200 /);
+    const parsed = context.upstream.parsedRequests.slice(beforeParsed);
+    const observed = context.upstream.requests.filter((r) => r.url === expectedTarget);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].method, method);
+    assert.equal(parsed[0].url, expectedTarget);
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].body, "");
+    const requestLine = method + " " + expectedTarget + " HTTP/1.1\r\n";
+    const capture = context.upstream.wire.find((w) =>
+      Buffer.concat(w.chunks).toString("latin1").includes(requestLine),
+    );
+    assert.ok(capture, "the real HTTPS wire must contain the bodyless request");
+    assert.equal(capture.overflow, false);
+    const wire = Buffer.concat(capture.chunks).toString("latin1");
+    const start = wire.indexOf(requestLine);
+    const headerEnd = wire.indexOf("\r\n\r\n", start);
+    assert.ok(headerEnd > start);
+    const frameHeaders = wire.slice(start, headerEnd);
+    assert.doesNotMatch(frameHeaders, /\r\n(?:content-length|transfer-encoding):/i);
+    assert.equal(parsed[0].headers["content-length"], undefined);
+    assert.equal(parsed[0].headers["transfer-encoding"], undefined);
+    bodyless.push({ method, parsedRequests: parsed.length, body: observed[0].body });
+  }
+
+  // Connection can remove Content-Length from the sanitized header map even
+  // though Node's incoming parser still delivers the length-delimited body.
+  const marker = "native-connection-nominated-length-body";
+  const path = "/integrity-nominated-content-length";
+  const expectedTarget = targetPrefix + path;
+  const beforeParsed = context.upstream.parsedRequests.length;
+  const downstream = await rawNativeRequest(
+    context,
+    "GET",
+    path,
+    {
+      connection: "close, Content-Length",
+      "content-length": String(Buffer.byteLength(marker)),
+    },
+    marker,
+  );
+  assert.match(downstream, /^HTTP\/1\.1 200 /);
+  const parsed = context.upstream.parsedRequests.slice(beforeParsed);
+  const observed = context.upstream.requests.filter((r) => r.url === expectedTarget);
+  assert.equal(parsed.length, 1, "one browser request must produce one upstream request");
+  assert.equal(parsed[0].method, "GET");
+  assert.equal(parsed[0].url, expectedTarget);
+  assert.equal(parsed[0].headers["content-length"], undefined);
+  assert.equal(parsed[0].headers["transfer-encoding"], "chunked");
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].body, marker);
+  const requestLine = "GET " + expectedTarget + " HTTP/1.1\r\n";
+  const capture = context.upstream.wire.find((w) =>
+    Buffer.concat(w.chunks).toString("latin1").includes(requestLine),
+  );
+  assert.ok(capture, "the real HTTPS wire must contain the body-bearing request");
+  assert.equal(capture.overflow, false);
+  const wire = Buffer.concat(capture.chunks).toString("latin1");
+  const start = wire.indexOf(requestLine);
+  const headerEnd = wire.indexOf("\r\n\r\n", start);
+  assert.ok(headerEnd > start);
+  const frameHeaders = wire.slice(start, headerEnd);
+  assert.doesNotMatch(frameHeaders, /\r\ncontent-length:/i);
+  assert.match(frameHeaders, /\r\ntransfer-encoding: chunked(?:\r\n|$)/i);
+  assert.ok(wire.slice(headerEnd + 4).endsWith("0\r\n\r\n"));
+  assert.deepEqual(context.upstream.parserErrors, []);
+  nativeIntegrityDiagnostic(
+    t,
+    "NATIVE-HTTP-FIX-01",
+    { bodyless, nominatedContentLength: { parsedRequests: parsed.length, body: observed[0].body } },
+    { exactTarget: true, reconstructedChunked: true, parserErrors: 0 },
+  );
+});
+
+test("native HTTP integrity 01 preserves framing for an admitted chunked GET", async (t) => {
+  const context = await liveNativeAdminFixture(t, { upstream: { captureWire: true } });
+  const safeHeaders = {
+    "x-forwarded-for": "203.0.113.10",
+    "x-occ-identity": "invented-browser-identity",
+    "x-openclaw-scopes": "invented-browser-scope",
+    "x-safe-client-header": "integrity-preserved",
+  };
+  const lengthBody = "native-content-length-control";
+  const length = await liveNativeRequest(context, "/integrity-content-length", {
+    headers: { ...safeHeaders, "content-length": String(Buffer.byteLength(lengthBody)) },
+    chunks: [lengthBody],
+  });
+  assert.equal(length.statusCode, 200);
+  assert.equal(length.complete, true);
+  const lengthObserved = context.upstream.requests.find((r) =>
+    r.url.endsWith("/integrity-content-length"),
+  );
+  assert.equal(lengthObserved?.body, lengthBody);
+  assert.equal(lengthObserved?.headers["content-length"], String(Buffer.byteLength(lengthBody)));
+  const posted = await liveNativeRequest(context, "/integrity-streamed-post", {
+    method: "POST",
+    headers: safeHeaders,
+    chunks: ["native-streamed-", "post-control"],
+  });
+  assert.equal(posted.statusCode, 200);
+  assert.equal(posted.complete, true);
+  const postObserved = context.upstream.requests.find((r) =>
+    r.url.endsWith("/integrity-streamed-post"),
+  );
+  assert.equal(postObserved?.body, "native-streamed-post-control");
+  assert.equal(postObserved?.headers["transfer-encoding"], "chunked");
+  const beforeDenied = context.upstream.parsedRequests.length;
+  const wrongOrigin = await liveNativeRequest(context, "/integrity-denied-origin", {
+    headers: { origin: "https://untrusted.example.test" },
+  });
+  const readOnly = await createReadOnlySession(context, "native-integrity-read-only");
+  const forbidden = await liveNativeRequest(context, "/integrity-denied-iam", {
+    headers: { cookie: readOnly.cookie },
+  });
+  assert.equal(wrongOrigin.statusCode, 403);
+  assert.equal(forbidden.statusCode, 403);
+  assert.equal(context.upstream.parsedRequests.length, beforeDenied);
+  const marker = "native-chunked-get-body";
+  const path = "/integrity-chunked-get";
+  const beforeParsed = context.upstream.parsedRequests.length;
+  const downstream = await rawNativeRequest(
+    context,
+    "GET",
+    path,
+    {
+      ...safeHeaders,
+      "transfer-encoding": "chunked",
+    },
+    Buffer.byteLength(marker).toString(16) + "\r\n" + marker + "\r\n0\r\n\r\n",
+  );
+  await waitForNativeIntegrity(
+    () => context.upstream.parsedRequests.some((r) => r.url.endsWith(path)),
+    "the real HTTPS parser must observe the admitted request",
+  );
+  const expectedTarget =
+    "/namespaces/" + context.namespace.id + "/agents/" + context.agent.id + path;
+  const parsed = context.upstream.parsedRequests.slice(beforeParsed);
+  const observed = context.upstream.requests.find((r) => r.url === expectedTarget);
+  const requestLine = "GET " + expectedTarget + " HTTP/1.1\r\n";
+  const capture = context.upstream.wire.find((w) =>
+    Buffer.concat(w.chunks).toString("latin1").includes(requestLine),
+  );
+  if (!capture) {
+    nativeIntegrityDiagnostic(
+      t,
+      "NATIVE-TRANSPORT-01",
+      {
+        captureReady: false,
+        wireConnections: context.upstream.wire.map((w) => ({
+          bytes: w.bytes,
+          chunks: w.chunks.length,
+          overflow: w.overflow,
+        })),
+        parsedRequests: parsed.map((r) => ({ method: r.method, url: r.url })),
+        parsedBody: observed?.body,
+        parserErrors: context.upstream.parserErrors,
+      },
+      {
+        contentLengthGet: length.statusCode,
+        streamedPost: posted.statusCode,
+        denialStatuses: [wrongOrigin.statusCode, forbidden.statusCode],
+      },
+    );
+  }
+  assert.ok(capture, "decrypted upstream wire capture must include the actual request");
+  assert.equal(capture.overflow, false);
+  const wire = Buffer.concat(capture.chunks).toString("latin1");
+  const start = wire.indexOf(requestLine);
+  const headerEnd = wire.indexOf("\r\n\r\n", start);
+  assert.ok(headerEnd > start);
+  const frameHeaders = wire.slice(start, headerEnd);
+  const wireBody = wire.slice(headerEnd + 4);
+  const framedByLength = new RegExp(
+    "\\r\\ncontent-length: " + Buffer.byteLength(marker) + "(?:\\r\\n|$)",
+    "i",
+  ).test(frameHeaders);
+  const framedByChunks = /\r\ntransfer-encoding: chunked(?:\r\n|$)/i.test(frameHeaders);
+  assert.equal(parsed.length, 1, "one browser request must produce one parsed upstream request");
+  assert.equal(parsed[0].url, expectedTarget);
+  assert.equal(parsed[0].headers["x-api-key"], nativeGatewayApiKey);
+  assert.equal(parsed[0].headers["x-safe-client-header"], "integrity-preserved");
+  for (const name of [
+    "cookie",
+    "authorization",
+    "x-forwarded-for",
+    "x-occ-identity",
+    "x-openclaw-scopes",
+  ]) {
+    assert.equal(parsed[0].headers[name], undefined, name + " must not reach the peer");
+  }
+  const positiveControls = {
+    contentLengthGet: {
+      status: length.statusCode,
+      complete: length.complete,
+      body: lengthObserved.body,
+    },
+    streamedPost: { status: posted.statusCode, complete: posted.complete, body: postObserved.body },
+    denialStatuses: [wrongOrigin.statusCode, forbidden.statusCode],
+    denialUpstreamContacts: context.upstream.parsedRequests.slice(beforeDenied, beforeParsed)
+      .length,
+    sanitizedExactTarget: true,
+  };
+  nativeIntegrityDiagnostic(
+    t,
+    "NATIVE-TRANSPORT-01",
+    {
+      downstreamStatus: Number(/^HTTP\/1.1 (\d+)/.exec(downstream)?.[1]),
+      parsedRequests: parsed.map((r) => ({ method: r.method, url: r.url })),
+      parsedBody: observed?.body,
+      framedByLength,
+      framedByChunks,
+      wireBody,
+      wire: wire.slice(start).replaceAll(nativeGatewayApiKey, "<invented-fixture-key>"),
+      parserErrors: context.upstream.parserErrors,
+    },
+    positiveControls,
+  );
+  assert.deepEqual(
+    {
+      framed: framedByLength || framedByChunks,
+      parsedBody: observed?.body,
+      wireContainsBody: wireBody.includes(marker),
+    },
+    { framed: true, parsedBody: marker, wireContainsBody: true },
+    "HTTP_INTEGRITY_01_REQUEST_FRAMING",
+  );
+});
+
+test("native HTTP integrity 02 preserves incomplete upstream responses", async (t) => {
+  const context = await liveNativeAdminFixture(t);
+  const complete = await liveNativeRequest(context, "/integrity-response-complete");
+  assert.equal(complete.statusCode, 200);
+  assert.equal(complete.body, "native-complete-body\n");
+  assert.equal(complete.complete, true);
+  const beforeHeaders = await liveNativeRequest(context, "/integrity-response-pre-header");
+  assert.equal(beforeHeaders.statusCode, 503);
+  assert.match(beforeHeaders.body, /native gateway is unavailable/);
+  assert.equal(beforeHeaders.complete, true);
+  const interrupted = await liveNativeRequest(context, "/integrity-response-reset", {
+    onFirstData: () => context.upstream.streams.get("response-reset").reset(),
+  });
+  const shortLength = await liveNativeRequest(context, "/integrity-response-short", {
+    onFirstData: () => context.upstream.streams.get("response-short").reset(),
+  });
+  const positiveControls = {
+    completeResponse: streamResult(complete),
+    preHeaderFailure: streamResult(beforeHeaders),
+  };
+  nativeIntegrityDiagnostic(
+    t,
+    "NATIVE-TRANSPORT-02",
+    {
+      interrupted: streamResult(interrupted),
+      shortContentLength: streamResult(shortLength),
+    },
+    positiveControls,
+  );
+  assert.equal(interrupted.statusCode, 200);
+  assert.equal(shortLength.statusCode, 200);
+  assert.deepEqual(
+    {
+      interruptedBody: interrupted.body,
+      interruptedComplete: interrupted.complete,
+      interruptedFallback: interrupted.body.includes("native gateway is unavailable"),
+      shortBody: shortLength.body,
+      shortComplete: shortLength.complete,
+      shortFallback: shortLength.body.includes("native gateway is unavailable"),
+    },
+    {
+      interruptedBody: "native-response-reset-prefix\n",
+      interruptedComplete: false,
+      interruptedFallback: false,
+      shortBody: "native-response-short-prefix\n",
+      shortComplete: false,
+      shortFallback: false,
+    },
+    "HTTP_INTEGRITY_02_INCOMPLETE_RESPONSE",
+  );
+});
+
+test("native HTTP integrity 03 keeps browser state headers controller-owned", async (t) => {
+  const context = await liveNativeAdminFixture(t);
+  const ordinary = await liveNativeRequest(context, "/settings/profile");
+  assert.equal(ordinary.statusCode, 200);
+  assert.equal(ordinary.headers["x-native-upstream"], "reached");
+  assert.equal(ordinary.headers["set-cookie"], undefined);
+  const redirected = await liveNativeRequest(context, "/redirect-root");
+  assert.equal(redirected.statusCode, 302);
+  assert.equal(
+    redirected.headers.location,
+    context.native.origin + "/settings/profile?from=redirect",
+  );
+  assert.match(redirected.headers["content-security-policy"], /default-src 'self'/);
+  assert.match(redirected.headers["content-security-policy"], /worker-src 'none'/);
+  const external = await liveNativeRequest(context, "/redirect-external");
+  const reserved = await liveNativeRequest(context, "/redirect-reserved");
+  assert.equal(external.statusCode, 502);
+  assert.equal(external.headers.location, undefined);
+  assert.equal(reserved.statusCode, 502);
+  assert.equal(reserved.headers.location, undefined);
+  const response = await liveNativeRequest(context, "/integrity-response-headers");
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body, "native-header-body\n");
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(response.headers["x-native-upstream"], "integrity-headers");
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.match(response.headers["content-security-policy"], /default-src 'self'/);
+  assert.match(response.headers["content-security-policy"], /worker-src 'none'/);
+  const positiveControls = {
+    ordinaryStatus: ordinary.statusCode,
+    safeHeader: response.headers["x-native-upstream"],
+    setCookieRemoved: response.headers["set-cookie"] === undefined,
+    csp: response.headers["content-security-policy"],
+    cacheControl: response.headers["cache-control"],
+    redirectStatus: redirected.statusCode,
+    redirectLocation: redirected.headers.location,
+    unsafeRedirectStatuses: [external.statusCode, reserved.statusCode],
+  };
+  nativeIntegrityDiagnostic(
+    t,
+    "NATIVE-TRANSPORT-03",
+    {
+      status: response.statusCode,
+      clearSiteData: response.headers["clear-site-data"] ?? null,
+      body: response.body,
+    },
+    positiveControls,
+  );
+  assert.equal(
+    response.headers["clear-site-data"],
+    undefined,
+    "HTTP_INTEGRITY_03_BROWSER_STATE_HEADER",
+  );
+});
+
+test("native HTTP integrity 04 cancels discarded avatar error streams", async (t) => {
+  const context = await liveNativeAdminFixture(t);
+  const finiteAvatar = await liveNativeRequest(context, "/api/users/upstream-unavailable/avatar");
+  assert.equal(finiteAvatar.statusCode, 404);
+  assert.equal(finiteAvatar.body, "");
+  assert.equal(finiteAvatar.complete, true);
+  const finiteError = await liveNativeRequest(context, "/upstream-unavailable");
+  assert.equal(finiteError.statusCode, 502);
+  assert.match(finiteError.body, /avatar_upstream_unavailable/);
+  assert.equal(finiteError.complete, true);
+  const disconnected = await liveNativeRequest(context, "/integrity-client-stream", {
+    onFirstData: (response) => response.destroy(),
+  });
+  const ordinaryProducer = context.upstream.streams.get("client-stream");
+  await waitForNativeIntegrity(
+    () => ordinaryProducer.closed,
+    "client disconnect must close the ordinary producer",
+  );
+  assert.equal(ordinaryProducer.finished, false);
+  const avatar = await liveNativeRequest(context, "/api/users/integrity-avatar-stream/avatar");
+  assert.equal(avatar.statusCode, 404);
+  assert.equal(avatar.body, "");
+  assert.equal(avatar.complete, true);
+  const producer = context.upstream.streams.get("avatar-stream");
+  assert.ok(producer);
+  const writesAtFinal404 = producer.writes;
+  const closedAfter404 = await Promise.race([
+    producer.close.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 300)),
+  ]);
+  const observed = {
+    downstream: streamResult(avatar),
+    producerClosedAfterFinal404: closedAfter404,
+    producerFinished: producer.finished,
+    writesAtFinal404,
+    writesAfterObservation: producer.writes,
+  };
+  producer.reset();
+  await producer.close;
+  const positiveControls = {
+    finiteAvatar: streamResult(finiteAvatar),
+    nonAvatarFiniteError: streamResult(finiteError),
+    clientDisconnect: streamResult(disconnected),
+    ordinaryProducerClosed: ordinaryProducer.closed,
+    ordinaryProducerFinished: ordinaryProducer.finished,
+    testOwnedProducerCleanup: producer.closed,
+  };
+  nativeIntegrityDiagnostic(t, "NATIVE-TRANSPORT-04", observed, positiveControls);
+  assert.equal(closedAfter404, true, "HTTP_INTEGRITY_04_DISCARDED_STREAM_CANCELLATION");
 });

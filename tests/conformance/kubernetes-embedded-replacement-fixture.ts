@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import {
+  readyServiceEndpointSliceList,
+  singleReplicaReadyDeploymentStatus,
+} from "./kubernetes-gateway-readiness-fixture.ts";
 
 type FixtureObject = {
   kind: string;
@@ -129,12 +133,7 @@ export function createEmbeddedReplacementKubernetesFixture(
         const observed = readObject("Deployment", name);
         // Readiness is an explicit transport observation, never inferred from a successful write.
         if (readyDeployments.has(name)) {
-          observed.status = {
-            observedGeneration: observed.metadata.generation,
-            replicas: 1,
-            updatedReplicas: 1,
-            readyReplicas: 1,
-          };
+          observed.status = singleReplicaReadyDeploymentStatus(observed.metadata.generation);
         }
         return observed;
       },
@@ -162,19 +161,7 @@ export function createEmbeddedReplacementKubernetesFixture(
           true,
           "replacement preparation must not wait on the unready previous gateway",
         );
-        return {
-          items: [
-            {
-              metadata: {
-                labels: { "kubernetes.io/service-name": gatewayName },
-                ownerReferences: [
-                  { kind: "Service", name: gatewayName, uid: `${gatewayName}-uid` },
-                ],
-              },
-              endpoints: [{ conditions: { ready: true } }],
-            },
-          ],
-        };
+        return readyServiceEndpointSliceList(gatewayName);
       },
     },
     networking: {

@@ -29,7 +29,7 @@ import {
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.mjs";
+import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 const message =

@@ -1,3 +1,32 @@
+import { isAbsolute, resolve } from "node:path";
+
+export const clientSessionFileMaxBytes = Object.freeze({
+  bearer: 256,
+  "client.json": 16 * 1024,
+  gitconfig: 16 * 1024,
+  "gh/hosts.yml": 16 * 1024,
+  "gh/config.yml": 16 * 1024,
+  "ca.pem": 64 * 1024,
+});
+
+export const clientGitconfig =
+  "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n";
+export const clientGhConfiguration = "version: 1\nprompt: disabled\ngit_protocol: https\n";
+
+export function renderClientGhHosts(
+  client: RepositoryCredentialClientConfiguration,
+  bearer: string,
+): string {
+  return `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(bearer)}\n`;
+}
+
+export const repositorySessionBearerSource = "[A-Za-z0-9_-]{43,256}";
+
+/** Check a Unix socket path's lexical form and UTF-8 byte limit. */
+export function isCanonicalUnixSocketPath(path: string): boolean {
+  return isAbsolute(path) && resolve(path) === path && Buffer.byteLength(path) <= 103;
+}
+
 export interface RepositoryCredentialClientConfiguration {
   readonly gatewayOrigin: string;
   readonly gitRemote: string;
@@ -26,6 +55,24 @@ export function isValidGitClientConnection(
     !remote.password &&
     !remote.search &&
     !remote.hash
+  );
+}
+
+const gitClientHostPattern = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+
+/** Check the client username and hosts against the parsed gateway hostname. */
+export function isValidGitClientUsernameAndHosts(
+  origin: URL,
+  client: Pick<
+    RepositoryCredentialClientConfiguration,
+    "gitUsername" | "apiHost" | "canonicalApiHost"
+  >,
+): boolean {
+  return (
+    /^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) &&
+    gitClientHostPattern.test(client.apiHost) &&
+    gitClientHostPattern.test(client.canonicalApiHost) &&
+    client.apiHost === origin.hostname
   );
 }
 

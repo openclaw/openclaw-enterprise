@@ -1,8 +1,8 @@
 name: Full Integration
 
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       lane:
@@ -48,7 +48,7 @@ jobs:
 
   preflight:
     needs: manual-approval
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && ((github.event_name == 'push' && needs.manual-approval.result == 'skipped') || (github.event_name == 'workflow_dispatch' && (github.run_attempt != '1' || needs.manual-approval.result == 'success'))) }}
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && ((github.event_name == 'schedule' && needs.manual-approval.result == 'skipped') || (github.event_name == 'workflow_dispatch' && (github.run_attempt != '1' || needs.manual-approval.result == 'success'))) }}
     name: Dispatch Preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -61,6 +61,11 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 2
           persist-credentials: false
+      - name: Set up scheduled admission runtime
+        if: github.event_name == 'schedule'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
       - name: Validate lane and environment policy
         id: select
         env:
@@ -72,9 +77,9 @@ jobs:
   execute:
     name: Execute
     needs: preflight
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && needs.preflight.result == 'success' && ((github.event_name == 'push' && needs.preflight.outputs.selected_lane == 'all') || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' && needs.preflight.outputs.selected_lane == inputs.lane)) }}
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && needs.preflight.result == 'success' && ((github.event_name == 'schedule' && github.run_attempt == '1' && needs.preflight.outputs.selected_lane == 'all') || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' && needs.preflight.outputs.selected_lane == inputs.lane)) }}
     concurrency:
-      # Only authorized non-doc work can replace a pending automatic run.
+      # Only an eligible full tick enters the automatic execution queue.
       group: ${{ github.event_name == 'workflow_dispatch' && format('full-integration-manual-{0}', github.run_id) || 'full-integration' }}
       cancel-in-progress: false
     uses: ./.github/workflows/full-integration-execution.yml
@@ -85,7 +90,7 @@ jobs:
   reject-selection:
     name: Reject missing or inconsistent selection
     needs: preflight
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && !((github.event_name == 'push' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'docs')) || (github.event_name == 'workflow_dispatch' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' && needs.preflight.outputs.selected_lane == inputs.lane)) }}
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && !((github.event_name == 'schedule' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'skip')) || (github.event_name == 'workflow_dispatch' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' && needs.preflight.outputs.selected_lane == inputs.lane)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions: {}

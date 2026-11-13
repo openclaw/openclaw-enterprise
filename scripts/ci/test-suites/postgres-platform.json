@@ -6,38 +6,41 @@
   "optionalEnv": ["OCC_TEST_STANDING_GIT_CODEX", "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION"],
   "fileConcurrency": 4,
   "parallelFiles": [
-    "tests/integration/postgres-password-sign-in-limit.test.mjs",
-    "tests/integration/postgres-bootstrap-failures.test.mjs",
+    "tests/integration/postgres-password-sign-in-limit.test.ts",
+    "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.mjs",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.mjs",
     "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
-    "tests/integration/postgres-production-wireup.test.mjs",
-    "tests/integration/compute-singleton-worker-postgres.test.mjs",
+    "tests/integration/postgres-production-wireup.test.ts",
+    "tests/integration/compute-singleton-worker-postgres.test.ts",
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
-    "tests/integration/postgres-agent-deletion-audit.test.mjs",
+    "tests/integration/postgres-agent-deletion-audit.test.ts",
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-default-users.test.ts",
-    "tests/integration/postgres-agent-runtime-logs.test.mjs",
+    "tests/integration/postgres-agent-runtime-logs.test.ts",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
-    "tests/integration/postgres-worker-stale-claim.test.mjs",
+    "tests/integration/postgres-worker-stale-claim.test.ts",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
-    "tests/integration/workspace-setup-worker.test.mjs",
+    "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
-    "tests/integration/postgres-service-account-deletion.test.mjs",
-    "tests/integration/postgres-service-account-issuance-recovery.test.mjs",
+    "tests/integration/postgres-service-account-deletion.test.ts",
+    "tests/integration/postgres-service-account-issuance-recovery.test.ts",
+    "tests/integration/postgres-service-account-compensation.test.ts",
     "tests/integration/postgres-presets.test.mjs",
-    "tests/integration/postgres-workspace-setup.test.mjs",
-    "tests/integration/postgres-connection-auth.test.mjs",
+    "tests/integration/postgres-workspace-setup.test.ts",
+    "tests/integration/postgres-connection-auth.test.ts",
+    "tests/integration/postgres-pool-options.test.ts",
     "tests/integration/postgres-repository-transactions.test.mjs",
     "tests/integration/postgres-controller-work-targets.test.mjs",
     "tests/integration/postgres-transaction-commit.test.mjs",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.mjs",
+    "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
     "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
@@ -67,11 +70,14 @@
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
     "tests/integration/postgres-worker-process-shutdown.test.ts",
-    "tests/integration/postgres-harness-overrides.test.ts"
+    "tests/integration/postgres-harness-overrides.test.ts",
+    "tests/integration/postgres-preset-template-validation.test.ts",
+    "tests/integration/postgres-readiness-capacity.test.ts",
+    "tests/integration/postgres-private-secret-create.test.ts"
   ],
   "files": [
     {
-      "path": "tests/integration/postgres-connection-auth.test.mjs",
+      "path": "tests/integration/postgres-connection-auth.test.ts",
       "expectedTests": [
         "password authentication preserves the existing pg connection configuration",
         "the password pool authenticates to the selected real PostgreSQL database",
@@ -84,7 +90,16 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-bootstrap-failures.test.mjs",
+      "path": "tests/integration/postgres-pool-options.test.ts",
+      "expectedTests": [
+        "worker metrics pool rejects writes despite conflicting URL options",
+        "explicit PostgreSQL statement deadline overrides the database URL",
+        "explicit PostgreSQL query deadline overrides the database URL",
+        "worker metrics collection preserves caller limits and unspecified URL settings"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-bootstrap-failures.test.ts",
       "expectedTests": [
         "concurrent development bootstraps reject the loser and reload the committed winner",
         "production bootstrap preserves committed credentials when COMMIT acknowledgement is lost",
@@ -113,9 +128,18 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-production-wireup.test.mjs",
+      "path": "tests/integration/postgres-production-wireup.test.ts",
       "expectedTests": [
-        "production bootstrap creates a generated-password administrator that can authenticate"
+        "production bootstrap creates a generated-password administrator that can authenticate",
+        "configured read grants fence Namespace IAM mutations through COMMIT",
+        "create Role: configuration first",
+        "create Role: policy first",
+        "delete Role: configuration first",
+        "delete Role: policy first",
+        "create AccessBinding: configuration first",
+        "create AccessBinding: policy first",
+        "delete AccessBinding: configuration first",
+        "delete AccessBinding: policy first"
       ]
     },
     {
@@ -167,13 +191,20 @@
     {
       "path": "tests/integration/postgres-namespace-iam-policy.test.mjs",
       "expectedTests": [
+        "selected native IAM sees original-unit grants and revocations before rollback",
         "PostgreSQL native IAM creates exact Namespace bindings atomically with audit",
+        "PostgreSQL native IAM binds Agent ServicePrincipals only while their Agent owns them",
         "PostgreSQL native IAM serializes AccessBinding creation before target deletion",
         "PostgreSQL native IAM serializes target deletion before AccessBinding creation",
         "PostgreSQL native IAM rolls back policy mutations when transaction audit fails",
+        "PostgreSQL native IAM grants and revokes existing human access to exact Namespace and Agent targets",
+        "PostgreSQL native IAM confines Console share grants to the shared Agent and Namespace discovery",
+        "PostgreSQL native IAM grants Namespace Roles only Namespace read",
+        "PostgreSQL exact Namespace grants serialize with Namespace deletion",
         "PostgreSQL native IAM authorizes Namespace-local service identities without Agent ownership",
         "PostgreSQL native IAM creates exact AgentRevision bindings with limited app privileges",
         "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets",
+        "PostgreSQL IAM policy writes keep the actor's authority current through COMMIT",
         "native IAM reads the policy once per unit of work and never across units",
         "listing 2000 Agents reads the policy once for the whole list"
       ]
@@ -194,18 +225,40 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-service-account-deletion.test.mjs",
+      "path": "tests/integration/postgres-service-account-deletion.test.ts",
       "expectedTests": [
         "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
         "a forced ServiceAccount delete without a Driver audits the unrevoked credential and decides on the locked account"
       ]
     },
     {
-      "path": "tests/integration/postgres-service-account-issuance-recovery.test.mjs",
+      "path": "tests/integration/postgres-service-account-issuance-recovery.test.ts",
       "expectedTests": [
         "an issuance that never committed is reclaimed by the next issuance under the account lock",
         "deleting an account after an issuance that never committed revokes its credential and removes its Secret",
         "a reclaim whose PostgreSQL session ends during the Secret read leaves a later issuance intact"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-service-account-compensation.test.ts",
+      "expectedTests": [
+        "known audit rollback retains the exact recovery receipt when provider revocation fails",
+        "HTTP retry is blocked until the retained provider credential is confirmed revoked",
+        "applied but unacknowledged Kubernetes create retains a recoverable credential ID",
+        "confirmed revocation cleans only its matching Secret after either failed issuance entrance",
+        "recognized already-absent provider replies complete recovery",
+        "unconfirmed provider failures keep the receipt and block replacement",
+        "a Kubernetes create that never applied leaves foreign or unrelated objects untouched",
+        "delayed compensation cannot delete another issuance's Secret",
+        "exact cleanup respects ownership, credential ID, UID and resourceVersion",
+        "an owned leftover without a safe credential ID blocks issuance",
+        "two concurrent HTTP issuances serialize on the exact PostgreSQL account lock",
+        "lost PostgreSQL session during leftover lookup cannot reclaim a later committed issuance",
+        "lost PostgreSQL COMMIT acknowledgment preserves a committed issuance without replay",
+        "withheld PostgreSQL COMMIT is reconciled before an explicit recovery request",
+        "parser and exact-account IAM refusals precede provider and Secret effects",
+        "revoked exact-account authority cannot recover a retained credential",
+        "force deletion keeps configured-provider and no-provider behavior separate"
       ]
     },
     {
@@ -238,7 +291,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-agent-deletion-audit.test.mjs",
+      "path": "tests/integration/postgres-agent-deletion-audit.test.ts",
       "expectedTests": [
         "Agent delete audit lists every AccessBinding and Restriction the deletion finalizer removes"
       ]
@@ -260,13 +313,13 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-agent-runtime-logs.test.mjs",
+      "path": "tests/integration/postgres-agent-runtime-logs.test.ts",
       "expectedTests": [
         "runtime log views and downloads persist audit rows before the read and fail closed without them"
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-stale-claim.test.mjs",
+      "path": "tests/integration/postgres-worker-stale-claim.test.ts",
       "expectedTests": [
         "a worker that loses its claim during Compute cannot publish Namespace status, lifecycle audit, or completion",
         "a worker whose lease renewal answers after the lease drops the claim before its Compute effect",
@@ -275,7 +328,7 @@
       ]
     },
     {
-      "path": "tests/integration/compute-singleton-worker-postgres.test.mjs",
+      "path": "tests/integration/compute-singleton-worker-postgres.test.ts",
       "expectedTests": [
         "production worker emits Compute preflight warnings before worker.started and continues startup",
         "a worker binds persisted Namespace, Agent, and service principal before provider effects",
@@ -298,14 +351,14 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-workspace-setup.test.mjs",
+      "path": "tests/integration/postgres-workspace-setup.test.ts",
       "expectedTests": [
         "OCC stages workspace input atomically, isolates it, and clears bytes on completion or deletion",
         "PostgreSQL workspace setup survives reopen and enforces immutable input and completed state"
       ]
     },
     {
-      "path": "tests/integration/workspace-setup-worker.test.mjs",
+      "path": "tests/integration/workspace-setup-worker.test.ts",
       "expectedTests": [
         "worker retains exact-Agent workspace input through activation failure and purges it only after success",
         "worker rejects unsupported workspace setup before Compute preparation and retains pending files"
@@ -319,7 +372,7 @@
       "expectedTests": ["confirmed broker disposal survives service restart in PostgreSQL"]
     },
     {
-      "path": "tests/integration/postgres-password-sign-in-limit.test.mjs",
+      "path": "tests/integration/postgres-password-sign-in-limit.test.ts",
       "expectedTests": [
         "password-only sign-in limits failures per client and email with a reserved administrator lane"
       ]
@@ -487,6 +540,17 @@
       "path": "tests/integration/postgres-static-egress.test.mjs"
     },
     {
+      "path": "tests/integration/postgres-static-retired-admission.test.ts",
+      "expectedTests": [
+        "a fresh retired owner preserves admitted state but refuses re-admission and deploy",
+        "the retired owner recovers the original active revision",
+        "unbound protected source re-admission PATCH",
+        "stored-provider Secret-only PATCH without adoption consent",
+        "deploy with the retained protected source",
+        "missing middleware cannot hide permanent deployment retirement"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-egress-send-receipts.test.mjs",
       "expectedTests": [
         "PostgreSQL send receipts survive owner loss and fence exact static versions",
@@ -637,6 +701,7 @@
     {
       "path": "tests/integration/postgres-credential-source-revision-owner.test.ts",
       "expectedTests": [
+        "PostgreSQL accepts 64 credential sources per draft and revision and rejects a 65th",
         "revision insertion owns its snapshot before a source lock wait",
         "reversed source lists commit in their original order",
         "direct insertion respects OCC Namespace Agent source lock order",
@@ -653,6 +718,28 @@
       "path": "tests/integration/postgres-harness-overrides.test.ts",
       "expectedTests": [
         "PostgreSQL preserves Harness destinations across restart and default replacement"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-preset-template-validation.test.ts",
+      "expectedTests": [
+        "shipped Preset API distinguishes literal launch text from variable tokens through PostgreSQL",
+        "shipped Preset API preserves gateway password reference placeholders through PostgreSQL",
+        "filesystem Configuration Driver validates gateway password reference placeholders",
+        "Kubernetes Configuration Driver validates gateway password reference placeholders"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-readiness-capacity.test.ts",
+      "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
+    },
+    {
+      "path": "tests/integration/postgres-private-secret-create.test.ts",
+      "expectedTests": [
+        "a refused Installation-private create removes only its exact Kubernetes object",
+        "Installation-private refused-create compensation preserves replacements and unknown outcomes",
+        "OAuth registration and cleanup retain custody across unknown PostgreSQL commits",
+        "ordinary Installation-private OAuth registration, rotation and retirement remain usable"
       ]
     }
   ]

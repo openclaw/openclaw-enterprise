@@ -1,7 +1,7 @@
 import { createServer } from "node:net";
 
 // A PostgreSQL server for the CI preparation and cleanup tests (ci-prepare*.test.mjs,
-// ci-cleanup.test.mjs): scripts/ci/postgres-admin.mjs connects to a lane server's published
+// ci-cleanup.test.mjs): scripts/ci/postgres-admin.ts connects to a lane server's published
 // port, and this listens on one in the test process. It speaks just enough of the frontend/
 // backend protocol for node-postgres: startup, a cleartext password request, and simple
 // queries, each answered with an empty CommandComplete. It records every session's user,
@@ -9,12 +9,35 @@ import { createServer } from "node:net";
 //
 // `onQuery(query, session)` decides an answer: undefined (success), `{ error: "message" }`
 // (an ErrorResponse; the session stays usable, as on a real server), `{ hang: true }` (no
-// answer until the client goes away), or a promise of one of these (a slow statement).
+// answer until the client goes away), `{ rows: [{ column: "text" }] }` (text results),
+// or a promise of one of these (a slow statement).
 // The server must be running on the event loop: drive the code under test with an
 // asynchronous child process, never spawnSync.
 //
 // With `socketPath`, it listens on that Unix socket instead and reports `port` as given.
+/**
+ * @typedef {object} FakePostgresSession
+ * @property {string | undefined} user
+ * @property {string | undefined} database
+ * @property {string | undefined} password
+ * @property {string[]} queries
+ *
+ * @typedef {object} FakePostgresAnswer
+ * @property {string} [error]
+ * @property {boolean} [hang]
+ * @property {Record<string, string>[]} [rows]
+ *
+ * @callback FakePostgresQuery
+ * @param {string} query
+ * @param {FakePostgresSession} session
+ * @returns {FakePostgresAnswer | void | Promise<FakePostgresAnswer | void>}
+ */
+
+/**
+ * @param {{ port?: number, socketPath?: string, onQuery?: FakePostgresQuery }} [options]
+ */
 export async function startFakePostgres({ port = 0, socketPath, onQuery = () => undefined } = {}) {
+  /** @type {FakePostgresSession[]} */
   const sessions = [];
   const sockets = new Set();
   const server = createServer((socket) => {
@@ -32,7 +55,7 @@ export async function startFakePostgres({ port = 0, socketPath, onQuery = () => 
     }
   });
   return {
-    port: socketPath ? port : server.address().port,
+    port: socketPath ? port : /** @type {import("node:net").AddressInfo} */ (server.address()).port,
     sessions,
     // Every query, as "<database>\t<query>", in arrival order.
     queries: () =>
@@ -67,6 +90,46 @@ function int32(...values) {
 
 const cstring = (value) => Buffer.from(`${value}\0`, "utf8");
 const readyForQuery = () => message("Z", Buffer.from("I", "latin1"));
+
+function textRows(rows) {
+  const columns = Object.keys(rows[0] ?? {});
+  const count = (value) => {
+    const bytes = Buffer.alloc(2);
+    bytes.writeInt16BE(value);
+    return bytes;
+  };
+  return [
+    message(
+      "T",
+      Buffer.concat([
+        count(columns.length),
+        ...columns.map((column) =>
+          Buffer.concat([
+            cstring(column),
+            int32(0),
+            count(0),
+            int32(25),
+            count(-1),
+            int32(-1),
+            count(0),
+          ]),
+        ),
+      ]),
+    ),
+    ...rows.map((row) =>
+      message(
+        "D",
+        Buffer.concat([
+          count(columns.length),
+          ...columns.map((column) => {
+            const value = Buffer.from(row[column], "utf8");
+            return Buffer.concat([int32(value.length), value]);
+          }),
+        ]),
+      ),
+    ),
+  ];
+}
 
 function errorResponse(text) {
   return message(
@@ -152,6 +215,7 @@ function serveSession(socket, sessions, onQuery) {
           }
           socket.write(
             Buffer.concat([
+              ...(answer?.rows ? textRows(answer.rows) : []),
               answer?.error ? errorResponse(answer.error) : message("C", cstring("OK")),
               readyForQuery(),
             ]),

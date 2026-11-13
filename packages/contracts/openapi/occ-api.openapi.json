@@ -1205,6 +1205,11 @@
                 "type": "array"
               },
               "message": { "maxLength": 256, "minLength": 1, "type": "string" },
+              "reason": {
+                "const": "credential_registration_pending",
+                "description": "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+                "type": "string"
+              },
               "remainingResources": {
                 "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
                 "items": {
@@ -12651,11 +12656,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -13080,11 +13080,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -14655,11 +14650,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -18926,7 +18916,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -26110,6 +26100,10 @@
                         "host": { "type": "string" },
                         "mode": { "enum": ["admin", "chat"], "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
+                        "reason": {
+                          "enum": ["not-enabled", "configuration", "compute"],
+                          "type": "string"
+                        },
                         "sessionMode": {
                           "enum": ["shared-cookie", "host-only-exchange"],
                           "type": "string"
@@ -28478,7 +28472,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -31291,7 +31285,66 @@
               },
               "schema": {
                 "additionalProperties": false,
+                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
                 "properties": {
+                  "additions": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "binary": {
+                          "description": "Absolute path of the executable receiving access.",
+                          "maxLength": 512,
+                          "minLength": 2,
+                          "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                          "title": "Executable path",
+                          "type": "string"
+                        },
+                        "host": {
+                          "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                          "title": "Destination hostname",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                          "title": "Rule ID",
+                          "type": "string"
+                        },
+                        "ports": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "from": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "Start port",
+                                "type": "integer"
+                              },
+                              "to": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "End port",
+                                "type": "integer"
+                              }
+                            },
+                            "required": ["from", "to"],
+                            "type": "object"
+                          },
+                          "maxItems": 16,
+                          "minItems": 1,
+                          "title": "Port ranges",
+                          "type": "array"
+                        }
+                      },
+                      "required": ["id", "binary", "host", "ports"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "title": "Network rules",
+                    "type": "array"
+                  },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
                   "revisionId": {
                     "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -31303,6 +31356,7 @@
               }
             }
           },
+          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
           "required": true
         },
         "responses": {
@@ -31573,7 +31627,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Apply the saved policy to the running Agent revision",
+        "summary": "Queue policy application to the running Agent revision, optionally replacing saved additions",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
@@ -32072,7 +32126,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
         "operationId": "validateAgentSandboxPolicy",
         "parameters": [
           {
@@ -32329,7 +32383,8 @@
         "summary": "Preview Agent network policy admission without saving or applying",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" }
+          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },
@@ -36082,10 +36137,16 @@
                 "examples": {
                   "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
-                "schema": { "$ref": "#/components/schemas/def-7" }
+                "schema": { "allOf": [{ "$ref": "#/components/schemas/def-7" }] }
               }
             },
-            "description": "A required dependency is unavailable."
+            "description": "A required dependency is unavailable.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
+                "schema": { "pattern": "^[1-9][0-9]*$", "type": "string" }
+              }
+            }
           }
         },
         "summary": "Remove an unreferenced credential source from the Credential Gateway",

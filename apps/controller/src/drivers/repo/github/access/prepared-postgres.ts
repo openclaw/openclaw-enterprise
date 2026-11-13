@@ -10,7 +10,11 @@ import type {
   PreparedGitHubEgressSource,
   Secret,
 } from "@openclaw-enterprise/contracts";
-import { preparedGitHubLive as live, readPreparedGitHubMetadata } from "@openclaw-enterprise/occ";
+import {
+  preparedGitHubLive as live,
+  preparedGitHubRejectedMaterialMatch,
+  readPreparedGitHubMetadata,
+} from "@openclaw-enterprise/occ";
 import type {
   PostgresClient,
   PostgresPool,
@@ -481,9 +485,7 @@ export class PreparedGitHubPostgres {
             AND NOT EXISTS (
               SELECT 1 FROM occ.egress_rejected_material r JOIN occ.prepared_github_families f
                 ON f.source_id=a.source_id
-              WHERE r.namespace_id=f.source #>> '{key,namespaceId}'
-                AND r.secret_driver_id=f.source #>> '{key,provider,id}'
-                AND r.material_id=f.source_id AND r.material_version=a.material_version::text)
+              WHERE ${preparedGitHubRejectedMaterialMatch})
             AND ($4::uuid IS NULL OR (id=$4 AND material_version=$5 AND state='committed'
               AND admission=$6::jsonb AND usable_until > clock_timestamp()
               AND usable_until < clock_timestamp() + interval '61 minutes'))
