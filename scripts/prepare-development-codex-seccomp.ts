@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { execFile as execFileCallback } from "node:child_process";
-import { prepareDevelopmentCodexSeccompProfile } from "./lib/codex-seccomp-k3d.mjs";
+import { execFile as execFileCallback, type ExecFileException } from "node:child_process";
+import { prepareDevelopmentCodexSeccompProfile } from "./lib/codex-seccomp-k3d.ts";
 
 const [directory, image, timeoutSeconds, ...extra] = process.argv.slice(2);
 const timeoutMs = Number(timeoutSeconds) * 1_000;
@@ -19,7 +19,7 @@ if (
 
 const stderrLimit = 400;
 
-function failureReason(error) {
+function failureReason(error: ExecFileException) {
   if (typeof error.code === "string") {
     return error.code;
   }
@@ -31,13 +31,17 @@ function failureReason(error) {
 
 // Name why a command failed and keep the end of its stderr. Never include
 // stdout: CRI inspection output can contain mount details.
-function failureMessage(command, error, stderr) {
+function failureMessage(command: string, error: ExecFileException, stderr: string) {
   const detail = stderr.trim().replace(/\s+/g, " ");
   const tail = detail.length > stderrLimit ? `...${detail.slice(-stderrLimit)}` : detail;
   return `${command} failed (${failureReason(error)})${tail ? `: ${tail}` : "."}`;
 }
 
-function execFile(command, args, { timeoutMs: commandTimeoutMs }) {
+const execFile: Parameters<typeof prepareDevelopmentCodexSeccompProfile>[0]["execFile"] = (
+  command,
+  args,
+  { timeoutMs: commandTimeoutMs },
+) => {
   return new Promise((resolve, reject) => {
     execFileCallback(
       command,
@@ -45,21 +49,23 @@ function execFile(command, args, { timeoutMs: commandTimeoutMs }) {
       { timeout: commandTimeoutMs, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) {
-          const failure = new Error(failureMessage(command, error, stderr));
-          failure.stdout = stdout;
-          failure.stderr = stderr;
-          failure.exitCode = error.code;
-          failure.signal = error.signal;
-          failure.killed = error.killed;
-          failure.timedOut = error.killed === true;
-          reject(failure);
+          reject(
+            Object.assign(new Error(failureMessage(command, error, stderr)), {
+              stdout,
+              stderr,
+              exitCode: error.code,
+              signal: error.signal,
+              killed: error.killed,
+              timedOut: error.killed === true,
+            }),
+          );
         } else {
           resolve({ stdout, stderr });
         }
       },
     );
   });
-}
+};
 
 try {
   const result = await prepareDevelopmentCodexSeccompProfile({
@@ -71,6 +77,7 @@ try {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } catch (error) {
   // Do not print CRI output: even a probe inspection can include mount details.
-  process.stderr.write(`Development Codex sandbox preparation failed: ${error.message}\n`);
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`Development Codex sandbox preparation failed: ${message}\n`);
   process.exitCode = 1;
 }

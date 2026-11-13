@@ -167,7 +167,7 @@ Without runner capture, it emits a projected diagnostic. `unavailable` means a
 failed observation; missing records do not prove healthy startup.
 
 Dedicated Codex preparation and the operator's offline profile generator share
-`scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
+`scripts/lib/codex-seccomp-profile.ts:deriveCodexBwrapProfile`. Preparation
 requires an actual workspace write and denied write to a container-writable
 outside path before publishing the selected Localhost profile to the live suite.
 Native runtime-image tests trust a dynamic Codex Docker seccomp profile only when

@@ -8,13 +8,11 @@ import { assertInsideDirectory } from "./assert-inside-directory.ts";
 import { privateOwned } from "./private-owned-path.mjs";
 import {
   assertReviewedCodexVersion,
-  codexBwrapAdditionalSyscalls,
   codexBwrapSourceProvenance,
   deriveCodexBwrapProfile,
   sha256Hex,
   stableJson,
-  validateRuntimeDefaultSeccompProfile,
-} from "./codex-seccomp-profile.mjs";
+} from "./codex-seccomp-profile.ts";
 
 // Load before any preparation effects; the complete script travels through kubectl exec.
 const sandboxProbeScript = await readFile(
@@ -27,13 +25,159 @@ const kubeletSeccompRoot = "/var/lib/kubelet/seccomp";
 const codexProbeTimeoutMs = 180_000;
 const kubectlRequestTimeout = "75s";
 
+type CommandResult = {
+  stdout: string;
+  stderr: string;
+  exitCode?: number | null;
+  code?: number;
+  signal?: NodeJS.Signals | null;
+  killed?: boolean;
+  timedOut?: boolean;
+};
+
+type CommandError = Error & {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number | string | null | undefined;
+  code?: number | string | null | undefined;
+  signal?: NodeJS.Signals | null | undefined;
+  killed?: boolean | undefined;
+  timedOut?: boolean | undefined;
+  codexSandboxProbe?: SandboxProbe | null;
+};
+
+type ExecFile = (
+  command: string,
+  args: string[],
+  options: { timeoutMs: number },
+) => Promise<CommandResult>;
+
+type ClusterSelection = { kubeconfig: string; context: string };
+type OwnedK3dCluster = ClusterSelection & {
+  name: string;
+  directory: string;
+  kubectl?: string;
+};
+
+type PreparationOptions = {
+  cluster?: OwnedK3dCluster;
+  image?: string;
+  profileName?: string;
+  timeoutMs?: number;
+  execFile?: ExecFile;
+  kubectl?: string;
+  docker?: string;
+  codexVersion?: string;
+  commandTimeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+};
+
+type DevelopmentPreparationOptions = {
+  directory: string;
+  image: string;
+  execFile: ExecFile;
+  timeoutMs: number;
+};
+
+type ProbeOptions = {
+  execFile: ExecFile;
+  kubectl: string;
+  docker: string;
+  timeoutMs: number;
+  commandTimeoutMs: number;
+  directory: string;
+  codexVersion: string;
+  allowRuntimeDefault?: boolean;
+  reportRuntimeDefaultReadinessFailure?: boolean;
+};
+
+type ProfileMode = "RuntimeDefault" | "Localhost";
+type SeccompProfile = ReturnType<typeof deriveCodexBwrapProfile>;
+type PreparedNode = {
+  nodeName: string;
+  architectures: string[];
+  runtimeDefaultSha256: string;
+  profileSha256: string;
+  profilePath: string;
+  addedRules: number;
+};
+
+type SandboxProbe = { stage: string; exit: number; entered: boolean };
+type ProfileObservation = {
+  profileVerification: "not-checked" | "passed" | "failed";
+  effectiveProfileSha256: string | null;
+};
+
+type ProbePodInput = {
+  name: string;
+  namespace: string;
+  nodeName: string;
+  image: string;
+  localhostProfile?: string;
+};
+
+type PodSecurity = {
+  runAsNonRoot?: boolean;
+  runAsUser?: number;
+  runAsGroup?: number;
+  allowPrivilegeEscalation?: boolean;
+  readOnlyRootFilesystem?: boolean;
+  capabilities?: { drop?: string[]; add?: string[] };
+};
+
+type ObservedPod = {
+  metadata?: { name?: string; uid?: string };
+  spec?: {
+    nodeName?: string;
+    securityContext?: PodSecurity;
+    containers?: { name: string; securityContext?: PodSecurity }[];
+  };
+  status?: {
+    containerStatuses?: {
+      name: string;
+      containerID?: string;
+      imageID?: string;
+      ready?: boolean;
+      state?: { waiting?: { reason?: string; message?: string } };
+    }[];
+  };
+};
+
+type ObservedNodeList = { items?: { metadata?: { name?: string } }[] };
+type ObservedNode = {
+  status?: {
+    nodeInfo?: {
+      architecture?: string;
+      kernelVersion?: string;
+      osImage?: string;
+      containerRuntimeVersion?: string;
+    };
+  };
+};
+
+type RuntimeSpec = { linux?: { seccomp?: SeccompProfile } };
+type CriInspectInfo = { runtimeSpec?: RuntimeSpec | string };
+type CriInspect = { info?: CriInspectInfo; status?: { info?: CriInspectInfo } };
+
+type DevelopmentState = {
+  version?: number;
+  computeDriver?: string;
+  deploymentMode?: string;
+  composeProject?: string;
+  sandboxDriver?: string;
+  cluster?: string;
+  containerEngine?: string;
+  dockerHost?: string;
+  repository: string;
+};
+
 function randomSuffix(bytes = 6) {
   return randomUUID()
     .replaceAll("-", "")
     .slice(0, bytes * 2);
 }
 
-function slug(value) {
+function slug(value: string) {
   return String(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -41,7 +185,10 @@ function slug(value) {
     .replace(/^-|-$/g, "");
 }
 
-function assertImmutableImageReference(image, name = "Codex runtime image") {
+function assertImmutableImageReference(
+  image: string | undefined,
+  name = "Codex runtime image",
+): asserts image is string {
   assert.match(
     image ?? "",
     /^\S+@sha256:[a-f0-9]{64}$/i,
@@ -49,7 +196,7 @@ function assertImmutableImageReference(image, name = "Codex runtime image") {
   );
 }
 
-function assertLocalhostProfileName(profileName) {
+function assertLocalhostProfileName(profileName: string) {
   assert.equal(typeof profileName, "string", "Codex seccomp profile name must be a string.");
   assert.ok(profileName.length > 0, "Codex seccomp profile name must be non-empty.");
   assert.equal(
@@ -74,14 +221,14 @@ function assertLocalhostProfileName(profileName) {
   );
 }
 
-function requireExecFile(execFile) {
+function requireExecFile(execFile: ExecFile | undefined) {
   if (typeof execFile !== "function") {
     throw new Error("Codex seccomp preparation requires execFile.");
   }
   return execFile;
 }
 
-function assertSelectedK3dCluster(cluster) {
+function assertSelectedK3dCluster(cluster: OwnedK3dCluster | undefined) {
   assert.ok(cluster?.name, "A run-owned k3d cluster is required.");
   assert.ok(cluster?.directory, "The k3d cluster resource must expose its owned directory.");
   assert.ok(cluster?.kubeconfig, "The k3d cluster resource must expose a kubeconfig path.");
@@ -112,7 +259,7 @@ function assertSelectedK3dCluster(cluster) {
   return { ...cluster, directory, kubeconfig };
 }
 
-function kubectlArgs(selection, args) {
+function kubectlArgs(selection: ClusterSelection, args: string[]) {
   return [
     "--kubeconfig",
     selection.kubeconfig,
@@ -124,18 +271,22 @@ function kubectlArgs(selection, args) {
   ];
 }
 
-async function kubectl(selection, args, options) {
+async function kubectl(selection: ClusterSelection, args: string[], options: ProbeOptions) {
   const result = await options.execFile(options.kubectl, kubectlArgs(selection, args), {
     timeoutMs: options.commandTimeoutMs,
   });
   return result.stdout;
 }
 
-async function kubectlJson(selection, args, options) {
-  return JSON.parse(await kubectl(selection, [...args, "-o", "json"], options));
+async function kubectlJson<T>(selection: ClusterSelection, args: string[], options: ProbeOptions) {
+  return JSON.parse(await kubectl(selection, [...args, "-o", "json"], options)) as T;
 }
 
-async function applyManifest(selection, manifest, options) {
+async function applyManifest(
+  selection: ClusterSelection,
+  manifest: ReturnType<typeof restrictedProbePod>,
+  options: ProbeOptions,
+) {
   const manifestPath = join(options.directory, `${manifest.metadata.name}.json`);
   await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, { mode: 0o600 });
   await chmod(manifestPath, 0o600);
@@ -144,9 +295,13 @@ async function applyManifest(selection, manifest, options) {
   });
 }
 
-async function waitFor(description, operation, timeoutMs = codexProbeTimeoutMs) {
+async function waitFor<T>(
+  description: string,
+  operation: () => Promise<T | false | undefined>,
+  timeoutMs = codexProbeTimeoutMs,
+) {
   const deadline = Date.now() + timeoutMs;
-  let lastError;
+  let lastError: unknown;
   while (Date.now() < deadline) {
     try {
       const value = await operation();
@@ -159,11 +314,11 @@ async function waitFor(description, operation, timeoutMs = codexProbeTimeoutMs) 
     await new Promise((resolve) => setTimeout(resolve, 750));
   }
   throw new Error(
-    `Timed out waiting for ${description}.${lastError ? ` Last error: ${lastError.message}` : ""}`,
+    `Timed out waiting for ${description}.${lastError instanceof Error ? ` Last error: ${lastError.message}` : ""}`,
   );
 }
 
-function restrictedProbePod({ name, namespace, nodeName, image, localhostProfile }) {
+function restrictedProbePod({ name, namespace, nodeName, image, localhostProfile }: ProbePodInput) {
   return {
     apiVersion: "v1",
     kind: "Pod",
@@ -218,22 +373,22 @@ function restrictedProbePod({ name, namespace, nodeName, image, localhostProfile
   };
 }
 
-function extractContainerId(pod, containerName = "probe") {
+function extractContainerId(pod: ObservedPod, containerName = "probe") {
   const status = pod.status?.containerStatuses?.find((entry) => entry.name === containerName);
   const id = status?.containerID?.replace(/^[^:]+:\/\//, "");
   assert.ok(id, `Pod ${pod.metadata?.name} did not expose a ${containerName} container ID.`);
   return id;
 }
 
-function extractRuntimeSpec(criInspect) {
+function extractRuntimeSpec(criInspect: CriInspect) {
   const runtimeSpec = criInspect.info?.runtimeSpec ?? criInspect.status?.info?.runtimeSpec;
   if (typeof runtimeSpec === "string") {
-    return JSON.parse(runtimeSpec);
+    return JSON.parse(runtimeSpec) as RuntimeSpec;
   }
   return runtimeSpec;
 }
 
-function receiveSandboxProbe(result, nonce) {
+function receiveSandboxProbe(result: Pick<CommandError, "stdout" | "stderr">, nonce: string) {
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
   if (
@@ -258,7 +413,7 @@ function receiveSandboxProbe(result, nonce) {
   }
   const terminal = lines
     .at(-1)
-    .match(
+    ?.match(
       /^OCE_SANDBOX_PROBE_V1:([a-f0-9]{32}):END:(VERSION|PREPARE|SANDBOX|ASSERTIONS|CLEANUP|DONE):(0|[1-9][0-9]{0,2})$/,
     );
   if (
@@ -273,6 +428,7 @@ function receiveSandboxProbe(result, nonce) {
   const stage = terminal[2];
   const exit = Number(terminal[3]);
   if (
+    stage === undefined ||
     (stage === "DONE") !== (exit === 0) ||
     (entered && ["VERSION", "PREPARE"].includes(stage)) ||
     (!entered && ["ASSERTIONS", "CLEANUP", "DONE"].includes(stage))
@@ -282,25 +438,30 @@ function receiveSandboxProbe(result, nonce) {
   return { stage, exit, entered };
 }
 
-async function inspectContainerRuntimeSpec(nodeName, containerId, options) {
+async function inspectContainerSeccompProfile(
+  nodeName: string,
+  containerId: string,
+  options: ProbeOptions,
+) {
   const result = await options.execFile(
     options.docker,
     ["exec", nodeName, "crictl", "inspect", containerId],
     { timeoutMs: options.commandTimeoutMs },
   );
-  let runtimeSpec;
+  let runtimeSpec: RuntimeSpec | undefined;
   try {
-    runtimeSpec = extractRuntimeSpec(JSON.parse(result.stdout));
+    runtimeSpec = extractRuntimeSpec(JSON.parse(result.stdout) as CriInspect);
   } catch {
     throw new Error("CRI inspect returned an invalid runtime specification.");
   }
   assert.ok(runtimeSpec?.linux?.seccomp, "CRI inspect did not expose runtimeSpec.linux.seccomp.");
-  return runtimeSpec;
+  return runtimeSpec.linux.seccomp;
 }
 
-function failedSandboxProbe(error, nonce) {
+function failedSandboxProbe(error: CommandError, nonce: string) {
   const status = error.exitCode ?? error.code;
   const definite =
+    typeof status === "number" &&
     Number.isInteger(status) &&
     status > 0 &&
     status <= 255 &&
@@ -313,7 +474,7 @@ function failedSandboxProbe(error, nonce) {
 }
 
 // execFile fulfills only after a zero exit; reject any contradictory explicit status.
-function successfulCommandResult(result) {
+function successfulCommandResult(result: CommandResult) {
   return (
     (result.exitCode === undefined || result.exitCode === 0) &&
     (result.code === undefined || result.code === 0) &&
@@ -323,9 +484,14 @@ function successfulCommandResult(result) {
   );
 }
 
-async function execCodexSandboxProbe(selection, namespace, podName, options) {
+async function execCodexSandboxProbe(
+  selection: ClusterSelection,
+  namespace: string,
+  podName: string,
+  options: ProbeOptions,
+) {
   const nonce = randomUUID().replaceAll("-", "");
-  let result;
+  let result: CommandResult;
   try {
     result = await options.execFile(
       options.kubectl,
@@ -345,7 +511,10 @@ async function execCodexSandboxProbe(selection, namespace, podName, options) {
       { timeoutMs: options.commandTimeoutMs },
     );
   } catch (error) {
-    error.codexSandboxProbe = failedSandboxProbe(error, nonce);
+    if (error instanceof Error) {
+      const failure: CommandError = error;
+      failure.codexSandboxProbe = failedSandboxProbe(failure, nonce);
+    }
     throw error;
   }
   const receipt = successfulCommandResult(result) ? receiveSandboxProbe(result, nonce) : null;
@@ -355,23 +524,24 @@ async function execCodexSandboxProbe(selection, namespace, podName, options) {
   );
 }
 
-function safeProbeField(value, pattern) {
+function safeProbeField(value: unknown, pattern: RegExp) {
   return typeof value === "string" && value.length <= 253 && value.match(pattern)?.[0] === value
     ? value
     : null;
 }
 
-function probeImageDigest(value) {
+function probeImageDigest(value: unknown) {
   return typeof value === "string"
     ? (value.match(/(?:^|@|:\/\/)(sha256:[a-f0-9]{64})$/i)?.[1] ?? null)
     : null;
 }
 
-function safeProbeSecurity(pod) {
+function safeProbeSecurity(pod: ObservedPod) {
   const podSecurity = pod.spec?.securityContext;
   const container = pod.spec?.containers?.find((entry) => entry.name === "probe")?.securityContext;
-  const bool = (value) => (typeof value === "boolean" ? value : null);
-  const id = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+  const bool = (value: unknown) => (typeof value === "boolean" ? value : null);
+  const id = (value: unknown) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   return {
     runAsNonRoot: bool(container?.runAsNonRoot ?? podSecurity?.runAsNonRoot),
     runAsUser: id(container?.runAsUser ?? podSecurity?.runAsUser),
@@ -384,17 +554,28 @@ function safeProbeSecurity(pod) {
   };
 }
 
-async function withProbeFailureReport(pod, mode, image, options, operation) {
+async function withProbeFailureReport<T>(
+  pod: ObservedPod,
+  mode: ProfileMode,
+  image: string,
+  options: ProbeOptions,
+  operation: (observation: ProfileObservation) => Promise<T>,
+) {
   const startedAt = new Date().toISOString();
-  const profile = { profileVerification: "not-checked", effectiveProfileSha256: null };
+  const profile: ProfileObservation = {
+    profileVerification: "not-checked",
+    effectiveProfileSha256: null,
+  };
   try {
     return await operation(profile);
   } catch (error) {
     try {
       const status = pod.status?.containerStatuses?.find((entry) => entry.name === "probe");
-      const codexProbe = error?.codexSandboxProbe;
+      const failure: CommandError | undefined = error instanceof Error ? error : undefined;
+      const codexProbe = failure?.codexSandboxProbe;
       const probe =
-        ["VERSION", "PREPARE", "SANDBOX", "ASSERTIONS", "CLEANUP"].includes(codexProbe?.stage) &&
+        codexProbe &&
+        ["VERSION", "PREPARE", "SANDBOX", "ASSERTIONS", "CLEANUP"].includes(codexProbe.stage) &&
         Number.isInteger(codexProbe.exit) &&
         codexProbe.exit >= 1 &&
         codexProbe.exit <= 255 &&
@@ -433,7 +614,7 @@ async function withProbeFailureReport(pod, mode, image, options, operation) {
   }
 }
 
-function isRuntimeDefaultSandboxDenial(error) {
+function isRuntimeDefaultSandboxDenial(error: CommandError) {
   const probe = error.codexSandboxProbe;
   if (
     error.timedOut === true ||
@@ -454,11 +635,16 @@ function isRuntimeDefaultSandboxDenial(error) {
   );
 }
 
-async function verifyRuntimeDefaultDeniesCodexSandbox(selection, namespace, podName, options) {
+async function verifyRuntimeDefaultDeniesCodexSandbox(
+  selection: ClusterSelection,
+  namespace: string,
+  podName: string,
+  options: ProbeOptions,
+) {
   try {
     await execCodexSandboxProbe(selection, namespace, podName, options);
   } catch (error) {
-    if (!isRuntimeDefaultSandboxDenial(error)) {
+    if (!(error instanceof Error) || !isRuntimeDefaultSandboxDenial(error)) {
       throw error;
     }
     return false;
@@ -466,9 +652,16 @@ async function verifyRuntimeDefaultDeniesCodexSandbox(selection, namespace, podN
   return true;
 }
 
-async function listOwnedK3dNodes(selection, cluster, options) {
-  const nodes = await kubectlJson(selection, ["get", "nodes"], options);
-  const names = nodes.items?.map((node) => node.metadata?.name).filter(Boolean) ?? [];
+async function listOwnedK3dNodes(
+  selection: ClusterSelection,
+  cluster: OwnedK3dCluster,
+  options: ProbeOptions,
+) {
+  const nodes = await kubectlJson<ObservedNodeList>(selection, ["get", "nodes"], options);
+  const names =
+    nodes.items
+      ?.map((node) => node.metadata?.name)
+      .filter((name): name is string => Boolean(name)) ?? [];
   assert.ok(names.length > 0, "The selected k3d cluster must expose at least one node.");
   for (const name of names) {
     assert.ok(
@@ -479,11 +672,17 @@ async function listOwnedK3dNodes(selection, cluster, options) {
   return names;
 }
 
-async function waitForPodReady(selection, namespace, name, options, observe) {
+async function waitForPodReady(
+  selection: ClusterSelection,
+  namespace: string,
+  name: string,
+  options: ProbeOptions,
+  observe?: (pod: ObservedPod) => void,
+) {
   return waitFor(
     `Pod ${namespace}/${name} to become ready`,
     async () => {
-      const pod = await kubectlJson(
+      const pod = await kubectlJson<ObservedPod>(
         selection,
         ["get", "pod", name, "--namespace", namespace],
         options,
@@ -502,7 +701,13 @@ async function waitForPodReady(selection, namespace, name, options, observe) {
   );
 }
 
-async function waitForMissingProfileFailure(selection, namespace, name, missingProfile, options) {
+async function waitForMissingProfileFailure(
+  selection: ClusterSelection,
+  namespace: string,
+  name: string,
+  missingProfile: string,
+  options: ProbeOptions,
+) {
   const profilePath = posix.join(kubeletSeccompRoot, missingProfile);
   // containerd's WithProfile read error, optionally wrapped by CreateContainer.
   // Match the complete diagnostic: mentioning seccomp or another profile is not proof.
@@ -510,7 +715,7 @@ async function waitForMissingProfileFailure(selection, namespace, name, missingP
   const pod = await waitFor(
     `Pod ${namespace}/${name} to fail closed on a missing localhost seccomp profile`,
     async () => {
-      const pod = await kubectlJson(
+      const pod = await kubectlJson<ObservedPod>(
         selection,
         ["get", "pod", name, "--namespace", namespace],
         options,
@@ -539,23 +744,43 @@ async function waitForMissingProfileFailure(selection, namespace, name, missingP
   return pod;
 }
 
-async function runtimeDefaultProfileForNode(selection, namespace, nodeName, image, options) {
+function runtimeDefaultProfileForNode(
+  selection: ClusterSelection,
+  namespace: string,
+  nodeName: string,
+  image: string,
+  options: ProbeOptions & { allowRuntimeDefault?: false },
+): Promise<SeccompProfile>;
+function runtimeDefaultProfileForNode(
+  selection: ClusterSelection,
+  namespace: string,
+  nodeName: string,
+  image: string,
+  options: ProbeOptions,
+): Promise<SeccompProfile | null>;
+async function runtimeDefaultProfileForNode(
+  selection: ClusterSelection,
+  namespace: string,
+  nodeName: string,
+  image: string,
+  options: ProbeOptions,
+) {
   const podName = `runtime-default-${slug(nodeName).slice(0, 40)}-${randomSuffix(3)}`;
   await applyManifest(
     selection,
     restrictedProbePod({ name: podName, namespace, nodeName, image }),
     options,
   );
-  let pod;
-  let lastPod;
+  let pod: ObservedPod;
+  const observation: { pod?: ObservedPod } = {};
   try {
     pod = await waitForPodReady(selection, namespace, podName, options, (observed) => {
-      lastPod = observed;
+      observation.pod = observed;
     });
   } catch (error) {
     if (options.reportRuntimeDefaultReadinessFailure) {
       try {
-        const statuses = lastPod?.status?.containerStatuses;
+        const statuses = observation.pod?.status?.containerStatuses;
         const waitingReason = Array.isArray(statuses)
           ? statuses.find((status) => status?.name === "probe")?.state?.waiting?.reason
           : null;
@@ -566,7 +791,7 @@ async function runtimeDefaultProfileForNode(selection, namespace, nodeName, imag
           "CreateContainerConfigError",
           "CreateContainerError",
           "ContainerCreating",
-        ].includes(waitingReason)
+        ].includes(waitingReason ?? "")
           ? waitingReason
           : null;
         // A stream write can emit EPIPE after this catch, interrupting cleanup.
@@ -590,16 +815,17 @@ async function runtimeDefaultProfileForNode(selection, namespace, nodeName, imag
       }
       throw new Error("RuntimeDefault unexpectedly allowed the Codex sandbox probe.");
     }
-    const runtimeSpec = await inspectContainerRuntimeSpec(
-      nodeName,
-      extractContainerId(pod),
-      options,
-    );
-    return runtimeSpec.linux.seccomp;
+    return inspectContainerSeccompProfile(nodeName, extractContainerId(pod), options);
   });
 }
 
-async function installProfileOnNode(nodeName, profileName, profile, directory, options) {
+async function installProfileOnNode(
+  nodeName: string,
+  profileName: string,
+  profile: SeccompProfile,
+  directory: string,
+  options: ProbeOptions,
+) {
   const profileData = stableJson(profile);
   const expectedSha256 = sha256Hex(profileData);
   const source = join(directory, `${basename(profileName)}-${nodeName}-${expectedSha256}.json`);
@@ -636,7 +862,11 @@ async function installProfileOnNode(nodeName, profileName, profile, directory, o
   };
 }
 
-async function writeDockerSeccompProfile(directory, codexVersion, installation) {
+async function writeDockerSeccompProfile(
+  directory: string,
+  codexVersion: string,
+  installation: Awaited<ReturnType<typeof installProfileOnNode>>,
+) {
   const dockerDirectory = join(directory, "docker-seccomp");
   await mkdir(dockerDirectory, { recursive: true, mode: 0o700 });
   await chmod(dockerDirectory, 0o700);
@@ -647,13 +877,13 @@ async function writeDockerSeccompProfile(directory, codexVersion, installation) 
 }
 
 async function verifyInstalledProfile(
-  selection,
-  namespace,
-  nodeName,
-  image,
-  profileName,
-  profile,
-  options,
+  selection: ClusterSelection,
+  namespace: string,
+  nodeName: string,
+  image: string,
+  profileName: string,
+  profile: SeccompProfile,
+  options: ProbeOptions,
 ) {
   const podName = `codex-seccomp-${slug(nodeName).slice(0, 42)}-${randomSuffix(3)}`;
   await applyManifest(
@@ -669,12 +899,11 @@ async function verifyInstalledProfile(
   );
   const pod = await waitForPodReady(selection, namespace, podName, options);
   await withProbeFailureReport(pod, "Localhost", image, options, async (observation) => {
-    const runtimeSpec = await inspectContainerRuntimeSpec(
+    const effective = await inspectContainerSeccompProfile(
       nodeName,
       extractContainerId(pod),
       options,
     );
-    const effective = runtimeSpec.linux.seccomp;
     observation.effectiveProfileSha256 = sha256Hex(stableJson(effective));
     const matches = isDeepStrictEqual(effective, profile);
     observation.profileVerification = matches ? "passed" : "failed";
@@ -687,12 +916,12 @@ async function verifyInstalledProfile(
 }
 
 async function verifyMissingProfileFailsClosed(
-  selection,
-  namespace,
-  nodeName,
-  image,
-  profileName,
-  options,
+  selection: ClusterSelection,
+  namespace: string,
+  nodeName: string,
+  image: string,
+  profileName: string,
+  options: ProbeOptions,
 ) {
   const podName = `missing-seccomp-${slug(nodeName).slice(0, 38)}-${randomSuffix(3)}`;
   const missingProfile = posix.join(
@@ -713,24 +942,23 @@ async function verifyMissingProfileFailsClosed(
   await waitForMissingProfileFailure(selection, namespace, podName, missingProfile, options);
 }
 
-async function withProbeCleanup(
-  selection,
-  namespace,
-  directory,
-  options,
-  isCreated,
-  wait,
-  label,
-  operation,
+async function withProbeCleanup<T>(
+  selection: ClusterSelection,
+  namespace: string,
+  directory: string,
+  options: ProbeOptions,
+  isCreated: () => boolean,
+  wait: boolean,
+  label: string,
+  operation: () => Promise<T>,
 ) {
-  let result;
-  let primaryError;
+  let outcome: { result: T } | { error: unknown };
   try {
-    result = await operation();
+    outcome = { result: await operation() };
   } catch (error) {
-    primaryError = error;
+    outcome = { error };
   }
-  const cleanupErrors = [];
+  const cleanupErrors: unknown[] = [];
   if (isCreated()) {
     try {
       await kubectl(
@@ -748,19 +976,21 @@ async function withProbeCleanup(
     cleanupErrors.push(error);
   }
   if (cleanupErrors.length > 0) {
-    const cleanupMessage = cleanupErrors.map((error) => error.message).join("; ");
+    const cleanupMessage = cleanupErrors
+      .map((error) => (error instanceof Error ? error.message : String(error)))
+      .join("; ");
     const cleanupError = new AggregateError(cleanupErrors, `${label}: ${cleanupMessage}`);
-    if (primaryError) {
-      primaryError.cleanupError = cleanupError;
-      primaryError.message = `${primaryError.message}; cleanup also failed: ${cleanupMessage}`;
-    } else {
-      primaryError = cleanupError;
+    if ("error" in outcome && outcome.error instanceof Error) {
+      Object.assign(outcome.error, { cleanupError });
+      outcome.error.message = `${outcome.error.message}; cleanup also failed: ${cleanupMessage}`;
+    } else if ("result" in outcome) {
+      throw cleanupError;
     }
   }
-  if (primaryError) {
-    throw primaryError;
+  if ("error" in outcome) {
+    throw outcome.error;
   }
-  return result;
+  return outcome.result;
 }
 
 async function prepareCodexSeccompProfile({
@@ -774,7 +1004,7 @@ async function prepareCodexSeccompProfile({
   codexVersion = "0.164.0",
   commandTimeoutMs = timeoutMs + 15_000,
   env = process.env,
-} = {}) {
+}: PreparationOptions = {}) {
   const selectedCluster = assertSelectedK3dCluster(cluster);
   const exec = requireExecFile(execFile);
   assertImmutableImageReference(image);
@@ -793,9 +1023,9 @@ async function prepareCodexSeccompProfile({
     directory,
     codexVersion,
   };
-  const nodes = [];
-  let dockerProfilePath;
-  let dockerProfileSha256;
+  const nodes: PreparedNode[] = [];
+  let dockerProfilePath: string | undefined;
+  let dockerProfileSha256: string | undefined;
   let namespaceCreated = false;
   return withProbeCleanup(
     selection,
@@ -852,14 +1082,12 @@ async function prepareCodexSeccompProfile({
           addedRules: profile.syscalls.length - baseline.syscalls.length,
         });
       }
-      assert.ok(
-        nodes.length > 0,
-        "Codex seccomp profile preparation must cover at least one node.",
-      );
+      const firstNode = nodes[0];
+      assert.ok(firstNode, "Codex seccomp profile preparation must cover at least one node.");
       await verifyMissingProfileFailsClosed(
         selection,
         namespace,
-        nodes[0].nodeName,
+        firstNode.nodeName,
         image,
         profileName,
         options,
@@ -882,7 +1110,7 @@ async function prepareCodexSeccompProfile({
 }
 
 // Development and CI have different ownership records; neither may bypass the other's checks.
-async function selectedDevelopmentCluster(directory) {
+async function selectedDevelopmentCluster(directory: string) {
   if (!isAbsolute(directory) || (await realpath(directory)) !== directory) {
     throw new Error("Development state directory must be an absolute canonical path.");
   }
@@ -896,7 +1124,9 @@ async function selectedDevelopmentCluster(directory) {
   ) {
     throw new Error("The selected directory is not owned by the development launcher.");
   }
-  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  const state = JSON.parse(
+    await readFile(join(directory, "state.json"), "utf8"),
+  ) as DevelopmentState;
   if (
     state.version !== 3 ||
     state.computeDriver !== "kubernetes" ||
@@ -906,9 +1136,10 @@ async function selectedDevelopmentCluster(directory) {
         /^[a-z0-9][a-z0-9_-]*$/.test(state.composeProject ?? "")
       )) ||
     state.sandboxDriver !== "none" ||
-    !/^occ-dev-[a-z0-9][a-z0-9-]*$/.test(state.cluster ?? "") ||
+    !state.cluster ||
+    !/^occ-dev-[a-z0-9][a-z0-9-]*$/.test(state.cluster) ||
     state.cluster.length > 63 ||
-    !["docker", "podman"].includes(state.containerEngine) ||
+    (state.containerEngine !== "docker" && state.containerEngine !== "podman") ||
     !state.dockerHost?.startsWith("unix:///") ||
     state.dockerHost !== process.env.DOCKER_HOST ||
     (await realpath(state.repository)) !== (await realpath(process.cwd()))
@@ -919,7 +1150,7 @@ async function selectedDevelopmentCluster(directory) {
     await lstat(join(directory, "installation.yaml"));
     throw new Error("Codex profile preparation must precede Installation creation.");
   } catch (error) {
-    if (error.code !== "ENOENT") {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
       throw error;
     }
   }
@@ -936,14 +1167,20 @@ async function selectedDevelopmentCluster(directory) {
 // lifecycle in internal/occdev/openshell_k3d.go parses this name, so the format
 // is a contract between the two; it matches the shape rather than repeating the
 // reviewed version, which this module owns.
-function developmentCodexProfileName(profile, codexVersion) {
+function developmentCodexProfileName(profile: SeccompProfile, codexVersion: string) {
   assertReviewedCodexVersion(codexVersion);
   const name = `openclaw/codex-${codexVersion}-${sha256Hex(stableJson(profile))}.json`;
   assertLocalhostProfileName(name);
   return name;
 }
 
-async function installDevelopmentProfile(nodeName, profileName, profile, directory, options) {
+async function installDevelopmentProfile(
+  nodeName: string,
+  profileName: string,
+  profile: SeccompProfile,
+  directory: string,
+  options: ProbeOptions,
+) {
   const profileData = stableJson(profile);
   const digest = sha256Hex(profileData);
   const source = join(directory, `profile-${randomSuffix()}.json`);
@@ -1009,7 +1246,12 @@ async function installDevelopmentProfile(nodeName, profileName, profile, directo
   }
 }
 
-async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFile, timeoutMs }) {
+async function prepareDevelopmentCodexSeccompProfile({
+  directory,
+  image,
+  execFile,
+  timeoutMs,
+}: DevelopmentPreparationOptions) {
   const cluster = await selectedDevelopmentCluster(directory);
   assertImmutableImageReference(image);
   const execute = requireExecFile(execFile);
@@ -1054,7 +1296,7 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
         options,
       );
       if (baseline === null) {
-        return { mode: "RuntimeDefault", profileName: "" };
+        return { mode: "RuntimeDefault", profileName: "" } as const;
       }
       const profile = deriveCodexBwrapProfile(baseline, { codexVersion });
       const digest = sha256Hex(stableJson(profile));
@@ -1078,9 +1320,14 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
         profileName,
         options,
       );
-      const node = await kubectlJson(selection, ["get", "node", nodes[0]], options);
+      const node = await kubectlJson<ObservedNode>(selection, ["get", "node", nodes[0]], options);
       const nodeInfo = node.status?.nodeInfo;
-      for (const name of ["architecture", "kernelVersion", "osImage", "containerRuntimeVersion"]) {
+      for (const name of [
+        "architecture",
+        "kernelVersion",
+        "osImage",
+        "containerRuntimeVersion",
+      ] as const) {
         if (typeof nodeInfo?.[name] !== "string" || nodeInfo[name].length === 0) {
           throw new Error(`Development node is missing ${name} for Codex profile provenance.`);
         }
@@ -1091,10 +1338,10 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
           node: nodes[0],
           image,
           codexVersion,
-          architecture: nodeInfo.architecture,
-          kernelVersion: nodeInfo.kernelVersion,
-          osImage: nodeInfo.osImage,
-          containerRuntimeVersion: nodeInfo.containerRuntimeVersion,
+          architecture: nodeInfo?.architecture,
+          kernelVersion: nodeInfo?.kernelVersion,
+          osImage: nodeInfo?.osImage,
+          containerRuntimeVersion: nodeInfo?.containerRuntimeVersion,
           runtimeDefaultSha256: sha256Hex(stableJson(baseline)),
           profileSha256: digest,
           profileName,
@@ -1102,18 +1349,13 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
         }),
         { mode: 0o600, flag: "wx" },
       );
-      return { mode: "Localhost", profileName };
+      return { mode: "Localhost", profileName } as const;
     },
   );
 }
 
 export {
-  codexBwrapAdditionalSyscalls,
-  codexBwrapSourceProvenance,
-  defaultProfileName,
-  deriveCodexBwrapProfile,
   developmentCodexProfileName,
   prepareCodexSeccompProfile,
   prepareDevelopmentCodexSeccompProfile,
-  validateRuntimeDefaultSeccompProfile,
 };
