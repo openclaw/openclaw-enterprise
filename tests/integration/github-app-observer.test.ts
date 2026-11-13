@@ -415,12 +415,21 @@ test("GitHub App observer credential helper keeps API origin override test-only 
   assert.notEqual(notTest.status, 0);
   assert.match(notTest.stderr, /allowed only in tests/);
 
+  const httpsOrigin = await runCredentialHelper(f, "get", credentialRequest(), {
+    NODE_ENV: "test",
+    OCC_TEST_QA_GITHUB_API_ORIGIN: "https://example.invalid",
+  });
+  assert.notEqual(httpsOrigin.status, 0);
+  assert.match(httpsOrigin.stderr, /must use http/);
+
+  // Use HTTP to reach the hostname check without triggering the scheme check.
   const nonLoopback = await runCredentialHelper(f, "get", credentialRequest(), {
     NODE_ENV: "test",
-    OCC_TEST_QA_GITHUB_API_ORIGIN: "https://api.example.com",
+    OCC_TEST_QA_GITHUB_API_ORIGIN: "http://example.invalid",
   });
-  assert.notEqual(nonLoopback.status, 0);
-  assert.match(nonLoopback.stderr, /must use http/);
+  assert.ok(nonLoopback.status !== null && nonLoopback.status !== 0);
+  assert.match(nonLoopback.stderr, /(?:^|: )test GitHub API origin must be loopback$/m);
+  assert.equal(nonLoopback.stdout, "");
   assert.equal(f.seen.length, 0);
 });
 
