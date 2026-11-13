@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+
 import {
   cleanupLogging,
   execute,
@@ -9,8 +10,8 @@ import {
   prepareLogging,
   readJsonlPayloads,
   selectedCollectorSmoke,
-} from "../helpers/ci-logging.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+} from "../helpers/ci-logging.ts";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 test(
   "prepareLogging backend receives real OTLP/HTTP logs and writes JSONL",
@@ -22,16 +23,17 @@ test(
   },
   async (t) => {
     const root = await fixture(t);
-    let resource;
     const result = await prepareLogging({
       laneName: "logging-collector",
       directory: root,
       env: process.env,
       execFile: execute,
-      registerResource: async (kind, details) => {
-        resource = { id: "resource-1", kind, owner: "openclaw-ci-local-test", ...details };
-        return resource;
-      },
+      registerResource: async (kind, details) => ({
+        id: "resource-1",
+        kind,
+        owner: "openclaw-ci-local-test",
+        ...details,
+      }),
     });
     try {
       const canary = `ci-logging-smoke-${randomUUID()}`;
@@ -60,14 +62,17 @@ test(
         }),
       });
       assert.equal(response.status, 200);
-      await waitUntil(
+      await waitFor(
         "Collector file exporter JSONL output",
-        async () => payloadContains(canary, await readJsonlPayloads(result.artifacts.logsJsonl)),
+        async () =>
+          payloadContains(canary, await readJsonlPayloads(result.artifacts.logsJsonl))
+            ? true
+            : undefined,
         { timeoutMs: 30_000, intervalMs: 250 },
       );
     } finally {
-      if (resource) {
-        await cleanupLogging(resource, { execFile: execute });
+      if (result.resource) {
+        await cleanupLogging(result.resource, { execFile: execute });
       }
     }
   },
