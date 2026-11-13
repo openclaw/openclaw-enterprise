@@ -169,11 +169,34 @@ includes the checks while both controllers are stopped and the single resume.
 Its success flag covers that sequence. Later fleet checks and model replies have
 their own results. Both receipts use the sample outcomes and cadence described above.
 
+The ordinary controller upgrade also writes `controller-api-endpoints.json`.
+This read-only observer surrounds the unchanged HTTP sampler. It binds the API
+Service UID before the action and records the named Service, its labeled
+EndpointSlices and API Pods. The `during` phase covers the HTTP recorder, including
+its baseline request and final receipt write. Each read has UTC start and finish
+times and monotonic offsets. To compare windows, align the HTTP samples by UTC
+and use the HTTP receipt’s own `cadence.startOffsetMs` and `endOffsetMs` for
+the upgrade action. The two files use different monotonic origins. Polls sleep one second after a sample;
+slow reads leave larger gaps. Reads have a two-second Kubernetes timeout and a
+three-second command timeout, plus the fixture's bounded termination grace.
+
+Match slice Service-owner UIDs to `boundServiceUID` and endpoint target UIDs to
+Pod UIDs. A null binding means the baseline Service was not observed successfully;
+the observer never adopts a replacement. Missing, stale or unmatched owner and
+target UIDs leave attribution unknown even when a labeled slice is present.
+An empty list means the scoped read returned zero objects. Missing readiness
+conditions stay null.
+Read errors are unknown, not empty endpoint sets. If the runner reports an unsettled baseline command, the fixture stops before launching the upgrade. The three reads are not atomic,
+and polling cannot locate exact transition times or prove reachability. Compare
+their UTC windows with the HTTP samples; Pod condition transition timestamps come
+from Kubernetes. `actionSucceeded` covers the upgrade and HTTP recorder, while
+`complete` describes observer completion. Partial receipts remain uncertain.
+
 In the fresh `run_dir` from the lane command, retain each available receipt before removing the runner. A phase
 the test never reached has no receipt. An interrupted phase can leave a partial one.
 
 ```sh
-for receipt in forward-api-availability.json runtime-api-availability.json; do
+for receipt in forward-api-availability.json runtime-api-availability.json controller-api-endpoints.json; do
   for source in "$run_dir"/oce-production-tui-*/"$receipt"; do
     if [ -f "$source" ]; then
       install -m 600 "$source" "$run_dir/$receipt" || exit 1
