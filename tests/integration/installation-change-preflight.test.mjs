@@ -191,7 +191,11 @@ test(
   },
 );
 
-async function runCheck(t, configuration, files = {}, environment = () => ({})) {
+function runCheck(t, configuration, files, environment) {
+  return runHook(t, configuration, { files, environment });
+}
+
+async function runHook(t, configuration, { files = {}, environment, refusal }) {
   const directory = await temporaryDirectory(t, "occ-installation-check-");
   const path = join(directory, "installation.yaml");
   await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -201,18 +205,50 @@ async function runCheck(t, configuration, files = {}, environment = () => ({})) 
   }
   // The chart's environment only (plus the lane's compile cache): the image's working
   // directory holds apps/.
+  const env = {
+    ...compileCacheEnvironment,
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    ...environment?.(directory),
+  };
+  const expectedStderr = refusal?.expected(directory);
+  const timeout = 30_000;
   const result = await captureChild(process.execPath, ["--input-type=module", "-e", checkScript], {
     cwd: process.cwd(),
-    env: {
-      ...compileCacheEnvironment,
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: path,
-      ...environment(directory),
-    },
-    timeout: 30_000,
+    env,
+    timeout,
+    expectedStderr,
   });
-  assert.equal(result.signal ?? null, null, result.stderr);
+  let message = result.stderr;
+  if (refusal && result.signal) {
+    const {
+      firstStderrMs,
+      expectedPrefixMs,
+      exactStderr,
+      parentSentSignal,
+      exitMs,
+      exitToCloseMs,
+    } = result.timing;
+    message = [
+      `hook=${refusal.phase}`,
+      `status=${result.status}`,
+      `signal=${result.signal}`,
+      `parentSentSignal=${parentSentSignal}`,
+      `cache=${Boolean(env.NODE_COMPILE_CACHE)}`,
+      `deadlineMs=${timeout}`,
+      `exactStderr=${exactStderr}`,
+      `firstStderrMs=${firstStderrMs ?? "unobserved"}`,
+      `expectedPrefixMs=${expectedPrefixMs ?? "unobserved"}`,
+      `exitMs=${exitMs ?? "unobserved"}`,
+      `exitToCloseMs=${exitToCloseMs ?? "unobserved"}`,
+    ].join(" ");
+  }
+  assert.equal(result.signal ?? null, null, message);
+  if (refusal) {
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, expectedStderr);
+  }
   return { ...result, directory };
 }
 
@@ -323,33 +359,36 @@ test("the upgrade hook check names the key and file of a refused Installation", 
   // D407: presets.files names a file the image lacks.
   const missing = installation();
   missing.presets = { files: ["presets/missing.json"] };
-  const absent = await runCheck(t, missing);
-  assert.equal(absent.status, 1);
+  const absent = await runHook(t, missing, {
+    refusal: {
+      phase: "missing-preset",
+      expected: (directory) =>
+        `${prefix} (PRESET_FILE_INVALID): presets.files: Preset file ${join(directory, "presets/missing.json")} is unavailable.\n`,
+    },
+  });
   assert.equal(absent.stdout, "");
-  assert.equal(
-    absent.stderr,
-    `${prefix} (PRESET_FILE_INVALID): presets.files: Preset file ${join(absent.directory, "presets/missing.json")} is unavailable.\n`,
-  );
 
   // A loader message that already names the key is not prefixed twice.
   const blank = installation();
   blank.presets = { files: ["  "] };
-  const empty = await runCheck(t, blank);
-  assert.equal(empty.status, 1);
-  assert.equal(
-    empty.stderr,
-    `${prefix} (PRESET_FILE_INVALID): presets.files entries must be nonempty file paths.\n`,
-  );
+  await runHook(t, blank, {
+    refusal: {
+      phase: "blank-preset",
+      expected: () =>
+        `${prefix} (PRESET_FILE_INVALID): presets.files entries must be nonempty file paths.\n`,
+    },
+  });
 
   // Other startup refusals keep the loader's message, which names the setting.
   const observability = installation();
   observability.observability = { url: "ftp://metrics.example.test" };
-  const refused = await runCheck(t, observability);
-  assert.equal(refused.status, 1);
-  assert.equal(
-    refused.stderr,
-    `${prefix}: observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.\n`,
-  );
+  await runHook(t, observability, {
+    refusal: {
+      phase: "invalid-observability",
+      expected: () =>
+        `${prefix}: observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.\n`,
+    },
+  });
 });
 
 test(
