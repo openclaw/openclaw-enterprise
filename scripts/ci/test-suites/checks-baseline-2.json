@@ -139,6 +139,7 @@
     "tests/conformance/controller-stop-yields.test.ts",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
+    "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
     "tests/integration/gateway-workspace-readiness.test.ts",
@@ -739,7 +740,13 @@
         "synthetic provider separates TLS handshakes from partial HTTP bytes",
         "connected adversarial wire carries split and nested-JSON material without raw reflection",
         "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
-        "failed custody deployment preserves worker event order across a reused attempt budget",
+        "failed custody deployment preserves worker event order across a reused attempt budget"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-connected-lifecycle-preflight.test.ts",
+      "expectedTests": [
+        "reconnect observer counts accepted sessions once and preserves uint64 epochs",
         "reconnect checkpoints keep correlation in the private ledger on success and failure",
         "unexpected retirement creates require new, read-back run ownership before cleanup",
         "upgrade and retirement quiet windows reject TCP arrivals without HTTP",
