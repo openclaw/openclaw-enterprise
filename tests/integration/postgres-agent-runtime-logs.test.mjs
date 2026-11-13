@@ -12,15 +12,15 @@ test(
   "runtime log views and downloads persist audit rows before the read and fail closed without them",
   requiresPostgres,
   async (t) => {
-    let failAudit = false;
+    let failAuditAction = "";
     const { pool, state, computeDriver, principal, inject, deployAgent } =
       await createPostgresAgentApp(t, {
         label: "runtime-logs",
         authSecret,
-        // The real PostgreSQL audit sink; a view must be durable before any output is read.
+        // The real PostgreSQL audit sink; access must be durable before any output is read.
         createAuditSink: (persisted) => ({
           async append(event) {
-            if (failAudit && event.action === "openclaw.agents.runtime_logs.view") {
+            if (event.action === failAuditAction) {
               throw new Error("audit store unavailable");
             }
             await persisted.append(event);
@@ -41,13 +41,13 @@ test(
       );
 
     // Audit failure: no row, no Driver read, no content.
-    failAudit = true;
+    failAuditAction = "openclaw.agents.runtime_logs.view";
     const refused = await inject("GET", logs);
     assertApiError(refused, 503, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
     assert.equal(refused.body.includes("first line"), false);
     assert.equal(computeDriver.calls.filter(({ operation }) => operation === "read").length, 0);
     assert.equal((await viewRows()).rowCount, 0);
-    failAudit = false;
+    failAuditAction = "";
 
     const first = await inject("GET", logs);
     assert.equal(first.statusCode, 200, first.body);
@@ -75,6 +75,14 @@ test(
     );
     assert.equal((await viewRows()).rowCount, 1);
 
+    // Make the original line fall outside the caller's ten-line tail.
+    computeDriver.state.lines.push(
+      ...Array.from({ length: 10 }, (_, index) => ({
+        time: `2026-09-30T12:00:${String(index + 3).padStart(2, "0")}.000000001Z`,
+        raw: `download line ${index + 3}`,
+      })),
+    );
+
     // Every download is its own durable row with the forced tail, never the text.
     const downloadRows = () =>
       pool.query(
@@ -84,11 +92,37 @@ test(
          ORDER BY occurred_at`,
         [agent.id],
       );
+    // A refused download cannot read the Driver, persist a success row, or return log text.
+    const readsBeforeRefusedDownload = computeDriver.calls.filter(
+      ({ operation }) => operation === "read",
+    ).length;
+    failAuditAction = "openclaw.agents.runtime_logs.download";
+    const refusedDownload = await inject("GET", `${logs}&tailLines=10&download=true`);
+    assertApiError(refusedDownload, 503, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
+    assert.equal(
+      computeDriver.calls.filter(({ operation }) => operation === "read").length,
+      readsBeforeRefusedDownload,
+    );
+    assert.equal((await downloadRows()).rowCount, 0);
+    assert.equal(
+      computeDriver.state.lines.some(({ raw }) => refusedDownload.body.includes(raw)),
+      false,
+    );
+    failAuditAction = "";
+
     for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const callsBeforeDownload = computeDriver.calls.length;
       const download = await inject("GET", `${logs}&tailLines=10&download=true`);
       assert.equal(download.statusCode, 200, download.body);
       assert.match(download.headers["content-type"], /^text\/plain/);
       assert.match(download.body, /first line/);
+      assert.deepEqual(
+        computeDriver.calls
+          .slice(callsBeforeDownload)
+          .filter(({ operation }) => operation === "read")
+          .map(({ tailLines }) => tailLines),
+        [1000],
+      );
       assert.equal((await downloadRows()).rowCount, attempt);
     }
     const downloaded = (await downloadRows()).rows;

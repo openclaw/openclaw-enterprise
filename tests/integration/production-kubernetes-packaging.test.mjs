@@ -33,6 +33,7 @@ import {
   resourceNameAndSignRefusals,
 } from "../helpers/production-chart-quantity-cases.ts";
 import { productionChartRendererRefusalCases } from "../helpers/production-chart-renderer-refusal-cases.ts";
+import { findResource } from "../helpers/production-chart-resource.ts";
 import { googleUpgradeValues, oidcUpgradeValues } from "../helpers/production-sign-in.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -56,10 +57,7 @@ test("console themes mount only on the API and restart it when the checksum chan
   );
   for (const objects of [defaults, themed]) {
     for (const component of ["api", "worker"]) {
-      const deployment = objects.find(
-        (item) =>
-          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
-      );
+      const deployment = findResource(objects, "Deployment", `openclaw-enterprise-${component}`);
       const enabled = objects === themed && component === "api";
       const pod = deployment.spec.template;
       const container = [...(pod.spec.initContainers ?? []), ...pod.spec.containers].find(
@@ -235,9 +233,7 @@ test(
       'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
     );
     const objects = await resources((await render({}, { valuesFiles: [quoted] })).stdout);
-    const api = objects.find(
-      (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
-    );
+    const api = findResource(objects, "Deployment", "openclaw-enterprise-api");
     assert.equal(
       api.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap.name,
       "no",
@@ -262,9 +258,7 @@ test(
         )
       ).stdout,
     );
-    const deployment = named.find(
-      (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
-    );
+    const deployment = findResource(named, "Deployment", "openclaw-enterprise-api");
     assert.equal(
       deployment.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap
         .name,
@@ -510,9 +504,7 @@ test(
     ];
     for (const { objects, policies } of charts) {
       for (const name of policies) {
-        const policy = objects.find(
-          (object) => object.kind === "NetworkPolicy" && object.metadata.name === name,
-        );
+        const policy = findResource(objects, "NetworkPolicy", name);
         assert.ok(policy, name);
         assert.deepEqual(
           policy.spec.egress[0],
@@ -976,10 +968,8 @@ test(
     }
     const objects = await resources((await render(execution)).stdout);
     for (const component of ["api", "worker"]) {
-      const pod = objects.find(
-        (item) =>
-          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
-      ).spec.template.spec;
+      const pod = findResource(objects, "Deployment", `openclaw-enterprise-${component}`).spec
+        .template.spec;
       assert.equal(
         pod.volumes.find((volume) => volume.name === "execution-kubeconfig").secret.secretName,
         `execution-${component}`,
@@ -994,10 +984,8 @@ test(
   async () => {
     const defaults = await resources((await render()).stdout);
     for (const component of ["api", "worker"]) {
-      const container = defaults.find(
-        (item) =>
-          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
-      ).spec.template.spec.containers[0];
+      const container = findResource(defaults, "Deployment", `openclaw-enterprise-${component}`)
+        .spec.template.spec.containers[0];
       assert.equal(container.env.find(({ name }) => name === "OCC_METRICS_ENABLED")?.value, "true");
       assert.ok(
         container.ports.some(
@@ -1027,9 +1015,8 @@ test(
       [repositoryCredentialValues, "9464", true],
     ]) {
       const accepted = await resources((await render(overrides)).stdout);
-      const pod = accepted.find(
-        (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-worker",
-      ).spec.template.spec;
+      const pod = findResource(accepted, "Deployment", "openclaw-enterprise-worker").spec.template
+        .spec;
       const worker = [...(pod.initContainers ?? []), ...pod.containers].find(
         ({ name }) => name === "worker",
       );
@@ -1063,10 +1050,8 @@ test(
     }
     const lowestPort = await resources((await render({ "metrics.port": "1024" })).stdout);
     for (const component of ["api", "worker"]) {
-      const container = lowestPort.find(
-        (item) =>
-          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
-      ).spec.template.spec.containers[0];
+      const container = findResource(lowestPort, "Deployment", `openclaw-enterprise-${component}`)
+        .spec.template.spec.containers[0];
       assert.equal(container.env.find((item) => item.name === "OCC_METRICS_PORT").value, "1024");
       assert.ok(
         container.ports.some((port) => port.name === "metrics" && port.containerPort === 1024),
@@ -1080,10 +1065,7 @@ test(
     await assert.rejects(render({ ...selected, "metrics.port": "8080" }), /distinct/);
     const objects = await resources((await render(selected)).stdout);
     for (const component of ["api", "worker"]) {
-      const deployment = objects.find(
-        (item) =>
-          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
-      );
+      const deployment = findResource(objects, "Deployment", `openclaw-enterprise-${component}`);
       const container = deployment.spec.template.spec.containers[0];
       assert.ok(
         container.ports.some((port) => port.name === "metrics" && port.containerPort === 9464),
@@ -1091,10 +1073,10 @@ test(
       assert.deepEqual(container.env.find((item) => item.name === "OCC_METRICS_HOST").valueFrom, {
         fieldRef: { fieldPath: "status.podIP" },
       });
-      const policy = objects.find(
-        (item) =>
-          item.kind === "NetworkPolicy" &&
-          item.metadata.name === `openclaw-enterprise-${component}-metrics`,
+      const policy = findResource(
+        objects,
+        "NetworkPolicy",
+        `openclaw-enterprise-${component}-metrics`,
       );
       assert.deepEqual(policy.spec.ingress, [
         {
@@ -1122,22 +1104,17 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
     /api\.port must be an integer TCP port/,
   );
   const objects = await resources((await render({ "api.port": "8081" })).stdout);
-  const container = objects.find(
-    (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
-  ).spec.template.spec.containers[0];
+  const container = findResource(objects, "Deployment", "openclaw-enterprise-api").spec.template
+    .spec.containers[0];
   assert.equal(container.env.find((item) => item.name === "OCC_PORT").value, "8081");
   assert.ok(container.ports.some((port) => port.name === "http" && port.containerPort === 8081));
   assert.equal(
-    objects.find(
-      (item) => item.kind === "Service" && item.metadata.name === "openclaw-enterprise-api",
-    ).spec.ports[0].port,
+    findResource(objects, "Service", "openclaw-enterprise-api").spec.ports[0].port,
     8081,
   );
   assert.equal(
-    objects.find(
-      (item) =>
-        item.kind === "NetworkPolicy" && item.metadata.name === "openclaw-enterprise-api-ingress",
-    ).spec.ingress[0].ports[0].port,
+    findResource(objects, "NetworkPolicy", "openclaw-enterprise-api-ingress").spec.ingress[0]
+      .ports[0].port,
     8081,
   );
 });
@@ -1178,10 +1155,10 @@ test(
     const objects = await resources(
       (await render({ ...executionValues, "executionCluster.apiPort": "6443" })).stdout,
     );
-    const policy = objects.find(
-      (item) =>
-        item.kind === "NetworkPolicy" &&
-        item.metadata.name === "openclaw-enterprise-execution-api-egress",
+    const policy = findResource(
+      objects,
+      "NetworkPolicy",
+      "openclaw-enterprise-execution-api-egress",
     );
     assert.equal(policy.spec.podSelector.matchLabels["app.kubernetes.io/component"], "worker");
     assert.equal(policy.spec.egress[0].ports[0].port, 6443);
@@ -1952,8 +1929,7 @@ test(
   async () => {
     const { stdout } = await render(repositoryCredentialValues);
     const objects = await resources(stdout);
-    const named = (kind, name) =>
-      objects.find((object) => object.kind === kind && object.metadata.name === name);
+    const named = (kind, name) => findResource(objects, kind, name);
     const api = named("Deployment", "openclaw-enterprise-api");
     const worker = named("Deployment", "openclaw-enterprise-worker");
     const workerPod = worker.spec.template.spec;
@@ -2172,21 +2148,17 @@ test(
       false,
       "ordinary repository ingress would add its broad peer grant to the prepared broker",
     );
-    const preparedIngress = objects.find(
-      ({ kind, metadata }) =>
-        kind === "NetworkPolicy" &&
-        metadata.name === "openclaw-enterprise-prepared-repository-ingress",
+    const preparedIngress = findResource(
+      objects,
+      "NetworkPolicy",
+      "openclaw-enterprise-prepared-repository-ingress",
     );
     assert.deepEqual(preparedIngress.spec.ingress, []);
-    const pod = objects.find(
-      (object) =>
-        object.kind === "Deployment" && object.metadata.name === "openclaw-enterprise-worker",
-    ).spec.template.spec;
+    const pod = findResource(objects, "Deployment", "openclaw-enterprise-worker").spec.template
+      .spec;
     const broker = pod.containers.find(({ name }) => name === "repository-credentials");
     assert.deepEqual(broker.args.slice(-2), ["--authority", "prepared-git"]);
-    const service = objects.find(
-      ({ kind, metadata }) => kind === "Service" && metadata.name === "git",
-    );
+    const service = findResource(objects, "Service", "git");
     const hostname = "git.openclaw-system.svc.cluster.internal";
     assert.equal(
       service.metadata.annotations["openclaw.dev/repository-credentials-hostname"],
@@ -2279,10 +2251,7 @@ test(
           (object) => object.kind === "Service" && object.metadata.name === endpointName,
         ),
       );
-      const worker = objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
-      );
+      const worker = findResource(objects, "Deployment", "openclaw-enterprise-worker");
       const broker = worker.spec.template.spec.containers.find(
         ({ name }) => name === "repository-credentials",
       );
@@ -2644,10 +2613,7 @@ esac
         const candidate = await resources(
           await readFile(join(evidence, "helm-attempts", attempts[0], "rendered.yaml"), "utf8"),
         );
-        const deployment = candidate.find(
-          ({ kind, metadata }) =>
-            kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
-        );
+        const deployment = findResource(candidate, "Deployment", "openclaw-enterprise-worker");
         const broker = deployment.spec.template.spec.containers.find(
           ({ name }) => name === "repository-credentials",
         );
@@ -2671,10 +2637,7 @@ test(
   tooling,
   async () => {
     const objects = await resources((await render(repositoryCredentialValues)).stdout);
-    const worker = objects.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
-    );
+    const worker = findResource(objects, "Deployment", "openclaw-enterprise-worker");
     const destination = {
       namespace: "openclaw-system",
       labels: worker.spec.template.metadata.labels,
@@ -2940,18 +2903,12 @@ test(
         !deployment.spec.template.spec.volumes.some(({ name }) => name.startsWith("repository-")),
       );
     }
-    const tenantWorker = objects.find(
-      ({ kind, metadata }) =>
-        kind === "ClusterRole" && metadata.name === "oce-openclaw-tenant-worker",
-    );
+    const tenantWorker = findResource(objects, "ClusterRole", "oce-openclaw-tenant-worker");
     assert.deepEqual(
       tenantWorker.rules.filter(({ resources }) => resources.includes("secrets")),
       [{ apiGroups: [""], resources: ["secrets"], verbs: ["get", "create", "update", "delete"] }],
     );
-    const gatewayObserver = objects.find(
-      ({ kind, metadata }) =>
-        kind === "ClusterRole" && metadata.name === "oce-openclaw-gateway-observer",
-    );
+    const gatewayObserver = findResource(objects, "ClusterRole", "oce-openclaw-gateway-observer");
     assert.deepEqual(gatewayObserver.rules, [
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
       { apiGroups: [""], resources: ["pods"], verbs: ["get", "list"] },
@@ -3222,9 +3179,10 @@ test(
         ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name.endsWith("default-deny"),
       ),
     );
-    const dependencyEgress = objects.find(
-      ({ kind, metadata }) =>
-        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-dependency-egress",
+    const dependencyEgress = findResource(
+      objects,
+      "NetworkPolicy",
+      "openclaw-enterprise-dependency-egress",
     );
     // Shared grants belong only to control-plane workloads in this release.
     assert.deepEqual(dependencyEgress.spec.podSelector, {
@@ -3351,8 +3309,7 @@ test(
   tooling,
   async () => {
     const objects = await resources((await render(slackProxyValues)).stdout);
-    const named = (kind, name) =>
-      objects.find((object) => object.kind === kind && object.metadata.name === name);
+    const named = (kind, name) => findResource(objects, kind, name);
     const deployment = named("Deployment", "openclaw-enterprise-slack-proxy");
     const service = named("Service", "openclaw-enterprise-slack-proxy");
     const proxyPolicy = named("NetworkPolicy", "openclaw-enterprise-slack-proxy");
@@ -3412,10 +3369,10 @@ test(
     const gatewayObjects = await resources(
       (await render({ ...slackProxyValues, ...gatewayRoutingValues })).stdout,
     );
-    const gatewayProxyPolicy = gatewayObjects.find(
-      (object) =>
-        object.kind === "NetworkPolicy" &&
-        object.metadata.name === "openclaw-enterprise-slack-proxy",
+    const gatewayProxyPolicy = findResource(
+      gatewayObjects,
+      "NetworkPolicy",
+      "openclaw-enterprise-slack-proxy",
     );
     assert.deepEqual(gatewayProxyPolicy.spec.ingress, [
       {
@@ -4715,9 +4672,7 @@ test("the chart lets the public CA settings share one trust bundle Secret", tool
   }
   const shared = Object.fromEntries(settings.map((setting) => [setting, "occ-trust-bundle"]));
   const objects = await resources((await render({ ...base, ...shared })).stdout);
-  const api = objects.find(
-    (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
-  ).spec.template.spec;
+  const api = findResource(objects, "Deployment", "openclaw-enterprise-api").spec.template.spec;
   assert.deepEqual(
     api.volumes
       .filter((volume) => volume.secret?.secretName === "occ-trust-bundle")
@@ -5149,18 +5104,12 @@ test(
       kinds: [{ group: "gateway.networking.k8s.io", kind: "HTTPRoute" }],
     });
 
-    const bootstrapIssuer = configured.find(
-      ({ kind, metadata }) => kind === "Issuer" && metadata.name === `${serviceName}-bootstrap`,
-    );
+    const bootstrapIssuer = findResource(configured, "Issuer", `${serviceName}-bootstrap`);
     assert.deepEqual(bootstrapIssuer.spec, { selfSigned: {} });
-    const caIssuer = configured.find(
-      ({ kind, metadata }) => kind === "Issuer" && metadata.name === `${serviceName}-ca`,
-    );
+    const caIssuer = findResource(configured, "Issuer", `${serviceName}-ca`);
     assert.deepEqual(caIssuer.spec, { ca: { secretName: rootSecret } });
 
-    const rootCertificate = configured.find(
-      ({ kind, metadata }) => kind === "Certificate" && metadata.name === rootSecret,
-    );
+    const rootCertificate = findResource(configured, "Certificate", rootSecret);
     assert.deepEqual(rootCertificate.spec, {
       isCA: true,
       commonName: rootSecret,
@@ -5171,9 +5120,7 @@ test(
       issuerRef: { name: `${serviceName}-bootstrap`, kind: "Issuer", group: "cert-manager.io" },
     });
 
-    const leafCertificate = configured.find(
-      ({ kind, metadata }) => kind === "Certificate" && metadata.name === `${gatewayName}-tls`,
-    );
+    const leafCertificate = findResource(configured, "Certificate", `${gatewayName}-tls`);
     assert.deepEqual(leafCertificate.spec, {
       secretName: `${gatewayName}-tls`,
       duration: "2160h",
@@ -5199,9 +5146,10 @@ test(
       "gateway.envoyproxy.io/owning-gateway-namespace": gatewayNamespace,
       "gateway.envoyproxy.io/owning-gateway-name": gatewayName,
     };
-    const workerEnvoyEgress = configured.find(
-      ({ kind, metadata }) =>
-        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-controller-envoy-egress",
+    const workerEnvoyEgress = findResource(
+      configured,
+      "NetworkPolicy",
+      "openclaw-enterprise-controller-envoy-egress",
     );
     assert.equal(workerEnvoyEgress.metadata.namespace, gatewayNamespace);
     assert.deepEqual(workerEnvoyEgress.spec.podSelector.matchLabels, {
@@ -5223,9 +5171,7 @@ test(
       },
     ]);
 
-    const envoyPolicy = configured.find(
-      ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === envoyPolicyName,
-    );
+    const envoyPolicy = findResource(configured, "NetworkPolicy", envoyPolicyName);
     assert.equal(envoyPolicy.metadata.namespace, envoyNamespace);
     assert.deepEqual(envoyPolicy.spec.podSelector.matchLabels, dataplaneLabels);
     assert.deepEqual(envoyPolicy.spec.ingress, [
@@ -5383,9 +5329,7 @@ test(
 
     const gateway = configured.find(({ kind }) => kind === "Gateway");
     assert.equal(gateway.spec.listeners[0].hostname, "agents.example.internal");
-    const leafCertificate = configured.find(
-      ({ kind, metadata }) => kind === "Certificate" && metadata.name === `${gatewayName}-tls`,
-    );
+    const leafCertificate = findResource(configured, "Certificate", `${gatewayName}-tls`);
     assert.deepEqual(leafCertificate.spec, {
       secretName: `${gatewayName}-tls`,
       duration: "2160h",
@@ -5585,10 +5529,7 @@ test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", too
     const objects = await resources(
       (await render(productionCollectorValues, { strings: { [field]: value } })).stdout,
     );
-    const policy = objects.find(
-      ({ kind, metadata }) =>
-        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-collector-egress",
-    );
+    const policy = findResource(objects, "NetworkPolicy", "openclaw-enterprise-collector-egress");
     assert.deepEqual(policy.spec.egress.at(-1).ports, [{ protocol: "TCP", port: Number(value) }]);
   }
   const numeric = await resources(
@@ -5905,9 +5846,7 @@ test(
   async () => {
     const template = renderExecutionChart;
     const proxyPolicy = async (stdout) =>
-      (await resources(stdout)).find(
-        (object) => object.kind === "NetworkPolicy" && object.metadata.name === "oce-harness-proxy",
-      );
+      findResource(await resources(stdout), "NetworkPolicy", "oce-harness-proxy");
     // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
     // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
     for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
@@ -6057,19 +5996,16 @@ test(
     }
     const objects = await resources((await render(protectedValues)).stdout);
     assert.ok(!objects.some((object) => object.metadata?.name === issuerPolicyName));
-    const service = objects.find(
-      ({ kind, metadata }) =>
-        kind === "Service" && metadata.name === "openclaw-enterprise-egress-authority",
-    );
+    const service = findResource(objects, "Service", "openclaw-enterprise-egress-authority");
     assert.equal(service.spec.type, "ClusterIP");
     assert.equal(service.spec.selector["app.kubernetes.io/component"], "api");
     assert.deepEqual(service.spec.ports, [
       { name: "egress-tls", port: 9444, targetPort: "egress-tls" },
     ]);
-    const ingress = objects.find(
-      ({ kind, metadata }) =>
-        kind === "NetworkPolicy" &&
-        metadata.name === "openclaw-enterprise-egress-authority-ingress",
+    const ingress = findResource(
+      objects,
+      "NetworkPolicy",
+      "openclaw-enterprise-egress-authority-ingress",
     );
     assert.equal(ingress.spec.podSelector.matchLabels["app.kubernetes.io/component"], "api");
     assert.deepEqual(ingress.spec.ingress, [
@@ -6086,10 +6022,8 @@ test(
       },
     ]);
     for (const component of ["api", "worker"]) {
-      const pod = objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.name === `openclaw-enterprise-${component}`,
-      ).spec.template.spec;
+      const pod = findResource(objects, "Deployment", `openclaw-enterprise-${component}`).spec
+        .template.spec;
       const client = pod.volumes.find(({ name }) => name === "openshell-client");
       assert.equal(client.secret.secretName, "dedicated-openshell-admin");
       assert.deepEqual(client.secret.items.map(({ key }) => key).sort(), [
@@ -6218,18 +6152,16 @@ test(
     assert.deepEqual(issuer.spec.egress, [
       { to: [{ ipBlock: { cidr: "198.51.100.23/32" } }], ports: [{ protocol: "TCP", port: 443 }] },
     ]);
-    const service = objects.find(
-      ({ kind, metadata }) =>
-        kind === "Service" && metadata.name === "openclaw-enterprise-openshell-git",
-    );
+    const service = findResource(objects, "Service", "openclaw-enterprise-openshell-git");
     assert.equal(service.spec.type, "ClusterIP");
     assert.equal(service.spec.selector["app.kubernetes.io/component"], "worker");
     assert.deepEqual(service.spec.ports, [
       { name: "openshell-git", port: 8445, targetPort: "openshell-git", protocol: "TCP" },
     ]);
-    const policy = objects.find(
-      ({ kind, metadata }) =>
-        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-openshell-git-ingress",
+    const policy = findResource(
+      objects,
+      "NetworkPolicy",
+      "openclaw-enterprise-openshell-git-ingress",
     );
     assert.equal(policy.spec.podSelector.matchLabels["app.kubernetes.io/component"], "worker");
     assert.deepEqual(policy.spec.ingress, [

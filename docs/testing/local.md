@@ -235,50 +235,71 @@ checkout of its exact commit ID with matching dependencies already installed.
 
 ### Start the development dashboard
 
-Start the [Compose quickstart](../guides/quickstart.md) first. This overlay
-recreates the API and worker, so allow existing work to finish. Use the same
-Compose project and `.env`. Run this block in Bash (start `bash` first if your
-shell is zsh):
+The [Docker Compute preview](../reference/cli/local-development.md#select-a-profile)
+uses Python 3, Docker Engine, and Docker Compose. From the repository root, run
+`go build -trimpath -o bin/occ ./cmd/occ` with the Go version in `go.mod`.
+Uncached builds and pulls need outbound access. `OCC_DOCKER_RUNTIME_IMAGE`
+selects a trusted local image. Otherwise the launcher reuses or builds the
+default. For Podman, see the [engine and socket prerequisites](../flows/docker-compose-development/startup.md#1-scriptsdev-up-host-preflight-and-runtime-image-selection).
+
+In Bash, set `project` to your existing Compose project name. Reuse its engine
+endpoint, environment, files, and `--env-file`. A second project needs free ports
+and a free subnet. Finish work before metrics recreates the API and worker.
+
+```bash
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=docker
+export OCC_DEVELOPMENT_CONTROL_PLANE=compose
+export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
+project=occ-metrics
+compose_args=(-p "$project" -f compose.yaml)
+key_dir=$(mktemp -d /tmp/occ-metrics-keys.XXXXXXXXXX)
+./bin/occ dev up --key-output "$key_dir/baseline.json" -- "${compose_args[@]}"
+```
+
+When ready, add the overlay. Use a fresh private `key_dir` for reruns. Cleanup
+leaves the keys. Keep needed copies private and delete unused copies from this run.
 
 ```bash
 read -rs -p 'Development Grafana password: ' OCC_METRICS_GRAFANA_PASSWORD
 printf '\n'
 export OCC_METRICS_GRAFANA_PASSWORD
-docker compose -f compose.yaml -f compose.metrics.yaml up -d --build
+./bin/occ dev up --key-output "$key_dir/metrics.json" -- "${compose_args[@]}" -f compose.metrics.yaml
 ```
 
-Open `http://127.0.0.1:3001`, sign in as `admin`, and select **OCC → OCC
-observability**. In Prometheus at `http://127.0.0.1:9090`, query
-`up{job=~"occ-api|occ-worker"}` after about 15 seconds; expect two series at
-`1`. Remote-write targets do not appear on the server's Targets page. Set
-`OCC_GRAFANA_PORT` or `OCC_PROMETHEUS_PORT` if a port is in use.
+Sign in at `http://127.0.0.1:3001` as `admin` with the non-empty password.
+Find **Scrape health** under **OCC → OCC development**. At
+`http://127.0.0.1:9090`, query `up{job=~"occ-api|occ-worker"}` after 15 seconds.
+Expect two series at `1`. Remote writes do not appear under Targets. To change
+ports, set `OCC_GRAFANA_PORT` or `OCC_PROMETHEUS_PORT` before startup and use
+that port in the URL.
 
-Use a trusted development machine: the server accepts unauthenticated remote
-writes on the development network. Grafana state is disposable; back up data
-that you need before recreating it. For Podman, include `compose.podman.yaml` and
-the selected socket as described in the quickstart.
-
-A draft Agent can exercise inventory metrics. The current Docker Driver rejects
-Agent harness authentication bindings, so its real Agent model scenarios fail
-at admission; the dashboard does not establish a deployed Agent or model turn.
-Use [Kubernetes runtime tests](kubernetes.md) for that proof.
+Use a trusted machine because Prometheus accepts unauthenticated remote writes.
+Back up Grafana data before removing its container. For deployed Agents and
+model turns, use the [Kubernetes runtime tests](kubernetes.md).
 
 ### Troubleshoot and stop
 
-Rate panels need at least two scrapes. Missing inventory data does not mean zero
-Agents. For failures, inspect `docker compose -f compose.yaml -f compose.metrics.yaml
-logs --tail=100 metrics-api metrics-worker prometheus grafana` and check remote
-writes, datasource URL, project/network, and mounts.
+Rate panels need two scrapes. List services on the same Docker endpoint.
 
-```sh
-docker compose -f compose.yaml -f compose.metrics.yaml stop metrics-api metrics-worker grafana prometheus
-docker compose -f compose.yaml -f compose.metrics.yaml rm -f metrics-api metrics-worker grafana prometheus
-unset OCC_METRICS_GRAFANA_PASSWORD
+```bash
+docker ps -a --filter "label=com.docker.compose.project=$project" \
+  --format '{{.ID}} {{.Label "com.docker.compose.service"}}'
 ```
 
-To disable OCC listeners, recreate the API and worker with the original
-quickstart Compose files. Keep PostgreSQL volumes, `.env`, and Agent workloads;
-do not use `down -v` to clean up monitoring.
+Check remote writes, datasource, network, and mounts with
+`docker logs --tail=100 CONTAINER`.
+
+To remove monitoring only, use `docker stop` and `docker rm` on the IDs for
+`metrics-api`, `metrics-worker`, `grafana`, and `prometheus` in that listing.
+Unset `OCC_METRICS_GRAFANA_PASSWORD`, then rerun the baseline with a fresh
+private `key_dir` to disable the API and worker metrics listeners. Keep the
+environment and database volumes.
+
+To stop the whole preview on the same engine endpoint, keep the password exported and run
+`./bin/occ dev down -- "${compose_args[@]}" -f compose.metrics.yaml`. Unset the
+password afterward. After a baseline restart, omit the metrics file. The CLI
+adds the browser overlay. Omit `--volumes` to keep Installation data.
+See [local development commands](../reference/cli/local-development.md).
 
 ### Automated proof
 
