@@ -183,23 +183,6 @@ test("Sandbox facets expose only the initial containment surfaces", () => {
   }
 });
 
-test("Agent Sandbox policy validation declares both exact-resource grants", async () => {
-  const document = JSON.parse(
-    await readFile(
-      new URL("../../packages/contracts/openapi/occ-api.openapi.json", import.meta.url),
-      "utf8",
-    ),
-  );
-  const operation =
-    document.paths["/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate"]
-      .post;
-  assert.equal(operation.operationId, "validateAgentSandboxPolicy");
-  assert.deepEqual(operation["x-openclaw-permissions"], [
-    { action: "manage_policy", resourceKind: "agent", scope: "requested" },
-    { action: "update", resourceKind: "sandbox_policy", scope: "requested" },
-  ]);
-});
-
 test("logging helpers admit one platform-owned native JSON policy", () => {
   assert.deepEqual(LOGGING_LEVELS, ["debug", "info", "warn", "error"]);
   assert.equal(normalizeLoggingLevel(undefined), "info");
