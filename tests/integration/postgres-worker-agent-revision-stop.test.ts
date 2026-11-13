@@ -1390,19 +1390,11 @@ test(
     const callsBeforeRefusal = [...repository.calls];
     repository.driver.close = close;
     events.length = 0;
-    await fixture.start(fixture.compute, {
-      emit,
-      transformDrivers(drivers) {
-        assert.ok(drivers.nativeRepositorySender);
-        return {
-          ...drivers,
-          nativeRepositorySender: {
-            ...drivers.nativeRepositorySender,
-            implementation: "different-repository-sender",
-          },
-        };
-      },
-    });
+    // Compose another valid sender. The retained attempt still belongs to the
+    // original selection, even though both senders use the GitHub implementation.
+    const originalSenderId = repository.driver.id;
+    repository.driver.id = "different-repository-sender";
+    await fixture.start(fixture.compute, { emit });
     await makeWorkDue(fixture.observerPool, cleanupKey);
     await completion(
       events,
@@ -1429,6 +1421,7 @@ test(
       callsBeforeRefusal,
       "wrong sender must have no boundary effects",
     );
+    repository.driver.id = originalSenderId;
     await fixture.start(fixture.compute);
     await makeWorkDue(fixture.observerPool, cleanupKey);
     await fixture.work({ id: candidate.id, idempotencyKey: cleanupKey }, "succeeded");
