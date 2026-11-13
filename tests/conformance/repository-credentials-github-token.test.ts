@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { generateKeyPairSync } from "node:crypto";
+import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
+import type {
+  AttemptContext,
+  Clock,
+  RequestHead,
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { ServiceLimits } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCustody } from "../../apps/controller/src/drivers/repo/access/custody.ts";
 import { admitSession } from "../../apps/controller/src/drivers/repo/access/sessions.ts";
@@ -11,48 +18,86 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/access/static-token.ts";
 import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/access/factory.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
+import type {
+  GitHubDriverFactory,
+  GitHubProfile,
+  GitHubStaticTokenOwner,
+  GitHubTokenClass,
+  GitHubTokenConfiguration,
+} from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   githubConfigurationData,
   githubTokenConfigurationData,
-  requestHead as head,
+  requestHead,
   serviceConfigurationData,
   custodyLimits,
 } from "../fixtures/repository-credentials/builders.mjs";
 
 // Synthetic values: the prefix selects a class; nothing here is a real credential.
-const sentinel = (prefix) => `${prefix}${"x".repeat(36)}`;
+const sentinel = (prefix: string) => `${prefix}${"x".repeat(36)}`;
 const oauthToken = sentinel("gho_");
 const fineGrainedToken = sentinel("github_pat_");
 
-function tokenFactory({
-  token = oauthToken,
-  configuration = {},
-  limits = {},
-  options = {},
-  owner = createGitHubStaticTokenOwner({ token: Buffer.from(token) }),
-} = {}) {
-  const clock = createControlledClock(1700000000000);
+interface TokenFixtureOptions {
+  token?: string;
+  configuration?: Partial<GitHubTokenConfiguration>;
+  limits?: Partial<ServiceLimits>;
+  owner?: GitHubStaticTokenOwner;
+  // These extra properties exercise rejection of options outside the factory contract.
+  options?: {
+    metadataOnly?: true;
+    binding?: { profile: string; identity: RepositoryCredentialGrantIdentity } | undefined;
+  };
+}
+
+function tokenFactory(
+  t: TestContext,
+  {
+    token = oauthToken,
+    configuration = {},
+    limits = {},
+    options = {},
+    owner,
+  }: TokenFixtureOptions = {},
+) {
+  const authority = owner ?? createGitHubStaticTokenOwner({ token: Buffer.from(token) });
+  if (owner === undefined) {
+    t.after(() => authority.close());
+  }
+  const clock: Clock = createControlledClock(1700000000000);
   const config = validateServiceConfig(serviceConfigurationData({ limits }));
   const factory = createGitHubDriverFactory({
-    configuration: githubTokenConfigurationData(configuration),
-    authority: owner,
+    configuration: validateGitHubConfiguration(githubTokenConfigurationData(configuration)),
+    authority,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
     ...options,
   });
-  return { clock, config, factory, owner };
+  return { clock, factory, owner: authority };
 }
 
-function appFactory() {
-  const clock = createControlledClock(1700000000000);
-  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const key = createGitHubKeyOwner({ privateKey, appId: "12345", clock });
-  return { key };
+function head(
+  method: string,
+  rawTarget: string,
+  headers: RequestHead["headers"] = {},
+  framing: RequestHead["framing"] = { kind: "none", bytes: undefined },
+): RequestHead {
+  const {
+    headers: fields,
+    receivedMonoMs,
+    contentEncoding,
+  } = requestHead(method, rawTarget, headers);
+  assert.equal(contentEncoding, "identity");
+  return { method, rawTarget, headers: fields, receivedMonoMs, contentEncoding, framing };
 }
 
-function bind({ factory, clock }, profile, binding = factory.resolve(profile).binding) {
+function bind(
+  { factory, clock }: Pick<ReturnType<typeof tokenFactory>, "factory" | "clock">,
+  profile: GitHubProfile,
+  binding = factory.resolve(profile).binding,
+) {
   const admitted = admitSession(binding, clock.wallNow() + 3600000, clock);
   const custody = createCustody({
     clock,
@@ -65,13 +110,13 @@ function bind({ factory, clock }, profile, binding = factory.resolve(profile).bi
     authority: admitted.authority,
     custody,
     driver,
-    plan: (request) =>
+    plan: (request: RequestHead) =>
       driver.plan({ authority: admitted.authority, session: admitted.ref, head: request }),
   };
 }
 
-test("static token owner lends zeroed copies of an owned token and fails closed after close", async () => {
-  for (const [token, tokenClass] of [
+test("static token owner lends zeroed copies of an owned token and fails closed after close", async (t) => {
+  const tokenClasses: [string, GitHubTokenClass][] = [
     [fineGrainedToken, "fine-grained"],
     [sentinel("ghp_"), "classic"],
     [oauthToken, "oauth"],
@@ -79,7 +124,8 @@ test("static token owner lends zeroed copies of an owned token and fails closed 
     [sentinel("ghs_"), "app-installation"],
     [sentinel("glpat-"), "unknown"],
     ["gho_", "unknown"],
-  ]) {
+  ];
+  for (const [token, tokenClass] of tokenClasses) {
     assert.equal(classifyGitHubToken(Buffer.from(token)), tokenClass, token.slice(0, 11));
   }
   for (const invalid of [
@@ -88,26 +134,27 @@ test("static token owner lends zeroed copies of an owned token and fails closed 
     Buffer.from("gho_with space"),
     Buffer.from("gho_trailing\n"),
     Buffer.from("gho_é"),
-    "gho_not-bytes",
   ]) {
     assert.throws(() => createGitHubStaticTokenOwner({ token: invalid }), {
       message: "invalid-token",
     });
   }
+  assert.throws(
+    // @ts-expect-error The owner also rejects non-byte inputs at runtime.
+    () => createGitHubStaticTokenOwner({ token: "gho_not-bytes" }),
+    { message: "invalid-token" },
+  );
   const input = Buffer.from(oauthToken);
   const owner = createGitHubStaticTokenOwner({ token: input });
+  t.after(() => owner.close());
   // The caller zero-fills its own read buffer; the owner keeps its own copy.
   input.fill(0);
   assert.equal(owner.kind, "github-token");
   assert.equal(owner.tokenClass, "oauth");
-  let lent;
-  assert.equal(
-    await owner.withToken(async (bytes) => {
-      lent = bytes;
-      return Buffer.from(bytes).toString();
-    }),
-    oauthToken,
-  );
+  const lent = await owner.withToken(async (bytes) => {
+    assert.equal(Buffer.from(bytes).toString(), oauthToken);
+    return bytes;
+  });
   assert.ok(
     lent.every((byte) => byte === 0),
     "lent copy is zeroed after use",
@@ -152,7 +199,7 @@ test("token backend configuration requires both scope controls and rejects every
   };
   const { developmentOnly: _d, ...noLiteral } = githubTokenConfigurationData();
   const { pushRefAllowlist: _p, ...noAllowlist } = githubTokenConfigurationData();
-  for (const [name, input] of [
+  const invalidConfigurations: [string, unknown][] = [
     ["missing developmentOnly", noLiteral],
     ["developmentOnly false", githubTokenConfigurationData({ developmentOnly: false })],
     ["developmentOnly string", githubTokenConfigurationData({ developmentOnly: "true" })],
@@ -173,37 +220,41 @@ test("token backend configuration requires both scope controls and rejects every
     ["App kind with a token field", githubConfigurationData({ tokenFile: "/protected/token" })],
     ["unknown kind", githubTokenConfigurationData({ kind: "github-pat" })],
     ...["0", "01", "-1", "+1", "1.0", "1e2", " 73", "73 ", "9007199254740992", 73].map(
-      (repositoryId) => [
+      (repositoryId): [string, unknown] => [
         "noncanonical repository ID",
         githubTokenConfigurationData({ repositoryId }),
       ],
     ),
     ["repository ID changes from string to number", changingRepositoryId],
-  ]) {
+  ];
+  for (const [name, input] of invalidConfigurations) {
     assert.throws(() => validateGitHubConfiguration(input), { message: "invalid-backend" }, name);
   }
 });
 
-test("token grant identities distinguish policy and cannot reuse a previous App grant", () => {
-  const previousBinding = {
+test("token grant identities distinguish policy and cannot reuse a previous App grant", (t) => {
+  const previousBinding: RepositoryCredentialGrantIdentity = {
     providerInstanceId: "github-test",
     repositoryId: "73",
     grantId: "sha256:2aaf0850449238395a21649ea67ff527ef3be5c1ffcc43ea0ea2d392884cc986",
   };
-  const token = tokenFactory();
-  const grant = (factory, profile = "git-write") => factory.resolve(profile).binding.grantId;
+  const token = tokenFactory(t);
+  const grant = (factory: GitHubDriverFactory, profile: GitHubProfile = "git-write") =>
+    factory.resolve(profile).binding.grantId;
   const grants = [
     previousBinding.grantId,
     grant(token.factory),
-    grant(tokenFactory({ token: fineGrainedToken, configuration: { allowGraphql: true } }).factory),
-    grant(tokenFactory({ configuration: { pushRefAllowlist: ["refs/heads/other/*"] } }).factory),
+    grant(
+      tokenFactory(t, { token: fineGrainedToken, configuration: { allowGraphql: true } }).factory,
+    ),
+    grant(tokenFactory(t, { configuration: { pushRefAllowlist: ["refs/heads/other/*"] } }).factory),
   ];
   assert.equal(new Set(grants).size, grants.length);
   // git-read never gets GraphQL, so allowGraphql does not change its identity.
   assert.equal(
     grant(token.factory, "git-read"),
     grant(
-      tokenFactory({ token: fineGrainedToken, configuration: { allowGraphql: true } }).factory,
+      tokenFactory(t, { token: fineGrainedToken, configuration: { allowGraphql: true } }).factory,
       "git-read",
     ),
   );
@@ -222,13 +273,28 @@ test("token grant identities distinguish policy and cannot reuse a previous App 
       message: "invalid-binding",
     });
   }
-  token.owner.close();
 });
 
-test("token factory refuses mismatched authorities, metadata scope, broad GraphQL and short leases", () => {
-  const { key } = appFactory();
-  for (const [name, input] of [
-    ["App authority for a token config", { owner: key }],
+test("token factory refuses mismatched authorities, metadata scope, broad GraphQL and short leases", (t) => {
+  const clock: Clock = createControlledClock(1700000000000);
+  const config = validateServiceConfig(serviceConfigurationData());
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const key = createGitHubKeyOwner({ privateKey, appId: "12345", clock });
+  t.after(() => key.close());
+  assert.throws(
+    () =>
+      createGitHubDriverFactory({
+        configuration: validateGitHubConfiguration(githubTokenConfigurationData()),
+        // @ts-expect-error A real App key owner must also be rejected at runtime.
+        authority: key,
+        clock,
+        gatewayOrigin: config.gateway.publicOrigin,
+        limits: config.limits,
+      }),
+    { message: "invalid-configuration" },
+    "App authority for a token config",
+  );
+  const invalidOptions: [string, TokenFixtureOptions][] = [
     ["metadata-only scope", { options: { metadataOnly: true } }],
     ["GraphQL with an OAuth token", { configuration: { allowGraphql: true } }],
     [
@@ -240,15 +306,16 @@ test("token factory refuses mismatched authorities, metadata scope, broad GraphQ
       "lease below the exchange bound",
       { configuration: { leaseSeconds: 900 }, limits: { exchangeMs: 900000 } },
     ],
-  ]) {
-    assert.throws(() => tokenFactory(input), { message: "invalid-configuration" }, name);
+  ];
+  for (const [name, input] of invalidOptions) {
+    assert.throws(() => tokenFactory(t, input), { message: "invalid-configuration" }, name);
   }
   const owner = createGitHubStaticTokenOwner({ token: Buffer.from(oauthToken) });
-  const clock = createControlledClock();
-  const config = validateServiceConfig(serviceConfigurationData());
+  t.after(() => owner.close());
   assert.throws(
     () =>
       createGitHubDriverFactory({
+        // @ts-expect-error The token factory must reject raw App configuration at runtime.
         configuration: githubConfigurationData(),
         authority: owner,
         clock,
@@ -257,38 +324,38 @@ test("token factory refuses mismatched authorities, metadata scope, broad GraphQ
       }),
     { message: "invalid-backend" },
   );
-  key.close();
-  owner.close();
 });
 
-test("token routes deny GraphQL by default and for git-read, and inspect every push", () => {
-  const graphql = head("POST", "/graphql", {}, { framing: { kind: "length", bytes: 20 } });
+test("token routes deny GraphQL by default and for git-read, and inspect every push", (t) => {
+  const graphql = head("POST", "/graphql", {}, { kind: "length", bytes: 20 });
   const receivePack = head(
     "POST",
     "/fixture/repository.git/git-receive-pack",
     { "content-type": "application/x-git-receive-pack-request" },
-    { framing: { kind: "length", bytes: 20 } },
+    { kind: "length", bytes: 20 },
   );
   const discovery = head("GET", "/fixture/repository.git/info/refs?service=git-receive-pack");
   const denied = { kind: "denied", status: 400, code: "unsupported-request" };
-  const defaults = tokenFactory();
-  const opted = tokenFactory({ token: fineGrainedToken, configuration: { allowGraphql: true } });
-  for (const profile of ["git-read", "git-write", "git-full"]) {
+  const defaults = tokenFactory(t);
+  const opted = tokenFactory(t, { token: fineGrainedToken, configuration: { allowGraphql: true } });
+  const profiles: GitHubProfile[] = ["git-read", "git-write", "git-full"];
+  for (const profile of profiles) {
     assert.deepEqual(bind(defaults, profile).plan(graphql), denied, profile);
   }
   assert.deepEqual(bind(opted, "git-read").plan(graphql), denied);
   // Opted-in GraphQL is read-only: a mutation could write refs outside the push allowlist.
-  const query = (text) => Buffer.from(JSON.stringify({ query: text }));
-  for (const profile of ["git-write", "git-full"]) {
+  const query = (text: string) => Buffer.from(JSON.stringify({ query: text }));
+  const writeProfiles: GitHubProfile[] = ["git-write", "git-full"];
+  for (const profile of writeProfiles) {
     const plan = bind(opted, profile).plan(graphql);
+    assert.ok(!("kind" in plan), profile);
     assert.equal(plan.target, "/graphql", profile);
-    assert.equal(plan.inputPolicy(query("{ viewer { login } }")), true, profile);
-    assert.equal(plan.inputPolicy(query("query { mutationTesting: viewer { login } }")), true);
+    const { inputPolicy } = plan;
+    assert.ok(inputPolicy, profile);
+    assert.equal(inputPolicy(query("{ viewer { login } }")), true, profile);
+    assert.equal(inputPolicy(query("query { mutationTesting: viewer { login } }")), true);
     const named = { query: "query Q($n: Int) { viewer { login } }", variables: { n: 1 } };
-    assert.equal(
-      plan.inputPolicy(Buffer.from(JSON.stringify({ ...named, operationName: "Q" }))),
-      true,
-    );
+    assert.equal(inputPolicy(Buffer.from(JSON.stringify({ ...named, operationName: "Q" }))), true);
     for (const refused of [
       query('mutation { updateRef(input: {refId: "x", oid: "y"}) { clientMutationId } }'),
       query("mutation{createRef(input:{}){ref{name}}}"),
@@ -304,31 +371,40 @@ test("token routes deny GraphQL by default and for git-read, and inspect every p
       Buffer.from('{"query":"{ viewer { login } }","extensions":{}}'),
       Buffer.from('{"query":{"text":"{ viewer { login } }"}}'),
     ]) {
-      assert.equal(plan.inputPolicy(refused), false, refused.toString());
+      assert.equal(inputPolicy(refused), false, refused.toString());
     }
   }
   // git-read never reaches receive-pack, before any acquisition.
   assert.deepEqual(bind(defaults, "git-read").plan(receivePack), denied);
   assert.deepEqual(bind(defaults, "git-read").plan(discovery), denied);
   const push = bind(defaults, "git-write").plan(receivePack);
+  assert.ok(!("kind" in push));
   assert.equal(push.category, "git-push");
+  const { inputPolicy } = push;
+  assert.ok(inputPolicy);
   const oid = "a".repeat(40);
-  const command = (ref) => {
+  const command = (ref: string) => {
     const line = `${oid} ${oid} ${ref}\0report-status`;
     return Buffer.from(`${(line.length + 4).toString(16).padStart(4, "0")}${line}0000`);
   };
-  assert.equal(push.inputPolicy(command("refs/heads/agent/x")), true);
-  assert.equal(push.inputPolicy(command("refs/heads/main")), false);
-  defaults.owner.close();
-  opted.owner.close();
+  assert.equal(inputPolicy(command("refs/heads/agent/x")), true);
+  assert.equal(inputPolicy(command("refs/heads/main")), false);
 });
 
-function attemptFor(session, { aborted = false, deadlineMonoMs = 60000 } = {}) {
+interface AttemptOptions {
+  aborted?: boolean;
+  deadlineMonoMs?: number;
+}
+
+function attemptFor(
+  session: Pick<ReturnType<typeof bind>, "authority" | "custody">,
+  { aborted = false, deadlineMonoMs = 60000 }: AttemptOptions = {},
+) {
   const controller = new AbortController();
   if (aborted) {
     controller.abort();
   }
-  const attempt = Object.freeze({
+  const attempt = Object.freeze<AttemptContext>({
     id: `attempt-${Math.random()}`,
     authority: session.authority,
     action: "acquire",
@@ -347,33 +423,33 @@ function attemptFor(session, { aborted = false, deadlineMonoMs = 60000 } = {}) {
   return { attempt, reservation: session.custody.reserve(attempt) };
 }
 
-test("static acquisition checks every bound before borrowing and never dispatches", async () => {
-  const fixture = tokenFactory();
+test("static acquisition checks every bound before borrowing and never dispatches", async (t) => {
+  const fixture = tokenFactory(t);
   const session = bind(fixture, "git-write");
   // Settle each attempt the way the lifecycle does, so refused attempts free their slot.
-  const outcome = async (options, minimumValidityMs = 0) => {
+  const outcome = async (options: AttemptOptions, minimumValidityMs = 0) => {
     const { attempt, reservation } = attemptFor(session, options);
     const result = await session.driver.acquire(attempt, undefined, minimumValidityMs);
     await session.driver.settle(result);
     session.custody.settle(reservation);
     return result;
   };
+  const capturedCount = () => session.custody.records.size;
   assert.equal((await outcome({ aborted: true })).kind, "not-dispatched");
   assert.equal((await outcome({ deadlineMonoMs: 0 })).kind, "not-dispatched");
   const rejected = await outcome({}, 3600001);
-  assert.deepEqual([rejected.kind, rejected.code], ["rejected", "insufficient-validity"]);
-  assert.equal(session.custody.records.size, 0, "refused attempts captured nothing");
+  assert.strictEqual(rejected.kind, "rejected");
+  assert.equal(rejected.code, "insufficient-validity");
+  assert.equal(capturedCount(), 0, "refused attempts captured nothing");
   const acquired = await outcome({}, 3600000);
-  assert.equal(acquired.kind, "acquired");
+  assert.strictEqual(acquired.kind, "acquired");
   assert.equal(acquired.expiresAtWallMs - acquired.observedWallMs, 3600000);
-  assert.equal(session.custody.records.size, 1);
+  assert.equal(capturedCount(), 1);
   fixture.owner.close();
   const closed = await outcome({});
-  assert.deepEqual(
-    [closed.kind, closed.code],
-    ["reauthorization-required", "authority-unavailable"],
-  );
-  assert.equal(session.custody.records.size, 1);
+  assert.strictEqual(closed.kind, "reauthorization-required");
+  assert.equal(closed.code, "authority-unavailable");
+  assert.equal(capturedCount(), 1);
 });
 
 test("token factory refuses a caller-supplied grant override", (t) => {
@@ -383,16 +459,16 @@ test("token factory refuses a caller-supplied grant override", (t) => {
     profile: "git-write",
     identity: { providerInstanceId: "github-test", repositoryId: "73", grantId: "x" },
   };
-  assert.throws(() => tokenFactory({ owner, options: { binding } }), {
+  assert.throws(() => tokenFactory(t, { owner, options: { binding } }), {
     message: "invalid-configuration",
   });
-  assert.throws(() => tokenFactory({ owner, options: { binding: undefined } }), {
+  assert.throws(() => tokenFactory(t, { owner, options: { binding: undefined } }), {
     message: "invalid-configuration",
   });
 });
 
-test("development token upload-pack deadlines fit the configured lease", () => {
-  const token = tokenFactory({
+test("development token upload-pack deadlines fit the configured lease", (t) => {
+  const token = tokenFactory(t, {
     configuration: { leaseSeconds: 900 },
     limits: { gitFetchExchangeMs: 1800000, maxExchangeMs: 1800000 },
   });
@@ -402,10 +478,11 @@ test("development token upload-pack deadlines fit the configured lease", () => {
       "content-type": "application/x-git-upload-pack-request",
     }),
   );
+  assert.ok(!("kind" in upload));
   assert.equal(upload.limits.totalMs, 780000);
   const discovery = bound.plan(
     head("GET", "/fixture/repository.git/info/refs?service=git-upload-pack"),
   );
+  assert.ok(!("kind" in discovery));
   assert.equal(discovery.limits.totalMs, 300000);
-  token.owner.close();
 });
