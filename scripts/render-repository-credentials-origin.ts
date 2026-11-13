@@ -1,27 +1,46 @@
 import { spawn } from "node:child_process";
 
-function fail(message) {
+type Options = {
+  release: string;
+  namespace: string;
+  values: string;
+};
+
+type HelmDocument = {
+  kind: string;
+  metadata?: { name?: string };
+  spec?: {
+    template?: {
+      spec?: {
+        containers?: { name: string; args?: string[] }[];
+      };
+    };
+  };
+};
+
+function fail(message: string): never {
   process.stderr.write(`render-repository-credentials-origin: ${message}\n`);
   process.exit(1);
 }
 
 function usage() {
-  process.stderr.write(`Usage: node scripts/render-repository-credentials-origin.mjs \\
+  process.stderr.write(`Usage: node scripts/render-repository-credentials-origin.ts \\
   --release NAME --namespace NAME --values FILE
 
 Prints JSON for the repository credential broker origin rendered by Helm.
 `);
 }
 
-function argValue(args, index, name) {
-  if (index + 1 >= args.length || args[index + 1].startsWith("--")) {
+function argValue(args: string[], index: number, name: string): string {
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith("--")) {
     fail(`${name} requires a value`);
   }
-  return args[index + 1];
+  return value;
 }
 
-function parseArgs(argv) {
-  const options = {};
+function parseArgs(argv: string[]): Options {
+  const options: Partial<Options> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     switch (arg) {
@@ -47,27 +66,32 @@ function parseArgs(argv) {
         fail(`unsupported argument ${arg}`);
     }
   }
-  for (const name of ["release", "namespace", "values"]) {
-    if (!options[name]) {
-      fail(`--${name} is required`);
-    }
+  const { release, namespace, values } = options;
+  if (!release) {
+    fail("--release is required");
   }
-  return options;
+  if (!namespace) {
+    fail("--namespace is required");
+  }
+  if (!values) {
+    fail("--values is required");
+  }
+  return { release, namespace, values };
 }
 
-function command(file, args, input) {
+function command(file: string, args: string[], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
       if (stdout.length > 8 * 1024 * 1024) {
         child.kill("SIGKILL");
       }
     });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
       if (stderr.length > 2 * 1024 * 1024) {
         child.kill("SIGKILL");
       }
@@ -84,24 +108,28 @@ function command(file, args, input) {
   });
 }
 
-function objectsFromYq(jsonLines) {
+function objectsFromYq(jsonLines: string): HelmDocument[] {
   return jsonLines
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => JSON.parse(line))
-    .filter((value) => value && typeof value === "object" && value.kind);
+    .map((line) => JSON.parse(line) as HelmDocument | null)
+    .filter(
+      (value): value is HelmDocument =>
+        value !== null && typeof value === "object" && Boolean(value.kind),
+    );
 }
 
-function valueAfter(args, flag) {
+function valueAfter(args: string[], flag: string): string {
   const index = args.indexOf(flag);
-  if (index === -1 || index + 1 >= args.length) {
+  const value = args[index + 1];
+  if (index === -1 || value === undefined) {
     fail(`rendered repository credential container is missing ${flag}`);
   }
-  return args[index + 1];
+  return value;
 }
 
-function renderedBroker(objects, options) {
+function renderedBroker(objects: HelmDocument[], options: Options) {
   const worker = objects.find(
     (object) =>
       object.kind === "Deployment" && object.metadata?.name === "openclaw-enterprise-worker",
@@ -116,7 +144,7 @@ function renderedBroker(objects, options) {
   const origin = valueAfter(args, "--public-origin");
   // The chart escapes literal dollars for one kubelet argument-expansion pass.
   const backendId = valueAfter(args, "--backend-id").replaceAll("$$", "$");
-  let url;
+  let url: URL;
   try {
     url = new URL(origin);
   } catch {
