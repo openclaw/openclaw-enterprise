@@ -16,10 +16,12 @@ import {
   formatsPlugin,
   generatePrecompiledRouteCompilers,
   loadPrecompiledRouteCompilers,
+  type PrecompiledRouteCompilers,
+  type RecordedCompile,
   validatorOptionsKey,
   writePrecompiledRouteCompilers,
 } from "../../apps/controller/src/http/route-compilers.ts";
-import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { createFastifyApp, type ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { perturbValue, sampleValue, seededRandom } from "../helpers/json-schema-samples.mjs";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -29,9 +31,10 @@ const PERTURBED_SAMPLES = 80;
 const directory = fileTemporaryDirectory("precompiled-route-compilers-");
 
 const generated = await generatePrecompiledRouteCompilers(async () => {
+  // Like the precompile CLI, this app only registers routes. It never calls a request handler.
   const app = createFastifyApp({
     development: { enabled: true, installationId: "ins_6054d30d-0f89-4cd0-aa56-2b76e3c5fb52" },
-  });
+  } as ControllerAppOptions);
   try {
     await app.ready();
   } finally {
@@ -40,31 +43,82 @@ const generated = await generatePrecompiledRouteCompilers(async () => {
 });
 const artifactPath = join(directory, "route-compilers.cjs");
 writePrecompiledRouteCompilers(artifactPath, generated.source);
-const artifact = loadPrecompiledRouteCompilers(artifactPath);
+const loadedArtifact = loadPrecompiledRouteCompilers(artifactPath);
 
-function describe(entry) {
+type Serializer = (value: unknown) => string;
+type Validator = ((
+  value: unknown,
+  context?: {
+    parentData: { part: unknown };
+    parentDataProperty: "part";
+  },
+) => unknown) & { schemaEnv?: unknown; errors?: unknown };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertValidator(value: unknown): asserts value is Validator {
+  assert.ok(typeof value === "function", "the compiler returns a validator");
+}
+
+function assertSharedSchemas(
+  value: unknown,
+): asserts value is Record<string, Record<string, unknown>> {
+  assert.ok(
+    isRecord(value) && Object.values(value).every(isRecord),
+    "recorded shared schemas are objects",
+  );
+}
+
+function validatorSettings(entry: RecordedCompile) {
+  const { externalSchemas, options } = entry;
+  assertSharedSchemas(externalSchemas);
+  assert.ok(isRecord(options), "recorded compiler options are an object");
+  const { customOptions } = options;
+  assert.ok(isRecord(customOptions), "recorded AJV custom options are an object");
+  return { externalSchemas, options, customOptions };
+}
+
+function compileSerializer(
+  artifact: PrecompiledRouteCompilers | null,
+  externalSchemas: unknown,
+  options: unknown,
+  route: { schema: unknown; method?: unknown; url?: unknown; httpStatus: unknown },
+): Serializer {
+  if (options !== undefined) {
+    assert.ok(isRecord(options), "recorded compiler options are an object");
+  }
+  // The factory's route declaration requires method and URL, but compilation uses the schema.
+  const compile = cachedResponseSerializers(artifact)(externalSchemas, options) as (route: {
+    schema: unknown;
+  }) => Serializer;
+  return compile(route);
+}
+
+function describe(entry: RecordedCompile) {
   return `${entry.kind} ${String(entry.route.method)} ${String(entry.route.url)} ${String(entry.route.part)}`;
 }
 
 // Request params and querystrings arrive as strings (or arrays of them, for a repeated query
 // parameter), so feed those parts strings too, besides the typed samples.
-function asRequestStrings(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+function asRequestStrings(value: unknown): unknown {
+  if (!isRecord(value)) {
     return value;
   }
   return Object.fromEntries(
     Object.entries(value).map(([name, entry]) => [
       name,
-      Array.isArray(entry) ? entry.map((item) => String(item)) : String(entry),
+      Array.isArray(entry) ? entry.map((item: unknown) => String(item)) : String(entry),
     ]),
   );
 }
 
-function corpus(entry, seed) {
+function corpus(entry: RecordedCompile, seed: number) {
   const random = seededRandom(seed);
   const shared = entry.externalSchemas ?? {};
   const nonJson = entry.kind === "serializer";
-  const values = [];
+  const values: unknown[] = [];
   for (let index = 0; index < VALID_SAMPLES; index += 1) {
     values.push(sampleValue(random, entry.schema, shared));
   }
@@ -83,12 +137,16 @@ function corpus(entry, seed) {
 // payload after coercion, defaults and removed additional properties.
 // The validator is called the way Fastify calls it (lib/validation.js): with the request as
 // parent when it has a schemaEnv, so a root value it rewrites lands on the request.
-function validate(validator, value) {
-  const request = { part: value === undefined ? undefined : structuredClone(value) };
+function validate(validator: unknown, value: unknown) {
+  assertValidator(validator);
+  const request: { part: unknown } = {
+    part: value === undefined ? undefined : structuredClone(value),
+  };
   const data = request.part === undefined ? null : request.part;
   const valid = validator.schemaEnv
     ? validator(data, { parentData: request, parentDataProperty: "part" })
     : validator(data);
+  assert.ok(typeof valid === "boolean", "route validation returns a synchronous verdict");
   return {
     valid,
     errors: validator.errors == null ? null : JSON.stringify(validator.errors),
@@ -96,16 +154,21 @@ function validate(validator, value) {
   };
 }
 
-function sourceWithoutSchemaIds(serializer) {
+function sourceWithoutSchemaIds(serializer: Serializer) {
   return serializer.toString().replaceAll(/__fjs_root_\d+/gu, "__fjs_root");
 }
 
-function serialize(serializer, value) {
+function serialize(serializer: Serializer, value: unknown) {
   try {
     return { output: serializer(value) };
   } catch (error) {
     const type = error?.constructor?.name;
-    const message = String(error?.message);
+    const message = String(
+      ((typeof error === "object" && error !== null) || typeof error === "function") &&
+        "message" in error
+        ? error.message
+        : undefined,
+    );
     const schemaMismatch =
       type === "TypeError" && message.endsWith("' does not match schema definition.")
         ? /^The value of '(__fjs_(?:root|merged))_\d+(#.*)$/su.exec(message)
@@ -122,18 +185,20 @@ function serialize(serializer, value) {
 }
 
 test("serializer error comparison preserves generated-looking property names", () => {
-  function failure(property, schemaId) {
+  function failure(property: string, schemaId?: string) {
     const schema = {
       type: "object",
       properties: { [property]: { anyOf: [{ type: "string" }, { type: "number" }] } },
     };
-    const serializer = cachedResponseSerializers(null)(
+    const serializer = compileSerializer(
+      null,
       schemaId ? { External: { $id: schemaId, ...schema } } : {},
       {},
-    )({
-      schema: schemaId ? { $ref: schemaId } : { allOf: [schema] },
-      httpStatus: "200",
-    });
+      {
+        schema: schemaId ? { $ref: schemaId } : { allOf: [schema] },
+        httpStatus: "200",
+      },
+    );
     return serialize(serializer, { [property]: {} });
   }
 
@@ -151,15 +216,17 @@ test("the generator records every route schema", () => {
   assert.ok(generated.validators >= 40, `${generated.validators} validators`);
   assert.ok(generated.serializers >= 60, `${generated.serializers} serializers`);
   assert.equal(generated.inputs.length, generated.validators + generated.serializers);
-  assert.ok(artifact !== null, "the artifact loads with the current fingerprint");
-  assert.equal(artifact.size, generated.inputs.length);
+  assert.ok(loadedArtifact !== null, "the artifact loads with the current fingerprint");
+  assert.equal(loadedArtifact.size, generated.inputs.length);
 });
 
 test("precompiled validators accept, reject and rewrite requests like run-time ones", (t) => {
+  assert.ok(loadedArtifact);
+  const artifact = loadedArtifact;
   const before = artifact.hits;
   let accepted = 0;
   let rejected = 0;
-  const oneSided = [];
+  const oneSided: string[] = [];
   const entries = generated.inputs.filter((entry) => entry.kind === "validator");
   for (const [index, entry] of entries.entries()) {
     const route = {
@@ -168,16 +235,15 @@ test("precompiled validators accept, reject and rewrite requests like run-time o
       url: entry.route.url,
       httpPart: entry.route.part,
     };
-    const runtime = cachedRequestValidators(null)(entry.externalSchemas, entry.options)(route);
+    const { externalSchemas, options } = validatorSettings(entry);
+    const runtime = cachedRequestValidators(null)(externalSchemas, options)(route);
     const hits = artifact.hits;
-    const precompiled = cachedRequestValidators(artifact)(entry.externalSchemas, entry.options)(
-      route,
-    );
+    const precompiled = cachedRequestValidators(artifact)(externalSchemas, options)(route);
     assert.equal(artifact.hits, hits + 1, `${describe(entry)} is answered by the artifact`);
     assert.notEqual(precompiled, runtime);
     // ajv generates the same code in both modes; standalone only moves its helpers to require.
     assert.equal(precompiled.toString(), runtime.toString(), `${describe(entry)} source`);
-    const outcomes = new Set();
+    const outcomes = new Set<boolean>();
     for (const value of corpus(entry, 1000 + index)) {
       const expected = validate(runtime, value);
       const actual = validate(precompiled, value);
@@ -209,6 +275,8 @@ test("precompiled validators accept, reject and rewrite requests like run-time o
 });
 
 test("precompiled serializers write the same bodies and errors as run-time ones", (t) => {
+  assert.ok(loadedArtifact);
+  const artifact = loadedArtifact;
   const before = artifact.hits;
   let failures = 0;
   const entries = generated.inputs.filter((entry) => entry.kind === "serializer");
@@ -219,10 +287,8 @@ test("precompiled serializers write the same bodies and errors as run-time ones"
       url: entry.route.url,
       httpStatus: entry.route.part,
     };
-    const runtime = cachedResponseSerializers(null)(entry.externalSchemas, entry.options)(route);
-    const precompiled = cachedResponseSerializers(artifact)(entry.externalSchemas, entry.options)(
-      route,
-    );
+    const runtime = compileSerializer(null, entry.externalSchemas, entry.options, route);
+    const precompiled = compileSerializer(artifact, entry.externalSchemas, entry.options, route);
     assert.notEqual(precompiled, runtime);
     // fast-json-stringify writes the same function in both modes, except for the counter in
     // the ids of the schemas its union checks validate against.
@@ -254,25 +320,32 @@ test("precompiled serializers write the same bodies and errors as run-time ones"
 });
 
 test("inputs the artifact lacks compile at run time", () => {
+  assert.ok(loadedArtifact);
+  const artifact = loadedArtifact;
   const [entry] = generated.inputs.filter((input) => input.kind === "validator");
+  assert.ok(entry);
+  const { externalSchemas, options } = validatorSettings(entry);
   const before = artifact.hits;
-  const changed = cachedRequestValidators(artifact)(entry.externalSchemas, entry.options)({
+  const changed = cachedRequestValidators(artifact)(externalSchemas, options)({
     schema: { type: "object", properties: { only: { type: "string", maxLength: 3 } } },
     httpPart: "body",
   });
   assert.equal(changed({ only: "abc" }), true);
   assert.equal(changed({ only: "abcd" }), false);
   // A schema JSON cannot represent exactly never gets a key.
-  const inexact = cachedRequestValidators(artifact)(entry.externalSchemas, entry.options)({
+  const inexact = cachedRequestValidators(artifact)(externalSchemas, options)({
     schema: { type: "integer", minimum: -0 },
     httpPart: "body",
   });
   assert.equal(inexact(0), true);
   const serializerEntry = generated.inputs.find((input) => input.kind === "serializer");
-  const serializer = cachedResponseSerializers(artifact)(
+  assert.ok(serializerEntry);
+  const serializer = compileSerializer(
+    artifact,
     serializerEntry.externalSchemas,
     serializerEntry.options,
-  )({ schema: { type: "object", properties: { a: { type: "integer" } } }, httpStatus: "200" });
+    { schema: { type: "object", properties: { a: { type: "integer" } } }, httpStatus: "200" },
+  );
   assert.equal(serializer({ a: 1, b: 2 }), '{"a":1}');
   assert.equal(artifact.hits, before);
 });
@@ -281,55 +354,58 @@ test("an input that differs from a recorded one in any compile setting misses th
   const entry = generated.inputs.find(
     (input) => input.kind === "validator" && input.route.part === "body",
   );
+  assert.ok(entry);
   const route = { schema: entry.schema, httpPart: "body" };
-  const customOptions = entry.options.customOptions;
+  const { externalSchemas, options, customOptions } = validatorSettings(entry);
   const nonEnumerable = structuredClone(entry.schema);
+  assert.ok(isRecord(nonEnumerable), "the recorded body schema has keywords");
   Object.defineProperty(nonEnumerable, "maxProperties", { value: 0, enumerable: false });
   const variants = {
     coerceTypes: [
-      entry.externalSchemas,
-      { ...entry.options, customOptions: { ...customOptions, coerceTypes: true } },
+      externalSchemas,
+      { ...options, customOptions: { ...customOptions, coerceTypes: true } },
     ],
     useDefaults: [
-      entry.externalSchemas,
-      { ...entry.options, customOptions: { ...customOptions, useDefaults: true } },
+      externalSchemas,
+      { ...options, customOptions: { ...customOptions, useDefaults: true } },
     ],
     removeAdditional: [
-      entry.externalSchemas,
-      { ...entry.options, customOptions: { ...customOptions, removeAdditional: true } },
+      externalSchemas,
+      { ...options, customOptions: { ...customOptions, removeAdditional: true } },
     ],
     "another ajv option": [
-      entry.externalSchemas,
-      { ...entry.options, customOptions: { ...customOptions, allErrors: true } },
+      externalSchemas,
+      { ...options, customOptions: { ...customOptions, allErrors: true } },
     ],
     "another plugin": [
-      entry.externalSchemas,
-      { ...entry.options, plugins: [formatsPlugin, (ajv) => ajv] },
+      externalSchemas,
+      { ...options, plugins: [formatsPlugin, (ajv: Parameters<typeof formatsPlugin>[0]) => ajv] },
     ],
     "another shared schema": [
-      { ...entry.externalSchemas, "extra-shared": { $id: "extra-shared", type: "string" } },
-      entry.options,
+      { ...externalSchemas, "extra-shared": { $id: "extra-shared", type: "string" } },
+      options,
     ],
-  };
+  } satisfies Record<string, Parameters<ReturnType<typeof cachedRequestValidators>>>;
   // A fresh load has its own compile caches, so nothing here is answered from an earlier test.
   const fresh = loadPrecompiledRouteCompilers(artifactPath);
-  for (const [name, [externalSchemas, options]] of Object.entries(variants)) {
-    cachedRequestValidators(fresh)(externalSchemas, options)(route);
+  assert.ok(fresh);
+  for (const [name, [schemas, compilerOptions]] of Object.entries(variants)) {
+    cachedRequestValidators(fresh)(schemas, compilerOptions)(route);
     assert.equal(fresh.hits, 0, `${name} misses the artifact`);
   }
   // A keyword JSON cannot see (not enumerable) still reaches ajv, so neither the artifact nor
   // the process-wide cache may answer for the schema without it.
-  const strict = cachedRequestValidators(fresh)(entry.externalSchemas, entry.options)({
+  const strict = cachedRequestValidators(fresh)(externalSchemas, options)({
     schema: nonEnumerable,
     httpPart: "body",
   });
   assert.equal(fresh.hits, 0, "a non-enumerable keyword misses the artifact");
   // The recorded input itself hits, and the strict schema rejects a body it accepts.
-  const recorded = cachedRequestValidators(fresh)(entry.externalSchemas, entry.options)(route);
+  const recorded = cachedRequestValidators(fresh)(externalSchemas, options)(route);
   assert.equal(fresh.hits, 1, "the recorded input hits");
-  let body;
+  let body: unknown;
   for (let seed = 1; seed < 50 && body === undefined; seed += 1) {
-    const candidate = sampleValue(seededRandom(seed), entry.schema, entry.externalSchemas ?? {});
+    const candidate: unknown = sampleValue(seededRandom(seed), entry.schema, externalSchemas);
     if (Object.keys(candidate ?? {}).length > 0 && recorded(structuredClone(candidate))) {
       body = candidate;
     }
@@ -342,23 +418,25 @@ test("an input that differs from a recorded one in any compile setting misses th
 // coerces or defaults, so validators for options that rewrite data are never precompiled.
 test("validator options that rewrite request data have no precompile key", () => {
   const entry = generated.inputs.find((input) => input.kind === "validator");
-  assert.equal(typeof validatorOptionsKey(entry.options), "string");
+  assert.ok(entry);
+  const { options, customOptions } = validatorSettings(entry);
+  assert.equal(typeof validatorOptionsKey(options), "string");
   for (const [name, value] of Object.entries({
     coerceTypes: true,
     useDefaults: true,
     removeAdditional: "all",
   })) {
-    const options = {
-      ...entry.options,
-      customOptions: { ...entry.options.customOptions, [name]: value },
+    const changed = {
+      ...options,
+      customOptions: { ...customOptions, [name]: value },
     };
-    assert.equal(validatorOptionsKey(options), undefined, name);
+    assert.equal(validatorOptionsKey(changed), undefined, name);
   }
   // @fastify/ajv-compiler turns each of them on when it is left out.
   for (const name of ["coerceTypes", "useDefaults", "removeAdditional"]) {
-    const { [name]: _omitted, ...customOptions } = entry.options.customOptions;
+    const { [name]: _omitted, ...rest } = customOptions;
     assert.equal(
-      validatorOptionsKey({ ...entry.options, customOptions }),
+      validatorOptionsKey({ ...options, customOptions: rest }),
       undefined,
       `${name} omitted`,
     );
