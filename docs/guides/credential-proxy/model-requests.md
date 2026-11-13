@@ -38,13 +38,22 @@ tokenGrant:
   bundlePath: /etc/openclaw/egress/token-grant/bundle.json
 ```
 
-The token endpoint uses the authority's TLS certificate and a distinct port.
-Its HTTPS certificate must cover the endpoint host. Stock OpenShell 0.1.6
-uses the supervisor's native CA trust store for token grants and ignores proxy
-environment settings. Use a publicly trusted endpoint or a supervisor image
-with the required CA in its trust store. The middleware's `tls_ca_cert_path`
-does not configure token-grant trust, and the dedicated supervisor configuration
-has no token-grant CA override or arbitrary environment/mount extension.
+The token endpoint uses the authority's TLS certificate on a separate port.
+Its certificate must cover the endpoint hostname and chain to a root in the
+dedicated supervisor's native trust store. In stock OpenShell 0.1.6 and 0.1.8,
+the token client connects directly and ignores proxy environment settings.
+The 0.1.8 chart's `supervisor.network.additionalCaConfigMapName` supplies roots
+for inspected HTTPS destinations. The middleware's `tls_ca_cert_path` supplies
+roots for its own connection. The token client uses neither setting.
+
+Before upgrading, exercise a fresh model request through the selected supervisor
+and verify that the token service received and accepted the exchange. With the
+unmodified supervisor image, use an endpoint whose chain is already trusted.
+Keep access restricted to the intended supervisor callers. A successful
+Gateway health check or artifact download exercises a different connection.
+If you change the endpoint URL, the generated profile requests that URL as its
+JWT-SVID audience, and the token service validates the same value. The OAuth
+resource audience remains the credential binding ID.
 
 With Helm, enable
 `egressAuthority.tokenGrant`, match its `port`, and set `bundleConfigMapName` to
