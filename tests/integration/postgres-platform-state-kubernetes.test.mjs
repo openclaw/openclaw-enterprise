@@ -156,26 +156,39 @@ stateCase(
     assert.equal(persisted.rows[0].configurations, 1);
     assert.equal(persisted.rows[0].agent_service_principals, 1);
 
-    // The live worker can still produce unrelated lifecycle audit rows, such as
-    // bootstrap Namespace convergence, so stop it before measuring this request.
-    await stopProcess(worker.child);
-
-    const auditBeforeUnauthenticatedRequest = await pool.query(
-      "SELECT count(*)::integer AS count FROM occ.audit_events",
-    );
-    const unauthenticated = await request(first, "GET", "/namespaces", undefined, {
-      authenticated: false,
+    const unauthenticated = await fetch(new URL("/namespaces", first.origin), {
+      signal: AbortSignal.timeout(5_000),
     });
     assert.equal(unauthenticated.status, 401);
-    const auditAfterUnauthenticatedRequest = await pool.query(
-      "SELECT count(*)::integer AS count FROM occ.audit_events",
+    const { error, meta } = await unauthenticated.json();
+    assert.equal(error.code, "UNAUTHENTICATED");
+    assert.match(meta.requestId, /^req_/);
+    // A request rejected before admission records only its result. It has no verified actor.
+    const audit = await pool.query(
+      `SELECT kind, action, outcome, actor_id, resource_kind, resource_id,
+              details->'__occAuditMetadata'->'actor' AS actor,
+              details->>'operationId' AS operation_id, details->>'method' AS method,
+              (details->>'statusCode')::integer AS status_code
+       FROM occ.audit_events
+       WHERE details->'__occAuditMetadata'->>'requestId' = $1`,
+      [meta.requestId],
     );
-    assert.equal(
-      auditAfterUnauthenticatedRequest.rows[0].count,
-      auditBeforeUnauthenticatedRequest.rows[0].count,
-      "unauthenticated requests have no attributable actor and cannot write audit rows",
-    );
+    assert.deepEqual(audit.rows, [
+      {
+        kind: "api_request",
+        action: "openclaw.api.request.result",
+        outcome: "denied",
+        actor_id: "unresolved",
+        resource_kind: "installation",
+        resource_id: installation.id,
+        actor: { unresolved: true },
+        operation_id: "listNamespaces",
+        method: "GET",
+        status_code: 401,
+      },
+    ]);
 
+    await stopProcess(worker.child);
     await stopProcess(first.child);
     const restarted = await startKubernetesController(context);
 
