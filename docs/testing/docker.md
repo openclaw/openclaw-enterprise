@@ -146,8 +146,8 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-codex-readiness.test.ts \
     tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \
-    tests/integration/runtime-image-gateway-retained-state.test.mjs \
-    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-gateway-retained-state.test.ts \
+    tests/integration/runtime-image-gateway-peer.test.ts \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-managed-files.test.ts \
@@ -188,7 +188,8 @@ suite above, omitting the `docker pull` commands.
 With Helm and `yq` supporting `eval-all -o=json`:
 
 ```sh
-node --test tests/integration/production-kubernetes-packaging.test.mjs
+node --test tests/integration/production-kubernetes-packaging.test.mjs \
+  tests/integration/production-kubernetes-network-policy.test.ts
 ```
 
 Missing Helm or `yq` skips cases. Rendering does not install the chart or prove
@@ -199,7 +200,7 @@ live admission or NetworkPolicy enforcement. `OCC_HELM_BIN` can select Helm.
 With a Compose provider on `PATH`, run:
 
 ```sh
-node --test tests/integration/development-packaging.test.mjs tests/integration/logging-packaging.test.mjs
+node --test tests/integration/development-packaging.test.mjs tests/integration/logging-packaging.test.ts
 ```
 
 The tests inspect configuration without starting containers. Missing Compose or

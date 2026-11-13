@@ -31,6 +31,7 @@ export class InstalledDriver {
   readonly #views = new Map<DriverCapability, { id: string; driver: Driver }>();
   readonly #close: (() => void | Promise<void>) | undefined;
   readonly #retiredStaticProviderRefs: readonly EgressRef[];
+  readonly #repositoryOnly: boolean;
   #closing: Promise<void> | undefined;
 
   constructor(
@@ -40,12 +41,15 @@ export class InstalledDriver {
       readonly configuration: unknown;
       /** @internal Process-local admission policy supplied only by bundled composition. */
       readonly retiredStaticProviderRefs?: readonly EgressRef[];
+      /** @internal Set only after bundled repository transport validation. */
+      readonly repositoryOnly?: boolean;
     },
     registration: DriverRegistration,
     // Installation composition supplies the configured identity for each capability.
     capabilityIds: Readonly<Partial<Record<DriverCapability, string>>> = {},
   ) {
     const { id, implementation, configuration } = selection;
+    this.#repositoryOnly = selection.repositoryOnly === true;
     this.#retiredStaticProviderRefs = Object.freeze(
       (selection.retiredStaticProviderRefs ?? []).map(({ id, generation }) =>
         Object.freeze({ id, generation }),
@@ -100,6 +104,9 @@ export class InstalledDriver {
     }
     this.namespaceLifecycleHooks = registration.namespaceLifecycleHooks;
     this.#close = registration.close?.bind(registration);
+    if (this.#repositoryOnly) {
+      this.requireRepositoryGitTransport();
+    }
     Object.freeze(this);
   }
 
@@ -118,6 +125,11 @@ export class InstalledDriver {
       );
     }
     return view.driver as DriverByCapability[K];
+  }
+
+  /** @internal The validated repository-only installation retains ordinary model delivery. */
+  allowsOrdinaryCredentialGateway(): boolean {
+    return this.#repositoryOnly;
   }
 
   /** @internal Refuse new static admissions without changing retained provider behavior. */

@@ -102,6 +102,16 @@ try {
   );
   const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: "production" });
   drivers = await loadInstallationConfiguration({ mode: "production", startupConfiguration });
+  const auth = drivers?.installation?.backend?.find(({ type }) => type === "openshell")?.configuration.auth;
+  if (auth?.mode === "bearerTokenFile") {
+    const { access, constants, stat } = await import("node:fs/promises");
+    try {
+      if (!(await stat(auth.path)).isFile()) throw new Error();
+      await access(auth.path, constants.R_OK);
+    } catch {
+      throw new Error("OpenShell bearer token file must be readable in this Pod.");
+    }
+  }
 } catch (error) {
   process.stderr.write((formatConfigurationFailure?.(error) ?? (error instanceof Error ? error.message : String(error))) + "\\n");
   process.exit(1);

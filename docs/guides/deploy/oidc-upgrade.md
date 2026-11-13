@@ -63,9 +63,13 @@ throughout attachment, target installation, and verification. Keep it restricted
 until the reopening step below, even if a linked procedure says to reopen it.
 The old release's OIDC path does not enforce admission claims.
 
-On a release supporting both current sign-in methods, enable OIDC alongside the
-existing provider through the documented stopped-maintenance procedure. Keep one
-serving controller; this does not authorize mixed-version serving.
+On a release supporting both providers, enable OIDC alongside GitHub during
+[stopped maintenance](auth-maintenance.md#stop-every-writer). If the previous
+chart requires GitHub alone for `agentNativeAdmin.sessionMode: host-only-exchange`,
+set `agentNativeAdmin.enabled: false` and remove the session-mode override for
+this step. Disabling native admin alone leaves that chart guard active. Agent
+browser access is unavailable while native admin is disabled. Run the checks through the
+restricted Console on one serving controller of the previous release.
 
 For each eligible account, use the administrator
 [OIDC attachment procedure](oidc-sign-in.md#attach-and-detach). Read the current
@@ -91,7 +95,15 @@ that Group supplies all required grants. Otherwise select an existing Role and
 its explicit scope. Initial Roles apply only to newly created accounts; they do
 not replace existing users' grants. Review direct and Group grants together.
 
-Apply these target-release changes in the stopped upgrade window:
+Apply the changes below during stopped maintenance after existing users prove
+OIDC access. If you use `scripts/upgrade-production-images`, prepare one OIDC-only
+values file for both charts. Remove the entire `auth.github` block, including
+`enabled: false`. Keep the selected password policy and, for the transition
+above, leave native admin disabled. Render both charts with these values and the
+target enrollment rule. Apply the values on the previous release during stopped
+maintenance and verify restricted OIDC access. Use those same values for the
+image upgrade. The image helper protects auth and native admin settings even
+with `--candidate-values`.
 
 | Existing input or behavior                                                                                | Target release                                                                                                       |
 | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -121,7 +133,15 @@ After OIDC access is verified, detach old GitHub methods by `methodId` through
 the existing account controls. Read a fresh account version for each mutation;
 detachment ends the account's sessions again. Verify a fresh OIDC login afterward.
 Disabled accounts must remain disabled throughout preparation and cutover.
+If the installation uses Agent browser access, restore the target chart's supported
+native-admin settings in separate stopped maintenance, then verify a fresh
+Agent launch through restricted ingress.
 Reopen general ingress only after these checks pass.
+
+Retain the identity mapping and audit evidence. IdP group removal does not end an
+existing OCE session or remove local grants. Use
+[account disablement](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
+for immediate offboarding, and revoke separately issued service keys independently.
 
 ## Recover from a failed verification
 
@@ -131,7 +151,29 @@ and grants; do not create a replacement account or rewrite subjects to make a
 sign-in pass. Follow [upgrade recovery](production-upgrade-recovery.md) for release
 or database failures. An older image is not assumed safe against a changed database.
 
-After successful verification, retain the identity mapping and audit evidence.
-IdP group removal does not end an existing OCE session or remove local grants.
-Use [account disablement](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
-for immediate offboarding, and revoke separately issued service keys independently.
+### Before reopening on the previous release
+
+Record which writes completed before choosing a recovery point. A provider
+attachment on the previous release changes the account and revokes its sessions,
+even if the target never started. If the target accepted writes or their outcome
+is uncertain, keep writers stopped, reconcile those operations, and
+[restore the retained candidate database to a separate destination](upgrade-baseline.md#restore-the-retained-candidate-database).
+Verify that the previous release can use the selected data with the expected
+accounts, identity links, resource ownership and grants. If it cannot, keep
+ingress restricted and fix the target release.
+
+With ingress still restricted, check which sign-in methods the previous release
+actually serves. Its OIDC callback accepts attached subjects without checking
+the target's group rule. If you restore direct GitHub sign-in, verify its
+organization or team restriction and the accounts' retained GitHub links.
+For each provider that must enforce membership, verify that an eligible member
+reaches the original account and permitted resource. Then verify that a formerly
+eligible linked member is refused on a fresh sign-in within the required
+removal window. Keep a provider disabled if it cannot enforce its admission rule.
+Check other enabled methods against the installation's configured policy,
+including ordinary password sign-in if enabled. Verify recovery administrator
+access separately.
+
+Reconcile account disablements, session revocations and service-key revocations
+that occurred after the selected recovery point. Check existing sessions
+separately from new sign-ins.

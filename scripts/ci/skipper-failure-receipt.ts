@@ -37,6 +37,9 @@ type Checkpoint =
   | ["skipper_test_operation", (typeof skipperOperations)[number] | "unknown"]
   | ["skipper_last_test_checkpoint", string]
   | ["skipper_gateway_chat_phase", (typeof skipperGatewayChatPhases)[number]]
+  | ["skipper_gateway_exec_exit_code", number]
+  | ["skipper_gateway_exec_signal", string]
+  | ["skipper_gateway_exec_code", string]
   | ["skipper_http_status", number]
   | ["skipper_gateway_category", string]
   | ["skipper_runtime_signal", string]
@@ -107,6 +110,18 @@ export async function recordSkipperTestFailure(
     // Missing or malformed runner evidence does not establish an operation.
   }
   await recordSkipperCheckpoint("skipper_test_operation", diagnostic?.operation ?? "unknown");
+  if (diagnostic?.operation === "gateway-exec") {
+    const { exitCode, signal, code } = diagnostic;
+    if (exitCode !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_exit_code", exitCode);
+    }
+    if (signal !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_signal", signal);
+    }
+    if (code !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_code", code);
+    }
+  }
   if (diagnostic?.operation === "gateway-chat") {
     const {
       gatewayChatPhase,
@@ -189,6 +204,24 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
             modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
           })
         : undefined;
+    const exitText = process.env.SKIPPER_GATEWAY_EXEC_EXIT_CODE;
+    const exitCode = Number(exitText);
+    const execDiagnostic =
+      lastStage === "selected-test" && testOperation === "gateway-exec"
+        ? skipperOperationDiagnostic({
+            kind: "skipper-operation",
+            operation: testOperation,
+            // Accept only the canonical text emitted by the recorder.
+            exitCode: String(exitCode) === exitText ? exitCode : undefined,
+            signal: process.env.SKIPPER_GATEWAY_EXEC_SIGNAL,
+            code: process.env.SKIPPER_GATEWAY_EXEC_CODE,
+          })
+        : undefined;
+    const gatewayExec = {
+      ...(execDiagnostic?.exitCode !== undefined ? { exitCode: execDiagnostic.exitCode } : {}),
+      ...(execDiagnostic?.signal !== undefined ? { signal: execDiagnostic.signal } : {}),
+      ...(execDiagnostic?.code !== undefined ? { code: execDiagnostic.code } : {}),
+    };
     const receipt = {
       version: 1,
       runId,
@@ -197,6 +230,7 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
       outcome: "failed",
       lastStage,
       ...(installer ? { installer } : {}),
+      ...(Object.keys(gatewayExec).length > 0 ? { gatewayExec } : {}),
       ...(lastStage === "selected-test"
         ? {
             testOperation,

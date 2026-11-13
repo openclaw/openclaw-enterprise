@@ -1770,36 +1770,46 @@ test(
         `#!/bin/sh\nif [ "$1" = status ] && [ -f ${shellQuote(join(upgradeEvidence, "quiescence-worker-deployment.json"))} ]; then exit 75; fi\nexec ${shellQuote(realHelm)} "$@"\n`,
         { mode: 0o700 },
       );
-      await assert.rejects(
-        run("scripts/upgrade-production-images", runtimeArguments, {
-          timeout: 900_000,
-          env: {
-            ...upgradeEnvironment,
-            PATH: `${wrapperDirectory}:${process.env.PATH}`,
-          },
-        }),
-        /failed \(75\)/u,
+      const runtimeReceipt = "runtime-api-availability.json";
+      context.diagnostic(
+        `Runtime interruption and resume observations: ${join(directory, runtimeReceipt)}`,
       );
-      await retainInstallationSecrets();
-      assert.ok(
-        Buffer.from(successor.data["installation.yaml"], "base64").toString() ===
-          (await readFile(join(upgradeEvidence, "candidate-installation.yaml"), "utf8")),
-        "prepared Installation bytes differ from the staged immutable Secret",
-      );
-      await assert.rejects(readFile(join(upgradeEvidence, "helm-started")), { code: "ENOENT" });
-      for (const component of ["api", "worker"]) {
-        assert.equal(
-          (await get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
-          0,
-        );
-      }
-      const output = await run(
-        "scripts/upgrade-production-images",
-        [...runtimeArguments, "--resume"],
-        {
-          timeout: 900_000,
-          env: upgradeEnvironment,
+      const output = await measureUpgradeAvailability(
+        externalRequest,
+        installationId,
+        directory,
+        async () => {
+          await assert.rejects(
+            run("scripts/upgrade-production-images", runtimeArguments, {
+              timeout: 900_000,
+              env: {
+                ...upgradeEnvironment,
+                PATH: `${wrapperDirectory}:${process.env.PATH}`,
+              },
+            }),
+            /failed \(75\)/u,
+          );
+          await retainInstallationSecrets();
+          assert.ok(
+            Buffer.from(successor.data["installation.yaml"], "base64").toString() ===
+              (await readFile(join(upgradeEvidence, "candidate-installation.yaml"), "utf8")),
+            "prepared Installation bytes differ from the staged immutable Secret",
+          );
+          await assert.rejects(readFile(join(upgradeEvidence, "helm-started")), { code: "ENOENT" });
+          for (const component of ["api", "worker"]) {
+            assert.equal(
+              (await get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
+              0,
+            );
+          }
+          return run("scripts/upgrade-production-images", [...runtimeArguments, "--resume"], {
+            timeout: 900_000,
+            env: upgradeEnvironment,
+          });
         },
+        (details) =>
+          record("Runtime interruption and resume API availability observations", details),
+        runtimeReceipt,
       );
       assert.match(
         output,

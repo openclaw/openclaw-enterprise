@@ -53,7 +53,7 @@ pnpm test                     # Conformance and integration files
 pnpm cli:test                 # Go
 pnpm docs:install             # Browser and docs dependencies
 pnpm test:console-browser     # Chromium
-node --test tests/docs/*.test.mjs tests/helpers/*.test.mjs
+node --test 'tests/docs/*.test.{mjs,ts}' tests/helpers/*.test.mjs
 ```
 
 These commands select test files, but real-service cases may skip without their

@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import type { GitHubTokenConfiguration } from "./types.ts";
+import { parseGitHubNumericId } from "./repository-grant.ts";
 import { hasControlCharacter, normalizePushRefAllowlist } from "../../access/client-contracts.ts";
 
 const tokenStringFields = [
@@ -18,10 +19,6 @@ const tokenFields = [
   "leaseSeconds",
 ];
 export const defaultTokenLeaseSeconds = 3600;
-
-function validNumericId(value: string): boolean {
-  return /^[1-9][0-9]{0,15}$/.test(value) && Number.isSafeInteger(Number(value));
-}
 
 export function validateGitHubConfiguration(value: unknown): GitHubTokenConfiguration {
   const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
@@ -53,7 +50,7 @@ export function validateGitHubConfiguration(value: unknown): GitHubTokenConfigur
   if (
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(providerInstanceId!) ||
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(configVersion!) ||
-    !validNumericId(repositoryId!) ||
+    parseGitHubNumericId(repositoryId) === undefined ||
     !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(repository!)
   ) {
     throw new Error("invalid-backend");

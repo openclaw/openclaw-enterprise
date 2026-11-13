@@ -6,7 +6,23 @@ import { permissionsForProfile } from "../profiles.ts";
 import { parseCanonicalGitHubOrigin } from "../origin.ts";
 
 declare const scopeIdentity: unique symbol;
-export type ProviderScope = IssuanceProjection & Readonly<{ [scopeIdentity]: true }>;
+export type ProviderScope = IssuanceProjection &
+  Readonly<{ [scopeIdentity]: true; issuance: GitHubIssuanceScope }>;
+
+type GitHubIssuanceScope = Readonly<{
+  schemaVersion: 1;
+  origin: string;
+  appId: string;
+  installationId: number;
+}> &
+  (
+    | Readonly<{ kind: "inherited" }>
+    | Readonly<{
+        kind: "selected";
+        repositoryIds: readonly number[];
+        permissions: Readonly<Record<string, string>>;
+      }>
+  );
 type IssuanceProjection =
   | Readonly<{ kind: "inherited" }>
   | Readonly<{
@@ -14,12 +30,7 @@ type IssuanceProjection =
       repositories: readonly Readonly<{ id: number; name: string }>[];
       permissions: Readonly<Record<string, string>>;
     }>;
-type Scope = Readonly<{
-  origin: string;
-  issuePath: string;
-  issueBody: string;
-}>;
-const scopes = new WeakMap<ProviderScope, Scope>();
+const requestBodies = new WeakMap<ProviderScope, string>();
 
 function numericId(value: string): number {
   const number = parseGitHubNumericId(value);
@@ -27,6 +38,19 @@ function numericId(value: string): number {
     throw new Error("invalid-provider-scope");
   }
   return number;
+}
+
+function canonicalPermissions(permissions: Readonly<Record<string, string>>) {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(permissions).sort(([left], [right]) => {
+        if (left === right) {
+          return 0;
+        }
+        return left < right ? -1 : 1;
+      }),
+    ),
+  );
 }
 
 function projectIssuanceScope(scope: GitHubPreparationAdmission["grant"]): IssuanceProjection {
@@ -40,7 +64,7 @@ function projectIssuanceScope(scope: GitHubPreparationAdmission["grant"]): Issua
           name: r.repository,
         }))
         .sort((a, b) => a.id - b.id),
-      permissions: { ...scope.permissions },
+      permissions: canonicalPermissions(scope.permissions),
     };
   }
   if (scope.profile === "github-installation") {
@@ -59,7 +83,7 @@ function projectIssuanceScope(scope: GitHubPreparationAdmission["grant"]): Issua
     return { kind: "inherited" };
   }
   const id = numericId(scope.repositoryId);
-  const permissions = permissionsForProfile(scope.profile);
+  const permissions = canonicalPermissions(permissionsForProfile(scope.profile));
   return {
     kind: "selected",
     repositories: [{ id, name: scope.repository }],
@@ -74,28 +98,37 @@ export function prepareProviderScope(
   if (parseCanonicalGitHubOrigin(origin) === undefined) {
     throw new Error("invalid-provider-origin");
   }
-  const installationId = numericId(scope.installationId);
+  const target = {
+    schemaVersion: 1 as const,
+    origin,
+    appId: scope.appId,
+    installationId: numericId(scope.installationId),
+  };
   const projection = projectIssuanceScope(scope);
+  const issuance: GitHubIssuanceScope =
+    projection.kind === "inherited"
+      ? Object.freeze({ ...target, kind: "inherited" })
+      : Object.freeze({
+          ...target,
+          kind: "selected",
+          repositoryIds: Object.freeze(projection.repositories.map((repository) => repository.id)),
+          permissions: projection.permissions,
+        });
   if (projection.kind === "selected") {
     projection.repositories.forEach(Object.freeze);
     Object.freeze(projection.repositories);
-    Object.freeze(projection.permissions);
   }
-  const prepared = Object.freeze(projection) as ProviderScope;
-  const issueBody =
-    projection.kind === "inherited"
+  // The issuer sends the exact normalized provider scope. Repository names stay in the
+  // response-validation projection; stable IDs identify the repositories in the mint request.
+  const prepared = Object.freeze({ ...projection, issuance }) as ProviderScope;
+  requestBodies.set(
+    prepared,
+    issuance.kind === "inherited"
       ? "{}"
       : JSON.stringify({
-          repository_ids: projection.repositories.map((r) => r.id),
-          permissions: projection.permissions,
-        });
-  scopes.set(
-    prepared,
-    Object.freeze({
-      origin,
-      issuePath: `/app/installations/${installationId}/access_tokens`,
-      issueBody,
-    }),
+          repository_ids: issuance.repositoryIds,
+          permissions: issuance.permissions,
+        }),
   );
   return prepared;
 }
@@ -106,16 +139,16 @@ export function providerRequestOptions(
   authorization: string,
   ca: Uint8Array | undefined,
 ): Readonly<{ options: RequestOptions; body: string }> {
-  const scope = scopes.get(endpoint);
-  if (!scope || (operation !== "issue" && operation !== "revoke")) {
+  const issueBody = requestBodies.get(endpoint);
+  if (issueBody === undefined || (operation !== "issue" && operation !== "revoke")) {
     throw new Error("invalid-provider-scope");
   }
   if (!isGitHubWireCredential(authorization)) {
     throw new Error("invalid-provider-credential");
   }
-  const origin = new URL(scope.origin);
+  const origin = new URL(endpoint.issuance.origin);
   const issue = operation === "issue";
-  const body = issue ? scope.issueBody : "";
+  const body = issue ? issueBody : "";
   return {
     body,
     options: {
@@ -123,7 +156,9 @@ export function providerRequestOptions(
       hostname: origin.hostname.replace(/^\[|\]$/g, ""),
       port: origin.port || 443,
       method: issue ? "POST" : "DELETE",
-      path: issue ? scope.issuePath : "/installation/token",
+      path: issue
+        ? `/app/installations/${endpoint.issuance.installationId}/access_tokens`
+        : "/installation/token",
       agent: false,
       rejectUnauthorized: true,
       maxHeaderSize: 32768,

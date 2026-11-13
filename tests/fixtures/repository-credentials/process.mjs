@@ -175,7 +175,7 @@ export async function createTlsMaterial(t) {
   const keyFile = join(directory, "key.pem");
   const certFile = join(directory, "cert.pem");
   await writeFile(keyFile, sharedRsaPrivateKeyPem("repository-credentials-tls"), { mode: 0o600 });
-  await writeFile(certFile, cert);
+  await writeFile(certFile, cert, { mode: 0o644 });
   return {
     key: await readFile(keyFile),
     cert: Buffer.from(cert),

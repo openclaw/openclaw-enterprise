@@ -54,10 +54,9 @@ manual advisory run.
 
 ## Scenarios
 
-The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) creates separate
-Agents on disposable control planes with Kubernetes compute, preserving existing
-clusters and kubeconfig. Both Plugin catalogs stay enabled across presets; setup
-checks Google Workspace for OpenClaw and Linear for Codex.
+The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) preserves existing
+clusters and kubeconfig. Setup checks Google Workspace for OpenClaw and Linear
+for Codex.
 
 | Scenario                | In advisory          | Presets         | Checks                                                                                                                                                                           |
 | ----------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -73,6 +72,7 @@ checks Google Workspace for OpenClaw and Linear for Codex.
 | `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                                             |
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
 | `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
+| `openshell-git-model`   | No                   | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                   |
 
 [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
 [scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
@@ -84,9 +84,12 @@ To run OpenShell scenarios locally, prepare the matching fixture for
 [scratch storage](../openshell.md#openshell-sandbox), or
 [plugin installation](../openshell.md#codex-plugin-installation).
 
-The OpenClaw `model-ui` case checks the example Console theme through sign-in
-and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
-Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
+`model-ui` checks Console sign-in and Agent use, then redeploys with a provider
+alias, the existing Secret, and `OCE_MODEL_API_KEY` for a real model turn.
+
+`openshell-git-model` requires Kubernetes, Codex, `OCC_TEST_QA_SANDBOX_ENV`,
+`OCC_TEST_QA_OPENAI_KEY_FILE`, and `OCC_TEST_QA_OPENAI_MODEL`. Its disposable stack
+uses a controlled Git origin and real model provider.
 
 ### Harness destination overrides
 
@@ -170,25 +173,24 @@ gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
-Local instructions run the **QA matrix only**. For other suites, follow
-[OpenShell setup](../openshell.md#openshell-sandbox) or
+For other suites, see [OpenShell setup](../openshell.md#openshell-sandbox) or
 [local installation tests](../kubernetes.md#local-kubernetes-installation).
 
 ### Select scenarios
 
-`OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
+`OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, or `kubernetes`.
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 `all` excludes `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`,
-`plugin-install`, `openshell-linear-read`, `codex-search-config`,
+`plugin-install`, `openshell-linear-read`, `openshell-git-model`, `codex-search-config`,
 `harness-overrides`, `oidc-agent-chat`, and `helm-oidc-agent-chat`.
-Invalid or wholly inapplicable selections fail before provisioning; missing
-inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+Invalid or wholly inapplicable selections fail before provisioning. Missing
+inputs fail selected checks. Omit `OCC_TEST_QA_MATRIX=1` to skip the suite.
 
-Use `kubernetes` and `OpenClaw` with one OIDC selector.
+Select one OIDC scenario with `kubernetes` and `OpenClaw`.
 
-- `oidc-agent-chat` uses `gateway-routing` for [Keycloak, PostgreSQL, routing, and runtime setup](../native-agent-browser.md).
-- `helm-oidc-agent-chat` uses the [two-provider Helm setup](../native-agent-browser.md#run-agent-chat-through-two-helm-configured-providers).
+- `oidc-agent-chat` uses `gateway-routing`. See [Keycloak setup](../native-agent-browser.md).
+- `helm-oidc-agent-chat` uses [two providers configured in Helm](../native-agent-browser.md#run-agent-chat-through-two-helm-configured-providers).
 
 Select `scratch-volume` with `kubernetes` and `Codex`. The
 [fixture](../openshell.md#openshell-sandbox) uses an OpenAI API key for

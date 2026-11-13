@@ -1,20 +1,18 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-12
-last_updated_session: "authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63"
+updated: 2026-11-13
+last_updated_session: "authoring-run/91737212-2ec5-4aca-981d-501670320fd5"
 ---
 
 # Namespace IAM Policy Flow
 
 ## Overview
 
-Authenticated callers use the OCC API or CLI to list, create, or read Namespace
-Roles, exact AccessBindings, and ServicePrincipals. They can also delete Roles
-and AccessBindings. OCC checks authority and Namespace ownership before the
-selected IAM Driver writes policy. The flow ends when policy and audit commit
-in the same platform state transaction. Phase 6 traces configured policy,
-Group membership at account creation, Owner bindings on create, and deploy-time
-Agent grants.
+Authenticated callers use the OCC API or CLI to list, read, or create Namespace
+Roles, exact AccessBindings, and ServicePrincipals, and to delete Roles and
+AccessBindings. OCC checks authority and Namespace ownership before the selected
+IAM Driver writes policy. Policy and audit commit in the same State transaction. Phase 6 covers
+configured policy, Group membership, Owner bindings, and deploy-time grants.
 
 ## Entry Points
 
@@ -49,7 +47,8 @@ graph TD
   G -->|COMMIT validates held session| H
   G -->|held session expired| X
   M["Startup applies the iam configuration"] --> P["IAM Driver writes configured Roles, Groups, and Group bindings"]
-  N["Caller creates a resource or deploys an Agent"] --> O["OCC writes the Owner binding or missing Agent operate grants"]
+  N["Caller creates a resource in an existing Namespace or deploys an Agent"] --> AC["OCC authorizes the exact operation under the Namespace lock"]
+  AC --> O["OCC writes the Owner binding or missing Agent operate grants"]
   P --> Q["Policy and audit commit in the same transaction"]
   O --> Q
 ```
@@ -69,38 +68,34 @@ access the target.
 
 `apps/controller/src/http/iam.ts:iamHandlers`
 
-List and read operations call the corresponding `OpenClawController` IAM method
-and return policy metadata. Create and delete operations use the handler's `transactIAM` callback, append an attributable mutation audit event, and return
-only after the transaction commits. For human sessions, authentication wraps
-`controller.transact` and retains the admitted session before the IAM command and
-checks its expiry again after the command and audit append. PostgreSQL locks the
-user before the session, then the controller takes the shared IAM configuration
-lock before its existing Namespace and account locks. Guarded profiles first reuse
-`packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.holdSession`,
-which validates the bound account and sign-in method through the existing actor guard.
-Session retention takes shared user locks and preserves the policy transaction's
-timeout settings. Account-management operations keep their exclusive locks and
-five-second lock and ten-second statement limits. Independent sessions can write
-different Namespaces concurrently while revocation still waits for both holders.
-Logout or account/method revocation must wait for a protected
-write to finish; revocation that completes first makes the write fail. Expiry
-during the write or before server-side COMMIT validation rolls back policy and its success audit. The memory auth adapter
-serializes policy writes with local logout and rechecks the session inside the
-transaction. Non-session credentials keep their existing admission behavior.
+List and read call `OpenClawController` IAM methods and return policy metadata.
+Create and delete use `transactIAM` and return after policy and attributable audit
+commit. Authentication wraps `controller.transact` for human sessions. It holds the
+session before the command and checks expiry after the command and audit append.
+For guarded profiles,
+`packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.holdSession`
+validates the bound account and sign-in method through the actor guard.
+PostgreSQL locks the user in shared mode before locking the session. OCC then
+takes the shared IAM configuration lock before Namespace and account locks.
+Session holds preserve policy transaction timeouts. Account-management operations
+keep exclusive locks, a five-second lock limit, and a ten-second statement limit.
+Independent sessions can write different Namespaces concurrently. Logout and
+account or method revocation wait for protected writes, and a revocation that
+finishes first prevents the write. Expiry during the write or at server-side
+COMMIT validation rolls back policy and its success audit. The memory adapter serializes writes
+with local logout and rechecks the session inside the transaction. Non-session
+credentials use their usual admission path.
 
-The mutation event records the Installation `administer` check in its
-`authorization` field.
-Role events use the Namespace as the resource and include `roleId` and
-`permissions` in details. AccessBinding create and delete events use the bound
-target as the resource (the Namespace for a Namespace binding) and include `bindingId`,
-`subjectKind`, `subjectId`, and `roleId` in details. Deletion reads the removed
-Role or AccessBinding in the same transaction for the audit event.
-ServicePrincipal creation takes an empty body. Its event uses the Namespace
-as the resource and includes `servicePrincipalId` in details. The new
-non-Agent identity belongs to and is listed only in that Namespace. It starts
-with no grant and gains access through an AccessBinding. The
-[service key flow](service-api-keys.md) issues and revokes its keys. These
-identities have no delete route.
+Mutation events record Installation `administer` in `authorization`. Role
+events name the Namespace and include `roleId` and `permissions`. AccessBinding
+events name the bound target, including the Namespace for a Namespace binding,
+and include `bindingId`, `subjectKind`,
+`subjectId`, and `roleId`. Deletion reads the removed row in the same
+transaction for audit. ServicePrincipal creation takes an empty body and
+audits the Namespace and `servicePrincipalId`. The non-Agent identity belongs
+to and appears only in its Namespace, starts without grants, and gains access
+through an AccessBinding. The [service key flow](service-api-keys.md) issues and
+revokes its keys. The identity has no delete route.
 
 ### 3. OCC validates policy ownership
 
@@ -130,37 +125,31 @@ creation refused them, because evaluation would drop those grants.
 
 `packages/iam/src/index.ts:NativeIAMDriver`
 
-The native IAM Driver implements Namespace policy methods against the
-platform-provided policy repository. Before a policy write, OCC requires the
-selected Driver's `namespacePolicyTransaction: "platform-unit-of-work"`
-declaration. An unsupported Driver returns `503` before its mutation method is
-called; reads do not require that declaration. The native Driver rejects missing Roles, cross-Namespace
-targets, unsupported subjects, duplicate IDs, referenced Role deletion, and
-unknown exact bindings without weakening authorization. Invalid Role or
-binding input (an unsupported Permission, or a subject, Role or target not
-usable in the path Namespace) raises `IAMPolicyValidationError`, which HTTP
-maps to `400 INVALID_REQUEST` with the offending field as the detail path.
-Referenced Role deletion raises `IAMRoleInUseError` (`409 RESOURCE_CONFLICT`).
-Existing human Principals can receive bindings without a Namespace service
-identity. ServicePrincipal subjects must belong to that exact Namespace.
+The native IAM Driver uses the platform policy repository. Before calling a
+mutation method, OCC returns `503` if the selected Driver lacks
+`namespacePolicyTransaction: "platform-unit-of-work"`. Reads need no declaration.
+The native Driver rejects missing Roles, cross-Namespace targets, unsupported
+subjects, duplicate IDs, referenced Role deletion, and unknown exact bindings.
+HTTP maps `IAMPolicyValidationError` to `400 INVALID_REQUEST` with the offending
+field as the detail path for invalid Role or binding input. Deleting a referenced Role raises `IAMRoleInUseError`
+(`409 RESOURCE_CONFLICT`). Human Principals can receive bindings directly.
+ServicePrincipal subjects must belong to the exact Namespace.
 
-When the native IAM Driver reloads policy inside a PostgreSQL State callback,
-`PostgresPlatformState.loadNativeIAMState` uses the original transaction.
-Authorization sees its pending grants and removals. Outside a callback, it opens a read transaction. Escaped work fails
-on the closed transaction after commit, rollback, or an unknown outcome. It
-cannot obtain another client. Policy writes use the locks in phases 2 and 3
-to order concurrent changes. Human HTTP writers retain their session through
-the original PostgreSQL unit's `holdAuthenticationSession` operation.
+`PostgresPlatformState.loadNativeIAMState` reuses the original transaction inside
+a State callback, so authorization sees pending grants and removals. Outside a
+callback it opens a read transaction. Escaped work fails on the closed
+transaction after commit, rollback, or an unknown outcome, without obtaining a
+new client. Phases 2 and 3 describe write ordering. Human HTTP writes use
+`holdAuthenticationSession` in the original PostgreSQL unit.
 
-`readNativeIAMState` builds a snapshot from the policy rows and caches it on
-the transaction. A read-only REPEATABLE READ unit reuses it for every decision
-and lookup, including all items on a list route. A writing unit reuses it until
-its next statement, so its IAM writes and lock acquisitions precede the next
-read. A concurrent commit stays invisible to two decisions that reuse the
-snapshot across that commit. `freezeSnapshot` makes the policy immutable. The native Driver validates and indexes each
-snapshot once, by ID and issuer/subject for identities, by subject for
-bindings, and by action and kind for Restrictions. The next unit reads policy
-afresh.
+`readNativeIAMState` caches a policy snapshot per transaction. A read-only
+REPEATABLE READ unit reuses it for every decision and lookup, including every
+item in a list. A writing unit reuses it until the next statement, so IAM
+writes and locks precede the next read. Decisions sharing a snapshot miss
+intervening commits. `freezeSnapshot` makes it immutable. The native Driver
+validates and indexes it once by ID and issuer/subject for identities, by
+subject for bindings, and by action and kind for Restrictions. The next unit
+reads fresh policy.
 
 `packages/occ/src/index.ts:OpenClawController.updateAgent` checks Agent `update`
 again after locking the Namespace. Namespace IAM writes take the same lock.
@@ -171,27 +160,22 @@ If a binding withdrawal commits first and the caller has no other applicable
 
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
 
-The PostgreSQL state implementation writes Roles and AccessBindings through the
-same unit of work used by the API audit append. Holding a session issues an
-unchanged-row UPDATE that locks it without extending its lifetime or changing
-authentication metadata. This queues the deferred
-`occ.require_held_authentication_session` constraint for server-side COMMIT
-validation. It checks expiry with the database clock, including when the client's
-COMMIT request was delayed after the last authentication check. An expired
-session raises the named `held_authentication_session_is_current` constraint;
-State maps that rejection to an authorization denial (`403`). The policy and
-success audit roll back together; the API records the denial separately.
-If commit outcome is unknown,
-State discards the connection without another query. OCC reports dependency
-failure; a caller must not infer rollback or replay the mutation from that
-result. Later authorization requests read the current policy through the IAM
-Driver. Namespace locking serializes grant creation with Namespace deletion;
-exact resource targets retain their existing deletion locks, and deleting a
-target resource deletes the bindings on it in the same transaction. Identity foreign
-keys protect persisted bindings without expanding application-role privileges.
-Deletion audit projections and Namespace policy removal live in
-`packages/occ/src/iam-policy-cleanup.ts`; callers pass their existing transaction
-unit, so cleanup and its audit retain the same commit boundary.
+PostgreSQL commits Role and AccessBinding writes with API audit. An unchanged-row
+UPDATE locks a held session, preserving its lifetime and authentication metadata.
+It queues the deferred `occ.require_held_authentication_session` constraint to
+check expiry with the database clock at COMMIT, including when the client delays
+COMMIT after its final authentication check. Expiry raises
+`held_authentication_session_is_current`. State maps it to `403`, rolls back
+policy and success audit, and the API audits the denial separately.
+On unknown commit, State discards the connection without another query. OCC
+reports dependency failure. The caller must neither assume rollback nor replay
+the mutation. Later requests read current policy through the IAM Driver.
+The Namespace lock serializes grant creation with Namespace deletion. Exact
+targets retain their deletion locks. Deleting a
+target removes its bindings in the same transaction. Identity foreign keys
+protect bindings without expanding application-role privileges.
+`packages/occ/src/iam-policy-cleanup.ts` uses the caller's transaction for
+deletion audit projections and Namespace policy removal.
 Both adapters apply one subject rule on every AccessBinding write: a human
 without a Namespace, a non-Agent ServicePrincipal of the exact Namespace, or the
 ServicePrincipal of a live Agent there. PostgreSQL checks the owning Agent in
@@ -231,10 +215,17 @@ behavior.
   mutations, the create paths below, and `deployAgentWithAuthorization` call
   `holdAuthority` first, which holds the
   session through COMMIT and takes the IAM configuration lock shared. Each
-  create in a Namespace and the deploy authorize again after `lockNamespace`,
-  which AccessBinding deletes also take.
+  create in an existing Namespace and the deploy authorize again after
+  `lockNamespace`, which AccessBinding deletes also take. `createNamespace`
+  instead authorizes `create` on the Namespace collection at the Installation
+  before it creates the Namespace.
   `fenceAgentProvisioning` also takes the IAM configuration lock before
   `lockNamespace`.
+- **Agent Backend selection.** `createAgent` resolves a supplied Backend ID and
+  checks its type only after the second `agent:create` authorization. A caller
+  without that grant receives `403` for both configured and unknown valid IDs.
+  An authorized creator can select a compatible Backend without Installation
+  `administer`; that permission still protects `GET /backends`.
 - **Owner bindings.** Each create path calls `bindCreator` after it inserts the
   resource row, in the same unit: `createNamespace`, `createAgent`,
   `createConfiguration`, `createSecret`, `createCredentialSource`,
@@ -261,7 +252,11 @@ behavior.
 
 - `node --test tests/integration/occ-api.test.mjs` checks the HTTP contract and
   API admission behavior for Namespace IAM policy, including refusal of all five
-  writes without declared transaction participation.
+  writes without declared transaction participation. The Agent Backend case
+  also checks equal create denials for configured and unknown valid Backend IDs,
+  request-correlated authorization audit, unchanged process-local Agent,
+  Configuration, IAM policy, ServicePrincipal, and operation State, and creation
+  by a non-administrator with the required grants.
 - `node --test tests/integration/postgres-default-users.test.ts` checks, with
   real PostgreSQL and HTTP admission, the configured rows, membership, Owner
   bindings in `default`, refusal of a second member, deploy-time grants, a
@@ -302,6 +297,8 @@ behavior.
 
 ## Changelog
 
+- 2026-11-13 06:59: Condense the Namespace IAM policy flow while retaining authorization and transaction boundaries. (authoring-run/91737212-2ec5-4aca-981d-501670320fd5 - 6192588c3a8fce971689a174fc34ae9deb1c8c80)
+- 2026-11-13 05:56: Authorize Agent creation before configured Backend lookup; preserve creator and catalog permissions, distinguish Namespace creation admission, and cover denial audit and unchanged State. (authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)
 - 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)

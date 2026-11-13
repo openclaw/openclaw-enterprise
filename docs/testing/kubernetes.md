@@ -33,6 +33,9 @@ state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-
 Use Kubernetes 1.35+, Docker, k3d, `kubectl`, and a
 [dedicated migrated database](postgresql.md#other-postgresql-suites). Choose another
 cluster name if `oce` exists. Default kubeconfig and context remain unchanged.
+Set `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` to the actual
+[API-server Pod-proxy source CIDRs](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+as a comma-separated list before running the tests.
 
 ```sh
 mkdir -m 700 -p /tmp/oce-k3d
@@ -52,10 +55,11 @@ docker exec k3d-oce-server-0 ctr -n k8s.io images list -q |
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
+OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS="${OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS:?Set the API-server Pod-proxy source CIDRs}" \
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_k8s_local \
-  node --test --test-concurrency=1 tests/integration/kubernetes-compute-real.test.mjs \
+  node --test --test-concurrency=1 tests/integration/kubernetes-compute-real.test.ts \
     tests/integration/kubernetes-compute-provisioning-real.test.mjs \
-    tests/integration/kubernetes-compute-driver-real.test.mjs
+    tests/integration/kubernetes-compute-driver-real.test.ts
 ```
 
 Run sequentially against this database without skips.
@@ -352,15 +356,7 @@ node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 
-The ordinary controller upgrade samples authenticated `GET /installation` through
-the operator Pod’s HTTPS proxy. For [sample outcomes and limits](populated-controller-return.md),
-see the recovery rehearsal. Normal fixture cleanup leaves the receipt in the
-private temporary directory. To retain just the observations, copy the file
-before the runner is removed:
-
-```sh
-install -m 600 "$run_dir"/oce-production-tui-*/forward-api-availability.json "$run_dir/forward-api-availability.json"
-```
+Before removing the runner, [retain both private availability receipts](populated-controller-return.md#retain-ordinary-upgrade-observations).
 
 After success or failure, save the private image mapping if needed and clean up:
 
