@@ -321,7 +321,7 @@ rechecks the resulting proof before issuing its cookie.
   output and rejected unsafe paths. Failed writes retain any created file.
   Database cases require the [disposable PostgreSQL setup](../testing/postgresql.md#postgresql-test-environment);
   an unconfigured/skipped suite is not runtime proof.
-- `postgres-bootstrap-failures.test.mjs` with `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`
+- `postgres-bootstrap-failures.test.ts` with `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`
   uses a dedicated loopback database to verify concurrent production bootstrap,
   credential preservation after lost COMMIT acknowledgement in both modes, and
   fast/full-path selection.
