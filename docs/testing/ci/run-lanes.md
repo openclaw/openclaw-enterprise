@@ -229,7 +229,7 @@ runner’s `--root` option does not change the directory pnpm checks.
 ```sh
 corepack pnpm exec node scripts/ci/run-tests.mjs run postgres-platform --lifecycle complete \
   --attempt "$HOME/oce-postgres-idle-attempt-1" \
-  --file tests/integration/postgres-connection-auth.test.mjs \
+  --file tests/integration/postgres-connection-auth.test.ts \
   --test-name 'the pool survives PostgreSQL terminating an idle backend'
 ```
 

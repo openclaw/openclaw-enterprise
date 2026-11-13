@@ -2,24 +2,29 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
 import { clientAddressConfiguration } from "../../apps/controller/src/auth/index.ts";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
-import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { cookieHeaderFromSetCookie } from "../../packages/utils/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import {
+  injectLocalhost,
+  text,
+  type Credentials,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 
 test(
   "sign-in admission keys on the client behind a trusted ingress and ignores other peers' headers",
   requiresPostgres,
   async (t) => {
+    assert.ok(databaseUrl);
     const pool = new pg.Pool({ connectionString: databaseUrl });
-    let app;
+    const resources: { app?: ReturnType<typeof createFastifyApp> } = {};
     t.after(async () => {
-      await app?.close();
+      await resources.app?.close();
       await pool.end();
     });
     const origin = "https://console.example.test";
@@ -34,14 +39,19 @@ test(
       authBaseURL: "https://console.oce.localhost",
       installationName: "Trusted proxy proof",
     });
-    const recoveryUserId = (await pool.query('SELECT id FROM occ."user" WHERE email=$1', [email]))
-      .rows[0].id;
+    const { rows } = await pool.query<{ id: unknown }, [string]>(
+      'SELECT id FROM occ."user" WHERE email=$1',
+      [email],
+    );
+    const recoveryUserId = text(rows[0]?.id);
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();
+    assert.ok(installation);
     const iamDriver = new NativeIAMDriver(state);
     const clientAddress = clientAddressConfiguration({
       OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/24",
     });
+    assert.ok(clientAddress);
     const auth = await createPostgresControllerAuth({
       mode: "production",
       installationId: installation.id,
@@ -60,7 +70,7 @@ test(
       },
     });
     // Real production auth, State, IAM and Fastify admission; no Controller routes are used.
-    app = createFastifyApp({
+    const app = createFastifyApp({
       iamDriver,
       auth,
       auditSink: state.auditSink,
@@ -69,16 +79,17 @@ test(
       development: { enabled: false, installationId: installation.id },
       trustedProxies: clientAddress,
     });
+    resources.app = app;
     await app.ready();
     const ingress = "10.0.0.9";
     const outsider = "192.0.2.7";
-    const signIn = (peer, headers, account) =>
+    const signIn = (peer: string, headers: Record<string, string>, account: Credentials) =>
       injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         remoteAddress: peer,
         headers: { origin, ...headers },
         body: account,
       });
-    const guess = (peer, headers, index) =>
+    const guess = (peer: string, headers: Record<string, string>, index: number) =>
       signIn(peer, headers, {
         email: `guess-${peer}-${index}@example.test`,
         password: "wrong-guess-password",
@@ -119,7 +130,7 @@ test(
         "x-real-ip": "1.2.3.4",
         "x-forwarded-proto": "https",
       };
-      const read = (peer, headers) =>
+      const read = (peer: string, headers: Record<string, string>) =>
         injectLocalhost(app, "GET", `/api/auth/accounts/${recoveryUserId}`, {
           remoteAddress: peer,
           headers: { ...session, ...headers },

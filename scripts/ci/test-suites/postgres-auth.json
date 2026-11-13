@@ -12,7 +12,7 @@
     "tests/integration/postgres-external-session-provider.test.mjs",
     "tests/integration/postgres-human-authentication.test.mjs",
     "tests/integration/postgres-break-glass-auth-maintain.test.ts",
-    "tests/integration/postgres-trusted-proxy.test.mjs",
+    "tests/integration/postgres-trusted-proxy.test.ts",
     "tests/integration/postgres-auth-accounts.test.ts",
     "tests/integration/postgres-password-recovery-only.test.ts",
     "tests/integration/postgres-oidc-sign-in.test.mjs",
@@ -158,7 +158,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-trusted-proxy.test.mjs",
+      "path": "tests/integration/postgres-trusted-proxy.test.ts",
       "expectedTests": [
         "sign-in admission keys on the client behind a trusted ingress and ignores other peers' headers"
       ]
