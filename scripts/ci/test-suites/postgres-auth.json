@@ -16,7 +16,7 @@
     "tests/integration/postgres-auth-accounts.test.ts",
     "tests/integration/postgres-password-recovery-only.test.ts",
     "tests/integration/postgres-oidc-sign-in.test.mjs",
-    "tests/integration/postgres-oidc-tab-binding.test.mjs",
+    "tests/integration/postgres-oidc-tab-binding.test.ts",
     "tests/integration/postgres-oidc-admin-attach.test.ts",
     "tests/integration/postgres-password-default-activation.test.ts",
     "tests/integration/postgres-password-default.test.ts",
@@ -24,7 +24,7 @@
     "tests/integration/postgres-oidc-cookie-commit.test.ts",
     "tests/integration/postgres-sign-in-result-processes.test.ts",
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.ts",
-    "tests/integration/postgres-human-session-cookie.test.mjs",
+    "tests/integration/postgres-human-session-cookie.test.ts",
     "tests/integration/postgres-service-api-keys.test.ts",
     "tests/integration/postgres-auth-binding.test.ts",
     "tests/integration/postgres-oidc-enrollment.test.ts",
@@ -63,7 +63,7 @@
       "expectedTests": ["sign-in results retain one-use ownership across real API processes"]
     },
     {
-      "path": "tests/integration/postgres-human-session-cookie.test.mjs",
+      "path": "tests/integration/postgres-human-session-cookie.test.ts",
       "expectedTests": [
         "guarded production sessions share the browser cookie with trusted Agent hosts"
       ]
@@ -79,7 +79,7 @@
       "expectedTests": ["unmatched external sign-in callbacks are counted, not audited"]
     },
     {
-      "path": "tests/integration/postgres-oidc-tab-binding.test.mjs",
+      "path": "tests/integration/postgres-oidc-tab-binding.test.ts",
       "expectedTests": [
         "an OIDC tab keeps its own session: another tab's password sign-in signs it out"
       ]
