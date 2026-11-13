@@ -6,7 +6,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  type AgentRevision,
+  type ComputeRevisionContext,
+  type Namespace,
+  type WorkspaceSetup,
+} from "../../packages/contracts/src/index.ts";
 import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
@@ -42,36 +48,54 @@ test(
         process.env.OPENAI_API_KEY = previousKey;
       }
     });
+    assert.ok(image, "the Docker Compute replacement test requires the candidate image");
     const driver = new DockerComputeDriver({ images: { gateway: image, agent: image } });
     const createdAt = new Date().toISOString();
-    const namespace = {
+    const namespace: Namespace = {
       id: `ns-replacement-${randomUUID()}`,
       name: "Gateway replacement proof",
       status: "ready",
       createdAt,
     };
     const agentId = `agent-replacement-${randomUUID()}`;
-    const revisionAt = (number) => ({
-      id: `rev-replacement-${number}-${randomUUID()}`,
-      namespaceId: namespace.id,
-      agentId,
-      revision: number,
-      configurationId: `cfg-replacement-${randomUUID()}`,
-      configurationKind: "agent",
-      configurationGeneration: 1,
-      configuration: admitLoggingConfiguration(
-        withStubbedProviderEndpoint(createHarnessConfiguration("openclaw", runtimeImageModel)),
-        "info",
-      ),
-      harness: { id: "openclaw", version: "2026.9.1", mode: "embedded" },
-      compute: { id: driver.id, implementation: driver.implementation },
-      executionAdmission: { version: 2, mode: "unprotected" },
-      servicePrincipalId: `sp-replacement-${randomUUID()}`,
-      createdAt,
-    });
+    // Docker Compute's preview accepts a revision without a Harness auth binding.
+    // The AgentRevision contract requires one for admitted Agent revisions.
+    const revisionAt = (number: number): AgentRevision => {
+      const revision: Omit<AgentRevision, "harnessAuth"> = {
+        id: `rev-replacement-${number}-${randomUUID()}`,
+        namespaceId: namespace.id,
+        agentId,
+        revision: number,
+        backendId: null,
+        configurationId: `cfg-replacement-${randomUUID()}`,
+        configurationKind: "agent",
+        gatewayManagedMode: false,
+        configurationGeneration: 1,
+        configuration: admitLoggingConfiguration(
+          withStubbedProviderEndpoint(createHarnessConfiguration("openclaw", runtimeImageModel)),
+          "info",
+        ),
+        harness: {
+          id: "openclaw",
+          version: "2026.9.1",
+          mode: "embedded",
+          overrides: {},
+          configuration: {},
+        },
+        compute: { id: driver.id, implementation: driver.implementation },
+        executionAdmission: { version: 2, mode: "unprotected" },
+        servicePrincipalId: `sp-replacement-${randomUUID()}`,
+        createdAt,
+      };
+      return revision as AgentRevision;
+    };
+    const context: ComputeRevisionContext = {
+      harnessAuth: { method: "runtime" },
+      secretEnvironment: [],
+    };
     // Initial workspace files give the Agent its retained state and workspace
     // volumes, so each Gateway below opens the state its predecessor left.
-    const setup = {
+    const setup: WorkspaceSetup = {
       id: `setup-${randomUUID()}`,
       namespaceId: namespace.id,
       agentId,
@@ -91,7 +115,10 @@ test(
     await driver.preflight();
     assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
     const first = revisionAt(1);
-    assert.equal((await driver.prepareRevision(first, { workspaceSetup: setup })).ready, true);
+    assert.equal(
+      (await driver.prepareRevision(first, { ...context, workspaceSetup: setup })).ready,
+      true,
+    );
 
     // A restarted controller has a new Driver that never observed the running
     // Gateway. It stops the Agent, then deploys the next revision on the same state.
@@ -100,7 +127,7 @@ test(
     await restarted.stopRevision(first);
     const second = revisionAt(2);
     assert.equal(
-      (await restarted.prepareRevision(second, { workspaceSetup: completed })).ready,
+      (await restarted.prepareRevision(second, { ...context, workspaceSetup: completed })).ready,
       true,
       "the Gateway started after Stop must take over the released state",
     );
@@ -112,7 +139,7 @@ test(
     await redeployed.preflight();
     const third = revisionAt(3);
     assert.equal(
-      (await redeployed.prepareRevision(third, { workspaceSetup: completed })).ready,
+      (await redeployed.prepareRevision(third, { ...context, workspaceSetup: completed })).ready,
       true,
       "the Gateway that replaces a running one must take over its state",
     );
