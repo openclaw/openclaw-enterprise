@@ -110,6 +110,8 @@
     "integration/ci-runner-measurements-case.ts",
     "helpers/ci-runner-held-clock.ts",
     "helpers/ci-runner-kill-window.ts",
+    "fixtures/docker-token-retry/*.mts",
+    "fixtures/kubernetes/*.mts",
     "fixtures/ci-runner-finite-conversation.ts",
     "fixtures/ci-runner-repository-setup-diagnostics.ts",
     "helpers/ci-runner-fixture.ts",

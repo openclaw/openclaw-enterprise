@@ -1,9 +1,33 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { createServer } from "node:http";
-import { WebSocketServer } from "ws";
+import { createServer, type IncomingMessage } from "node:http";
+import { createRequire } from "node:module";
+import type { Duplex } from "node:stream";
 
-function optionValue(name) {
+interface AppServerSocket {
+  on(event: "error", listener: () => void): void;
+  on(event: "message", listener: (data: Buffer | ArrayBuffer | Buffer[]) => void): void;
+  close(code: number, reason: string): void;
+  send(data: string): void;
+}
+
+interface AppServerSockets {
+  on(event: "connection", listener: (socket: AppServerSocket) => void): void;
+  emit(event: "connection", socket: AppServerSocket, request: IncomingMessage): void;
+  handleUpgrade(
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    callback: (connection: AppServerSocket) => void,
+  ): void;
+}
+
+const require = createRequire(import.meta.url);
+const { WebSocketServer } = require("ws") as {
+  WebSocketServer: new (options: { noServer: true }) => AppServerSockets;
+};
+
+function optionValue(name: string) {
   const index = process.argv.indexOf(name);
   return index === -1 ? undefined : process.argv[index + 1];
 }
@@ -11,7 +35,7 @@ function optionValue(name) {
 // The production launcher supplies settings and disables tools for its probe.
 // Parse those prefixes without implementing their native Codex behavior.
 const arguments_ = process.argv.slice(2);
-while (["-c", "--disable", "-a"].includes(arguments_[0]) && arguments_.length >= 2) {
+while (arguments_.length >= 2 && ["-c", "--disable", "-a"].includes(arguments_[0]!)) {
   arguments_.splice(0, 2);
 }
 const command = arguments_[0];
@@ -42,7 +66,7 @@ if (command === "login") {
     // even for an empty selection. This external fixture offers an empty catalog;
     // it does not implement or verify plugin installation or model execution.
     socket.on("message", (data) => {
-      let message;
+      let message: { method?: unknown; id?: unknown };
       try {
         message = JSON.parse(data.toString());
       } catch {

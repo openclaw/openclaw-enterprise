@@ -5,6 +5,7 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, rm, writeFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -385,7 +386,7 @@ export async function retryKubectlWrite(write, { applied = alreadyCreated, ...op
   }, options);
 }
 
-// tests/fixtures/kubernetes/probe.mjs exits with this code, and prints
+// tests/fixtures/kubernetes/probe.mts exits with this code, and prints
 // {"denied":true,"code":...} on stdout, only when its connection attempt was
 // refused, unreachable, or unanswered. Any other probe failure exits 1.
 export const PROBE_DENIED_EXIT_CODE = 42;
@@ -434,12 +435,19 @@ export async function assertProbeDenied(description, run, options) {
   assert.fail(`${description} unexpectedly succeeded: ${String(stdout).trim()}`);
 }
 
-// The `node` command that runs probe.mjs from its source text, for a container
-// that does not mount the fixture (a Gateway container, the DNS fixture Pods).
+// Strip the authored probe for containers that do not mount the fixture
+// (a Gateway container, the DNS fixture Pods).
 // "probe.mjs" fills process.argv[1], so the probe still reads its own arguments
 // from process.argv.slice(2).
 export function inlineProbeCommand(source, ...probeArguments) {
-  return ["node", "--input-type=module", "-e", source, "probe.mjs", ...probeArguments.map(String)];
+  return [
+    "node",
+    "--input-type=module",
+    "-e",
+    stripTypeScriptTypes(source),
+    "probe.mjs",
+    ...probeArguments.map(String),
+  ];
 }
 
 export function createKubernetesClient({

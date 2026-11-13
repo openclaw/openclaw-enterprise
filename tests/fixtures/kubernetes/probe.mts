@@ -13,24 +13,24 @@ const deniedCodes = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ETI
 // The resolver reports an unanswered or refused UDP query with its own codes.
 const deniedResolverCodes = new Set(["ECONNREFUSED", "ETIMEOUT"]);
 
-function connectTimeout(message) {
+function connectTimeout(message: string) {
   return Object.assign(new Error(message), { code: "ETIMEDOUT" });
 }
 
 // Resolve before connecting so the connect timer covers only the connection:
 // a slow or failed lookup is a probe error, never a denial.
-async function resolveHost(host) {
-  let timer;
+async function resolveHost(host: string) {
+  let timer: NodeJS.Timeout | undefined;
   const { address } = await Promise.race([
     lookup(host),
-    new Promise((_, reject) => {
+    new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error("DNS lookup timed out")), timeoutMs);
     }),
   ]).finally(() => clearTimeout(timer));
   return address;
 }
 
-async function resolveTcp() {
+async function resolveTcp(target: string, port: string, hostname: string) {
   const question = Buffer.concat([
     ...hostname
       .split(".")
@@ -41,7 +41,7 @@ async function resolveTcp() {
   const length = Buffer.alloc(2);
   length.writeUInt16BE(query.length);
   const address = await resolveHost(target);
-  const response = await new Promise((resolve, reject) => {
+  const response = await new Promise<Buffer>((resolve, reject) => {
     const socket = createConnection({ host: address, port: Number(port) });
     let received = Buffer.alloc(0);
     let connected = false;
@@ -57,7 +57,7 @@ async function resolveTcp() {
       socket.write(Buffer.concat([length, query]));
     });
     socket.on("data", (chunk) => {
-      received = Buffer.concat([received, chunk]);
+      received = Buffer.concat([received, typeof chunk === "string" ? Buffer.from(chunk) : chunk]);
       if (received.length >= 2 && received.length >= received.readUInt16BE(0) + 2) {
         resolve(received.subarray(2, received.readUInt16BE(0) + 2));
         socket.destroy();
@@ -74,17 +74,18 @@ async function resolveTcp() {
   ) {
     throw new Error("DNS TCP query returned no successful answer");
   }
-  const skipName = (offset) => {
-    while (offset < response.length && response[offset] !== 0) {
-      if ((response[offset] & 0xc0) === 0xc0) {
+  const skipName = (offset: number) => {
+    while (offset < response.length) {
+      const label = response.readUInt8(offset);
+      if (label === 0) {
+        return offset + 1;
+      }
+      if ((label & 0xc0) === 0xc0) {
         return offset + 2;
       }
-      offset += response[offset] + 1;
+      offset += label + 1;
     }
-    if (offset >= response.length) {
-      throw new Error("DNS TCP response has a truncated name");
-    }
-    return offset + 1;
+    throw new Error("DNS TCP response has a truncated name");
   };
   const answer = skipName(skipName(12) + 4);
   if (
@@ -99,23 +100,25 @@ async function resolveTcp() {
 
 try {
   if (operation === "http") {
-    const response = await fetch(target, { signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetch(target!, { signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
     process.stdout.write(JSON.stringify({ status: response.status }) + "\n");
   } else if (operation === "dns") {
-    const result = await lookup(target);
+    const result = await lookup(target!);
     process.stdout.write(JSON.stringify({ address: result.address }) + "\n");
   } else if (operation === "dns-udp" || operation === "dns-tcp") {
     const resolver = new Resolver({ timeout: timeoutMs, tries: 1 });
     resolver.setServers([`${target}:${port}`]);
     const address =
-      operation === "dns-udp" ? (await resolver.resolve4(hostname))[0] : await resolveTcp();
+      operation === "dns-udp"
+        ? (await resolver.resolve4(hostname!))[0]
+        : await resolveTcp(target!, port!, hostname!);
     process.stdout.write(JSON.stringify({ address }) + "\n");
   } else if (operation === "tcp") {
-    const address = await resolveHost(target);
-    await new Promise((resolve, reject) => {
+    const address = await resolveHost(target!);
+    await new Promise<void>((resolve, reject) => {
       const socket = createConnection({ host: address, port: Number(port) });
       socket.setTimeout(timeoutMs, () => socket.destroy(connectTimeout("connection timed out")));
       socket.once("connect", () => {
@@ -126,23 +129,31 @@ try {
     });
     process.stdout.write(JSON.stringify({ connected: true }) + "\n");
   } else if (operation === "token") {
-    const token = await readFile(target, "utf8");
+    const token = await readFile(target!, "utf8");
     const [, payload] = token.trim().split(".");
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    const claims: { aud?: unknown; sub?: unknown } = JSON.parse(
+      Buffer.from(payload!, "base64url").toString("utf8"),
+    );
     process.stdout.write(JSON.stringify({ audience: claims.aud, subject: claims.sub }) + "\n");
   } else {
     throw new Error(`Unsupported probe operation: ${operation ?? "missing"}`);
   }
 } catch (error) {
+  const code =
+    error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : undefined;
   const denied =
-    operation === "dns-udp"
-      ? deniedResolverCodes.has(error.code)
-      : (operation === "tcp" || operation === "dns-tcp") && deniedCodes.has(error.code);
+    code !== undefined &&
+    (operation === "dns-udp"
+      ? deniedResolverCodes.has(code)
+      : (operation === "tcp" || operation === "dns-tcp") && deniedCodes.has(code));
   if (denied) {
-    process.stdout.write(JSON.stringify({ denied: true, code: error.code }) + "\n");
+    process.stdout.write(JSON.stringify({ denied: true, code }) + "\n");
     process.exitCode = deniedExitCode;
   } else {
-    process.stderr.write(JSON.stringify({ error: error.message, code: error.code }) + "\n");
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(JSON.stringify({ error: message, code }) + "\n");
     process.exitCode = 1;
   }
 }
