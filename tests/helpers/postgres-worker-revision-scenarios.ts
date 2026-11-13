@@ -6,6 +6,9 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWork, DeploymentStatusError } from "../../packages/occ/src/index.ts";
 import type { RevisionFixture, WorkIdentity } from "./postgres-worker-refused-candidate.ts";
+import type { waitFor } from "./wait-for.mjs";
+
+type PollingOptions = Parameters<typeof waitFor>[2];
 
 interface AdmittedRevision {
   owner: Readonly<Agent>;
@@ -41,7 +44,7 @@ export async function assertFailedDeployment(
   fixture: RevisionFixture,
   { owner, candidate }: AdmittedRevision,
   { error, resultData = null }: FailureExpectation,
-  timeoutMs?: number,
+  timeoutMs?: PollingOptions,
 ) {
   const failed: { attempt_count: number } = await fixture.work(
     candidate,
@@ -61,7 +64,7 @@ export async function assertFailedDeployment(
 export async function runRuntimeFailureCases(
   fixture: RevisionFixture,
   cases: readonly RuntimeFailureCase[],
-  timeoutMs?: number,
+  timeoutMs?: PollingOptions,
 ) {
   const scenarios: (RuntimeFailureCase & AdmittedRevision & { preparations: number })[] = [];
   for (const scenario of cases) {
@@ -106,7 +109,7 @@ export async function runRuntimeFailureCases(
 export async function runPreparationFailureCase(
   fixture: RevisionFixture,
   { label, failure, convergenceTimeoutMs, expected }: PreparationFailureCase,
-  timeoutMs?: number,
+  timeoutMs?: PollingOptions,
 ) {
   const admitted: AdmittedRevision = await fixture.admitInitialRevision(label);
   let preparations = 0;
