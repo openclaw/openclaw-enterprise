@@ -39,7 +39,7 @@ function createFixture(t: TestContext) {
 }
 
 type Fixture = Awaited<ReturnType<typeof createFixture>>["fixture"];
-type Session = Awaited<ReturnType<Fixture["signIn"]>>;
+type Session = string | { cookie: string; origin?: string | undefined };
 
 // Sends `text` as the exact request body, without re-encoding it.
 async function sendRaw(

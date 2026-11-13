@@ -44,18 +44,13 @@ function capturedLogger() {
 // does a ServiceAccount Driver's.
 async function configurationFixture(
   t: TestContext,
-  {
-    createError,
-    auditSink,
-  }: {
-    createError?: DependencyUnavailableError;
-    auditSink?: InMemoryAuditSink;
-  } = {},
+  createError?: unknown,
+  options: Parameters<typeof createConsoleAppFixture>[1] = {},
 ) {
   const { lines, logger } = capturedLogger();
   const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
   const fixture = await createConsoleAppFixture(t, {
-    ...(auditSink === undefined ? {} : { auditSink }),
+    ...options,
     logger,
     configurationDriver,
     secretDriver: createTestSecretDriver({ id: "console-secret" }),
@@ -98,7 +93,7 @@ test("a 503 DEPENDENCY_UNAVAILABLE keeps its generic body and logs its cause by 
     body: CLIENT_TEXT,
     cause: Object.assign(new Error(`socket ${CLIENT_TEXT}`), { code: "ECONNRESET" }),
   });
-  const { fixture, lines, namespace } = await configurationFixture(t, { createError: error });
+  const { fixture, lines, namespace } = await configurationFixture(t, error);
   const response = await createConfiguration(fixture, namespace);
 
   const body = errorResponse(fixture, response);
@@ -130,9 +125,10 @@ test("a 503 DEPENDENCY_UNAVAILABLE keeps its generic body and logs its cause by 
 });
 
 test("a dependency message that resembles a credential is withheld from the log", async (t) => {
-  const { fixture, lines, namespace } = await configurationFixture(t, {
-    createError: new DependencyUnavailableError(`Upstream answered with ${SECRET_VALUE}.`),
-  });
+  const { fixture, lines, namespace } = await configurationFixture(
+    t,
+    new DependencyUnavailableError(`Upstream answered with ${SECRET_VALUE}.`),
+  );
   const response = await createConfiguration(fixture, namespace);
 
   const body = errorResponse(fixture, response);
@@ -223,7 +219,7 @@ test("a dependency error answered with its own code logs no dependency warning",
 
 test("a dependency 503 that no dependency error raised logs no dependency warning", async (t) => {
   const auditSink = new InMemoryAuditSink();
-  const { fixture, lines, namespace } = await configurationFixture(t, { auditSink });
+  const { fixture, lines, namespace } = await configurationFixture(t, undefined, { auditSink });
   const limited = await fixture.createAccountWithPolicy("dependency-log-member", () => {});
   const session = await fixture.signIn(limited.credentials);
   // The denial's audit write fails, so the denial answers a dependency 503 of its own.
@@ -253,7 +249,7 @@ test("a dependency error whose fields cannot be read keeps its 503 and a bare wa
       throw new Error(CLIENT_TEXT);
     },
   };
-  const { fixture, lines, namespace } = await configurationFixture(t, { createError: error });
+  const { fixture, lines, namespace } = await configurationFixture(t, error);
   const response = await createConfiguration(fixture, namespace);
   const body = errorResponse(fixture, response);
   assert.deepEqual(body.error, {
