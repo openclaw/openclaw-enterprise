@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
 import { ChatGPTServiceAccountDriver } from "../../apps/controller/src/drivers/service-account/chatgpt.ts";
+import type { Installation, Namespace, Principal } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   OpenClawController,
@@ -13,10 +15,10 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
-} from "../helpers/development.mjs";
+} from "../helpers/development.ts";
 import {
+  apiKeyPath,
   authorizedPrincipal,
-  backendDefinition,
   backendId,
   createBackendFixture,
   databaseUrl,
@@ -28,6 +30,8 @@ import {
 import { testPool } from "../helpers/postgres-database.mjs";
 import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
 
+type CredentialStorage = ConstructorParameters<typeof ChatGPTServiceAccountDriver>[3];
+
 /**
  * Finding 1397: an issuance whose token Secret was stored but whose transaction never committed
  * (a crash, or an unknown COMMIT that failed) skips its compensations. These cases run the real
@@ -38,29 +42,39 @@ import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
  * uid and resourceVersion preconditions, the credential-ID annotation) are proved in
  * service-account-driver and kubernetes-compute conformance. No live provider or cluster runs.
  */
-function dependencies() {
-  const provider = { live: new Set(), revoked: [], deletedAccounts: [], issued: 0 };
-  const client = {
-    workspaceId,
-    async createCredential() {
-      provider.issued += 1;
-      const id = `cred-${provider.issued}`;
-      provider.live.add(id);
-      return { id, accessToken: `synthetic-token-${provider.issued}` };
-    },
-    async deleteCredential({ credentialId }) {
-      provider.revoked.push(credentialId);
-      provider.live.delete(credentialId);
-    },
-    async deleteServiceAccount(accountId) {
-      provider.deletedAccounts.push(accountId);
-    },
+function dependencies(context: TestContext) {
+  const provider: {
+    live: Set<string>;
+    revoked: string[];
+    deletedAccounts: string[];
+    issued: number;
+  } = { live: new Set(), revoked: [], deletedAccounts: [], issued: 0 };
+  const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
+  const createCredential: ChatGPTClient["createCredential"] = async () => {
+    provider.issued += 1;
+    const id = `cred-${provider.issued}`;
+    provider.live.add(id);
+    return { id, accessToken: `synthetic-token-${provider.issued}` };
   };
+  const deleteCredential: ChatGPTClient["deleteCredential"] = async ({ credentialId }) => {
+    provider.revoked.push(credentialId);
+    provider.live.delete(credentialId);
+  };
+  const deleteServiceAccount: ChatGPTClient["deleteServiceAccount"] = async (accountId) => {
+    provider.deletedAccounts.push(accountId);
+  };
+  context.mock.method(client, "createServiceAccount", async () => {
+    assert.fail("This fixture seeds the provider account binding.");
+  });
+  context.mock.method(client, "createCredential", createCredential);
+  context.mock.method(client, "deleteCredential", deleteCredential);
+  context.mock.method(client, "deleteServiceAccount", deleteServiceAccount);
+
   // One token Secret per account under its deterministic name, recording its credential ID.
-  const secrets = new Map();
-  const secretName = (serviceAccountId) =>
+  const secrets = new Map<string, { credentialId: string; accessToken: string }>();
+  const secretName = (serviceAccountId: string) =>
     `service-account-${createHash("sha256").update(serviceAccountId).digest("hex").slice(0, 32)}`;
-  const storage = {
+  const storage: CredentialStorage = {
     async storeServiceAccountCredential({ serviceAccountId, credentialId, accessToken }) {
       const name = secretName(serviceAccountId);
       if (secrets.has(serviceAccountId)) {
@@ -95,10 +109,21 @@ function dependencies() {
 }
 
 /** An OCC API controller over `state` with the production ChatGPT ServiceAccount Driver. */
-function apiController(fixture, state, { client, storage }) {
-  const controller = new OpenClawController(fixture.installation, {
+function apiController(
+  installation: Installation,
+  state: PostgresPlatformState,
+  { client, storage }: Pick<ReturnType<typeof dependencies>, "client" | "storage">,
+) {
+  const controller = new OpenClawController(installation, {
     state,
-    backends: [backendDefinition()],
+    backends: [
+      {
+        id: backendId,
+        type: "chatgpt",
+        configuration: { workspaceId, apiKeyPath },
+        drivers: { service_account: serviceAccountDriverId },
+      },
+    ],
   });
   const driver = new ChatGPTServiceAccountDriver(
     { id: backendId, drivers: { service_account: serviceAccountDriverId }, client },
@@ -115,18 +140,18 @@ function apiController(fixture, state, { client, storage }) {
   return controller;
 }
 
-async function issuanceFixture(context) {
+async function issuanceFixture(context: TestContext) {
   const fixture = await createBackendFixture(context);
   const { state, pool } = fixture;
-  const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
+  const actor: Principal | undefined = authorizedPrincipal(await state.loadNativeIAMState(), [
     ["read", "service_account"],
     ["update", "service_account"],
     ["delete", "service_account"],
   ]);
   assert.ok(actor, "persisted IAM must contain an unrestricted ServiceAccount Principal");
-  const used = dependencies();
-  const controller = apiController(fixture, state, used);
-  const namespace = fixture.track(
+  const used = dependencies(context);
+  const controller = apiController(fixture.installation, state, used);
+  const namespace: Namespace = fixture.track(
     await state.transact((unit) =>
       unit.namespaces.createNamespace({
         id: `ns_${randomUUID()}`,
@@ -146,7 +171,7 @@ async function issuanceFixture(context) {
   await seedBackendBinding(pool, account, { credentialIssued: false });
   const recordedCredentialId = async () =>
     (
-      await pool.query(
+      await pool.query<{ external_credential_id: string | null }>(
         "SELECT external_credential_id FROM occ.service_account_driver_bindings WHERE service_account_id = $1",
         [account.id],
       )
@@ -195,7 +220,7 @@ test(
     await abandonIssuance();
     // The live credential and its Secret stayed, but nothing recorded them.
     assert.deepEqual([...provider.live], ["cred-1"]);
-    assert.equal(secrets.get(account.id).credentialId, "cred-1");
+    assert.equal(secrets.get(account.id)?.credentialId, "cred-1");
     assert.equal(await recordedCredentialId(), null);
     assert.equal(
       (await controller.getServiceAccount(actor.id, namespace.id, account.id)).credential,
@@ -204,10 +229,10 @@ test(
 
     // Before finding 1397 this answered the leftover Secret's 409 until an operator deleted it.
     const issued = await issue();
-    assert.equal(issued.credential.kind, "access_token");
+    assert.equal(issued.credential?.kind, "access_token");
     assert.deepEqual(provider.revoked, ["cred-1"]);
     assert.deepEqual([...provider.live], ["cred-2"]);
-    assert.equal(secrets.get(account.id).credentialId, "cred-2");
+    assert.equal(secrets.get(account.id)?.credentialId, "cred-2");
     assert.equal(await recordedCredentialId(), "cred-2");
   },
 );
@@ -241,7 +266,11 @@ test(
     // A second API process over its own pool: the later issuance must not share this request's
     // transaction context.
     const otherPool = testPool(context, { connectionString: databaseUrl, max: 4 });
-    const other = apiController(fixture, new PostgresPlatformState(otherPool), issuing);
+    const other = apiController(
+      fixture.installation,
+      new PostgresPlatformState(otherPool),
+      issuing,
+    );
 
     const find = issuing.storage.findServiceAccountCredential;
     let intercept = true;
@@ -255,19 +284,29 @@ test(
       const probe = await pool.connect();
       try {
         await probe.query("BEGIN");
-        const [{ pid: probePid }] = (await probe.query("SELECT pg_backend_pid() AS pid")).rows;
+        const [probeBackend] = (
+          await probe.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+        ).rows;
+        assert.ok(probeBackend);
         const waiting = probe.query(
           "SELECT id FROM occ.service_accounts WHERE id = $1 FOR UPDATE",
           [account.id],
         );
         waiting.catch(() => {});
-        const holder = await waitForLockHolder(
+        const holder: unknown = await waitForLockHolder(
           pool,
-          probePid,
+          probeBackend.pid,
           "the probe to wait for the account lock",
           { timeoutMs: 15_000, intervalMs: 50 },
         );
-        await pool.query("SELECT pg_terminate_backend($1)", [holder]);
+        assert.equal(typeof holder, "number");
+        const [termination] = (
+          await pool.query<{ terminated: boolean }>(
+            "SELECT pg_terminate_backend($1) AS terminated",
+            [holder],
+          )
+        ).rows;
+        assert.equal(termination?.terminated, true);
         await waiting;
         await probe.query("ROLLBACK");
       } finally {
@@ -289,7 +328,7 @@ test(
     assert.equal(intercept, false);
     assert.deepEqual(provider.revoked, []);
     assert.deepEqual([...provider.live], ["cred-1"]);
-    assert.equal(secrets.get(account.id).credentialId, "cred-1");
+    assert.equal(secrets.get(account.id)?.credentialId, "cred-1");
     assert.equal(await recordedCredentialId(), "cred-1");
   },
 );
