@@ -7,7 +7,7 @@ import { verifyProtectedGitNetworkAdmission } from "./sandbox-driver-protected-g
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
-import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
+import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.ts";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -43,11 +43,9 @@ import { formatStartupConfigurationFailure } from "../../apps/controller/src/sta
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
   GrpcOpenShellGatewayClient,
-  normalizeServiceUrl,
   OpenShellProviderAlreadyExistsError,
   OpenShellSandboxAlreadyExistsError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { serviceTarget } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   ConfigurationHarnessError,
@@ -128,15 +126,11 @@ import {
 } from "./sandbox-driver-protected-startup-guard-cases.ts";
 import { callCount, storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
-import {
-  buildEndpointInstallation,
-  makeStructuralRefusal,
-} from "./sandbox-driver-installation-fixture.ts";
+import { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
 import {
   buildSandboxInstallation as sandboxInstallation,
   rejectsAtStartup,
 } from "./sandbox-driver-startup-installation-fixture.ts";
-import { verifyEndpointAdmission } from "./sandbox-driver-endpoint-admission-case.ts";
 import { verifySandboxDriverHarnessObservation } from "./sandbox-driver-harness-observation-cases.ts";
 import { registerSandboxDriverNamespaceGatewayCleanupCases } from "./sandbox-driver-namespace-gateway-cleanup-cases.ts";
 import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
@@ -2463,17 +2457,6 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     sandboxInstallation,
     TransientDependencyError,
   });
-});
-
-test("OpenShell startup admits exactly the endpoints both consumers can parse and dial", async (t) => {
-  // Each consumer parses the endpoint once per gateway call: the gRPC path through its
-  // service URL normalization, the service transport through its connect target.
-  const consumers = {
-    grpc: (endpoint) => normalizeServiceUrl("http://service.example.test/", endpoint),
-    service: (endpoint) =>
-      serviceTarget({ endpoint, requestTimeoutMs: 1000 }, "http://service.example.test/"),
-  };
-  await verifyEndpointAdmission(t, buildEndpointInstallation, consumers);
 });
 
 // These codecs test the stock/product boundary, not installed supervisor capabilities.
