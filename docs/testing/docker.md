@@ -188,7 +188,8 @@ suite above, omitting the `docker pull` commands.
 With Helm and `yq` supporting `eval-all -o=json`:
 
 ```sh
-node --test tests/integration/production-kubernetes-packaging.test.mjs
+node --test tests/integration/production-kubernetes-packaging.test.mjs \
+  tests/integration/production-kubernetes-network-policy.test.ts
 ```
 
 Missing Helm or `yq` skips cases. Rendering does not install the chart or prove

@@ -26,6 +26,7 @@
     "tests/integration/docker-compute-token-retry.test.mjs",
     "tests/integration/workspace-setup-runtime.test.ts",
     "tests/integration/production-kubernetes-packaging.test.mjs",
+    "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
     "tests/integration/container-registry-real.test.mjs",
     "tests/integration/logging-packaging.test.mjs",
@@ -88,7 +89,6 @@
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
-        "database routing refuses invalid ports before emitting NetworkPolicies",
         "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
         "the plugin request guard installs beside OpenShell without control-plane access",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
@@ -96,10 +96,23 @@
         "default routing refuses missing operator configuration",
         "private Envoy Gateway routing defaults on with automatic CA and deterministic hostnames",
         "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
-        "production peer matchLabels keep the native Kubernetes map contract",
         "Collector exporter ports preserve decimal meaning in Kubernetes YAML",
         "protected OpenShell Git installs without a repository broker and refuses the retired trial",
         "Helm supplies protected Git custody for a separately installed Credential Proxy"
+      ]
+    },
+    {
+      "path": "tests/integration/production-kubernetes-network-policy.test.ts",
+      "expectedTests": [
+        "execution chart names reject YAML booleans and numbers",
+        "execution peer label maps reject non-string values before rendering",
+        "database and Kubernetes API egress refuse an empty host list",
+        "database routing refuses invalid ports before emitting NetworkPolicies",
+        "gateway routing refuses fractional YAML ports before emitting resources",
+        "metrics chart requires exact scraper selectors and isolates the extra Pod ports",
+        "the chart refuses an API port the server does not bind",
+        "NetworkPolicy peers from values are refused before install",
+        "production peer matchLabels keep the native Kubernetes map contract"
       ]
     },
     {
