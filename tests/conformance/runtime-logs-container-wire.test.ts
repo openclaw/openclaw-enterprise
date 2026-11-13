@@ -125,7 +125,6 @@ test("runtime container wire pages include escaped messages, cursor and HTTP met
     time: iso(started + index),
     raw: gatewayJson(`row=${index}; 网络🙂 process arguments: ${'--option="value" '.repeat(500)}`),
   }));
-  let firstCount;
   const { rows, cursor, pages } = await drain(route, {
     tailLines: 200,
     onPage(response, page) {
@@ -136,13 +135,14 @@ test("runtime container wire pages include escaped messages, cursor and HTTP met
         "the actual formatter matches measured JSON, including Unicode",
       );
       if (page === 0) {
-        firstCount = lineRecords(response.data).length;
+        const firstCount = lineRecords(response.data).length;
+        assert.ok(firstCount > 0 && firstCount < 70);
         assert.equal(response.data.truncated, true);
       }
       advances(response);
     },
   });
-  assert.ok(firstCount !== undefined && firstCount > 0 && firstCount < 70);
+  assert.ok(pages > 0, "expected a first page");
   assert.deepEqual(rows, range(70));
   const replay = await readPage(route, { cursor });
   assert.deepEqual(replay.data.records, []);
@@ -218,8 +218,8 @@ test("runtime container checkpoint suffixes survive append-only growth to a full
           // The previous compact cursor had ten window entries and no inherited proof.
           const payload = cursorPayload(cursor);
           assert.ok(typeof payload === "object" && payload !== null && "cw" in payload);
-          const window = payload.cw;
-          assert.ok(Array.isArray(window));
+          assert.ok(Array.isArray(payload.cw));
+          const window: unknown[] = payload.cw;
           if (window.length === 11) {
             window.pop();
           }
@@ -275,7 +275,7 @@ test("container byte-cut checkpoints retain untimed progress or advance mixed wi
     ];
     route.state.truncated = true;
     assert.ok(rawBytes(route.state.lines) < 1024 * 1024);
-    const seen = [];
+    const seen: number[] = [];
     let cursor: string | null | undefined;
     let pages = 0;
     let drained: AgentRuntimeLogPageWire | undefined;
@@ -496,18 +496,18 @@ test("container byte-window checkpoints drain full same-time and untimed tails",
   for (const time of [recently(), null]) {
     const route = await logsRoute({ label: "container-window" });
     route.state.lines = wireContainerRows(time);
-    let first;
-    const { rows, cursor } = await drain(route, {
+    const { rows, cursor, pages } = await drain(route, {
       tailLines: 60,
       onPage(response, page) {
         if (page === 0) {
-          first = lineRecords(response.data).length;
+          const firstCount = lineRecords(response.data).length;
+          assert.ok(firstCount > 16 && firstCount < 60);
           assert.equal(response.data.truncated, true);
         }
         advances(response);
       },
     });
-    assert.ok(first !== undefined && first > 16 && first < 60);
+    assert.ok(pages > 0, "expected a first page");
     assert.deepEqual(rows, range(60));
     const replay = await readPage(route, { tailLines: 60, cursor });
     assert.equal(lineRecords(replay.data).length, 0);
@@ -825,9 +825,9 @@ test("container follows a growing full wire-cut tail without replaying its deliv
   const route = await logsRoute({ label: "full-growing-wire-tail" });
   const start = Date.now() - 120_000;
   route.state.lines = range(100).map((index) => ordinaryRow(start, index));
-  let cursor;
-  const seen = [];
-  const counts = [];
+  let cursor: string | null | undefined;
+  const seen: number[] = [];
+  const counts: number[] = [];
   for (let poll = 0; poll < 6; poll += 1) {
     if (poll > 0) {
       const offset = route.state.lines.length;
