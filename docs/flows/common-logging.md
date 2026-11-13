@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-11-08
-last_updated_session: authoring-run/b490de13-d3f2-4301-b212-4393219a8625
+updated: 2026-11-13
+last_updated_session: authoring-run/ab7d7799-30b2-43fe-8453-86ac8cba698b
 ---
 
 # Common Operational Logging Flow
@@ -81,7 +81,8 @@ also create Pino loggers at the selected level. The API disables Fastify request
 logging. Bootstrap and migration separate success protocol output from structured
 failure diagnostics. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
 keeps reviewed scalar fields and drops credentials, provider payloads, request/reply
-objects, and unsafe strings before the Collector filter in step 7. The Collector
+objects, and unsafe strings before the Collector filter in step 7. Approved scalar
+strings also pass the existing URL and connection-string credential check. The Collector
 retains allowed worker `work.operation` values and `work.id` formats. Agent stop keys
 include the operation UUID. Credential withdrawal keys end in the operation UUID or
 `activation` (the attempt a candidate's activation queues), optionally followed by
@@ -216,7 +217,8 @@ hash is not exported. `authentication.provider-unavailable-warning` keeps
 `membership` or `email`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
-`occ.worker.cause`.
+`occ.worker.cause`. These codes and runtime wrapper codes reject the same recognized
+key and token shapes as the other code fields. SQLSTATE values remain supported.
 Every exported OCC event keeps the sanitizer's codes under the same checks (a
 letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `check`, `failure`, `harnessState`, `hintCode` and `reasonCode` as `occ.check`,
@@ -332,6 +334,8 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 22:56: Apply the existing credential checks to local scalar strings and Collector diagnostic codes. (authoring-run/ab7d7799-30b2-43fe-8453-86ac8cba698b - afab47b8ff040a1ab6e0fa1c5a211690ab990f32)
 
 - 2026-11-08 16:26: Record bounded Git retirement diagnostics. (authoring-run/b490de13-d3f2-4301-b212-4393219a8625 - 842bea47b86394333aa46a900c962a8a81272580)
 
