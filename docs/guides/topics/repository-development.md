@@ -14,9 +14,8 @@ validation commands. Follow their contribution instructions instead.
   model CredentialSource, paired Credential Gateway and Sandbox, and an
   [authorized repository binding](../repository-credentials/openshell-git-push.md).
   Confirm an actual model response and ordinary Git/gh access first.
-- This workflow selects [public network egress mode](../../reference/configuration/network-egress.md)
-  for package downloads, with compatible Gateway/supervisor images that report
-  the applied mode. Stock OpenShell 0.1.6 cannot provide it. Select the qualified images through the setup
+- The package-download steps below require [public network egress mode](../../reference/configuration/network-egress.md)
+  and compatible Gateway/supervisor images that report the applied mode. Stock OpenShell 0.1.6 cannot provide it. Select the qualified images through the setup
   guide; changing an Installation setting requires a successor Agent revision.
   Public mode permits workspace data to reach public services. Managed credential
   destinations retain their authorization rules; public mode is not general UDP,
@@ -33,6 +32,28 @@ validation commands. Follow their contribution instructions instead.
 If the model refuses its required permission profile, follow
 [Agent troubleshooting](agent-troubleshoot.md#codex-refuses-the-required-permission-profile)
 before proceeding. Successful login alone does not establish that permission.
+
+## Build with prepared offline dependencies
+
+Ask the operator for the approved developer image digest and a local dependency
+bundle for the selected revision. Confirm the Agent runs that image for its
+architecture. Check the compiler, linker and native libraries against the
+project’s requirements. Match the bundle to the reviewed manifest and verify
+package checksums against its lockfile. Review a newly generated lockfile before
+adopting it.
+
+Run the repository’s build and tests in the Agent’s normal shell with network
+access disabled for the build and test processes. For Cargo, use the prepared
+source configuration, pass `--locked --offline`, and put the target directory
+on the designated workspace or scratch volume. Exercise the resulting program
+and record the command, exit status and scratch usage. For a worktree manager,
+create, inspect and remove one disposable worktree through the tool itself.
+
+Use the private `0700` directory under `/tmp`, exported `TMPDIR`, and exit
+cleanup shown in the next section. Keep them in the same Bash script through
+any authorized [publication steps](#review-and-publish-the-work). Skip package
+downloads when using the prepared toolchain and dependency bundle. Record
+separately any checks that still require a registry or another service.
 
 ## Prepare pinned tools
 
