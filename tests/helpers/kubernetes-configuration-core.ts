@@ -3,7 +3,7 @@ import {
   FakeNamespaceCoreV1Api,
   injectedFailure,
   stallUntilAborted,
-} from "./kubernetes-core-api.mjs";
+} from "./kubernetes-core-api.ts";
 
 type ConfigurationCoreApi = Pick<
   Parameters<typeof resolveKubernetesControlNamespace>[0],
