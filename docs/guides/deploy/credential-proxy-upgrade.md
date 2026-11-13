@@ -51,6 +51,8 @@ same upgrade command with a fresh evidence directory. This option requires
 `psql` and a named libpq service for the Installation's primary database. Use
 your approved reader connection and protected password file. Select an ordinary
 role with SELECT access to the columns in `scripts/upgrade-repository-inventory.sql`.
+The helper rejects predefined PostgreSQL role memberships, elevated role attributes,
+database or OCC schema creation privileges, and OCC relation owners.
 Use verified TLS for a remote database.
 
 A successful read adds `inventory/repository-custody.jsonl` before the helper

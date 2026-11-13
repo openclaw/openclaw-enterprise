@@ -6,12 +6,16 @@ SET LOCAL row_security = off;
 SET LOCAL client_encoding = 'UTF8';
 SELECT NOT pg_is_in_recovery()
    AND current_user = session_user
+   AND NOT has_database_privilege(current_user, current_database(), 'CREATE')
+   AND NOT has_schema_privilege(current_user, 'occ', 'CREATE')
    AND NOT EXISTS (
      SELECT FROM pg_roles
-     WHERE (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls)
+     WHERE (starts_with(rolname, 'pg_') OR rolsuper OR rolcreaterole OR rolcreatedb
+            OR rolreplication OR rolbypassrls)
        AND pg_has_role(current_user, oid, 'MEMBER'))
-   AND NOT pg_has_role(current_user,
-     (SELECT relowner FROM pg_class WHERE oid = 'occ.installation'::regclass), 'MEMBER')
+   AND NOT EXISTS (
+     SELECT FROM pg_class
+     WHERE relnamespace = 'occ'::regnamespace AND pg_has_role(current_user, relowner, 'MEMBER'))
    AS ordinary_primary \gset
 \if :ordinary_primary
 \else

@@ -1513,7 +1513,8 @@ if [[ "$repository_policy" == matching-backend ]]; then
     python3 scripts/upgrade-preflight-state.py record-repository-fleet "$evidence_dir" "$(jq -er .version "$evidence_dir/before-helm-status.json")" ||
     die "Cannot preserve the original Agent desired states; the old owners are still serving."
   if [[ -n "$repository_service" ]]; then
-    python3 scripts/upgrade-preflight-state.py inspect-repository "$evidence_dir" "$repository_service" "$installation_id" "$timeout_seconds" ||
+    read_checkout "${checkout_git[@]}" cat-file blob "$source_revision:scripts/upgrade-repository-inventory.sql" |
+      python3 scripts/upgrade-preflight-state.py inspect-repository "$evidence_dir" "$repository_service" "$installation_id" "$timeout_seconds" ||
       die "Repository custody inspection is incomplete. Preserve the fleet observation; keep the old owners running."
   fi
   die "Recorded the pre-stop Agent desired states in inventory/repository-fleet.json. The original owner must settle deleted-revision cleanup. A direct upgrade is unsupported: this release cannot exclude concurrent admissions. Keep the original API, worker and credential sender running."

@@ -278,9 +278,11 @@ def inspect_repository(root, service, installation, timeout):
     seconds = int(timeout)
     require(1 <= seconds <= 86400, "invalid database inspection timeout")
     output, _ = directory(root / "inventory")
-    sql = Path(__file__).with_name("upgrade-repository-inventory.sql")
+    # The caller supplies the blob from the selected release. Execute the same
+    # bytes we verified, even if the checkout file changes during observation.
+    sql = sys.stdin.buffer.read()
     expected = parameters(root)
-    require(hashlib.sha256(sql.read_bytes()).hexdigest() == expected["repositoryInventorySha256"],
+    require(hashlib.sha256(sql).hexdigest() == expected["repositoryInventorySha256"],
             "repository inventory query changed")
     # The named service selects a dedicated installation database. Give libpq no
     # ambient database/user/role selection. The service and passfile stay private.
@@ -294,9 +296,11 @@ def inspect_repository(root, service, installation, timeout):
             try:
                 status = subprocess.run(
                     ["psql", "-X", "-qAtw", "-v", "ON_ERROR_STOP=1",
-                     "-v", "installation=" + installation, "-f", str(sql)],
-                    stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.DEVNULL,
+                     "-v", "installation=" + installation, "-f", "-"],
+                    input=sql, stdout=stream, stderr=subprocess.DEVNULL,
                     env=environment, timeout=seconds, check=False).returncode
+            except FileNotFoundError:
+                raise InvalidEvidence("repository database inspection requires psql")
             except subprocess.TimeoutExpired:
                 raise InvalidEvidence(f"repository database observation timed out after {seconds}s")
             require(status == 0, f"database inspection failed (psql exit {status}); check service, access and schema")
