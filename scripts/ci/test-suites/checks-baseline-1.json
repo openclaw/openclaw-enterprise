@@ -41,6 +41,7 @@
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.ts",
+    "tests/conformance/runtime-logs-admission.test.ts",
     "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
@@ -263,6 +264,9 @@
     },
     {
       "path": "tests/conformance/occ-api-security.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-logs-admission.test.ts"
     },
     {
       "path": "tests/conformance/runtime-logs-content.test.mjs"
