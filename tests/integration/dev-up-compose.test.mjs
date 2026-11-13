@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import { browserEnvironment } from "../helpers/compose.mjs";
 import {
   composeInvocations,
   composeOptions,
@@ -246,6 +247,144 @@ async function ownedKeyDirectories(fixture) {
   return (await readdir(fixture.directory)).filter((name) =>
     name.startsWith("openclaw-dev-up-key."),
   );
+}
+
+for (const engine of ["docker", "podman"]) {
+  test(`printed cleanup preserves the ${engine} Compose selection through occ dev down`, async (t) => {
+    const fixture = await createFixture(t, { engine, macosPodmanMachine: "rootful" });
+    const overlay = join(fixture.directory, "user's $overlay.yaml");
+    const project = engine === "podman" ? "oce-dev-up-test" : "printed-cleanup";
+    await writeFile(overlay, `name: ${project}\nservices: {}\n`);
+    const settings = ["--env-file", fixture.emptyEnv, "--project-name", project];
+    const files = ["-f", "compose.yaml", "-f", overlay];
+    const env = { ...fixture.env, COMPOSE_PROJECT_NAME: "overridden-project" };
+    let options;
+    let expected;
+    if (engine === "podman") {
+      // The Podman fixture has an isolated PATH. The printed command uses env.
+      await symlink("/usr/bin/env", join(fixture.directory, "bin", "env"));
+      env.COMPOSE_FILE = ["compose.yaml", overlay].join("|");
+      env.COMPOSE_PATH_SEPARATOR = "|";
+      options = settings;
+      expected = [
+        ...files,
+        ...settings,
+        "-f",
+        join(fixture.fixtureRepository, "compose.podman.yaml"),
+      ];
+    } else {
+      options = [...settings, ...files, "-f", overlay];
+      expected = options;
+    }
+
+    const started = await runDevUp(["--", ...options], env);
+    assert.equal(started.status, 0, started.stderr);
+    const command = started.stdout.match(/^Cleanup:\n {2}(.+)$/m)?.[1];
+    assert.ok(command, started.stdout);
+    const stopped = await runCommand("/bin/bash", ["-c", command], {
+      cwd: fixture.fixtureRepository,
+      env: fixture.env,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+    const calls = await readJsonLines(engine === "podman" ? fixture.podmanLog : fixture.dockerLog);
+    const cleanup = calls.filter(({ args }) => args.includes("down"));
+    assert.deepEqual(
+      cleanup.map(({ args }) => args),
+      [
+        [
+          "compose",
+          ...expected,
+          "--project-name",
+          project,
+          "-f",
+          join(fixture.fixtureRepository, "compose.native-admin.yaml"),
+          "down",
+        ],
+      ],
+    );
+    if (engine === "podman") {
+      assert.equal(cleanup[0].env.CONTAINER_CONNECTION, "podman-machine-default-root");
+      assert.equal(
+        cleanup[0].env.PODMAN_COMPOSE_PROVIDER,
+        join(fixture.directory, "bin", "podman-compose"),
+      );
+    }
+  });
+}
+
+for (const selection of ["environment", "explicit", "default", "interpolated"]) {
+  test(`printed cleanup targets the ${selection} project in a different shell`, async (t) => {
+    const fixture = await createFixture(t);
+    if (fixture.env.DEV_UP_REAL_COMPOSE_FORMAT !== "json") {
+      t.skip("Docker Compose is required to compare resolved Docker project names");
+      return;
+    }
+    const original = { ...fixture.env };
+    delete original.COMPOSE_PROJECT_NAME;
+    const startup =
+      selection === "default" || selection === "interpolated"
+        ? original
+        : { ...original, COMPOSE_PROJECT_NAME: "command-scoped-project" };
+    const later =
+      selection === "environment"
+        ? original
+        : { ...original, COMPOSE_PROJECT_NAME: "unrelated-project" };
+    const options = ["--env-file", fixture.emptyEnv];
+    if (selection === "explicit") {
+      options.push("-p", "explicit-project");
+    }
+    if (selection === "interpolated") {
+      const overlay = join(fixture.directory, "project.yaml");
+      await writeFile(overlay, "name: ${STACK_NAME:-fallback-project}\n");
+      options.push("-f", "compose.yaml", "-f", overlay);
+      startup.STACK_NAME = "interpolated-project";
+      delete later.COMPOSE_PROJECT_NAME;
+      later.STACK_NAME = "other-interpolated-project";
+    }
+    const expectedProject = {
+      interpolated: "interpolated-project",
+      default: "openclaw-enterprise-development",
+      environment: "command-scoped-project",
+      explicit: "explicit-project",
+    }[selection];
+    const started = await runDevUp(["--", ...options], startup);
+    assert.equal(started.status, 0, started.stderr);
+    const command = started.stdout.match(/^Cleanup:\n {2}(.+)$/m)?.[1];
+    assert.ok(command, started.stdout);
+    const stopped = await runCommand("/bin/bash", ["-c", command], {
+      cwd: fixture.fixtureRepository,
+      env: later,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+
+    const calls = composeInvocations(await readJsonLines(fixture.dockerLog));
+    for (const [verb, shell] of [
+      ["up", startup],
+      ["down", later],
+    ]) {
+      const call = calls.find(({ args }) => args.includes(verb));
+      assert.ok(call, verb);
+      const options = call.args.slice(1, call.args.indexOf(verb));
+      const rendered = await runCommand(
+        fixture.env.DEV_UP_REAL_COMPOSE_COMMAND,
+        ["compose", ...options, "config", "--format", "json"],
+        {
+          cwd: fixture.fixtureRepository,
+          env: {
+            ...shell,
+            PATH: fixture.env.DEV_UP_REAL_PATH,
+            ...browserEnvironment,
+            DOCKER_HOST: `unix://${fixture.directory}/absent.sock`,
+            OCC_DEVELOPMENT_BROWSER_PORT: "8443",
+            OCC_DEVELOPMENT_BROWSER_TLS_CERT: "/fixture/tls.crt",
+            OCC_DEVELOPMENT_BROWSER_TLS_KEY: "/fixture/tls.key",
+          },
+        },
+      );
+      assert.equal(rendered.status, 0, rendered.stderr);
+      assert.equal(JSON.parse(rendered.stdout).name, expectedProject, verb);
+    }
+  });
 }
 
 test("Compose shutdown keeps copied service keys and leaves Namespace networks to Docker Compute", async (t) => {

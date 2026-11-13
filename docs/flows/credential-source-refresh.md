@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-12
-last_updated_session: authoring-run/648ee44b-b66c-4584-89ab-53728ee4862e
+updated: 2026-11-13
+last_updated_session: authoring-run/6366a138-6e59-492d-8eae-730c7c10e323
 ---
 
 # Credential source refresh Flow
@@ -107,8 +107,7 @@ OpenShell resolves the credential at runtime.
 `packages/occ/src/index.ts:mintFirstRefreshToken`
 
 OCC calls `configureRefresh` with the source config and resolved Secret values,
-then `rotate`. Name-based request UUIDs combine the source ID and step to prevent
-duplicate effects. The OpenShell Driver sends `ConfigureProviderRefresh`
+then `rotate`. Request UUIDs derived from source ID and step prevent duplicate effects. The OpenShell Driver sends `ConfigureProviderRefresh`
 (`client_id`, `scope`, and Secret material) and `RotateProviderCredential`;
 OpenShell calls the issuer and stores the token on the provider. A thrown call leaves the outcome unknown;
 after cleanup, OCC retains the `deleting` record. A definite non-`ready` result
@@ -158,9 +157,9 @@ response bodies, and nested causes.
 performs the Codex exchange, configures OpenShell refresh material, and stores
 trusted account metadata. Before code acquisition, issuer `429`, `5xx`, or fetch
 connection failures return pending, retaining the handle and interval. An aborted
-initial poll, including OCC's internal timeout, or any failure from code acquisition
+initial poll, including OCC's internal timeout, or failure from code acquisition
 onward closes the session without replay. OpenShell owns future refresh and
-successor persistence. After handoff, polls read existing state: unfinished refresh
+successor persistence. After handoff, polls read state: unfinished refresh
 stays pending; a persistent uncertain marker needs operator inspection. Ready confirms
 a usable token. Later versions attach the provider without reseeding credentials;
 account metadata changes require a new login and version.
@@ -169,8 +168,8 @@ For plugin configuration, the Gateway reads ownership/account metadata with its
 Backend identity, then calls `GetProviderCredentials` over operator-TLS.
 OpenShell may refresh to keep five minutes remaining. Only access credentials enter
 the callback, which rechecks caller authority and saved-Agent binding/grant before
-provider I/O. Closing or expiring the session leaves source-based discovery enabled.
-Cancellation or a failed recheck cannot undo a started gateway refresh.
+provider I/O. Session closure or expiry keeps source-based discovery enabled.
+Cancellation or failed recheck cannot undo a started gateway refresh.
 
 ### 3. Background refresh
 
@@ -253,7 +252,7 @@ graph TD
 
 OCC registers `github_app_installation` with the scoped grant and signing-key reference. PostgreSQL encrypts tokens with a persistent 32-byte key. Authorized metadata requests reuse valid tokens or join issuance until their deadline. Native Git uses its [private broker](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
-`provider-transport/request-options.ts:prepareProviderScope` freezes repository IDs, names and permissions for issuance and response validation. Capturing the token before scope and expiry checks retains refused candidates for retirement. The `github-installation` profile inherits scope with `{}`. Replacement retires the old token; OCC [rechecks the grant and version](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send) before sending.
+`provider-transport/request-options.ts:prepareProviderScope` freezes scope. The issuer captures before validation, retaining expiry bounds locally. Transport clears synchronously borrowed bytes; publication requires successful close and current signing authority/admission. `github-installation` inherits scope with `{}`. OCC [rechecks the grant and version](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send) before sending.
 
 | Limit                                | Effect                                                                                                                                                                                                              |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -272,21 +271,16 @@ worker disables the Agent-bound metadata family and retires the token. GitHub
 revocation can outlast Agent deletion. Source deletion waits up to 25 seconds
 for revocation, returning `409` if custody remains unsettled.
 
-**Uncertain outcomes.** A lost issuance or commit receipt blocks replay. The
-[response parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
-keeps a unique cleanup candidate despite ambiguous scope. Duplicate root token
-fields leave none. The worker records possible revocation before
-`DELETE /installation/token`. HTTP 204 confirms revocation. A lost response
-leaves it unknown. Expiry plus the clock-skew allowance can settle an attempt
-without confirming revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+**Uncertain outcomes.** Lost receipts block replay; readback can recover eligible committed material. [The parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
+retains unique cleanup tokens despite ambiguous scope; duplicate root tokens leave none. Capture and definite refusals survive transport errors.
+Retirement claims precede `DELETE /installation/token`. Complete 204 and successful close confirm revocation, separately from durable
+settlement. Expiry plus skew can settle uncertainty without confirming revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
 
 `apps/controller/src/backends/token-service/retirement.ts:retireToken` clears
-detached bytes before settling the original receipt. If revocation and
-settlement both fail, the error names only the stages.
+detached bytes before settling the original receipt; combined errors name stages.
 
 `apps/controller/src/drivers/repo/github/access/prepared-postgres.ts:store`
-clears token buffers after successful or failed publication. Callers own their
-detached reads. Clearing bytes cannot revoke a token.
+clears publication buffers on success/failure. Callers own detached reads; clearing cannot revoke tokens.
 
 ## Debugging and Verification
 
@@ -324,6 +318,12 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 01:14: Reconcile device-login auditing. (authoring-run/6366a138-6e59-492d-8eae-730c7c10e323 - 2f1d2561161dd49cad47dafa9710df55dddbb18e)
+
+- 2026-11-12 13:28: Clarify ownership. (authoring-run/82f9923d-f09a-4fe3-af54-b6393a5587f3 - 64c0ffdc2910e1cb7748c28c9101b734ef840522)
+
+- 2026-11-12 12:59: Clarify synchronous response ownership, close-gated release and uncertain receipt readback. (authoring-run/3ec57f4f-e274-4d8a-84d6-52f1fa5e45d4 - 6305fa1709fb21c3ba83dfc38469a296ff87ab80)
 
 - 2026-11-12 03:30: Trace attributable device-login binding denials. (authoring-run/648ee44b-b66c-4584-89ab-53728ee4862e - b8fe106ea9ee5ba7a94aae5ea60abdd7ecf28217)
 

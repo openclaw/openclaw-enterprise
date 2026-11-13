@@ -3,7 +3,6 @@ import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
 import { createHash, createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
-import { isDeepStrictEqual } from "node:util";
 import type {
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
@@ -23,7 +22,7 @@ import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prep
 import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
 import {
   validateGitHubRepositoryRegistry,
-  resolveGitHubRepositoryBinding,
+  resolveCurrentGitHubRepositoryBinding,
   resolveSelectedRepositoryGrant,
   resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
@@ -290,12 +289,8 @@ export async function startPreparedGitHubGitOwner(
       ) {
         return;
       }
-      const admitted = resolveGitHubRepositoryBinding(registry, {
-        namespaceId,
-        repositoryRef,
-        profile,
-      });
-      if (!isDeepStrictEqual(binding, admitted)) {
+      const admitted = resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding);
+      if (!admitted) {
         return;
       }
       const common = { key: { source: { id: "repository-git:" + session.admissionId } }, session };

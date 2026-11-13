@@ -92,19 +92,30 @@ export async function discoverHarnessModels(input: {
       const page = await readDiscoveryResponse(
         await fetch(url.href, { headers, signal, redirect: "error" }),
       );
-      const entries = pat ? page.models : page.data;
-      if (!Array.isArray(entries) || entries.length > MAX_MODELS) {
+      const pageEntries = pat ? page.models : page.data;
+      if (!Array.isArray(pageEntries) || pageEntries.length > MAX_MODELS) {
         throw new ModelDiscoveryError("invalid_response");
       }
+      let entries: readonly unknown[] = pageEntries;
       if (pat) {
-        entries.sort((left, right) => {
-          const a = asRecord(left)?.priority;
-          const b = asRecord(right)?.priority;
-          if (typeof a !== "number" || typeof b !== "number") {
+        // The operator catalog command lists visibility "list" and does not read
+        // priority. A hidden row, or a listed row without a number, is not an
+        // invalid catalog. Numeric priorities still order the picker.
+        const listed: Record<string, unknown>[] = [];
+        for (const item of entries) {
+          const entry = asRecord(item);
+          if (entry === undefined) {
             throw new ModelDiscoveryError("invalid_response");
           }
-          return a - b;
-        });
+          if (entry.visibility !== "list") {
+            continue;
+          }
+          listed.push(entry);
+        }
+        if (listed.every((entry) => typeof entry.priority === "number")) {
+          listed.sort((left, right) => Number(left.priority) - Number(right.priority));
+        }
+        entries = listed;
       }
       for (const item of entries) {
         const entry = asRecord(item);

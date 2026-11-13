@@ -137,7 +137,7 @@ def attempt(directory, nonce=None):
     return root, record
 
 
-def new_attempt(directory, release, helm_args):
+def new_attempt(directory, release, values_path, helm_args):
     nonce = str(uuid.uuid4())
     root = directory / "helm-attempts" / nonce
     root.mkdir(parents=True, mode=0o700)
@@ -145,7 +145,9 @@ def new_attempt(directory, release, helm_args):
     # any prepared/submission pointer can name this attempt.
     sync_directory(root.parent)
     sync_directory(directory)
-    values = command(["yq", '.installation.upgradeAttemptId = strenv(OCE_UPGRADE_ATTEMPT)',
+    # These exact bytes are also written back to the operator's values file.
+    output_format = ["-o=json"] if values_path.suffix.lower() == ".json" else []
+    values = command(["yq", *output_format, '.installation.upgradeAttemptId = strenv(OCE_UPGRADE_ATTEMPT)',
                       str(directory / "candidate-values.yaml")],
                      env={**os.environ, "OCE_UPGRADE_ATTEMPT": nonce})
     write(root / "values.yaml", values)
@@ -436,7 +438,7 @@ def verify_hook(desired, actual, nonce, kube):
     return None
 
 
-def recover(directory, release, kubeconfig, context, namespace):
+def recover(directory, release, kubeconfig, context, namespace, check_only=False):
     root, record = attempt(directory)
     submission = load(directory / "helm-started")
     require(load(root / "intent.json") == submission
@@ -494,6 +496,12 @@ def recover(directory, release, kubeconfig, context, namespace):
         secret = load(directory / "current-live-installation-secret.json")
         observed.append((secret, secret))
     target = directory / "helm-recovery"
+    require(not target.exists() and not target.is_symlink(), "Helm recovery already started; never replay")
+    if check_only:
+        # Admission before application preflight creates anything. The dispatch
+        # call repeats every check against the same immutable original attempt.
+        print(record["nonce"])
+        return
     target.mkdir(mode=0o700)
     # The exclusive marker's parent entry must survive a host crash too.
     sync_directory(directory)
@@ -670,13 +678,15 @@ def main():
     action, location, *args = sys.argv[1:]
     directory = Path(location)
     if action == "new":
-        new_attempt(directory, args[0], args[1:])
+        new_attempt(directory, args[0], Path(args[1]), args[2:])
     elif action == "select":
         print(attempt(directory)[1]["nonce"])
     elif action == "predecessor":
         predecessor_matches(directory)
     elif action == "record":
         record_submission(directory, args[0])
+    elif action == "check-recovery":
+        recover(directory, *args, check_only=True)
     elif action == "recover":
         recover(directory, *args)
     elif action == "verify-recovery":

@@ -8,18 +8,21 @@ function gitRepositoryPath(value: string): string | undefined {
     : undefined;
 }
 
+function matchesGitRepositoryPath(repository: string, path: string): boolean {
+  const normalizedRepository = repository.toLowerCase();
+  return path === normalizedRepository || path === `${normalizedRepository}.git`;
+}
+
 function matchGitRepositoryUrl(manifest: RuntimeRepositoryManifest, url: URL) {
   const path = gitRepositoryPath(url.pathname.slice(1));
   if (path === undefined) {
     return [];
   }
-  return manifest.bindings.filter(({ client }) => {
-    const repository = client.repository.toLowerCase();
-    return (
+  return manifest.bindings.filter(
+    ({ client }) =>
       [client.gatewayOrigin, `https://${client.canonicalApiHost}`].includes(url.origin) &&
-      [repository, `${repository}.git`].includes(path)
-    );
-  });
+      matchesGitRepositoryPath(client.repository, path),
+  );
 }
 
 function selectBinding(
@@ -48,13 +51,11 @@ export function selectGitCredential(
   if (fields.get("protocol") !== "https" || path === undefined) {
     throw new Error("repository-not-admitted");
   }
-  const matches = manifest.bindings.filter(({ client }) => {
-    const repository = client.repository.toLowerCase();
-    return (
+  const matches = manifest.bindings.filter(
+    ({ client }) =>
       fields.get("host") === new URL(client.gatewayOrigin).host &&
-      [repository, `${repository}.git`].includes(path)
-    );
-  });
+      matchesGitRepositoryPath(client.repository, path),
+  );
   const selected = selectBinding(matches, pinned);
   if (fields.has("username") && fields.get("username") !== selected.client.gitUsername) {
     throw new Error("repository-not-admitted");
@@ -110,14 +111,12 @@ function gitPushDestinations(
     } catch {
       decoded = undefined;
     }
-    const restricted = manifest.bindings.some(({ client }) => {
-      const repository = client.repository.toLowerCase();
-      return (
+    const restricted = manifest.bindings.some(
+      ({ client }) =>
         client.gatewayOrigin === url.origin &&
         client.pushRefAllowlist !== undefined &&
-        (decoded === undefined || [repository, repository + ".git"].includes(decoded))
-      );
-    });
+        (decoded === undefined || matchesGitRepositoryPath(client.repository, decoded)),
+    );
     if (restricted) {
       throw new Error("unsupported-push-destination");
     }

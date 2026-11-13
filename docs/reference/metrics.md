@@ -58,7 +58,9 @@ both values, so these callbacks write no audit event; this counter is their only
 aggregate record. Callbacks that match an attempt are audited, not counted. See
 [external sign-in](authentication/external-sign-in.md#external-sign-in-profile).
 
-Work kinds are `namespace_ensure|namespace_delete|agent_revision|agent_stop|agent_delete|agent_credential_withdrawal`. Outcomes are
+Work kinds are `namespace_ensure`, `namespace_delete`, `agent_provisioning`,
+`agent_revision`, `agent_stop`, `agent_delete`, `agent_credential_withdrawal`, and
+`agent_sandbox_policy`. Outcomes are
 `success|pending|retry|permanent|claim_lost|error`. Pending convergence, retries,
 maintenance, and superseded work may generate multiple passes per deployment.
 Durations exclude queue wait and time between passes. Idle polling and stale
@@ -137,10 +139,24 @@ upgrades must explicitly review this list; new defaults are filtered out.
 
 For `R` observed registered route/method pairs, HTTP has at most `20R` series
 (six statuses plus fourteen histogram series). Unmatched methods add at most
-eight pairs. Sign-in callbacks add three API series. Worker application metrics
-have at most 136 series (30 outcomes, 70 pass-duration series, 28
-operation-duration series, and eight gauges). Process collectors add at most 53
-series per process. Do not preallocate the route/status Cartesian product.
+eight pairs. Sign-in callbacks add three API series.
+
+In one worker registry with a successful six-state snapshot, application metrics
+expose exactly `54 + 14K + P` series. `K` is the number of observed work kinds;
+`P` is the number of distinct observed `(work_kind, outcome)` pairs. The fixed
+54 comprises 46 operation-duration series (two initialized operations, each with
+20 finite buckets, `+Inf`, count, and sum) and eight gauges (six lifecycle states,
+pending work, and oldest pending age). Each observed work kind adds 14
+pass-duration series: 11 finite buckets, `+Inf`, count, and sum. Each observed
+kind/outcome pair adds one counter series.
+
+With `K <= 8` and `P <= 6K`, use 214 application series per worker registry as a
+conservative label-domain budget. This budget does not imply that every kind can
+produce all six outcomes or that 214 is a reachable maximum. For example, one
+success per kind exposes `54 + 14 × 8 + 8 = 174` application series, without
+process collectors.
+
+Process collectors add at most 53 series per process. Do not preallocate the route/status Cartesian product.
 
 ## Replica aggregation
 

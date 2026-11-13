@@ -507,6 +507,117 @@ test("Repository options preserve an empty successful discovery", async (t) => {
   assert.deepEqual(options.data, []);
 });
 
+test("Repository options preserve the full valid GitHub catalog and refuse overflow", async (t) => {
+  const f = await fixture(t);
+  const agent = await f.createAgent();
+  const foreign = await f.request("POST", "/namespaces", { name: "foreign-repositories" });
+  assert.equal(foreign.status, 201, JSON.stringify(foreign));
+  const paths = [
+    `${f.collection}/repository-options`,
+    `${f.collection}/${agent.id}/repository-options`,
+  ];
+  const ordinaryOptions = Array.from({ length: 1000 }, (_, index) => {
+    const repositoryRef = `repository-${String(index + 1).padStart(4, "0")}`;
+    return {
+      repositoryRef,
+      displayName: `example/${repositoryRef}`,
+      allowedProfiles: ["git-read"],
+    };
+  });
+  const registry = {
+    ...f.registry,
+    repositories: ordinaryOptions.map((option, index) => ({
+      repositoryRef: option.repositoryRef,
+      repositoryId: String(10000 + index),
+      repository: option.displayName,
+      namespaces: [
+        { namespaceId: f.namespace.id, profiles: ["git-read"] },
+        ...(index === 0 ? [{ namespaceId: foreign.data.id, profiles: ["git-read"] }] : []),
+      ],
+    })),
+  };
+  const installationAccess = {
+    repositoryRef: "installation",
+    namespaces: [{ namespaceId: f.namespace.id, accessMode: "installation" }],
+  };
+  const installationOption = {
+    repositoryRef: "installation",
+    displayName: "All repositories and permissions available to this GitHub App installation",
+    allowedProfiles: ["github-installation"],
+  };
+
+  // The public catalog has room for the separately registered Installation choice.
+  // Construct every positive case through the real registry validator and policy.
+  for (const [count, installation] of [
+    [1000, false],
+    [999, true],
+    [1000, true],
+  ]) {
+    await t.test(`${count} repositories${installation ? " plus Installation" : ""}`, async () => {
+      const configured = {
+        ...registry,
+        repositories: registry.repositories.slice(0, count),
+        ...(installation && { installationAccess }),
+      };
+      const reconfigured = await f.compose(configured);
+      const expected = [
+        ...ordinaryOptions.slice(0, count),
+        ...(installation ? [installationOption] : []),
+      ];
+      for (const path of paths) {
+        const response = await reconfigured.request("GET", path);
+        assert.equal(response.status, 200, JSON.stringify(response));
+        assert.deepEqual(response.data, expected, path);
+      }
+      const filtered = await reconfigured.request(
+        "GET",
+        `/namespaces/${foreign.data.id}/agents/repository-options`,
+      );
+      assert.equal(filtered.status, 200, JSON.stringify(filtered));
+      assert.deepEqual(filtered.data, [ordinaryOptions[0]]);
+    });
+  }
+
+  const extraRepository = {
+    repositoryRef: "overflow",
+    repositoryId: "20000",
+    repository: "example/overflow",
+    namespaces: [{ namespaceId: f.namespace.id, profiles: ["git-read"] }],
+  };
+  assert.throws(
+    () =>
+      repositoryDriver({ ...registry, repositories: [...registry.repositories, extraRepository] }),
+    /invalid-repository-registry/,
+    "the ordinary registry still refuses more than 1,000 repositories",
+  );
+
+  // A third-party Driver may return an oversized result even though GitHub policy cannot.
+  // Keep the real maximum-size GitHub catalog and add one otherwise valid, distinct choice.
+  class OversizedRepositoryDriver extends GitHubRepositoryPolicy {
+    async listOptions(input) {
+      const result = await super.listOptions(input);
+      return {
+        options: [
+          ...result.options,
+          {
+            repositoryRef: "overflow",
+            displayName: "example/overflow",
+            allowedProfiles: ["git-read"],
+          },
+        ],
+      };
+    }
+  }
+  const oversized = await f.compose({ ...registry, installationAccess }, OversizedRepositoryDriver);
+  for (const path of paths) {
+    const response = await oversized.request("GET", path);
+    assert.equal(response.status, 503, JSON.stringify(response));
+    assert.equal(response.error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(response.error.message, DEPENDENCY_UNAVAILABLE);
+    assert.equal(response.data, undefined, "an oversized catalog must not return partial choices");
+  }
+});
+
 test("Repository options refuse Driver display text with C0 controls or DEL", async (t) => {
   // The utils conformance suite pins every code unit of the shared helper; this pins its use here.
   let override = {};

@@ -289,8 +289,9 @@ the upgraded control plane without `completed`; follow
 [recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
 Initial preflight failure leaves writers serving; inspect `preflight-<api|worker|migration>.log`.
+[Application identity checks](../../flows/coordinated-production-upgrade.md) reject a missing, different or unreadable Installation before further writer shutdown.
 Failed resume prevents further shutdown; writers may already be stopped. Inspect
-current `migration-preflight-resume.*` evidence. Preserve evidence and lock;
+current `upgrade-preflight-resume.*` evidence. Preserve evidence and lock;
 follow [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.

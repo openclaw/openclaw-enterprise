@@ -1314,7 +1314,8 @@ export function assertSameCredentialSourceFields(
 
 function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string {
   if (operation.kind === "agent") {
-    return `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`;
+    const key = `agent:${operation.resourceId}:${operation.action}:${operation.target}`;
+    return operation.target === "deleted" ? key : `${key}:${operation.operationId}`;
   }
   if (operation.kind === "agent_revision" && operation.target === CREDENTIAL_WITHDRAWAL_TARGET) {
     return credentialWithdrawalWorkKey(operation.resourceId, operation.operationId);

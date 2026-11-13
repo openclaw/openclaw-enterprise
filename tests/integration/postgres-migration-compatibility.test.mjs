@@ -2081,6 +2081,91 @@ test(
 );
 
 test(
+  "Completed migration avoids DDL while preserving read-only refusal and lock release",
+  requiresHistoryPostgres,
+  async (context) => {
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "completed", {
+      prefix: 73,
+    });
+    // Observe attempted DDL, including CREATE IF NOT EXISTS on existing objects.
+    // These database-local objects are outside the canonical application catalogs.
+    await historyAdmin(
+      db,
+      db.name,
+      `CREATE SEQUENCE public.migration_ddl_attempts;
+       GRANT USAGE, SELECT ON public.migration_ddl_attempts TO occ_migrator;
+       CREATE FUNCTION public.observe_migration_ddl() RETURNS event_trigger
+       LANGUAGE plpgsql AS $$ BEGIN
+         PERFORM nextval('public.migration_ddl_attempts');
+       END $$;
+       CREATE EVENT TRIGGER observe_migration_ddl ON ddl_command_start
+       WHEN TAG IN ('CREATE SCHEMA', 'CREATE TABLE')
+       EXECUTE FUNCTION public.observe_migration_ddl();`,
+    );
+    const attempts = async () =>
+      (await db.migrator.query("SELECT last_value FROM public.migration_ddl_attempts")).rows[0]
+        .last_value;
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preFiniteRepositorySessionWithdrawal",
+    });
+    const before = await attempts();
+    assert.ok(Number(before) >= 2, "The observer must see the pending migrator's DDL.");
+    const snapshot = await historySnapshot(db);
+    for (const mode of ["development", "production"]) {
+      assert.deepEqual(await runHistoryCommand(db, mode), { ok: true, history: "completed" });
+      assert.equal(await attempts(), before, "A completed migration must not attempt DDL.");
+    }
+
+    const readonly = new URL(db.migrationUrl);
+    readonly.searchParams.set("options", "-c default_transaction_read_only=on");
+    const readonlyDb = { ...db, migrationUrl: readonly.toString() };
+    assert.deepEqual(await runHistoryCommand(readonlyDb, "production"), {
+      ok: false,
+      code: "MIGRATION_FAILED",
+    });
+    for (const flag of ["--check", "--require-current"]) {
+      assert.deepEqual(await runHistoryCommand(readonlyDb, "production", flag), {
+        ok: true,
+        history: "completed",
+      });
+    }
+    assert.deepEqual(await runHistoryCommand(readonlyDb, "production", "--expect-empty"), {
+      ok: false,
+      code: "MIGRATION_HISTORY_NOT_EMPTY",
+    });
+
+    // Keep the backend alive: closing the pool would hide a missing explicit unlock.
+    for (const readOnly of [false, true]) {
+      const pool = await createPostgresPool(db.migrationUrl, {
+        max: 1,
+        options: `-c default_transaction_read_only=${readOnly ? "on" : "off"}`,
+      });
+      try {
+        if (readOnly) {
+          await assert.rejects(migrateWithHistory(pool), (error) => error.cause?.code === "25006");
+        } else {
+          assert.equal(await migrateWithHistory(pool), "completed");
+        }
+        assert.equal(
+          (await pool.query("SHOW transaction_read_only")).rows[0].transaction_read_only,
+          readOnly ? "on" : "off",
+        );
+        assert.equal(
+          (await db.migrator.query("SELECT pg_try_advisory_lock(1868785005, 1835624306) AS held"))
+            .rows[0].held,
+          true,
+        );
+        await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
+      } finally {
+        await pool.end();
+      }
+    }
+    assert.deepEqual(await historySnapshot(db), snapshot);
+  },
+);
+
+test(
   "First installation requires empty migration history under the migration lock",
   requiresHistoryPostgres,
   async (context) => {
@@ -3248,6 +3333,17 @@ test(
         "GRANT DELETE ON occ.prepared_repository_draft_pulls TO occ_app",
       ],
       ["ledger-grant", 25, "GRANT SELECT ON drizzle.__drizzle_migrations TO occ_app"],
+      ["completed-catalog", manifest.entries.length, "CREATE TABLE occ.unexplained(id integer)"],
+      [
+        "completed-grant",
+        manifest.entries.length,
+        "REVOKE SELECT ON occ.iam_identities FROM occ_app",
+      ],
+      [
+        "completed-receipt",
+        manifest.entries.length,
+        "UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=(SELECT min(id) FROM drizzle.__drizzle_migrations)",
+      ],
     ];
     for (const [label, prefix, sql] of cases) {
       void context.test(label, async (child) => {
