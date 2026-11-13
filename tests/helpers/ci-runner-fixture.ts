@@ -188,6 +188,15 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
   await writeFile(join(root, "bin/occ"), `#!${process.execPath}\n${cliBody}`, { mode: 0o700 });
 }
 
+export function requireTestResult<T extends { name: string }>(
+  results: readonly T[],
+  name: string,
+): T {
+  const result = results.find((entry) => entry.name === name);
+  assert.ok(result, `Missing test result: ${name}`);
+  return result;
+}
+
 export function runnerArtifactPaths(root: string, name: string) {
   return {
     statePath: join(root, `state/${name}.json`),
