@@ -5856,7 +5856,10 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         },
       },
     });
-    await assert.rejects(f.run("--preflight-only"));
+    await assert.rejects(f.run("--preflight-only"), (error) => {
+      assert.match(error.stderr, /OpenShell bearer token file must be readable in this Pod/);
+      return true;
+    });
     for (const component of ["api", "worker"]) {
       const log = await f.readEvidence(`preflight-${component}.log`);
       assert.match(log, /OpenShell bearer token file must be readable/);

@@ -398,4 +398,5 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 - 2026-11-13 14:29: Document optional Console entry verification. (authoring-run/a7f1373b-e0ab-4c0e-a622-91d8d3169950 - ef69b58a9e60e68af17f54bb2750fffe28804b9b)
 
 - 2026-11-13 05:08: Exclude terminating Pods when selecting Doctor targets. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - ca6bfc2f0376ee3fd9c5a9a255f7e5f37a454131)
+
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.
