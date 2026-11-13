@@ -323,6 +323,7 @@ import {
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   RuntimeDiagnosticsTransportError,
+  DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -495,6 +496,7 @@ export {
   DependencyUnavailableError,
   RuntimeDiagnosticsTransportError,
   PersistedStateInvalidError,
+  DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -10254,7 +10256,7 @@ export class OpenClawController {
       session.namespaceId !== namespaceId ||
       session.agentId !== agentId
     ) {
-      throw new ScopeViolationError("The login belongs to another actor or Agent scope.");
+      throw new DeviceAuthorizationScopeMismatchError();
     }
     if (
       session.phase !== "cancelled" &&

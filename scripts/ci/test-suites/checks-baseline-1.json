@@ -44,6 +44,7 @@
     "tests/conformance/runtime-logs-admission.test.ts",
     "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.ts",
+    "tests/integration/device-authorization-denial-audit.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
@@ -468,6 +469,9 @@
     },
     {
       "path": "tests/integration/device-authorization-api.test.ts"
+    },
+    {
+      "path": "tests/integration/device-authorization-denial-audit.test.ts"
     },
     {
       "path": "tests/integration/openshell-device-authorization-api.test.mjs"

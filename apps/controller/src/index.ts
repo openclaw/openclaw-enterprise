@@ -59,6 +59,7 @@ import {
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
   ResourceStateConflictError,
@@ -4980,6 +4981,34 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));
+    }
+    if (error instanceof DeviceAuthorizationScopeMismatchError) {
+      const context = contexts.get(request);
+      if (
+        context &&
+        (context.operation.operationId === "pollAgentDeviceAuthorization" ||
+          context.operation.operationId === "pollSavedAgentDeviceAuthorization" ||
+          context.operation.operationId === "cancelAgentDeviceAuthorization" ||
+          context.operation.operationId === "cancelSavedAgentDeviceAuthorization")
+      ) {
+        try {
+          await denial(
+            context.operation,
+            request,
+            "authorization_denial",
+            context,
+            undefined,
+            undefined,
+            {
+              decisionReason: "The device login does not belong to the requested scope.",
+              reasonCode: "DEVICE_AUTHORIZATION_SCOPE_MISMATCH",
+              details: {},
+            },
+          );
+        } catch (auditError) {
+          mapped = requestFailure(auditError);
+        }
+      }
     }
     if (isAuthorizationDenied(error) && !isDependencyUnavailable(error)) {
       const context = contexts.get(request);
