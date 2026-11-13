@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -7,6 +8,7 @@ import {
   openShellProgress,
   openShellProgressPrefix,
 } from "../../scripts/ci/openshell-progress.mjs";
+import { isOpenShellPluginStage } from "../../scripts/ci/reporter-measurements.ts";
 import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 
 const pluginInstallCase = "OpenShell installs selected Codex plugins before WebSocket startup";
@@ -116,7 +118,7 @@ function nextPluginStage(line: string, previous: PluginStage | undefined): Plugi
     const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
     if (
       value?.kind === "openshell-stage" &&
-      (value.stage === "installation" || value.stage === "exposure-auth") &&
+      isOpenShellPluginStage(value.stage) &&
       line === `${openShellProgressPrefix}${JSON.stringify(value)}` &&
       validPluginTransition(previous, value as PluginStage)
     ) {
@@ -292,7 +294,11 @@ export function pluginInstallResult(
   };
 }
 
-export async function runPluginInstallCase(testFile: string, timeout: number): Promise<void> {
+export async function runPluginInstallCase(
+  testFile: string,
+  timeout: number,
+  t: Pick<TestContext, "diagnostic">,
+): Promise<void> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     OCC_TEST_OPENSHELL_HARNESS: "codex",
@@ -330,6 +336,12 @@ export async function runPluginInstallCase(testFile: string, timeout: number): P
     result.killedByTimeout,
   );
   if (failure !== undefined) {
+    if (progress) {
+      const { stage, outcome } = progress;
+      t.diagnostic(
+        `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-plugin-stage", stage, outcome })}`,
+      );
+    }
     const stage = progress
       ? `\nLast reported OpenShell stage was ${progress.stage} (${progress.outcome}).`
       : "";

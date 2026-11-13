@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -11,6 +11,7 @@ import {
   laneArgs,
   runnerArtifactPaths,
   runRunnerSync,
+  writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
 
@@ -18,9 +19,98 @@ const reporter = new URL("../helpers/openshell-plugin-install-reporter.ts", impo
 const stages = new URL("../helpers/openshell-stage.mjs", import.meta.url).href;
 const progress = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.url).href;
 const caseName = "OpenShell installs selected Codex plugins before WebSocket startup";
+const outerCaseName = "OpenShell Agent workflow installs and retains selected Codex plugins";
 const sentinel = "invented-plugin-diagnostic-sentinel";
 const incomplete =
   "OpenShell plugin installation did not complete one exact passing case; child details withheld.";
+
+for (const scenario of ["installation-failure", "no-frame", "invalid-frame"] as const) {
+  test(`plugin wrapper reports the latest validated stage for ${scenario}`, async (t) => {
+    const root = await createRunnerFixture(t);
+    const file = "tests/integration/openshell-plugin-install-real.test.ts";
+    const child = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+    const prepareMarker = join(root, "prepare-marker");
+    const childMarker = join(root, "child-marker");
+    // Use the registered outer test and real reporters with a disposable child and preparation.
+    await copyFile(
+      new URL("./openshell-plugin-install-real.test.ts", import.meta.url),
+      join(root, file),
+    );
+    await mkdir(join(root, "tests/helpers"));
+    await writeFile(
+      join(root, "tests/helpers/openshell-plugin-install-reporter.ts"),
+      `export { runPluginInstallCase } from ${JSON.stringify(reporter)};`,
+    );
+    await writeFile(
+      join(root, "scripts/ci/prepare.mjs"),
+      'export { prepareFile } from "./prepare-fixture.ts";\n',
+    );
+    await writeFile(
+      join(root, "scripts/ci/prepare-fixture.ts"),
+      `import { rm, writeFile } from "node:fs/promises";
+const marker = ${JSON.stringify(prepareMarker)};
+export async function prepareFile() {
+  await writeFile(marker, "prepared");
+  return { env: { OCC_TEST_OPENSHELL_K3D_REAL: "1" }, cleanup: () => rm(marker) };
+}
+`,
+    );
+    await writeFile(join(root, child), `import "./plugin-stage-fixture.ts";\n`);
+    await writeFile(
+      join(root, "tests/integration/plugin-stage-fixture.ts"),
+      `import test, { after } from "node:test";
+import { writeFile } from "node:fs/promises";
+import { runOpenShellStage } from ${JSON.stringify(stages)};
+import { emitOpenShellProgress, openShellProgressPrefix } from ${JSON.stringify(progress)};
+const scenario = ${JSON.stringify(scenario)};
+const fail = () => { throw new Error(${JSON.stringify(sentinel)}); };
+after(() => writeFile(${JSON.stringify(childMarker)}, "completed"));
+test(${JSON.stringify(caseName)}, async (t) => {
+  if (scenario === "installation-failure") {
+    await runOpenShellStage(t, "installation", fail);
+  }
+  if (scenario === "invalid-frame") {
+    console.log(openShellProgressPrefix + "{malformed");
+    console.log(openShellProgressPrefix + JSON.stringify({kind: "openshell-stage", stage: "unrecognized-stage", outcome: "started"}));
+    console.log(openShellProgressPrefix + JSON.stringify({kind: "openshell-stage", stage: "installation", outcome: "started", extra: ${JSON.stringify(sentinel)}}));
+    emitOpenShellProgress("initial-model", "started");
+    emitOpenShellProgress("exposure-auth", "started");
+    emitOpenShellProgress("installation", "failed");
+  }
+  fail();
+});
+`,
+    );
+    const lane = "openshell-policy";
+    await writeRunnerManifest(root, {
+      lanes: { [lane]: { files: [{ path: file, expectedTests: [outerCaseName] }] } },
+    });
+    const { statePath, resultsPath } = runnerArtifactPaths(root, lane);
+    const run = runRunnerSync(laneArgs(root, lane, statePath, resultsPath), {}, { timeout: 20000 });
+    const resultText = await readFile(resultsPath, "utf8");
+    const result = JSON.parse(resultText);
+    const [fileResult] = result.files;
+    assert.equal(run.status, 1, run.stderr);
+    assert.equal(result.exitCode, 1);
+    assert.equal(fileResult.nodeExitCode, 1);
+    assert.deepEqual(result.counts, { passed: 0, failed: 1, skipped: 0, todo: 0, total: 1 });
+    assert.deepEqual(fileResult.cleanup, { status: "passed" });
+    assert.equal(await readFile(childMarker, "utf8"), "completed");
+    await assert.rejects(readFile(prepareMarker), { code: "ENOENT" });
+    assert.doesNotMatch(run.stdout + run.stderr + resultText, new RegExp(sentinel));
+    assert.deepEqual(fileResult.installationPhases, { phases: [], truncated: false });
+    const measured = scenario === "installation-failure";
+    const summary = "OpenShell plugin installation case failed; child details withheld.";
+    const stage = "\nLast reported OpenShell stage was installation (failed).";
+    assert.equal(fileResult.tests[0].error.message, measured ? summary + stage : summary);
+    assert.deepEqual(
+      fileResult.measurements,
+      measured
+        ? [{ kind: "openshell-plugin-stage", stage: "installation", outcome: "failed" }]
+        : undefined,
+    );
+  });
+}
 
 for (const scenario of ["failure", "timeout", "success", "skip", "todo", "extra-pass"] as const) {
   test(`plugin reporter preserves strict ${scenario} through the Node and CI transports`, async (t) => {
@@ -63,7 +153,7 @@ ${scenario === "extra-pass" ? `test(${JSON.stringify(caseName)}, () => {});` : "
       file,
       `import test from "node:test";
 import { runPluginInstallCase } from ${JSON.stringify(reporter)};
-test("plugin wrapper", () => runPluginInstallCase(${JSON.stringify(child)}, ${scenario === "timeout" ? 4000 : 10000}));
+test("plugin wrapper", (t) => runPluginInstallCase(${JSON.stringify(child)}, ${scenario === "timeout" ? 4000 : 10000}, t));
 `,
     );
     const { statePath, resultsPath } = runnerArtifactPaths(root, "single");
@@ -89,7 +179,13 @@ test("plugin wrapper", () => runPluginInstallCase(${JSON.stringify(child)}, ${sc
       output,
       /initial-model|openshell-stage-failure|openshell-installation|elapsedMs/,
     );
-    assert.equal(result.files[0].measurements, undefined);
+    const outcome = scenario === "timeout" ? "started" : "passed";
+    assert.deepEqual(
+      result.files[0].measurements,
+      passed || scenario === "skip"
+        ? undefined
+        : [{ kind: "openshell-plugin-stage", stage: "exposure-auth", outcome }],
+    );
     const message = result.files[0].tests[0].error?.message;
     if (passed) {
       assert.equal(message, undefined);
@@ -102,7 +198,6 @@ test("plugin wrapper", () => runPluginInstallCase(${JSON.stringify(child)}, ${sc
         : scenario === "failure"
           ? "OpenShell plugin installation case failed; child details withheld."
           : incomplete;
-    const outcome = scenario === "timeout" ? "started" : "passed";
     const stage = `Last reported OpenShell stage was exposure-auth (${outcome}).`;
     // The real CI lane result keeps the original failure and last observed stage.
     assert.equal(message, scenario === "skip" ? summary : `${summary}\n${stage}`);
