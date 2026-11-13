@@ -3,6 +3,8 @@
 Find an operation, check its permissions, and copy a complete request or response
 example. For a text-only view, use the [Markdown reference](api.md), which is also
 available in site search. Both views use the same generated OpenAPI contract.
+Use the documentation header’s theme button to switch both views between light
+and dark mode.
 
 Examples contain synthetic IDs and credentials. Replace them with your own values.
 **Test Request affects the selected server**, initially `http://127.0.0.1:3000`.
@@ -16,13 +18,13 @@ require human sign-in; OAuth examples need a real browser-bound attempt.
 ## Write request limits
 
 Preset create/update, Configuration create/update, and Agent network policy
-preview/save share an early authorization budget on each API replica. Each
+preview/save/apply share an early authorization budget on each API replica. Each
 verified external identity gets 5 requests per second with a burst of 60 across
 these operations. The budget runs before IAM identity lookup and body reads;
 new sessions and target resources do not reset it. Exhaustion returns
 `429 RATE_LIMITED` with `Retry-After`.
 
-Network policy preview/save also use the stricter
+Network policy preview/save/apply also use the stricter
 [per-principal policy budget](sandbox-policies.md). When either budget is spent,
 wait for `Retry-After` before retrying. Other API operations retain their own
 admission and request limits.

@@ -9,6 +9,8 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { partialWrite } from "../helpers/partial-write-authorization.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
 
 const grants = (count) =>
@@ -148,6 +150,7 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     for (const [method, target] of [
       ["POST", `${path}/validate`],
       ["PUT", path],
+      ["POST", `${path}/apply`],
     ]) {
       const refused = await partialWrite({
         origin: fixture.origin,
@@ -166,6 +169,7 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
   for (const [method, target, declaredBytes] of [
     ["POST", `${path}/validate`, 32 * 1024 * 1024 + 1],
     ["PUT", path, 32 * 1024 * 1024 + 1],
+    ["POST", `${path}/apply`, 32 * 1024 * 1024 + 1],
     ["PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, 64 * 1024 + 1],
   ]) {
     const oversized = await partialWrite({
@@ -180,6 +184,47 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     assert.notEqual(oversized, null, "oversized request waited for its body");
     assert.equal(oversized.status, 413, JSON.stringify(oversized.body));
   }
+  const runningAgent = await fixture.createAgent(
+    namespace.id,
+    "Running capacity",
+    createHarnessConfiguration("codex", "gpt-4.1"),
+    { executionMode: "dedicated" },
+  );
+  // An admitted active revision exercises HTTP enqueueing, not provider enforcement.
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, runningAgent.id);
+  const runningPath = path.replace(agent.id, runningAgent.id);
+  assert.equal(
+    (await fixture.request("PATCH", `${runningPath}/editing`, { body: { enabled: true } })).status,
+    200,
+  );
+  const application = await fixture.rawRequest("POST", `${runningPath}/apply`, {
+    headers: authenticatedHeaders(adminSession, { origin: fixture.origin }),
+    body: { expectedVersion: 1, revisionId: revision.id, additions },
+    timeout: 30_000,
+  });
+  assert.equal(application.response.status, 202, application.text);
+  const appliedView = await fixture.request("GET", runningPath);
+  assert.deepEqual(appliedView.data.policy.additions, additions);
+  assert.equal(appliedView.data.policy.application.state, "pending");
+  // Apply additionally needs policy read authority, checked before an incomplete body.
+  const updater = await fixture.createNamespaceMember("capacity-apply-no-read", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["manage_policy", "agent"],
+    ["update", "sandbox_policy"],
+  ]);
+  const updaterSession = await fixture.signIn(updater.credentials);
+  const unreadable = await partialWrite({
+    origin: fixture.origin,
+    transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
+    method: "POST",
+    path: `${runningPath}/apply`,
+    session: updaterSession,
+    declaredBytes: 2 * 1024 * 1024,
+    bodyPrefix: '{"additions":[{"id":"',
+  });
+  assert.notEqual(unreadable, null, "apply read authorization waited for its body");
+  assert.equal(unreadable.status, 403, JSON.stringify(unreadable.body));
   const otherAgent = await fixture.createAgent(
     namespace.id,
     "Other policy",
@@ -219,6 +264,17 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     assert.notEqual(refused, null, "rate-limited save waited for the unfinished body");
     assert.equal(refused.status, 429, JSON.stringify(refused.body));
   }
+  const applyLimited = await partialWrite({
+    origin: fixture.origin,
+    transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
+    method: "POST",
+    path: `${runningPath}/apply`,
+    session: adminSession,
+    declaredBytes: 2 * 1024 * 1024,
+    bodyPrefix: '{"additions":[{"id":"',
+  });
+  assert.notEqual(applyLimited, null, "rate-limited apply waited for its body");
+  assert.equal(applyLimited.status, 429, JSON.stringify(applyLimited.body));
   const configurationLimited = await partialWrite({
     origin: fixture.origin,
     transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,

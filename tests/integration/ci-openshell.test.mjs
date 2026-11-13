@@ -7,11 +7,14 @@ import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { createOccLogger, resemblesCredential } from "../../apps/controller/src/logging.ts";
 import {
-  k3sImage,
-  kubectlVersion,
+  redactLogLine,
+  redactOutputLine,
+  redactFailureDetail,
+} from "../../scripts/ci/failure-redaction.mjs";
+import {
   prepareOpenShell,
-  prepareOpenShellClusterBootstrap,
   selectKubectlAsset,
   validateOpenShellSelection,
 } from "../../scripts/ci/openshell.mjs";
@@ -22,7 +25,12 @@ import {
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
-} from "../helpers/k3d-failure-diagnostics.mjs";
+  summarizeWorkerEvents,
+  createOpenShellWorkerLogEmitter,
+  workerDiagnosticLines,
+  workerFailureDetail,
+  rethrowOpenShellFailure,
+} from "../helpers/k3d-failure-diagnostics.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   createOpenShellInstallationConfiguration,
@@ -35,12 +43,69 @@ import {
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import {
+  registerOpenShellBootstrapCases,
+  registerOpenShellPreparationCases,
+} from "./ci-openshell-bootstrap-cases.ts";
 
 async function fixture(t, prefix = "ci-openshell-test") {
   const root = await temporaryDirectory(t, `${prefix}-`);
   await chmod(root, 0o700);
   return root;
 }
+
+test("OpenShell failure summaries retain bounded Compute causes without provider or chat text", () => {
+  const revisionId = "rev_10000000-0000-4000-8000-000000000003";
+  const failure = {
+    event: "worker.compute-prepare-failed",
+    revisionId,
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    errorClass: "KubernetesApiError",
+    status: 422,
+    candidatePreparationReached: false,
+  };
+  // The worker can retry the same preparation failure many times before the wait ends.
+  const events = ["2026-11-11T20:00:00.000Z", "2026-11-11T20:01:00.000Z"].map((observedAt) => ({
+    ...failure,
+    observedAt,
+    message: "private provider response",
+    chat: "private chat",
+  }));
+  events.push({
+    event: "worker.completed",
+    revisionId,
+    code: "WORKSPACE_NODE_PENDING",
+    cleanupCause: "SANDBOX_DELETE_PENDING",
+    observedAt: "2026-11-11T20:02:00.000Z",
+  });
+  assert.deepEqual(summarizeWorkerEvents(events, revisionId), [
+    { ...failure, count: 2, firstAt: events[0].observedAt, lastAt: events[1].observedAt },
+    {
+      event: "worker.completed",
+      revisionId,
+      code: "WORKSPACE_NODE_PENDING",
+      cleanupCause: "SANDBOX_DELETE_PENDING",
+      at: events[2].observedAt,
+    },
+  ]);
+  assert.equal(summarizeWorkerEvents(events, revisionId, 1).length, 1);
+  assert.deepEqual(
+    summarizeWorkerEvents(
+      [
+        {
+          ...failure,
+          step: "x".repeat(161),
+          errorClass: "sk-" + "s".repeat(30),
+          status: Number.POSITIVE_INFINITY,
+          candidatePreparationReached: "private provider response",
+        },
+      ],
+      revisionId,
+    ),
+    [{ event: failure.event, revisionId, code: failure.code, at: undefined }],
+  );
+});
 
 function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
   return {
@@ -50,6 +115,180 @@ function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
     context: `k3d-${name}`,
   };
 }
+
+test("OpenShell worker sinks omit response text and share both credential checks", () => {
+  const lines = [];
+  const emit = createOpenShellWorkerLogEmitter(
+    createOccLogger({
+      component: "openshell-test-worker",
+      destination: { write: (line) => lines.push(JSON.parse(line)) },
+    }),
+  );
+  const token = "ghs_" + "a_b".repeat(6);
+  assert.equal(resemblesCredential(token), true);
+  assert.equal(redactLogLine(token, [], 160), token, "CI redaction alone misses this shape");
+  const event = {
+    event: "worker.compute-prepare-failed",
+    revisionId: "rev_test",
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    status: 422,
+    errorClass: "KubernetesApiError",
+    validationCategory: "PVC_ADMISSION_LABELS",
+    reason: "PrivateResponseWord",
+    message: "private response text",
+    cause: token,
+  };
+  emit(event);
+  emit({ event: "worker.completed", code: "AUTHORIZATION_DENIED" });
+  emit({ event: "worker.error", code: "DEPENDENCY_UNAVAILABLE", cleanupCause: token });
+  emit({ event: "worker.health", message: "private health text" });
+  assert.equal(lines.length, 3, "health stays at the suppressed debug level");
+  const { time: _time, ...first } = lines[0];
+  assert.deepEqual(first, {
+    severity: "ERROR",
+    service: "openshell-test-worker",
+    event: event.event,
+    revisionId: event.revisionId,
+    code: event.code,
+    step: event.step,
+    status: event.status,
+    errorClass: event.errorClass,
+    validationCategory: event.validationCategory,
+  });
+  assert.equal(lines[2].severity, "ERROR");
+  assert.equal(lines[2].cleanupCause, undefined);
+  assert.equal(lines[1].code, "ACCESS_DENIED");
+  assert.equal(redactOutputLine(JSON.stringify(lines[1]), [], "", 1000), JSON.stringify(lines[1]));
+  const summaries = summarizeWorkerEvents(
+    [
+      event,
+      {
+        event: "worker.completed",
+        code: "AUTHORIZATION_DENIED",
+        cleanupCause: token,
+      },
+    ],
+    "rev_test",
+  );
+  assert.equal(summaries[0].cause, undefined);
+  assert.equal(summaries[0].validationCategory, event.validationCategory);
+  assert.equal(
+    summaries[1].code,
+    "AUTHORIZATION_DENIED",
+    "returned evidence retains the exact fixed code",
+  );
+  assert.equal(summaries[1].cleanupCause, undefined);
+  assert.match(workerDiagnosticLines({ events: summaries }).at(-1), /PVC_ADMISSION_LABELS/);
+});
+
+test("OpenShell persisted queue records survive the reporter's per-line limit", () => {
+  const revisionId = "rev_10000000-0000-4000-8000-000000000003";
+  const queue = Array.from({ length: 8 }, (_, index) => ({
+    operation: "agent_revision.reconcile",
+    revisionId: revisionId.slice(0, -1) + index,
+    state: "queued",
+    attempt: index,
+    completed: false,
+  }));
+  const lines = workerDiagnosticLines({
+    operation: "agent_revision.reconcile",
+    revisionId,
+    persisted: { activeRevisionId: revisionId, revision: { revisionId, revisionNumber: 2 }, queue },
+    events: [{ event: "worker.completed", code: "AUTHORIZATION_DENIED" }],
+  });
+  assert.equal(lines.length, 10);
+  assert.deepEqual(
+    lines.slice(1, 9).map((line) => JSON.parse(line.slice(line.indexOf("{")))),
+    queue,
+  );
+  for (const line of lines) {
+    assert.ok(line.length <= 1000);
+    assert.equal(redactOutputLine(line, [], "", 1000), line);
+    assert.doesNotThrow(() => JSON.parse(line.slice(line.indexOf("{"))));
+  }
+  assert.match(lines.at(-1), /ACCESS_DENIED/);
+});
+
+test("OpenShell activation diagnostics share one deadline and preserve the original failure", async (t) => {
+  const lines = [];
+  t.mock.method(process.stderr, "write", (line) => {
+    lines.push(line);
+    return true;
+  });
+  const original = new Error("activation failed");
+  await assert.rejects(
+    rethrowOpenShellFailure(original, () => {
+      throw new Error("diagnostic output failed");
+    }),
+    (error) => error === original,
+  );
+  let release;
+  const read = new Promise((resolve) => {
+    release = resolve;
+  });
+  let complete;
+  const completed = new Promise((resolve) => {
+    complete = resolve;
+  });
+  let lateLines;
+  await assert.rejects(
+    rethrowOpenShellFailure(
+      original,
+      async () => {
+        await read;
+        lateLines = workerDiagnosticLines({ events: [] });
+        complete();
+      },
+      {
+        timeoutMs: 20,
+        provisioningFailure: new Error("sandbox prepare failed: private-provider-detail"),
+        secrets: [["private-provider-detail", "PROVIDER_DETAIL"]],
+      },
+    ),
+    (error) => error === original,
+  );
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^First OpenShell provisioning failure: sandbox prepare failed:/);
+  assert.doesNotMatch(lines[0], /private-provider-detail/);
+  assert.equal(lines[1], "OpenShell activation diagnostics timed out\n");
+  release();
+  await completed;
+  assert.deepEqual(
+    lateLines,
+    [],
+    "a read finishing after the shared deadline cannot emit late evidence",
+  );
+  assert.equal(lines.length, 2);
+  t.mock.method(process.stderr, "write", () => {
+    throw new Error("output unavailable");
+  });
+  await assert.rejects(
+    rethrowOpenShellFailure(original, async () => {}, { provisioningFailure: new Error("cached") }),
+    (error) => error === original,
+  );
+});
+
+test("OpenShell replacement failure detail preserves denied and adjacent worker state", () => {
+  const worker = {
+    persisted: { revision: { revisionNumber: 2 }, queue: [{ state: "queued" }] },
+    events: summarizeWorkerEvents(
+      [
+        { event: "worker.error", code: "DEPENDENCY_UNAVAILABLE" },
+        { event: "worker.completed", code: "AUTHORIZATION_DENIED" },
+      ],
+      "rev_test",
+    ),
+  };
+  const detail = workerFailureDetail(worker, []);
+  const published = redactFailureDetail(new Error(`activation failed\n${detail}`), [], "");
+  assert.equal(published.message, `activation failed\n${detail}`);
+  assert.match(published.message, /ACCESS_DENIED/);
+  assert.match(published.message, /DEPENDENCY_UNAVAILABLE/);
+  assert.match(published.message, /"revisionNumber":2/);
+  assert.match(published.message, /"state":"queued"/);
+  assert.equal(worker.events[1].code, "AUTHORIZATION_DENIED");
+});
 
 test("OpenShell turnover accepts established relay failures, not connection admission denials", () => {
   const domain = "gateway.fixture.svc.cluster.local";
@@ -170,7 +409,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values use the v0.1.6 registry and digest contract", () => {
+test("OpenShell Helm chart image values use the registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
@@ -210,18 +449,25 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   const waitOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
   const refusalCode = "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
   const privateDetail = "private requirements detail";
-  const activate = (deployment, activeRevisionId = null, workerEvents = []) =>
+  const activate = (
+    deployment,
+    activeRevisionId = null,
+    workerEvents = [],
+    checkDeploymentBeforeActivation = false,
+    deploymentStatus = 200,
+  ) =>
     waitForOpenShellRevisionActivation(waitOnce, {
       agentPath,
       revisionId,
       workerEvents,
+      checkDeploymentBeforeActivation,
       request: async (method, path) => {
         assert.equal(method, "GET");
         if (path === agentPath) {
           return { status: 200, data: { activeRevisionId } };
         }
         assert.equal(path, `${agentPath}/deployments/${revisionId}`);
-        return { status: 200, data: deployment };
+        return { status: deploymentStatus, data: deployment };
       },
     });
 
@@ -277,6 +523,74 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   assert.deepEqual(await activate({ status: "succeeded", error: null }, revisionId), {
     activeRevisionId: revisionId,
   });
+  // Replacement reconciliation can fail after publishing the active pointer.
+  await assert.rejects(
+    activate({ status: "failed", error: { code: refusalCode } }, revisionId, [], true),
+    {
+      code: refusalCode,
+      message: `OpenShell revision ${revisionId} deployment failed (${refusalCode}).`,
+    },
+  );
+  await assert.rejects(activate(undefined, revisionId, [], true, 503), {
+    name: "AssertionError",
+    message: /OpenShell deployment status read failed/,
+  });
+  assert.deepEqual(await activate({ status: "succeeded" }, revisionId, [], true), {
+    activeRevisionId: revisionId,
+  });
+  assert.deepEqual(
+    await activate(undefined, revisionId, [], false, 503),
+    { activeRevisionId: revisionId },
+    "initial activation keeps its existing pointer-first behavior",
+  );
+});
+
+test("the OpenShell policy replacement timeout reports only the last recognized deployment status", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const agentPath = "/agents/agent";
+  const revisionId = "replacement";
+  const description = `Timed out waiting for OpenShell revision ${revisionId} activation`;
+  for (const [status, label] of [
+    ["queued", "queued"],
+    ["running", "running"],
+    ["succeeded", "succeeded"],
+    ["unrecognized status", undefined],
+    [{ value: "running" }, undefined],
+    [undefined, undefined],
+  ]) {
+    const deadline = Date.now() + 1;
+    let reads = 0;
+    await assert.rejects(
+      waitForOpenShellRevisionActivation(
+        (description, read) => waitFor(description, read, { timeoutMs: 1, intervalMs: 0 }),
+        {
+          request: async (method, path) => {
+            assert.equal(method, "GET");
+            if (path === agentPath) {
+              return { status: 200, data: { activeRevisionId: "previous" } };
+            }
+            assert.equal(path, `${agentPath}/deployments/${revisionId}`);
+            if (++reads === 1) {
+              return { status: 200, data: { status: "running" } };
+            }
+            t.mock.timers.setTime(deadline);
+            return { status: 200, data: { status } };
+          },
+          agentPath,
+          revisionId,
+          checkDeploymentBeforeActivation: true,
+          reportDeploymentStatusOnTimeout: true,
+        },
+      ),
+      {
+        message:
+          label === undefined
+            ? `${description}.`
+            : `${description} (last deployment status: ${label}).`,
+      },
+    );
+    assert.equal(reads, 2);
+  }
 });
 
 // Finding 1846: the worker can claim the work again between reads. The status is read only once
@@ -1202,100 +1516,7 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   }
 });
 
-test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl with runc", async (t) => {
-  const root = await fixture(t, "openshell-cluster-bootstrap-test");
-  const calls = [];
-
-  async function execFile(command, args) {
-    calls.push([command, args]);
-    return { stdout: "", stderr: "" };
-  }
-
-  const result = await prepareOpenShellClusterBootstrap({
-    directory: root,
-    execFile,
-    hostPlatform: "darwin",
-    hostArch: "arm64",
-    downloadArtifact: async (url, destination, sha256) => {
-      assert.match(url, /kubectl$/);
-      assert.equal(sha256.length, 64);
-      await writeFile(destination, "fake kubectl", { mode: 0o700 });
-    },
-  });
-
-  assert.deepEqual(result, {
-    k3sImage,
-    runtimeClass: "openshell-sandbox",
-    runtimeHandler: "runc",
-    kubectl: join(root, "bin", `kubectl-darwin-arm64-${kubectlVersion}`),
-    kubectlVersion,
-  });
-  assert.deepEqual(
-    calls.map(([command]) =>
-      command.endsWith("kubectl-darwin-arm64-v1.36.4") ? "kubectl" : command,
-    ),
-    ["kubectl"],
-  );
-  assert.deepEqual(calls[0][1], ["version", "--client=true"]);
-});
-
-test("prepareOpenShell rejects foreign clusters before kubectl, Docker, or image registration", async (t) => {
-  const root = await fixture(t, "foreign-openshell-test");
-  const calls = [];
-  let registerCalls = 0;
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster: {
-          name: "foreign",
-          directory: root,
-          kubeconfig: join(root, "kubeconfig"),
-          context: "foreign",
-        },
-        execFile: async (command, args) => {
-          calls.push([command, args]);
-          return { stdout: "", stderr: "" };
-        },
-        registerImage: async () => {
-          registerCalls += 1;
-        },
-        env: {},
-      }),
-    /unowned cluster|cluster\.name must be a Kubernetes DNS label/,
-  );
-
-  assert.deepEqual(calls, []);
-  assert.equal(registerCalls, 0);
-});
-
-test("prepareOpenShell rejects mutable OpenShell image overrides before kubectl or Docker", async (t) => {
-  const clusterName = "openclaw-k8s-openshell-test";
-  const root = await fixture(t, clusterName);
-  const calls = [];
-  let registerCalls = 0;
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster: ownedCluster(root, clusterName),
-        execFile: async (command, args) => {
-          calls.push([command, args]);
-          return { stdout: "", stderr: "" };
-        },
-        registerImage: async () => {
-          registerCalls += 1;
-        },
-        env: {
-          OCC_TEST_OPENSHELL_GATEWAY_IMAGE: "ghcr.io/nvidia/openshell/gateway:latest",
-        },
-      }),
-    /OCC_TEST_OPENSHELL_GATEWAY_IMAGE must be an immutable image@sha256 reference/,
-  );
-
-  assert.deepEqual(calls, []);
-  assert.equal(registerCalls, 0);
-});
+registerOpenShellBootstrapCases({ fixture, ownedCluster });
 
 const execFileAsync = promisify(execFileCallback);
 
@@ -1357,11 +1578,11 @@ test("OpenShell stock selection accepts empty selectors and mirrors of released 
     },
     {
       OCC_TEST_OPENSHELL_GATEWAY_IMAGE:
-        "localhost/mirror/gateway@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+        "localhost/mirror/gateway@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
       OCC_TEST_OPENSHELL_SANDBOX_IMAGE:
-        "localhost/mirror/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+        "localhost/mirror/sandbox@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE:
-        "localhost/mirror/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+        "localhost/mirror/supervisor@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
     },
   ]) {
     assert.equal(await validateOpenShellSelection(env, execFile), null);
@@ -1622,141 +1843,4 @@ test("prepareOpenShell rejects source, chart, and image mismatches before cluste
   assert.equal(registerImage.mock.callCount(), 0);
 });
 
-test("prepareOpenShell fails before downloads when the RuntimeClass smoke Pod fails", async (t) => {
-  const clusterName = "openclaw-k8s-openshell-test";
-  const root = await fixture(t, clusterName);
-  const calls = [];
-  let registerCalls = 0;
-  const cluster = ownedCluster(root, clusterName);
-  const agentImage =
-    "localhost/openclaw-k8s-openshell-test/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-  async function execFile(command, args) {
-    calls.push([command, args]);
-    if (command === "docker" && args[0] === "exec") {
-      return {
-        stdout: "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.'runc']\n",
-        stderr: "",
-      };
-    }
-    if (
-      command === "kubectl" &&
-      args.includes("--dry-run=server") &&
-      args.some((arg) => arg.endsWith("openshell-psa-restricted-rejection.yaml"))
-    ) {
-      throw new Error(
-        'Error from server (Forbidden): pods "openshell-psa-violation" is forbidden: violates PodSecurity "restricted:latest": privileged',
-      );
-    }
-    if (command === "kubectl" && args.includes("--for=jsonpath={.status.phase}=Succeeded")) {
-      throw new Error("pod reached Failed phase");
-    }
-    if (command === "kubectl" && args.includes("describe")) {
-      return { stdout: "FailedCreatePodSandBox runc unavailable", stderr: "" };
-    }
-    return { stdout: "", stderr: "" };
-  }
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster,
-        execFile,
-        registerImage: async () => {
-          registerCalls += 1;
-        },
-        env: {
-          OCC_KUBECTL_BIN: "kubectl",
-          OCC_HELM_BIN: "helm",
-          OCC_DOCKER_BIN: "docker",
-          OCC_TEST_KUBERNETES_AGENT_IMAGE: agentImage,
-        },
-      }),
-    /FailedCreatePodSandBox runc unavailable/,
-  );
-
-  assert.equal(registerCalls, 0);
-  assert.equal(
-    calls.some(([command]) => command === "tar"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "helm" && args[0] === "pull"),
-    false,
-  );
-  assert.ok(
-    calls.some(
-      ([command, args]) =>
-        command === "kubectl" &&
-        args.includes("delete") &&
-        args.includes("openshell-runtimeclass-smoke"),
-    ),
-  );
-
-  const manifest = await readFile(
-    join(root, "openshell", "openshell-runtimeclass-smoke.yaml"),
-    "utf8",
-  );
-  assert.match(manifest, /runtimeClassName: openshell-sandbox/);
-  assert.match(manifest, new RegExp(`image: "${agentImage}"`));
-  assert.match(manifest, /imagePullPolicy: Never/);
-});
-
-test("prepareOpenShell fails before downloads when the k3d node lacks the selected handler", async (t) => {
-  const clusterName = "openclaw-k8s-openshell-test";
-  const root = await fixture(t, clusterName);
-  const calls = [];
-  let registerCalls = 0;
-  const cluster = ownedCluster(root, clusterName);
-
-  async function execFile(command, args) {
-    calls.push([command, args]);
-    if (command === "docker" && args[0] === "exec") {
-      return { stdout: "", stderr: "" };
-    }
-    return { stdout: "", stderr: "" };
-  }
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster,
-        execFile,
-        registerImage: async () => {
-          registerCalls += 1;
-        },
-        env: {
-          OCC_KUBECTL_BIN: "kubectl",
-          OCC_HELM_BIN: "helm",
-          OCC_DOCKER_BIN: "docker",
-        },
-      }),
-    /does not advertise that handler/,
-  );
-
-  assert.equal(registerCalls, 0);
-  assert.equal(
-    calls.some(([command]) => command === "tar"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "helm" && args[0] === "pull"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "docker" && args[0] !== "exec"),
-    false,
-  );
-  assert.deepEqual(
-    calls.filter(([command]) => command === "docker").map(([, args]) => args[1]),
-    [`k3d-${cluster.name}-server-0`],
-  );
-  for (const [, args] of calls.filter(([command]) => command === "kubectl")) {
-    assert.deepEqual(args.slice(0, 4), [
-      "--kubeconfig",
-      cluster.kubeconfig,
-      "--context",
-      cluster.context,
-    ]);
-  }
-});
+registerOpenShellPreparationCases({ fixture, ownedCluster });

@@ -69,7 +69,7 @@ const STRIPPED_REQUEST_HEADERS = new Set([
   "x-openclaw-scopes",
 ]);
 
-const STRIPPED_RESPONSE_HEADERS = new Set(["set-cookie"]);
+const STRIPPED_RESPONSE_HEADERS = new Set(["set-cookie", "clear-site-data"]);
 
 function percentDecode(value: string): string | undefined {
   try {
@@ -317,17 +317,20 @@ function rewriteLocation(value: string, context: NativeAdminProxyContext): strin
 }
 
 function endHttp(reply: FastifyReply, statusCode: number): void {
-  if (!reply.raw.headersSent) {
-    reply.raw.writeHead(statusCode, {
-      "cache-control": "no-store",
-      "content-type": "text/plain; charset=utf-8",
-    });
+  if (reply.raw.writableEnded || reply.raw.destroyed) {
+    return;
   }
-  if (!reply.raw.writableEnded) {
-    reply.raw.end(
-      "The native gateway is unavailable. Reopen native admin from the Agent page to retry.",
-    );
+  if (reply.raw.headersSent) {
+    reply.raw.destroy();
+    return;
   }
+  reply.raw.writeHead(statusCode, {
+    "cache-control": "no-store",
+    "content-type": "text/plain; charset=utf-8",
+  });
+  reply.raw.end(
+    "The native gateway is unavailable. Reopen native admin from the Agent page to retry.",
+  );
 }
 
 export async function proxyNativeAdminHttp(options: {
@@ -346,33 +349,48 @@ export async function proxyNativeAdminHttp(options: {
     return;
   }
 
+  // The incoming stream is already decoded. Reconstruct declared body framing
+  // when sanitization removed its length, preserving ordinary bodyless requests.
+  const incomingHeaders = options.request.raw.headers;
+  if (
+    headers["content-length"] === undefined &&
+    (incomingHeaders["content-length"] !== undefined ||
+      incomingHeaders["transfer-encoding"] !== undefined)
+  ) {
+    headers["transfer-encoding"] = "chunked";
+  }
   const avatarRequest = USER_AVATAR_PATH.test(options.request.url.split("?", 1)[0] ?? "");
   options.reply.hijack();
   const upstreamRequest = https.request(
     upstream,
     { method: options.request.method, headers },
     (upstreamResponse) => {
+      upstreamResponse.once("error", fail);
       const headers = responseHeaders(upstreamResponse.headers, options.context);
       if (headers === undefined) {
         endHttp(options.reply, 502);
         upstreamResponse.destroy();
+        abort();
         return;
       }
       if (avatarRequest && upstreamResponse.statusCode === 502) {
         // A missing photo, not an unavailable Gateway: the UI shows initials either way.
-        upstreamResponse.resume();
         options.reply.raw.writeHead(404, { "cache-control": "no-store" });
         options.reply.raw.end();
+        upstreamResponse.destroy();
+        abort();
         return;
       }
       options.reply.raw.writeHead(upstreamResponse.statusCode ?? 502, headers);
       upstreamResponse.pipe(options.reply.raw);
-      upstreamResponse.once("error", () => endHttp(options.reply, 503));
     },
   );
 
   const abort = () => upstreamRequest.destroy();
-  const fail = () => endHttp(options.reply, 503);
+  const fail = () => {
+    abort();
+    endHttp(options.reply, 503);
+  };
   upstreamRequest.setTimeout(HTTP_PROXY_TIMEOUT_MS, () => upstreamRequest.destroy());
   upstreamRequest.once("error", fail);
   options.request.raw.once("aborted", abort);

@@ -1,18 +1,27 @@
 import { createHash } from "node:crypto";
 import { createServer } from "node:https";
 import { createTlsMaterial, listen } from "./process.mjs";
-import { createAlternateDriver } from "./alternate/driver.mjs";
-import { createAlternateUpstreamHandler } from "./alternate/upstream.mjs";
-import { denied, resolveAlternateProfile } from "./alternate/policy.mjs";
+import { createAlternateDriver } from "./alternate/driver.ts";
+import { createAlternateUpstreamHandler } from "./alternate/upstream.ts";
+import { denied, resolveAlternateProfile } from "./alternate/policy.ts";
 
+/** @param {string} bytes */
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+/**
+ * @param {Pick<import("node:test").TestContext, "after">} t
+ * @param {{ tls?: Awaited<ReturnType<typeof createTlsMaterial>>,
+ *   clock?: Pick<import("../../../apps/controller/src/drivers/repo/access/backend-contracts.ts").Clock, "wallNow">,
+ *   controls?: { beforeWriteChunk?: () => void | Promise<void> } }} options
+ */
 export async function startAlternateUpstream(
   t,
   { tls, clock = { wallNow: Date.now }, controls = {} } = {},
 ) {
   tls ??= await createTlsMaterial(t);
+  /** @type {Map<string, number>} */
   const accepted = new Map();
+  /** @type {import("./alternate/upstream.ts").AlternateTraceEntry[]} */
   const trace = [];
   const handleRequest = createAlternateUpstreamHandler({
     authorize: (key) =>
@@ -28,6 +37,11 @@ export async function startAlternateUpstream(
 // This adapter intentionally uses a different identity, permission vocabulary,
 // authentication header and rotation model. Custody, leases and dispatch are
 // supplied by the production common owner, never reimplemented here.
+/**
+ * @param {Pick<import("./alternate/driver.ts").AlternateDriverOptions, "origin" | "clock"> &
+ *   Partial<Pick<import("./alternate/driver.ts").AlternateDriverOptions,
+ *     "accepted" | "lifetimeMs" | "operationMs" | "controls">> & { gatewayOrigin: string }} options
+ */
 export function createAlternateDriverFactory({
   origin,
   gatewayOrigin,
@@ -42,8 +56,11 @@ export function createAlternateDriverFactory({
     repositoryId: "repo:team/nested/project",
     grantId: "forge-config-v7:source-update",
   });
+  /** @type {import("./alternate/driver.ts").AlternateDriverEvent[]} */
   const events = [];
+  /** @type {import("../../../apps/controller/src/drivers/repo/access/backend-contracts.ts").RepositoryBackend[]} */
   const drivers = [];
+  /** @satisfies {import("../../../apps/controller/src/drivers/repo/access/backend-contracts.ts").RepositoryBackendFactory & { events: typeof events, drivers: typeof drivers }} */
   const factory = {
     events,
     drivers,

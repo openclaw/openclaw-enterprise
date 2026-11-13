@@ -12668,11 +12668,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -13097,11 +13092,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -14672,11 +14662,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -18943,7 +18928,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -28499,7 +28484,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -31323,7 +31308,66 @@
               },
               "schema": {
                 "additionalProperties": false,
+                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
                 "properties": {
+                  "additions": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "binary": {
+                          "description": "Absolute path of the executable receiving access.",
+                          "maxLength": 512,
+                          "minLength": 2,
+                          "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                          "title": "Executable path",
+                          "type": "string"
+                        },
+                        "host": {
+                          "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                          "title": "Destination hostname",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                          "title": "Rule ID",
+                          "type": "string"
+                        },
+                        "ports": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "from": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "Start port",
+                                "type": "integer"
+                              },
+                              "to": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "End port",
+                                "type": "integer"
+                              }
+                            },
+                            "required": ["from", "to"],
+                            "type": "object"
+                          },
+                          "maxItems": 16,
+                          "minItems": 1,
+                          "title": "Port ranges",
+                          "type": "array"
+                        }
+                      },
+                      "required": ["id", "binary", "host", "ports"],
+                      "type": "object"
+                    },
+                    "maxItems": 16384,
+                    "title": "Network rules",
+                    "type": "array"
+                  },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
                   "revisionId": {
                     "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -31335,6 +31379,7 @@
               }
             }
           },
+          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
           "required": true
         },
         "responses": {
@@ -31584,6 +31629,17 @@
             },
             "description": "The request content type is not supported."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/SANDBOX_POLICY_RATE_LIMITED" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -31605,7 +31661,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Apply the saved policy to the running Agent revision",
+        "summary": "Queue policy application to the running Agent revision, optionally replacing saved additions",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
@@ -32104,7 +32160,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
         "operationId": "validateAgentSandboxPolicy",
         "parameters": [
           {
@@ -32372,7 +32428,8 @@
         "summary": "Preview Agent network policy admission without saving or applying",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" }
+          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },

@@ -86,6 +86,7 @@ function credentialFixture({
   twoCluster = false,
   secretReadStatus = undefined,
   secretCreateStatus = undefined,
+  observeCreatedSecret = (secret) => secret,
   deploymentListStatus = undefined,
 } = {}) {
   const configured = options();
@@ -201,7 +202,7 @@ function credentialFixture({
       }
       assert.equal(request.namespace, controlNamespace?.metadata.name ?? namespaceName);
       created.push(structuredClone(request.body));
-      const observed = {
+      const observed = observeCreatedSecret({
         ...request.body,
         metadata: { ...request.body.metadata, uid: `${request.body.metadata.name}-uid` },
         data:
@@ -212,7 +213,7 @@ function credentialFixture({
               encode(value),
             ]),
           ),
-      };
+      });
       secrets[observed.metadata.name] = observed;
       return structuredClone(observed);
     },
@@ -648,6 +649,93 @@ test("mocked Kubernetes client preflights the transport Secret before initial cr
   assert.deepEqual(Object.keys(password), ["gateway-password"]);
   assert.match(password["gateway-password"], /^[A-Za-z0-9_-]+$/);
   assert.notEqual(transport["app-server-token"], password["gateway-password"]);
+});
+
+for (const group of ["transport", "gateway-password"]) {
+  for (const defect of ["extra data", "foreign owner", "missing group"]) {
+    test(`runtime credential creation refuses ${group} with ${defect} on readback`, async () => {
+      const secrets = {};
+      const name = `${group}-${digest(agent.id)}`;
+      const fixture = credentialFixture({
+        secrets,
+        observeCreatedSecret(secret) {
+          if (secret.metadata.name === name) {
+            if (defect === "extra data") {
+              secret.data.unexpected = encode("benign-admission-value");
+            } else if (defect === "foreign owner") {
+              secret.metadata.labels["openclaw.dev/agent"] = "another-agent";
+            }
+          }
+          return secret;
+        },
+      });
+      if (defect === "missing group") {
+        const { core } = await fixture.driver.apiClients;
+        const create = core.createNamespacedSecret.bind(core);
+        core.createNamespacedSecret = async (request) => {
+          const observed = await create(request);
+          // Another actor removes this group after the create has succeeded.
+          delete secrets[name];
+          return observed;
+        };
+      }
+
+      await assert.rejects(
+        fixture.driver.provisionAgentRuntimeCredentials(binding(), {}),
+        defect === "missing group" ? DependencyUnavailableError : ResourceConflictError,
+      );
+      const retained = structuredClone(secrets);
+      if (defect === "missing group") {
+        assert.deepEqual(await fixture.driver.getAgentRuntimeCredentialStatus(binding()), {
+          transportConfigured: false,
+        });
+      } else {
+        await assert.rejects(
+          fixture.driver.getAgentRuntimeCredentialStatus(binding()),
+          ResourceConflictError,
+        );
+      }
+      assert.deepEqual(secrets, retained, "failed confirmation must retain the stored objects");
+      assert.deepEqual(fixture.deleted, []);
+      assert.deepEqual(
+        fixture.calls.filter(({ kind }) => kind === "createSecret").map(({ name }) => name),
+        [`transport-${digest(agent.id)}`, `gateway-password-${digest(agent.id)}`],
+        "confirmation must not replay creates or compensate for the stored objects",
+      );
+    });
+  }
+}
+
+test("runtime credential creation reconciles a lost response without replaying the stored Secret", async () => {
+  const fixture = credentialFixture();
+  const { core } = await fixture.driver.apiClients;
+  const create = core.createNamespacedSecret.bind(core);
+  let responseLost = false;
+  core.createNamespacedSecret = async (request) => {
+    const observed = await create(request);
+    if (!responseLost) {
+      responseLost = true;
+      throw httpError(503);
+    }
+    return observed;
+  };
+
+  await assert.rejects(
+    fixture.driver.provisionAgentRuntimeCredentials(binding(), {}),
+    DependencyUnavailableError,
+  );
+  assert.equal(fixture.created.length, 1, "an uncertain create must not be replayed");
+  assert.deepEqual(await fixture.driver.getAgentRuntimeCredentialStatus(binding()), {
+    transportConfigured: false,
+  });
+  assert.deepEqual(await fixture.driver.provisionAgentRuntimeCredentials(binding(), {}), {
+    transportConfigured: true,
+  });
+  assert.deepEqual(
+    fixture.created.map((secret) => secret.metadata.name),
+    [`transport-${digest(agent.id)}`, `gateway-password-${digest(agent.id)}`],
+  );
+  assert.deepEqual(fixture.deleted, []);
 });
 
 test("mocked Kubernetes client can recover missing transport when model credentials already exist", async () => {

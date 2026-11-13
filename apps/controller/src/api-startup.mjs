@@ -1,3 +1,4 @@
+import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
   isDevelopmentBrowserOrigin,
@@ -95,6 +96,16 @@ function startupFailureCode(error) {
 
 /** The log fields that name a startup failure: its `code`, and for some causes, more. */
 export function startupFailureFields(error) {
+  if (
+    error instanceof ScopeViolationError &&
+    error.message === "Enrollment requires an existing Installation Role."
+  ) {
+    return {
+      code: "OIDC_ENROLLMENT_ROLE_INVALID",
+      reason:
+        "Set auth.oidc.enrollment.createAccount.role.id to an Installation-scoped Role from the Installation iam configuration.",
+    };
+  }
   return (
     startupDependencyFailure(error) ??
     startupConfigurationFailure(error) ??

@@ -939,6 +939,63 @@ async function bootstrapExistingInstallation(context, label, run = runBootstrap)
   return { environment, fresh };
 }
 
+test(
+  "verification-only bootstrap binds the incumbent ID and administrator without initializing or repairing",
+  requiresFailurePostgres,
+  async (t) => {
+    const directory = await prepareBootstrapFailureFixture(t, "verify-existing");
+    const env = productionEnvironment({
+      directory,
+      email: "verify-bootstrap@example.test",
+      name: "Verify existing",
+    });
+    const verify = (id, environment = env) =>
+      runBootstrapInstallation(environment, { args: ["--verify-existing", id] });
+    const other = `ins_${randomUUID()}`;
+
+    const empty = await rowCounts();
+    const missing = await verify(other);
+    assert.equal(missing.ok, false);
+    assert.match(missing.stderr, /No existing Installation to verify/);
+    assert.deepEqual(await rowCounts(), empty);
+    assert.deepEqual(await readdir(directory), []);
+
+    const fresh = await runBootstrap(env);
+    assert.equal(fresh.ok, true, fresh.stderr);
+    const { installationId } = jsonEvent(fresh.stdout, "installation.bootstrapped");
+    const counts = await rowCounts();
+    const files = await readdir(directory);
+    const outputs = await Promise.all(files.map((file) => readFile(join(directory, file))));
+    const readonlyEnv = { ...env };
+    delete readonlyEnv.OCC_BOOTSTRAP_PASSWORD_FILE;
+    delete readonlyEnv.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
+    delete readonlyEnv.OCC_BOOTSTRAP_INSTALLATION_NAME;
+    const matched = await verify(installationId, readonlyEnv);
+    assert.equal(matched.ok, true, matched.stderr);
+    assert.deepEqual(jsonEvent(matched.stdout, "installation.bootstrap-verified"), {
+      event: "installation.bootstrap-verified",
+      installationId,
+    });
+    const mismatched = await verify(other, env);
+    assert.equal(mismatched.ok, false);
+    assert.match(mismatched.stderr, /does not match the expected Installation ID/);
+    assert.equal(mismatched.stdout, "");
+    const wrongAdmin = await verify(installationId, {
+      ...readonlyEnv,
+      OCC_BOOTSTRAP_ADMIN_EMAIL: "other@example.test",
+    });
+    assert.equal(wrongAdmin.ok, false);
+    assert.match(wrongAdmin.stderr, /configured bootstrap administrator/);
+    assert.equal(wrongAdmin.stdout, "");
+    assert.deepEqual(await rowCounts(), counts);
+    assert.deepEqual(await readdir(directory), files);
+    assert.deepEqual(
+      await Promise.all(files.map((file) => readFile(join(directory, file)))),
+      outputs,
+    );
+  },
+);
+
 function alreadyBootstrappedEvent(result) {
   return jsonLines(result.stderr).find(
     (line) => line.event === "installation.already-bootstrapped",

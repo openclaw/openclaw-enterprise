@@ -107,7 +107,7 @@ function registerWatchCase({
 }
 
 async function registerStopCase() {
-  const { followContainerLog } = await import("../helpers/container-log-capture.mjs");
+  const { followContainerLog } = await import("../helpers/container-log-capture.ts");
   let snapshots = 0;
   test("gateway stop is confirmed", async (t) => {
     const log = followContainerLog({

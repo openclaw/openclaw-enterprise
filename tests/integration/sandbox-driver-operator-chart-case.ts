@@ -9,6 +9,8 @@ type GatewayEvent = Parameters<
 >[0];
 type OperatorEvent =
   GatewayEvent | ["kubernetes", "patch" | "delete", "ServiceAccount", "openshell-sandbox", string];
+type NamespaceContext = Parameters<OpenShellSandboxDriver["ensureNamespace"]>[0];
+type OperatorFixture = ReturnType<typeof operatorWorkspaceChartFixture>;
 
 function operatorWorkspaceChartFixture() {
   const events: OperatorEvent[] = [];
@@ -26,19 +28,29 @@ function operatorWorkspaceChartFixture() {
   return { gatewayClient, configuration, events };
 }
 
-export async function verifyOperatorWorkspaceChart(
-  setup: (fixture: ReturnType<typeof operatorWorkspaceChartFixture>) => {
-    namespaceName: Parameters<OpenShellSandboxDriver["ensureNamespace"]>[0]["namespace"]["name"];
-    ensureNamespace: () => ReturnType<OpenShellSandboxDriver["ensureNamespace"]>;
-    cleanup: () => ReturnType<OpenShellSandboxDriver["cleanup"]>;
-  },
-): Promise<void> {
+export async function verifyOperatorWorkspaceChart({
+  openShellDriver,
+  namespaceContext,
+  kubernetesObjectClient,
+}: {
+  openShellDriver: (
+    gatewayClient: OperatorFixture["gatewayClient"],
+    configuration: OperatorFixture["configuration"],
+  ) => Pick<OpenShellSandboxDriver, "ensureNamespace" | "cleanup">;
+  namespaceContext: () => Omit<NamespaceContext, "kubernetes"> & {
+    kubernetes: NamespaceContext["kubernetes"];
+  };
+  kubernetesObjectClient: (events: OperatorFixture["events"]) => NamespaceContext["kubernetes"];
+}): Promise<void> {
   const fixture = operatorWorkspaceChartFixture();
-  const { namespaceName, ensureNamespace, cleanup } = setup(fixture);
+  const driver = openShellDriver(fixture.gatewayClient, fixture.configuration);
+  const context = namespaceContext();
+  context.kubernetes = kubernetesObjectClient(fixture.events);
+  const namespaceName = context.namespace.name;
 
   // The Gateway must not observe a Workspace until its operator-mode RBAC and
   // ServiceAccount resources have converged in the Compute-owned namespace.
-  await ensureNamespace();
+  await driver.ensureNamespace(context);
   assert.deepEqual(fixture.events, [
     ["kubernetes", "patch", "ServiceAccount", "openshell-sandbox", namespaceName],
     ["gateway", "health"],
@@ -47,11 +59,50 @@ export async function verifyOperatorWorkspaceChart(
   ]);
 
   fixture.events.length = 0;
-  await cleanup();
+  await driver.cleanup(context);
   assert.deepEqual(fixture.events, [
     ["gateway", "getWorkspace", namespaceName],
     ["gateway", "deleteWorkspace", namespaceName],
     ["gateway", "getWorkspace", namespaceName],
     ["kubernetes", "delete", "ServiceAccount", "openshell-sandbox", namespaceName],
   ]);
+}
+
+export function buildOperatorIngressManifests() {
+  // The stock OpenShell workspace chart's SSH policy as occ dev renders it, in wire form.
+  const sshIngress = {
+    from: [
+      {
+        namespaceSelector: {
+          matchLabels: { "kubernetes.io/metadata.name": "openshell-system" },
+        },
+        podSelector: { matchLabels: { "app.kubernetes.io/instance": "openshell-gateway" } },
+      },
+    ],
+    ports: [{ protocol: "TCP", port: 2222 }],
+  };
+  const ingress = [sshIngress];
+  const policy = (name: string) => ({
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name },
+    spec: {
+      podSelector: { matchLabels: { "openshell.ai/managed-by": "openshell" } },
+      policyTypes: ["Ingress"],
+      ingress: structuredClone(ingress),
+    },
+  });
+  // A provider CRD that is also named NetworkPolicy has no SDK model: the client sends it as
+  // written, so renaming its `from` would make the API server drop the field.
+  const crdIngress = [{ action: "Allow", ...structuredClone(sshIngress) }];
+  const crdPolicy = {
+    apiVersion: "crd.antrea.io/v1beta1",
+    kind: "NetworkPolicy",
+    metadata: { name: "provider-crd-ingress" },
+    spec: {
+      appliedTo: [{ podSelector: { matchLabels: { "openshell.ai/managed-by": "openshell" } } }],
+      ingress: structuredClone(crdIngress),
+    },
+  };
+  return { ingress, policy, crdIngress, crdPolicy };
 }

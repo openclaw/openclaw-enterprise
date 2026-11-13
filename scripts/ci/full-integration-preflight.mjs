@@ -178,7 +178,14 @@ async function fetchGithubJson({ repository, token, path }) {
   if (!response.ok) {
     throw new Error(`GitHub API ${path} returned ${response.status}.`);
   }
-  return response.json();
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch {
+    // An unreadable JSON value is invalid metadata, not a failed request.
+    // Discard parser text and response bytes before the caller diagnoses it.
+    return null;
+  }
 }
 
 export async function validateFullIntegrationPreflight({
@@ -187,12 +194,6 @@ export async function validateFullIntegrationPreflight({
   impactMode = "full",
 } = {}) {
   assertRunContext(env);
-  const selected = selectLane({
-    eventName: env.GITHUB_EVENT_NAME,
-    inputLane: env.INPUT_LANE,
-    ref: env.GITHUB_REF,
-    impactMode,
-  });
   const read = (path) =>
     github({ repository: env.GITHUB_REPOSITORY, token: env.GITHUB_TOKEN, path });
   const scheduled = env.GITHUB_EVENT_NAME === "schedule";
@@ -203,12 +204,20 @@ export async function validateFullIntegrationPreflight({
     const history = await readScheduleHistory(read, env.GITHUB_SHA, Number(env.GITHUB_RUN_ID), now);
     const decision = decideAdmission({ ...history, now, eventSha: env.GITHUB_SHA });
     if (decision.result === "hold") {
-      throw new Error("Full Integration schedule could not verify admission metadata.");
+      const failure = history.failure;
+      const detail = failure ? ` (${failure.operation}: ${failure.kind})` : "";
+      throw new Error(`Full Integration schedule could not verify admission metadata${detail}.`);
     }
     if (decision.result === "skip") {
       return { selectedLane: "skip", runAll: false, reason: decision.reason };
     }
   }
+  const selected = selectLane({
+    eventName: env.GITHUB_EVENT_NAME,
+    inputLane: env.INPUT_LANE,
+    ref: env.GITHUB_REF,
+    impactMode,
+  });
   // Validate selection before any authorization or protected-environment reads.
   const required = requiredEnvironmentsForLane(selected === "docs" ? "all" : selected);
   if (env.GITHUB_EVENT_NAME === "workflow_dispatch") {

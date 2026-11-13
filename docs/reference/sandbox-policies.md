@@ -77,9 +77,9 @@ wildcard addition requires that exact wildcard in the ceiling. Port coverage may
 combine adjacent ceiling ranges; gaps remain unauthorized. Drivers reject
 unsupported constraints. An Installation delegation ceiling and an Agent's additions
 can each contain at most 16,384 grants, with at most 16 ranges per grant. Policy
-preview and update requests have a separate 32 MiB body limit; an explicit
+preview, update, and apply requests have a separate 32 MiB body limit; an explicit
 `maxBodyBytes` override still applies. JSON escaping and whitespace count toward
-that byte limit. Preview and update share a replica-local budget per principal:
+that byte limit. Preview, update, and apply share a replica-local budget per principal:
 2 requests per second with a burst of 10 across Agents. A depleted budget returns
 `429 SANDBOX_POLICY_RATE_LIMITED` with `Retry-After` before reading the body. OpenShell additionally
 limits each grant to 1024 distinct ports. These writes also share the
@@ -100,9 +100,12 @@ Saving additions requires `expectedVersion` and advances the desired policy
 version. It performs no provider mutation. Deploy explicitly to freeze selected
 Driver defaults and approved additions into a new AgentRevision;
 deployment retains its usual authorization and interruption behavior.
-In the Console, **Save and apply to current revision** proceeds to application
-only when the save response identifies this policy, its next version, and the
-rules shown in review. An unconfirmed save requires a policy refresh.
+**Save and apply to current revision** sends the reviewed additions, expected
+policy version and running revision in one request to the existing apply URL.
+OCC saves the new version and queues its application in one transaction. An
+empty additions list requests removal of the Agent-specific grants. Omitting
+the additions field applies the previously saved version. If the response is
+lost, refresh the policy and its application status before deciding what to do.
 
 Live application additionally requires a supporting Driver, enabled editing, the
 expected desired version, and the exact running revision. OCC records a durable

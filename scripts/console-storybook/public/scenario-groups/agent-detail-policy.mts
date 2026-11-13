@@ -110,8 +110,8 @@ export function createAgentDetailPolicyScenarios({
       "failedCeiling",
       "Policy application refused by a changed ceiling",
     ],
-    ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
-    ["policyDenialsApplyDenied", "applyDenied", "Policy saved but live application refused access"],
+    ["policyDenialsApplyRejected", "applyRejected", "Combined policy change rejected"],
+    ["policyDenialsApplyDenied", "applyDenied", "Combined policy change refused access"],
     ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
     [
       "policyUnconfirmedSave",
@@ -257,7 +257,7 @@ export function createAgentDetailPolicyScenarios({
             ? {
                 steps: [
                   "Review a suggestion, then choose Review changes and Save and apply to current revision.",
-                  "Confirm the alert states the policy was saved but application was not confirmed. The saved version increases and the rule remains saved; do not infer live enforcement.",
+                  "Refresh the policy. The rejected change leaves the saved rules and version unchanged.",
                 ],
               }
             : {}),
@@ -273,7 +273,7 @@ export function createAgentDetailPolicyScenarios({
                 ],
                 steps: [
                   "Review a suggestion, then choose Review changes and Save and apply to current revision.",
-                  "The simulated apply answers 403, as when SandboxPolicy read is revoked while the page is open. Confirm the alert says the policy was saved but not applied, and names Agent manage_policy and SandboxPolicy update and read.",
+                  "The simulated apply answers 403, as when SandboxPolicy read is revoked while the page is open. Confirm the refusal names Agent manage_policy and SandboxPolicy update and read. Refresh and verify the saved version did not change.",
                 ],
               }
             : {}),
@@ -288,7 +288,7 @@ export function createAgentDetailPolicyScenarios({
             ? {
                 steps: [
                   "Review a suggestion, then choose Review changes and Save and apply to current revision.",
-                  "The save response omits the rule. Confirm that live application was not requested, then choose Refresh policy to see the rule that was saved.",
+                  "The response omits the reviewed rule. Confirm the Console reads the policy again and shows the recorded outcome without sending another apply.",
                 ],
               }
             : {}),

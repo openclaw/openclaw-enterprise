@@ -61,13 +61,15 @@ async function writeState(path, state) {
 test("focused first-Agent preparation leaves installation to Local Setup and refuses another file", async (t) => {
   const root = await fixture(t);
   const saved = {
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     CODEX_ACCESS_TOKEN: process.env.CODEX_ACCESS_TOKEN,
     OCC_HELM_BIN: process.env.OCC_HELM_BIN,
     OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
   };
   // Fail before side effects if generic stack preparation is accidentally restored.
   process.env.OCC_HELM_BIN = join(root, "unavailable-helm");
-  process.env.CODEX_ACCESS_TOKEN = "synthetic-model-credential";
+  process.env.OPENAI_API_KEY = "synthetic-model-credential";
+  delete process.env.CODEX_ACCESS_TOKEN;
   process.env.OCC_TEST_OPENAI_MODEL = "synthetic-model";
   t.after(() => {
     for (const [key, value] of Object.entries(saved)) {
@@ -78,6 +80,17 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
       }
     }
   });
+  const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+  await mkdir(join(root, "scripts/ci"), { recursive: true });
+  await mkdir(join(root, "tests/integration"), { recursive: true });
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `export { prepareFile } from ${JSON.stringify(new URL("../../scripts/ci/prepare.mjs", import.meta.url).href)};`,
+  );
+  await writeFile(
+    join(root, "manifest.json"),
+    JSON.stringify({ version: 1, lanes: { openshell: suites.lanes.openshell }, groups: {} }),
+  );
   for (const file of [
     "tests/integration/local-first-agent-openshell-real.test.mjs",
     "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
@@ -94,10 +107,59 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
       prepareFile({
         lane: "openshell",
         statePath,
-        file: "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        file: file.endsWith("-k3d-real.test.mjs")
+          ? "tests/integration/local-first-agent-openshell-real.test.mjs"
+          : "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
       }),
       /Selected file must match/,
     );
+    // Use canonical metadata and the real preparer/runner; only the child body is a
+    // sentinel. This proves API-key-only runner admission, not a model turn.
+    const testName = suites.lanes.openshell.files.find(({ path }) => path === file)
+      .expectedTests[0];
+    await writeFile(
+      join(root, file),
+      `import assert from "node:assert/strict"; import test from "node:test";
+      test(${JSON.stringify(testName)}, () => {
+        assert.equal(process.env.OPENAI_API_KEY, "synthetic-model-credential");
+        assert.ok(!process.env.CODEX_ACCESS_TOKEN);
+      });`,
+    );
+    const resultsPath = `${statePath}.results.json`;
+    const result = await spawnResult(
+      process.execPath,
+      [
+        join(repositoryRoot, "scripts/ci/run-tests.mjs"),
+        "run",
+        "openshell",
+        "--root",
+        root,
+        "--manifest",
+        "manifest.json",
+        "--state",
+        statePath,
+        "--results",
+        resultsPath,
+        "--file",
+        file,
+        "--test-name",
+        testName,
+      ],
+      {
+        env: {
+          ...process.env,
+          GITHUB_SHA: "a".repeat(40),
+          GIT_CEILING_DIRECTORIES: root,
+          CI_RUNNER_DEADLINE_MS: "",
+          CODEX_ACCESS_TOKEN_FILE: "",
+          OCC_CI_SUITE_VIEW: "default",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.equal(receipt.files[0].tests[0].status, "passed");
+    assert.deepEqual(receipt.files[0].issues, []);
     await prepared.cleanup();
     await lane.cleanup();
   }
@@ -180,6 +242,170 @@ function runPrepare(args, env = {}) {
     env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
   });
 }
+
+function modelPreparationNotices(stderr) {
+  return stderr
+    .split("\n")
+    .filter((line) => line.startsWith("::notice title=k3d Model Runtime preparation::"))
+    .map((line) => {
+      const match =
+        /^::notice title=k3d Model Runtime preparation::stage=([a-z0-9-]+) elapsed_ms=\d+ outcome=(success|failure)$/.exec(
+          line,
+        );
+      assert.ok(match, line);
+      return [match[1], match[2]];
+    });
+}
+
+function modelImageRoleNotices(stderr) {
+  return stderr
+    .split("\n")
+    .filter((line) => line.startsWith("::notice title=k3d Model Runtime image::"))
+    .map((line) => {
+      const match =
+        /^::notice title=k3d Model Runtime image::role=(controller|runtime) elapsed_ms=\d+ outcome=(success|failure)$/.exec(
+          line,
+        );
+      assert.ok(match, line);
+      return [match[1], match[2]];
+    })
+    .sort(([left], [right]) => left.localeCompare(right));
+}
+
+test("model preparation notices follow completed CLI phases", async (t) => {
+  const root = await fixture(t);
+  const fetchStub = join(root, "offline.cjs");
+  await writeFile(fetchStub, "globalThis.fetch = async () => new Response(null, { status: 404 });");
+  for (const suppliedImages of [false, true]) {
+    const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
+      GITHUB_ACTIONS: "true",
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      NODE_BASE_IMAGE: nodeBaseImage,
+      NODE_OPTIONS: `--require="${fetchStub}"`,
+      // The empty source directory fails validation only when an image build is requested.
+      OCC_K3D_OPENCLAW_SOURCE: root,
+      ...(suppliedImages
+        ? {
+            OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+            OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+          }
+        : {}),
+    });
+    const prepared = await commands.prepare();
+    assert.equal(prepared.status, 1, prepared.stderr);
+    assertStderrMatch(prepared.stderr, suppliedImages ? /download failed: HTTP 404/ : /Dockerfile/);
+    assert.deepEqual(modelPreparationNotices(prepared.stderr), [
+      ["k3d-cluster-preparation", "success"],
+      ["postgres-start", "success"],
+      ...(suppliedImages
+        ? [
+            ["runtime-image-preparation", "success"],
+            ["gateway-routing", "failure"],
+          ]
+        : [
+            ["image-build-or-reuse", "failure"],
+            ["runtime-image-preparation", "failure"],
+          ]),
+    ]);
+    assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
+    await commands.cleanupSuccessfully();
+  }
+});
+
+test("model image notices time only requested builds and preserve each outcome", async (t) => {
+  for (const [scenario, suppliedPair] of [
+    ["save-failed", false],
+    ["controller-build-failed", false],
+    ["save-failed", true],
+  ]) {
+    const commands = await fixtureImageCommands(t, scenario, "k3d-model", {
+      GITHUB_ACTIONS: "true",
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      NODE_BASE_IMAGE: nodeBaseImage,
+      ...(suppliedPair
+        ? {
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+            OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+          }
+        : {}),
+    });
+    // The shared fake recognizes controller builds under its buildx spelling.
+    // Adapt only the plain controller command issued by this lane at the fake boundary.
+    const bin = join(dirname(commands.statePath), "bin");
+    const adapter = join(bin, "model-docker");
+    await writeFile(
+      adapter,
+      `#!/bin/sh
+if [ "$1" = build ]; then
+  if [ "$3" = --target ]; then
+    role=controller
+    peer=runtime
+    set -- buildx "$@"
+  else
+    role=runtime
+    peer=controller
+  fi
+  if [ "$WAIT_FOR_PEER" = 1 ]; then
+    : > "$TMPDIR/$role.started"
+    tries=0
+    while [ ! -f "$TMPDIR/$peer.started" ]; do
+      [ "$tries" -lt 100 ] || { echo "peer build never started" >&2; exit 1; }
+      /bin/sleep 0.05
+      tries=$((tries + 1))
+    done
+  fi
+fi
+exec docker.mjs "$@"
+`,
+      { mode: 0o700 },
+    );
+    // Both requested builds must start before either command can finish.
+    const result = await commands.prepare([], {
+      env: { OCC_DOCKER_BIN: adapter, WAIT_FOR_PEER: suppliedPair ? "0" : "1" },
+    });
+    assert.equal(result.status, 1, result.stderr);
+    const failed = scenario === "controller-build-failed";
+    assertStderrMatch(
+      result.stderr,
+      failed ? /synthetic build failure/ : /synthetic export failure/,
+    );
+    assert.deepEqual(modelImageRoleNotices(result.stderr), [
+      ["controller", failed ? "failure" : "success"],
+      ...(suppliedPair ? [] : [["runtime", "success"]]),
+    ]);
+    await commands.cleanupSuccessfully();
+  }
+});
+
+test("model preparation notices preserve outcomes and require Actions and a known stage", async (t) => {
+  const root = await fixture(t);
+  const result = await runProgram(
+    `import assert from "node:assert/strict";
+     const { timedK3dModelPreparation: time } = await import(process.argv[1]);
+     const value = {};
+     const failure = new Error("synthetic-private-detail");
+     assert.equal(await time("k3d-model", "postgres-start", () => value), value);
+     await assert.rejects(time("k3d-model", "gateway-routing", async () => { throw failure; }), error => error === failure);
+     await time("k3d-model", "unknown-stage", () => value);
+     await time("k3d-otel", "gateway-routing", () => value);
+     delete process.env.GITHUB_ACTIONS;
+     await time("k3d-model", "controller", () => value);
+     await time("k3d-model", "postgres-start", () => value);`,
+    join(root, "state.json"),
+    { GITHUB_ACTIONS: "true" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.doesNotMatch(result.stderr, /synthetic-private-detail|lane=k3d-otel/);
+  assert.deepEqual(modelImageRoleNotices(result.stderr), []);
+  assert.deepEqual(modelPreparationNotices(result.stderr), [
+    ["postgres-start", "success"],
+    ["gateway-routing", "failure"],
+  ]);
+});
 
 test(
   "PostgreSQL preparation records staging before creating its directory",
@@ -818,6 +1044,7 @@ describe("CI preparation", { concurrency }, () => {
       } else {
         assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
       }
+      assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
       const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
       const builds = calls.filter(({ args }) => args.includes("--load"));
       if (lane === "k3d-otel") {
@@ -927,6 +1154,7 @@ describe("CI preparation", { concurrency }, () => {
         OCC_CI_SUITE_VIEW: view,
         NODE_BASE_IMAGE: packagingNodeBaseImage,
         CODEX_ACCESS_TOKEN: "synthetic-model-credential",
+        OPENAI_API_KEY: "synthetic-model-credential",
         OCC_TEST_OPENAI_MODEL: "synthetic-model",
         // The hosted action must supply its builder for the full lane, even
         // though no individual test file was selected. Fail before tool calls.
@@ -952,6 +1180,7 @@ describe("CI preparation", { concurrency }, () => {
       OCC_CI_SUITE_VIEW: "full-integration",
       NODE_BASE_IMAGE: packagingNodeBaseImage,
       CODEX_ACCESS_TOKEN: "synthetic-model-credential",
+      OPENAI_API_KEY: "synthetic-model-credential",
       OCC_TEST_OPENAI_MODEL: "synthetic-model",
       BUILDX_BUILDER: "owned-installer-builder",
     });
@@ -1686,7 +1915,7 @@ const statePath = process.argv[2];
 const lane = "postgres-application";
 const selected = await prepareFile({
   lane,
-  file: "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+  file: "tests/integration/postgres-native-iam-policy-barrier.test.ts",
   statePath,
 });
 assert.equal(selected.env.OCC_TEST_NATIVE_IAM_BARRIER_CI, "1");
@@ -1755,7 +1984,7 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
           "--lane",
           "postgres-application",
           "--file",
-          "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+          "tests/integration/postgres-native-iam-policy-barrier.test.ts",
           "--state",
           statePath,
           ...extra,
@@ -3551,13 +3780,117 @@ if (args[0] === "pull") {
     }
   });
 
+  test("OpenShell preparation binds custom credentials to a focused destination before effects", async (t) => {
+    const root = await fixture(t);
+    const upstream = "tests/integration/openshell-upstream-real.test.ts";
+    const guided = [
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+    ];
+    const cases = [];
+    for (const lane of ["openshell", "openshell-installers", "openshell-policy"]) {
+      cases.push(
+        {
+          lane,
+          endpoint: "https://custom-model.example.test/v1",
+          pat: true,
+          error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+        },
+        {
+          lane,
+          native: true,
+          pat: true,
+          error: /Custom native providers require a focused first-Agent file/u,
+        },
+      );
+    }
+    cases.push(
+      { file: upstream, endpoint: "https://custom-model.example.test/v1" },
+      {
+        file: guided[0],
+        endpoint: "https://custom-model.example.test/v1",
+        error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+      },
+      {
+        file: upstream,
+        native: true,
+        error: /Custom native providers require a focused first-Agent file/u,
+      },
+    );
+    for (const file of [
+      "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+      "tests/integration/openshell-credentials-real.test.ts",
+      "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+    ]) {
+      cases.push({
+        file,
+        endpoint: "https://custom-model.example.test/v1",
+        pat: true,
+        error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+      });
+    }
+    for (const file of [undefined, upstream]) {
+      cases.push({
+        file,
+        endpoint: "malformed-private-endpoint",
+        error: /The OpenShell model endpoint must be a valid absolute URL/u,
+      });
+    }
+    for (const file of guided) {
+      cases.push(
+        { file, native: true, error: /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/u },
+        { file, native: "   ", error: /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/u },
+        { file, native: true, pat: true },
+        {
+          file,
+          native: true,
+          pat: true,
+          noKey: true,
+          error: /Missing required CI input\(s\): OPENAI_API_KEY/u,
+        },
+      );
+    }
+    for (const [index, value] of cases.entries()) {
+      await t.test(`selection ${index}`, async () => {
+        const lane = value.lane ?? "openshell";
+        const statePath = join(root, `bound-credential-${index}.json`);
+        // Distinct synthetic destinations cannot share a key across whole-lane
+        // siblings. Valid focused inputs stop at the immutable-image gate.
+        const result = await runProgram(
+          `const { prepareLane } = await import(process.argv[1]);
+         await prepareLane({ lane: ${JSON.stringify(lane)}, statePath: process.argv[2], file: ${JSON.stringify(value.file)} });`,
+          statePath,
+          {
+            ...process.env,
+            GITHUB_ENV: "",
+            GITHUB_OUTPUT: "",
+            OCC_CI_SUITE_VIEW: lane === "openshell" ? "default" : "full-integration",
+            OPENAI_API_KEY: value.noKey ? "" : "synthetic-custom-provider-key",
+            CODEX_ACCESS_TOKEN: value.pat ? "synthetic-separate-codex-token" : "",
+            OCC_TEST_OPENAI_MODEL: "fixture-model",
+            OCC_TEST_OPENSHELL_HARNESS: "codex",
+            OCC_TEST_OPENSHELL_MODEL_BASE_URL: value.endpoint ?? "",
+            OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE:
+              value.native === true ? join(root, "custom-provider.json") : value.native || "",
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
+          },
+          10_000,
+        );
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, value.error ?? /must be an immutable image@sha256 reference/u);
+        assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
+        await assert.rejects(stat(statePath), { code: "ENOENT" });
+      });
+    }
+  });
+
   test("OpenShell preparation requires the selected owner's credential before side effects", async (t) => {
     const root = await fixture(t);
     const owner = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
     const other = "tests/integration/local-first-agent-openshell-real.test.mjs";
     const cases = [
       { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"] },
-      { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN"] },
+      { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN"], missing: "OPENAI_API_KEY" },
       { harness: "codex", credentials: ["OPENAI_API_KEY"], missing: "CODEX_ACCESS_TOKEN" },
       { harness: "openclaw", credentials: ["OPENAI_API_KEY"], missing: "CODEX_ACCESS_TOKEN" },
       { harness: "openclaw", credentials: ["OPENAI_API_KEY"], file: owner },
@@ -3578,7 +3911,6 @@ if (args[0] === "pull") {
       {
         harness: "openclaw",
         credentials: ["OPENAI_API_KEY"],
-        missing: "CODEX_ACCESS_TOKEN",
         file: other,
       },
       {
@@ -3620,12 +3952,8 @@ if (args[0] === "pull") {
     }
     // Each split owner must retain the credential admission gate before any resource is created.
     for (const file of [
-      "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
-      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
       "tests/integration/openshell-credentials-real.test.ts",
-      "tests/integration/openshell-withdrawal-real.test.ts",
-      "tests/integration/openshell-upstream-real.test.ts",
-      "tests/integration/openshell-refresh-real.test.ts",
+      "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
     ]) {
       cases.push(
         { harness: "codex", credentials: ["OPENAI_API_KEY"], file, missing: "CODEX_ACCESS_TOKEN" },
@@ -3637,6 +3965,48 @@ if (args[0] === "pull") {
           missing: "OPENAI_API_KEY",
         },
         { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
+      );
+    }
+    // Namespace declares OpenClaw itself; both preparers must honor that declaration
+    // even when an inherited selector asks for Codex. No PAT is needed by its child.
+    for (const prepareLane of [false, true]) {
+      for (const harness of [undefined, "codex"]) {
+        for (const credentials of [["OPENAI_API_KEY"], ["CODEX_ACCESS_TOKEN"]]) {
+          cases.push({
+            file: "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+            prepareLane,
+            harness,
+            credentials,
+            ...(credentials.includes("OPENAI_API_KEY") ? {} : { missing: "OPENAI_API_KEY" }),
+          });
+        }
+      }
+    }
+    // The new finite-Git installer still consumes a PAT; joining the installer
+    // lane must not make its file-level preparation accept an API key alone.
+    for (const credentials of [["OPENAI_API_KEY"], ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]]) {
+      cases.push({
+        harness: "codex",
+        credentials,
+        file: "tests/integration/openshell-git-finite-removal-real.test.ts",
+        ...(credentials.includes("CODEX_ACCESS_TOKEN") ? {} : { missing: "CODEX_ACCESS_TOKEN" }),
+      });
+    }
+    // Generic workflows use API keys even when an unrelated managed PAT is present.
+    // PAT-only input must fail before the preparer creates a state file or any resources.
+    for (const file of [
+      "tests/integration/openshell-upstream-real.test.ts",
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-refresh-real.test.ts",
+      "tests/integration/openshell-withdrawal-real.test.ts",
+      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+    ]) {
+      cases.push(
+        { harness: "codex", credentials: ["OPENAI_API_KEY"], file },
+        { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"], file },
+        { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN"], file, missing: "OPENAI_API_KEY" },
       );
     }
     const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
@@ -3704,13 +4074,72 @@ if (args[0] === "pull") {
     }
   });
 
+  // Each complete OpenShell cohort includes API-key and PAT workflows. Reject
+  // either missing input before creating shared resources.
+  for (const lane of ["openshell", "openshell-policy", "openshell-installers"]) {
+    for (const harness of ["codex", "openclaw"]) {
+      for (const credentials of [
+        [],
+        ["OPENAI_API_KEY"],
+        ["CODEX_ACCESS_TOKEN"],
+        ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"],
+      ]) {
+        test(`whole ${lane} admission with ${harness} and ${credentials.join("+") || "no credentials"}`, async (t) => {
+          const root = await fixture(t);
+          const statePath = join(root, "cohort.json");
+          const result = await runProgram(
+            `const { prepareLane } = await import(process.argv[1]);
+           await prepareLane({ lane: ${JSON.stringify(lane)}, statePath: process.argv[2] });`,
+            statePath,
+            {
+              ...process.env,
+              GITHUB_ENV: "",
+              GITHUB_OUTPUT: "",
+              OCC_CI_SUITE_VIEW: lane === "openshell" ? "default" : "full-integration",
+              OPENAI_API_KEY: "",
+              CODEX_ACCESS_TOKEN: "",
+              ...Object.fromEntries(
+                credentials.map((name) => [name, "synthetic-fixture-credential"]),
+              ),
+              OCC_TEST_OPENAI_MODEL: "fixture-model",
+              OCC_TEST_OPENSHELL_HARNESS: harness,
+              OCC_K3D_HARNESS: harness,
+              OCC_TEST_OPENSHELL_MODEL_BASE_URL: "",
+              OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
+              // Valid credential admission stops here instead of creating resources.
+              OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
+            },
+            10_000,
+          );
+          assert.equal(result.status, 1);
+          const missing = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].filter(
+            (name) => !credentials.includes(name),
+          );
+          if (missing.length) {
+            assert.match(result.stderr, /Missing required CI input/u);
+            for (const name of missing) {
+              assert.ok(
+                result.stderr.includes(name),
+                `missing credential ${name} must be reported`,
+              );
+            }
+            assert.doesNotMatch(result.stderr, /must be an immutable/u);
+          } else {
+            assert.match(result.stderr, /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/u);
+          }
+          await assert.rejects(stat(statePath), { code: "ENOENT" });
+        });
+      }
+    }
+  }
+
   test("OpenShell prepares the source selection once and passes the resulting inputs to a gateway file", async (t) => {
     const root = await fixture(t);
     const lane = "openshell";
     const file = "tests/integration/openshell-refresh-real.test.ts";
     const sourceRevision = "a".repeat(40);
     const baseEnv = {
-      CODEX_ACCESS_TOKEN: "synthetic-fixture-credential",
+      OPENAI_API_KEY: "synthetic-fixture-credential",
       OCC_TEST_OPENAI_MODEL: "fixture-model",
       OCC_HELM_BIN: join(root, "must-not-run-helm"),
       OCC_DOCKER_BIN: join(root, "must-not-run-docker"),
@@ -3752,7 +4181,7 @@ if (args[0] === "pull") {
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
     };
     for (const [name, version] of [
-      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.6" }],
+      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.8" }],
       [
         "candidate",
         {
@@ -3794,7 +4223,14 @@ if (args[0] === "pull") {
          assert.equal(migration.pathname, application.pathname);
          await prepared.cleanup();`,
         statePath,
-        { ...baseEnv, ...env },
+        {
+          ...baseEnv,
+          ...env,
+          // Main's stock scratch case retains its PAT path; the candidate refresh uses API keys.
+          ...(name === "stock"
+            ? { OPENAI_API_KEY: "", CODEX_ACCESS_TOKEN: "synthetic-fixture-credential" }
+            : {}),
+        },
         10_000,
       );
       assert.equal(result.status, 0, result.stderr);
@@ -3854,6 +4290,7 @@ if (args[0] === "pull") {
   test("Kubernetes runtime consumers reject a foreign artifact without a source-build fallback", async (t) => {
     for (const lane of ["gateway-routing", "production-tui"]) {
       const commands = await fixtureImageCommands(t, "artifact-import", lane, {
+        GITHUB_ACTIONS: "true",
         NODE_BASE_IMAGE: packagingNodeBaseImage,
         OPENAI_API_KEY: "synthetic-model-key",
         OCC_TEST_OPENAI_MODEL: "synthetic-model",
@@ -3871,6 +4308,7 @@ if (args[0] === "pull") {
       const prepared = await commands.prepare();
       assert.equal(prepared.status, 1, lane);
       assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/, lane);
+      assert.deepEqual(modelPreparationNotices(prepared.stderr), []);
       const calls = await commands.commands();
       assert.equal(
         calls.some(

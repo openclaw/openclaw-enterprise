@@ -38,9 +38,7 @@ OpenShell is a development integration. See the
    referenced Secret. A protected metadata source requires `agent:operate`
    on the active, dedicated Agent named by `config.agent_id` in that Namespace.
 
-For example, this source names the GitHub App, installation, repository and
-Agent. `"authority": "execution"` admits requests from processes throughout
-that execution. Replace the example IDs and Secret reference with your own.
+Replace the sample IDs and Secret reference. Execution authority admits every process in that execution.
 
 ```json
 {
@@ -64,12 +62,13 @@ that execution. Replace the example IDs and Secret reference with your own.
 }
 ```
 
-OCC returns `201` with a `cs_` source ID, binding `ref` and status. Use the
-`cs_` ID in the Agent draft. The `sec_` reference stays on the source.
+The `201` response includes the `cs_` source ID, binding `ref` and status. Bind the Agent to the source ID. The source retains the `sec_` reference.
 
 - `name` is unique within the Namespace.
-- `type` must be offered by the installation. With a Credential Proxy selected,
-  registration also requires a protected profile for that type.
+- Select an offered `type`. With a Proxy selected, fresh ordinary Gateway
+  registration requires the validated Git-only profile and a static Harness model
+  type. Refresh, device authorization and ChatGPT OAuth are ineligible.
+  Protected admission uses the Proxy. Explicit live adoption preserves the source’s recorded owner.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`. Custom authorization must match the
@@ -106,10 +105,7 @@ status `pending` while its worker prepares the token.
 and returns only sources on which the caller has exact `read`. Lists
 do not call the gateway and omit `status`.
 
-The record's `state` is `registering`, `ready`, or `deleting`. A source left
-`registering` by an interrupted request never becomes usable; delete it to
-remove any gateway copy. A `registering` or `deleting` source cannot be
-bound or deployed.
+The record's `state` is `registering`, `ready`, or `deleting`. Bind or deploy only ready sources. Delete interrupted registrations to remove any Gateway copy.
 
 ## Bind a source to an Agent
 
@@ -157,11 +153,11 @@ the Agent's `credentialSources`, and grants its service principal exact source
 permission on the underlying model Secret. Queued and running provisioning jobs
 keep their source referenced before the Agent exists.
 
-The Console uses the selected gateway catalog from Installation capabilities, or a
-member's [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
-For supported Dedicated API-key creation, it registers the selected model Secret
-before submitting the provisioning request; the provider and Secret controls are
-shared by both Harnesses. See [Console creation](console/create-and-deploy.md).
+The Console reads the Gateway catalog from Installation or [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
+Both Dedicated Harnesses share provider and Secret controls. API-key provisioning registers the Secret first. See [Console creation](console/create-and-deploy.md).
+
+For Git-only model delivery without repositories, bind one ready static Harness
+source from the selected Gateway. Kubernetes [rechecks its lifecycle before release](../flows/credential-source-lifecycle.md#6-resolve-the-source-at-dispatch).
 
 ## Update a source
 

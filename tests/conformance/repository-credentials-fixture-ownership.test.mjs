@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { run } from "../fixtures/repository-credentials/process.mjs";
-import { ownedNetwork } from "../fixtures/repository-credentials-isolation/ownership.mjs";
+import { ownedNetwork } from "../fixtures/repository-credentials-isolation/ownership.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // These checks qualify fixture ownership only; they do not run the service,
@@ -14,7 +14,7 @@ test("runner timeout cancels and joins commands before teardown admits cleanup",
   const late = join(directory, "late");
   const cleaned = join(directory, "cleaned");
   const ownership = new URL(
-    "../fixtures/repository-credentials-isolation/ownership.mjs",
+    "../fixtures/repository-credentials-isolation/ownership.ts",
     import.meta.url,
   ).href;
   const processModule = new URL("../fixtures/repository-credentials/process.mjs", import.meta.url)

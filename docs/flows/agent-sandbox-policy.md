@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: "2026-11-11"
+updated: "2026-11-13"
 last_updated_session: "01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd"
 ---
 
@@ -65,18 +65,16 @@ budget keyed by verified admission method, issuer, and subject before IAM lookup
 Preset and Configuration writes share this early budget. Policy writes then
 resolve the principal, charge their stricter shared principal budget, and call
 `authorizeBeforeBody`. It delegates Agent `manage_policy` and SandboxPolicy
-`update` checks to `OpenClawController.authorizeAgentSandboxPolicyWrite`; admission
-repeats authorization. Either budget returns 429 and `Retry-After` before body
+`update` checks to `OpenClawController.authorizeAgentSandboxPolicyWrite`; apply
+also checks SandboxPolicy `read`. Preview, save, and apply share the body budget;
+admission repeats authorization. Either budget returns 429 and `Retry-After` before body
 reads. [API limits](../reference/api-explorer.md#write-request-limits) and
 [policy limits](../reference/sandbox-policies.md) define their scopes and values.
 
-Startup, discovery, and policy requests use
-`packages/contracts/src/sandbox-policy.ts:SandboxNetworkGrantsSchema` for the
-16,384-entry bound. The controller snapshots `createSandboxNetworkGrantChecker`
-at construction, grouping by executable and hostname and combining adjacent port
-ranges. Admission checks exact and single-label wildcard hosts together without
-scanning the ceiling for every rule. The worker's
-`sandboxNetworkGrantsWithinCeiling` builds the same index for application checks.
+The shared `SandboxNetworkGrantsSchema` bounds policies at 16,384 entries.
+`createSandboxNetworkGrantChecker` indexes executables and hostnames, merges port
+ranges, and checks exact and single-label wildcard hosts. Controller admission and
+worker application use this index.
 
 `validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
 current editing flag, expected version, and pending application, then runs shared
@@ -148,8 +146,9 @@ snapshot rather than re-reading changed defaults.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before any refusal that names saved additions, then requires
-the exact active revision and supporting Driver. It persists a pending application and durable Agent-target work in one
-transaction. Neither saving nor enqueueing establishes enforcement.
+the exact active revision and supporting Driver. When the caller supplies reviewed additions, the same transaction saves the new
+policy version, records its pending application and enqueues Agent-target work.
+Omitting additions retains the saved policy version. Neither saving nor enqueueing establishes enforcement.
 
 ### 3. Reconcile provider effects
 
@@ -219,15 +218,15 @@ validated array with the reviewed policy version. Superseded preview and read re
 cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
 cannot invalidate a newer request. A pending application re-arms polling after
 the latest read, including a response discarded after a draft edit.
-An unreadable preview retains the draft for another review. Save and apply checks
-that the save response names this policy, Agent, Namespace, next version, and
-the rules shown in review before requesting application to the selected revision.
-Starting a write invalidates earlier policy reads and pauses polling. After an
-unconfirmed save, only an explicit refresh started after the outcome can reopen editing.
-Save alone leaves running enforcement unchanged. Applying a
-previously saved policy is disabled while local edits are unsaved. If application
-fails after saving, the alert identifies the saved version rather than implying
-that the entire operation was rejected. `loadPolicy(true)` records explicit
+An unreadable preview retains the draft for another review. The combined request
+must return the reviewed rules, the next version of this Agent’s policy and a
+fresh pending application for the selected running revision. Starting a write
+invalidates earlier policy reads and pauses polling. If the combined response is
+lost or does not match, the Console reads the policy again. An unsuccessful
+read leaves **Refresh policy** available in the open editor. A refused request
+keeps the edit local. After admission, the provider outcome remains pending
+until confirmed. **Save for later** only saves. **Apply saved rules** requires
+a clean draft and targets the existing saved version. `loadPolicy(true)` records explicit
 inspection of a failed application. Refresh issues only the policy GET; a separate
 Retry application action invokes the existing apply descriptor after inspection.
 The action remains subject to current permissions, lifecycle, and draft guards.
@@ -277,6 +276,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-13: Trace the Console’s single save-and-apply request and its atomic admission for a running Agent.
 
 - 2026-11-11 11:50: Bound identity lookup and classify early write refusals. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - b9a678f1b)
 

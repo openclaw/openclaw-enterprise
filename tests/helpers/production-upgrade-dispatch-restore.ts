@@ -16,18 +16,21 @@ import {
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout } from "node:timers/promises";
+import { restartInventory } from "./production-upgrade-retained-fleet-preflight.ts";
 
 type UpgradeFixture = {
   directory: string;
   evidence: string;
   commands: string[];
   deploy(namespaceId: string, agentId: string): Promise<{ stdout: string }>;
-  run(...args: string[]): Promise<unknown>;
+  run(...args: string[]): Promise<{ stderr: string }>;
   failNext(fault: string): Promise<void>;
   state(): Promise<{
     dispatches: number;
     activeRevision?: string;
     deployFailures?: Record<string, string>;
+    deployNotices?: Record<string, string>;
+    inventoryReadCount?: number;
   }>;
   events(): Promise<string[]>;
 };
@@ -40,8 +43,11 @@ type FixtureOptions = {
     status: string;
     agents: Record<string, string | boolean>[];
   }[];
+  inventoryResponses?: readonly ReturnType<typeof restartInventory>[];
   names?: Record<string, string>;
 };
+
+type UpgradeFixtureFactory = (t: TestContext, options: FixtureOptions) => Promise<UpgradeFixture>;
 
 async function quarantineContents(directory: string, quarantine: string): Promise<void> {
   await mkdir(quarantine, { mode: 0o700 });
@@ -51,7 +57,7 @@ async function quarantineContents(directory: string, quarantine: string): Promis
 }
 
 export function registerDispatchRestoreTests(
-  fixture: (t: TestContext, options: FixtureOptions) => Promise<UpgradeFixture>,
+  fixture: UpgradeFixtureFactory,
   injectedFault: { code: number },
 ): void {
   for (const outcome of ["succeeded", "failed"] as const) {
@@ -393,5 +399,58 @@ export function registerDispatchRestoreTests(
       pause.emit("release");
       await original;
     }
+  });
+}
+
+export function registerUnknownAgentDeploymentResumeTest(fixture: UpgradeFixtureFactory): void {
+  test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
+    // A normal runtime upgrade can replace a worker-bound revision, but a lost
+    // response must never turn that planned replacement into a second deployment.
+    const inventory = restartInventory("original-worker-required");
+    const f = await fixture(t, { agent: true, inventoryResponses: [inventory, inventory] });
+    await f.failNext("lost-agent-response");
+    await assert.rejects(f.run(), /deployment outcome is unknown/);
+    const calls = f.commands.length;
+    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+    assert.equal(f.commands.length, calls);
+    assert.equal((await f.state()).dispatches, 1);
+    const receipt = join(f.evidence, "dispatch/ns_test--agt_test.json");
+    // An arbitrary or baseline revision cannot resolve the pending dispatch.
+    for (const id of ["rev_missing", "rev_old"]) {
+      await writeFile(receipt, JSON.stringify({ id }), { mode: 0o600 });
+      await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+      assert.equal((await f.state()).dispatches, 1);
+    }
+    // Simulate the operator confirming this revision in durable history and
+    // recording the accepted request before resuming the readiness checks.
+    await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
+    await f.run("--resume");
+    assert.equal((await f.state()).dispatches, 1);
+    assert.equal((await f.state()).inventoryReadCount, 2);
+  });
+}
+
+export function registerAcceptedAgentDeployNoticeTest(fixture: UpgradeFixtureFactory): void {
+  // occ's notices about an accepted deploy, such as a revision with no Harness overrides to
+  // retain, must reach the operator in the run output and not only the evidence directory.
+  // A control character in a notice must not reach the terminal.
+  test("an accepted Agent deploy shows occ's notices in the run output", async (t) => {
+    const f = await fixture(t, { agent: true });
+    const notice =
+      "revision rev_old has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: configuration) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.";
+    const state = await f.state();
+    state.deployNotices = { agt_test: `notice: ${notice}\u001b[2J` };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const result = await f.run();
+    assert.ok(
+      result.stderr
+        .split("\n")
+        .includes(`upgrade-production-images: Agent agt_test in Namespace ns_test: ${notice}?[2J`),
+      result.stderr,
+    );
+    assert.equal(
+      await readFile(join(f.evidence, "dispatch/ns_test--agt_test.error"), "utf8"),
+      `notice: ${notice}\u001b[2J\n`,
+    );
   });
 }

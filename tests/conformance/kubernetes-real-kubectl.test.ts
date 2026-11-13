@@ -29,7 +29,7 @@ import {
   withBoundedTeardown,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
@@ -136,7 +136,7 @@ function expectError(value: unknown): Error {
 }
 
 const execute = promisify(execFile);
-const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
+const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mts", import.meta.url));
 
 // execFile rejects a non-zero kubectl exit with a numeric code and the
 // captured stderr; a spawn failure has a string code and no stderr.
@@ -1291,7 +1291,13 @@ test(
       import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelperUrl)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       test("proof", async (testContext) => {
-        const { context } = boundedTeardown(testContext, { stepLimitMs: 200, exitGraceMs: 50 });
+        const { context } = boundedTeardown(testContext, {
+          stepLimitMs: 200,
+          exitGraceMs: 50,
+          onOutcome: (outcome) => testContext.diagnostic(
+            "openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-fixture-teardown", outcome }),
+          ),
+        });
         let poll;
         registerOpenShellInstallationCleanups(context, {
           workerStop: () => {
@@ -1317,6 +1323,10 @@ test(
       "attempted workload Namespace",
       "attempted temporary directory",
     ]);
+    assert.match(
+      exited.stdout,
+      /openclaw-ci-measurement \{"kind":"openshell-fixture-teardown","outcome":"failed"\}/,
+    );
     assert.match(
       exited.stderr,
       /teardown: cleanup workerStop registered at openshell-kubernetes-real\.mjs:\d+ failed: did not finish within 200 ms/,
@@ -2279,7 +2289,7 @@ test("only the probe's denial exit code with its stdout report is a denial", () 
 });
 
 // The Gateway container does not mount the probe fixture, so the Gateway
-// connect check (finding 335) runs probe.mjs from its source text.
+// connect check (finding 335) runs the stripped probe source inline.
 async function fakeKubectlExecInline(source: string, ...probeArguments: Array<string | number>) {
   const [node, script, ...args]: unknown[] = inlineProbeCommand(source, ...probeArguments);
   assert.equal(node, "node");

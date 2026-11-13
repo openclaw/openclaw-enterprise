@@ -42,20 +42,40 @@ stops provisioning permanently.
 
 ### Grant tenant RoleBindings
 
-Single-cluster Compute uses the same tenant namespace for both runtime roles and
-canonical storage. Grant the worker runtime role and API credential/configuration
-roles there. Replace the `oce-` prefix if the Helm release name differs:
+Single-cluster Compute uses the same tenant namespace for runtime roles and
+canonical storage. Use the Helm release and Kubernetes namespace from the
+control-plane install. The chart prefixes the three tenant ClusterRoles with
+the release name and creates fixed-name ServiceAccounts in the install namespace.
 
 ```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
-  --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
-  --clusterrole=oce-openclaw-tenant-api --serviceaccount=openclaw-system:openclaw-enterprise-api
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-configuration \
-  --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
+# Control-plane installation example
+RELEASE=oce
+CONTROL_PLANE_NAMESPACE=openclaw-system
+# For a different install, use its values. Example:
+# RELEASE=openclaw-enterprise
+# CONTROL_PLANE_NAMESPACE=oce-system
+
+tenant_kubectl() {
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" "$@"
+}
+WORKER_SA="$CONTROL_PLANE_NAMESPACE:openclaw-enterprise-worker"
+API_SA="$CONTROL_PLANE_NAMESPACE:openclaw-enterprise-api"
+```
+
+For OpenShell Sandbox, first create and bind the tenant-local workspace
+provisioner Role. Use the Role and its RoleBinding from
+[OpenShell Namespace preparation](eks-openshell-installation.md#3-authenticate-and-prepare-the-namespace)
+with the worker ServiceAccount above.
+
+Grant the API credential and configuration roles, then the worker runtime role.
+
+```bash
+tenant_kubectl create rolebinding openclaw-enterprise-api-secrets \
+  --clusterrole="$RELEASE-openclaw-tenant-api" --serviceaccount="$API_SA"
+tenant_kubectl create rolebinding openclaw-enterprise-api-configuration \
+  --clusterrole="$RELEASE-openclaw-tenant-configuration" --serviceaccount="$API_SA"
+tenant_kubectl create rolebinding openclaw-enterprise-worker \
+  --clusterrole="$RELEASE-openclaw-tenant-worker" --serviceaccount="$WORKER_SA"
 ```
 
 The Secret role also grants Deployment list access for credential preflight and

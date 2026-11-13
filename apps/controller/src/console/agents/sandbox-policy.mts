@@ -664,7 +664,6 @@ export function renderAgentSandboxPolicy(
     !unknownOutcome;
   const canEdit = () => !mutation && hasEditAuthority();
   const editable = () => canEdit() && !protectedExecution();
-  // Save-then-apply owns an active mutation, but must recheck all policy authority.
   const canApplySavedPolicy = () =>
     current() &&
     hasEditAuthority() &&
@@ -1295,6 +1294,7 @@ export function renderAgentSandboxPolicy(
     requiresEditAuthority = true,
     failureMessage = (error: unknown) =>
       errorText(error, "changing this Agent’s policy", POLICY_CHANGE_GRANT),
+    reloadOnUncertainty = false,
   ) {
     if (mutation || unknownOutcome) {
       return;
@@ -1317,7 +1317,10 @@ export function renderAgentSandboxPolicy(
       rejected = true;
       const { status } = requestFailure(error);
       validationDetails = requestErrorDetails(error);
-      feedback.textContent = failureMessage(error);
+      feedback.textContent =
+        error instanceof Error && (error === unconfirmedApply || error === unconfirmedSave)
+          ? error.message
+          : failureMessage(error);
       feedback.className = "error";
       feedback.setAttribute("role", "alert");
       if (status === 403 && requiresEditAuthority) {
@@ -1327,6 +1330,9 @@ export function renderAgentSandboxPolicy(
         unknownOutcome = true;
         feedback.textContent +=
           " Refresh policy to check the outcome before making another change.";
+        if (reloadOnUncertainty) {
+          await loadPolicy();
+        }
       }
     } finally {
       mutation = false;
@@ -1432,14 +1438,10 @@ export function renderAgentSandboxPolicy(
         canApply
       ) {
         dialogActions.append(
-          button(
-            failed ? "Retry application" : "Apply saved rules",
-            () => void mutate(applySavedPolicy, true, applyErrorText),
-            {
-              tone: "primary",
-              disabled: mutation,
-            },
-          ),
+          button(failed ? "Retry application" : "Apply saved rules", applySavedPolicy, {
+            tone: "primary",
+            disabled: mutation,
+          }),
         );
       }
       const addRule = rulesOverview.querySelector(".sandbox-add-rule");
@@ -1592,60 +1594,37 @@ export function renderAgentSandboxPolicy(
           !canEdit() ||
           generation !== draftGeneration ||
           expectedVersion !== view?.policy.version ||
-          (protectedExecution() && (apply || reviewedRules.length !== 0))
+          (apply && !canApplySavedPolicy()) ||
+          (protectedExecution() && reviewedRules.length !== 0)
         ) {
           return;
         }
-        let savedVersion: number | undefined;
-        const unconfirmedSave = new Error(
-          "The Console could not confirm the saved rules. Live application was not requested.",
-        );
         void mutate(
           async () => {
             if (!view?.configuration) {
               return;
             }
-            const action = configurationAction(view.configuration, "save");
-            const saved = (await context.request(action.href, {
-              method: action.method,
-              expectedStatus: 200,
-              body: { expectedVersion, additions: reviewedRules },
-            })) as Policy | null;
-            if (
-              saved?.id !== policy.id ||
-              saved.agentId !== agent.id ||
-              saved.namespaceId !== agent.namespaceId ||
-              saved.version !== expectedVersion + 1 ||
-              !sameValue(saved.additions, reviewedRules)
-            ) {
-              throw unconfirmedSave;
+            const saved = await writePolicy(view.configuration, policy, apply, reviewedRules);
+            if (!current()) {
+              return;
             }
             view.policy = saved;
             additions = structuredClone(saved.additions);
-            savedVersion = saved.version;
             outcomeRequested = true;
+            failedApplicationInspected = false;
             selected.clear();
             stagedReview = undefined;
             editingRules = false;
             dialog.close();
-            if (apply) {
-              await applySavedPolicy();
-            } else {
+            if (!apply) {
               feedback.textContent = protectedExecution()
                 ? `Policy v${saved.version} saved without network rules. The current revision is unchanged. Deploy a new version when ready.`
                 : `Policy v${saved.version} saved. The current revision is unchanged. Apply the saved policy or deploy a new version when ready.`;
             }
           },
           true,
-          (error) => {
-            if (error === unconfirmedSave) {
-              return unconfirmedSave.message;
-            }
-            // Once the save succeeded, the refusal came from application, which also needs read.
-            return savedVersion === undefined
-              ? errorText(error, "changing this Agent’s policy", POLICY_CHANGE_GRANT)
-              : `Policy v${savedVersion} was saved, but application to the current revision was not confirmed. ${applyErrorText(error)}`;
-          },
+          apply ? applyErrorText : undefined,
+          apply,
         );
       }
       const changed = reviewedRules.filter(
@@ -1857,19 +1836,69 @@ export function renderAgentSandboxPolicy(
     updateDraftStatus();
   }
 
-  async function applySavedPolicy() {
-    outcomeRequested = true;
-    failedApplicationInspected = false;
+  const unconfirmedSave = new Error(
+    "The Console could not confirm the saved rules. Live application was not requested.",
+  );
+  const unconfirmedApply = new Error(
+    "The Console could not confirm the saved rules and pending application.",
+  );
+
+  async function writePolicy(
+    descriptor: Pick<DriverConfigurationDescriptor, "actions">,
+    policy: Policy,
+    apply: boolean,
+    reviewedRules?: SandboxNetworkGrant[],
+  ) {
+    const action = configurationAction(descriptor, apply ? "apply" : "save");
+    const saved = (await context.request(action.href, {
+      method: action.method,
+      expectedStatus: apply ? 202 : 200,
+      body: {
+        expectedVersion: policy.version,
+        ...(apply ? { revisionId } : {}),
+        ...(reviewedRules === undefined ? {} : { additions: reviewedRules }),
+      },
+    })) as Policy | null;
+    if (
+      saved?.id !== policy.id ||
+      saved.agentId !== agent.id ||
+      saved.namespaceId !== agent.namespaceId ||
+      saved.version !== policy.version + (reviewedRules === undefined ? 0 : 1) ||
+      !sameValue(saved.additions, reviewedRules ?? policy.additions) ||
+      (apply &&
+        (saved.application?.state !== "pending" ||
+          typeof saved.application.id !== "string" ||
+          !saved.application.id ||
+          saved.application.id === policy.application?.id ||
+          saved.application.revisionId !== revisionId ||
+          saved.application.policyVersion !== saved.version))
+    ) {
+      throw apply ? unconfirmedApply : unconfirmedSave;
+    }
+    if (apply && current()) {
+      feedback.textContent = `Policy v${saved.version} saved. Application to the current revision is pending. Enforcement is confirmed only after the provider loads this policy.`;
+    }
+    return saved;
+  }
+
+  function applySavedPolicy() {
     if (!view?.configuration || !canApplySavedPolicy() || hasProposedChanges()) {
       return;
     }
-    const action = configurationAction(view.configuration, "apply");
-    const applied = (await context.request(action.href, {
-      method: action.method,
-      body: { expectedVersion: view.policy.version, revisionId },
-    })) as Policy;
-    view.policy = applied;
-    feedback.textContent = `Policy v${applied.version} saved. Application to the current revision is pending. Enforcement is confirmed only after the provider loads this policy.`;
+    const { configuration, policy } = view;
+    void mutate(
+      async () => {
+        const applied = await writePolicy(configuration, policy, true);
+        if (current() && view) {
+          view.policy = applied;
+          outcomeRequested = true;
+          failedApplicationInspected = false;
+        }
+      },
+      true,
+      applyErrorText,
+      true,
+    );
   }
 
   function schedulePendingPolicyRead(delay = 3000) {
@@ -1912,7 +1941,12 @@ export function renderAgentSandboxPolicy(
             "Policy application was not confirmed. Inspect the application status before retrying.";
         }
       }
-      if (keepDraft) {
+      if (unknownOutcome) {
+        feedback.textContent = `Policy v${view.policy.version} reloaded. Check the saved rules and application status before making another change.`;
+        feedback.className = "";
+        feedback.setAttribute("role", "status");
+      }
+      if (keepDraft && !sameValue(additions, view.policy.additions)) {
         feedback.textContent = `Policy v${view.policy.version} reloaded. Your draft is retained; review it against the saved policy before saving.`;
       } else {
         additions = structuredClone(view.policy.additions);
@@ -2011,6 +2045,9 @@ export function renderAgentSandboxPolicy(
     }
     // Keep the failed read and its recovery action visible after a mutation finishes.
     if (policyReadUnavailable) {
+      if (dialog.open) {
+        renderEditor();
+      }
       return;
     }
     manageButton.disabled = mutation || !view;
@@ -2209,7 +2246,7 @@ export function renderAgentSandboxPolicy(
       const actions = element("div", { className: "sandbox-outcome-actions" });
       if (outcome.title === "Saved for later" && !hasProposedChanges() && canApplySavedPolicy()) {
         actions.append(
-          button("Apply saved rules", () => void mutate(applySavedPolicy, true, applyErrorText), {
+          button("Apply saved rules", applySavedPolicy, {
             size: "sm",
             disabled: mutation,
           }),
@@ -2231,7 +2268,7 @@ export function renderAgentSandboxPolicy(
         canApplySavedPolicy()
       ) {
         actions.append(
-          button("Retry application", () => void mutate(applySavedPolicy, true, applyErrorText), {
+          button("Retry application", applySavedPolicy, {
             size: "sm",
             disabled: mutation,
           }),

@@ -52,7 +52,6 @@ import {
   AuthAccountRoleInvalidError,
   AuthAccountRoleNotFoundError,
   NativeIAMDriver,
-  type AuthPrincipalSeed,
 } from "@openclaw-enterprise/iam";
 import {
   AgentPrincipalAuthorizationError,
@@ -61,6 +60,7 @@ import {
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
   ResourceStateConflictError,
@@ -98,7 +98,7 @@ import {
   ServiceKeyNameRefused,
   type ClientAddressConfiguration,
   type ControllerAuth,
-  type PreparedAuthAccount,
+  type ProvisionAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
 import { createBootstrapResources } from "./composition/installation-bootstrap.ts";
@@ -230,12 +230,7 @@ export interface ControllerAppOptions {
   readonly agentRuntimeLogs?: AgentRuntimeLogsConfig;
   readonly publicOrigin?: string;
   /** Writes the prepared account with its Principal, bindings and enrolment atomically. */
-  readonly provisionAuthAccount?: (
-    seed: AuthPrincipalSeed,
-    auditEvent: AuditEvent,
-    prepared: PreparedAuthAccount,
-    external?: { readonly providerId: string; readonly subject: string },
-  ) => Promise<void>;
+  readonly provisionAuthAccount?: ProvisionAuthAccount;
   readonly auditEventFactory?: AuditEventFactory;
   readonly logger?: FastifyBaseLogger;
   /** Production proxies allowed to send forwarded headers; admission ignores those headers. */
@@ -477,6 +472,14 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   }
 }
 
+function writesSandboxPolicy(operation: OccApiRoute): boolean {
+  return [
+    "validateAgentSandboxPolicy",
+    "updateAgentSandboxPolicy",
+    "applyAgentSandboxPolicy",
+  ].includes(operation.operationId);
+}
+
 /** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
 function authorizesBeforeBody(operation: OccApiRoute): boolean {
   return (
@@ -484,8 +487,7 @@ function authorizesBeforeBody(operation: OccApiRoute): boolean {
     operation.operationId === "updatePreset" ||
     operation.operationId === "createConfiguration" ||
     operation.operationId === "updateConfiguration" ||
-    operation.operationId === "validateAgentSandboxPolicy" ||
-    operation.operationId === "updateAgentSandboxPolicy"
+    writesSandboxPolicy(operation)
   );
 }
 
@@ -554,6 +556,7 @@ function operationTarget(
   if (
     (operation.operationId === "createAgent" ||
       operation.operationId === "validateAgentCreate" ||
+      operation.operationId === "getNamespaceAgentCapabilities" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
     namespaceId
@@ -616,6 +619,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     [
       "getAgentSandboxPolicy",
       "getAgentSandboxRecommendations",
+      "validateAgentSandboxPolicy",
       "updateAgentSandboxPolicy",
       "applyAgentSandboxPolicy",
     ].includes(operation.operationId)
@@ -1644,7 +1648,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         abort("The HTTP client disconnected before the workspace file request completed.");
       }
     };
-    if (request.raw.aborted) {
+    if (request.raw.aborted || reply.raw.destroyed) {
       abort("The HTTP client disconnected before the workspace file request.");
     }
     request.raw.once("aborted", onRequestAborted);
@@ -1728,12 +1732,28 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     context: RequestContext,
   ) {
     const target: ResourceRef = { kind: "installation", id: installationId };
-    let selected: IAMDriver;
+    const selected = selectedIAMDriver();
+    const decision = await installationAdminDecision(selected, context.actorId, target);
+    if (!decision.allowed) {
+      await denial(operation, request, "authorization_denial", context, decision.evidence);
+      throw failure(
+        403,
+        "FORBIDDEN",
+        callerDenialMessage({ action: "administer", resource: target }),
+      );
+    }
+    return { selected, target, decision };
+  }
+
+  async function installationAdminDecision(
+    selected: IAMDriver,
+    actorId: string,
+    target: ResourceRef,
+  ) {
     let decision;
     try {
-      selected = selectedIAMDriver();
       decision = await selected.authorize({
-        principalId: context.actorId,
+        principalId: actorId,
         action: "administer",
         resource: target,
       });
@@ -1749,15 +1769,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       throw dependencyUnavailable();
     }
-    if (!decision.allowed) {
-      await denial(operation, request, "authorization_denial", context, decision.evidence);
-      throw failure(
-        403,
-        "FORBIDDEN",
-        callerDenialMessage({ action: "administer", resource: target }),
-      );
-    }
-    return { selected, target, decision };
+    return decision;
   }
 
   // Report the primary IAM decision without auditing a mutation the caller never attempted.
@@ -2173,15 +2185,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
-    if (
-      operation.operationId === "validateAgentSandboxPolicy" ||
-      operation.operationId === "updateAgentSandboxPolicy"
-    ) {
+    if (writesSandboxPolicy(operation)) {
       await controller.authorizeAgentSandboxPolicyWrite(
         context.actorId,
         params.namespaceId!,
         params.agentId!,
         params.facet as SandboxFacet,
+        operation.operationId === "applyAgentSandboxPolicy" ? "apply" : "save",
       );
       return;
     }
@@ -2336,7 +2346,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }),
           meta: {
             requestId: request.id,
-            ...(connectionOrigin ? { redirectUri: `${connectionOrigin}/oauth/callback` } : {}),
+            ...(connectionRedirectUri ? { redirectUri: connectionRedirectUri } : {}),
           },
           discover: options.discoverMcpAuthorization ?? discoverMcpAuthorization,
           controller: controller!,
@@ -3188,6 +3198,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
       };
       reply.raw.once("close", onClose);
+      if (request.raw.aborted || reply.raw.destroyed) {
+        onClose();
+      }
       try {
         if (operation.operationId === "getAgentDeploymentRuntime") {
           const description = await controller!.describeAgentRuntime(
@@ -4525,7 +4538,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           );
         }
 
-        const { target, decision } = await requireInstallationAdmin(
+        const { selected, target, decision } = await requireInstallationAdmin(
           request,
           createAuthAccountOperation,
           context,
@@ -4566,22 +4579,59 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           decision.evidence,
         );
         // Record who was enrolled and what they were granted; never the email or password.
+        const accountDetails = {
+          principalId: seed.principal.id,
+          ...(roleId === undefined ? { grant: "none" } : { roleId }),
+          ...(groupIds.length === 0 ? {} : { groupIds }),
+        };
         const auditEvent: AuditEvent = {
           ...baseAuditEvent,
-          details: {
-            ...baseAuditEvent.details,
-            principalId: seed.principal.id,
-            ...(roleId === undefined ? { grant: "none" } : { roleId }),
-            ...(groupIds.length === 0 ? {} : { groupIds }),
-          },
+          details: { ...baseAuditEvent.details, ...accountDetails },
         };
         try {
-          await options.provisionAuthAccount(seed, auditEvent, prepared);
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw dependencyUnavailable();
+          }
+          if (admitted.method !== "session") {
+            throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
+          }
+          const session = admitted.session;
+          const provision = () =>
+            options.provisionAuthAccount!(seed, auditEvent, prepared, undefined, {
+              holdSession: (unit: PlatformUnitOfWork) =>
+                options.auth.holdSession(unit, session, request),
+              authorize: async () => {
+                // State calls this after its authority locks, on the account's original unit.
+                // Let the HTTP error handler audit a denial after that unit rolls back.
+                const current = await installationAdminDecision(selected, context.actorId, target);
+                if (!current.allowed) {
+                  throw new AuthorizationDeniedError(
+                    current.reason,
+                    current.evidence,
+                    { action: "administer", resource: target },
+                    context.actorId,
+                  );
+                }
+                return event(
+                  createAuthAccountOperation,
+                  request,
+                  target,
+                  "mutation",
+                  context,
+                  current.evidence,
+                  { outcome: "success", details: accountDetails },
+                );
+              },
+            });
+          await options.auth.withSessionAuthority(session, provision);
         } catch (error) {
           // The account, Principal and audit commit in one transaction, so nothing is
           // compensated here. Dependency errors keep their class: an unknown COMMIT
           // outcome must reach the caller as unknown, never as a plain outage.
-          throw error instanceof RequestFailure || error instanceof DependencyUnavailableError
+          throw error instanceof RequestFailure ||
+            error instanceof AuthorizationDeniedError ||
+            error instanceof DependencyUnavailableError
             ? error
             : error instanceof UserAlreadyExistsError
               ? failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.")
@@ -4670,7 +4720,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         getController: () => controller,
         getContext: (request) => contexts.get(request),
         auditEvent: (request, context, target) =>
-          event(connectionCallbackOperation, request, target, "mutation", context),
+          event(
+            connectionCallbackOperation,
+            request,
+            target,
+            "mutation",
+            context,
+            undefined,
+            undefined,
+            {
+              action: "create",
+              // OCC supplies the saved connection after consuming and authorizing its attempt.
+              resource: {
+                kind: "credential_source",
+                id: target.namespaceId!,
+                namespaceId: target.namespaceId!,
+              },
+            },
+          ),
         auditFailure: (request, context, reasonCode) =>
           rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
       }),
@@ -4728,8 +4795,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   operation.operationId === "updateConfiguration"
                 ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
                 : {}),
-        ...(operation.operationId === "validateAgentSandboxPolicy" ||
-        operation.operationId === "updateAgentSandboxPolicy"
+        ...(writesSandboxPolicy(operation)
           ? {
               bodyLimit: options.maxBodyBytes ?? SANDBOX_POLICY_BODY_LIMIT,
             }
@@ -4788,10 +4854,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               throw failure(429, "RATE_LIMITED", "Too many write requests. Wait before retrying.");
             }
             await resolveIdentity(request, operation);
-            if (
-              operation.operationId === "validateAgentSandboxPolicy" ||
-              operation.operationId === "updateAgentSandboxPolicy"
-            ) {
+            if (writesSandboxPolicy(operation)) {
               const rateLimit = sandboxPolicyRateLimit;
               const context = contexts.get(request);
               if (context === undefined) {
@@ -5017,6 +5080,34 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));
+    }
+    if (error instanceof DeviceAuthorizationScopeMismatchError) {
+      const context = contexts.get(request);
+      if (
+        context &&
+        (context.operation.operationId === "pollAgentDeviceAuthorization" ||
+          context.operation.operationId === "pollSavedAgentDeviceAuthorization" ||
+          context.operation.operationId === "cancelAgentDeviceAuthorization" ||
+          context.operation.operationId === "cancelSavedAgentDeviceAuthorization")
+      ) {
+        try {
+          await denial(
+            context.operation,
+            request,
+            "authorization_denial",
+            context,
+            undefined,
+            undefined,
+            {
+              decisionReason: "The device login does not belong to the requested scope.",
+              reasonCode: "DEVICE_AUTHORIZATION_SCOPE_MISMATCH",
+              details: {},
+            },
+          );
+        } catch (auditError) {
+          mapped = requestFailure(auditError);
+        }
+      }
     }
     if (isAuthorizationDenied(error) && !isDependencyUnavailable(error)) {
       const context = contexts.get(request);
