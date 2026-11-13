@@ -20,7 +20,7 @@
   },
   "files": [
     {
-      "path": "tests/integration/observability-demo-chart.test.mjs",
+      "path": "tests/integration/observability-demo-chart.test.ts",
       "expectedTests": [
         "demo Grafana keeps its disposable SQLite database off node disk",
         "demo guide install can be rerun after a cold-cache wait timeout",
