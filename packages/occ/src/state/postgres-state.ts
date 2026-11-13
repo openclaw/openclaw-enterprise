@@ -442,7 +442,7 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
   if (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped") {
     throw new PersistedStateInvalidError("Persisted Agent desired runtime state is invalid.");
   }
-  return immutableCopy({
+  return Object.freeze({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     name: text(row, "name"),
@@ -457,7 +457,7 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
     desiredRuntimeState,
     status: text(row, "status") as Agent["status"],
     createdAt: timestamp(row, "created_at"),
-  });
+  } satisfies AgentMetadata & Record<string, string | number | boolean | null | undefined>);
 }
 
 function agentFromRow(row: PostgresRow, metadata = agentMetadataFromRow(row)): Readonly<Agent> {
@@ -662,14 +662,14 @@ function revisionMetadataFromRow(row: PostgresRow): Readonly<AgentRevisionMetada
   if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision <= 0) {
     throw new PersistedStateInvalidError("Persisted AgentRevision numbering is invalid.");
   }
-  return immutableCopy({
+  return Object.freeze({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     agentId: text(row, "agent_id"),
     revision,
     backendId: row.backend_id === null ? null : text(row, "backend_id"),
     createdAt: timestamp(row, "admitted_at"),
-  });
+  } satisfies Record<string, string | number | boolean | null | undefined>);
 }
 
 function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary> {
