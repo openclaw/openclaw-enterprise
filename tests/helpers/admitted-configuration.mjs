@@ -7,11 +7,27 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 
 // No legacy exec policy beside the setting: OpenClaw reads a mode over `security` and `ask`.
 const noExecPolicy = (exec) => exec.security === undefined && exec.ask === undefined;
+// A `channels` entry other than the shared settings that is not turned off (finding 3191).
+const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+const channelEnabled = (_parent, root) =>
+  isObject(root.channels) &&
+  Object.entries(root.channels).some(
+    ([provider, channel]) =>
+      !["defaults", "modelByChannel"].includes(provider) &&
+      !(isObject(channel) && channel.enabled === false),
+  );
 
 // Each row gives an unset setting its OCE default and supplies an explicit value admission
-// preserves. The inline-program rule reads the exec mode filled by the preceding row.
+// preserves. `admits` sees the object that would hold the setting and the document root. The
+// inline-program rule reads the exec mode filled by the preceding row.
 export const GATEWAY_SECURITY_DEFAULTS = Object.freeze([
   { path: ["tools", "exec", "applyPatch", "workspaceOnly"], value: true, explicit: false },
+  {
+    path: ["session", "dmScope"],
+    value: "per-account-channel-peer",
+    explicit: "main",
+    admits: channelEnabled,
+  },
   { path: ["agents", "defaults", "sandbox", "mode"], value: "off", explicit: "all" },
   { path: ["tools", "exec", "mode"], value: "full", explicit: "ask", admits: noExecPolicy },
   {
@@ -29,9 +45,11 @@ function withUnset(parent, [key, ...rest], value, admits = () => true) {
     return current === undefined && admits(parent) ? { ...parent, [key]: value } : parent;
   }
   if (current === undefined) {
-    return { ...parent, [key]: withUnset({}, rest, value, admits) };
+    // A fill not admitted adds no empty objects on the way.
+    const created = withUnset({}, rest, value, admits);
+    return Object.keys(created).length === 0 ? parent : { ...parent, [key]: created };
   }
-  if (current === null || typeof current !== "object" || Array.isArray(current)) {
+  if (!isObject(current)) {
     return parent;
   }
   return { ...parent, [key]: withUnset(current, rest, value, admits) };
@@ -42,7 +60,8 @@ function withUnset(parent, [key, ...rest], value, admits = () => true) {
 // path, is kept.
 export function withGatewaySecurityDefaults(values, defaults = GATEWAY_SECURITY_DEFAULTS) {
   return defaults.reduce(
-    (filled, { path, value, admits }) => withUnset(filled, path, value, admits),
+    (filled, { path, value, admits = () => true }) =>
+      withUnset(filled, path, value, (parent) => admits(parent, filled)),
     values,
   );
 }

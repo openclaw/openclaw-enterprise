@@ -48,7 +48,9 @@ export function createCustodyTransitions(
     freshCount: null,
     labels: [],
     sequence: "unobserved",
+    evidence: null,
   };
+  let identityCheck = "unobserved";
   function describeSequence(before, expected) {
     const fresh = events.slice(before.length);
     const id = fresh[0]?.id;
@@ -58,6 +60,18 @@ export function createCustodyTransitions(
       fresh.every((entry, i) => entry.id === id && entry.event === expected[i]);
     diagnostic.freshCount = fresh.length;
     diagnostic.labels = fresh.map(({ event }) => event).slice(0, 9);
+    diagnostic.evidence = {
+      sandboxId,
+      supervisorUid: uid,
+      containerId,
+      identityCheck,
+      expected,
+      events: fresh.slice(0, 9).map(({ id, event }) => ({ requestId: id, event })),
+      truncated: fresh.length > 9,
+      uniqueRequest: unique,
+      singleRequest: fresh.every((entry) => entry.id === id),
+      ordered,
+    };
     if (!unique || !ordered) {
       diagnostic.sequence = "invalid";
     } else if (fresh.length === expected.length) {
@@ -76,16 +90,27 @@ export function createCustodyTransitions(
   }
 
   async function sameSupervisor() {
-    const { metadata, status } = await readSupervisor();
-    assert.equal(metadata.uid, uid, "selected supervisor UID changed");
-    assert.equal(metadata.namespace, workspace, "selected supervisor workspace");
-    assert.equal(metadata.deletionTimestamp, undefined, "selected supervisor is retiring");
-    assert.equal(metadata.labels["openshell.ai/sandbox-id"], sandboxId);
-    assert.equal(metadata.labels["openshell.ai/boundary-role"], "supervisor");
-    const [container, ...others] = status.containerStatuses;
-    assert.equal(others.length, 0, "one selected supervisor container");
-    assert.equal(container.restartCount, 0, "selected supervisor restarted");
-    assert.equal(container.containerID, containerId, "selected supervisor container changed");
+    identityCheck = "pending";
+    try {
+      const { metadata, status } = await readSupervisor();
+      assert.equal(metadata.uid, uid, "selected supervisor UID changed");
+      assert.equal(metadata.namespace, workspace, "selected supervisor workspace");
+      assert.equal(metadata.deletionTimestamp, undefined, "selected supervisor is retiring");
+      assert.equal(metadata.labels["openshell.ai/sandbox-id"], sandboxId);
+      assert.equal(metadata.labels["openshell.ai/boundary-role"], "supervisor");
+      const [container, ...others] = status.containerStatuses;
+      assert.equal(others.length, 0, "one selected supervisor container");
+      assert.equal(container.restartCount, 0, "selected supervisor restarted");
+      assert.equal(container.containerID, containerId, "selected supervisor container changed");
+      identityCheck = "matched";
+    } catch (error) {
+      identityCheck = "failed";
+      throw error;
+    } finally {
+      if (diagnostic.evidence) {
+        diagnostic.evidence.identityCheck = identityCheck;
+      }
+    }
   }
 
   async function read(timeoutMs) {
@@ -161,6 +186,7 @@ export function createCustodyTransitions(
       diagnostic.freshCount = null;
       diagnostic.labels = [];
       diagnostic.sequence = "unobserved";
+      diagnostic.evidence = null;
       return diagnose(async () => {
         await observeConnectedOperation("before-custody-supervisor-get", sameSupervisor);
         await observeConnectedOperation("before-custody-log-read", () => read(5000));
@@ -177,6 +203,7 @@ export function createCustodyTransitions(
       diagnostic.freshCount = null;
       diagnostic.labels = [];
       diagnostic.sequence = "unobserved";
+      diagnostic.evidence = null;
       return diagnose(() =>
         observeConnectedOperation("after-custody-observation", async () => {
           assert.ok(

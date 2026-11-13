@@ -9,6 +9,7 @@ import type {
   DriverCapability,
   DriverRegistration,
   DriverRegistrationRef,
+  EgressRef,
   ProxyPlan,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -19,7 +20,7 @@ import {
   driverHasCapabilityContract,
   driverHasValidLifecycleHooks,
 } from "./driver-contract.ts";
-import { DriverSelectionError } from "./errors.ts";
+import { DriverSelectionError, ResourceStateConflictError } from "./errors.ts";
 
 /** One process-local owner. Its reference, unlike object identity, survives an API/worker handoff. */
 export class InstalledDriver {
@@ -29,6 +30,7 @@ export class InstalledDriver {
   readonly namespaceLifecycleHooks: NamespaceLifecycleHooks | undefined;
   readonly #views = new Map<DriverCapability, { id: string; driver: Driver }>();
   readonly #close: (() => void | Promise<void>) | undefined;
+  readonly #retiredStaticProviderRefs: readonly EgressRef[];
   #closing: Promise<void> | undefined;
 
   constructor(
@@ -36,12 +38,19 @@ export class InstalledDriver {
       readonly id: string;
       readonly implementation: string;
       readonly configuration: unknown;
+      /** @internal Process-local admission policy supplied only by bundled composition. */
+      readonly retiredStaticProviderRefs?: readonly EgressRef[];
     },
     registration: DriverRegistration,
     // Installation composition supplies the configured identity for each capability.
     capabilityIds: Readonly<Partial<Record<DriverCapability, string>>> = {},
   ) {
     const { id, implementation, configuration } = selection;
+    this.#retiredStaticProviderRefs = Object.freeze(
+      (selection.retiredStaticProviderRefs ?? []).map(({ id, generation }) =>
+        Object.freeze({ id, generation }),
+      ),
+    );
     if (!isNonEmptyString(id) || !isNonEmptyString(implementation)) {
       throw new DriverSelectionError(
         "A Driver registration requires an identity and implementation.",
@@ -109,6 +118,19 @@ export class InstalledDriver {
       );
     }
     return view.driver as DriverByCapability[K];
+  }
+
+  /** @internal Refuse new static admissions without changing retained provider behavior. */
+  assertNewStaticProviderUse(ref: EgressRef): void {
+    if (
+      this.#retiredStaticProviderRefs.some(
+        (retired) => retired.id === ref.id && retired.generation === ref.generation,
+      )
+    ) {
+      throw new ResourceStateConflictError(
+        "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
+      );
+    }
   }
 
   /** Admission needs both operational views; release still requires the observed recipient. */

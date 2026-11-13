@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-10
-last_updated_session: authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2
+updated: 2026-11-11
+last_updated_session: authoring-run/f416a831-2d60-4973-af5c-9f0bf35a8899
 ---
 
 # Compose development flow
@@ -9,10 +9,11 @@ last_updated_session: authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2
 ## Overview
 
 `./bin/occ dev up` starts local OpenClaw Enterprise development from a checkout.
-The `scripts/dev-up` entry point selects the same profile. By default OCC and
-PostgreSQL run in Compose with Docker Compute. Operators can explicitly select
-Kubernetes Compute with either the Compose control plane or the
-[local k3d-only profile](../guides/deploy/local-kubernetes-development.md). The
+The `scripts/dev-up` entry point selects the same profile. By default it starts the
+[local k3d-only profile](../guides/deploy/local-kubernetes-development.md):
+Kubernetes Compute with the Kubernetes control plane
+(`internal/occdev/profile.go:ResolveProfile`). Operators can select the Compose
+control plane, or Docker Compute with OCC and PostgreSQL in Compose. The
 Kubernetes profile can select the OpenShell Sandbox Driver for its fail-closed
 path; it prepares pinned OpenShell infrastructure and reconciles rendered
 workspace-chart resources before reporting readiness.
@@ -41,8 +42,7 @@ selected Kubernetes Compute Driver and the
 
 - Trigger: `./bin/occ dev up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
   from the repository root, followed by authenticated Namespace operations.
-- Source: `scripts/dev-up:require_command`, `internal/occdev/up.go:Up`, and
-  `internal/occdev/openshell.go:prepareOpenShell`.
+- Source: `scripts/dev-up:require_command` and `internal/occdev/up.go:Up`.
 - Assumptions: Docker Engine with Compose, or Podman with `docker-compose` or `podman-compose` (Docker Compute requires `podman-compose`);
   Bash, curl, Python 3, and `yq` v4 for the Docker profile; writable PostgreSQL
   and Configuration volumes; loopback API publication; executable `bin/occ`
@@ -51,7 +51,7 @@ selected Kubernetes Compute Driver and the
 The Kubernetes profile additionally uses `compose.kubernetes.yaml`,
 `internal/occdev`, k3d, and kubectl. `./bin/occ dev down` owns profile cleanup;
 `scripts/dev-down` dispatches to it. Without a Compute Driver selection,
-`internal/occdev/profile.go:downComputeDriver` sends cleanup to the stack
+`internal/occdev/profile.go:chooseDownStack` sends cleanup to the stack
 recorded in the state directory, and to Docker only when that directory is
 absent or Compose options follow `--`; it refuses another checkout's stack.
 The local Kubernetes development guide owns the operator procedure and
@@ -169,11 +169,10 @@ its reported API socket sets `OCC_CONTAINER_ENGINE_SOCKET` only to resolve the
 worker mount, never replacing the host connection with a macOS VM socket. An
 unavailable engine or invalid socket fails cleanup.
 
-Compose removes its project containers and network; database, Configuration,
-and bootstrap volumes remain without `--volumes`. Down removes the service-key
-directory `scripts/dev-up` created. `--volumes` first reads the Installation's
-Namespace IDs from its database, then removes their idle Docker Compute
-networks. For Agent containers, see [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
+Compose removes its project containers and network. With `--volumes`, it also
+removes project volumes. Down leaves local service-key copies and Docker Compute Namespace
+networks in place because the Compose project does not own them. See
+[safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
 
 ### 4. Start and clean up Kubernetes development
 
@@ -225,13 +224,13 @@ With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, OpenShell uses the
 Kubernetes-only lifecycle before Compose rendering. It pins K3s and OpenShell
 inputs, installs PostgreSQL, OCE, and one central Gateway in `oce-system`, and
 publishes only an admitted API proxy on host loopback. The source archive and all three
-OpenShell images select 0.1.6 together, including the paired sandbox/supervisor
+OpenShell images select 0.1.8 together, including the paired sandbox/supervisor
 control protocol and compromised-key rejection. The observed-hook repository
 credential preview admits 0.1.6 through its existing opt-in, held-launcher and
 recipient checks. Repository-scoped access uses the separate
 [protected Git enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
-By default, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
+With `OCC_DEVELOPMENT_CONTROL_PLANE=compose`, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in
 `openshell-system` and exposes its fixed NodePort only to the owned container
 network. Before starting the API and worker, the launcher installs pinned
@@ -308,7 +307,7 @@ describes accepted selectors.
   reads the owned Workspace through the Gateway API. This proves infrastructure
   readiness, not a model turn. The expected Agent result is the explicit
   unsupported `secretKeyRef` projection failure with no Sandbox or Agent Pod.
-- With the default Compose control plane, OpenShell startup should report
+- With `OCC_DEVELOPMENT_CONTROL_PLANE=compose`, OpenShell startup should report
   `Control plane: Compose`, retain a private Compose snapshot, install the
   Gateway in `openshell-system`, program
   `oce-system/openclaw-enterprise-agent-gateways`, and create the bootstrap
@@ -346,6 +345,8 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 03:59: Limit Compose shutdown to its project. (authoring-run/f416a831-2d60-4973-af5c-9f0bf35a8899 - 5ee1a6b2650e988ddd2f03ded0142dba685ca504)
 
 - 2026-11-10 22:18: Identify in-flight Docker request aborts while preserving caller cancellation and cleanup. (authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2 - ee73157fdf2982a8e0eab3dcb22d8ff9cf87fbd0)
 

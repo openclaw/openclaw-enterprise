@@ -420,6 +420,10 @@ export class OpenShellGitRuntime {
   private readonly states = new Map<string, EntryState>();
   /** One reconcile pass's read budget; a provider write has its own deadline. */
   private observeTimeoutMs = OBSERVE_TIMEOUT_MS;
+  private starting: Promise<void> | undefined;
+  private pendingStore:
+    | { routes: PostgresOpenShellGitRouteStore; emit: RepositoryTransportEmit | undefined }
+    | undefined;
   private owner: OnlineGitOwner | undefined;
   private emit: RepositoryTransportEmit | undefined;
   private routes: OpenShellGitRouteStore | undefined;
@@ -2058,24 +2062,30 @@ export class OpenShellGitRuntime {
     return undefined;
   }
 
-  /** Composition supplies this Driver's store. Neither the pool nor this store is a sender port. */
-  connectRouteStore(pool: PostgresPool, emit?: RepositoryTransportEmit): OpenShellGitRouteStore {
-    const store = new PostgresOpenShellGitRouteStore(pool);
-    this.routes = store;
-    this.restartEvidence = store.restartEvidence.bind(store);
-    this.emit = emit;
-    return this.routes;
+  private requireAvailableWorker(): void {
+    if (this.starting || this.owner || this.stopped.signal.aborted) {
+      throw new Error("OpenShell Git worker already started or stopped.");
+    }
+  }
+
+  /** Stage storage for the selected sender. API restart observation remains usable until startup succeeds. */
+  connectRouteStore(pool: PostgresPool, emit?: RepositoryTransportEmit): void {
+    this.requireAvailableWorker();
+    this.pendingStore = { routes: new PostgresOpenShellGitRouteStore(pool), emit };
   }
 
   /** The protected sender gets committed material and one request decision, never the issuer. */
   async bindRepositoryGit(authority: ProtectedRepositoryGitAuthority) {
-    if (!this.routes) {
+    this.requireAvailableWorker();
+    const binding = this.pendingStore;
+    if (!binding) {
       throw new Error("OpenShell protected repository Git requires its selected route store.");
     }
+    this.pendingStore = undefined;
     await this.start(
       protectedOpenShellGitOwner(authority, !!this.configuration.observedHookPreviewWorkspace),
-      this.emit,
-      this.routes,
+      binding.emit,
+      binding.routes,
     );
     return { close: () => this.close() };
   }
@@ -2089,19 +2099,27 @@ export class OpenShellGitRuntime {
     emit?: RepositoryTransportEmit,
     routes?: OpenShellGitRouteStore,
   ): Promise<void> {
-    if (this.owner || this.stopped.signal.aborted) {
-      throw new Error("OpenShell Git worker already started or stopped.");
+    this.requireAvailableWorker();
+    this.starting = this.startListener(owner, emit, routes);
+    try {
+      await this.starting;
+    } finally {
+      this.starting = undefined;
     }
+  }
+
+  private async startListener(
+    owner: OnlineGitOwner,
+    emit?: RepositoryTransportEmit,
+    routes?: OpenShellGitRouteStore,
+  ): Promise<void> {
     const config = this.configuration.authority;
     const [certificate, privateKey, publicKey] = await Promise.all([
       readFile(config.certificatePath),
       readFile(config.privateKeyPath),
       readFile(config.issuerPublicKeyPath),
     ]);
-    this.owner = owner;
-    this.emit = emit;
-    this.routes = routes;
-    this.server = createOpenShellOnlineGitAuthority({
+    const server = createOpenShellOnlineGitAuthority({
       registrationName: this.configuration.registrationName,
       budgetMs: 3000,
       identity: {
@@ -2140,18 +2158,26 @@ export class OpenShellGitRuntime {
       },
     });
     try {
+      this.stopped.signal.throwIfAborted();
       await bindOpenShellEgressAuthority(
-        this.server,
+        server,
         `${config.host.includes(":") ? `[${config.host}]` : config.host}:${config.port}`,
         certificate,
         privateKey,
       );
+      this.stopped.signal.throwIfAborted();
     } catch (error) {
-      this.server.forceShutdown();
-      this.owner = undefined;
+      server.forceShutdown();
       throw error;
     } finally {
       privateKey.fill(0);
+    }
+    this.server = server;
+    this.owner = owner;
+    this.emit = emit;
+    this.routes = routes;
+    if (routes?.restartEvidence) {
+      this.restartEvidence = routes.restartEvidence.bind(routes);
     }
     const tick = () => {
       this.running = (async () => {
@@ -2172,6 +2198,7 @@ export class OpenShellGitRuntime {
 
   async close(): Promise<void> {
     this.stopped.abort();
+    await this.starting?.catch(() => undefined);
     clearTimeout(this.timer);
     this.server?.forceShutdown();
     await this.running;

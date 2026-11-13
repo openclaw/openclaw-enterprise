@@ -3,6 +3,9 @@ import { copyFile, mkdir, readFile, writeFile, appendFile } from "node:fs/promis
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { exercisedLaneStatus } from "./full-integration-coverage.ts";
+import { loadTestSuites } from "./test-suites.mjs";
+
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const repository = "openclaw/openclaw-enterprise";
 const freshOnly = new Set(["k3d-observability-demo", "repository-credentials-container"]);
@@ -163,6 +166,7 @@ export async function validateResults({ directory, producer, sha, get }) {
   if (JSON.stringify(admitted) !== JSON.stringify(producer)) {
     return [];
   }
+  const manifest = loadTestSuites(join(root, "scripts/ci/test-suites.json"));
   const accepted = [];
   await mkdir(join(directory, "accepted"), { recursive: true });
   for (const { lane } of producer.artifacts) {
@@ -173,7 +177,14 @@ export async function validateResults({ directory, producer, sha, get }) {
         summary.scope !== "full" ||
         summary.sourceSha !== sha ||
         summary.lane !== lane ||
-        summary.cleanup?.status !== "passed"
+        summary.cleanup?.status !== "passed" ||
+        exercisedLaneStatus(
+          summary,
+          manifest.lanes[lane].files.map((file) => ({
+            path: file.path,
+            expectedTests: file.expectedTests ?? [],
+          })),
+        ) !== "passed"
       ) {
         continue;
       }
@@ -253,7 +264,7 @@ async function main(command) {
     if (
       process.env.GITHUB_REPOSITORY !== repository ||
       process.env.GITHUB_REF !== "refs/heads/main" ||
-      process.env.GITHUB_EVENT_NAME !== "push" ||
+      !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME) ||
       !/^[a-f0-9]{40}$/.test(sha || "")
     ) {
       await output(command === "discover" ? { artifact_ids: "" } : { lanes: [] });

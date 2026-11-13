@@ -33,7 +33,9 @@ else
   grep -Ex 'Control UI verification failed during (initialize|launch trusted Chromium|sign in to Console|resolve the running revision|complete onboarding|verify Workspace identity and preference|verify ready reply|reopen original conversation from chat history|search signed-in session history|open matching session history row|verify original session selected|recall saved preference)\.|OCE REST request failed with HTTP [1-5][0-9]{2}' "$log" | tail -3 || true
   grep -Ex 'quickstart-location browser\.mjs:[0-9]{1,5}|Control UI navigation HTTP (0|[1-5][0-9]{2})' "$log" | tail -2 || true
   if [[ $phase == linear ]]; then
-    node scripts/ci/k3d-quickstart/linear-evidence.mjs diagnose "$RUN_DIR" || true
+    if ! node scripts/ci/k3d-quickstart/linear-evidence.ts diagnose "$RUN_DIR" 2>>"$log"; then
+      printf '%s\n' 'Linear diagnostics unavailable.'
+    fi
     # Nested Bash blocks keep their visible examples in private files. Surface
     # only script locations; command text can contain credentials.
     grep -Eh '^quickstart-location (linear-(deploy|catalog|send|transcript)|operator-session)\.sh:[0-9]{1,5}$' \

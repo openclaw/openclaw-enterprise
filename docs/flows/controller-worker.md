@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-11
-last_updated_session: authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9
+updated: 2026-11-13
+last_updated_session: authoring-run/7afadd63-f96a-4c29-bac6-c18615964316
 ---
 
 # Controller Worker Flow
@@ -295,13 +295,12 @@ same metrics contract.
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.defer`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.retry`
 
-Pending convergence refunds the attempt and requeues unready versions on the
-cadence in
-[pending deployment progress](../reference/agents/deployment.md#pending-deployment-progress),
-others with backoff. Compute's `pendingReason` selects the pending code.
-`PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome or
-code changes. `retry` outcomes consume attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
-terminates work. See [outcomes](../reference/controller.md) and
+Pending convergence refunds the attempt. Unready versions follow the
+[progress cadence](../reference/agents/deployment.md#pending-deployment-progress)
+and use Compute's `pendingReason`. Other pending work backs off.
+`PostgresWorkQueue.defer` records changed outcomes or codes. Retries consume
+attempts. Permanent failures, exhaustion, deadlines and `AUTHENTICATION_FAILED`
+end work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
 Before publishing a permanent refusal (not a held runtime failure, the deadline
@@ -342,10 +341,11 @@ live claim; [deployment status](../reference/agents.md#deployment-status) derive
 `error` and `warnings` from that result. Completion needs no acknowledgment or
 post-commit cleanup; maintenance cannot rewrite deployment warnings.
 
-Indexed `workId` scopes progress to work; maintenance and unbound history cannot
-supply it. `getDeploymentStatus` reads
-`findWorkAttempt` with the work row in one State snapshot and projects fixed
-public explanations. Memory State has no attempt.
+In one State snapshot, `getDeploymentStatus` reads the work and its latest
+attempt by indexed `workId`, excluding maintenance and unbound history.
+`packages/occ/src/state/controller-work.ts:deploymentProgressForWork` maps
+`PREDECESSOR_COMPLETION_WAITING` to a fixed explanation. Memory State has no
+attempt.
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
@@ -393,18 +393,20 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
   [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.mjs),
-  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs),
-  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs),
-  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs),
+  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.ts),
+  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.ts),
+  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts),
   [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs),
-  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.mjs) and
+  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.ts) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs)
   require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback after an IAM Driver change.
-- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) and
-  [k3d](../../tests/helpers/openshell-sandbox-workflows.mjs) tests
-  verify composition and infrastructure.
+- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs),
+  [Installation configuration](../../tests/integration/sandbox-driver-installation-configuration.test.ts)
+  and [IPv6 endpoints](../../tests/integration/sandbox-driver-ipv6-endpoints.test.ts)
+  check startup. [k3d tests](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  check infrastructure.
 
 ## Related docs
 
@@ -422,6 +424,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 04:51: Explain the planned replacement wait in deployment progress. (authoring-run/7afadd63-f96a-4c29-bac6-c18615964316 - 8185f9274)
 
 - 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
 

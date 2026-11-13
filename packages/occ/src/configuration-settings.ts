@@ -247,7 +247,7 @@ export function validateConfigurationSettings(
       new ConfigurationHarnessError(`Configuration setting ${setting} ${requirement}.`),
     options,
   );
-  refuseLiteralGatewayPassword(values);
+  refuseLiteralGatewayPassword(values, options);
   refuseInvalidSecretProviderDefaults(values, options);
   refuseUnreadableGatewayPassword(values, options);
   validateWorkspaceBootstrapSettings(values, options);
@@ -290,8 +290,22 @@ export function refuseUndeployableConfigurationValues(values: OpenClawConfigurat
  * (validateModelCredentialReferences) run it again on every write and at deployment, which
  * refuses a stored document that predates the rule.
  */
-export function refuseLiteralGatewayPassword(values: OpenClawConfigurationDocument): void {
+export function refuseLiteralGatewayPassword(
+  values: OpenClawConfigurationDocument,
+  options?: ConfigurationValidationOptions,
+): void {
   const password = asRecord(asRecord(values.gateway)?.auth)?.password;
+  const path = ["gateway", "auth", "password"] as const;
+  const literals = options?.unresolved?.(path);
+  // Only the renderer's whole string variable can become a credential reference at launch.
+  if (
+    typeof password === "string" &&
+    literals?.length === 2 &&
+    literals.every((part) => part === "") &&
+    options?.unresolvedType?.(path) === "string"
+  ) {
+    return;
+  }
   if (password !== undefined && password !== null && !isCredentialReference(password)) {
     throw new GatewayPasswordValueError("/gateway/auth/password");
   }

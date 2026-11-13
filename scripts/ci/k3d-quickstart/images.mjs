@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { appendFile, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { loadRuntimeArtifact, runtimeArtifactSelection } from "../runtime-artifact.mjs";
+import { registryImage } from "../fixture-support-images.mjs";
+import { loadRuntimeArtifact, runtimeArtifactSelection } from "../runtime-artifact.ts";
 
 const selection = runtimeArtifactSelection(process.env);
 assert.ok(selection, "The quickstart requires its same-run runtime artifact.");
@@ -67,7 +68,7 @@ try {
       `openclaw.dev/quickstart-image-owner=${owner}`,
       "--publish",
       "127.0.0.1::5000",
-      "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373",
+      registryImage,
     ],
     { capture: true, timeoutMs: 300_000 },
   ).trim();

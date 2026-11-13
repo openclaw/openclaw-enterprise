@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test, { after } from "node:test";
+import { writeFile } from "node:fs/promises";
+import { createServer } from "node:https";
+import { join } from "node:path";
+import test, { after, type TestContext } from "node:test";
 
 import type {
   AgentDeploymentDiagnostics,
@@ -31,6 +34,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import {
   ResourceConflictError,
+  RuntimeDiagnosticsTransportError,
   RuntimeCredentialsForbiddenByClusterError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
@@ -40,13 +44,17 @@ import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { listen } from "../helpers/listen.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { reservePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.ts";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
@@ -155,9 +163,11 @@ function createRuntimeCredentialComputeDriver(options: RuntimeCredentialDriverOp
   return driver;
 }
 
-// Namespace setup is outside these admission cases; no Kubernetes cluster is contacted.
-function createKubernetesComputeDriver() {
-  const computeDriver = createTestKubernetesComputeDriver("runtime-credential-compute");
+// Admission fixtures own Namespace setup. Driver reads still use the selected Kubernetes client.
+function createKubernetesComputeDriver(
+  options?: Parameters<typeof createTestKubernetesComputeDriver>[1],
+) {
+  const computeDriver = createTestKubernetesComputeDriver("runtime-credential-compute", options);
   computeDriver.ensureNamespace = async (namespace) => ({
     namespaceId: namespace.id,
     namespaceReady: true,
@@ -309,7 +319,7 @@ async function createSharedApp(implementation: string) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
-        recordOperations: false,
+        recordOperations: true,
       });
       return controller;
     },
@@ -465,6 +475,7 @@ async function createSharedApp(implementation: string) {
     bootstrapAgent,
     createPrincipal,
     origin,
+    platformState,
     policy,
     request,
     fixtureResponse,
@@ -591,9 +602,278 @@ test("first draft deployment provisions generated credentials and later revision
   );
 });
 
-test("Kubernetes without managed runtime credentials admits a draft deployment", async () => {
-  const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
-  const { agent, agentPath } = await fixture.bootstrapAgent();
+type RuntimeSecretDefect = "extra data" | "foreign owner" | "none";
+
+async function createRuntimeSecretClientFixture(t: TestContext, defect: RuntimeSecretDefect) {
+  const directory = await temporaryDirectory(t, "occ-runtime-secret-readback-");
+  const { key, cert, certPath } = await selfSigned(directory);
+  const token = `kubernetes-fixture-${randomUUID()}`;
+  const resources = new Map<string, object>();
+  const mutations: Array<{ method: string; path: string }> = [];
+  const server = createServer({ key, cert }, async (request, response) => {
+    const path = new URL(request.url ?? "", "https://127.0.0.1").pathname;
+    const method = request.method ?? "";
+    const send = (status: number, body: object) =>
+      response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (request.headers.authorization !== `Bearer ${token}`) {
+      send(403, { kind: "Status", code: 403 });
+      return;
+    }
+    if (method === "GET") {
+      if (path.endsWith("/deployments")) {
+        send(200, { apiVersion: "apps/v1", kind: "DeploymentList", items: [] });
+      } else {
+        const resource = resources.get(path);
+        send(resource === undefined ? 404 : 200, resource ?? { kind: "Status", code: 404 });
+      }
+      return;
+    }
+    mutations.push({ method, path });
+    if (method !== "POST" || !path.endsWith("/secrets")) {
+      send(405, { kind: "Status", code: 405 });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const body = record(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    const metadata = record(body.metadata);
+    assert.equal(typeof metadata.name, "string");
+    const secretPath = `${path}/${metadata.name}`;
+    if (resources.has(secretPath)) {
+      send(409, { kind: "Status", code: 409 });
+      return;
+    }
+    const data: Record<string, string> = {};
+    for (const [name, value] of Object.entries(record(body.stringData))) {
+      assert.equal(typeof value, "string");
+      data[name] = Buffer.from(String(value)).toString("base64");
+    }
+    // Model the object stored and returned by successful Kubernetes admission.
+    // The Driver must validate that object through a later read.
+    const labels = { ...record(metadata.labels) };
+    if (String(metadata.name).startsWith("gateway-password-")) {
+      if (defect === "extra data") {
+        data.unexpected = Buffer.from("benign-admission-value").toString("base64");
+      } else if (defect === "foreign owner") {
+        labels["openclaw.dev/agent"] = "another-agent";
+      }
+    }
+    const observed = {
+      apiVersion: "v1",
+      kind: "Secret",
+      type: body.type,
+      metadata: { ...metadata, labels, uid: randomUUID() },
+      data,
+    };
+    resources.set(secretPath, observed);
+    send(201, observed);
+  });
+  const port = await listen(t, server);
+  const kubeconfigPath = join(directory, "kubeconfig");
+  await writeFile(
+    kubeconfigPath,
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "Config",
+      clusters: [
+        {
+          name: "fixture",
+          cluster: { server: `https://127.0.0.1:${port}`, "certificate-authority": certPath },
+        },
+      ],
+      users: [{ name: "controller", user: { token } }],
+      contexts: [{ name: "fixture", context: { cluster: "fixture", user: "controller" } }],
+      "current-context": "fixture",
+    }),
+    { mode: 0o600 },
+  );
+  const computeDriver = createKubernetesComputeDriver({
+    gatewayRuntime: true,
+    routed: false,
+    authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
+  });
+  const bindNamespace = (namespaceId: string) => {
+    const name = kubernetesNamespaceName(namespaceId);
+    const namespace = {
+      apiVersion: "v1",
+      kind: "Namespace",
+      metadata: {
+        name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace": namespaceId,
+        },
+        annotations: { "openclaw.dev/namespace-id": namespaceId },
+      },
+      status: { phase: "Active" },
+    };
+    resources.set("/api/v1/namespaces", { kind: "NamespaceList", items: [namespace] });
+    resources.set(`/api/v1/namespaces/${name}`, namespace);
+  };
+  return { computeDriver, bindNamespace, resources, mutations };
+}
+
+for (const defect of ["extra data", "foreign owner"] as const) {
+  for (const operation of ["runtime-credentials", "deploy"] as const) {
+    test(`Kubernetes ${operation} refuses a created Secret with ${defect}`, async (t) => {
+      const client = await createRuntimeSecretClientFixture(t, defect);
+      const fixture = await createFixture({ computeDriver: client.computeDriver });
+      const { namespace, agent, agentPath, credentialsPath } = await fixture.bootstrapAgent();
+      client.bindNamespace(namespace.id);
+      const workBefore = await fixture.platformState.read((state) => state.operations.list());
+
+      const response = await fixture.request("POST", `${agentPath}/${operation}`, { body: {} });
+      assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(
+        fixture.fixtureResponse(response, 503, ErrorResponse, "failed confirmation").error.message,
+        "A required platform dependency is unavailable.",
+      );
+      const stored = structuredClone([...client.resources]);
+      assert.equal(client.mutations.length, 2, "both initial creates must have succeeded");
+      assert.ok(client.mutations.every(({ method }) => method === "POST"));
+      assertApiError(await fixture.request("GET", credentialsPath), 503, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(
+        fixture.auditSink.events.some(
+          (event) =>
+            event.resource.id === agent.id &&
+            event.action === "openclaw.agents.runtime_credentials.provision" &&
+            event.outcome === "success",
+        ),
+        false,
+      );
+      const revisions = await fixture.request("GET", `${agentPath}/revisions`);
+      assert.equal(
+        fixture.fixtureResponse(revisions, 200, AgentRevisionListResponse, "list revisions").data
+          .length,
+        0,
+      );
+      assert.deepEqual(
+        await fixture.platformState.read((state) => state.operations.list()),
+        workBefore,
+        "failed confirmation must not queue deployment work",
+      );
+      assert.deepEqual([...client.resources], stored, "later reads must preserve stored Secrets");
+      assert.equal(client.mutations.length, 2, "no rotation, overwrite, delete, or replay");
+    });
+  }
+}
+
+test("Kubernetes runtime credential confirmation preserves healthy and existing groups", async (t) => {
+  const client = await createRuntimeSecretClientFixture(t, "none");
+  const fixture = await createFixture({ computeDriver: client.computeDriver });
+  const { namespace, agentPath, credentialsPath } = await fixture.bootstrapAgent();
+  client.bindNamespace(namespace.id);
+  const first = await fixture.request("POST", credentialsPath, { body: {} });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.deepEqual(first.data, { transportConfigured: true });
+  const stored = structuredClone([...client.resources]);
+  const second = await fixture.request("POST", credentialsPath, { body: {} });
+  assert.equal(second.status, 200);
+  assert.deepEqual(second.data, first.data);
+  const admitted = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const revision = fixture.fixtureResponse(
+    admitted,
+    202,
+    AgentRevisionResponse,
+    "deploy Agent",
+  ).data;
+  assert.ok(
+    (await fixture.platformState.read((state) => state.operations.list())).some(
+      (work) => work.kind === "agent_revision" && work.resourceId === revision.id,
+    ),
+    "the healthy control must record real reconcile work",
+  );
+  assert.deepEqual([...client.resources], stored);
+  assert.equal(client.mutations.length, 2);
+
+  // After a historical revision, missing sources require operator recovery.
+  for (const path of client.resources.keys()) {
+    if (path.includes("/secrets/")) {
+      client.resources.delete(path);
+    }
+  }
+  assertApiError(await fixture.request("POST", `${agentPath}/deploy`), 409, "RESOURCE_CONFLICT");
+  assert.equal(client.mutations.length, 2);
+});
+
+test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod proxy read", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-kubernetes-diagnostics-");
+  const { key, cert, certPath } = await selfSigned(directory);
+  const token = `kubernetes-fixture-${randomUUID()}`;
+  const marker = `private-kubernetes-detail-${randomUUID()}`;
+  const resources = new Map<string, object>();
+  const proxyReads: string[] = [];
+  const failures = new Map<string, 403 | 503>();
+  const startupUnavailable = Promise.withResolvers<void>();
+  let unavailableStatusPath: string | undefined = undefined;
+  let diagnosticsRefusalsServed = 0;
+  const server = createServer({ key, cert }, async (request, response) => {
+    if (request.method !== "GET" || request.headers.authorization !== `Bearer ${token}`) {
+      response.writeHead(403).end();
+      return;
+    }
+    const path = request.url ?? "";
+    if (path.includes("/proxy/")) {
+      proxyReads.push(path);
+    }
+    const headers = { "content-type": "application/json" };
+    const diagnosticsStatus = failures.get(path);
+    if (diagnosticsStatus !== undefined) {
+      if (diagnosticsStatus === 403) {
+        await startupUnavailable.promise;
+        response.once("finish", () => {
+          diagnosticsRefusalsServed += 1;
+        });
+      }
+      response.writeHead(diagnosticsStatus, headers).end(
+        JSON.stringify({
+          apiVersion: "v1",
+          kind: "Status",
+          status: "Failure",
+          reason: diagnosticsStatus === 503 ? "ServiceUnavailable" : "Forbidden",
+          code: diagnosticsStatus,
+          message: marker,
+        }),
+      );
+      return;
+    }
+    const resource = resources.get(new URL(path, "https://127.0.0.1").pathname);
+    if (path === unavailableStatusPath && resource === undefined) {
+      response.once("finish", startupUnavailable.resolve);
+    }
+    response.writeHead(resource === undefined ? 404 : 200, headers).end(JSON.stringify(resource));
+  });
+  const port = await listen(t, server);
+  const kubeconfigPath = join(directory, "kubeconfig");
+  await writeFile(
+    kubeconfigPath,
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "Config",
+      clusters: [
+        {
+          name: "fixture",
+          cluster: { server: `https://127.0.0.1:${port}`, "certificate-authority": certPath },
+        },
+      ],
+      users: [{ name: "controller", user: { token } }],
+      contexts: [{ name: "fixture", context: { cluster: "fixture", user: "controller" } }],
+      "current-context": "fixture",
+    }),
+    { mode: 0o600 },
+  );
+
+  const lines: LogLine[] = [];
+  const fixture = await createFixture({
+    logLines: lines,
+    computeDriver: createKubernetesComputeDriver({
+      authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
+    }),
+  });
+  const { namespace, agent, agentPath } = await fixture.bootstrapAgent();
   // This credential-admission fixture has no Gateway runtime to apply managed mode.
   const updated = await fixture.request("PATCH", agentPath, {
     body: { configurationId: agent.configurationId, gatewayManagedMode: false },
@@ -601,11 +881,131 @@ test("Kubernetes without managed runtime credentials admits a draft deployment",
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
 
   const admitted = await fixture.request("POST", `${agentPath}/deploy`);
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  assert.equal(
-    fixture.fixtureResponse(admitted, 202, AgentRevisionResponse, "admit deployment").data.revision,
-    1,
+  const revision = fixture.fixtureResponse(
+    admitted,
+    202,
+    AgentRevisionResponse,
+    "admit deployment",
+  ).data;
+  assert.equal(revision.revision, 1);
+
+  // The SDK discovers the owned Namespace and a Running Pod for the admitted revision.
+  const namespaceName = kubernetesNamespaceName(namespace.id);
+  const ownedNamespace = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: namespaceName,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": namespace.id,
+      },
+      annotations: { "openclaw.dev/namespace-id": namespace.id },
+    },
+    status: { phase: "Active" },
+  };
+  const podName = "gateway-pod";
+  const podUid = randomUUID();
+  const namespacePath = `/api/v1/namespaces/${namespaceName}`;
+  resources.set("/api/v1/namespaces", {
+    apiVersion: "v1",
+    kind: "NamespaceList",
+    items: [ownedNamespace],
+  });
+  resources.set(namespacePath, ownedNamespace);
+  resources.set(`${namespacePath}/pods`, {
+    apiVersion: "v1",
+    kind: "PodList",
+    items: [
+      {
+        apiVersion: "v1",
+        kind: "Pod",
+        metadata: {
+          name: podName,
+          namespace: namespaceName,
+          uid: podUid,
+          labels: {
+            "openclaw.dev/agent": agent.id,
+            "openclaw.dev/revision": revision.id,
+            "openclaw.dev/workload-role": "gateway",
+          },
+        },
+        status: {
+          phase: "Running",
+          podIP: "10.42.0.10",
+          containerStatuses: [{ name: "gateway", containerID: "containerd://gateway-fixture" }],
+        },
+      },
+    ],
+  });
+  const proxyPath = `${namespacePath}/pods/${podName}%3A18791/proxy/openclaw%2Fruntime%2F`;
+  const statusPath = `${proxyPath}status`;
+  resources.set(statusPath, { revisionId: revision.id, container: "gateway", podUid });
+  const diagnosticsPath = `${proxyPath}diagnostics`;
+  failures.set(diagnosticsPath, 503);
+  const diagnose = () =>
+    fixture.request("POST", `${agentPath}/deployments/${revision.id}/diagnostics`);
+  const dependencyLogs = (requestId: string) =>
+    lines.filter(
+      (line) => line.event === "http.dependency_unavailable" && line.requestId === requestId,
+    );
+
+  // Kubernetes can answer 503 while the private endpoint starts. OCC still returns an observation.
+  const starting = fixture.fixtureResponse(
+    await diagnose(),
+    200,
+    AgentDeploymentDiagnosticsResponse,
+    "Gateway diagnostics while starting",
   );
+  assert.deepEqual(proxyReads.sort(), [diagnosticsPath, statusPath]);
+  assert.equal(starting.data.revisionId, revision.id);
+  assert.deepEqual(starting.data.checks, [
+    {
+      component: "gateway",
+      check: "runtime-status",
+      state: "unknown",
+      checkedAt: null,
+      code: "UNAVAILABLE",
+    },
+  ]);
+  assert.deepEqual(dependencyLogs(starting.meta.requestId), []);
+
+  // Settle the supplementary startup response before diagnostics refuses, so no sibling
+  // read needs a later Pod check after the public failure permits fixture teardown.
+  unavailableStatusPath = statusPath;
+  resources.delete(statusPath);
+  // An API-server refusal of the same proxy request has a fixed operator category.
+  failures.set(diagnosticsPath, 403);
+  proxyReads.length = 0;
+  const denied = fixture.fixtureResponse(await diagnose(), 503, ErrorResponse, "denied Pod proxy");
+  // A request timeout can produce the same public category; require the intended refusal.
+  assert.equal(diagnosticsRefusalsServed, 1);
+  assert.deepEqual(
+    proxyReads.filter((path) => path === diagnosticsPath),
+    [diagnosticsPath],
+  );
+  assert.deepEqual(denied.error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: "A required platform dependency is unavailable.",
+  });
+  assert.deepEqual(
+    dependencyLogs(denied.meta.requestId).map(({ errorClass, message, causes }) => ({
+      errorClass,
+      message,
+      causes,
+    })),
+    [
+      {
+        errorClass: "RuntimeDiagnosticsTransportError",
+        message: "The private Gateway diagnostics transport is unavailable.",
+        causes: undefined,
+      },
+    ],
+  );
+  assert.equal(JSON.stringify(starting).includes(marker), false);
+  assert.equal(JSON.stringify(denied).includes(marker), false);
+  assert.equal(JSON.stringify(lines).includes(marker), false);
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
 });
 
 test("Kubernetes deploy names an unconfigured Harness authentication model provider", async () => {
@@ -1195,10 +1595,21 @@ for (const [name, diagnostics] of [
         { diagnosticsError: new DriverError(marker) },
       ] as const,
   ),
+  [
+    "retain only the fixed private Gateway transport category in operator logs",
+    {
+      diagnosticsError: Object.assign(new RuntimeDiagnosticsTransportError(), {
+        message: marker,
+        cause: new Error(marker),
+      }),
+    },
+  ] as const,
   ["reject a null Driver response as unavailable", { diagnosticsResult: null }] as const,
 ]) {
   test(`deployment diagnostics ${name}`, async () => {
+    const lines: LogLine[] = [];
     const fixture = await createFixture({
+      logLines: lines,
       computeDriver: createRuntimeCredentialComputeDriver(diagnostics),
     });
     const { agentPath } = await fixture.bootstrapAgent();
@@ -1217,6 +1628,18 @@ for (const [name, diagnostics] of [
     assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE");
     assert.equal(JSON.stringify(result.body).includes(marker), false);
     assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
+    assert.equal(JSON.stringify(lines).includes(marker), false);
+    if (diagnostics.diagnosticsError instanceof RuntimeDiagnosticsTransportError) {
+      const logged = lines.find((line) => line.event === "http.dependency_unavailable");
+      assert.ok(logged);
+      assert.equal(logged.errorClass, "RuntimeDiagnosticsTransportError");
+      assert.equal(logged.message, "The private Gateway diagnostics transport is unavailable.");
+      assert.equal(
+        logged.requestId,
+        fixture.fixtureResponse(result, 503, ErrorResponse, "diagnostics failure").meta.requestId,
+      );
+      assert.equal(logged.causes, undefined);
+    }
   });
 }
 

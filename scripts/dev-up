@@ -12,7 +12,9 @@ repo_root="$(CDPATH="" cd "$script_dir/.." && pwd)"
 occ_cli="$repo_root/bin/occ"
 CDPATH="" cd "$repo_root"
 
-development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
+# Match occ dev up: unset Compute selects Kubernetes, whose unset control plane
+# is the Kubernetes-only profile. occ dev up names Docker when it runs this script.
+development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-kubernetes}"
 development_sandbox_driver="${OCC_DEVELOPMENT_SANDBOX_DRIVER:-none}"
 development_control_plane="${OCC_DEVELOPMENT_CONTROL_PLANE:-}"
 case "$development_sandbox_driver" in
@@ -148,8 +150,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   rm -rf -- "$temporary_directory"
-  # A failed or interrupted start removes the key directory it created while it is still
-  # empty. One that holds a copied key stays, recorded for occ dev down.
+  # Keep a copied key, even when startup fails after the copy.
   if [ "$status" -ne 0 ] && [ -n "$key_directory" ]; then
     rmdir -- "$key_directory" 2>/dev/null || true
   fi
@@ -183,12 +184,13 @@ if stat.S_IMODE(parent_stat.st_mode) & 0o077:
 PY
 }
 
-# Without --key-output the key goes to a directory this script creates once the checkout's
-# browser directory is known (below), so occ dev down can find and remove it.
-if [ -n "$key_output" ]; then
-  if ! key_output_error="$(validate_key_output "$key_output" 2>&1)"; then
-    usage_error "key output" "$key_output_error"
-  fi
+if [ -z "$key_output" ]; then
+  key_parent="${TMPDIR:-/tmp}"
+  key_directory="$(mktemp -d "${key_parent%/}/openclaw-dev-up-key.XXXXXXXXXX")"
+  chmod 700 "$key_directory"
+  key_output="$key_directory/initial-admin-service-key.json"
+elif ! key_output_error="$(validate_key_output "$key_output" 2>&1)"; then
+  usage_error "key output" "$key_output_error"
 fi
 
 container_engine=""
@@ -440,17 +442,6 @@ fi
 export OCC_DEVELOPMENT_BROWSER_ORIGIN OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN OCC_DEVELOPMENT_BROWSER_PORT
 export OCC_DEVELOPMENT_BROWSER_TLS_CERT OCC_DEVELOPMENT_BROWSER_TLS_KEY
 export OCC_AGENT_NATIVE_ADMIN_ENABLED=false
-if [ -z "$key_output" ]; then
-  # Drop trailing slashes (macOS sets TMPDIR to ".../T/") so the recorded path is clean.
-  key_parent="${TMPDIR:-/tmp}"
-  while [ "$key_parent" != "${key_parent%/}" ]; do key_parent="${key_parent%/}"; done
-  key_directory="$(mktemp -d "$key_parent/openclaw-dev-up-key.XXXXXXXXXX")"
-  chmod 700 "$key_directory"
-  key_output="$key_directory/initial-admin-service-key.json"
-  # Record only directories this script created: occ dev down removes them with the
-  # stack and never touches a --key-output path.
-  printf '%s\n' "$key_directory" >>"${OCC_DEVELOPMENT_BROWSER_TLS_CERT%/*}/dev-up-key-directories"
-fi
 browser_compose_file_selected=0
 for arg in "${compose_args[@]+${compose_args[@]}}"; do
   case "$arg" in -f | --file | -f?* | --file=*) browser_compose_file_selected=1 ;; esac
@@ -466,6 +457,8 @@ if [ "$browser_compose_file_selected" -eq 0 ]; then
     compose_args+=(-f "$browser_file")
   done
 fi
+# occ dev down appends the browser overlay itself. Keep the resolved input files.
+cleanup_compose_args=("${compose_args[@]}")
 compose_args+=(-f "$repo_root/compose.native-admin.yaml")
 
 compose() {
@@ -542,6 +535,8 @@ PY
       --build-arg "OPENCLAW_SOURCE_SHA256=$openclaw_archive_sha256"
       --build-arg "OPENCLAW_BUILD_TIMESTAMP=$openclaw_build_timestamp"
       --tag "$DEFAULT_RUNTIME_IMAGE" .)
+    # Matches internal/occdev's note for the Kubernetes profiles.
+    echo "dev-up: Building the runtime image. With no build cache, this compiles Node.js from source first: 15-60 minutes or longer, depending on CPUs and memory; later builds reuse the cache." >&2
     if ! engine "${runtime_build_args[@]}"; then
       fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" "${engine_command[@]}" "${runtime_build_args[@]}"
     fi
@@ -723,7 +718,7 @@ else
   if ! compose "${compose_ps_status_args[@]}" >"$podman_status" 2>"$temporary_directory/podman-services.err"; then
     fail "key copy" "could not inspect the Podman bootstrap container" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
   fi
-  if ! bootstrap_container_id="$(python3 - "$podman_status" <<'PY'
+  if ! bootstrap_container_id="$(python3 - "$podman_status" "$temporary_directory/bootstrap-project.json" <<'PY'
 import json
 import pathlib
 import sys
@@ -752,10 +747,17 @@ for entry in payload:
         service = labels.get("com.docker.compose.service") or labels.get("io.podman.compose.service")
     container_id = entry.get("ID") or entry.get("Id")
     if service == "bootstrap" and isinstance(container_id, str) and container_id:
-        matches.append(container_id)
+        # Standalone podman-compose config can retain the file's name even when
+        # -p selected a different project. Use the container it actually started.
+        project = labels.get("io.podman.compose.project", labels.get("com.docker.compose.project"))
+        if labels.get("com.docker.compose.project", project) != project:
+            project = None
+        matches.append((container_id, project))
 if len(matches) != 1:
     raise SystemExit(f"expected one Podman bootstrap container, found {len(matches)}")
-print(matches[0])
+container_id, project = matches[0]
+pathlib.Path(sys.argv[2]).write_text(json.dumps({"name": project}), encoding="utf-8")
+print(container_id)
 PY
 )"; then
     fail "key copy" "could not identify exactly one Podman bootstrap container" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
@@ -830,16 +832,34 @@ cleanup_environment=("OCC_DEVELOPMENT_COMPUTE_DRIVER=docker" "OCC_DEVELOPMENT_CO
 if [ -n "${podman_connection_name:-}" ]; then
   cleanup_environment+=("CONTAINER_CONNECTION=$podman_connection_name")
 fi
-cleanup_command_args=(env "${cleanup_environment[@]}" "$occ_cli" dev down --)
-if [ "${#compose_args[@]}" -gt 0 ]; then
-  cleanup_command_args+=("${compose_args[@]}")
+project_config="$compose_config"
+if [ "$container_engine" = "podman" ]; then
+  project_config="$temporary_directory/bootstrap-project.json"
 fi
-cleanup_command="$(quote_command "${cleanup_command_args[@]}")"
+if cleanup_project="$(python3 - "$project_config" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    name = json.load(source).get("name")
+if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+    raise SystemExit(1)
+print(name)
+PY
+)"; then
+  cleanup_command_args=(env "${cleanup_environment[@]}" "$occ_cli" dev down -- "${cleanup_compose_args[@]}" --project-name "$cleanup_project")
+  cleanup_command="$(quote_command "${cleanup_command_args[@]}")"
+else
+  cleanup_command="Could not identify the Compose project. Verify its name before running occ dev down."
+fi
 next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" "$occ_cli" installation get)"
 
 cat <<EOF
 OpenClaw Enterprise development stack is ready.
 Container engine: $container_engine_label
+Control plane: Compose
+Compute Driver: Docker (control-plane preview; it cannot deploy Agents)
 API URL: $api_url
 Browser console: $OCC_DEVELOPMENT_BROWSER_ORIGIN/console/
 Browser CA certificate: ${OCC_DEVELOPMENT_BROWSER_TLS_CERT%/*}/browser-ca.crt
