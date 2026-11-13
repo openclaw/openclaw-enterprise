@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { waitForWorkspaceReconnect } from "../helpers/gateway-workspace-readiness.mjs";
+import { waitForWorkspaceReconnect } from "../helpers/gateway-workspace-readiness.ts";
 
-const disconnected = (changes = {}) =>
+const disconnected = (changes: { type?: string; code?: string; message?: string } = {}) =>
   new Error("workspace unavailable", {
     cause: {
       type: "gateway_request_error",
@@ -37,6 +37,10 @@ test("workspace readiness never retries other protocol, authorization or transpo
     disconnected({ message: "upstream unavailable" }),
     disconnected({ type: "gateway_credentials_required" }),
     new Error("transport closed"),
+    { cause: null },
+    "transport closed",
+    null,
+    undefined,
   ]) {
     let reads = 0;
     await assert.rejects(

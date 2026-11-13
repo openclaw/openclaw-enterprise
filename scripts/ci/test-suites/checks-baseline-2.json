@@ -141,7 +141,7 @@
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
-    "tests/integration/gateway-workspace-readiness.test.mjs",
+    "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
@@ -760,7 +760,7 @@
       "path": "tests/integration/staging-qualification.test.ts"
     },
     {
-      "path": "tests/integration/gateway-workspace-readiness.test.mjs"
+      "path": "tests/integration/gateway-workspace-readiness.test.ts"
     },
     {
       "path": "tests/integration/openshell-full-integration.test.ts"
