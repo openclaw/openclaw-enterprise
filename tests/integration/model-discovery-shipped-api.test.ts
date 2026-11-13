@@ -1,82 +1,122 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcessByStdio } from "node:child_process";
-import http, { type IncomingHttpHeaders } from "node:http";
-import type { Readable } from "node:stream";
+import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
+import http, { type IncomingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
-import { execFileSync } from "node:child_process";
+import { createInterface } from "node:readline";
+import type { Readable } from "node:stream";
+import test, { type TestContext } from "node:test";
+import { Check } from "typebox/value";
+import { AgentModelListResponse } from "../../packages/contracts/src/index.ts";
+import type { CatalogReady } from "../fixtures/model-discovery-catalog-proxy.ts";
+import type { ControllerReady } from "../fixtures/model-discovery-controller-process.ts";
 
 const root = new URL("../..", import.meta.url);
-const proxyScript = new URL("../fixtures/model-discovery-catalog-proxy.mjs", import.meta.url);
+const proxyScript = new URL("../fixtures/model-discovery-catalog-proxy.ts", import.meta.url);
 const controllerScript = new URL(
-  "../fixtures/model-discovery-controller-process.mjs",
+  "../fixtures/model-discovery-controller-process.ts",
   import.meta.url,
 );
 
 type FixtureProcess = ChildProcessByStdio<null, Readable, Readable>;
-interface ReadyMessage {
-  port: number;
-  pid: number;
-  fetch: string;
-  namespaceId: string;
-  cookie: string;
-}
 interface ModelsResponse {
   status: number | undefined;
   headers: IncomingHttpHeaders;
-  body: { data: { id: string; name: string }[] };
+  body: string;
 }
 
-function spawnNode(script: URL, args: string[], env: NodeJS.ProcessEnv, label: string) {
+function spawnNode(t: TestContext, script: URL, args: string[], env: NodeJS.ProcessEnv) {
   const child = spawn(process.execPath, [script.pathname, ...args], {
     cwd: root.pathname,
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8");
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+  t.after(
+    async () => {
+      child.kill();
+      await closed;
+    },
+    { timeout: 5000 },
+  );
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
+  child.stderr.on("data", (chunk: string) => {
     stderr += chunk;
   });
-  child.on("exit", (code) => {
-    if (code !== 0 && code !== null) {
-      stderr += `${label} exited ${code}\n`;
-    }
+  child.on("error", (error) => {
+    stderr += `${error.message}\n`;
   });
-  return {
-    child,
-    output: () => ({ stdout, stderr }),
-  };
+  return { child, stderr: () => stderr };
 }
 
-function readyLine(child: FixtureProcess, event: string) {
-  return new Promise<ReadyMessage>((resolve, reject) => {
-    let buffer = "";
-    let errors = "";
+function isCatalogReady(value: unknown): value is CatalogReady {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "event" in value &&
+    value.event === "catalog.ready" &&
+    "port" in value &&
+    typeof value.port === "number"
+  );
+}
+
+function isControllerReady(value: unknown): value is ControllerReady {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "event" in value &&
+    value.event === "controller.ready" &&
+    "port" in value &&
+    typeof value.port === "number" &&
+    "pid" in value &&
+    typeof value.pid === "number" &&
+    "fetch" in value &&
+    value.fetch === "node-undici" &&
+    "namespaceId" in value &&
+    typeof value.namespaceId === "string" &&
+    "cookie" in value &&
+    typeof value.cookie === "string"
+  );
+}
+
+function readyLine<Ready extends CatalogReady | ControllerReady>(
+  child: FixtureProcess,
+  event: Ready["event"],
+  isReady: (value: unknown) => value is Ready,
+) {
+  const lines = createInterface({ input: child.stdout });
+  return new Promise<Ready>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`${event} did not become ready\n${buffer}\n${errors}`));
+      lines.close();
     }, 30_000);
-    child.stdout.on("data", (chunk) => {
-      buffer += chunk;
-      const line = buffer.split("\n").find((entry) => entry.includes(`"event":"${event}"`));
-      if (line !== undefined) {
-        clearTimeout(timer);
-        resolve(JSON.parse(line));
+    lines.on("line", (line) => {
+      let message: unknown;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        return;
       }
+      if (
+        message === null ||
+        typeof message !== "object" ||
+        !("event" in message) ||
+        message.event !== event
+      ) {
+        return;
+      }
+      if (isReady(message)) {
+        resolve(message);
+      } else {
+        reject(new Error(`Invalid ${event} message`));
+      }
+      lines.close();
     });
-    child.stderr.on("data", (chunk) => {
-      errors += chunk;
-    });
-    child.on("exit", (code) => {
+    lines.once("close", () => {
       clearTimeout(timer);
-      reject(new Error(`${event} process exited ${code} before ready\n${buffer}\n${errors}`));
+      reject(new Error(`${event} did not become ready`));
+      child.stdout.resume();
     });
   });
 }
@@ -148,29 +188,23 @@ test("shipped models API lists visible Codex models from a separate catalog proc
     { stdio: "ignore" },
   );
 
-  const proxy = spawnNode(proxyScript, [serverKey, serverCert], process.env, "catalog");
-  t.after(() => proxy.child.kill());
-  const catalog = await readyLine(proxy.child, "catalog.ready");
+  const proxy = spawnNode(t, proxyScript, [serverKey, serverCert], process.env);
+  const catalog = await readyLine(proxy.child, "catalog.ready", isCatalogReady);
 
   const catalogProxy = `http://127.0.0.1:${catalog.port}`;
   const noProxy = "localhost,127.0.0.1,[::1]";
-  const controller = spawnNode(
-    controllerScript,
-    [],
-    {
-      ...process.env,
-      NODE_USE_ENV_PROXY: "1",
-      HTTPS_PROXY: catalogProxy,
-      https_proxy: catalogProxy,
-      NO_PROXY: noProxy,
-      no_proxy: noProxy,
-      NODE_EXTRA_CA_CERTS: caCert,
-    },
-    "controller",
-  );
-  t.after(() => controller.child.kill());
-  const ready = await readyLine(controller.child, "controller.ready");
+  const controller = spawnNode(t, controllerScript, [], {
+    ...process.env,
+    NODE_USE_ENV_PROXY: "1",
+    HTTPS_PROXY: catalogProxy,
+    https_proxy: catalogProxy,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+    NODE_EXTRA_CA_CERTS: caCert,
+  });
+  const ready = await readyLine(controller.child, "controller.ready", isControllerReady);
   assert.equal(ready.fetch, "node-undici");
+  assert.equal(ready.pid, controller.child.pid);
   assert.notEqual(ready.pid, process.pid);
 
   // IPv4 loopback. Node's fetch can present ::ffff:127.0.0.1, which development
@@ -198,12 +232,13 @@ test("shipped models API lists visible Codex models from a separate catalog proc
       },
       (result) => {
         const chunks: Buffer[] = [];
-        result.on("data", (chunk) => chunks.push(chunk));
+        result.on("data", (chunk: Buffer) => chunks.push(chunk));
+        result.on("error", reject);
         result.on("end", () => {
           resolve({
             status: result.statusCode,
             headers: result.headers,
-            body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+            body: Buffer.concat(chunks).toString("utf8"),
           });
         });
       },
@@ -211,8 +246,9 @@ test("shipped models API lists visible Codex models from a separate catalog proc
     request.on("error", reject);
     request.end(payload);
   });
-  const body = response.body;
-  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(response.status, 200, response.body);
+  const body: unknown = JSON.parse(response.body);
+  assert.ok(Check(AgentModelListResponse, body), "Controller must return a model-list response");
   assert.equal(response.headers["cache-control"], "no-store");
   assert.deepEqual(body.data, [
     { id: "gpt-5.5", name: "GPT-5.5" },
@@ -220,7 +256,7 @@ test("shipped models API lists visible Codex models from a separate catalog proc
   ]);
   assert.equal(JSON.stringify(body).includes("at-fixture-token"), false);
 
-  const catalogLog = proxy.output().stderr;
+  const catalogLog = proxy.stderr();
   assert.match(
     catalogLog,
     /"host":"auth.openai.com","path":"\/api\/accounts\/v1\/user-auth-credential\/whoami"/,

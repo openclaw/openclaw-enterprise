@@ -1081,6 +1081,53 @@ function parseReporter(stdout, timedOut = false) {
   return events;
 }
 
+// An unfinished start is useful only if the earlier operations finished in order
+// and the independent terminal diagnostics agree with that sequence.
+function upstreamUnfinishedStage(events, measurements) {
+  const stages = ["installation", "exposure-auth", "initial-model", "replacement"];
+  const phases = ["installation", "exposure-auth", "gateway-turns", "pod-replacement"];
+  let index = 0;
+  let started = false;
+  for (const event of events) {
+    if (event.type !== "test:progress") {
+      continue;
+    }
+    if (event.data.kind === "openshell-stage-failure") {
+      return undefined;
+    }
+    if (event.data.kind !== "openshell-stage") {
+      continue;
+    }
+    const { stage, outcome } = event.data;
+    if (stage !== stages[index] || outcome !== (started ? "passed" : "started")) {
+      return undefined;
+    }
+    if (started) {
+      index += 1;
+    }
+    started = !started;
+  }
+  const stage = stages[index];
+  if (!started || (stage !== "installation" && stage !== "replacement")) {
+    return undefined;
+  }
+  const previous = new Map();
+  for (const { kind, stage: measuredStage, outcome } of measurements) {
+    // Only these two streams establish completion of earlier operations. A
+    // gateway failure or another diagnostic cannot corroborate this prefix.
+    if (kind !== "openshell-stage" && kind !== "openshell-sandbox-phase") {
+      return undefined;
+    }
+    const names = kind === "openshell-stage" ? stages : phases;
+    const position = names.indexOf(measuredStage);
+    if (outcome !== "passed" || position <= (previous.get(kind) ?? -1) || position >= index) {
+      return undefined;
+    }
+    previous.set(kind, position);
+  }
+  return stage;
+}
+
 function isRealTestEvent(event, absolutePath) {
   return (
     ["test:pass", "test:fail"].includes(event.type) &&
@@ -1577,6 +1624,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   let timeout;
   let case2Directory;
   let case2Phase;
+  let unfinishedStage;
   try {
     if (issues.length === 0) {
       // An externally prepared release case has no diagnostic collection state.
@@ -1686,6 +1734,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
       measurements = events
         .filter((event) => event.type === "test:diagnostic" && event.data?.kind === "measurement")
         .map((event) => event.data.measurement);
+      if (
+        relativePath === "tests/integration/openshell-upstream-real.test.ts" &&
+        ["openshell", "openshell-installers"].includes(lane.name)
+      ) {
+        unfinishedStage = upstreamUnfinishedStage(events, measurements);
+      }
       const terminalEvents = events.filter(
         (event) =>
           isRealTestEvent(event, absolutePath) ||
@@ -1891,6 +1945,14 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
     counts,
     tests,
     ...(measurements.length > 0 ? { measurements } : {}),
+    ...(unfinishedStage &&
+    ((timedOut && tests.length === 0) ||
+      (tests.length === 1 &&
+        tests[0].status === "failed" &&
+        file.expectedTests?.length === 1 &&
+        tests[0].name === file.expectedTests[0]))
+      ? { openShellUnfinishedStage: unfinishedStage }
+      : {}),
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,

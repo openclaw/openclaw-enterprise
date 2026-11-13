@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
-import type { AgentRevision, EgressRoute } from "../../packages/contracts/src/index.ts";
+import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { exerciseHarnessOverrides } from "../helpers/harness-overrides.ts";
+import {
+  assertHarnessInferenceRoutes,
+  exerciseHarnessOverrides,
+} from "../helpers/harness-overrides.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -13,7 +17,7 @@ test(
   async (t) => {
     // This fixture uses Native IAM in the same PostgreSQL State, including its transactional
     // deployment grants; the shared HTTP fixture uses an independently stored policy instead.
-    const { fixture, revisions } = await exerciseHarnessOverrides(
+    const { fixture, revisions, expectedInference } = await exerciseHarnessOverrides(
       t,
       { appFactory: postgresApp },
       true,
@@ -44,14 +48,17 @@ test(
         );
         assert.ok(saved);
         assert.deepEqual(saved.harness, expected.harness);
-        assert.equal(compute.admitRevision(saved), original.admitRevision(saved));
-        assert.ok(
-          saved.egressPlan?.routes.every((route: EgressRoute) =>
-            (route.origin + route.path).startsWith(
-              expected.harness.configuration.modelProvider.baseUrl + "/",
-            ),
-          ),
-        );
+        const inference = expectedInference.get(expected.id);
+        assert.ok(inference);
+        assertHarnessInferenceRoutes(saved, inference);
+        // Pin the Driver token to the fixture's requested provider, independently of
+        // either Compute instance and the persisted admission result.
+        const providerHash = createHash("sha256")
+          .update(JSON.stringify(["openai-responses", inference.baseUrl, false]))
+          .digest("hex");
+        const admission = `model-provider:v1:${providerHash}:protected-codex-no-connection-retry:v1`;
+        assert.equal(original.admitRevision(saved), admission);
+        assert.equal(compute.admitRevision(saved), admission);
       }
     }
   },

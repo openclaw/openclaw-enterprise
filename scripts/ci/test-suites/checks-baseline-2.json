@@ -141,7 +141,7 @@
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
-    "tests/integration/gateway-workspace-readiness.test.mjs",
+    "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
@@ -265,7 +265,8 @@
       "path": "tests/integration/ci-runner-openshell-progress.test.ts",
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
-        "run reports bounded OpenShell progress before the test file finishes"
+        "run reports bounded OpenShell progress before the test file finishes",
+        "CI retains the unfinished upstream stage without changing the failed case"
       ]
     },
     {
@@ -282,7 +283,8 @@
         "run annotates the first failed file before the lane finishes",
         "run finishes file accounting and cleanup after a reporter pipe read error",
         "run records a sanitized file failure after all reported cases pass",
-        "run records failed, skipped, todo, and passed dispositions separately"
+        "run records failed, skipped, todo, and passed dispositions separately",
+        "run keeps the enrollment operation pending when the parent is interrupted"
       ]
     },
     {
@@ -760,7 +762,7 @@
       "path": "tests/integration/staging-qualification.test.ts"
     },
     {
-      "path": "tests/integration/gateway-workspace-readiness.test.mjs"
+      "path": "tests/integration/gateway-workspace-readiness.test.ts"
     },
     {
       "path": "tests/integration/openshell-full-integration.test.ts"

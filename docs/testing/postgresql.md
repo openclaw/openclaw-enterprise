@@ -311,7 +311,7 @@ persistence, not a deployed installation.
 With a migrated disposable `OCC_TEST_DATABASE_URL`, run:
 
 ```sh
-node --test --test-concurrency=1 tests/integration/postgres-auth-binding.test.mjs \
+node --test --test-concurrency=1 tests/integration/postgres-auth-binding.test.ts \
   tests/integration/postgres-auth-accounts.test.ts tests/integration/postgres-service-api-keys.test.ts
 ```
 

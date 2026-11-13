@@ -9,7 +9,7 @@ import {
   runnerArtifactPaths,
   runRunnerSync,
   writeJson,
-  writeRunnerManifest,
+  writeRunnerLaneFiles,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
 
@@ -40,13 +40,12 @@ interface PreparationDiagnostics {
 
 test("invalid prepared defaults keep bounded cleanup and its failure without starting a child", async (t) => {
   const root = await createRunnerFixture(t);
-  const files = ["clean", "failed-cleanup"].map((name) => `tests/integration/${name}.test.mjs`);
-  for (const file of files) {
-    await writeFile(join(root, file), 'throw new Error("child must not start");\n');
-  }
-  await writeRunnerManifest(root, {
-    lanes: { "invalid-defaults": { files: files.map((path) => ({ path })) } },
-  });
+  await writeRunnerLaneFiles(
+    root,
+    "invalid-defaults",
+    ["clean", "failed-cleanup"],
+    'throw new Error("child must not start");\n',
+  );
   // Invalid defaults must still leave the runner responsible for both owned paths.
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
@@ -105,22 +104,12 @@ test("run records a preparation failure's redacted message in the diagnostics re
       "",
     ].join("\n"),
   );
-  for (const name of ["broken", "fine"]) {
-    await writeFile(
-      join(root, `tests/integration/${name}.test.mjs`),
-      'import test from "node:test";\ntest("runs", () => {});\n',
-    );
-  }
-  await writeRunnerManifest(root, {
-    lanes: {
-      prepare: {
-        files: [
-          { path: "tests/integration/broken.test.mjs" },
-          { path: "tests/integration/fine.test.mjs" },
-        ],
-      },
-    },
-  });
+  await writeRunnerLaneFiles(
+    root,
+    "prepare",
+    ["broken", "fine"],
+    'import test from "node:test";\ntest("runs", () => {});\n',
+  );
 
   const result = runRunnerSync(laneArgs(root, "prepare", statePath, resultsPath));
 

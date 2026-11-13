@@ -111,7 +111,7 @@ Slack serializes channel/app access; installation and Skipper Git serialize per 
 Retries require [approved dispatch](../testing/ci/configuration.md#environments).
 
 First-attempt `all` reuse requires completed execution
-(`scripts/ci/full-integration-reuse.mjs:validateResults`). Success selects artifacts,
+(`scripts/ci/full-integration-reuse.ts:validateResults`). Success selects artifacts,
 skipping lanes. Failure uses preflight’s fresh fallback.
 QA awaits Slack despite failure, stops on cancellation, and requires selected results.
 

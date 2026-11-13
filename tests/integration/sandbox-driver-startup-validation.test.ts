@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { makeStructuralRefusal as structuralRefusal } from "./sandbox-driver-installation-fixture.ts";
-import { verifySandboxFactoryValidation } from "./sandbox-driver-startup-composition-cases.ts";
 import {
   buildSandboxInstallation as sandboxInstallation,
   rejectsAtStartup,
@@ -13,15 +12,37 @@ import {
 
 type SandboxInstallation = ReturnType<typeof sandboxInstallation>;
 type ConfigurationMutation = (configuration: SandboxInstallation) => void;
-type RefusalDetail = SharedConfigurationValidationError["error"]["details"][number];
+type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
 
 test("startup rejects invalid bundled OpenShell configuration before invoking an injected factory", async (t) => {
-  await verifySandboxFactoryValidation({
-    t,
-    sandboxInstallation,
-    structuralRefusal,
-    SharedConfigurationValidationError,
+  const configuration = sandboxInstallation();
+  Reflect.set(configuration.drivers.sandbox.configuration, "unsupported", true);
+  const factoryError = new Error(
+    "An injected factory must not bypass provider configuration validation.",
+  );
+  let invokedFactory = false;
+  const options = {
+    createSandboxDriver() {
+      invokedFactory = true;
+      throw factoryError;
+    },
+  } satisfies NonNullable<Parameters<typeof loadInstallationFile>[2]>;
+
+  await assert.rejects(loadInstallationFile(t, configuration, options), (error: unknown) => {
+    assert.ok(error instanceof ConfigurationValidationError);
+    assert.deepEqual(
+      error.error.details,
+      structuralRefusal("", "additionalProperties", "UNKNOWN_FIELD"),
+    );
+    return true;
   });
+  assert.equal(invokedFactory, false);
+  // Control: the same factory is reached once the configuration is valid.
+  await assert.rejects(
+    loadInstallationFile(t, sandboxInstallation(), options),
+    (error: unknown) => error === factoryError,
+  );
+  assert.equal(invokedFactory, true);
 });
 
 // Each test below changes settings of a valid installation, and startup refuses each change.
