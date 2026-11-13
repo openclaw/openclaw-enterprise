@@ -1510,7 +1510,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
                   {
                     kind: "Deployment",
                     name: "openclaw-enterprise-" + component,
-                    uid: component + "-deployment-uid",
+                    uid: state.replicaSetOwner?.[component] ?? component + "-deployment-uid",
                     controller: true,
                   },
                 ],
@@ -3508,6 +3508,10 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         state.secret.data["installation.yaml"] = Buffer.from(originalBytes).toString("base64");
         state.installationSuccessor.data["installation.yaml"] =
           Buffer.from(stagedBytes).toString("base64");
+        await writeFile(
+          join(f.directory, "startup-projection", "generation", "installation.yaml"),
+          originalBytes,
+        );
         await writeFile(join(f.directory, "installation.json"), originalBytes);
         await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
         await assert.rejects(f.run(), /string mapping keys/);
@@ -4375,6 +4379,15 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
           await f.readEvidence("native-command-failures.tsv"),
           "quiescence-scale\tworker\t1\n",
         );
+        if (fault === "replace-worker-before-scale") {
+          // The old ReplicaSet still belongs to the replaced Deployment. Keep both
+          // writers in their observed state until the new worker actually owns it.
+          await assert.rejects(f.run("--resume"), /serving Pod is unavailable or unowned/);
+          assert.deepEqual(await f.events(), ["scale-api"]);
+          const reconciled = await f.state();
+          reconciled.replicaSetOwner = { worker: reconciled.deploymentIdentities.worker.uid };
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(reconciled));
+        }
         // After the operator reconciles the conflict, resume observes the current
         // worker and the already-stopped API instead of replaying stale preconditions.
         await f.run("--resume");
