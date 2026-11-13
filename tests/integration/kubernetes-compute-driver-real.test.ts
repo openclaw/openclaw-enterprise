@@ -3,37 +3,129 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type {
+  KubernetesComputeDriver,
+  KubernetesComputeDriverOptions,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import type { AgentRevision, Namespace } from "../../packages/contracts/src/index.ts";
 import {
   fixtureImage,
   requiresKubernetes,
   hash,
   kubectl,
-  resource,
-  resources,
+  resource as readResource,
+  resources as listResources,
   missing,
-  waitFor,
+  waitFor as waitForFixture,
   waitForDeletedClaim,
   assertKubernetesFixtureAvailable,
-  namespace,
+  namespace as createNamespace,
   provisionFixtureAuth,
-  revisionContext,
-  revision,
+  revisionContext as fixtureRevisionContext,
+  revision as createFixtureRevision,
   agentName,
   gatewayName,
   harnessWorkspaceClaimName,
   revisionName,
-  assertReadyGateway,
-  assertHarnessWorkspaceClaim,
+  assertReadyGateway as readyGateway,
+  assertHarnessWorkspaceClaim as workspaceClaim,
   assertAgentServiceEndpointCount,
-  createDriver,
-  workloadPod,
-  probe,
+  createDriver as createFixtureDriver,
+  workloadPod as findWorkloadPod,
+  probe as runProbe,
   assertDeniedTraffic,
   assertExplicitNetworkProfile,
   authorized,
-  createScopedController,
+  createScopedController as provisionScopedController,
 } from "../helpers/kubernetes-compute-real.mjs";
+
+type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
+type Metadata = InstanceType<KubernetesSdk["V1ObjectMeta"]> & { name: string; uid: string };
+type KubernetesResource = { metadata: Metadata };
+type Pod = KubernetesResource & {
+  spec: InstanceType<KubernetesSdk["V1PodSpec"]>;
+  status: InstanceType<KubernetesSdk["V1PodStatus"]> & { podIP: string };
+};
+type Deployment = KubernetesResource & {
+  spec: { template: { metadata?: Metadata; spec: Pod["spec"] } };
+  status: InstanceType<KubernetesSdk["V1DeploymentStatus"]>;
+};
+type ResourceByKind = {
+  namespace: KubernetesResource & { status: InstanceType<KubernetesSdk["V1NamespaceStatus"]> };
+  persistentvolumeclaim: KubernetesResource & {
+    spec: InstanceType<KubernetesSdk["V1PersistentVolumeClaimSpec"]>;
+  };
+  deployment: Deployment;
+  secret: KubernetesResource & { data: Record<string, string> };
+  serviceaccount: KubernetesResource & InstanceType<KubernetesSdk["V1ServiceAccount"]>;
+  pod: Pod;
+};
+type FixtureRevision = AgentRevision & {
+  configuration: { agents: { defaults: { model: string } } };
+};
+type RevisionContext = Parameters<KubernetesComputeDriver["prepareRevision"]>[1];
+type Harness = AgentRevision["harness"];
+type Compute = AgentRevision["compute"];
+
+const resource: <K extends string>(
+  kind: K,
+  name: string,
+  namespace?: string,
+) => Promise<K extends keyof ResourceByKind ? ResourceByKind[K] : KubernetesResource> =
+  readResource;
+const resources: <K extends string>(
+  kind: K,
+  namespace: string,
+) => Promise<(K extends "deployments" ? Deployment : KubernetesResource)[]> = listResources;
+const workloadPod: (namespace: string, selector: string) => Promise<Pod | undefined> =
+  findWorkloadPod;
+const waitFor: <T>(
+  description: string,
+  operation: () => T | false | undefined | Promise<T | false | undefined>,
+  timeoutMs?: number,
+) => Promise<T> = waitForFixture;
+const assertReadyGateway: (
+  placement: string,
+  agentId: string,
+  namespaceId: string,
+  candidate?: AgentRevision,
+) => Promise<Deployment> = readyGateway;
+const assertHarnessWorkspaceClaim: (
+  placement: string,
+  namespaceId: string,
+  agentId: string,
+  expectedUid?: string,
+) => Promise<KubernetesResource> = workspaceClaim;
+const namespace = createNamespace as (label: string) => Namespace;
+const revision = createFixtureRevision as (
+  driver: KubernetesComputeDriver,
+  owner: Namespace,
+  agentId: string,
+  number: number,
+) => FixtureRevision;
+const createDriver: (
+  overrides: Partial<KubernetesComputeDriverOptions>,
+) => Promise<{ driver: KubernetesComputeDriver; kubernetesNamespaceName: (id: string) => string }> =
+  createFixtureDriver;
+const createScopedController = provisionScopedController as (
+  context: TestContext,
+  installationId: string,
+  platformNamespace: string,
+) => Promise<{
+  authentication: KubernetesComputeDriverOptions["authentication"];
+  account: string;
+  tenantRole: string;
+}>;
+const revisionContext: (candidate: AgentRevision) => RevisionContext = fixtureRevisionContext;
+const probe: (
+  namespace: string,
+  pod: string,
+  operation: "http" | "dns" | "token",
+  target: string,
+  port?: number,
+) => Promise<string> = runProbe;
 
 test(
   "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",
@@ -130,7 +222,11 @@ test(
     const second = namespace("second");
     const empty = namespace("empty");
     const foreign = namespace("foreign");
-    const owned = [first, second, empty].map(({ id }) => kubernetesNamespaceName(id));
+    const owned = [
+      kubernetesNamespaceName(first.id),
+      kubernetesNamespaceName(second.id),
+      kubernetesNamespaceName(empty.id),
+    ] as const;
     const gatewayTargets = owned;
     const foreignName = kubernetesNamespaceName(foreign.id);
     context.after(async () => {
@@ -173,14 +269,19 @@ test(
       ),
     );
 
-    for (const [index, owner] of [first, second].entries()) {
-      const name = owned[index];
+    for (const [owner, name] of [
+      [first, owned[0]],
+      [second, owned[1]],
+    ] as const) {
       const backing = await resource("namespace", name);
       assert.equal(backing.status.phase, "Active");
-      assert.equal(backing.metadata.labels["app.kubernetes.io/managed-by"], "openclaw-enterprise");
-      assert.equal(backing.metadata.labels["openclaw.dev/namespace"], owner.id);
+      assert.equal(
+        backing.metadata.labels?.["app.kubernetes.io/managed-by"],
+        "openclaw-enterprise",
+      );
+      assert.equal(backing.metadata.labels?.["openclaw.dev/namespace"], owner.id);
       for (const mode of ["enforce", "audit", "warn"]) {
-        assert.equal(backing.metadata.labels[`pod-security.kubernetes.io/${mode}`], "restricted");
+        assert.equal(backing.metadata.labels?.[`pod-security.kubernetes.io/${mode}`], "restricted");
       }
 
       const policyNames = (await resources("networkpolicies", name))
@@ -198,7 +299,7 @@ test(
     }
 
     for (const owner of [first, second, empty]) {
-      const storageTargets = JSON.parse(
+      const { items: storageTargets } = JSON.parse(
         await kubectl(
           "get",
           "namespaces",
@@ -207,7 +308,7 @@ test(
           "-o",
           "json",
         ),
-      ).items;
+      ) as { items: KubernetesResource[] };
       assert.deepEqual(
         storageTargets.map(({ metadata }) => metadata.name),
         [kubernetesNamespaceName(owner.id)],
@@ -287,7 +388,7 @@ test(
         owned[0],
       );
       assert.deepEqual(rejectedClaim.spec.accessModes, ["ReadWriteOnce"]);
-      assert.equal(rejectedClaim.spec.resources.requests.storage, "1Gi");
+      assert.equal(rejectedClaim.spec.resources?.requests?.storage, "1Gi");
     } finally {
       await rm(invalidClaimDirectory, { recursive: true, force: true });
       await kubectl(
@@ -300,8 +401,8 @@ test(
       );
     }
 
-    const gatewayIdentities = new Map();
-    const sharedWorkspaceIdentities = new Map();
+    const gatewayIdentities = new Map<string, string>();
+    const sharedWorkspaceIdentities = new Map<string, string>();
     for (const candidate of candidates) {
       if (driver.requiresStoppedPredecessors(candidate)) {
         for (const previous of candidates.filter(
@@ -353,7 +454,7 @@ test(
       );
       sharedWorkspaceIdentities.set(identityKey, harnessClaim.metadata.uid);
       assert.equal(
-        gateway.spec.template.spec.volumes.some(
+        gateway.spec.template.spec.volumes?.some(
           ({ persistentVolumeClaim }) =>
             persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
         ),
@@ -361,7 +462,7 @@ test(
         "Gateway must not mount the Harness workspace claim",
       );
       assert.deepEqual(
-        deployment.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
+        deployment.spec.template.spec.volumes?.find(({ name }) => name === "openclaw-workspace"),
         {
           name: "openclaw-workspace",
           persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
@@ -369,13 +470,15 @@ test(
       );
       assert.equal(deployment.spec.template.spec.serviceAccountName, agentName(candidate.agentId));
       assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
-      assert.equal(deployment.spec.template.spec.securityContext.runAsNonRoot, true);
+      assert.equal(deployment.spec.template.spec.securityContext?.runAsNonRoot, true);
       assert.equal(
-        deployment.spec.template.spec.securityContext.seccompProfile.type,
+        deployment.spec.template.spec.securityContext?.seccompProfile?.type,
         "RuntimeDefault",
       );
       const container = deployment.spec.template.spec.containers[0];
-      const sourceName = revisionContext(candidate).harnessAuth.backendRef.name;
+      const harnessAuth = revisionContext(candidate)?.harnessAuth;
+      assert.ok(harnessAuth?.method === "api_key" && "backendRef" in harnessAuth);
+      const sourceName = harnessAuth.backendRef.name;
       const mountedSecrets = [
         ...(deployment.spec.template.spec.volumes ?? []).flatMap((volume) => [
           volume.secret?.secretName,
@@ -399,25 +502,28 @@ test(
       const harnessProjection = await resource("secret", projectionName, placement);
       assert.equal(Object.keys(harnessProjection.data).length, 1);
       assert.equal(Object.hasOwn(harnessProjection.data, "gateway-password"), false);
-      assert.equal(container.securityContext.allowPrivilegeEscalation, false);
-      assert.equal(container.securityContext.readOnlyRootFilesystem, true);
-      assert.deepEqual(container.securityContext.capabilities.drop, ["ALL"]);
-      assert.deepEqual(container.resources.requests, { cpu: "25m", memory: "48Mi" });
+      assert.equal(container?.securityContext?.allowPrivilegeEscalation, false);
+      assert.equal(container?.securityContext?.readOnlyRootFilesystem, true);
+      assert.deepEqual(container?.securityContext?.capabilities?.drop, ["ALL"]);
+      assert.deepEqual(container?.resources?.requests, { cpu: "25m", memory: "48Mi" });
       assert.equal(deployment.status.readyReplicas, 1);
       const account = await resource("serviceaccount", agentName(candidate.agentId), placement);
       assert.equal(account.automountServiceAccountToken, false);
       assert.equal(
-        account.metadata.annotations["openclaw.dev/service-principal-id"],
+        account.metadata.annotations?.["openclaw.dev/service-principal-id"],
         candidate.servicePrincipalId,
       );
-      const projection = deployment.spec.template.spec.volumes.find(
+      const projection = deployment.spec.template.spec.volumes?.find(
         ({ projected }) => projected !== undefined,
       );
       assert.equal(
-        projection.projected.sources[0].serviceAccountToken.audience,
+        projection?.projected?.sources?.[0]?.serviceAccountToken?.audience,
         "openclaw-enterprise",
       );
-      assert.equal(projection.projected.sources[0].serviceAccountToken.expirationSeconds, 3_600);
+      assert.equal(
+        projection?.projected?.sources?.[0]?.serviceAccountToken?.expirationSeconds,
+        3_600,
+      );
       await assertAgentServiceEndpointCount(
         placement,
         candidate.agentId,
@@ -428,14 +534,14 @@ test(
 
     assert.equal(
       (await resources("deployments", gatewayTargets[0])).filter(
-        ({ spec }) => spec.template.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+        ({ spec }) => spec.template.metadata?.labels?.["openclaw.dev/workload-role"] === "gateway",
       ).length,
       2,
       "two Agents in the same Namespace must own two independent gateway Deployments",
     );
     assert.equal(
       (await resources("deployments", gatewayTargets[1])).filter(
-        ({ spec }) => spec.template.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+        ({ spec }) => spec.template.metadata?.labels?.["openclaw.dev/workload-role"] === "gateway",
       ).length,
       1,
       "a separate Namespace must own only its deployed Agent's gateway",
@@ -514,7 +620,7 @@ test(
     await assertExplicitNetworkProfile(context, owned[0], firstPod);
 
     const gatewayUrl = `http://${gatewayName(primaryAgent)}.${gatewayTargets[0]}.svc.cluster.local:8080/readyz`;
-    let lastApprovedGatewayError;
+    let lastApprovedGatewayError: unknown;
     try {
       await waitFor(
         "the approved platform client to reach the exact Agent's owned gateway through Service DNS",
@@ -522,8 +628,13 @@ test(
           try {
             // Pod and EndpointSlice readiness can precede cross-Pod Service DNS reachability.
             assert.equal(
-              JSON.parse(await probe(platformNamespace, "platform-probe", "http", gatewayUrl))
-                .status,
+              (
+                JSON.parse(
+                  await probe(platformNamespace, "platform-probe", "http", gatewayUrl),
+                ) as {
+                  status: number;
+                }
+              ).status,
               200,
               "an explicitly approved platform client must reach the exact Agent's owned gateway",
             );
@@ -539,13 +650,15 @@ test(
       throw lastApprovedGatewayError ?? error;
     }
     assert.ok(
-      JSON.parse(
-        await probe(
-          owned[0],
-          firstPod.metadata.name,
-          "dns",
-          "kubernetes.default.svc.cluster.local",
-        ),
+      (
+        JSON.parse(
+          await probe(
+            owned[0],
+            firstPod.metadata.name,
+            "dns",
+            "kubernetes.default.svc.cluster.local",
+          ),
+        ) as { address: string }
       ).address,
       "Agent DNS traffic must remain explicitly allowed",
     );
@@ -580,7 +693,7 @@ test(
         "token",
         "/var/run/secrets/openclaw/service-principal/token",
       ),
-    );
+    ) as { audience: string[]; subject: string };
     assert.deepEqual(
       projectedIdentity.audience,
       ["openclaw-enterprise"],
@@ -624,14 +737,15 @@ test(
         true,
         "the controller needs exact-target access to canonical and delivered Secrets",
       );
-      for (const [namespace, pod] of [
+      const workloads: ReadonlyArray<readonly [string, Pod]> = [
         [owned[0], firstPod],
         [gatewayTargets[0], gatewayPod],
-      ]) {
+      ];
+      for (const [podNamespace, pod] of workloads) {
         assert.equal(
           await authorized(
             target,
-            `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`,
+            `system:serviceaccount:${podNamespace}:${pod.spec.serviceAccountName}`,
             "get",
             "secrets",
           ),
@@ -741,9 +855,18 @@ test(
     await assertReadyGateway(owned[0], secondaryAgent, first.id);
 
     const embeddedAgent = `agt_${randomUUID()}`;
-    const embeddedRevision = {
+    const embeddedRevision: Omit<FixtureRevision, "harness" | "compute"> & {
+      harness: Harness & { configuration: Harness["configuration"] };
+      compute: { -readonly [K in keyof Compute]: Compute[K] };
+    } = {
       ...revision(driver, first, embeddedAgent, 1),
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded", overrides: {} },
+      harness: {
+        id: "openclaw",
+        version: "1.0.0",
+        mode: "embedded",
+        overrides: {},
+        configuration: {},
+      },
     };
     embeddedRevision.configuration.agents.defaults.model = "openai/gpt-5";
     embeddedRevision.harness.configuration = driver.resolveHarnessConfiguration(
@@ -751,7 +874,12 @@ test(
       embeddedRevision.harnessAuth,
       embeddedRevision.configuration,
     );
-    embeddedRevision.compute.admission = driver.admitRevision(embeddedRevision);
+    const admission = driver.admitRevision(embeddedRevision);
+    if (admission === undefined) {
+      delete embeddedRevision.compute.admission;
+    } else {
+      embeddedRevision.compute.admission = admission;
+    }
     await waitFor(`embedded AgentRevision ${embeddedRevision.id} to become ready`, async () => {
       const observation = await driver.prepareRevision(
         embeddedRevision,
@@ -776,7 +904,20 @@ test(
     // Revision cleanup preserves the Agent workspace; only final Agent deletion removes it.
     await driver.deleteAgentRuntimeCredentials({
       namespace: first,
-      agent: { id: primaryAgent, namespaceId: first.id },
+      agent: {
+        id: primaryAgent,
+        namespaceId: first.id,
+        name: "primary Agent",
+        desiredRuntimeState: "stopped",
+        status: "deleting",
+        configurationId: secondRevision.configurationId,
+        backendId: null,
+        harnessAuth: secondRevision.harnessAuth,
+        executionMode: secondRevision.harness.mode,
+        gatewayManagedMode: false,
+        servicePrincipalId: secondRevision.servicePrincipalId,
+        createdAt: secondRevision.createdAt,
+      },
     });
     await waitForDeletedClaim(harnessWorkspaceClaimName(primaryAgent), owned[0]);
     await assertHarnessWorkspaceClaim(
