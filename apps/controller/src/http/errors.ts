@@ -59,7 +59,7 @@ import {
 import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
-} from "../drivers/configuration/kubernetes/index.ts";
+} from "../configuration-errors.ts";
 import { loggedErrorText, resemblesCredential } from "../logging.ts";
 import {
   agentPrincipalDenialMessage,
