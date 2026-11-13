@@ -65,7 +65,7 @@ graph TD
 
 `run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
-`run-tests.mjs:parseArgs` accepts `--test-name=<literal>` with leading dashes;
+`runner-inputs.ts:parseArgs` accepts `--test-name=<literal>` with leading dashes;
 duplicates, including empty values, fail before effects. `selectLane` validates paths/names.
 `runFile` requires one passing standalone case through an escaped, anchored Node-child pattern.
 Results retain environment, cleanup and focus/name on preparation failure.
@@ -185,7 +185,7 @@ owns credential isolation and historical-pair limits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-`scripts/ci/run-tests.mjs:normalizeFile` validates `file.env`.
+`scripts/ci/runner-inputs.ts:normalizeFile` validates `file.env`.
 `runFile` merges filtered inherited values, restored declared inputs, `lane.env`,
 preparation defaults, `file.env`, then generated values; later values win.
 `scripts/ci/prepare.mjs:prepareFile` separates defaults and outputs.
