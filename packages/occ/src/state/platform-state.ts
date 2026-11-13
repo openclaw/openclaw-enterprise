@@ -3256,7 +3256,8 @@ function repositories(
         (policy.version === existing.version &&
           !isDeepStrictEqual(policy.additions, existing.additions)) ||
         (policy.version !== existing.version &&
-          (previousApplication?.state === "pending" || application !== undefined))
+          (previousApplication?.state === "pending" || application !== undefined)) ||
+        (previousApplication?.state === "pending" && application === undefined)
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy version transition.");
       }
