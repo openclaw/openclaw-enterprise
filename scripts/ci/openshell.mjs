@@ -6,10 +6,11 @@ import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
 import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { downloadPinnedArtifact } from "./routing.mjs";
+import { preloadAgentSandboxController } from "./agent-sandbox.ts";
 import { selectOpenShellCandidate, verifyOpenShellCandidate } from "./openshell-candidate.ts";
 
-const openShellVersion = "0.1.6";
-const openShellRevision = "ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47";
+const openShellVersion = "0.1.8";
+const openShellRevision = "f3d976590d3eb1379690a2abaf0f0e26c21d487d";
 const agentSandboxVersion = "v0.5.2";
 const kubectlVersion = "v1.36.4";
 const k3sImage =
@@ -18,12 +19,12 @@ const openShellChartArchive = `helm-chart-${openShellVersion}.tgz`;
 const openShellWorkspaceChartArchive = `openshell-workspace-${openShellVersion}.tgz`;
 const openShellSourceArchive = `openshell-v${openShellVersion}.tar.gz`;
 const openShellSourceRoot = `OpenShell-${openShellVersion}`;
-const openShellSourceSha256 = "e7bce772f5837a4ffc29fb51a49381eec3d4771a9f015c75b06d4f66deb109d2";
+const openShellSourceSha256 = "ea6c2dcb50b3ecb3c7bf3d8b5ae4ada71eee838a1a2b12f7a1d2ada76b0837b9";
 const agentSandboxManifestSha256 =
   "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b";
-const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellVersion}@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea`;
-const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellVersion}@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63`;
-const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellVersion}@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b`;
+const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellVersion}@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4`;
+const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellVersion}@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b`;
+const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellVersion}@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1`;
 const podSecurityAdmissionConfigName = "openshell-pod-security-admission.yaml";
 const podSecurityAdmissionContainerPath = `/etc/openclaw-ci/${podSecurityAdmissionConfigName}`;
 
@@ -268,7 +269,7 @@ async function acquireOpenShellCharts(execFile, helm, directory) {
   return { gateway: chartPath, workspace: workspaceChartPath };
 }
 
-async function installAgentSandbox(execFile, kubectl, cluster, directory) {
+async function installAgentSandbox(execFile, kubectl, cluster, directory, registerImage) {
   const manifestPath = await downloadPinnedArtifact({
     artifact: {
       name: "Agent Sandbox",
@@ -279,7 +280,11 @@ async function installAgentSandbox(execFile, kubectl, cluster, directory) {
     },
     directory,
   });
-  await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", manifestPath]));
+  const nodes = JSON.parse(
+    (await execFile(kubectl, kubectlArgs(cluster, ["get", "nodes", "-o", "json"]))).stdout,
+  );
+  const localManifest = await preloadAgentSandboxController(manifestPath, nodes, registerImage);
+  await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", localManifest]));
   await execFile(kubectl, kubectlArgs(cluster, ["get", "crd", "sandboxes.agents.x-k8s.io"]));
   await execFile(
     kubectl,
@@ -680,7 +685,7 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
   const charts = candidate
     ? { gateway: candidate.gatewayChart, workspace: candidate.workspaceChart }
     : await acquireOpenShellCharts(execFile, helm, directory);
-  await installAgentSandbox(execFile, kubectl, selectedCluster, directory);
+  await installAgentSandbox(execFile, kubectl, selectedCluster, directory, registerImage);
 
   const gatewayImage = chartDeployableImageReference(
     await registerImage(gatewaySourceImage, "OCC_TEST_OPENSHELL_GATEWAY_IMAGE"),

@@ -41,18 +41,25 @@ func TestDevelopmentSignInAcceptsKeycloakOnlyInTheRoutingProfile(t *testing.T) {
 	if value, err := developmentSignIn(map[string]string{}); err != nil || value != "" {
 		t.Fatalf("unset: developmentSignIn = %q, %v", value, err)
 	}
+	// Unset profile selectors resolve to the Kubernetes-only profile, so
+	// Keycloak sign-in needs no other selection.
+	for _, key := range []string{"OCC_DEVELOPMENT_COMPUTE_DRIVER", "OCC_DEVELOPMENT_CONTROL_PLANE"} {
+		env := keycloakProfileEnv()
+		env[key] = ""
+		if value, err := developmentSignIn(env); err != nil || value != "keycloak" {
+			t.Fatalf("unset %s: developmentSignIn = %q, %v", key, value, err)
+		}
+	}
 }
 
 func TestDevelopmentSignInRefusesEveryOtherProfile(t *testing.T) {
 	cases := map[string]struct {
 		key, value, want string
 	}{
-		"docker compute":                   {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker", "OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes"},
-		"unset compute defaults to docker": {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "", "OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes"},
-		"compose plane":                    {"OCC_DEVELOPMENT_CONTROL_PLANE", "compose", "Kubernetes-only profile"},
-		"unset plane defaults to compose":  {"OCC_DEVELOPMENT_CONTROL_PLANE", "", "Kubernetes-only profile"},
-		"openshell":                        {"OCC_DEVELOPMENT_SANDBOX_DRIVER", "openshell", "OCC_DEVELOPMENT_SANDBOX_DRIVER=none"},
-		"unknown provider":                 {"OCC_DEVELOPMENT_SIGN_IN", "github", "must be keycloak or unset"},
+		"docker compute":   {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker", "OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes"},
+		"compose plane":    {"OCC_DEVELOPMENT_CONTROL_PLANE", "compose", "Kubernetes-only profile"},
+		"openshell":        {"OCC_DEVELOPMENT_SANDBOX_DRIVER", "openshell", "OCC_DEVELOPMENT_SANDBOX_DRIVER=none"},
+		"unknown provider": {"OCC_DEVELOPMENT_SIGN_IN", "github", "must be keycloak or unset"},
 	}
 	for name, test := range cases {
 		env := keycloakProfileEnv()
@@ -74,6 +81,7 @@ func TestCheckDevelopmentProfileRefusesKeycloakSignInForDockerCompute(t *testing
 	// A present OCC_DEVELOPMENT_DATABASE_NAME counts as selected even when empty.
 	t.Setenv("OCC_DEVELOPMENT_DATABASE_NAME", "")
 	os.Unsetenv("OCC_DEVELOPMENT_DATABASE_NAME")
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")
 	t.Setenv("OCC_DEVELOPMENT_SIGN_IN", "keycloak")
 	err := CheckDevelopmentProfile()
 	if err == nil || !strings.Contains(err.Error(), "OCC_DEVELOPMENT_SIGN_IN=keycloak requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes") {

@@ -1586,6 +1586,7 @@ export {
   validatePresetTemplate,
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
+  presetValueHasVariables,
   requiredPresetVariables,
 } from "./preset-variables.mts";
 

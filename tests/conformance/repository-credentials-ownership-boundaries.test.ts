@@ -15,8 +15,8 @@ import type { RepositoryCredentialSessionResult } from "../../apps/controller/sr
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
-  type AlternateFixtureFactory,
   createAlternateFixtureFactory,
+  fixtureEvents,
   isBackendFactory,
   requireFixtureDriver,
 } from "../fixtures/repository-credentials/alternate-shape.ts";
@@ -36,23 +36,6 @@ const completed = { kind: "completed", status: 200 } as const;
 const unavailable = { kind: "not-dispatched", code: "exchange-unavailable" };
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-type FixtureEvent = { kind: string; sessionId: string };
-function isFixtureEvent(value: unknown): value is FixtureEvent {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "kind" in value &&
-    typeof value.kind === "string" &&
-    "sessionId" in value &&
-    typeof value.sessionId === "string"
-  );
-}
-function fixtureEvents(factory: AlternateFixtureFactory): FixtureEvent[] {
-  return factory.events.map((value) => {
-    assert.ok(isFixtureEvent(value));
-    return value;
-  });
-}
 function fixtureHead(clock: Clock, rawTarget: string): RequestHead {
   const result = requestHead("GET", rawTarget, {}, { receivedMonoMs: clock.monotonicNow() });
   assert.equal(result.contentEncoding, "identity");

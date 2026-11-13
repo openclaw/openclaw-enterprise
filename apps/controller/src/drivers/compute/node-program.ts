@@ -1,4 +1,4 @@
-import { deflateRawSync, inflateRawSync } from "node:zlib";
+import { brotliCompressSync, constants, deflateRawSync, inflateRawSync } from "node:zlib";
 
 /**
  * Upper bound for one program piece. Linux rejects any single exec argument or
@@ -32,16 +32,35 @@ export function withoutLineComments(program: string): string {
  * argument outgrows a piece and a Sandbox command carries only the compressed size.
  */
 export function nodeProgramArguments(program: string): string[] {
-  // Keep nested runtime programs within the Sandbox command budget.
-  const encoded = deflateRawSync(withoutLineComments(program), {
-    level: 9,
-    memLevel: 7,
-  }).toString("base64");
+  return [
+    NODE_PROGRAM_LOADER,
+    ...programPieces(
+      deflateRawSync(withoutLineComments(program), {
+        level: 9,
+        memLevel: 7,
+      }),
+    ),
+  ];
+}
+
+/** Pack only the static Codex child inside a workspace node supervisor. */
+export function compactNodeChildArguments(program: string): string[] {
+  const packed = brotliCompressSync(withoutLineComments(program), {
+    params: { [constants.BROTLI_PARAM_QUALITY]: 11 },
+  });
+  return [
+    NODE_PROGRAM_LOADER.replace("inflateRawSync", "brotliDecompressSync"),
+    ...programPieces(packed),
+  ];
+}
+
+function programPieces(program: Buffer): string[] {
+  const encoded = program.toString("base64");
   const pieces: string[] = [];
   for (let offset = 0; offset < encoded.length; offset += NODE_PROGRAM_PIECE_BYTES) {
     pieces.push(encoded.slice(offset, offset + NODE_PROGRAM_PIECE_BYTES));
   }
-  return [NODE_PROGRAM_LOADER, ...pieces];
+  return pieces;
 }
 
 /** Re-encode a provider prelude with the canonical, already-rendered Node program. */

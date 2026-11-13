@@ -239,6 +239,7 @@ test(
         );
         await fixture.stop();
         assert.deepEqual(prepared[0].repositoryCredentials, snapshot);
+        assert.ok(prepared[1]);
         assert.ok(prepared[1].repositoryCredentials);
         assert.ok(
           checks.mock.callCount() > 0,

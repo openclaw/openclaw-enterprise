@@ -241,7 +241,8 @@ export async function exchangeOidcSubject(
     }
     const policy = config.enrollment;
     if (policy !== undefined) {
-      const groups = claims[policy.admission.groupsClaim];
+      const claim = claims[policy.admission.groupsClaim];
+      const groups = typeof claim === "string" ? [claim] : claim;
       if (
         !Array.isArray(groups) ||
         groups.some((group) => typeof group !== "string") ||
@@ -255,7 +256,7 @@ export async function exchangeOidcSubject(
           groupIds: policy.groupIds,
           createAccount: policy.createAccount,
           policyId: policy.policyId,
-          profile: oidcEnrollmentProfile(claims),
+          profile: oidcEnrollmentProfile(claims, policy.createAccount.requireVerifiedEmail),
         },
       };
     }
@@ -271,8 +272,13 @@ export async function exchangeOidcSubject(
 
 function oidcEnrollmentProfile(
   claims: Record<string, unknown>,
-): { email: string; name: string } | undefined {
-  if (claims.email_verified !== true || typeof claims.email !== "string") {
+  requireVerifiedEmail: boolean,
+): { email: string; name: string; emailVerified: boolean } | undefined {
+  if (
+    (Object.hasOwn(claims, "email_verified") && typeof claims.email_verified !== "boolean") ||
+    (requireVerifiedEmail && claims.email_verified !== true) ||
+    typeof claims.email !== "string"
+  ) {
     return undefined;
   }
   const email = claims.email.trim().toLowerCase();
@@ -291,5 +297,5 @@ function oidcEnrollmentProfile(
   ) {
     return undefined;
   }
-  return { email, name };
+  return { email, name, emailVerified: claims.email_verified === true };
 }

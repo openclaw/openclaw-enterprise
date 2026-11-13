@@ -1,3 +1,7 @@
+---
+rfc: ../rfcs/0036-bounded-planned-replacement.md
+---
+
 # Implementation plan: Bounded planned replacement
 
 - **ID:** RFC-0036

@@ -5,10 +5,10 @@
 Start an OpenClaw Enterprise installation that can deploy Agents on your
 machine. The OpenClaw Control Plane (OCC), PostgreSQL, and Agent workloads run
 in a local Kubernetes cluster created with k3d. This setup is for development
-and uses loopback addresses. This guide explicitly selects the Kubernetes-only
-profile; without a selection, startup uses a Compose control-plane preview that
-cannot deploy Agents. A separate [Compose OCC with Kubernetes compute profile](deploy/local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute)
-has fewer configured capabilities. To install OCC itself in a cluster you already operate,
+and uses loopback addresses. `occ dev up` starts this Kubernetes-only profile
+when no profile is selected. Other local profiles need an
+[explicit selection](deploy/local-kubernetes-development.md#select-another-profile)
+and have fewer capabilities. To install OCC itself in a cluster you already operate,
 use [Kubernetes Setup](kubernetes-setup.md).
 
 For local OpenShell with native Git or Codex plugins, start with [Setup OCE on local k3d](deploy/local-setup.md). The instructions below use the profile without OpenShell.
@@ -17,7 +17,7 @@ For local OpenShell with native Git or Codex plugins, start with [Setup OCE on l
 
 Run the commands below from the repository root on Linux or macOS. You need:
 
-- Docker Engine, k3d, kubectl, Helm, and jq. Podman users should first
+- Docker Engine, k3d, kubectl, Helm, jq, Bash, and Python 3. Podman users should first
   check the [local Kubernetes requirements](deploy/local-kubernetes-development.md#start-the-profile).
 - The Go version in `go.mod`, Node.js 24.22.1 or later, and the pnpm version pinned
   in `package.json`.
@@ -27,9 +27,12 @@ Run the commands below from the repository root on Linux or macOS. You need:
   Desktop with `docker run --rm alpine df -h /`. Without it, startup
   fails late with `no space left on device` and rolls back the cluster.
 - Free local ports `3000` for the API, `8443` for the browser console, and
-  `6443` for Kubernetes. If a port is in use, override `OPENCLAW_DEV_PORT`,
-  `OCC_DEVELOPMENT_BROWSER_PORT`, or `OCC_DEVELOPMENT_KUBERNETES_API_PORT`;
-  see [development settings](../reference/settings/development.md#required-development-controller-environment).
+  `6443` for Kubernetes. Startup checks them first and names the container
+  that holds a port. If that is a Docker-compatible stack from an earlier
+  `occ dev up`, stop it with `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./bin/occ dev down`.
+  Otherwise, override `OPENCLAW_DEV_PORT`, `OCC_DEVELOPMENT_BROWSER_PORT`, or
+  `OCC_DEVELOPMENT_KUBERNETES_API_PORT`; see
+  [development settings](../reference/settings/development.md#required-development-controller-environment).
 
 You do not need a model credential to install the platform. Have an OpenAI API
 key available when you continue to [deploy an Agent](#deploy-an-agent).
@@ -41,14 +44,14 @@ By default, startup builds this checkout. To use published images, first
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
-export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
-export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
-export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./bin/occ dev up
 ```
 
 The first start builds and imports both images unless you selected published
-images. This can take several minutes. Wait for `OpenClaw Enterprise development stack is ready.` The
+images. With no build cache, the runtime build first compiles Node.js from
+source, which takes 15-60 minutes or longer depending on CPUs and memory; later
+starts reuse the cache. Wait for `OpenClaw Enterprise development stack is ready.`
+and `Deployment: Kubernetes only`. The
 command prints the browser console URL and CA certificate, then the API URL,
 Installation ID, service-key file, administrator password file, kubeconfig,
 Kubernetes context, and cleanup command. Keep this output. The service-key and
@@ -116,9 +119,11 @@ built-in `default` namespace.
 
 Prepare the shared deployment guide's operator variables in Bash from this
 checkout. Keep `OCC_URL` and `OCC_SERVICE_KEY_FILE` from the authenticated check
-above. The launcher already configured this installation's private routing and
-tenant RoleBindings; keep those grants instead of applying the production
-examples with different release and ServiceAccount names.
+above. The launcher already configured this installation's private routing,
+Envoy source CIDRs, and tenant RoleBindings; keep those grants instead of
+applying the production examples with different release and ServiceAccount
+names. Use this shell and the bootstrap service key as the operator session; this
+local installation needs no separate operator shell or service principal.
 
 ```bash
 set -euo pipefail
@@ -143,9 +148,9 @@ do not repeat the production installation or Namespace RoleBinding steps.
 
 ## Clean up and stop
 
-When you are finished, run the cleanup command printed by startup. In a new
-shell without the profile exports, `occ dev down` still stops the Kubernetes
-stack recorded in the default state directory:
+When you are finished, run the cleanup command printed by startup. In any shell
+from this checkout, `occ dev down` stops the Kubernetes stack recorded in the
+default state directory:
 
 ```bash
 ./bin/occ dev down

@@ -6,7 +6,7 @@ import { connect as connectTcp, createServer as createTcpServer } from "node:net
 import test from "node:test";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Request headers a client never finishes, so the reader holds the connection open.

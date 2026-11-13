@@ -15,7 +15,7 @@ import type {
 import type { callControl as CallControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import { createHash } from "node:crypto";
 import { createServer, request } from "node:https";
-import { connect } from "node:net";
+import { connect, createServer as createTcpServer } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
@@ -102,6 +102,7 @@ async function startTransport(
   return {
     config: config as { gateway: { publicOrigin: string; controlSocket: string } },
     tls,
+    upstream,
     service,
     listeners: listeners as { address: { port: number } },
     opened,
@@ -437,6 +438,72 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     assert.deepEqual(await readDiscovery(fixture), completed());
     await released(fixture);
   });
+
+  // Finding 3169: when the provider refuses or drops the connect, as a stale egress allowlist
+  // (repositoryCredentials.upstreamCidrs) does, the Agent still receives no provider answer,
+  // but the operator line names the host, the addresses it resolved to and the socket error,
+  // so it does not read as a broker outage. The line never carries the credential or a path.
+  async function stopUpstream(fixture: TransportFixture) {
+    const [origin] = fixture.trustedOrigins;
+    assert.ok(origin);
+    await new Promise<void>((resolve) => fixture.upstream.close(() => resolve()));
+    return Number(new URL(origin).port);
+  }
+  function assertConnectFailureLogged(fixture: TransportFixture, port: number, error: string) {
+    assert.deepEqual(fixture.logs, [
+      {
+        event: "repository-credentials.denied",
+        status: 503,
+        reasonCode: "unavailable",
+        reason: "not_dispatched",
+        operation: "git-discovery",
+        upstreamConnect: { host: "127.0.0.1", addresses: ["127.0.0.1"], port, error },
+        sessionId: fixture.opened.session.sessionId,
+      },
+    ]);
+    assert.ok(!JSON.stringify(fixture.logs).includes(fixture.opened.bearer));
+    assert.equal(fixture.received.length, 0);
+  }
+  const answer = (incoming: IncomingMessage, outgoing: ServerResponse) => {
+    incoming.resume();
+    outgoing.writeHead(200, replyHeaders).end("0000");
+  };
+
+  bounded("a refused provider connect names the upstream host, address and error", async (t) => {
+    const fixture = await startTransport(t, answer);
+    // Stop the upstream listener: its port now refuses TCP connects.
+    const port = await stopUpstream(fixture);
+    assertRefused(await readDiscovery(fixture));
+    assertConnectFailureLogged(fixture, port, "ECONNREFUSED");
+    await released(fixture);
+  });
+
+  // The defaults set connectMs === stallMs, and the input stall watchdog is armed first, so
+  // whichever timer ends a dropped connect, the result must be the same.
+  for (const [name, limits] of [
+    ["connect timer first", { connectMs: 300 }],
+    ["stall timer first (default shape)", { connectMs: 300, stallMs: 300 }],
+  ] as const) {
+    bounded(
+      `a provider that never answers TLS is logged as a connect timeout: ${name}`,
+      async (t) => {
+        const fixture = await startTransport(t, answer, limits);
+        const port = await stopUpstream(fixture);
+        // Accept TCP on the same port and never answer the TLS handshake, as a dropped connect.
+        let accepted = 0;
+        const silent = createTcpServer((socket) => {
+          socket.on("error", () => {});
+          accepted++;
+        });
+        await listen(fixture.resources, silent, port);
+        // Nothing was dispatched, so the Agent gets the same definite 503 as a refused connect.
+        assertRefused(await readDiscovery(fixture));
+        assertConnectFailureLogged(fixture, port, "connect-timeout");
+        assert.equal(accepted, 1);
+        await released(fixture);
+      },
+    );
+  }
 
   // Finding 2429: a head refused after its fields are checked (here a wrong Host) is logged
   // when its one Authorization field, in any scheme Git or gh sends, names an open session.

@@ -69,12 +69,16 @@ export function productionBootstrapEnvironment({
 
 export async function runBootstrapInstallation(environment, options = {}) {
   try {
-    const result = await run(process.execPath, ["scripts/bootstrap-installation.mjs"], {
-      cwd: repository,
-      env: environment,
-      timeout: options.timeout ?? 20_000,
-      maxBuffer: options.maxBuffer ?? 1024 * 1024,
-    });
+    const result = await run(
+      process.execPath,
+      ["scripts/bootstrap-installation.mjs", ...(options.args ?? [])],
+      {
+        cwd: repository,
+        env: environment,
+        timeout: options.timeout ?? 20_000,
+        maxBuffer: options.maxBuffer ?? 1024 * 1024,
+      },
+    );
     return { ok: true, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
     return {
