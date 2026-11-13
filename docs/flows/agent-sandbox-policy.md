@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: "2026-11-11"
+updated: "2026-11-13"
 last_updated_session: "01a1cb1a-b03e-7380-9b34-1a7470a05f64"
 ---
 
@@ -8,10 +8,8 @@ last_updated_session: "01a1cb1a-b03e-7380-9b34-1a7470a05f64"
 
 ## Overview
 
-OCC persists governed network additions for one Agent, freezes them at deployment,
-and optionally applies a later version through its Sandbox Driver. Denial logs
-and provider recommendations supply independent context for a user review.
-This trace describes the implemented source; runtime proof has separate limits.
+OCC persists Agent network additions, freezes them at deployment, and applies
+later versions through the Sandbox Driver. Denial logs and recommendations inform review.
 
 ## Entry Points
 
@@ -45,7 +43,7 @@ graph TD
   V --> R["Record applied<br/>or unconfirmed failure"]
 ```
 
-The solid arrows trace source paths, not a claim that all providers are verified.
+Arrows trace source paths; provider verification has separate limits.
 
 ## Execution Trace
 
@@ -163,8 +161,9 @@ snapshot rather than re-reading changed defaults.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before any refusal that names saved additions, then requires
-the exact active revision and supporting Driver. It persists a pending application and durable Agent-target work in one
-transaction. Neither saving nor enqueueing establishes enforcement.
+the exact active revision and supporting Driver. When the caller supplies reviewed additions, the same transaction saves the new
+policy version, records its pending application and enqueues Agent-target work.
+Omitting additions retains the saved policy version. Neither saving nor enqueueing establishes enforcement.
 
 ### 3. Reconcile provider effects
 
@@ -233,15 +232,15 @@ validated array with the reviewed policy version. Superseded preview and read re
 cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
 cannot invalidate a newer request. A pending application re-arms polling after
 the latest read, including a response discarded after a draft edit.
-An unreadable preview retains the draft for another review. Save and apply checks
-that the save response names this policy, Agent, Namespace, next version, and
-the rules shown in review before requesting application to the selected revision.
-Starting a write invalidates earlier policy reads and pauses polling. After an
-unconfirmed save, only an explicit refresh started after the outcome can reopen editing.
-Save alone leaves running enforcement unchanged. Applying a
-previously saved policy is disabled while local edits are unsaved. If application
-fails after saving, the alert identifies the saved version rather than implying
-that the entire operation was rejected. `loadPolicy(true)` records explicit
+An unreadable preview retains the draft for another review. The combined request
+must return the reviewed rules, the next version of this Agent’s policy and a
+fresh pending application for the selected running revision. Starting a write
+invalidates earlier policy reads and pauses polling. If the combined response is
+lost or does not match, the Console reads the policy again. An unsuccessful
+read leaves **Refresh policy** available in the open editor. A refused request
+keeps the edit local. After admission, the provider outcome remains pending
+until confirmed. **Save for later** only saves. **Apply saved rules** requires
+a clean draft and targets the existing saved version. `loadPolicy(true)` records explicit
 inspection of a failed application. Refresh issues only the policy GET; a separate
 Retry application action invokes the existing apply descriptor after inspection.
 The action remains subject to current permissions, lifecycle, and draft guards.
@@ -291,6 +290,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-13: Trace the Console’s single save-and-apply request and its atomic admission for a running Agent.
 
 - 2026-11-11 12:25: Trace persistent Installation ceiling initialization, saves, and admission. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - 6bf16386658e8b1f81a7f90a04ccd0697c23805c)
 

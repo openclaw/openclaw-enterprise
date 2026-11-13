@@ -170,8 +170,11 @@ status remains Proposed; migration 0077 and published history are unchanged.
 The merged source passes typecheck, lint, formatting, workspace, OpenAPI and
 documentation checks. The owner API and regular Agent PostgreSQL scenarios pass
 48/48 with no skips; the ceiling browser suite passes 5/5 with no skips. Hosted
-CI for this merge is pending. These checks do not close the runtime, media or
-independent-review gaps above.
+CI for that merge is pending. Main advanced during validation; a subsequent
+merge of `919dc42dc` preserves its atomic save-and-apply flow while reading the
+persisted ceiling. The combined PostgreSQL owner and Agent suite passes 52/52,
+including atomic edit/apply cases, and the ceiling browser suite passes 5/5.
+These checks do not close the runtime, media or independent-review gaps above.
 
 No Driver contract or default runtime image changed. Real runtime qualification,
 reviewable native media attachments and final CI remain delivery requirements.

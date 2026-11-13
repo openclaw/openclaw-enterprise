@@ -49,6 +49,7 @@ export AWS_REGION='<aws-region>'
 export ECR_REGISTRY='<aws-account-id>.dkr.ecr.<aws-region>.amazonaws.com'
 export SOURCE_CONTROLLER='ghcr.io/openclaw/openclaw-enterprise-controller@sha256:<64-hex-digest>'
 export SOURCE_RUNTIME='ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:<64-hex-digest>'
+export RUNTIME_SOURCE="docker://$SOURCE_RUNTIME"
 export ECR_CONTROLLER="$ECR_REGISTRY/openclaw-enterprise/controller"
 export ECR_RUNTIME="$ECR_REGISTRY/openclaw-enterprise/runtime"
 export ECR_TAG='<unique-release-tag>'
@@ -104,6 +105,33 @@ compare its digest with the source and use it only if it matches. Stop on a
 conflicting digest. The repository's immutability policy protects against
 overwrites but does not replace this readback or coordination with other writers.
 
+### Use a qualified local runtime
+
+If you built and qualified the runtime locally, you can use its OCI archive as
+the source for the runtime copy. Use the root index digest recorded during
+qualification. An index can include a platform image and a provenance attestation
+even when the runtime supports only one architecture. A platform-specific export
+can omit the attestation and change the digest.
+
+In the dedicated Bash shell above, select a new archive path in your private
+build directory. Export the complete image and compare the archive's raw index
+with the qualification record before copying it to ECR.
+
+```bash
+RUNTIME_INDEX='sha256:<qualified-runtime-index-digest>'
+RUNTIME_ARCHIVE='<absolute-path-to-new-runtime.tar>'
+( set -o noclobber; docker image save "$RUNTIME_INDEX" > "$RUNTIME_ARCHIVE" ) || exit 1
+RUNTIME_SOURCE="oci-archive:$RUNTIME_ARCHIVE"
+archive_hash=$(skopeo inspect --raw "$RUNTIME_SOURCE" | sha256sum) || exit 1
+[[ "sha256:${archive_hash%% *}" == "$RUNTIME_INDEX" ]] || exit 1
+```
+
+If the digest differs, recover the complete index and its referenced manifests
+from the build's image store. Use the same qualified index digest for the
+destination readback.
+
+### Copy and verify the destination
+
 Copy each absent tag and verify the destination digest before continuing. Run
 each command separately and stop on an error:
 
@@ -111,7 +139,7 @@ each command separately and stop on an error:
 skopeo copy --all --preserve-digests --authfile "$REGISTRY_AUTH" \
   "docker://$SOURCE_CONTROLLER" "docker://$ECR_CONTROLLER:$ECR_TAG"
 skopeo copy --all --preserve-digests --authfile "$REGISTRY_AUTH" \
-  "docker://$SOURCE_RUNTIME" "docker://$ECR_RUNTIME:$ECR_TAG"
+  "$RUNTIME_SOURCE" "docker://$ECR_RUNTIME:$ECR_TAG"
 
 skopeo inspect --raw --authfile "$REGISTRY_AUTH" \
   "docker://$ECR_CONTROLLER:$ECR_TAG" | sha256sum

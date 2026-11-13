@@ -40,6 +40,8 @@ import {
   k3dHostMetrics,
   redactCredentialLine,
 } from "./k3d-diagnostics.mjs";
+import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
+import { createK3dNodeImages } from "./k3d-node-images.ts";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
@@ -197,6 +199,27 @@ async function timedPreparation(lane, phase, operation) {
     const elapsedMs = Math.round(performance.now() - started);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
+    if (lane === "k3d-model" && process.env.GITHUB_ACTIONS === "true") {
+      const outcome = succeeded ? "success" : "failure";
+      if (phase === "controller" || phase === "runtime") {
+        // Each role measures its own build or reuse. Their wall times can overlap.
+        process.stderr.write(
+          `::notice title=k3d Model Runtime image::role=${phase} elapsed_ms=${elapsedMs} outcome=${outcome}\n`,
+        );
+      } else if (
+        [
+          "postgres-start",
+          "k3d-cluster-preparation",
+          "image-build-or-reuse",
+          "runtime-image-preparation",
+          "gateway-routing",
+        ].includes(phase)
+      ) {
+        process.stderr.write(
+          `::notice title=k3d Model Runtime preparation::stage=${phase} elapsed_ms=${elapsedMs} outcome=${outcome}\n`,
+        );
+      }
+    }
     if (lane === "logging-collector" && phase === "image-pulls") {
       await recordLoggingSetupTiming("image-pulls", succeeded ? "success" : "failure", elapsedMs);
     }
@@ -218,6 +241,10 @@ async function timedPreparation(lane, phase, operation) {
       }
     }
   }
+}
+
+export function timedK3dModelPreparation(lane, phase, operation) {
+  return lane === "k3d-model" ? timedPreparation(lane, phase, operation) : operation();
 }
 
 function filePath(file) {
@@ -1675,14 +1702,16 @@ async function buildRuntimeImages(
         entry.env = Object.fromEntries(Object.keys(entry.env).map((name) => [name, reference]));
         await rm(entry.metadataFile, { force: true });
       } else {
-        // The warm job builds every step so its export has them all.
-        if (
-          cacheWarm ||
-          !reuseEngineImages ||
-          !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
-        ) {
-          await build(entry.role, entry.args);
-        }
+        await timedK3dModelPreparation(state.lane, entry.role, async () => {
+          // The warm job builds every step so its export has them all.
+          if (
+            cacheWarm ||
+            !reuseEngineImages ||
+            !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
+          ) {
+            await build(entry.role, entry.args);
+          }
+        });
         await markResourceReady(statePath, state, entry.resource);
       }
     }),
@@ -2225,109 +2254,6 @@ async function waitForPluginStatusProxySource(cluster, destination) {
   throw new Error("Timed out waiting for the cross-node plugin status proxy route on flannel.1.");
 }
 
-async function verifyFixtureStorage(cluster, timeoutSeconds = 120) {
-  const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
-  const scope = [
-    "--kubeconfig",
-    cluster.kubeconfig,
-    "--context",
-    cluster.context,
-    "--namespace",
-    "kube-system",
-  ];
-  try {
-    await execFile(
-      kubectl,
-      [
-        ...scope,
-        "rollout",
-        "status",
-        "deployment/local-path-provisioner",
-        `--timeout=${timeoutSeconds}s`,
-      ],
-      { timeoutMs: (timeoutSeconds + 10) * 1_000 },
-    );
-  } catch {
-    // This fixture lane has no provider credentials. Limit diagnostics to its
-    // storage controller; never serialize arbitrary Pod specs or tenant logs.
-    const observations = await Promise.allSettled([
-      execFile(
-        kubectl,
-        [...scope, "get", "pods", "--selector=app=local-path-provisioner", "-o", "json"],
-        { timeoutMs: 10_000 },
-      ),
-      ...[false, true].map((previous) =>
-        execFile(
-          kubectl,
-          [
-            ...scope,
-            "logs",
-            "deployment/local-path-provisioner",
-            "--tail=30",
-            ...(previous ? ["--previous"] : []),
-          ],
-          { timeoutMs: 10_000 },
-        ),
-      ),
-      execFile(kubectl, [...scope.slice(0, 4), "get", "nodes", "-o", "json"], {
-        timeoutMs: 10_000,
-      }),
-    ]);
-    let pods = [];
-    if (observations[0].status === "fulfilled") {
-      try {
-        pods = (JSON.parse(observations[0].value.stdout).items ?? []).map((pod) => ({
-          name: pod.metadata?.name,
-          node: pod.spec?.nodeName,
-          nodeSelector: pod.spec?.nodeSelector,
-          phase: pod.status?.phase,
-          conditions: (pod.status?.conditions ?? []).map(({ type, status, reason, message }) => ({
-            type,
-            status,
-            reason,
-            message,
-          })),
-          containers: (pod.status?.containerStatuses ?? []).map((container) => ({
-            name: container.name,
-            image: container.image,
-            ready: container.ready,
-            restarts: container.restartCount,
-            waiting: container.state?.waiting,
-            terminated: container.state?.terminated?.reason,
-          })),
-        }));
-      } catch {
-        // Preserve the storage failure even when Kubernetes diagnostics are incomplete.
-      }
-    }
-    let nodes = [];
-    if (observations[3].status === "fulfilled") {
-      try {
-        nodes = (JSON.parse(observations[3].value.stdout).items ?? []).map((node) => ({
-          name: node.metadata?.name,
-          unschedulable: node.spec?.unschedulable,
-          taints: node.spec?.taints,
-          conditions: (node.status?.conditions ?? [])
-            .filter(({ type }) =>
-              ["Ready", "DiskPressure", "MemoryPressure", "PIDPressure"].includes(type),
-            )
-            .map(({ type, status, reason, message }) => ({ type, status, reason, message })),
-        }));
-      } catch {
-        // Do not replace the storage failure with a diagnostic parsing failure.
-      }
-    }
-    const logs = observations
-      .slice(1, 3)
-      .map((result) =>
-        result.status === "fulfilled" ? result.value.stdout.slice(-4_000) : "unavailable",
-      );
-    throw new Error(
-      `CI fixture storage controller is not ready: ${JSON.stringify({ kubernetesVersion: cluster.kubernetesVersion, pods, nodes, logs })}`,
-    );
-  }
-}
-
 async function validateLoopbackKubeconfig(
   kubeconfig,
   context,
@@ -2356,222 +2282,6 @@ async function validateLoopbackKubeconfig(
   if (!endpoint.port || Number(endpoint.port) === 0) {
     throw new Error("k3d API server must expose an explicit loopback port.");
   }
-}
-
-// Retain only the fixed fixture Dockerfile's numbered operations and states.
-// Build arguments, container output and error details can contain credentials.
-function fixtureBuildProgress(error) {
-  const steps = new Map();
-  for (const output of [error.stdout, error.stderr]) {
-    if (typeof output !== "string") {
-      continue;
-    }
-    const start = Math.max(0, output.length - 32_768);
-    const lines = output.slice(start).split("\n");
-    if (start > 0 && output[start - 1] !== "\n") {
-      lines.shift();
-    }
-    for (const [index, rawLine] of lines.entries()) {
-      const line =
-        index < lines.length - 1 && rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-      if (/\p{Cc}/u.test(line)) {
-        continue;
-      }
-      const operation = /^#([0-9]{1,4}) \[([0-9]{1,4}\/[0-9]{1,4})\] (FROM|RUN|COPY)(?: |$)/.exec(
-        line,
-      );
-      if (operation) {
-        steps.set(operation[1], { label: `#${operation[1]} [${operation[2]}] ${operation[3]}` });
-      } else {
-        const state = /^#([0-9]{1,4}) (DONE|CACHED|ERROR)(?:$|:| [0-9]+(?:\.[0-9]+)?s$)/.exec(line);
-        const step = state && steps.get(state[1]);
-        if (step) {
-          step.state = state[2];
-        }
-      }
-      if (steps.size > 8) {
-        steps.delete(steps.keys().next().value);
-      }
-    }
-  }
-  return (
-    [...steps.values()]
-      .map(({ label, state }) => (state ? `${label} ${state}` : label))
-      .join("; ") || "no numbered Dockerfile steps captured"
-  );
-}
-
-// The fixture build needs no cluster, so lanes can overlap it with k3d creation.
-async function buildFixtureImage(statePath, state) {
-  const run = (stage, args, limitMs) =>
-    k3dStage(state, stage, async () => {
-      if (!Number.isFinite(limitMs) || limitMs <= 0 || limitMs > 2_147_483_647) {
-        throw new Error(
-          `Fixture image preparation ${stage} requires a valid finite command timeout.`,
-        );
-      }
-      const budgetMs = imageBuildBudgetMs();
-      if (budgetMs !== undefined && budgetMs < 1_000) {
-        throw new Error(
-          `Fixture image preparation ${stage} was not started: the lane keeps ` +
-            `${imageBuildTestReserveMs} ms before its deadline for remaining preparation and tests.`,
-        );
-      }
-      const timeoutMs = Math.min(limitMs, budgetMs ?? limitMs);
-      try {
-        return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
-          timeoutMs,
-          processGroup: process.platform !== "win32",
-        });
-      } catch (error) {
-        if (stage === "fixture-image-build") {
-          try {
-            progress(
-              state.lane,
-              `Fixture image build steps (captured tail): ${fixtureBuildProgress(error)}`,
-            );
-          } catch {
-            // Diagnostics must preserve the original build failure.
-          }
-        }
-        if (error.timedOut) {
-          throw new Error(`Fixture image preparation ${stage} timed out after ${timeoutMs} ms.`, {
-            cause: error,
-          });
-        }
-        if (error.code === "ENOENT") {
-          throw new Error(
-            `Missing required command on PATH: ${process.env.OCC_DOCKER_BIN ?? "docker"}`,
-            { cause: error },
-          );
-        }
-        throw error;
-      }
-    });
-  await run(
-    "fixture-engine-version",
-    ["version", "--format", "{{.Server.Version}}"],
-    imageCommandTimeoutMs,
-  );
-  const image = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/fixture:local`;
-  const resource = addResource(state, "image-tag", { name: image, owner: state.prefix });
-  await writeState(statePath, state);
-  // Allow slow fixture builds while keeping a finite cap outside hosted lanes.
-  await run(
-    "fixture-image-build",
-    ["build", "--pull=false", "-t", image, fixtureDockerContext],
-    30 * 60_000,
-  );
-  await markResourceReady(statePath, state, resource);
-  return { image, resourceId: resource.id };
-}
-
-async function importFixtureImage(statePath, state, cluster, built) {
-  const registered = await registerImageInK3d(
-    statePath,
-    state,
-    cluster,
-    built.image,
-    "OCC_TEST_KUBERNETES_IMAGE",
-  );
-  return { image: registered.reference, resourceId: built.resourceId };
-}
-
-// The fixture import needs the ready nodes, not the storage provisioner. Settle
-// both before the lane pins the image, restarts storage, or hands off to cleanup.
-async function prepareFixtureStorageAndImage(statePath, state, cluster, built) {
-  const { lane } = state;
-  const [storage, fixture] = await Promise.allSettled([
-    k3dStage(state, "k3d-storage", () => verifyFixtureStorage(cluster)).then(() =>
-      markResourceReady(statePath, state, cluster),
-    ),
-    timedPreparation(lane, "fixture-image-import", () =>
-      importFixtureImage(statePath, state, cluster, built),
-    ),
-  ]);
-  if (storage.status === "fulfilled" && fixture.status === "fulfilled") {
-    return fixture.value;
-  }
-
-  // Record a bounded phase notice when the image failure has no transport summary.
-  const failure =
-    fixture.status === "rejected"
-      ? (fixture.reason?.k3dImageImportFailure ??
-        "Fixture image preparation failed during fixture-image-import.")
-      : undefined;
-  await captureK3dDiagnostics({ execFile, cluster, lane, statePath, failure }).catch(() =>
-    progress(lane, "k3d diagnostics unavailable"),
-  );
-  throw storage.status === "rejected" ? storage.reason : fixture.reason;
-}
-
-async function pinFixtureImageInK3d(cluster, image) {
-  const name = "openclaw-ci-fixture-image-pin";
-  const manifestPath = join(cluster.directory, `${name}.json`);
-  const manifest = {
-    apiVersion: "apps/v1",
-    kind: "DaemonSet",
-    metadata: { name, namespace: "kube-system" },
-    spec: {
-      selector: { matchLabels: { app: name } },
-      template: {
-        metadata: { labels: { app: name } },
-        spec: {
-          automountServiceAccountToken: false,
-          nodeSelector: { "kubernetes.io/os": "linux" },
-          tolerations: [{ operator: "Exists" }],
-          containers: [
-            {
-              name: "pin",
-              image,
-              imagePullPolicy: "Never",
-              command: ["node", "-e", "setInterval(() => {}, 2147483647)"],
-              resources: {
-                requests: { cpu: "1m", memory: "8Mi" },
-                limits: { cpu: "25m", memory: "128Mi" },
-              },
-              securityContext: {
-                allowPrivilegeEscalation: false,
-                capabilities: { drop: ["ALL"] },
-                readOnlyRootFilesystem: true,
-                runAsNonRoot: true,
-                runAsUser: 1000,
-                seccompProfile: { type: "RuntimeDefault" },
-              },
-            },
-          ],
-        },
-      },
-    },
-  };
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
-  await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
-    "--kubeconfig",
-    cluster.kubeconfig,
-    "--context",
-    cluster.context,
-    "--namespace",
-    "kube-system",
-    "apply",
-    "-f",
-    manifestPath,
-  ]);
-  await execFile(
-    process.env.OCC_KUBECTL_BIN ?? "kubectl",
-    [
-      "--kubeconfig",
-      cluster.kubeconfig,
-      "--context",
-      cluster.context,
-      "--namespace",
-      "kube-system",
-      "rollout",
-      "status",
-      `daemonset/${name}`,
-      "--timeout=120s",
-    ],
-    { timeoutMs: 130_000 },
-  );
 }
 
 function immutableDigest(image) {
@@ -2620,6 +2330,38 @@ async function boundedImageCommand(
     throw error;
   }
 }
+
+const { k3dNodeImageCheck, assertK3dImageReference, importImageIntoK3dNodes } = createK3dNodeImages(
+  {
+    execFile,
+    boundedImageCommand,
+    immutableDigest,
+    progress,
+    timedPreparation,
+  },
+);
+
+const {
+  verifyFixtureStorage,
+  buildFixtureImage,
+  importFixtureImage,
+  prepareFixtureStorageAndImage,
+  pinFixtureImageInK3d,
+} = createK3dFixtureStorage({
+  execFile,
+  progress,
+  k3dStage,
+  timedPreparation,
+  captureK3dDiagnostics,
+  fixtureDockerContext,
+  imageCommandTimeoutMs,
+  imageBuildBudgetMs,
+  imageBuildTestReserveMs,
+  addResource,
+  writeState,
+  markResourceReady,
+  registerImageInK3d,
+});
 
 async function dockerImageHasRepoDigest(image, docker) {
   const expected = immutableDigest(image);
@@ -2694,220 +2436,6 @@ export async function prepareDevUpImage(
     "Dev-up rejection image",
     docker,
   );
-}
-
-// containerd's CRI plugin answers `crictl inspecti` only from its in-memory image
-// cache, which its serial event monitor fills from containerd ImageCreate events.
-// A reference that `ctr images tag` just created is in containerd's image store
-// (and `ctr images list`) before that event is handled, so CRI can briefly report
-// "no such image" or an image whose pin label event has not arrived. Wait a bounded
-// time for those states; a mismatched digest or any other failure is final.
-const criImageCacheWaitMs = 5_000;
-
-// Each check or tag on a node after the import is one short exec. The timeout stops the
-// engine CLI; a process it started inside the node may keep running until the cluster is
-// removed.
-async function k3dNodeImageCheck(node, args, what) {
-  return boundedImageCommand(["exec", node, ...args], `${what} on ${node}`, args);
-}
-
-async function inspectK3dCriImage(lane, node, reference, envName) {
-  const deadline = performance.now() + criImageCacheWaitMs;
-  for (let attempt = 1; ; attempt += 1) {
-    let result;
-    try {
-      result = await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
-    } catch (error) {
-      const remainingMs = deadline - performance.now();
-      if (!/\bno such image\b/i.test(error.stderr ?? "") || remainingMs <= 0) {
-        throw error;
-      }
-      progress(
-        lane,
-        `CRI on ${node} does not list the imported ${envName} reference yet (attempt ${attempt}); retrying.`,
-      );
-      await delay(Math.min(250 * attempt, 1_000, remainingMs));
-      continue;
-    }
-    const { status } = JSON.parse(result.stdout);
-    if (
-      !Array.isArray(status?.repoDigests) ||
-      !status.repoDigests.every((digest) => typeof digest === "string") ||
-      !status.repoDigests.includes(reference)
-    ) {
-      throw new Error(`CRI on ${node} does not match the imported ${envName} digest.`);
-    }
-    if (status.pinned !== undefined && typeof status.pinned !== "boolean") {
-      throw new Error(`CRI on ${node} reported a malformed ${envName} image pin.`);
-    }
-    if (status.pinned === true) {
-      return;
-    }
-    const remainingMs = deadline - performance.now();
-    if (remainingMs <= 0) {
-      throw new Error(`CRI on ${node} did not report the imported ${envName} image pinned.`);
-    }
-    progress(lane, `CRI on ${node} has not pinned the imported ${envName} image yet; retrying.`);
-    await delay(Math.min(250 * attempt, 1_000, remainingMs));
-  }
-}
-
-async function assertK3dImageReference(lane, cluster, reference, envName) {
-  for (const node of cluster.nodes) {
-    const listed = await k3dNodeImageCheck(
-      node,
-      ["ctr", "-n", "k8s.io", "images", "list"],
-      "containerd",
-    );
-    const found = listed.stdout.split(/\r?\n/).find((entry) => entry.split(/\s+/)[0] === reference);
-    if (!found) {
-      throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
-    }
-    if (found.split(/\s+/)[2] !== `sha256:${immutableDigest(reference)}`) {
-      throw new Error(`containerd on ${node} does not match the imported ${envName} digest.`);
-    }
-    await inspectK3dCriImage(lane, node, reference, envName);
-  }
-}
-
-// A Ready node's containerd can still refuse connections: a worker import once
-// failed with "connect: connection refused" 6 s after every node was Ready
-// (finding 1006). Probe each node's containerd before streaming an image to it.
-// A probe that hangs is final; any other failure is retried until the deadline.
-const k3dContainerdWaitMs =
-  Number(process.env.OPENCLAW_CI_K3D_CONTAINERD_WAIT_MS) > 0
-    ? Number(process.env.OPENCLAW_CI_K3D_CONTAINERD_WAIT_MS)
-    : 60_000;
-
-async function waitForK3dContainerd(lane, cluster) {
-  // The first failed node stops polling; drain already-started probes before returning.
-  let failed = false;
-  const probes = cluster.nodes.map(async (node) => {
-    const deadline = performance.now() + k3dContainerdWaitMs;
-    for (let attempt = 1; !failed; attempt += 1) {
-      try {
-        await k3dNodeImageCheck(node, ["ctr", "-n", "k8s.io", "version"], "containerd");
-        return;
-      } catch (error) {
-        const remainingMs = deadline - performance.now();
-        if (error.cause?.timedOut === true || remainingMs <= 0) {
-          failed = true;
-          throw error.cause?.timedOut === true
-            ? error
-            : new Error(
-                `containerd on ${node} did not answer within ${k3dContainerdWaitMs} ms: ${error.message}`,
-                { cause: error },
-              );
-        }
-        if (failed) {
-          return;
-        }
-        progress(
-          lane,
-          `containerd on ${node} is not answering yet (attempt ${attempt}); retrying.`,
-        );
-        await delay(Math.min(250 * attempt, 2_000, remainingMs));
-      }
-    }
-  });
-  try {
-    await Promise.all(probes);
-  } catch (error) {
-    await Promise.allSettled(probes);
-    throw error;
-  }
-}
-
-const containerdSocketUnavailable =
-  /\/run\/k3s\/containerd\/containerd\.sock: connect: (?:connection refused|no such file or directory)/;
-
-// k3d tools-node mode can exit successfully after a per-node import failure, so
-// stream the export into each owned node's containerd directly and propagate
-// both export and node-local containerd errors. A containerd that stops
-// answering during the import gets one more wait and import; ctr import is
-// idempotent, so nodes that already imported the image are unaffected.
-async function importImageIntoK3dNodes(lane, cluster, saveArgs) {
-  for (let attempt = 1; ; attempt += 1) {
-    await waitForK3dContainerd(lane, cluster);
-    try {
-      return await timedPreparation(lane, "image-stream-import", () =>
-        streamImageIntoK3dNodes(cluster, saveArgs),
-      );
-    } catch (error) {
-      if (attempt > 1 || !containerdSocketUnavailable.test(error.stderr ?? "")) {
-        throw error;
-      }
-      progress(lane, "A node's containerd refused the image import; waiting for it to retry once.");
-    }
-  }
-}
-
-// Stream one image export into every owned node's containerd at once. No
-// archive touches the host or node disks. The export and every node import
-// must exit 0; the caller then verifies the imported reference on each node.
-async function streamImageIntoK3dNodes(cluster, saveArgs) {
-  const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
-  let save;
-  const saved = execFile(containerEngine, saveArgs, {
-    timeoutMs: 600_000,
-    streamStdout: true,
-    onSpawn: (child) => {
-      save = child;
-    },
-  });
-  // Settled below, after the imports; never let an early failure go unhandled.
-  saved.catch(() => {});
-  let stoppedExport = false;
-  let firstImportError;
-  const imports = cluster.nodes.map((node) =>
-    execFile(
-      containerEngine,
-      [
-        "exec",
-        "-i",
-        node,
-        "ctr",
-        "-n",
-        "k8s.io",
-        "images",
-        "import",
-        "--all-platforms",
-        "--label",
-        "io.cri-containerd.pinned=pinned",
-        "-",
-      ],
-      { timeoutMs: 600_000, input: save.stdout },
-    ).catch((error) => {
-      // The first node failure is the cause; later ones may follow from it.
-      firstImportError ??= error;
-      // A failed node stops reading. Stop a still-running export so it cannot
-      // block on a full pipe until its timeout. Once the export's output has
-      // ended, no node can have stopped it, so the export's own exit decides
-      // whether it failed, even if that exit is not seen yet: a node that reads
-      // a truncated stream to its end can report its failure first.
-      if (!save.stdout.readableEnded && save.exitCode === null && save.signalCode === null) {
-        stoppedExport = true;
-        save.kill("SIGTERM");
-      }
-      throw error;
-    }),
-  );
-  await Promise.allSettled(imports);
-  // An importer may stop before the archive's trailing padding; discard the
-  // rest so the export can exit instead of blocking on a full pipe.
-  save.stdout.resume();
-  const [exported] = await Promise.allSettled([saved]);
-  // An export failure truncates every import stream, so report it first unless
-  // a node failure is what stopped the export.
-  if (exported.status === "rejected" && !stoppedExport) {
-    throw exported.reason;
-  }
-  if (firstImportError) {
-    throw firstImportError;
-  }
-  if (exported.status === "rejected") {
-    throw exported.reason;
-  }
 }
 
 // Native selection belongs to the importer: the required child may be present
@@ -3333,13 +2861,15 @@ async function prepareK3dRuntimeImages(
         `Building the current ${images} image${needsController && needsRuntime ? "s" : ""}.`,
       );
     }
-    const built = await buildRuntimeImages(statePath, state, {
-      controller: needsController,
-      runtime: needsRuntime,
-      nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
-      reuseEngineImages,
-      runtimeArtifact,
-    });
+    const built = await timedK3dModelPreparation(state.lane, "image-build-or-reuse", () =>
+      buildRuntimeImages(statePath, state, {
+        controller: needsController,
+        runtime: needsRuntime,
+        nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
+        reuseEngineImages,
+        runtimeArtifact,
+      }),
+    );
     Object.assign(env, built.env);
     if (needsRuntime) {
       env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE = built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE;
@@ -4008,7 +3538,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
         buildRuntime: true,
         runtimeArtifact,
       });
-      const routing = await prepareGatewayRouting({ cluster, execFile });
+      const routing = await timedK3dModelPreparation(name, "gateway-routing", () =>
+        prepareGatewayRouting({ cluster, execFile }),
+      );
       Object.assign(env, routing.env);
       if (name === "k3d-otel") {
         await prepareLaneLogging(resolvedStatePath, state, env, cluster);
@@ -4246,10 +3778,14 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
 }
 
 async function prepareK3dModelLane(statePath, state, env, options) {
-  const cluster = await ensureK3dCluster(statePath, state);
+  const cluster = await timedK3dModelPreparation(state.lane, "k3d-cluster-preparation", () =>
+    ensureK3dCluster(statePath, state),
+  );
   // Register PostgreSQL after the cluster so cleanup removes its attached
   // container before k3d removes the network. Test files preserve this attachment.
-  await ensurePostgresServer(statePath, state);
+  await timedK3dModelPreparation(state.lane, "postgres-start", () =>
+    ensurePostgresServer(statePath, state),
+  );
   env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
   env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
   if (cluster.pluginStatusProxyCidrs !== undefined) {
@@ -4264,7 +3800,9 @@ async function prepareK3dModelLane(statePath, state, env, options) {
   if (cluster.runtimeHandler) {
     env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER = cluster.runtimeHandler;
   }
-  await prepareK3dRuntimeImages(statePath, state, cluster, env, options);
+  await timedK3dModelPreparation(state.lane, "runtime-image-preparation", () =>
+    prepareK3dRuntimeImages(statePath, state, cluster, env, options),
+  );
   return cluster;
 }
 
@@ -4418,7 +3956,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     }
   }
 
-  if (relativeFile.endsWith("postgres-bootstrap-failures.test.mjs")) {
+  if (relativeFile.endsWith("postgres-bootstrap-failures.test.ts")) {
     const failures = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: "failures",
       label: fileStem(relativeFile),

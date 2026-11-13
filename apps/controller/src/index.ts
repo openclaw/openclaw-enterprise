@@ -59,6 +59,7 @@ import {
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
   ResourceStateConflictError,
@@ -604,6 +605,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     [
       "getAgentSandboxPolicy",
       "getAgentSandboxRecommendations",
+      "validateAgentSandboxPolicy",
       "updateAgentSandboxPolicy",
       "applyAgentSandboxPolicy",
     ].includes(operation.operationId)
@@ -1640,7 +1642,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         abort("The HTTP client disconnected before the workspace file request completed.");
       }
     };
-    if (request.raw.aborted) {
+    if (request.raw.aborted || reply.raw.destroyed) {
       abort("The HTTP client disconnected before the workspace file request.");
     }
     request.raw.once("aborted", onRequestAborted);
@@ -2329,7 +2331,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }),
           meta: {
             requestId: request.id,
-            ...(connectionOrigin ? { redirectUri: `${connectionOrigin}/oauth/callback` } : {}),
+            ...(connectionRedirectUri ? { redirectUri: connectionRedirectUri } : {}),
           },
           discover: options.discoverMcpAuthorization ?? discoverMcpAuthorization,
           controller: controller!,
@@ -3208,6 +3210,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
       };
       reply.raw.once("close", onClose);
+      if (request.raw.aborted || reply.raw.destroyed) {
+        onClose();
+      }
       try {
         if (operation.operationId === "getAgentDeploymentRuntime") {
           const description = await controller!.describeAgentRuntime(
@@ -5015,6 +5020,34 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));
+    }
+    if (error instanceof DeviceAuthorizationScopeMismatchError) {
+      const context = contexts.get(request);
+      if (
+        context &&
+        (context.operation.operationId === "pollAgentDeviceAuthorization" ||
+          context.operation.operationId === "pollSavedAgentDeviceAuthorization" ||
+          context.operation.operationId === "cancelAgentDeviceAuthorization" ||
+          context.operation.operationId === "cancelSavedAgentDeviceAuthorization")
+      ) {
+        try {
+          await denial(
+            context.operation,
+            request,
+            "authorization_denial",
+            context,
+            undefined,
+            undefined,
+            {
+              decisionReason: "The device login does not belong to the requested scope.",
+              reasonCode: "DEVICE_AUTHORIZATION_SCOPE_MISMATCH",
+              details: {},
+            },
+          );
+        } catch (auditError) {
+          mapped = requestFailure(auditError);
+        }
+      }
     }
     if (isAuthorizationDenied(error) && !isDependencyUnavailable(error)) {
       const context = contexts.get(request);

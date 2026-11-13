@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-12
-last_updated_session: authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98
+updated: 2026-11-13
+last_updated_session: authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4
 ---
 
 # Console Agent creation
@@ -117,13 +117,10 @@ discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILA
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
 failures block submission.
 
-After authorizing the capability read, `packages/occ/src/index.ts:capabilities`
-checks the selected Credential Proxy's profile without repository access. A
-confirmed repository-only refusal adds `repositoryAccessRequired` to both
-capability responses. An unavailable registration leaves it absent.
-`create.mts:renderAgentForm` explains this requirement until the repository
-selection has approved access and pauses immediate provisioning. It still allows ordinary drafts.
-Deployment admission checks the selected profile and repository grants again.
+The credential catalog includes ordinary Gateway sources even when a Git Proxy
+is selected. Repository access remains optional in the form. An ordinary Gateway
+source without protected sources or repository bindings needs no Proxy admission.
+Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 4. Submit provisioning or an ordinary draft
 
@@ -148,9 +145,14 @@ is refused before any write. It then checks the Agent name, draft values with th
 `secretBindings`, plugins and the planned `harnessAuth`
 (only the method for a Secret it saves next or registers with a Credential Gateway; none for
 ChatGPT sign-in) with
-`POST /namespaces/:namespaceId/agents/validate`, which refuses a name another Agent has with
-Agent create's `409` and a channel token reference without a binding with Configuration
-create's `400`. `list.mts:channelBindingRefusal` shows that refusal, and the same one from
+`POST /namespaces/:namespaceId/agents/validate`. After Agent create authorization,
+OCC rejects Configuration Secret bindings that name another Namespace, then applies
+Configuration create's size, content, and required Configuration Driver admission checks
+to the unsaved Configuration. It next checks the Agent's plugins and topology, then refuses
+a name another Agent has with Agent create's `409`. A channel token reference without a
+binding receives Configuration create's `400`. Preflight writes nothing; Secret existence
+and `operate` checks stay with the actual writes. `list.mts:channelBindingRefusal` shows
+the channel refusal, and the same one from
 provisioning, only under the Configuration JSON;
 the Slack drawer requires both token Secrets while Slack is enabled. It then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
@@ -162,6 +164,9 @@ stops the grant; **Retry credential access** reads the saved Agent again without
 An unrecognized success leaves the outcome unknown and blocks another create.
 For an uncertain Credential Source registration, **Check credential registration** reads
 the source for this request and confirms its type and Secret references before continuing.
+After a known registration refusal, empty checks retain the refusal and the saved Secret.
+They do not retry writes. A confirmed validation refusal unlocks source correction;
+other known refusals keep the same registration for an explicit **Create Agent** retry.
 If the Console times out waiting for validation, it stops before the save step,
 keeps the form entries, and lets the caller select **Create Agent** to try again.
 Success opens `revision=draft`.
@@ -221,7 +226,15 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
+
+- 2026-11-12 19:08: Limit the Proxy bypass to Agents with ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
+
+- 2026-11-12 18:36: Preserve credential registration refusals across empty status checks. (authoring-run/e0dff858-3588-44ee-9ffa-b67c8dd4dfe5 - 4478a18a7)
+
 - 2026-11-12 16:13: Trace Agent create authorization, Namespace lookup, and browser-access capability discovery. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
+
+- 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 
 - 2026-11-10 13:36: Show a confirmed repository-only Credential Proxy requirement before provisioning. (authoring-run/f0decdaf-c71f-47f9-b2e5-c5bd6b1dfee1 - 07c2a00c82e8a10635533eb1a27b110b52b90f14)
 - 2026-11-05: A member reads the Namespace's Agent capabilities after a refused Installation read, registers a model Secret with a Credential Gateway, and opens the draft without an IAM request. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)

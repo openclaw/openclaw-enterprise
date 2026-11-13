@@ -854,6 +854,177 @@ test("installed Skipper failure retention preserves known checkpoints and withho
     ownerSource.indexOf("  const summary = await read(privateResult);"),
   );
   assert.ok(selectedBlock.includes('assert.fail("selected test runner failed")'));
+  await t.test("gateway exec diagnostics survive the selected failure receipt", async (t) => {
+    const exec = promisify(execFile);
+    for (const [name, script, expected] of [
+      ["exit", 'process.stderr.write("private-canary"); process.exit(23)', { exitCode: 23 }],
+      ["signal", 'process.kill(process.pid, "SIGTERM")', { signal: "SIGTERM" }],
+      [
+        "code",
+        'process.stdout.write("private-canary")',
+        { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" },
+      ],
+    ] as const) {
+      await t.test(name, async (t) => {
+        let failure: Error | undefined;
+        await assert.rejects(
+          sendSkipperChat({
+            gatewayChatPhase: "native-git",
+            marker: "private-canary",
+            sessionKey: "private-canary",
+            enter: async () =>
+              (
+                await exec(process.execPath, ["-e", script], {
+                  maxBuffer: name === "code" ? 1 : 1024,
+                })
+              ).stdout,
+            modelEvents: async () => [],
+            runtimeLogs: async () => [],
+            checkpoint: async () => {},
+          }),
+          (error: Error) => {
+            failure = error;
+            return true;
+          },
+        );
+        assert.ok(failure);
+        const { value } = await reporter([
+          { type: "test:fail", data: { name, details: { error: { cause: failure } } } },
+        ]).next();
+        assert.equal(typeof value, "string");
+        const reported = JSON.parse(String(value)).data.error;
+        assert.deepEqual(reported.diagnostic, {
+          kind: "skipper-operation",
+          operation: "gateway-exec",
+          ...expected,
+        });
+        t.diagnostic("Reporter already captured " + JSON.stringify(reported.diagnostic));
+        const resultText = runner("gateway-exec", undefined, reported);
+        if (name === "exit") {
+          // Prove the private runner result has text the public receipt must omit.
+          assert.match(resultText, /private-canary/);
+        }
+        await writeFile(stageOutput, "");
+        await writeFile(ledgerPath, native);
+        // Run the owner's selected-result block, preserving its primary failure.
+        const selected = child(`
+          import assert from "node:assert/strict";
+          import { join, resolve } from "node:path";
+          import { readSkipperJourney, recordSkipperTestFailure } from "./scripts/ci/skipper-failure-receipt.ts";
+          const directory = ${JSON.stringify(directory)};
+          const env = {};
+          const proof = [];
+          const progress = () => {};
+          const testFailed = true;
+          const resultText = ${JSON.stringify(resultText)};
+          ${selectedBlock}
+        `);
+        assert.equal(selected.status, 1);
+        assert.match(selected.stderr, /AssertionError.*selected test runner failed/);
+        const destination = join(directory, name + "-exec.json");
+        const writer = outcome(
+          destination,
+          "failure",
+          "selected-test",
+          "passed",
+          await transport(),
+        );
+        assert.equal(writer.status, 0, writer.stderr);
+        const published = await readFile(destination, "utf8");
+        assert.deepEqual(
+          JSON.parse(published).gatewayExec,
+          expected,
+          "sanitized failure artifact must retain the already-captured exec diagnostic",
+        );
+        assert.equal(JSON.parse(published).lastTestCheckpoint, released);
+        assert.equal(JSON.parse(published).gatewayChatPhase, undefined);
+        assert.doesNotMatch(published + (await readFile(stageOutput, "utf8")), /private-canary/);
+      });
+    }
+
+    // Invalid recorder input must emit no exec fields, even on a known foreign operation.
+    for (const operation of ["gateway-exec", "gateway-chat", "native-observation"]) {
+      await writeFile(stageOutput, "");
+      await recordSkipperTestFailure(
+        runner(operation, undefined, {
+          diagnostic: {
+            kind: "skipper-operation",
+            operation,
+            ...(operation === "gateway-exec"
+              ? { exitCode: "23", signal: "SIGTERM\nprivate-canary", code: "private-canary" }
+              : { exitCode: 23, signal: "SIGTERM", code: "ENOENT" }),
+          },
+        }),
+        ledgerPath,
+        false,
+      );
+      assert.deepEqual(await readOutputs(), {
+        skipper_test_operation: operation,
+        skipper_last_test_checkpoint: released,
+      });
+    }
+
+    // The writer must independently reject noncanonical numbers and foreign attribution.
+    const cases = [
+      ...[undefined, "", "023", "2.3e1", " 23", "23\n", "-0", "-1", "256", "1.5", "NaN"].map(
+        (exitCode) => ({
+          exitCode,
+          signal: "private-canary",
+          code: "private-canary",
+          expected: undefined,
+        }),
+      ),
+      { exitCode: "0", signal: undefined, code: undefined, expected: { exitCode: 0 } },
+      {
+        exitCode: "255",
+        signal: "SIGKILL",
+        code: "ENOENT",
+        expected: { exitCode: 255, signal: "SIGKILL", code: "ENOENT" },
+      },
+      { exitCode: undefined, signal: undefined, code: "EACCES", expected: { code: "EACCES" } },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const destination = join(directory, `exec-readback-${index}.json`);
+      assert.equal(
+        outcome(destination, "failure", "selected-test", "passed", {
+          SKIPPER_TEST_OPERATION: "gateway-exec",
+          SKIPPER_GATEWAY_EXEC_EXIT_CODE: entry.exitCode,
+          SKIPPER_GATEWAY_EXEC_SIGNAL: entry.signal,
+          SKIPPER_GATEWAY_EXEC_CODE: entry.code,
+        }).status,
+        0,
+      );
+      const published = await readFile(destination, "utf8");
+      assert.deepEqual(JSON.parse(published).gatewayExec, entry.expected);
+      assert.doesNotMatch(published, /private-canary/);
+    }
+    for (const [index, [stage, operation, proofOutcome]] of (
+      [
+        ["install", "gateway-exec", "failure"],
+        ["verify-proof", "gateway-exec", "failure"],
+        ["selected-test", "gateway-chat", "failure"],
+        ["selected-test", "native-observation", "failure"],
+        ["selected-test", "gateway-exec\nprivate-canary", "failure"],
+        ["selected-test", "gateway-exec", "success"],
+      ] as const
+    ).entries()) {
+      const destination = join(directory, `exec-foreign-${index}.json`);
+      assert.equal(
+        outcome(destination, proofOutcome, stage, "passed", {
+          SKIPPER_TEST_OPERATION: operation,
+          SKIPPER_GATEWAY_EXEC_EXIT_CODE: "23",
+          SKIPPER_GATEWAY_EXEC_SIGNAL: "SIGTERM",
+          SKIPPER_GATEWAY_EXEC_CODE: "ENOENT",
+        }).status,
+        0,
+      );
+      if (proofOutcome === "success") {
+        await assert.rejects(readFile(destination), { code: "ENOENT" });
+      } else {
+        assert.equal(JSON.parse(await readFile(destination, "utf8")).gatewayExec, undefined);
+      }
+    }
+  });
   const phaseKey = "SKIPPER_GATEWAY_CHAT_PHASE";
   const diagnosticCases: {
     name: string;
