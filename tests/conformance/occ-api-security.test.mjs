@@ -24,7 +24,7 @@ import {
   createTenantReaderFixture,
   tenantANamespaceId,
   tenantRequest as request,
-} from "../helpers/tenant-reader-app.mjs";
+} from "../helpers/tenant-reader-app.ts";
 import {
   BODY_NOT_JSON,
   callerDenied,
