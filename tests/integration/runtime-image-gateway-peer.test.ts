@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
-import { describe, test } from "node:test";
+import { describe, test, type TestContext } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { runWritableGatewayRestart } from "../fixtures/runtime-gateway-writable-restart.ts";
@@ -11,6 +11,7 @@ import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   imageTestOptions,
   runDocker,
@@ -55,22 +56,67 @@ const startupPhases = new Set([
   "workspace-node-changed",
 ]);
 
-function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
+const diagnosticFlags = ["singleProcess", "sameIdentity", "sameCredential", "ready"] as const;
+
+type PeerDiagnostic = {
+  phase: string;
+  elapsedMs?: number;
+  ordinal?: number;
+  lastPhase?: string;
+} & Partial<Record<(typeof diagnosticFlags)[number], boolean>>;
+
+type StartupDiagnostic = {
+  phase: string;
+  outcome: "ok" | "failed" | "started";
+  ms?: number;
+  sinceStartMs?: number;
+};
+
+type DockerFailure = Error & {
+  code?: number | string;
+  signal?: NodeJS.Signals | null;
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+};
+
+function dockerFailure(error: unknown): DockerFailure {
+  if (!(error instanceof Error)) {
+    throw error;
+  }
+  return error;
+}
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function emitPeerDiagnostics(t: TestContext, fixtureOutput: string, containerOutput: string) {
   for (const entry of jsonLogEntries(fixtureOutput)) {
-    if (entry?.event !== "stale-peer-diagnostic" || !diagnosticPhases.has(entry.phase)) {
+    if (
+      entry?.event !== "stale-peer-diagnostic" ||
+      typeof entry.phase !== "string" ||
+      !diagnosticPhases.has(entry.phase)
+    ) {
       continue;
     }
-    const record = { phase: entry.phase };
-    if (Number.isFinite(entry.elapsedMs) && entry.elapsedMs >= 0) {
+    const record: PeerDiagnostic = { phase: entry.phase };
+    if (isNonNegativeFinite(entry.elapsedMs)) {
       record.elapsedMs = entry.elapsedMs;
     }
-    if (Number.isSafeInteger(entry.ordinal) && entry.ordinal >= 0) {
+    if (
+      typeof entry.ordinal === "number" &&
+      Number.isSafeInteger(entry.ordinal) &&
+      entry.ordinal >= 0
+    ) {
       record.ordinal = entry.ordinal;
     }
-    if (diagnosticPhases.has(entry.lastPhase) || entry.lastPhase === "initial") {
+    if (
+      typeof entry.lastPhase === "string" &&
+      (diagnosticPhases.has(entry.lastPhase) || entry.lastPhase === "initial")
+    ) {
       record.lastPhase = entry.lastPhase;
     }
-    for (const field of ["singleProcess", "sameIdentity", "sameCredential", "ready"]) {
+    for (const field of diagnosticFlags) {
       if (typeof entry[field] === "boolean") {
         record[field] = entry[field];
       }
@@ -78,17 +124,21 @@ function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
     t.diagnostic(`stale peer: ${JSON.stringify(record)}`);
   }
   for (const entry of jsonLogEntries(containerOutput)) {
-    if (entry?.event !== "runtime.startup_phase" || !startupPhases.has(entry.phase)) {
+    if (
+      entry?.event !== "runtime.startup_phase" ||
+      typeof entry.phase !== "string" ||
+      !startupPhases.has(entry.phase)
+    ) {
       continue;
     }
-    if (!["ok", "failed", "started"].includes(entry.outcome)) {
+    if (entry.outcome !== "ok" && entry.outcome !== "failed" && entry.outcome !== "started") {
       continue;
     }
-    const record = { phase: entry.phase, outcome: entry.outcome };
-    if (Number.isFinite(entry.ms) && entry.ms >= 0) {
+    const record: StartupDiagnostic = { phase: entry.phase, outcome: entry.outcome };
+    if (isNonNegativeFinite(entry.ms)) {
       record.ms = entry.ms;
     }
-    if (Number.isFinite(entry.sinceStartMs) && entry.sinceStartMs >= 0) {
+    if (isNonNegativeFinite(entry.sinceStartMs)) {
       record.sinceStartMs = entry.sinceStartMs;
     }
     t.diagnostic(`wrapper phase: ${JSON.stringify(record)}`);
@@ -179,7 +229,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
           new URL("../fixtures/runtime-gateway-peer-respawn.ts", import.meta.url),
           "utf8",
         );
-        let stdout;
+        let stdout: string;
         try {
           ({ stdout } = await runDocker(
             [
@@ -198,7 +248,8 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
             { timeout: 780_000 * imageSmokeTimeoutMultiplier },
           ));
         } catch (error) {
-          const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
+          const failure = dockerFailure(error);
+          const logs = await runDocker(["logs", containerName]).catch(dockerFailure);
           // CI truncates error messages; preserve complete container logs separately.
           t.diagnostic(commandOutput(logs));
           // CI also keeps only 1,000 characters of each output line, which the log above spends
@@ -214,9 +265,9 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
           }
           // Its own read: a log over runDocker's 1 MB buffer would keep only its beginning.
           const tail = await runDocker(["logs", "--tail", "20", containerName]).catch(
-            (tailError) => tailError,
+            dockerFailure,
           );
-          for (const stream of ["stdout", "stderr"]) {
+          for (const stream of ["stdout", "stderr"] as const) {
             for (const line of String(tail[stream] ?? "").split("\n")) {
               if (line.trim() !== "") {
                 t.diagnostic(`container ${stream} tail: ${line}`);
@@ -228,14 +279,25 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
             .map((entry) => entry.message)
             .join("\n");
           throw new Error(
-            `Peer respawn fixture failed (code=${error.code}, signal=${error.signal}): ${failureTail(runtimeErrors || commandOutput(error).trim() || "no fixture output")}`,
+            `Peer respawn fixture failed (code=${failure.code}, signal=${failure.signal}): ${failureTail(runtimeErrors || commandOutput(failure).trim() || "no fixture output")}`,
             { cause: error },
           );
         }
-        const result = JSON.parse(stdout.trim().split("\n").at(-1));
-        assert.ok(result.samePeerOutageResponses >= 2);
-        assert.ok(result.samePeerUnreadySamples >= 2);
-        assert.ok(result.samePeerRecoveryResponses >= 1);
+        const lastLine = stdout.trim().split("\n").at(-1);
+        assert.ok(lastLine, "the peer respawn fixture must report its results");
+        const decoded: unknown = JSON.parse(lastLine);
+        const result = asRecord(decoded);
+        assert.ok(result);
+        assert.ok(
+          typeof result.samePeerOutageResponses === "number" && result.samePeerOutageResponses >= 2,
+        );
+        assert.ok(
+          typeof result.samePeerUnreadySamples === "number" && result.samePeerUnreadySamples >= 2,
+        );
+        assert.ok(
+          typeof result.samePeerRecoveryResponses === "number" &&
+            result.samePeerRecoveryResponses >= 1,
+        );
         assert.notDeepEqual(result.after, result.before);
         // The container, and the wrapper that is its main process, never restarted.
         const inspect = await runDocker([
@@ -272,7 +334,11 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
     runWritableGatewayRestart,
   );
 
-  async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) {
+  async function assertGatewayExitsDuringPeerScenario(
+    t: TestContext,
+    scenario: "peer-outage-exit" | "stale-replacement",
+    expectedPhase: "peer-unready" | "stale-peer-verified",
+  ) {
     const directory = await temporaryDirectory(t, "oce-runtime-image-config-");
     const configurationPath = join(directory, "openclaw.json");
     await writeFile(
@@ -312,7 +378,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
       new URL("../fixtures/runtime-gateway-peer-respawn.ts", import.meta.url),
       "utf8",
     );
-    let failure;
+    let failure: DockerFailure | undefined;
     try {
       await runDocker(
         [
@@ -330,15 +396,15 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
         { timeout: 300_000 * imageSmokeTimeoutMultiplier },
       );
     } catch (error) {
-      failure = error;
+      failure = dockerFailure(error);
     }
     assert.ok(failure, `the container should exit for ${scenario}`);
     if (scenario === "stale-replacement") {
-      const logs = await runDocker(["logs", containerName]).catch((error) => error);
+      const logs = await runDocker(["logs", containerName]).catch(dockerFailure);
       emitPeerDiagnostics(t, commandOutput(failure), commandOutput(logs));
     }
     if (!(failure.stdout ?? "").includes(`"phase":"${expectedPhase}"`)) {
-      const logs = await runDocker(["logs", containerName]).catch((error) => error);
+      const logs = await runDocker(["logs", containerName]).catch(dockerFailure);
       assert.fail(
         scenario === "stale-replacement"
           ? `Expected ${expectedPhase} was not observed; see allowlisted diagnostics above.`
@@ -356,9 +422,9 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
     const exited = await runDocker(["wait", containerName], {
       timeout: 30_000 * imageSmokeTimeoutMultiplier,
     }).catch(async (error) => {
-      const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
+      const logs = await runDocker(["logs", containerName]).catch(dockerFailure);
       assert.fail(
-        `The Gateway container did not exit.\n${error.message}\n${failureTail(commandOutput(logs))}`,
+        `The Gateway container did not exit.\n${dockerFailure(error).message}\n${failureTail(commandOutput(logs))}`,
       );
     });
     // A crashed OpenClaw ends the container with 1. Rejecting a changed peer is a deliberate
@@ -367,7 +433,9 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
     const exitCode = scenario === "stale-replacement" ? 75 : 1;
     assert.equal(exited.stdout.trim(), String(exitCode));
     const inspect = await runDocker(["inspect", containerName, "--format", "{{json .State}}"]);
-    const state = JSON.parse(inspect.stdout);
+    const decoded: unknown = JSON.parse(inspect.stdout);
+    const state = asRecord(decoded);
+    assert.ok(state, "Docker inspect must report container state");
     assert.equal(state.Status, "exited");
     assert.equal(state.ExitCode, exitCode);
     if (scenario === "stale-replacement") {

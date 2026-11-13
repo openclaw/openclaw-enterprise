@@ -21,7 +21,7 @@ import {
   spawnWorker,
   startController,
   verifyPlatformStateStoreContract,
-} from "../helpers/postgres-platform-state.mjs";
+} from "../helpers/postgres-platform-state.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { AGENT_NAME_CONFLICT, callerDenied } from "../helpers/refusal-text.mjs";
 

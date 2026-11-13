@@ -4,7 +4,7 @@ import test from "node:test";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { PRESET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
-import { startController, request } from "../helpers/postgres-platform-state.mjs";
+import { startController, request } from "../helpers/postgres-platform-state.ts";
 
 const identifier = (kind) => `${kind}_${randomUUID()}`;
 

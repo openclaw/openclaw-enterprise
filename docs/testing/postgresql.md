@@ -177,7 +177,7 @@ Use `OCC_TEST_DATABASE_URL` for the application role and
 clients disconnected. Bootstrap failure tests require a separate disposable
 loopback database named `openclaw_failures_*` via
 `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`; their reset changes its tables. See
-[the test](../../tests/integration/postgres-bootstrap-failures.test.mjs) for
+[the test](../../tests/integration/postgres-bootstrap-failures.test.ts) for
 its optional migration URL. Do not share that database with another process.
 
 ## Canonical migration compatibility
