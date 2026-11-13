@@ -1,28 +1,188 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import type {
+  AdmittedRepositoryBinding,
+  Agent,
+  Namespace,
+  RepositoryCredentialGrantIdentity,
+  RepositoryRevisionState,
+} from "@openclaw-enterprise/contracts";
+import type { Pool, PoolClient } from "pg";
+import type { RepositorySessionPhase } from "../../packages/occ/src/ports/repository-sessions.ts";
+import type {
+  ConfigurationOwnership,
+  PlatformStateStore,
+} from "../../packages/occ/src/state/platform-state.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import type { RepositorySessionCaseBuilders } from "../conformance/repository-session-state-cases.ts";
 import {
-  seedSessionRevision,
-  sessionAttempt,
+  seedSessionRevision as buildSeedSessionRevision,
+  sessionAttempt as buildSessionAttempt,
   verifyRepositorySessions,
 } from "../conformance/repository-sessions.contract.mjs";
 import {
-  repositoryBinding,
-  repositoryCredentials,
-  repositoryGrant,
+  repositoryBinding as buildRepositoryBinding,
+  repositoryCredentials as buildRepositoryCredentials,
+  repositoryGrant as buildRepositoryGrant,
 } from "../fixtures/repository-credentials/session-state.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
 
+type SessionCase = Awaited<ReturnType<RepositorySessionCaseBuilders["seedSessionRevision"]>>;
+type SessionRevision = Pick<
+  SessionCase["revision"],
+  "id" | "namespaceId" | "agentId" | "createdAt"
+> & {
+  readonly repositoryCredentials: Pick<RepositoryRevisionState, "deadlineWallMs">;
+};
+type AttemptInput = ReturnType<RepositorySessionCaseBuilders["sessionAttempt"]>;
+type AttemptDefaults = Pick<AttemptInput, keyof ReturnType<typeof buildSessionAttempt>>;
+type SnapshotDefaults = ReturnType<typeof buildRepositoryCredentials>;
+
+// PostgreSQL receives these malformed values directly, without the State repository's typing.
+type RawAttempt = Omit<AttemptInput, "durationSeconds"> & {
+  readonly durationSeconds: number | `${bigint}`;
+};
+type RawGrant = RepositoryCredentialGrantIdentity & { readonly bearer?: string };
+type RawBinding = Omit<AdmittedRepositoryBinding, "grant"> & {
+  readonly grant: RawGrant | null;
+  readonly bearer?: string;
+};
+type RawSnapshot = Omit<RepositoryRevisionState, "driver" | "bindings"> & {
+  readonly driver: RepositoryRevisionState["driver"] & { readonly bearer?: string };
+  readonly bindings: readonly RawBinding[] | Record<string, never>;
+  readonly bearer?: string;
+};
+
+// Each builder shallow-spreads its overrides after its defaults. An optional
+// override leaves the default in place when the property is absent.
+type RepositoryFixtureResult<Defaults, Overrides> = Overrides extends object
+  ? {
+      [Key in keyof Defaults]: Key extends keyof Overrides
+        ? Record<never, never> extends Pick<Overrides, Key>
+          ? Defaults[Key] | Required<Overrides>[Key]
+          : Overrides[Key]
+        : Defaults[Key];
+    } & Omit<Overrides, keyof Defaults>
+  : Defaults;
+
+type RepositoryFixtureBuilder<Defaults, Input> = {
+  (overrides?: undefined): Defaults;
+  <Overrides extends Partial<Input> | undefined>(
+    overrides: Overrides,
+  ): RepositoryFixtureResult<Defaults, Overrides>;
+};
+
+// The seed reads credentials and retains the supplied object in the revision.
+type SeedCredentials = RepositoryRevisionState & {
+  readonly bearer?: never;
+  readonly driver: RepositoryRevisionState["driver"] & { readonly bearer?: never };
+  readonly bindings: readonly (AdmittedRepositoryBinding & {
+    readonly bearer?: never;
+    readonly grant: RepositoryCredentialGrantIdentity & { readonly bearer?: never };
+  })[];
+};
+type SessionSeed = Awaited<ReturnType<typeof buildSeedSessionRevision>>;
+type SeedAgent = Pick<
+  Agent,
+  Exclude<
+    keyof SessionSeed["agent"],
+    "backendId" | "harnessAuth" | "gatewayManagedMode" | "repositoryBindings"
+  >
+> &
+  Required<Pick<Agent, "repositoryBindings">> & {
+    readonly backendId: null;
+    readonly gatewayManagedMode: true;
+    readonly harnessAuth: Extract<
+      Agent["harnessAuth"],
+      { method: "api_key"; source: { kind: "secret" } }
+    >;
+  };
+type SeedRevision = Pick<
+  SessionCase["revision"],
+  Exclude<
+    keyof SessionSeed["revision"],
+    "executionAdmission" | "harnessAuth" | "repositoryCredentials"
+  >
+> & {
+  readonly executionAdmission: Extract<
+    SessionCase["revision"]["executionAdmission"],
+    { mode: "unprotected" }
+  >;
+  readonly harnessAuth: SeedAgent["harnessAuth"] & { readonly secretDriverId: string };
+};
+type SeedOptions = {
+  readonly createdAt?: string | undefined;
+  readonly namespaceId?: string | undefined;
+  readonly executionMode?: Agent["executionMode"] | undefined;
+};
+type SeededSession<Credentials extends RepositoryRevisionState> = {
+  readonly namespace: Pick<Namespace, keyof SessionSeed["namespace"]> & {
+    readonly status: "ready";
+  };
+  readonly configuration: ConfigurationOwnership;
+  readonly agent: SeedAgent;
+  readonly revision: SeedRevision & { readonly repositoryCredentials: Credentials };
+};
+
+// The unchecked JavaScript declarations omit the effects of object spread and
+// widen the seed's literal fields. These aliases describe the same functions.
+const seedSessionRevision = buildSeedSessionRevision as {
+  (
+    store: PlatformStateStore,
+    credentials?: undefined,
+    options?: SeedOptions,
+  ): Promise<SeededSession<SnapshotDefaults>>;
+  <Credentials extends SeedCredentials | undefined>(
+    store: PlatformStateStore,
+    credentials: Credentials,
+    options?: SeedOptions,
+  ): Promise<SeededSession<Credentials extends SeedCredentials ? Credentials : SnapshotDefaults>>;
+};
+const sessionAttempt = buildSessionAttempt as {
+  (revision: SessionRevision, overrides?: undefined): AttemptDefaults;
+  <Overrides extends Partial<RawAttempt> | undefined>(
+    revision: SessionRevision,
+    overrides: Overrides,
+  ): RepositoryFixtureResult<AttemptDefaults, Overrides>;
+};
+const repositoryGrant = buildRepositoryGrant as RepositoryFixtureBuilder<
+  ReturnType<typeof buildRepositoryGrant>,
+  RawGrant
+>;
+const repositoryBinding = buildRepositoryBinding as RepositoryFixtureBuilder<
+  ReturnType<typeof buildRepositoryBinding>,
+  RawBinding
+>;
+const repositoryCredentials = buildRepositoryCredentials as RepositoryFixtureBuilder<
+  SnapshotDefaults,
+  RawSnapshot
+>;
+
 function insertAttempt(
-  pool,
-  input,
-  phase = "opening",
-  sessionId = null,
-  updatedAt = input.createdAt,
+  pool: Pool | PoolClient,
+  input: RawAttempt,
+  phase: RepositorySessionPhase | "unknown" = "opening",
+  sessionId: string | null = null,
+  updatedAt: string = input.createdAt,
 ) {
-  return pool.query(
+  return pool.query<
+    never,
+    [
+      namespaceId: string,
+      agentId: string,
+      revisionId: string,
+      repositoryRef: string,
+      admissionId: string,
+      durationSeconds: RawAttempt["durationSeconds"],
+      deadlineWallMs: number,
+      phase: RepositorySessionPhase | "unknown",
+      sessionId: string | null,
+      createdAt: string,
+      updatedAt: string,
+    ]
+  >(
     `INSERT INTO occ.repository_session_attempts
        (namespace_id, agent_id, revision_id, repository_ref, admission_id,
         duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at)
@@ -47,7 +207,7 @@ test(
   "PostgreSQL repository sessions enforce durable admission boundaries",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
-    const pool = testPool(t, { connectionString: databaseUrl, max: 4 });
+    const pool: Pool = testPool(t, { connectionString: databaseUrl, max: 4 });
     const store = new PostgresPlatformState(pool);
     await verifyRepositorySessions(t, store);
 
@@ -60,7 +220,7 @@ test(
           "namespace belongs to another revision": { namespaceId: other.namespace.id },
           "agent belongs to another revision": { agentId: other.agent.id },
           "revision does not exist": { revisionId: `rev_${randomUUID()}` },
-        };
+        } satisfies Record<string, Partial<RawAttempt>>;
         for (const [name, override] of Object.entries(foreignOwners)) {
           await t.test(name, async () => {
             await assert.rejects(insertAttempt(pool, sessionAttempt(revision, override)), {
@@ -79,7 +239,7 @@ test(
           "admission identity contains a space": { admissionId: "bad admission" },
           "admission identity ends with a newline": { admissionId: "admission\n" },
           "admission identity exceeds 128 characters": { admissionId: "a".repeat(129) },
-        };
+        } satisfies Record<string, Partial<RawAttempt>>;
         for (const [name, override] of Object.entries(invalidAttempts)) {
           await t.test(name, async () => {
             await assert.rejects(insertAttempt(pool, sessionAttempt(revision, override)), {
@@ -116,15 +276,14 @@ test(
             { code: "23514" },
           );
         });
-        assert.equal(
-          (
-            await pool.query(
-              "SELECT count(*)::integer AS count FROM occ.repository_session_attempts WHERE revision_id = $1",
-              [revision.id],
-            )
-          ).rows[0].count,
-          0,
+        const {
+          rows: [row],
+        } = await pool.query<{ count: number }, [revisionId: string]>(
+          "SELECT count(*)::integer AS count FROM occ.repository_session_attempts WHERE revision_id = $1",
+          [revision.id],
         );
+        assert.ok(row);
+        assert.equal(row.count, 0);
       },
     );
 
@@ -137,7 +296,7 @@ test(
         await assert.rejects(insertAttempt(pool, input), { code: "23505" });
         await assert.rejects(insertAttempt(pool, sessionAttempt(revision)), { code: "23505" });
         await assert.rejects(
-          pool.query(
+          pool.query<never, [admissionId: string]>(
             "UPDATE occ.repository_session_attempts SET phase = 'open' WHERE admission_id = $1",
             [input.admissionId],
           ),
@@ -145,38 +304,38 @@ test(
         );
         const sessionId = `session-${randomUUID()}`;
         await assert.rejects(
-          pool.query(
+          pool.query<never, [admissionId: string, sessionId: string]>(
             "UPDATE occ.repository_session_attempts SET phase = 'open', session_id = $2 WHERE admission_id = $1",
             [input.admissionId, "session\n"],
           ),
           { code: "23514" },
         );
-        await pool.query(
+        await pool.query<never, [admissionId: string, sessionId: string]>(
           "UPDATE occ.repository_session_attempts SET phase = 'open', session_id = $2 WHERE admission_id = $1",
           [input.admissionId, sessionId],
         );
         await assert.rejects(
-          pool.query(
+          pool.query<never, [admissionId: string]>(
             "UPDATE occ.repository_session_attempts SET phase = 'disposed' WHERE admission_id = $1",
             [input.admissionId],
           ),
           { code: "23514" },
         );
         await assert.rejects(
-          pool.query(
+          pool.query<never, [admissionId: string]>(
             "UPDATE occ.repository_session_attempts SET session_id = NULL WHERE admission_id = $1",
             [input.admissionId],
           ),
           { code: "55000" },
         );
         await assert.rejects(
-          pool.query(
+          pool.query<never, [admissionId: string]>(
             "UPDATE occ.repository_session_attempts SET phase = 'closing', session_id = 'replacement' WHERE admission_id = $1",
             [input.admissionId],
           ),
           { code: "55000" },
         );
-        await pool.query(
+        await pool.query<never, [admissionId: string]>(
           "UPDATE occ.repository_session_attempts SET phase = 'closing' WHERE admission_id = $1",
           [input.admissionId],
         );
@@ -184,18 +343,18 @@ test(
         const replacement = sessionAttempt(revision);
         await insertAttempt(pool, replacement);
         await assert.rejects(
-          pool.query(
+          pool.query<never, [admissionId: string, sessionId: string]>(
             "UPDATE occ.repository_session_attempts SET phase = 'open', session_id = $2 WHERE admission_id = $1",
             [replacement.admissionId, sessionId],
           ),
           { code: "23505" },
         );
-        await pool.query(
+        await pool.query<never, [admissionId: string]>(
           "UPDATE occ.repository_session_attempts SET phase = 'disposed' WHERE admission_id = $1",
           [input.admissionId],
         );
         await assert.rejects(
-          pool.query(
+          pool.query<never, [admissionId: string]>(
             "UPDATE occ.repository_session_attempts SET phase = 'open' WHERE admission_id = $1",
             [input.admissionId],
           ),
@@ -207,11 +366,12 @@ test(
     await t.test(
       "application grants permit lifecycle changes while protecting identity and history",
       async () => {
-        const role = (
-          await pool.query(
-            "SELECT current_user AS name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-          )
-        ).rows[0];
+        const {
+          rows: [role],
+        } = await pool.query<{ name: string; rolsuper: boolean; rolbypassrls: boolean }, []>(
+          "SELECT current_user AS name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        assert.ok(role);
         assert.equal(role.name, "occ_app");
         assert.equal(role.rolsuper, false);
         assert.equal(role.rolbypassrls, false);
@@ -231,7 +391,7 @@ test(
           "created_at",
         ]) {
           await assert.rejects(
-            pool.query(
+            pool.query<never, [admissionId: string]>(
               `UPDATE occ.repository_session_attempts SET ${column} = ${column} WHERE admission_id = $1`,
               [input.admissionId],
             ),
@@ -239,20 +399,21 @@ test(
           );
         }
         await assert.rejects(
-          pool.query("DELETE FROM occ.repository_session_attempts WHERE admission_id = $1", [
-            input.admissionId,
-          ]),
+          pool.query<never, [admissionId: string]>(
+            "DELETE FROM occ.repository_session_attempts WHERE admission_id = $1",
+            [input.admissionId],
+          ),
           { code: "42501" },
         );
-        await pool.query(
+        await pool.query<never, [admissionId: string, updatedAt: string]>(
           "UPDATE occ.repository_session_attempts SET phase = 'invalidated', updated_at = $2 WHERE admission_id = $1",
           [input.admissionId, "2030-03-17T17:46:41.000Z"],
         );
-        assert.equal(
-          (await store.read((view) => view.repositorySessions.findAttempt(input.admissionId)))
-            .phase,
-          "invalidated",
+        const attempt = await store.read((view) =>
+          view.repositorySessions.findAttempt(input.admissionId),
         );
+        assert.ok(attempt);
+        assert.equal(attempt.phase, "invalidated");
       },
     );
 
@@ -261,23 +422,27 @@ test(
       const deleting = await pool.connect();
       const admission = await pool.connect();
       try {
-        const admissionPid = (await admission.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
-        await deleting.query("BEGIN");
-        await deleting.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
-          namespace.id,
-        ]);
-        await deleting.query(
+        const {
+          rows: [backend],
+        } = await admission.query<{ pid: number }, []>("SELECT pg_backend_pid() AS pid");
+        assert.ok(backend);
+        await deleting.query<never, []>("BEGIN");
+        await deleting.query<never, [namespaceId: string]>(
+          "SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE",
+          [namespace.id],
+        );
+        await deleting.query<never, [agentId: string]>(
           "UPDATE occ.agents SET desired_runtime_state = 'stopped', status = 'deleting' WHERE id = $1",
           [agent.id],
         );
         const pending = insertAttempt(admission, sessionAttempt(revision));
         const refused = assert.rejects(pending, { code: "23514" });
-        await waitForLockHolder(pool, admissionPid, "admission to wait on its Namespace owner", {
+        await waitForLockHolder(pool, backend.pid, "admission to wait on its Namespace owner", {
           timeoutMs: 5_000,
           intervalMs: 10,
         });
         // The owner commits deletion before the waiting INSERT may validate admission.
-        await deleting.query("COMMIT");
+        await deleting.query<never, []>("COMMIT");
         await refused;
         assert.deepEqual(
           await store.read((view) =>
@@ -290,7 +455,7 @@ test(
           [],
         );
       } finally {
-        await deleting.query("ROLLBACK");
+        await deleting.query<never, []>("ROLLBACK");
         deleting.release();
         admission.release();
       }
@@ -317,10 +482,10 @@ test(
         for (const [name, bindings] of Object.entries(invalidDrafts)) {
           await t.test(`draft: ${name}`, async () => {
             await assert.rejects(
-              pool.query("UPDATE occ.agents SET repository_bindings = $2::jsonb WHERE id = $1", [
-                agent.id,
-                JSON.stringify(bindings),
-              ]),
+              pool.query<never, [agentId: string, bindings: string]>(
+                "UPDATE occ.agents SET repository_bindings = $2::jsonb WHERE id = $1",
+                [agent.id, JSON.stringify(bindings)],
+              ),
               { code: "23514" },
             );
           });
@@ -370,7 +535,10 @@ test(
         for (const [name, credentials] of Object.entries(invalidSnapshots)) {
           await t.test(`snapshot: ${name}`, async () => {
             await assert.rejects(
-              pool.query(
+              pool.query<
+                never,
+                [sourceRevisionId: string, newRevisionId: string, credentials: string]
+              >(
                 `INSERT INTO occ.agent_revisions (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at)
          SELECT $2, namespace_id, agent_id, 2,
            jsonb_set(admitted_spec, '{repository_credentials}', $3::jsonb), admitted_at
@@ -381,12 +549,13 @@ test(
             );
           });
         }
-        const row = (
-          await pool.query(
-            "SELECT admitted_spec->'repository_credentials' AS credentials FROM occ.agent_revisions WHERE id = $1",
-            [revision.id],
-          )
-        ).rows[0];
+        const {
+          rows: [row],
+        } = await pool.query<{ credentials: RepositoryRevisionState | null }, [revisionId: string]>(
+          "SELECT admitted_spec->'repository_credentials' AS credentials FROM occ.agent_revisions WHERE id = $1",
+          [revision.id],
+        );
+        assert.ok(row);
         assert.deepEqual(row.credentials, revision.repositoryCredentials);
       },
     );
