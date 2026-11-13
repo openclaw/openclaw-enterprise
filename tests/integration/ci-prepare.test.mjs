@@ -2642,7 +2642,10 @@ assert.equal(commands, 0);
                 ? ["compose", "kubernetes"].map((installation) => ({
                     installation,
                     preset: "Codex",
-                    scenarios: "console-secrets",
+                    scenarios:
+                      installation === "compose"
+                        ? "console-secrets,agent-audit"
+                        : "console-secrets",
                     focused: false,
                   }))
                 : [

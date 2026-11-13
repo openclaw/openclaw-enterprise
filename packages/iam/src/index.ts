@@ -895,6 +895,15 @@ function bindingScopeMatches(binding: AccessBinding, request: AuthorizationReque
   );
 }
 
+function isDirectAgentAuditBinding(identity: Identity, binding: AccessBinding): boolean {
+  return (
+    identity.kind === "principal" &&
+    binding.subjectKind === "identity" &&
+    binding.namespaceId !== undefined &&
+    binding.resourceKind === "agent"
+  );
+}
+
 function restrictionMatches(restriction: Restriction, request: AuthorizationRequest): boolean {
   return (
     (restriction.namespaceId === undefined ||
@@ -957,12 +966,7 @@ function evaluateValidatedAuthorization(
   for (const binding of subjectBindings) {
     if (
       request.action === "read_audit" &&
-      (identity.kind !== "principal" ||
-        request.resource.kind !== "agent" ||
-        binding.subjectKind !== "identity" ||
-        binding.namespaceId !== request.resource.namespaceId ||
-        binding.resourceKind !== "agent" ||
-        binding.resourceId !== request.resource.id)
+      (request.resource.kind !== "agent" || !isDirectAgentAuditBinding(identity, binding))
     ) {
       continue;
     }
@@ -1066,14 +1070,20 @@ function effectiveGrants(identity: Identity, policy: NativeIAMPolicy): Effective
         namespaceId: [...namespaces][0],
         resourceKind: binding.resourceKind,
         resourceId: binding.resourceId,
-        permissions: role.permissions.filter(
-          (permission) =>
+        permissions: role.permissions.filter((permission) => {
+          if (permission.action === "read_audit") {
+            return (
+              permission.resourceKind === "agent" && isDirectAgentAuditBinding(identity, binding)
+            );
+          }
+          return (
             binding.resourceKind === undefined ||
             permission.resourceKind === binding.resourceKind ||
             // An exact Agent binding also grants these permissions on the Agent's own children.
             (binding.resourceKind === "agent" &&
-              AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === permission.resourceKind)),
-        ),
+              AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === permission.resourceKind))
+          );
+        }),
       });
     }
   }

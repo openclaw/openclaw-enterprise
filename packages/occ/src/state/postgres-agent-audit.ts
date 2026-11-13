@@ -1,18 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentAuditEntry } from "@openclaw-enterprise/contracts";
 
-export interface AgentAuditPosition {
-  readonly occurredAt: string;
-  readonly id: string;
-}
-
-export interface AgentAuditSelection {
-  readonly start: string;
-  readonly end: string;
-  readonly limit: number;
-  readonly after?: AgentAuditPosition;
-}
-
 export const SELECT_AGENT_AUDIT = `
   SELECT id, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAt",
          action, outcome, actor_id AS "actorId",

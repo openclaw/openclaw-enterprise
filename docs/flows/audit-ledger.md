@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: "2026-11-12"
-last_updated_session: "authoring-run/bb7f16b1-d73b-4957-b5bb-212692e7ada9"
+last_updated_session: "authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9"
 ---
 
 # Audit ledger flow
@@ -204,13 +204,18 @@ copies and array are immutable.
 ### 6. The Agent audit API saves a disclosure for each page
 
 `apps/controller/src/http/agent-audit.ts:createAgentAuditReader` and
-`packages/occ/src/index.ts:OpenClawController.listAgentAuditEvents`
+`packages/occ/src/index.ts:OpenClawController.listAgentAuditEvents`, and
+`apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
 
-The route opens a PostgreSQL transaction and holds the caller's session.
-It checks the Native IAM grant, locks the active Agent and its ready Namespace,
-and holds the policy tables through commit. The second grant check uses
-the held policy. The query selects approved event types for the exact Agent
-and bounds the time window and page size.
+When audit is enabled, composition supplies the PostgreSQL audit reader. The
+reader checks that the selected Native IAM Driver uses the same State as the
+controller. OCC then opens a transaction and holds the caller's session.
+Native IAM checks for a direct `read_audit` binding for the human Principal, the
+Agent, and its Namespace. The same rule applies when Native IAM checks which
+grants an account or service-key manager must hold. The reader locks the active
+Agent, its ready Namespace, and the policy tables through commit. It checks the
+grant again under these locks. The query selects approved event types for that
+Agent and limits the time window and page size.
 
 State builds the page from named fields. It derives a public work ID from the
 stored key and omits revision IDs. The same transaction appends
@@ -252,6 +257,8 @@ to the same session, Agent, and window.
 
 ## Changelog
 
+- 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
+- 2026-11-12 16:19: Trace how composition supplies the Agent audit reader and verifies its IAM Driver. (authoring-run/0262148b-40f3-48c2-a3e1-546feb2e265b - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 15:31: Trace how a successful Agent read saves the verified Agent and Namespace IDs. (authoring-run/bb7f16b1-d73b-4957-b5bb-212692e7ada9 - 8658496ea654b960bebabca40d18c7d71994db50)
 - 2026-11-12 14:30: Document the covered request rejection path and audit-write failure response. (authoring-run/184ad244-ddb9-4dc2-b9ff-1d35f57fb8e0 - 8658496ea654b960bebabca40d18c7d71994db50)
 - 2026-11-12 14:04: Document request admission and results and the atomic queue claim audit. (authoring-run/2e85d711-50c8-4e66-aa55-842b05f80ba9 - 8658496ea654b960bebabca40d18c7d71994db50)

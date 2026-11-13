@@ -6,6 +6,7 @@ import { installationControllerOptions } from "./installation-config.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
   controlPlaneAuditDatabaseOptions,
+  postgresAgentAuditState,
 } from "./control-plane-audit.ts";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type { ComputeDriver, ConfigurationDriver } from "@openclaw-enterprise/contracts";
@@ -185,6 +186,7 @@ export async function composePostgresDevelopment(
         ...installationControllerOptions(drivers?.installation),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
+        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
         ...(drivers?.pluginSourceReader === undefined
           ? {}

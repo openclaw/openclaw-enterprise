@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
 
 import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
@@ -22,11 +23,7 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import { postgresSavedConnections } from "./postgres-saved-connections.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
-import {
-  projectAgentAuditRow,
-  SELECT_AGENT_AUDIT,
-  type AgentAuditSelection,
-} from "./postgres-agent-audit.ts";
+import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
 import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,

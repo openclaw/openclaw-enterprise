@@ -419,6 +419,7 @@ import {
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
 import type { StoredOAuthClient } from "./ports/oauth-client.ts";
+import type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
 import {
   InMemoryPlatformState,
   type PlatformReadView,
@@ -434,11 +435,7 @@ import {
   deploymentWarningsForWork,
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
-import {
-  PostgresCommitOutcomeUnknownError,
-  PostgresPlatformState,
-} from "./state/postgres-state.ts";
-import type { AgentAuditSelection } from "./state/postgres-agent-audit.ts";
+import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
 import {
   validAdmittedRepositoryBindings,
   validRepositoryAccess,
@@ -740,6 +737,7 @@ export type {
   HumanAuthenticationMaintenanceStatus,
 } from "./state/human-authentication-maintenance.ts";
 export { createPostgresPool } from "./state/postgres-pool.ts";
+export type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
 export type {
   RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
@@ -880,6 +878,7 @@ export interface ControllerOptions {
   readonly now?: () => Date;
   readonly createId?: (kind: ResourceKind) => string;
   readonly state?: PlatformStateStore;
+  readonly agentAuditState?: AgentAuditState<PlatformUnitOfWork>;
   readonly recordOperations?: boolean;
   readonly backends?: readonly BackendDefinition[];
   readonly defaultPresets?: readonly PresetDraftDefinition[];
@@ -2314,6 +2313,7 @@ export class OpenClawController {
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
   private readonly state: PlatformStateStore;
+  private readonly agentAuditState: ControllerOptions["agentAuditState"];
   private readonly transactionContext = new AsyncLocalStorage<PlatformUnitOfWork>();
   private readonly authorityFence = new AsyncLocalStorage<AuthorityFence>();
   private readonly requestAuditId = new AsyncLocalStorage<string>();
@@ -2374,6 +2374,7 @@ export class OpenClawController {
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
+    this.agentAuditState = options.agentAuditState;
     this.shouldRecordOperations = options.recordOperations ?? true;
     this.backends = validateBackendDefinitions(options.backends ?? []);
     this.defaultPresets = immutableCopy(options.defaultPresets ?? []);
@@ -3505,34 +3506,31 @@ export class OpenClawController {
     holdSession: AuthorityFence,
     disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
   ) {
-    const state = this.state;
-    const driver = this.selectedDriver("iam");
+    const state = this.agentAuditState;
+    const driver = this.authorizationAuthority(principalId);
+    const authorize = driver.authorize;
     if (
-      !(state instanceof PostgresPlatformState) ||
+      state === undefined ||
       this.authorization !== undefined ||
-      !NativeIAMDriver.usesStateForAuthorization(driver, driver.authorize, state)
+      !state.supportsAuthorization(this.state, driver, authorize)
     ) {
-      throw new NotImplementedError("Agent audit requires PostgreSQL and the Native IAM Driver.");
+      throw new NotImplementedError(
+        "The selected State and IAM Driver do not support Agent audit.",
+      );
     }
     const target = { kind: "agent", id: agentId, namespaceId } as const;
-    return state.transactWithNativeIAMAuthority(this.installation.id, "read", async (unit) => {
-      await state.boundAgentAuditTransaction(unit);
+    return state.transact(this.installation.id, async (unit) => {
       await holdSession(unit);
       // An unauthorized caller cannot lock Agent or Namespace records. Recheck after
       // taking the locks so no policy change can commit between approval and disclosure.
-      await this.authorize(principalId, "read_audit", target);
-      if (!(await state.holdAgentAuditResource(unit, this.installation.id, namespaceId, agentId))) {
+      await this.authorize(principalId, "read_audit", target, driver, authorize);
+      if (!(await state.holdResource(unit, this.installation.id, namespaceId, agentId))) {
         throw new ScopeViolationError(
           "The active Agent does not belong to the exact ready Namespace.",
         );
       }
-      const decision = await this.authorize(principalId, "read_audit", target);
-      const entries = await state.listAgentAuditInTransaction(
-        unit,
-        namespaceId,
-        agentId,
-        selection,
-      );
+      const decision = await this.authorize(principalId, "read_audit", target, driver, authorize);
+      const entries = await state.list(unit, namespaceId, agentId, selection);
       const events = entries.slice(0, selection.limit);
       try {
         await unit.audit.append(disclosure(events.length, decision));
@@ -14811,8 +14809,16 @@ export class OpenClawController {
     principalId: string,
     action: AuthorizationRequest["action"],
     target: AuthorizationTarget,
+    selected?: IAMDriver,
+    authorize?: IAMDriver["authorize"],
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const authorization = await this.authorizationDecision(principalId, action, target);
+    const authorization = await this.authorizationDecision(
+      principalId,
+      action,
+      target,
+      selected,
+      authorize,
+    );
     if (!authorization.decision.allowed) {
       throw new AuthorizationDeniedError(
         isNonEmptyString(authorization.decision.reason)

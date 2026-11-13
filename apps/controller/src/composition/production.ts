@@ -2,6 +2,7 @@ import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
   controlPlaneAuditDatabaseOptions,
+  postgresAgentAuditState,
 } from "./control-plane-audit.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
@@ -223,6 +224,7 @@ export async function composeProduction(
         ...installationControllerOptions(config.drivers.installation),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
+        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         ...(config.drivers.pluginSourceReader === undefined
           ? {}

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 
 import { createPostgresControllerAuth } from "./password-hasher.mjs";
+import { postgresAgentAuditState } from "../../apps/controller/src/composition/control-plane-audit.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -109,6 +110,9 @@ export async function createPostgresAgentApp(
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
   const controller = new OpenClawController(installation, {
     state,
+    ...(appOptions?.agentAuditCursorSecret === undefined
+      ? {}
+      : { agentAuditState: postgresAgentAuditState(state) }),
     recordOperations: false,
     namespaceLifecycleBindings:
       sandboxDriver?.ensureNamespace === undefined
