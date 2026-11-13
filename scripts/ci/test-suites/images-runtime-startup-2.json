@@ -111,7 +111,8 @@
     {
       "path": "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
       "expectedTests": [
-        "OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer can reach"
+        "OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer can reach",
+        "OpenShell startup admits exactly the endpoints both consumers can parse and dial"
       ]
     },
     {

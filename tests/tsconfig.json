@@ -70,7 +70,6 @@
     "integration/sandbox-driver-credential-contract-cases.ts",
     "integration/sandbox-driver-credential-fixture.ts",
     "integration/sandbox-driver-provider-profiles-cases.ts",
-    "integration/sandbox-driver-endpoint-admission-case.ts",
     "integration/sandbox-driver-installation-fixture.ts",
     "integration/sandbox-driver-startup-installation-fixture.ts",
     "integration/sandbox-driver-harness-observation-cases.ts",
