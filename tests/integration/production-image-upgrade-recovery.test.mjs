@@ -32,6 +32,7 @@ import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test, { describe } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -5707,10 +5708,12 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       };
       if (beforeStart) {
         await publish();
+        await delay(10);
       }
       await writeFile(marker + ".new", "");
       await rename(marker + ".new", marker);
       if (!beforeStart) {
+        await delay(10);
         await publish();
       }
       const created = statSync(marker, { bigint: true }).birthtimeNs;
