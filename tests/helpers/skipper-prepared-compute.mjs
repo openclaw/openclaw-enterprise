@@ -177,7 +177,14 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef, upgrade
       "the owned revision broker ingress peer removed",
       async () => (await brokerIngress()).length === 0,
     );
-    await checkpoint("owned-agent-retired-cluster-cleanup-still-required");
+    if (upgradeGit) {
+      // Wait for the provider's independent observation while its retirement owner is still alive.
+      await waitFor("all issued fixture tokens retired", upgradeGit.tokensRetired, 300_000);
+    }
+    await checkpoint(
+      "owned-agent-retired-cluster-cleanup-still-required",
+      upgradeGit ? { agentId: agent.id } : {},
+    );
   });
   // node:test runs after hooks in registration order: the session read above needs this pool.
   t.after(() => pool.end());
@@ -223,6 +230,14 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef, upgrade
     [approval] = await api("GET", agentPath + "/repository-approvals");
     assert.equal(approval.id, approvalId);
     assert.equal(approval.scopeFingerprint, preview.scopeFingerprint);
+  }
+  if (upgradeGit) {
+    // Deleting the cluster destroys the worker that owns any provider-token retirement.
+    await writeFile(join(directory, "agent-deploy-intent"), agent.id, {
+      mode: 0o600,
+      flag: "wx",
+      flush: true,
+    });
   }
   await checkpoint("deploy-request-started", { agentId: agent.id });
   const revision = await api("POST", agentPath + "/deploy", undefined, 202);
@@ -535,7 +550,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef, upgrade
     ordinaryChat,
     approval,
     observeTurn: native,
-    async writerState(expectedImage) {
+    async writerState(expectedImages) {
       const result = [];
       for (const component of ["api", "worker"]) {
         const owner = await resource(
@@ -545,14 +560,23 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef, upgrade
           system,
         );
         assert.ok(owner.spec.replicas > 0 && owner.status.readyReplicas === owner.spec.replicas);
-        if (expectedImage) {
+        if (expectedImages) {
+          assert.equal(owner.status.observedGeneration, owner.metadata.generation);
+          assert.equal(owner.status.updatedReplicas, owner.spec.replicas);
           assert.equal(
             [
               ...(owner.spec.template.spec.initContainers ?? []),
               ...owner.spec.template.spec.containers,
             ].find((container) => container.name === component)?.image,
-            expectedImage,
+            expectedImages.controller,
           );
+          if (component === "worker") {
+            assert.equal(
+              owner.spec.template.spec.containers.find((c) => c.name === "repository-credentials")
+                ?.image,
+              expectedImages.repository,
+            );
+          }
         }
         result.push([owner.metadata.uid, owner.metadata.generation, owner.spec.replicas]);
       }

@@ -54,6 +54,17 @@ export async function upgradeNeedsRecovery(directory: string) {
         throw error;
       },
     );
+  // The helper records its first temporary NetworkPolicy or Secret create before dispatch.
+  // A surviving lock can also mean a live subprocess. A completed legacy refusal clears the lock.
+  const preflight = "upgrade-preflight/";
+  if (
+    (await exists(preflight + ".upgrade-lock")) ||
+    (((await exists(preflight + "preflight-networkpolicy-started.json")) ||
+      (await exists(preflight + "preflight-secret-started.json"))) &&
+      !(await exists(preflight + "startup-preflight-passed")))
+  ) {
+    return true;
+  }
   return (await exists("apply-intent")) && !(await exists("upgrade-apply/completed"));
 }
 
@@ -69,7 +80,9 @@ async function upgradeInstallation(input: UpgradeInput, installed: Installed) {
   assert.equal(input.context, "k3d-" + state.cluster);
   assert.equal(state.browserPort, 8443);
   const origin = "https://console." + state.cluster + ".oce.localhost:8443";
-  assert.equal(state.browserOrigin, origin);
+  // The k3d installer writes the public origin in the release values.
+  const helm = JSON.parse(await readFile(join(local, "helm-values.json"), "utf8"));
+  assert.equal(helm.auth.baseUrl, origin);
   const key = join(local, "initial-admin-service-key.json");
   assert.equal(state.keyPath, key);
   for (const phase of ["preflight", "apply"] as const) {
@@ -257,7 +270,7 @@ export async function verifyInstalledUpgrade(
     sha: expected,
   });
   await upgradeInstallation(input, installed);
-  await installed.writerState(input.upgrade.candidateImages.controller);
+  await installed.writerState(input.upgrade.candidateImages);
   const current = await installed.reconnect();
   assert.deepEqual(current.repositoryBindings, [
     { repositoryRef: git.repositoryRef, profile: "git-write" },
@@ -274,6 +287,7 @@ export async function verifyInstalledUpgrade(
   const restored = await waitFor("restored open Git session", () =>
     session(current.activeRevisionId),
   );
+  assert.notEqual(restored.session_id, original.session_id, "original sender session was replaced");
   const renewed: Session = await waitFor(
     "standing session renewed after upgrade",
     async () => {
@@ -285,12 +299,31 @@ export async function verifyInstalledUpgrade(
     13 * 60_000,
   );
   assert.notEqual(renewed.session_id, original.session_id);
-  const beforeFetch = await witness("/evidence");
-  const fresh = beforeFetch.tokens.filter(
-    (t) => !t.revoked && !oldTokens.some((old) => old.index === t.index),
+  assert.notEqual(renewed.session_id, restored.session_id);
+  // Session admission and provider preparation are separate worker operations.
+  const { token, evidence: beforeFetch } = await waitFor(
+    "renewed credential ready and old credentials retired",
+    async () => {
+      const evidence = await witness("/evidence");
+      const active = evidence.tokens.filter((token) => !token.revoked);
+      if (
+        active.length === 1 &&
+        oldTokens.every(
+          (old) => evidence.tokens.find((t) => t.index === old.index)?.revoked === true,
+        )
+      ) {
+        return { evidence, token: active[0]! };
+      }
+    },
   );
-  assert.equal(fresh.length, 1);
-  const token = fresh[0]!;
+  const permits = async (operation: string) =>
+    (
+      await query(
+        "SELECT exchange_id FROM occ.prepared_repository_git_uses WHERE admission_id=$1 AND operation=$2",
+        [renewed.admission_id, operation],
+      )
+    ).rows.length;
+  const readsBefore = await permits("upload-pack");
   assert.deepEqual(token.repositoryIds, ["73"]);
   assert.deepEqual(token.permissions, { metadata: "read", contents: "write" });
   const cold = repo + "-cold";
@@ -318,23 +351,11 @@ export async function verifyInstalledUpgrade(
   assert.ok(
     fetched.tokens.some((t) => t.index === token.index && t.uses > token.uses && !t.revoked),
   );
-  const retired = (await witness("/evidence")).tokens;
-  for (const old of oldTokens) {
-    assert.equal(retired.find((t) => t.index === old.index)?.revoked, true);
-  }
-  const uses = await query(
-    "SELECT operation FROM occ.prepared_repository_git_uses WHERE admission_id=$1 AND operation='upload-pack'",
-    [renewed.admission_id],
+  assert.ok(
+    (await permits("upload-pack")) > readsBefore,
+    "renewed admission authorized this fetch",
   );
-  assert.ok(uses.rows.length > 0);
-  const writes = async () =>
-    (
-      await query(
-        "SELECT exchange_id FROM occ.prepared_repository_git_uses WHERE admission_id=$1 AND operation='receive-pack' ORDER BY exchange_id",
-        [renewed.admission_id],
-      )
-    ).rows;
-  const allowed = await writes();
+  const allowed = await permits("receive-pack");
   await sendScript(
     [
       ...pre,
@@ -349,7 +370,37 @@ export async function verifyInstalledUpgrade(
     (await witness("/evidence")).endpoints["receive-pack:200"],
     fetched.endpoints["receive-pack:200"],
   );
-  assert.deepEqual(await writes(), allowed, "forbidden ref released no write credential");
+  assert.equal(
+    await permits("receive-pack"),
+    allowed,
+    "forbidden ref released no write credential",
+  );
+  // The broker refuses discovery for an unregistered path. Keep the Git trace inside the
+  // Agent and require the actual HTTP refusal, so a DNS, TLS or local failure cannot pass.
+  const wrongRepo =
+    "https://git.oce-system.svc.cluster.local/fixture/unapproved-" + git.id + ".git";
+  const beforeDenial = await witness("/evidence");
+  const readPermits = async () =>
+    (await permits("advertise-upload-pack")) + (await permits("upload-pack"));
+  const reads = await readPermits();
+  await sendScript(
+    [
+      ...pre,
+      "cd " + cold,
+      "(set +e; LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_TRACE_REDACT=1 GIT_TRACE_CURL=1 GIT_TRACE_CURL_NO_DATA=1 git fetch --no-tags " +
+        wrongRepo +
+        " HEAD; printf '\\nfetch-exit=%d\\n' \"$?\") 2>&1 | awk '",
+      "/=> Send header: GET .*unapproved-" +
+        git.id +
+        "[.]git\\/info\\/refs[?]service=git-upload-pack / { requested=1 }",
+      "/<= Recv header: HTTP\\/[0-9.]+ 401( |$)/ { if (requested) denied=1 }",
+      "/^fetch-exit=128$/ { failed=1 }",
+      "END { exit !(requested && denied && failed) }'",
+    ].join("\n"),
+    "upgrade-denied-repository-read",
+  );
+  assert.deepEqual(await witness("/evidence"), beforeDenial);
+  assert.equal(await readPermits(), reads);
   await stopped();
   await checkpoint("upgrade-continuity-verified", {
     agentId: agent.id,

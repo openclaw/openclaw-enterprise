@@ -29,7 +29,11 @@ if (upgrade || !selected) {
       assert.equal(git.repositoryRef, "private-git");
       const inputs = JSON.parse(await readFile(input, "utf8"));
       assert.equal(inputs.upgrade.previousRevision, "54bfa7fc1b99e362450beb5f9211e164991fa7b4");
-      const installed = await prepareComputeSkipper(t, input, git.repositoryRef, git);
+      const installed = await prepareComputeSkipper(t, input, git.repositoryRef, {
+        ...git,
+        tokensRetired: async () =>
+          (await witness("/evidence")).tokens.every((token) => token.revoked),
+      });
       await verifyInstalledUpgrade(inputs, installed, git, witness);
     },
   );

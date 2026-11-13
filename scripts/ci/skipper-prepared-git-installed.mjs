@@ -6,8 +6,19 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { once } from "node:events";
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import {
@@ -184,6 +195,31 @@ async function checkImage(stack, selected, built, revision = sourceCommit) {
 // Only a separate, clean checkout of the supported previous release may launch the baseline.
 async function previousInstallation() {
   assert.equal(env.OCC_TEST_SKIPPER_TEAM_REVIEW, "0");
+  assert.equal(modelContainer, "oce-first-agent-smoke-model");
+  const modelDirectory = env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY;
+  assert.ok(modelDirectory && resolve(modelDirectory) === modelDirectory);
+  // Match the baseline runtime's trust root, but run the current native command observer
+  // in a fresh directory. Do not mount or write the operator's source directory.
+  const ownedModel = join(directory, "model");
+  await mkdir(ownedModel, { mode: 0o755 });
+  await chmod(ownedModel, 0o755);
+  for (const name of ["cert.pem", "key.pem"]) {
+    const source = join(modelDirectory, name);
+    assert.ok((await lstat(source)).isFile(), "missing model TLS input " + name);
+    await copyFile(source, join(ownedModel, name), constants.COPYFILE_EXCL);
+    await chmod(join(ownedModel, name), 0o644);
+  }
+  for (const [source, target] of [
+    ["runtime-model-probe-endpoint.mjs", "endpoint.mjs"],
+    ["skipper-prepared-compute-model.mjs", "skipper-prepared-compute-model.mjs"],
+  ]) {
+    await copyFile(
+      join("tests", "fixtures", source),
+      join(ownedModel, target),
+      constants.COPYFILE_EXCL,
+    );
+    await chmod(join(ownedModel, target), 0o644);
+  }
   assert.match(
     install.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY ?? "",
     /^\/tmp\/oce-skipper-[a-zA-Z0-9]+$/,
@@ -232,16 +268,34 @@ async function previousInstallation() {
   await execute("go", ["build", "-trimpath", "-o", previousCli, "./cmd/occ"], { cwd: checkout });
   const candidateCli = join(directory, "candidate-occ");
   await run("go", ["build", "-trimpath", "-o", candidateCli, "./cmd/occ"]);
-  const registryFile = join(install.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY, "registry.json");
-  const registry = await read(registryFile);
-  assert.equal(registry.backendId, "skipper-fixture");
-  assert.equal(registry.repositories.length, 1);
-  assert.equal(registry.repositories[0].namespaces.length, 1);
-  // Make standing sessions renew on a real clock during the test.
-  registry.maximumDurationSeconds = 600;
-  registry.allowStandingApprovals = true;
-  registry.repositories[0].namespaces[0].allowStandingApproval = true;
-  await writeFile(registryFile, JSON.stringify(registry), { mode: 0o600 });
+  const inputDirectory = install.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY;
+  const fixtureDir = await lstat(inputDirectory);
+  assert.ok(fixtureDir.isDirectory() && fixtureDir.uid === process.getuid());
+  assert.equal(fixtureDir.mode & 0o777, 0o700);
+  const registry = await open(
+    join(inputDirectory, "registry.json"),
+    constants.O_RDWR | constants.O_NOFOLLOW,
+  );
+  try {
+    const file = await registry.stat();
+    assert.ok(file.isFile() && file.uid === process.getuid() && file.nlink === 1);
+    assert.equal(file.mode & 0o777, 0o600);
+    const policy = JSON.parse(await registry.readFile("utf8"));
+    assert.equal(policy.backendId, "skipper-fixture");
+    assert.equal(policy.repositories.length, 1);
+    assert.equal(policy.repositories[0].namespaces.length, 1);
+    // Make standing sessions renew on a real clock during the test.
+    policy.maximumDurationSeconds = 600;
+    policy.allowStandingApprovals = true;
+    policy.repositories[0].namespaces[0].allowStandingApproval = true;
+    const bytes = Buffer.from(JSON.stringify(policy));
+    // Use the same open file for reading and updating the fixture policy.
+    const { bytesWritten } = await registry.write(bytes, 0, bytes.length, 0);
+    assert.equal(bytesWritten, bytes.length);
+    await registry.truncate(bytes.length);
+  } finally {
+    await registry.close();
+  }
   const dev = (action) =>
     execute(previousCli, ["dev", action], {
       env: install,
@@ -259,6 +313,9 @@ async function previousInstallation() {
   });
   const local = install.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const state = await read(join(local, "state.json"));
+  assert.equal(state.cluster, cluster);
+  assert.equal(state.apiPort, 3000);
+  assert.equal(state.platformNamespace, "oce-system");
   assert.equal(state.repository, checkout);
   assert.equal(state.keyOwned, true);
   assert.equal(state.keyPath, join(local, "initial-admin-service-key.json"));
@@ -361,7 +418,9 @@ try {
     ),
   };
   progress("installed controller, agent, gateway and repository image identities verified");
-  const modelDirectory = env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY;
+  const modelDirectory = upgrade
+    ? join(directory, "model")
+    : env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY;
   await routeModelProvider(stack, modelDirectory, env.OCC_KUBERNETES_RUNTIME_IMAGE, {
     journey: "PROBE_SKIPPER_PREPARED_COMPUTE",
     cleanup,
@@ -414,8 +473,8 @@ try {
   );
   const databaseUrl = await applicationDatabase(stack, system);
 
-  // The test gets 30 minutes, its runner 38, then the owner checks retirement and cleanup.
-  // Its raw result and runner diagnostics stay in the private directory. Publish only a pass
+  // The withdrawal test has 30 minutes inside its 38-minute suite runner. The upgrade test
+  // has 95 minutes for two Agents, maintenance, renewal and retirement. Publish only a pass
   // with the exact selected case, all required journey stages and allowlisted runner fields.
   phase = "run selected installed native Git test";
   await recordSkipperCheckpoint("skipper_stage", "selected-test");
@@ -451,10 +510,16 @@ try {
     },
   ).then(
     () => ({ status: 0 }),
-    (error) => error.result ?? {},
+    (error) => ({
+      ...error.result,
+      status: error.result?.code ?? error.result?.signal ?? "unknown",
+    }),
   );
   if (upgrade) {
-    const entries = await readSkipperJourney(join(directory, "compute-journey.jsonl"), false);
+    const entries = await readSkipperJourney(
+      join(directory, "compute-journey.jsonl"),
+      runner.status !== 0,
+    );
     const stages = entries.map((e) => e.phase);
     if (runner.status !== 0) {
       await writeFile(
@@ -462,7 +527,7 @@ try {
         String(runner.stdout ?? "") + String(runner.stderr ?? ""),
         { mode: 0o600, flag: "wx" },
       );
-      const last = stages.filter((s) => s.startsWith("upgrade-")).at(-1);
+      const last = stages.filter((s) => typeof s === "string" && s.startsWith("upgrade-")).at(-1);
       console.error(
         "Installed upgrade failed at %s; inspect private evidence in %s",
         last ?? "baseline",
@@ -492,12 +557,27 @@ try {
     installerFailure ?? (error.code === "ERR_ASSERTION" ? "assertion failed" : "operation failed"),
   );
 } finally {
-  const hold = upgrade && (await upgradeNeedsRecovery(directory));
+  let hold = upgrade && (await upgradeNeedsRecovery(directory));
+  if (upgrade && !hold) {
+    const agent = await readFile(join(directory, "agent-deploy-intent"), "utf8").catch((error) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    });
+    if (agent) {
+      const entries = await readSkipperJourney(join(directory, "compute-journey.jsonl"), true);
+      hold = !entries.some(
+        (entry) =>
+          entry.phase === "owned-agent-retired-cluster-cleanup-still-required" &&
+          entry.agentId === agent,
+      );
+    }
+  }
   if (hold) {
     failed = true;
     await closeDatabase?.();
     console.error(
-      "Apply has no completion marker. Reconcile this installation and private evidence before cleanup: %s",
+      "Upgrade work requires reconciliation. Inspect the installation and private evidence before cleanup: %s",
       directory,
     );
   }
@@ -510,13 +590,14 @@ try {
       console.error("Private Git acceptance: owned resource cleanup failed");
     }
   }
-  if (!upgrade) {
-    await rm(env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY, { recursive: true, force: true }).catch(
-      async (error) => {
-        await recordSkipperCheckpoint("skipper_installed_cleanup", "failed");
-        throw error;
-      },
-    );
+  if (!hold) {
+    const modelDirectory = upgrade
+      ? join(directory, "model")
+      : env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY;
+    await rm(modelDirectory, { recursive: true, force: true }).catch(async (error) => {
+      await recordSkipperCheckpoint("skipper_installed_cleanup", "failed");
+      throw error;
+    });
   }
   await recordSkipperCheckpoint(
     "skipper_installed_cleanup",

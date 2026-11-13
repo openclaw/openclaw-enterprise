@@ -145,7 +145,15 @@ synthetic model prerequisites. The baseline is commit
 Keep the upgrade checkout clean. Set `GITHUB_SHA` to its commit and use a fresh
 numeric `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`. Use the dedicated runner's
 loopback ports 3000, 6443 and 8443, with its development Console hostname
-resolving to loopback. From the candidate checkout, run:
+resolving to loopback. Use the default First Agent Smoke slot (0), a dedicated
+Docker daemon with the baseline images loaded, and the candidate checkout's
+frozen pnpm dependencies. The baseline `prepared-git-images` command generates the matching model TLS
+files. The runner copies that certificate and key into its own model directory
+with the candidate's command fixture.
+Full Integration dispatch on `main` selects the withdrawal case. To run this
+rehearsal on a hosted runner, provision a separate job with the same tool and
+sandbox setup, stage both releases, and run the command below. The rehearsal
+writes private evidence outside the ordinary CI receipt aggregation.
 
 ```sh
 host=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
@@ -158,12 +166,15 @@ The baseline CLI installs the old release. The test deploys two Agents, stops
 one, and records a conversation turn, workspace marker and private commit on
 the other. The candidate runs `scripts/upgrade-production-images` in preflight
 and apply modes. Success requires the same conversation history, retained
-workspace, a fresh Git fetch with the renewed standing session, a refused push
-to another ref, and an unchanged stopped Agent.
+workspace and a fresh Git fetch under the renewed standing session. The
+installed client must refuse a push to another ref, the broker must refuse a
+new fetch from an unregistered repository, and the stopped Agent must retain
+its revision history without starting.
 
 A legacy-policy preflight refusal fails this test. The test also checks that
 the old writers and Agent still serve. The run directory retains private logs
-and upgrade evidence. Reconcile an interrupted apply before removing retained
-cluster resources. The controlled model and native sender cover the selected
-runtime with its fixture trust layer. Protected senders require their own
-installed proof.
+and upgrade evidence. Reconcile unfinished preflight or apply operations
+before removing retained cluster resources. The outer fixture closes its
+temporary issuer and Git origin when the command exits. The controlled model
+and native sender cover the runtime with its fixture trust layer. Protected
+senders require their own installed proof.
