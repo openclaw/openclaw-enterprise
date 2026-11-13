@@ -6,9 +6,12 @@ import {
   recordAuthorizationDenial,
   recordMutation,
   redactAuditDetails,
+  type AuditEventCreationInput,
+  type AuditEventInput,
+  type AuditEventKind,
 } from "../../packages/audit/src/index.ts";
 
-function resource(id = "agent-a") {
+function resource(id = "agent-a"): AuditEventInput["resource"] {
   return {
     kind: "agent",
     id,
@@ -70,7 +73,7 @@ test("authorization denials are attributable and never record credentials or mes
     "nested-token-value",
     "api-key-value",
     "private-customer-message",
-  ];
+  ] as const;
 
   const event = await recordAuthorizationDenial(sink, {
     installationId: "installation-a",
@@ -106,7 +109,7 @@ test("authorization denials are attributable and never record credentials or mes
 
 test("audit rejects infrastructure actor identities", async () => {
   const sink = new InMemoryAuditSink();
-  const event = {
+  const event: AuditEventInput = {
     installationId: "installation-a",
     namespaceId: "namespace-a",
     actorId: "principal-admin",
@@ -117,6 +120,7 @@ test("audit rejects infrastructure actor identities", async () => {
   await assert.rejects(
     recordMutation(sink, {
       ...event,
+      // @ts-expect-error Exercise runtime rejection of an infrastructure actor.
       actor: { principalId: "principal-admin", kind: "workload_identity" },
     }),
     /actors must be human or service principals/,
@@ -168,17 +172,21 @@ test("audit evidence retains Installation identity and rejects another Namespace
 
 test("audit event kinds default to their own outcome", () => {
   const factory = new AuditEventFactory({ clock: () => "2026-09-30T12:00:00.000Z" });
-  const base = {
+  const base: AuditEventCreationInput = {
     installationId: "installation-a",
     namespaceId: "namespace-a",
     actorId: "principal-admin",
     action: "openclaw.agents.runtime_logs.view",
     resource: resource(),
   };
+  const kinds: readonly AuditEventKind[] = [
+    "bootstrap",
+    "mutation",
+    "access",
+    "authorization_denial",
+  ];
   assert.deepEqual(
-    ["bootstrap", "mutation", "access", "authorization_denial"].map(
-      (kind) => factory.create({ ...base, kind }).outcome,
-    ),
+    kinds.map((kind) => factory.create({ ...base, kind }).outcome),
     ["success", "success", "success", "denied"],
   );
   assert.equal(factory.create({ ...base, kind: "access", outcome: "failure" }).outcome, "failure");
@@ -187,7 +195,8 @@ test("audit event kinds default to their own outcome", () => {
 test("audit redaction matches real GitHub token spellings", () => {
   const github = "ghp_aaaaaaaaaaaaaaaa";
   const oauth = "gho_bbbbbbbbbbbbbbbb";
-  assert.equal(redactAuditDetails({ note: `used ${github} here` }).note, "used [REDACTED] here");
+  const sanitized = redactAuditDetails({ note: `used ${github} here` }) as { note: unknown };
+  assert.equal(sanitized.note, "used [REDACTED] here");
   assert.equal(redactAuditDetails(oauth), "[REDACTED]");
   assert.equal(redactAuditDetails("ghp-aaaaaaaaaaaaaaaa"), "ghp-aaaaaaaaaaaaaaaa");
 });

@@ -2,8 +2,8 @@
 // (runtime-image-startup.test.mjs, runtime-image-startup-probe.test.mjs,
 // runtime-image-startup-termination.test.ts,
 // runtime-image-gateway-unclean-restart.test.ts,
-// runtime-image-gateway-retained-state.test.mjs,
-// runtime-image-gateway-peer.test.mjs, runtime-image-native-worker.test.mjs,
+// runtime-image-gateway-retained-state.test.ts,
+// runtime-image-gateway-peer.test.ts, runtime-image-native-worker.test.mjs,
 // runtime-image-state-migration.test.mjs,
 // runtime-image-managed-files.test.ts,
 // runtime-image-native-listener.test.mjs and

@@ -3250,21 +3250,14 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<readonly Readonly<AgentRead>[]> {
     const namespace = await this.getNamespace(principalId, namespaceId);
-    return this.read(async (state) => {
-      const readable: Readonly<AgentRead>[] = [];
-      for (const agent of await state.agents.listAgentsForBrowsing(namespace.id)) {
-        if (
-          await this.canRead(principalId, {
-            kind: "agent",
-            id: agent.id,
-            namespaceId: namespace.id,
-          })
-        ) {
-          readable.push(agent);
-        }
-      }
-      return Object.freeze(readable);
-    });
+    return this.read(async (state) =>
+      this.readableListRows(
+        principalId,
+        namespace.id,
+        "agent",
+        await state.agents.listAgentsForBrowsing(namespace.id),
+      ),
+    );
   }
 
   async listRepositoryOptions(
@@ -6046,21 +6039,14 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<readonly Readonly<ServiceAccount>[]> {
     const namespace = await this.getNamespace(principalId, namespaceId);
-    return this.read(async (state) => {
-      const readable: Readonly<ServiceAccount>[] = [];
-      for (const account of await state.serviceAccounts.listServiceAccounts(namespace.id)) {
-        if (
-          await this.canRead(principalId, {
-            kind: "service_account",
-            id: account.id,
-            namespaceId: namespace.id,
-          })
-        ) {
-          readable.push(account);
-        }
-      }
-      return Object.freeze(readable);
-    });
+    return this.read(async (state) =>
+      this.readableListRows(
+        principalId,
+        namespace.id,
+        "service_account",
+        await state.serviceAccounts.listServiceAccounts(namespace.id),
+      ),
+    );
   }
 
   /**
@@ -7110,21 +7096,14 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<readonly Readonly<PresetSummary>[]> {
     const namespace = await this.getNamespace(principalId, namespaceId);
-    return this.read(async (state) => {
-      const readable: Readonly<PresetSummary>[] = [];
-      for (const preset of await state.presets.listPresetSummaries(namespace.id)) {
-        if (
-          await this.canRead(principalId, {
-            kind: "preset",
-            id: preset.id,
-            namespaceId: namespace.id,
-          })
-        ) {
-          readable.push(preset);
-        }
-      }
-      return Object.freeze(readable);
-    });
+    return this.read(async (state) =>
+      this.readableListRows(
+        principalId,
+        namespace.id,
+        "preset",
+        await state.presets.listPresetSummaries(namespace.id),
+      ),
+    );
   }
 
   async getPreset(
@@ -15050,6 +15029,21 @@ export class OpenClawController {
       }
       throw error;
     }
+  }
+
+  private async readableListRows<Row extends { readonly id: string }>(
+    principalId: string,
+    namespaceId: string,
+    kind: "agent" | "service_account" | "preset",
+    rows: readonly Row[],
+  ): Promise<readonly Row[]> {
+    const readable: Row[] = [];
+    for (const row of rows) {
+      if (await this.canRead(principalId, { kind, id: row.id, namespaceId })) {
+        readable.push(row);
+      }
+    }
+    return Object.freeze(readable);
   }
 
   private async canRead(principalId: string, target: AuthorizationTarget): Promise<boolean> {

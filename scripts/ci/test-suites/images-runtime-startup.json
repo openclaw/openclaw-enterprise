@@ -15,7 +15,7 @@
   },
   "fileConcurrency": 3,
   "parallelFiles": [
-    "tests/integration/runtime-image-gateway-retained-state.test.mjs",
+    "tests/integration/runtime-image-gateway-retained-state.test.ts",
     "tests/integration/runtime-image-startup.test.mjs",
     "tests/integration/runtime-image-gateway-workspace.test.ts",
     "tests/integration/runtime-image-public-github-read.test.mjs",
@@ -24,7 +24,7 @@
   ],
   "files": [
     {
-      "path": "tests/integration/runtime-image-gateway-retained-state.test.mjs",
+      "path": "tests/integration/runtime-image-gateway-retained-state.test.ts",
       "expectedTests": [
         "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop",
         "runtime image Docker Compute replaces a Gateway on retained state after a controller restart and on redeploy"
