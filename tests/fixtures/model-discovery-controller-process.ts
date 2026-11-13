@@ -1,6 +1,9 @@
+import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { Check } from "typebox/value";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { NamespaceResponse } from "../../packages/contracts/src/index.ts";
+import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -10,9 +13,18 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+
+export interface ControllerReady {
+  event: "controller.ready";
+  pid: number;
+  port: number;
+  namespaceId: string;
+  fetch: "node-undici";
+  cookie: string;
+}
 
 // Shipped HTTP application in its own process. global fetch is left untouched;
 // Node's proxy environment sends provider calls to the catalog process.
@@ -27,20 +39,13 @@ const authFixture = await createTestAuthPrincipal({
   password: `generated-password-${randomUUID()}`,
   name: "Model Discovery Administrator",
 });
-const principal = authFixture.seed.principal;
-const state = {
+const { principal, roles, bindings } = authFixture.seed;
+const state: NativeIAMState = {
   identities: [principal],
   groups: [],
   memberships: [],
-  roles: authFixture.seed.roles.map((role) => ({ ...role, permissions: [...role.permissions] })),
-  bindings: [
-    {
-      id: "binding-admin",
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: authFixture.seed.roles[0].id,
-    },
-  ],
+  roles,
+  bindings,
   restrictions: [],
 };
 const iamDriver = new NativeIAMDriver(
@@ -48,7 +53,7 @@ const iamDriver = new NativeIAMDriver(
   { id: "iam-shipped-discovery" },
 );
 const auditSink = new InMemoryAuditSink();
-let controller;
+let controller: OpenClawController | undefined;
 const native = createTestKubernetesComputeDriver("compute-model-discovery");
 const app = createFastifyApp({
   createController(installation) {
@@ -82,36 +87,34 @@ if (address === null || typeof address === "string") {
 }
 const session = await signInToControllerApp(app, authFixture);
 
-async function inject(method, pathname, body) {
+async function post(pathname: string, body: object) {
   const result = await app.inject({
-    method,
+    method: "POST",
     url: pathname,
     headers: {
       ...authenticatedHeaders(session),
       host: "console.oce.localhost",
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
+      "content-type": "application/json",
     },
-    ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
+    payload: JSON.stringify(body),
     remoteAddress: "127.0.0.1",
   });
-  const parsed = result.statusCode === 204 ? undefined : JSON.parse(result.body);
-  if (result.statusCode >= 400) {
-    throw new Error(`${method} ${pathname} failed with ${result.statusCode}`);
-  }
-  return parsed;
+  assert.equal(result.statusCode, 201, `POST ${pathname} did not create the resource`);
+  return result.body;
 }
 
-await inject("POST", "/installation/bootstrap", { name: "Shipped discovery installation" });
-const namespace = await inject("POST", "/namespaces", { name: "shipped-discovery" });
+await post("/installation/bootstrap", { name: "Shipped discovery installation" });
+const namespace: unknown = JSON.parse(await post("/namespaces", { name: "shipped-discovery" }));
+assert.ok(Check(NamespaceResponse, namespace), "Controller must return a Namespace response");
+assert.ok(controller, "Installation bootstrap must create the controller");
 await controller.handleNamespaceLifecycle(principal.id, namespace.data.id, "ready");
 
-console.log(
-  JSON.stringify({
-    event: "controller.ready",
-    pid: process.pid,
-    port: address.port,
-    namespaceId: namespace.data.id,
-    fetch: "node-undici",
-    cookie: session.cookie,
-  }),
-);
+const ready: ControllerReady = {
+  event: "controller.ready",
+  pid: process.pid,
+  port: address.port,
+  namespaceId: namespace.data.id,
+  fetch: "node-undici",
+  cookie: session.cookie,
+};
+console.log(JSON.stringify(ready));
