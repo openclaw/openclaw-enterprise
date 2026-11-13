@@ -225,7 +225,7 @@ test("QA matrix summary refuses malformed evidence without printing its contents
   const summary = join(directory, "summary.md");
   const existingSummary = "Previous summary content.\n";
   const marker = "invented report text";
-  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.mjs", import.meta.url));
+  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.ts", import.meta.url));
   await mkdir(evidenceDirectory);
   await writeFile(summary, existingSummary);
 
@@ -265,7 +265,7 @@ test("QA matrix summary distinguishes an initial snapshot from recorded outcomes
   const { createQaReport } = await import("../helpers/qa-report.mjs");
   const directory = await temporaryDirectory(t, "qa-summary-");
   const evidenceDirectory = join(directory, "qa-matrix-evidence");
-  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.mjs", import.meta.url));
+  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.ts", import.meta.url));
   await mkdir(evidenceDirectory);
 
   async function summarize(name) {

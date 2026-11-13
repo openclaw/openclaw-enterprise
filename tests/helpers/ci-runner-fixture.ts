@@ -146,6 +146,19 @@ export function writeRunnerManifest(
   return writeJson(join(root, filename), { version: 1, fileDurations, lanes, groups });
 }
 
+export async function writeRunnerLaneFiles(
+  root: string,
+  lane: string,
+  names: readonly string[],
+  source: string,
+) {
+  const files = names.map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
+  for (const { path } of files) {
+    await writeFile(join(root, path), source);
+  }
+  await writeRunnerManifest(root, { lanes: { [lane]: { files } } });
+}
+
 export async function writeSingleFileRunnerLane(
   root: string,
   lane: string,

@@ -10,11 +10,14 @@ import type {
   HarnessWorkloadRequirements,
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
-import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   completeWorkspaceRevision,
   type SandboxFixtureRevision,
 } from "./sandbox-driver-revision-fixture.ts";
+import {
+  overrideWorkspaceSetupSecretRead,
+  type KubernetesReader,
+} from "./sandbox-driver-workspace-expiry-fixture.ts";
 import { registerSandboxDriverWorkspaceExpiryRefusalCases } from "./sandbox-driver-workspace-expiry-refusal-cases.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
@@ -28,7 +31,7 @@ type Gateway = Omit<ReturnType<typeof workspaceGatewayClient>, "createSandbox" |
 };
 type RuntimeFixture = {
   context: SandboxNamespaceContext & {
-    kubernetes: { read: (request: { kind?: string }) => Promise<unknown> };
+    kubernetes: KubernetesReader;
   };
   revision: SandboxFixtureRevision;
   requirements: HarnessWorkloadRequirements;
@@ -87,22 +90,10 @@ export function registerSandboxDriverWorkspaceExpiryCases({
       const revision = completeWorkspaceRevision(fixtureRevision, requirements);
       const expiredSetup = { ...nodeSetup, expiresAtMs: Date.now() - 1 };
       const setupCode = Buffer.from(JSON.stringify(expiredSetup)).toString("base64url");
-      const originalRead = context.kubernetes.read;
-      context.kubernetes.read = async (request) => {
-        const resource = await originalRead(request);
-        if (request.kind !== "Secret") {
-          return resource;
-        }
-        const record = asRecord(resource);
-        assert.ok(record);
-        return {
-          ...record,
-          data: {
-            setupCode: Buffer.from(setupCode).toString("base64"),
-            deviceId: Buffer.from("recorded-node:1").toString("base64"),
-          },
-        };
-      };
+      overrideWorkspaceSetupSecretRead(context.kubernetes, {
+        setupCode: Buffer.from(setupCode).toString("base64"),
+        deviceId: Buffer.from("recorded-node:1").toString("base64"),
+      });
 
       // A replacement Harness must receive the retained envelope so native can
       // verify its saved identity and device token. This is provider planning,

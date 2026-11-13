@@ -725,9 +725,9 @@ jobs:
         run: |
           printf '%s' "$NEEDS_JSON" > "$RUNNER_TEMP/raw-needs.json"
           if [ "$EXPECTED_MODE" = tests ]; then
-            node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode tests --output "$RUNNER_TEMP/needs.json" --lanes "$EXPECTED_LANES"
+            node scripts/ci/impact-gate.ts --needs "$RUNNER_TEMP/raw-needs.json" --mode tests --output "$RUNNER_TEMP/needs.json" --lanes "$EXPECTED_LANES"
           else
-            node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode "$EXPECTED_MODE" --output "$RUNNER_TEMP/needs.json"
+            node scripts/ci/impact-gate.ts --needs "$RUNNER_TEMP/raw-needs.json" --mode "$EXPECTED_MODE" --output "$RUNNER_TEMP/needs.json"
           fi
       # The action retries after a pause and says why.
       - name: Download CI results

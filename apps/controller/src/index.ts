@@ -613,6 +613,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     [
       "getAgentSandboxPolicy",
       "getAgentSandboxRecommendations",
+      "validateAgentSandboxPolicy",
       "updateAgentSandboxPolicy",
       "applyAgentSandboxPolicy",
     ].includes(operation.operationId)
@@ -2429,7 +2430,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }),
           meta: {
             requestId: request.id,
-            ...(connectionOrigin ? { redirectUri: `${connectionOrigin}/oauth/callback` } : {}),
+            ...(connectionRedirectUri ? { redirectUri: connectionRedirectUri } : {}),
           },
           discover: options.discoverMcpAuthorization ?? discoverMcpAuthorization,
           controller: controller!,

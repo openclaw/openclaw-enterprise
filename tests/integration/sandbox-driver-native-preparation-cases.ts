@@ -5,63 +5,23 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import type { createOrphanedNativePreparation } from "./sandbox-driver-preparation-cases.ts";
 
-type PreparationOptions = { scratch?: boolean; dataMountPath?: string };
-type OrphanedNativePreparation = (options: PreparationOptions) => Promise<{ deployment: unknown }>;
-type VolumeMount = { name: string; mountPath: string };
-type PreparationContainer = { volumeMounts: VolumeMount[]; command: [string, string, string] };
-type PreparationVolume = { name: string; persistentVolumeClaim?: { claimName: string } };
+type OrphanedNativePreparation = ReturnType<typeof createOrphanedNativePreparation>;
+type PreparationDeployment = Awaited<ReturnType<OrphanedNativePreparation>>["deployment"];
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function preparationManifest(deployment: PreparationDeployment) {
+  const spec = deployment.spec?.template.spec;
+  const container = spec?.containers[0];
+  const program = container?.command?.[2];
+  assert.ok(spec?.volumes);
+  assert.ok(container?.volumeMounts);
+  assert.ok(typeof program === "string");
+  return { volumes: spec.volumes, volumeMounts: container.volumeMounts, program };
 }
 
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(isRecord(value));
-  return value;
-}
-
-function text(value: unknown): string {
-  assert.ok(typeof value === "string");
-  return value;
-}
-
-function preparationManifest(deployment: unknown): {
-  spec: { volumes: PreparationVolume[] };
-  container: PreparationContainer;
-} {
-  const spec = record(record(record(record(deployment).spec).template).spec);
-  assert.ok(Array.isArray(spec.containers));
-  const container = record(spec.containers[0]);
-  assert.ok(Array.isArray(container.command));
-  assert.ok(Array.isArray(container.volumeMounts));
-  assert.ok(Array.isArray(spec.volumes));
-  const volumeMounts = container.volumeMounts.map((entry: unknown) => {
-    const mount = record(entry);
-    return { name: text(mount.name), mountPath: text(mount.mountPath) };
-  });
-  const volumes = spec.volumes.map((entry: unknown) => {
-    const volume = record(entry);
-    const name = text(volume.name);
-    if (volume.persistentVolumeClaim === undefined || volume.persistentVolumeClaim === null) {
-      return { name };
-    }
-    return {
-      name,
-      persistentVolumeClaim: { claimName: text(record(volume.persistentVolumeClaim).claimName) },
-    };
-  });
-  return {
-    spec: { volumes },
-    container: {
-      volumeMounts,
-      command: [text(container.command[0]), text(container.command[1]), text(container.command[2])],
-    },
-  };
-}
-
-function volumeMount(container: PreparationContainer, name: string): VolumeMount {
-  const mount = container.volumeMounts.find((entry) => entry.name === name);
+function volumeMount(mounts: ReturnType<typeof preparationManifest>["volumeMounts"], name: string) {
+  const mount = mounts.find((entry) => entry.name === name);
   assert.ok(mount);
   return mount;
 }
@@ -122,17 +82,15 @@ export function registerSandboxDriverNativePreparationCases(
     // Capture the production manifest through the existing transport fixture, then
     // execute its preparation process. Live Pod deletion is proved separately.
     const { deployment } = await orphanedNativePreparation({ scratch: true });
-    const { spec, container } = preparationManifest(deployment);
+    const { volumes, volumeMounts, program: command } = preparationManifest(deployment);
     const directory = await temporaryDirectory(t, "openshell-preparation-stop-");
-    for (const mount of container.volumeMounts) {
+    for (const mount of volumeMounts) {
       await mkdir(join(directory, mount.mountPath), { recursive: true });
     }
     const claimRoot = (claimName: string) => {
-      const volume = spec.volumes.find(
-        (entry) => entry.persistentVolumeClaim?.claimName === claimName,
-      );
+      const volume = volumes.find((entry) => entry.persistentVolumeClaim?.claimName === claimName);
       assert.ok(volume);
-      return join(directory, volumeMount(container, volume.name).mountPath);
+      return join(directory, volumeMount(volumeMounts, volume.name).mountPath);
     };
     const scratchRoot = claimRoot("operator-scratch");
     // fsGroup-backed volumes commonly inherit setgid; a new private child must
@@ -149,7 +107,7 @@ export function registerSandboxDriverNativePreparationCases(
     await mkdir(legacyWorkspace);
     await writeFile(join(legacyWorkspace, "notes.md"), "keep durable workspace");
     // Only relocate mount paths; keep the generated preparation and signal code.
-    const program = container.command[2]
+    const program = command
       .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
       .replaceAll("/preparation-status", join(directory, "preparation-status"));
     await runNativePreparation(t, program, directory);
@@ -193,22 +151,22 @@ export function registerSandboxDriverNativePreparationCases(
 
   test("OpenShell preserves legacy workspace recovery when its data mount uses the scratch path", async (t) => {
     const { deployment } = await orphanedNativePreparation({ dataMountPath: "/sandbox/scratch" });
-    const { spec, container } = preparationManifest(deployment);
+    const { volumes, volumeMounts, program: command } = preparationManifest(deployment);
     const directory = await temporaryDirectory(t, "openshell-workspace-path-");
-    for (const mount of container.volumeMounts) {
+    for (const mount of volumeMounts) {
       await mkdir(join(directory, mount.mountPath), { recursive: true });
     }
-    const volume = spec.volumes.find(
+    const volume = volumes.find(
       ({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName === "harness-workspace-codex",
     );
     assert.ok(volume);
-    const root = join(directory, volumeMount(container, volume.name).mountPath);
+    const root = join(directory, volumeMount(volumeMounts, volume.name).mountPath);
     // This is the existing durable claim: its configured destination does not
     // turn it into operator scratch or remove normal legacy workspace recovery.
     const saved = join(root, ".workspace.kubelet-created");
     await mkdir(saved);
     await writeFile(join(saved, "notes.md"), "durable workspace data");
-    const program = container.command[2]
+    const program = command
       .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
       .replaceAll("/preparation-status", join(directory, "preparation-status"));
     await runNativePreparation(t, program, directory);

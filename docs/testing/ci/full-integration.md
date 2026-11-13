@@ -190,7 +190,7 @@ both steps succeeded before `Aggregate full suite` failed.
 - [Full Integration workflow](../../../.github/workflows/full-integration.yml): events, approval, preflight, and execution queue admission.
 - [Execution workflow](../../../.github/workflows/full-integration-execution.yml): same-commit revalidation, selectable lanes, dependencies, and aggregate.
 - [Dispatch preflight](../../../scripts/ci/full-integration-preflight.mjs): lane and environment policy.
-- [CI lane planning](../../../scripts/ci/full-integration-reuse.mjs): ordinary CI lane selection and result validation.
+- [CI lane planning](../../../scripts/ci/full-integration-reuse.ts): ordinary CI lane selection and result validation.
 - [Suite index](../../../scripts/ci/test-suites.json): group membership; exact manifests are linked in Scenarios.
 - [Test runner](../../../scripts/ci/run-tests.mjs): expected-case and result checks.
 - [Lane action](../../../.github/actions/run-ci-lane/action.yml): preparation and cleanup.

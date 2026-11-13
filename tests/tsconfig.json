@@ -62,7 +62,6 @@
     "integration/sandbox-driver-protected-git-network-admission.ts",
     "integration/sandbox-driver-native-exposure-cases.ts",
     "integration/sandbox-driver-native-harness-assertions.ts",
-    "integration/sandbox-driver-admitted-command-case.ts",
     "integration/sandbox-driver-credential-withdrawal-cases.ts",
     "integration/sandbox-driver-startup-guard-cases.ts",
     "integration/sandbox-driver-codex-harness-cases.ts",
@@ -70,7 +69,6 @@
     "integration/sandbox-driver-credential-contract-cases.ts",
     "integration/sandbox-driver-credential-fixture.ts",
     "integration/sandbox-driver-provider-profiles-cases.ts",
-    "integration/sandbox-driver-endpoint-admission-case.ts",
     "integration/sandbox-driver-installation-fixture.ts",
     "integration/sandbox-driver-startup-installation-fixture.ts",
     "integration/sandbox-driver-harness-observation-cases.ts",
@@ -78,9 +76,10 @@
     "integration/sandbox-driver-operator-chart-case.ts",
     "integration/sandbox-driver-preparer-cleanup-cases.ts",
     "integration/sandbox-driver-native-preparation-cases.ts",
+    "integration/sandbox-driver-preparation-cases.ts",
     "integration/sandbox-driver-revision-fixture.ts",
     "integration/sandbox-driver-revision-observation-cases.ts",
-    "integration/sandbox-driver-workspace-admission-cases.ts",
+    "integration/workspace-setup-admission-cases.ts",
     "integration/sandbox-driver-scratch-storage-case.ts",
     "integration/sandbox-driver-workspace-expiry-cases.ts",
     "integration/sandbox-driver-workspace-renewal-cases.ts",
@@ -122,6 +121,7 @@
     "integration/first-agent-startup-lifecycle-cases.ts",
     "integration/ci-openshell-bootstrap-cases.ts",
     "helpers/fixture-command-server.ts",
+    "helpers/keycloak-enrollment-wait.ts",
     "helpers/node-test-summary.ts",
     "helpers/reuse-port-preload.ts",
     "helpers/image-smoke-timeout.ts",
@@ -162,7 +162,8 @@
     "../scripts/observe-worker-terminations.ts",
     "helpers/native-admin-postgres.ts",
     "helpers/postgres-worker-revision-queue.ts",
-    "conformance/topology-launch-cases.ts"
+    "conformance/topology-launch-cases.ts",
+    "conformance/workspace-node-supervisor-cases.ts"
   ],
   "references": [
     {

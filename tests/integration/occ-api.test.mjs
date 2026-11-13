@@ -3641,30 +3641,25 @@ test("Namespace IAM Roles cannot grant Namespace lifecycle actions to a Namespac
   assert.equal(after.data.status, read.data.status, "the Namespace must not enter deletion");
 });
 
-test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or State write", async () => {
-  const controller = await configuredController();
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "occ-role-permission-check");
-  const driverCalls = [];
-  // This Driver admits every request and accepts every Role without validation or State
-  // writes, so only OCC's own Permission check can reject a Namespace lifecycle action.
-  const permissiveDriver = {
-    id: "iam-permissive-role-sink",
+function createPermissiveIAMDriver(fixture, { id, implementation, reason }) {
+  return {
+    id,
     capability: "iam",
-    namespacePolicyTransaction: "platform-unit-of-work",
-    implementation: "occ-permission-isolation-test",
+    implementation,
     async lookupIdentity(input) {
-      return input.issuer === fixture.principal.issuer &&
+      if (
+        input.issuer === fixture.principal.issuer &&
         input.subject === fixture.principal.subject
-        ? fixture.principal
-        : undefined;
+      ) {
+        return fixture.principal;
+      }
+      return undefined;
     },
     async authorize(request) {
       return {
         allowed: true,
-        reason: "admitted for OCC Permission isolation test",
-        driverId: "iam-permissive-role-sink",
+        reason,
+        driverId: id,
         evidence: {
           identityId: request.principalId,
           groupIds: [],
@@ -3674,6 +3669,24 @@ test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or 
         },
       };
     },
+  };
+}
+
+test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or State write", async () => {
+  const controller = await configuredController();
+  const { fixture } = controller;
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "occ-role-permission-check");
+  const driverCalls = [];
+  // This Driver admits every request and accepts every Role without validation or State
+  // writes, so only OCC's own Permission check can reject a Namespace lifecycle action.
+  const permissiveDriver = {
+    ...createPermissiveIAMDriver(fixture, {
+      id: "iam-permissive-role-sink",
+      implementation: "occ-permission-isolation-test",
+      reason: "admitted for OCC Permission isolation test",
+    }),
+    namespacePolicyTransaction: "platform-unit-of-work",
     async createNamespaceRole(_context, role) {
       driverCalls.push(role);
       return role;
@@ -3820,32 +3833,11 @@ test("Namespace IAM read routes serialize broad native policy without widening m
     roleId: role.id,
   };
   const readPolicyDriver = {
-    id: "iam-native-read-policy",
-    capability: "iam",
-    implementation: "native-read-policy-test",
-    async lookupIdentity(input) {
-      if (
-        input.issuer === fixture.principal.issuer &&
-        input.subject === fixture.principal.subject
-      ) {
-        return fixture.principal;
-      }
-      return undefined;
-    },
-    async authorize(request) {
-      return {
-        allowed: true,
-        reason: "admitted for native read policy serialization",
-        driverId: "iam-native-read-policy",
-        evidence: {
-          identityId: request.principalId,
-          groupIds: [],
-          bindingIds: [],
-          roleIds: [],
-          restrictionIds: [],
-        },
-      };
-    },
+    ...createPermissiveIAMDriver(fixture, {
+      id: "iam-native-read-policy",
+      implementation: "native-read-policy-test",
+      reason: "admitted for native read policy serialization",
+    }),
     async listNamespaceRoles(_context, namespaceId) {
       return namespaceId === namespace.id ? [role] : [];
     },
@@ -3933,34 +3925,11 @@ test("Namespace IAM routes fail closed without policy management and roll back a
   const { fixture: unsupportedFixture } = unsupported;
   await bootstrap(unsupported);
   const unsupportedNamespace = await createNamespace(unsupported, "unsupported-iam");
-  const unsupportedDriver = {
+  const unsupportedDriver = createPermissiveIAMDriver(unsupportedFixture, {
     id: "iam-without-policy-management",
-    capability: "iam",
     implementation: "admission-only-test",
-    async lookupIdentity(input) {
-      if (
-        input.issuer === unsupportedFixture.principal.issuer &&
-        input.subject === unsupportedFixture.principal.subject
-      ) {
-        return unsupportedFixture.principal;
-      }
-      return undefined;
-    },
-    async authorize(request) {
-      return {
-        allowed: true,
-        reason: "admitted for unsupported management test",
-        driverId: "iam-without-policy-management",
-        evidence: {
-          identityId: request.principalId,
-          groupIds: [],
-          bindingIds: [],
-          roleIds: [],
-          restrictionIds: [],
-        },
-      };
-    },
-  };
+    reason: "admitted for unsupported management test",
+  });
   unsupportedFixture.controller.registerDriver(unsupportedDriver);
   unsupportedFixture.controller.selectDriver("iam", unsupportedDriver.id);
   const dependencyFailure = await unsupported.request(
@@ -4219,6 +4188,111 @@ test("Agent Backend API preserves nullable drafts and immutable revision associa
   const namespace = await createNamespace(controller, "provider-api");
   const configuration = await createConfiguration(controller, namespace.id);
   const collection = `/namespaces/${namespace.id}/agents`;
+
+  const { principal: member } = await fixture.createAuthPrincipal("backend-selector");
+  fixture.state.identities.push(member);
+  const memberApp = fixture.createApp(member);
+  assertApiError(await injectedRequest(memberApp, "GET", "/backends"), 403, "FORBIDDEN");
+  const beforeDeniedCreates = await controller.request("GET", collection);
+  assert.equal(beforeDeniedCreates.status, 200);
+  const readCreateState = () =>
+    fixture.platformState.read(async (unit) => ({
+      agents: await unit.agents.listAgents(namespace.id),
+      configuration: await unit.configurations.findConfiguration(namespace.id, configuration.id),
+      roles: await unit.iamPolicy.listRoles(namespace.id),
+      accessBindings: await unit.iamPolicy.listAccessBindings(namespace.id),
+      servicePrincipals: await unit.iamPolicy.listServicePrincipals(namespace.id),
+      operations: await unit.operations.list(),
+    }));
+  const beforeDeniedState = await readCreateState();
+  assert.equal(beforeDeniedState.configuration?.id, configuration.id);
+  assert.equal(beforeDeniedState.configuration.namespaceId, namespace.id);
+
+  // Backend existence must not be observable before the caller's exact Agent-create check.
+  let firstDenial;
+  const denialRequestIds = new Set();
+  for (const backendId of ["openai", "unknown"]) {
+    const denied = await injectedRequest(memberApp, "POST", collection, {
+      body: { name: "denied-backend", configurationId: configuration.id, backendId },
+    });
+    assertApiError(denied, 403, "FORBIDDEN", backendId);
+    assert.deepEqual(Object.keys(denied.body).sort(), ["error", "meta"]);
+    assert.equal(denied.data, undefined);
+    if (firstDenial === undefined) {
+      firstDenial = denied.body.error;
+    } else {
+      assert.deepEqual(denied.body.error, firstDenial);
+    }
+    const requestId = denied.body.meta.requestId;
+    assert.equal(denialRequestIds.has(requestId), false);
+    denialRequestIds.add(requestId);
+    const events = fixture.auditSink.events.filter((event) => event.requestId === requestId);
+    assert.equal(events.length, 1, "the denied request emits no success mutation");
+    const denial = events[0];
+    const target = { kind: "agent", id: namespace.id, namespaceId: namespace.id };
+    assert.equal(denial.kind, "authorization_denial");
+    assert.equal(denial.action, "openclaw.agents.create");
+    assert.equal(denial.actorId, member.id);
+    assert.equal(denial.actor.principalId, member.id);
+    assert.equal(denial.outcome, "denied");
+    assert.equal(denial.reasonCode, "AUTHORIZATION_DENIED");
+    assert.equal(denial.iamDriverId, "iam-integration");
+    assert.deepEqual(denial.resource, target);
+    assert.deepEqual(denial.authorization, {
+      principalId: member.id,
+      action: "create",
+      resource: target,
+    });
+    assert.equal(denial.details.iamEvidence.identityId, member.id);
+    // A refusal may append its audit event, but cannot change application or IAM State.
+    assert.deepEqual(await readCreateState(), beforeDeniedState, backendId);
+  }
+  const afterDeniedCreates = await controller.request("GET", collection);
+  assert.equal(afterDeniedCreates.status, 200);
+  assert.deepEqual(afterDeniedCreates.data, beforeDeniedCreates.data);
+
+  // Agent creation can select a Backend without permission to list the Installation catalog.
+  fixture.state.roles.push({
+    id: "role-backend-agent-creator",
+    namespaceId: namespace.id,
+    permissions: [
+      { action: "create", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
+    ],
+  });
+  fixture.state.bindings.push({
+    id: "binding-backend-agent-creator",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: member.id,
+    roleId: "role-backend-agent-creator",
+  });
+  assertApiError(await injectedRequest(memberApp, "GET", "/backends"), 403, "FORBIDDEN");
+  const memberCreated = await injectedRequest(memberApp, "POST", collection, {
+    body: {
+      name: "member-selected",
+      configurationId: configuration.id,
+      backendId: "openai",
+    },
+  });
+  assert.equal(memberCreated.status, 201, JSON.stringify(memberCreated.body));
+  assert.equal(memberCreated.data.backendId, "openai");
+  const memberRead = await controller.request("GET", `${collection}/${memberCreated.data.id}`);
+  assert.equal(memberRead.status, 200);
+  assert.equal(memberRead.data.backendId, "openai");
+  const beforeUnknownCreate = await controller.request("GET", collection);
+  assert.equal(beforeUnknownCreate.status, 200);
+  const memberUnknown = await injectedRequest(memberApp, "POST", collection, {
+    body: {
+      name: "member-unknown",
+      configurationId: configuration.id,
+      backendId: "unknown",
+    },
+  });
+  assertApiError(memberUnknown, 404, "NOT_FOUND");
+  const afterUnknownCreate = await controller.request("GET", collection);
+  assert.equal(afterUnknownCreate.status, 200);
+  assert.deepEqual(afterUnknownCreate.data, beforeUnknownCreate.data);
 
   // Exercise wire defaults and persistence through the real authenticated Fastify routes.
   for (const [name, association] of [
