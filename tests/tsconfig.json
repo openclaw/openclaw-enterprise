@@ -106,6 +106,7 @@
     "helpers/ci-prepare-fixture.ts",
     "integration/ci-cleanup-process-cases.ts",
     "integration/ci-runner-complete-lifecycle-cases.ts",
+    "integration/ci-runner-k3d-diagnostics-cases.ts",
     "integration/ci-runner-measurements-case.ts",
     "helpers/ci-runner-held-clock.ts",
     "helpers/ci-runner-kill-window.ts",
