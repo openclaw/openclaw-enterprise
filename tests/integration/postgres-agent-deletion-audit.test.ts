@@ -2,12 +2,56 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import type {
+  AgentRevision,
+  AgentWire,
+  CreateIAMAccessBindingBody,
+  ErrorResponse,
+  IAMAccessBindingResponse,
+  IAMRoleResponse,
+  NamespaceWire,
+  Restriction,
+  SecretReference,
+} from "../../packages/contracts/src/index.ts";
+import type { RemovedAccessBinding } from "../../packages/occ/src/index.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { BINDING_SUBJECT_INELIGIBLE } from "../helpers/refusal-text.mjs";
 
 const authSecret = "agent-deletion-audit-postgres-auth-secret-minimum-32";
-const byId = (left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+const byId = (left: { id: string }, right: { id: string }) =>
+  left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+
+type BindingTarget = [
+  subjectId: string,
+  resourceKind: "agent" | "agent_revision" | "secret",
+  resourceId: string,
+];
+type Refusal = readonly [path: string, message: string];
+
+interface AccessBindingRow {
+  id: string;
+  identity_subject_id: string | null;
+  role_id: string;
+  resource_kind: NonNullable<RemovedAccessBinding["resourceKind"]> | null;
+  resource_id: string | null;
+}
+
+interface RestrictionRow {
+  id: string;
+  namespace_id: string | null;
+  action: Restriction["action"];
+  resource_kind: Restriction["resourceKind"];
+  resource_id: string | null;
+  effect: Restriction["effect"];
+}
+
+interface DeletionAuditRow {
+  details: {
+    accessBindingsRemovedOnCompletion?: readonly RemovedAccessBinding[];
+    restrictionsRemovedOnCompletion?: readonly Restriction[];
+  } | null;
+}
 
 test(
   "Agent delete audit lists every AccessBinding and Restriction the deletion finalizer removes",
@@ -17,13 +61,25 @@ test(
       label: "agent-deletion-audit",
       authSecret,
     });
-    const { namespace, secretRef, agent, revision } = await deployAgent("Agent deletion audit");
-    const servicePrincipalId = (
-      await pool.query(
+    const {
+      namespace,
+      secretRef,
+      agent,
+      revision,
+    }: {
+      namespace: Pick<NamespaceWire, "id">;
+      secretRef: Pick<SecretReference, "id">;
+      agent: Pick<AgentWire, "id">;
+      revision: Pick<AgentRevision, "id">;
+    } = await deployAgent("Agent deletion audit");
+    const [persistedAgent] = (
+      await pool.query<{ service_principal_id: string }>(
         "SELECT service_principal_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
         [namespace.id, agent.id],
       )
-    ).rows[0].service_principal_id;
+    ).rows;
+    assert.ok(persistedAgent);
+    const servicePrincipalId = persistedAgent.service_principal_id;
 
     const policyPath = `/namespaces/${namespace.id}/iam`;
     const role = await inject("POST", `${policyPath}/roles`, {
@@ -34,17 +90,20 @@ test(
       ],
     });
     assert.equal(role.statusCode, 201, role.body);
-    const bindingBody = (subjectId, resourceKind, resourceId) => ({
+    const roleId = role.json<IAMRoleResponse>().data.id;
+    const bindingBody = (
+      ...[subjectId, resourceKind, resourceId]: BindingTarget
+    ): CreateIAMAccessBindingBody => ({
       subjectKind: "identity",
       subjectId,
-      roleId: role.json().data.id,
+      roleId,
       resourceKind,
       resourceId,
     });
-    const bind = async (...args) => {
-      const binding = await inject("POST", `${policyPath}/access-bindings`, bindingBody(...args));
+    const bind = async (...target: BindingTarget) => {
+      const binding = await inject("POST", `${policyPath}/access-bindings`, bindingBody(...target));
       assert.equal(binding.statusCode, 201, binding.body);
-      return binding.json().data;
+      return binding.json<IAMAccessBindingResponse>().data;
     };
     await bind(principal.id, "agent", agent.id);
     await bind(principal.id, "agent_revision", revision.id);
@@ -57,7 +116,7 @@ test(
     // DELETE must update this query and accessBindingsRemovedWithAgent together.
     const finalizerTargets = async () =>
       (
-        await pool.query(
+        await pool.query<AccessBindingRow>(
           `SELECT binding.id, binding.identity_subject_id, binding.role_id,
                   binding.resource_kind, binding.resource_id
            FROM occ.iam_access_bindings AS binding
@@ -91,7 +150,11 @@ test(
     // directly: one on the Agent and one on its revision in the Namespace, one on the Agent
     // at Installation scope, and a kind-wide one the finalizer keeps. The application role
     // cannot delete Restrictions, so they stay; each names only this test's Namespace or Agent.
-    const restrict = async (namespaceId, resourceKind, resourceId) => {
+    const restrict = async (
+      namespaceId: string | null,
+      resourceKind: "agent" | "agent_revision",
+      resourceId: string | null,
+    ) => {
       const id = `restriction_${randomUUID()}`;
       await pool.query(
         `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id)
@@ -110,7 +173,7 @@ test(
     // must update this query and restrictionsRemovedWithAgent together.
     const finalizerRestrictions = async () =>
       (
-        await pool.query(
+        await pool.query<RestrictionRow>(
           `SELECT restriction.id, restriction.namespace_id, restriction.action,
                   restriction.resource_kind, restriction.resource_id, restriction.effect
            FROM occ.iam_restrictions AS restriction
@@ -144,39 +207,38 @@ test(
 
     const deleting = await inject("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
     assert.equal(deleting.statusCode, 202, deleting.body);
-    const event = await pool.query(
+    const event = await pool.query<DeletionAuditRow>(
       `SELECT details FROM occ.audit_events
        WHERE action = 'openclaw.agents.delete' AND resource_id = $1`,
       [agent.id],
     );
     assert.equal(event.rowCount, 1);
-    assert.deepEqual(
-      [...event.rows[0].details.accessBindingsRemovedOnCompletion].sort(byId),
-      expected,
-    );
-    assert.deepEqual(
-      [...event.rows[0].details.restrictionsRemovedOnCompletion].sort(byId),
-      expectedRestrictions,
-    );
+    const details = event.rows[0]?.details;
+    assert.ok(details?.accessBindingsRemovedOnCompletion);
+    assert.ok(details.restrictionsRemovedOnCompletion);
+    assert.deepEqual([...details.accessBindingsRemovedOnCompletion].sort(byId), expected);
+    assert.deepEqual([...details.restrictionsRemovedOnCompletion].sort(byId), expectedRestrictions);
 
     // The deleting Agent admits no new binding the list would miss.
-    const deletedTarget = [
+    const deletedTarget: Refusal = [
       "/resourceId",
       "The IAM AccessBinding target does not exist in this Namespace or is being deleted.",
     ];
-    for (const [subjectId, resourceKind, resourceId, [path, message]] of [
+    const refusedBindings: readonly [...BindingTarget, Refusal][] = [
       [principal.id, "agent", agent.id, deletedTarget],
       [principal.id, "agent_revision", revision.id, deletedTarget],
       [servicePrincipalId, "secret", secretRef.id, ["/subjectId", BINDING_SUBJECT_INELIGIBLE]],
-    ]) {
+    ];
+    for (const [subjectId, resourceKind, resourceId, [path, message]] of refusedBindings) {
       const refused = await inject(
         "POST",
         `${policyPath}/access-bindings`,
         bindingBody(subjectId, resourceKind, resourceId),
       );
       assert.equal(refused.statusCode, 400, `${resourceKind} ${subjectId}: ${refused.body}`);
-      assert.equal(refused.json().error.message, message, resourceKind);
-      assert.equal(refused.json().error.details[0].path, path, resourceKind);
+      const { error } = refused.json<ErrorResponse>();
+      assert.equal(error.message, message, resourceKind);
+      assert.equal(error.details?.[0]?.path, path, resourceKind);
     }
     assert.deepEqual(await finalizerTargets(), expected);
     assert.deepEqual(await finalizerRestrictions(), expectedRestrictions);
