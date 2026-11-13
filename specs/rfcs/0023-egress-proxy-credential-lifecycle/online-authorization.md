@@ -55,6 +55,38 @@ strictly verify that policy when adopting a sandbox, and prevent stop/start or r
 under the prior execution's grant. If these lifecycle controls cannot be established, refuse
 release.
 
+## Trust a private model token issuer
+
+An installation may use an internal HTTPS token endpoint whose certificate chains to a
+private CA. We propose an optional `tokenGrant.issuerCaPath` in the OpenShell Credential
+Proxy Driver configuration. The operator mounts a public PEM certificate bundle and
+selects it for that endpoint. These roots extend the native roots for that endpoint alone.
+Omitting the option preserves the existing profile. The SPIFFE signing bundle still
+verifies the incoming workload assertion. The Gateway connection, protected Git, sandbox
+programs and ordinary outbound destinations keep their own trust settings.
+
+The proposed Driver must validate the bundle before admission and bind its contents to
+the installation identity. As with the rest of the admitted binding, OCE must control who can
+change the workspace profile. The Driver writes the selected trust into the revision's
+model provider profile, then reads it back through the Gateway. The reread must verify the selected roots,
+endpoint, assertion and resource audiences, and zero token-cache lifetime. A successful
+import or a matching annotation alone cannot establish what the Gateway stored. If a
+release drops the field, changes the roots or reports unsolicited roots, OCE must refuse
+the affected execution before creating its model provider or releasing a credential.
+
+Changing the root set changes the admitted configuration. Admit replacement revisions
+that trust both roots and drain old-root-only executions before switching the shared
+issuer to a chain signed only by the new root. Verify a fresh exchange at the model
+origin, then admit new-root-only revisions and retire revisions that trust both roots.
+Existing approval expiry and the zero cache lifetime apply throughout. A file replacement
+alone does not establish that these steps succeeded.
+
+Qualification needs a released supplier and a controlled issuer whose chain is outside
+native trust. The model origin must receive the ordinary authorized request with the right
+root and receive no request with an unrelated root or wrong hostname. Verify that the same
+private root does not extend trust at another endpoint. An installation with a natively trusted issuer chain can keep
+its existing endpoint and configuration.
+
 ## Preview the configured request hook
 
 An isolated team installation may explicitly offer _request hook observed_ before its
