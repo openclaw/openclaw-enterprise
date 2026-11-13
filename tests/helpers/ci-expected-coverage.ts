@@ -23,7 +23,7 @@ export const expectedFullLanes = [
   "keycloak-oidc",
 ];
 
-export function passingGateNeeds(mode) {
+export function passingGateNeeds(mode: "docs" | "full") {
   return {
     impact: { result: "success", outputs: { mode } },
     "static-checks": { result: "success", outputs: {} },
