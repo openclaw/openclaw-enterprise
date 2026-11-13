@@ -79,6 +79,7 @@
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
+    "tests/conformance/slack-proxy-backpressure.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
@@ -441,6 +442,9 @@
     },
     {
       "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-proxy-backpressure.test.ts"
     },
     {
       "path": "tests/conformance/native-admin-websocket-relay.test.mjs"

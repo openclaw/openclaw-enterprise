@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-04
-last_updated_session: authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975
+updated: 2026-11-13
+last_updated_session: authoring-run/38e47fe4-fe4c-4f85-9b86-3a9cca43424e
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -72,6 +72,15 @@ to the proxy Pod selector. With an external literal IPv4 proxy, Helm limits API
 egress to that IP and port. The managed proxy accepts CONNECT only for Slack
 hostnames on port 443, while its NetworkPolicy allows upstream egress to public
 IPv4 addresses on TCP 443, excluding private and reserved ranges.
+
+In `apps/controller/src/slack-proxy.mjs:createSlackProxyServer`, the managed
+proxy starts a drain wait when queued output blocks writes to the client.
+The client’s `drain` event clears the wait and forwarding resumes. An upstream
+end, an upstream close, or a client close also clears the wait. If the wait
+expires with bytes still queued, the proxy resets the client connection so a
+partial reply cannot appear complete. After a clean upstream end, a separate
+wait gives the client time to read the remaining bytes and close its side.
+
 The selected SecretDriver invokes `withValue` and verifies backend ownership.
 OCC rechecks grants and Secret backend identity after the read. It passes the
 token only in process to the ChannelDriver. The bundled Slack implementation
@@ -171,6 +180,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 22:19: Document bounded client write stalls in the accompanying Slack proxy change. (authoring-run/38e47fe4-fe4c-4f85-9b86-3a9cca43424e - bf84c5566fc92f97e7f9a4f7ae1f4a5778a0e83c)
 
 - 2026-11-04 22:37: Document closed-picker reopening and pending activation cancellation in the accompanying local change. (authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 

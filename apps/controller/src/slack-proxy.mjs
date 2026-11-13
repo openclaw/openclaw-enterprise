@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_PORT = 3128;
 const CONNECT_TIMEOUT_MS = 10_000;
 const SHUTDOWN_DRAIN_MS = 2_000;
-// How long a client may take to read what is still queued for it, and close its side, after
-// the proxy has finished writing to it.
+// How long client output may remain blocked, or a client may take to drain and close its
+// side after the proxy has finished writing to it.
 const CLIENT_DRAIN_TIMEOUT_MS = 10_000;
 const ALLOWED_SUFFIXES = [".slack.com", ".slack-edge.com", ".slack-msgs.com"];
 const ALLOWED_HOSTS = new Set(["slack.com", "slack-edge.com", "slack-msgs.com"]);
@@ -98,6 +98,48 @@ function closeClientWhenDrained(clientSocket, drainTimeoutMs) {
   clientSocket.once("close", () => clearTimeout(timer));
 }
 
+// pipe() pauses the upstream when the client's write buffer is full. Bound that wait while
+// the upstream is still open, without placing an idle timeout on healthy Socket Mode tunnels.
+// EOF hands ownership back to closeClientWhenDrained, which preserves complete replies.
+function watchClientWriteStall(upstream, clientSocket, drainTimeoutMs) {
+  let timer;
+  const clear = () => {
+    clearTimeout(timer);
+    timer = undefined;
+  };
+  const wait = () => {
+    if (
+      timer !== undefined ||
+      !clientSocket.writableNeedDrain ||
+      clientSocket.writableLength === 0
+    ) {
+      return;
+    }
+    timer = setTimeout(() => {
+      clear();
+      if (clientSocket.writableNeedDrain && clientSocket.writableLength > 0) {
+        cutClient(clientSocket);
+        upstream.destroy();
+      }
+    }, drainTimeoutMs);
+    timer.unref();
+  };
+  const stop = () => {
+    clear();
+    upstream.off("pause", wait);
+    upstream.off("end", stop);
+    upstream.off("close", stop);
+    clientSocket.off("drain", clear);
+    clientSocket.off("close", stop);
+  };
+  upstream.on("pause", wait);
+  upstream.once("end", stop);
+  upstream.once("close", stop);
+  clientSocket.on("drain", clear);
+  clientSocket.once("close", stop);
+  return wait;
+}
+
 export function createSlackProxyServer({ clientDrainTimeoutMs = CLIENT_DRAIN_TIMEOUT_MS } = {}) {
   const server = createServer((request, response) => {
     response.writeHead(405, { "content-type": "text/plain; charset=utf-8" });
@@ -121,7 +163,14 @@ export function createSlackProxyServer({ clientDrainTimeoutMs = CLIENT_DRAIN_TIM
     upstream.once("connect", () => {
       connected = true;
       upstream.setTimeout(0);
-      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      const waitForClientDrain = watchClientWriteStall(
+        upstream,
+        clientSocket,
+        clientDrainTimeoutMs,
+      );
+      if (!clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n")) {
+        waitForClientDrain();
+      }
       if (head.length > 0) {
         upstream.write(head);
       }
