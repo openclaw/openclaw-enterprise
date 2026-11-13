@@ -1,8 +1,8 @@
 diff --git a/ui/src/api/gateway-browser-socket.ts b/ui/src/api/gateway-browser-socket.ts
-index 38da3458db1566c6c593f8a1a5ee7f14461f8601..6334b7acee58cf2eb8a0f050d6296ae70e6b9fc5 100644
+index 45e802cf4..3b6087188 100644
 --- a/ui/src/api/gateway-browser-socket.ts
 +++ b/ui/src/api/gateway-browser-socket.ts
-@@ -37,7 +37,10 @@ export function formatBrowserWebSocketConstructorError(err: unknown, url: string
+@@ -47,7 +47,10 @@ export function formatBrowserWebSocketConstructorError(err: unknown, url: string
    };
  }
  
@@ -14,7 +14,7 @@ index 38da3458db1566c6c593f8a1a5ee7f14461f8601..6334b7acee58cf2eb8a0f050d6296ae7
    try {
      const gateway = new URL(url, window.location.href);
      gateway.protocol = gateway.protocol.replace(/^ws/u, "http");
-@@ -46,7 +49,7 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
+@@ -56,7 +59,7 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
        window.location.href,
      );
      if (probe.origin !== new URL(window.location.href).origin) {
@@ -23,7 +23,7 @@ index 38da3458db1566c6c593f8a1a5ee7f14461f8601..6334b7acee58cf2eb8a0f050d6296ae7
      }
      const response = await fetch(probe, {
        cache: "no-store",
-@@ -55,20 +58,25 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
+@@ -65,20 +68,25 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
        redirect: "error",
        signal,
      });
@@ -55,10 +55,10 @@ index 38da3458db1566c6c593f8a1a5ee7f14461f8601..6334b7acee58cf2eb8a0f050d6296ae7
  }
  
 diff --git a/ui/src/api/gateway-connect-errors.ts b/ui/src/api/gateway-connect-errors.ts
-index 1baf7e29daad53407e044c0d62904f6a35fd6238..c71f5f94198c30e80dbb7532c9cc5c9ebaf06736 100644
+index 6aa163fe7..c6bae0182 100644
 --- a/ui/src/api/gateway-connect-errors.ts
 +++ b/ui/src/api/gateway-connect-errors.ts
-@@ -22,6 +22,7 @@ export type GatewayBrowserCloseInfo = {
+@@ -23,6 +23,7 @@ export type GatewayBrowserCloseInfo = {
    error?: ErrorShape;
    willRetry: boolean;
    busy?: boolean;
@@ -67,7 +67,7 @@ index 1baf7e29daad53407e044c0d62904f6a35fd6238..c71f5f94198c30e80dbb7532c9cc5c9e
  
  export class GatewayRequestError extends GatewayProtocolRequestError {
 diff --git a/ui/src/api/gateway-reachability.node.test.ts b/ui/src/api/gateway-reachability.node.test.ts
-index 1f70fd5f455d69e12b9769061e295a5c8d632044..3e89cfec94a66623f7c80bb95c4428a95d46b7bc 100644
+index 1f70fd5f4..3e89cfec9 100644
 --- a/ui/src/api/gateway-reachability.node.test.ts
 +++ b/ui/src/api/gateway-reachability.node.test.ts
 @@ -27,8 +27,11 @@ it.each([
@@ -92,10 +92,10 @@ index 1f70fd5f455d69e12b9769061e295a5c8d632044..3e89cfec94a66623f7c80bb95c4428a9
  
  it.each(["cross-origin", "opened"])("does not probe a %s transport", async (kind) => {
 diff --git a/ui/src/api/gateway.ts b/ui/src/api/gateway.ts
-index 18148532607e27b555f7fa990b16bcf043c5646f..d90d53158281ca4ee18ab210e896216edefea625 100644
+index 8c8ddffc4..cae260f8e 100644
 --- a/ui/src/api/gateway.ts
 +++ b/ui/src/api/gateway.ts
-@@ -217,14 +217,17 @@ export class GatewayBrowserClient {
+@@ -193,14 +193,17 @@ export class GatewayBrowserClient {
              this.reachabilityProbe = probe;
              const timeout = setTimeout(() => probe.abort(), 1_000);
              void probeGatewayReachability(this.opts.url, probe.signal)
@@ -116,10 +116,10 @@ index 18148532607e27b555f7fa990b16bcf043c5646f..d90d53158281ca4ee18ab210e896216e
                  }
                })
 diff --git a/ui/src/app/app-shell-view.test.ts b/ui/src/app/app-shell-view.test.ts
-index 2708f32ef422ea9b6881005c190b3aceba53d80a..a498cbdcc3db389bc444faba94c36ed75c622f46 100644
+index fd185aa0c..cde9b6aa9 100644
 --- a/ui/src/app/app-shell-view.test.ts
 +++ b/ui/src/app/app-shell-view.test.ts
-@@ -316,6 +316,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
+@@ -387,6 +387,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
    }
  });
  
@@ -145,10 +145,10 @@ index 2708f32ef422ea9b6881005c190b3aceba53d80a..a498cbdcc3db389bc444faba94c36ed7
    let mobile = false;
    mockMobile(() => mobile);
 diff --git a/ui/src/app/app-shell-view.tsx b/ui/src/app/app-shell-view.tsx
-index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323954a02ac 100644
+index dcdaa9b23..d523678c8 100644
 --- a/ui/src/app/app-shell-view.tsx
 +++ b/ui/src/app/app-shell-view.tsx
-@@ -101,6 +101,11 @@ export function ApplicationShell(props: {
+@@ -116,6 +116,11 @@ export function ApplicationShell(props: {
      projectOwner(sessionOwner(), (sessions) => sessions.state.result?.sessions),
    );
    const shellConnectionStatus = createMemo(() => view().shellConnectionStatus);
@@ -160,7 +160,7 @@ index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323
    const footerStatus = createMemo(() =>
      shellConnectionStatus() || view().connectionRecovery ? view().gatewayStatus : null,
    );
-@@ -363,6 +368,19 @@ export function ApplicationShell(props: {
+@@ -436,6 +441,19 @@ export function ApplicationShell(props: {
            onMouseDown={beginNativeWindowDragFromTopInset}
            inert={view().mobileNavLayout && view().navDrawerOpen}
          >
@@ -180,8 +180,8 @@ index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323
            <Show
              when={
                floatingSidebarAttentionVisible(view().floatingUpdateCard) ||
-@@ -386,8 +404,9 @@ export function ApplicationShell(props: {
-           >
+@@ -469,8 +487,9 @@ export function ApplicationShell(props: {
+             </Show>
              <RouterOutlet
                ref={(element) => (props.host.routeOutlet = element)}
 -              inert={view().reloadRequired}
@@ -193,10 +193,10 @@ index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323
                retryContext={view().context}
                retryEnabled={view().gatewayConnected}
 diff --git a/ui/src/app/gateway-page-activation.test.ts b/ui/src/app/gateway-page-activation.test.ts
-index 6b01e8f70ae1ced8ea00efcfe46ff6e3abb182c8..7ad3624bc5828f3c29a3cc32e50bbe8960f4be66 100644
+index de07561cc..5fbdf452c 100644
 --- a/ui/src/app/gateway-page-activation.test.ts
 +++ b/ui/src/app/gateway-page-activation.test.ts
-@@ -183,6 +183,15 @@ it("cuts short transport backoff after a successful fresh probe", async () => {
+@@ -306,6 +306,15 @@ it.each(["online", "visible"])("restarts a backed-off probe immediately on %s",
    expect(connect).toHaveBeenCalledOnce();
  });
  
@@ -213,10 +213,10 @@ index 6b01e8f70ae1ced8ea00efcfe46ff6e3abb182c8..7ad3624bc5828f3c29a3cc32e50bbe89
    "young opening",
    "opened socket",
 diff --git a/ui/src/app/gateway-page-activation.ts b/ui/src/app/gateway-page-activation.ts
-index 21e14e43dc9eef907b8c20b27712d0d0cfdd7268..bab3f3a9e8d52faec2746faf9a1dabe03eeea017 100644
+index 38ff1abc1..4a3e05beb 100644
 --- a/ui/src/app/gateway-page-activation.ts
 +++ b/ui/src/app/gateway-page-activation.ts
-@@ -81,7 +81,8 @@ export function startGatewayPageActivation(
+@@ -82,7 +82,8 @@ export function startGatewayPageActivation(
        probe = controller;
        const timeout = setTimeout(() => controller.abort(), 1_500);
        try {
@@ -227,10 +227,10 @@ index 21e14e43dc9eef907b8c20b27712d0d0cfdd7268..bab3f3a9e8d52faec2746faf9a1dabe0
            failedProbes = Math.min(9, failedProbes + 1);
          }
 diff --git a/ui/src/app/gateway-store.observers.test.ts b/ui/src/app/gateway-store.observers.test.ts
-index 8adcff4da2675804542eb7977d68fa12105d3f20..a5125ca83842490eae4731feed13bb6a808f4b75 100644
+index 1bde950b6..18b3880d7 100644
 --- a/ui/src/app/gateway-store.observers.test.ts
 +++ b/ui/src/app/gateway-store.observers.test.ts
-@@ -493,6 +493,23 @@ describe("createApplicationGateway connection ownership", () => {
+@@ -494,6 +494,23 @@ describe("createApplicationGateway connection ownership", () => {
      }
    });
  
@@ -255,10 +255,10 @@ index 8adcff4da2675804542eb7977d68fa12105d3f20..a5125ca83842490eae4731feed13bb6a
      const otherGateway = "wss://other-gateway.example.test";
      const selection = {
 diff --git a/ui/src/app/gateway-store.ts b/ui/src/app/gateway-store.ts
-index 8fa1879e4d4fbc89cb659cd84f68aeaa54677f83..1c58df9c09f730ce9ca7cc590d0daafb3d8e68a7 100644
+index aa98f4c2c..387a5c0bf 100644
 --- a/ui/src/app/gateway-store.ts
 +++ b/ui/src/app/gateway-store.ts
-@@ -190,6 +190,7 @@ export function createApplicationGateway(
+@@ -192,6 +192,7 @@ export function createApplicationGateway(
    };
    const setConnectionSnapshot = (patch: Partial<ApplicationGatewaySnapshot>) =>
      setSnapshot({
@@ -266,7 +266,7 @@ index 8fa1879e4d4fbc89cb659cd84f68aeaa54677f83..1c58df9c09f730ce9ca7cc590d0daafb
        hello: null,
        pluginCapabilities: null,
        canvasPluginSurfaceUrl: null,
-@@ -516,7 +517,7 @@ export function createApplicationGateway(
+@@ -514,7 +515,7 @@ export function createApplicationGateway(
        onConnecting: () => client === nextClient && setSnapshot({ reconnectAt: undefined }),
        onReconnectScheduled: (delayMs) =>
          client === nextClient && setSnapshot({ reconnectAt: Date.now() + delayMs }),
@@ -281,13 +281,13 @@ index 8fa1879e4d4fbc89cb659cd84f68aeaa54677f83..1c58df9c09f730ce9ca7cc590d0daafb
                    }),
 +          browserAccessDenied: everConnected && browserAccessDenied === true,
            lastErrorCode: startupPending ? null : busy ? "GATEWAY_BUSY" : lastErrorCode,
-           lastErrorAuthReason: startupPending ? null : readConnectionAuthReason(error?.details),
+           ...readConnectFailureDetails(error?.details, startupPending),
          });
 diff --git a/ui/src/app/gateway.ts b/ui/src/app/gateway.ts
-index 5419f99999f0837122e0c142600f8c0961de5223..4e196edb77a19f20a28e37fd58fe2201b0859fc4 100644
+index 85eb871f5..f56e43731 100644
 --- a/ui/src/app/gateway.ts
 +++ b/ui/src/app/gateway.ts
-@@ -29,6 +29,8 @@ export type ApplicationGatewaySnapshot = {
+@@ -31,6 +31,8 @@ export type ApplicationGatewaySnapshot = {
    /** The live transport/admission fact; retained hello metadata does not authorize dispatch. */
    phase: ApplicationGatewayPhase;
    offlineStable: boolean;
@@ -297,10 +297,10 @@ index 5419f99999f0837122e0c142600f8c0961de5223..4e196edb77a19f20a28e37fd58fe2201
    deferredIntentCount?: number;
    deferredIntentDraining?: boolean;
 diff --git a/ui/src/app/router-outlet.tsx b/ui/src/app/router-outlet.tsx
-index cfe905152f8d70f15df13fe2ce3103a530e69e43..106573515193c39fb9279c9b6a284ab07a77dd9d 100644
+index 9d3c81b05..a6a22af07 100644
 --- a/ui/src/app/router-outlet.tsx
 +++ b/ui/src/app/router-outlet.tsx
-@@ -126,6 +126,7 @@ function renderRouterOutlet(
+@@ -186,6 +186,7 @@ function renderRouterOutlet(
  }
  
  export type RouterOutletProps = {
@@ -308,7 +308,7 @@ index cfe905152f8d70f15df13fe2ce3103a530e69e43..106573515193c39fb9279c9b6a284ab0
    inert?: boolean;
    "aria-disabled"?: "true" | "false";
    router?: ApplicationRouter;
-@@ -466,6 +467,7 @@ export function RouterOutlet(props: RouterOutletProps): SolidJSX.Element {
+@@ -545,6 +546,7 @@ export function RouterOutlet(props: RouterOutletProps): SolidJSX.Element {
  
    return (
      <openclaw-router-outlet
@@ -317,10 +317,10 @@ index cfe905152f8d70f15df13fe2ce3103a530e69e43..106573515193c39fb9279c9b6a284ab0
        aria-disabled={props["aria-disabled"]}
        onOpenclaw-route-element={elements.register}
 diff --git a/ui/src/i18n/locales/en.ts b/ui/src/i18n/locales/en.ts
-index 9282056e54b004d8b3e25554634f03677f2752a6..4c7cfc82feb0954fa9806353b3838f12d1e6d698 100644
+index 8ca370c22..ec622ba61 100644
 --- a/ui/src/i18n/locales/en.ts
 +++ b/ui/src/i18n/locales/en.ts
-@@ -1371,6 +1371,9 @@ const startupEnglish = {
+@@ -1320,6 +1320,9 @@ const startupEnglish = {
      "reload-required": "Refresh required",
      offline: "Disconnected",
      reconnecting: "Reconnecting…",
@@ -331,10 +331,10 @@ index 9282056e54b004d8b3e25554634f03677f2752a6..4c7cfc82feb0954fa9806353b3838f12
      interrupted: "Disconnected. Check your connection and reconnect. (WebSocket {code})",
      restarting: "Restarting…",
 diff --git a/ui/src/styles/layout.css b/ui/src/styles/layout.css
-index 995470c81ff714a6d085de86316ba57ddbabaeaf..92a6fb5909064172ad5aa2e1be1a38b8574c95b7 100644
+index 7d929ca30..90f3af12a 100644
 --- a/ui/src/styles/layout.css
 +++ b/ui/src/styles/layout.css
-@@ -3395,6 +3395,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
+@@ -3794,6 +3794,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
    min-height: 0;
  }
  
