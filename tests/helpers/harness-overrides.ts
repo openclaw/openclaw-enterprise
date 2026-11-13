@@ -47,7 +47,7 @@ export function assertHarnessInferenceRoutes(
   );
   const byEndpoint = (a: { endpoint: string }, b: { endpoint: string }) =>
     a.endpoint.localeCompare(b.endpoint);
-  assert.deepEqual(routes.toSorted(byEndpoint), expectedRoutes.toSorted(byEndpoint));
+  assert.deepEqual([...routes].sort(byEndpoint), [...expectedRoutes].sort(byEndpoint));
 }
 
 // Exercise HTTP, IAM, Compute resolution and Proxy admission with the supplied State implementation.
