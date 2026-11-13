@@ -93,7 +93,7 @@
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.ts",
-    "tests/conformance/kubernetes-ownership.test.mjs",
+    "tests/conformance/kubernetes-ownership.test.ts",
     "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
@@ -288,7 +288,7 @@
       "path": "tests/conformance/kubernetes-configuration.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-ownership.test.mjs",
+      "path": "tests/conformance/kubernetes-ownership.test.ts",
       "expectedTests": ["sealed Namespace compares SDK-deserialized ingress exactly"]
     },
     {
