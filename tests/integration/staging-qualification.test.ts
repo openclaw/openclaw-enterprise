@@ -24,7 +24,7 @@ test("staging runtime lane preserves the reviewed Codex version in its child", c
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
 
-for (const change of ["compatible", "controller", "catalog", "runtime"] as const) {
+for (const change of ["compatible", "controller", "catalog", "migration", "runtime"] as const) {
   test(`staging sign-in preparation checks the current ${change} source pair`, (t) =>
     checkWorkflowCommand(t, true, change));
 }
@@ -32,7 +32,7 @@ for (const change of ["compatible", "controller", "catalog", "runtime"] as const
 async function checkWorkflowCommand(
   t: TestContext,
   pairPullOnly = false,
-  signin?: "compatible" | "controller" | "catalog" | "runtime",
+  signin?: "compatible" | "controller" | "catalog" | "migration" | "runtime",
 ) {
   const directory = await mkdtemp(join(process.cwd(), ".staging-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -102,6 +102,12 @@ async function checkWorkflowCommand(
   const source = await commit();
   if (signin === "runtime") {
     await writeFile(recipePath, recipe);
+  }
+  if (signin === "migration") {
+    // Historical releases still use this filename; a script-only change must
+    // not inherit the reviewed production-input fingerprint.
+    const file = join(root, "scripts/migration-history.mjs");
+    await writeFile(file, `${await readFile(file, "utf8")}\n// Changed historical input.\n`);
   }
   if (signin === "controller" || signin === "catalog") {
     // A changed production tree cannot inherit the reviewed reader contract.

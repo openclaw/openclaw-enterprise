@@ -658,6 +658,8 @@ function signinBuildInputs(root: string, revision: string) {
     "pnpm-lock.yaml",
     "scripts/build-console-metadata.mjs",
     "scripts/migrate-production.mjs",
+    // Historical releases still name the implementation .mjs.
+    "scripts/migration-history.mjs",
     "scripts/migration-history.ts",
     "scripts/migration-catalog.mjs",
     "scripts/bootstrap-installation.mjs",
