@@ -4,7 +4,11 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
 import { startFakePostgres } from "./fake-postgres-server.mjs";
-import { commandShim as fixtureCommandShim, startCommandServer } from "./fixture-command-server.ts";
+import {
+  commandShim as fixtureCommandShim,
+  startCommandServer,
+  type CommandRequest,
+} from "./fixture-command-server.ts";
 
 // The external commands preparation runs (docker, podman, k3d, kubectl, helm, yq,
 // corepack), faked for ci-prepare*.test.mjs through fixture-command-server.ts: each is
@@ -14,7 +18,7 @@ import { commandShim as fixtureCommandShim, startCommandServer } from "./fixture
 // the environment variables below. The fixture directory the scenarios write to is the
 // server's, never the client's. `compose up` starts a fake PostgreSQL server
 // (fake-postgres-server.mjs) for the port the fixture reports, where its administrative
-// SQL arrives (scripts/ci/postgres-admin.mjs); each query is logged as a "postgres"
+// SQL arrives (scripts/ci/postgres-admin.ts); each query is logged as a "postgres"
 // command whose args are the database and the query. `compose down` stops it. The fake
 // listens on that port's Unix socket in OPENCLAW_CI_POSTGRES_SOCKET_DIR. These command
 // fixtures exercise orchestration and SQL sequencing, not Docker port allocation.
@@ -28,11 +32,70 @@ export const forwardedEnv = [
   "OPENCLAW_CI_K3S_IMAGE",
 ];
 
+const clusterNodes = ["server-0", "agent-0"] as const;
+type ClusterNode = (typeof clusterNodes)[number];
+type NodeState<T> = Partial<Record<ClusterNode, T>>;
+
+type CommandState = {
+  cluster?: string;
+  clusterDeleted?: boolean;
+  containersAvailable?: boolean;
+  pulled?: boolean;
+  tag?: string;
+  controller?: string;
+  runtime?: string;
+  importedNodes?: NodeState<boolean>;
+  routeLookups?: number;
+  aliases?: NodeState<string>;
+  pinned?: NodeState<boolean>;
+  criLookups?: NodeState<number>;
+  agents?: number;
+  createHung?: boolean;
+  nodeListings?: number;
+  podCidrReads?: number;
+  fixtureImagePinned?: boolean;
+  storageRestarted?: boolean;
+} & Partial<Record<`imports:${ClusterNode}` | `containerdProbes:${ClusterNode}`, number>>;
+
+type RecordedResources = { resources: { kind: string; name?: string }[] };
+type PinManifest = {
+  kind: string;
+  metadata: { name: string; namespace: string };
+  spec: {
+    template: {
+      spec: {
+        automountServiceAccountToken: boolean;
+        tolerations: { operator: string }[];
+        containers: {
+          image: string;
+          imagePullPolicy: string;
+          securityContext: {
+            capabilities: { drop: string[] };
+            readOnlyRootFilesystem: boolean;
+          };
+        }[];
+      };
+    };
+  };
+};
+
+type StateStore = { json: string };
+type PostgresRegistry = Map<string, Awaited<ReturnType<typeof startFakePostgres>>>;
+type FixtureServerOptions = { root: string; hungCommandExitMs: number };
+type FakeCommandOptions = CommandRequest &
+  FixtureServerOptions & { store: StateStore; postgresServers: PostgresRegistry };
+
+const manifestMediaTypes: Readonly<Record<string, string | undefined>> = {
+  "oci-index": "application/vnd.oci.image.index.v1+json",
+  "docker-manifest-list": "application/vnd.docker.distribution.manifest.list.v2+json",
+  "docker-manifest": "application/vnd.docker.distribution.manifest.v2+json",
+};
+
 // The state every command of one fixture shares, as the command processes shared one
 // JSON file. A command works on a copy taken when it starts, and merges its changed
 // keys back when it commits (an exit without a commit drops them), so concurrent
 // commands see the same state they did as processes.
-function createStateStore() {
+function createStateStore(): StateStore {
   return { json: "{}" };
 }
 
@@ -46,20 +109,27 @@ async function fakeCommand({
   postgresServers,
   hungCommandExitMs,
   io,
-}) {
+}: FakeCommandOptions) {
   const { stdout, stderr, exit, exitAfter, closeStdout, lateStderr, readInput, holdPipes } = io;
   const scenario = env.CI_FIXTURE_SCENARIO;
   const initialState = store.json;
-  const state = JSON.parse(initialState);
-  const equals = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
-  const postgresContainerId = (project) => createHash("sha256").update(project).digest("hex");
+  const state = JSON.parse(initialState) as CommandState;
+  const equals = (actual: unknown, expected: unknown) =>
+    JSON.stringify(actual) === JSON.stringify(expected);
+  const argument = (index: number) => {
+    const value = args[index];
+    assert.ok(value !== undefined, `missing ${command} argument at index ${index}`);
+    return value;
+  };
+  const postgresContainerId = (project: string) =>
+    createHash("sha256").update(project).digest("hex");
   const configId = "sha256:" + "b".repeat(64);
   const manifestDigest = "sha256:" + "c".repeat(64);
   // The node of this fixture's cluster that a container name refers to, as one of the
   // fixed keys "server-0" and "agent-0" (undefined for any other name). Per-node state
   // is keyed by it, never by the command's own argument.
-  const clusterNode = (name) =>
-    ["server-0", "agent-0"].find((node) => name === "k3d-" + state.cluster + "-" + node);
+  const clusterNode = (name: string | undefined) =>
+    clusterNodes.find((node) => name === "k3d-" + state.cluster + "-" + node);
   appendFileSync(
     join(root, "commands.jsonl"),
     JSON.stringify({
@@ -77,14 +147,19 @@ async function fakeCommand({
     if (serializedState === initialState) {
       return;
     }
-    const before = JSON.parse(initialState);
-    const latest = JSON.parse(store.json);
-    for (const [key, value] of Object.entries(state)) {
+    const before = JSON.parse(initialState) as CommandState;
+    const latest = JSON.parse(store.json) as CommandState;
+    for (const key of Object.keys(state) as (keyof CommandState)[]) {
+      const value = state[key];
       if (JSON.stringify(value) === JSON.stringify(before[key])) {
         continue;
       }
-      const nested = (entry) => entry && typeof entry === "object" && !Array.isArray(entry);
-      latest[key] = nested(value) && nested(latest[key]) ? { ...latest[key], ...value } : value;
+      const previous = latest[key];
+      const nested = (entry: unknown): entry is Record<string, unknown> =>
+        entry !== null && typeof entry === "object" && !Array.isArray(entry);
+      Object.assign(latest, {
+        [key]: nested(value) && nested(previous) ? { ...previous, ...value } : value,
+      });
     }
     store.json = JSON.stringify(latest);
   }
@@ -101,7 +176,7 @@ async function fakeCommand({
   }
   // A descendant that keeps the command's output pipes open until the same bound. The
   // escaped one leaves the process group, and the command then ignores SIGTERM.
-  function spawnPipeHolder({ escaped }) {
+  function spawnPipeHolder(escaped: boolean) {
     holdPipes({
       ms: hungCommandExitMs,
       escaped,
@@ -118,7 +193,7 @@ async function fakeCommand({
       [["ps", "-a"], "{{.Names}}"],
       [["network", "ls"], "{{.Name}}"],
       [["volume", "ls"], "{{.Name}}"],
-    ]) {
+    ] as const) {
       if (equals(args.slice(0, list.length), list)) {
         assert.ok(
           !state.cluster || state.clusterDeleted,
@@ -128,22 +203,17 @@ async function fakeCommand({
         // Keep exact ownership checks even when the fake has no live cluster name.
         const cluster =
           state.cluster ??
-          JSON.parse(readFileSync(join(root, "state.json"), "utf8")).resources.find(
-            ({ kind }) => kind === "k3d-cluster",
-          )?.name;
+          (
+            JSON.parse(readFileSync(join(root, "state.json"), "utf8")) as RecordedResources
+          ).resources.find(({ kind }) => kind === "k3d-cluster")?.name;
         assert.ok(cluster, "cleanup must own a recorded cluster");
-        assert.ok(
-          ["label=k3d.cluster=" + cluster, "name=k3d-" + cluster].includes(args[list.length + 1]),
-        );
-        assert.deepEqual(args.slice(list.length), [
-          "--filter",
-          args[list.length + 1],
-          "--format",
-          format,
-        ]);
+        const filter = argument(list.length + 1);
+        assert.ok(["label=k3d.cluster=" + cluster, "name=k3d-" + cluster].includes(filter));
+        assert.deepEqual(args.slice(list.length), ["--filter", filter, "--format", format]);
         return finish();
       }
     }
+    assert.ok(typeof scenario === "string", "the Docker fixture requires CI_FIXTURE_SCENARIO");
     if (
       (scenario.startsWith("nodes-unready") || scenario === "cluster-create-failed") &&
       ["server-0", "agent-0"].some(
@@ -242,7 +312,7 @@ async function fakeCommand({
       if (scenario === "hung-host-tag") {
         return hang();
       }
-      state.tag = args[2];
+      state.tag = argument(2);
       return finish();
     }
     if (command === "podman" && equals(args.slice(0, 2), ["ps", "--no-trunc"])) {
@@ -265,13 +335,14 @@ async function fakeCommand({
       return finish(postgresContainerId(project) + "\n");
     }
     if (args[0] === "compose" && args[1] === "-f" && args[3] === "-p") {
-      assert.match(args[4], /^openclaw_ci_pg_/);
+      const project = argument(4);
+      assert.match(project, /^openclaw_ci_pg_/);
       if (equals(args.slice(5), ["up", "-d", "--wait"])) {
         assert.equal(env.OCC_POSTGRES_PORT, "0");
         const port = 45000 + postgresServers.size;
         assert.ok(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, "the fixture sets the socket directory");
         postgresServers.set(
-          args[4],
+          project,
           await startFakePostgres({
             port,
             socketPath: join(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, `.s.PGSQL.${port}`),
@@ -287,12 +358,12 @@ async function fakeCommand({
         return finish();
       }
       if (command === "docker" && equals(args.slice(5), ["ps", "-q", "postgres"])) {
-        assert.ok(postgresServers.has(args[4]));
-        return finish(postgresContainerId(args[4]) + "\n");
+        assert.ok(postgresServers.has(project));
+        return finish(postgresContainerId(project) + "\n");
       }
       if (equals(args.slice(5), ["down", "--volumes", "--remove-orphans"])) {
-        await postgresServers.get(args[4])?.close();
-        postgresServers.delete(args[4]);
+        await postgresServers.get(project)?.close();
+        postgresServers.delete(project);
         return finish();
       }
     }
@@ -372,7 +443,7 @@ async function fakeCommand({
         return hang();
       }
       const role = args.includes("--target") ? "controller" : "runtime";
-      const metadata = resolve(cwd, args[args.indexOf("--metadata-file") + 1]);
+      const metadata = resolve(cwd, argument(args.indexOf("--metadata-file") + 1));
       if (scenario === "engine-bad-metadata") {
         // Unparsable for the controller, no image digest for the runtime.
         writeFileSync(
@@ -397,7 +468,7 @@ async function fakeCommand({
     }
     if (
       equals(args.slice(0, 4), ["image", "inspect", "--format", "{{.Id}}"]) &&
-      [...Object.values(heldImages), absentImage].includes(args[4])
+      [...Object.values(heldImages), absentImage].some((image) => image === args[4])
     ) {
       if (scenario === "engine-inspect-hung") {
         return hang();
@@ -420,16 +491,17 @@ async function fakeCommand({
       scenario === "engine-tag-failed" &&
       args[0] === "tag" &&
       args.length === 3 &&
-      Object.values(heldImages).includes(args[1])
+      Object.values(heldImages).some((image) => image === args[1])
     ) {
       stderr("Error response from daemon: synthetic tag failure\n");
       return exit(1);
     }
     if (scenario === "engine-holds-images" && args[0] === "tag" && args.length === 3) {
-      const role = Object.keys(heldImages).find((key) => heldImages[key] === args[1]);
-      assert.ok(role, args[1]);
-      assert.match(args[2], new RegExp("/" + role + ":local$"));
-      state[role] = args[2];
+      const role = (["controller", "runtime"] as const).find((key) => heldImages[key] === args[1]);
+      assert.ok(role, argument(1));
+      const tag = argument(2);
+      assert.match(tag, new RegExp("/" + role + ":local$"));
+      state[role] = tag;
       return finish();
     }
     // The warm job builds the runtime image's OpenClaw build stage alone first.
@@ -447,7 +519,7 @@ async function fakeCommand({
         args.includes("--load") || args.includes("-t") || args.includes("--cache-to"),
         false,
       );
-      assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
+      assert.ok(argument(args.indexOf("-f") + 1).endsWith("/deploy/runtime/Dockerfile"));
       assert.equal(state.runtime, undefined, "the stage builds before the runtime image");
       return finish();
     }
@@ -469,29 +541,29 @@ async function fakeCommand({
       assert.equal(args[args.indexOf("--target") + 1], "runtime");
       if (scenario === "controller-build-failed") {
         // The tag is owned before the build; cleanup must still remove it.
-        state.controller = args[args.indexOf("-t") + 1];
+        state.controller = argument(args.indexOf("-t") + 1);
         commitState();
         stderr("#7 [runtime 3/9] synthetic controller step\nERROR: synthetic build failure\n");
         return exit(1);
       }
       assert.equal(args.at(-1), ".");
-      state.controller = args[args.indexOf("-t") + 1];
+      state.controller = argument(args.indexOf("-t") + 1);
       return finish();
     }
     if (
       (args[0] === "build" || equals(args.slice(0, 2), ["buildx", "build"])) &&
       args.includes("-f")
     ) {
-      assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
+      assert.ok(argument(args.indexOf("-f") + 1).endsWith("/deploy/runtime/Dockerfile"));
       if (scenario === "image-build-hung") {
         stderr("#14 exporting to image\n");
         return hang();
       }
-      state.runtime = args[args.indexOf("-t") + 1];
+      state.runtime = argument(args.indexOf("-t") + 1);
       return finish();
     }
     if (args[0] === "build" && args.includes("OPENCLAW_DOCKER_BUILD_SKIP_DTS=1")) {
-      state.runtime = args[args.indexOf("-t") + 1];
+      state.runtime = argument(args.indexOf("-t") + 1);
       stderr("#1 [native-build 1/1] RUN synthetic-native-command\n#1 CACHED\n");
       return finish();
     }
@@ -509,8 +581,9 @@ async function fakeCommand({
     }
     if (equals(args.slice(0, 3), ["build", "--pull=false", "-t"]) && args.length === 5) {
       // The fixture build overlaps cluster creation, so its tag cannot name the cluster.
-      assert.match(args[3], /^localhost\/openclaw-ci-image-[a-z0-9-]+\/fixture:local$/);
-      state.tag = args[3];
+      const tag = argument(3);
+      assert.match(tag, /^localhost\/openclaw-ci-image-[a-z0-9-]+\/fixture:local$/);
+      state.tag = tag;
       return finish();
     }
     if (state.runtime && equals(args, ["image", "inspect", state.runtime])) {
@@ -589,8 +662,8 @@ async function fakeCommand({
     if (state.controller && equals(args, ["image", "rm", "-f", state.controller])) {
       return finish();
     }
-    if (equals(args.slice(0, 2), ["exec", "-i"]) && clusterNode(args[2])) {
-      const node = clusterNode(args[2]);
+    const importNode = equals(args.slice(0, 2), ["exec", "-i"]) ? clusterNode(args[2]) : undefined;
+    if (importNode) {
       assert.deepEqual(args.slice(3), [
         "ctr",
         "-n",
@@ -604,11 +677,12 @@ async function fakeCommand({
       ]);
       // The worker's containerd stops answering during its first import (finding 1006). The
       // other cases pin which failures get the one retry.
-      const imports = (state["imports:" + node] ?? 0) + 1;
-      state["imports:" + node] = imports;
+      const importKey = `imports:${importNode}` as const;
+      const imports = (state[importKey] ?? 0) + 1;
+      state[importKey] = imports;
       const socket = "/run/k3s/containerd/containerd.sock: connect: ";
-      let refusal;
-      if (node === "agent-0") {
+      let refusal: string | undefined;
+      if (importNode === "agent-0") {
         if (scenario === "containerd-refuses-imports") {
           refusal = socket + "connection refused";
         }
@@ -634,7 +708,7 @@ async function fakeCommand({
         return exit(1);
       }
       // The worker fails before reading, which stops the export early.
-      if (scenario === "nonzero-worker-import" && node === "agent-0") {
+      if (scenario === "nonzero-worker-import" && importNode === "agent-0") {
         stderr("synthetic import command failure\n");
         return exit(17);
       }
@@ -649,12 +723,12 @@ async function fakeCommand({
       }
       if (scenario !== "missing-tag") {
         state.importedNodes ??= {};
-        state.importedNodes[node] = true;
+        state.importedNodes[importNode] = true;
       }
       return finish();
     }
-    if (args[0] === "exec" && clusterNode(args[1])) {
-      const node = clusterNode(args[1]);
+    const node = args[0] === "exec" ? clusterNode(args[1]) : undefined;
+    if (node) {
       const alias = state.aliases?.[node];
       if (equals(args.slice(2), ["ip", "route", "get", "10.42.7.0"])) {
         assert.ok(node === "server-0");
@@ -672,8 +746,9 @@ async function fakeCommand({
       }
       if (equals(args.slice(2), ["ctr", "-n", "k8s.io", "version"])) {
         // A Ready worker whose containerd refuses connections for a while (finding 1006).
-        const probes = (state["containerdProbes:" + node] ?? 0) + 1;
-        state["containerdProbes:" + node] = probes;
+        const probeKey = `containerdProbes:${node}` as const;
+        const probes = (state[probeKey] ?? 0) + 1;
+        state[probeKey] = probes;
         if (scenario === "hung-containerd-probe" && node === "agent-0") {
           return hang();
         }
@@ -707,12 +782,7 @@ async function fakeCommand({
             references
               .map((ref) => {
                 const mediaType =
-                  {
-                    "oci-index": "application/vnd.oci.image.index.v1+json",
-                    "docker-manifest-list":
-                      "application/vnd.docker.distribution.manifest.list.v2+json",
-                    "docker-manifest": "application/vnd.docker.distribution.manifest.v2+json",
-                  }[scenario] ?? "application/vnd.oci.image.manifest.v1+json";
+                  manifestMediaTypes[scenario] ?? "application/vnd.oci.image.manifest.v1+json";
                 const digest =
                   scenario === "wrong-worker-containerd-digest" &&
                   node === "agent-0" &&
@@ -730,7 +800,7 @@ async function fakeCommand({
         }
         if (scenario !== "missing-alias") {
           state.aliases ??= {};
-          state.aliases[node] = args[8];
+          state.aliases[node] = argument(8);
         }
         return finish();
       }
@@ -783,7 +853,11 @@ async function fakeCommand({
           );
           return exit(1);
         }
-        const status = {
+        const status: {
+          id: string;
+          repoDigests: (string | number)[] | string;
+          pinned?: boolean | string;
+        } = {
           id: configId,
           repoDigests: [alias],
           pinned:
@@ -826,7 +900,9 @@ async function fakeCommand({
     return finish("yq (https://github.com/mikefarah/yq/) version v4.45.1\n");
   }
   if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
-    assert.match(env.OCC_MIGRATION_DATABASE_URL, /^postgresql:\/\/occ_migrator:.*\/openclaw_k8s_/);
+    const migrationUrl = env.OCC_MIGRATION_DATABASE_URL;
+    assert.ok(typeof migrationUrl === "string", "the migration fixture requires its database URL");
+    assert.match(migrationUrl, /^postgresql:\/\/occ_migrator:.*\/openclaw_k8s_/);
     return finish();
   }
   if (command === "k3d") {
@@ -834,26 +910,29 @@ async function fakeCommand({
       return finish("k3d version v5.8.3\n");
     }
     // Only lanes whose tests need no Gateway API or other K3s add-on skip them.
-    const addonArgs = lanesWithoutK3sAddons.has(env.CI_FIXTURE_LANE)
-      ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"]
-      : [];
+    const lane = env.CI_FIXTURE_LANE;
+    const addonArgs =
+      lane !== undefined && lanesWithoutK3sAddons.has(lane)
+        ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"]
+        : [];
     if (equals(args.slice(0, 2), ["cluster", "create"])) {
-      assert.match(args[2], /^openclaw-k8s-/);
+      const cluster = argument(2);
+      assert.match(cluster, /^openclaw-k8s-/);
       assert.deepEqual(args.slice(3, 5), ["--image", env.OPENCLAW_CI_K3S_IMAGE || defaultK3sImage]);
       // A channel such as +v1.35 makes k3d query update.k3s.io on every cluster
       // create; the forwarded node image must be a digest-pinned K3s 1.35 image.
-      assert.match(args[4], /:v1\.35\.\d+-k3s\d+@sha256:[a-f0-9]{64}$/);
+      assert.match(argument(4), /:v1\.35\.\d+-k3s\d+@sha256:[a-f0-9]{64}$/);
       // Two-node clusters (the fixture lanes' cross-node plugin status) share a storage volume.
       if (args[8] === "1") {
         assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "1", "--volume"]);
-        const storage = args[10].split(":");
-        assert.equal(storage[1], "/var/lib/rancher/k3s/storage@all");
+        const [storageDirectory = "", mount] = argument(10).split(":");
+        assert.equal(mount, "/var/lib/rancher/k3s/storage@all");
         assert.ok(
-          existsSync(resolve(cwd, storage[0])),
+          existsSync(resolve(cwd, storageDirectory)),
           "both nodes must mount an existing shared host directory",
         );
         assert.equal(args[11], "--api-port");
-        assert.match(args[12], /^127\.0\.0\.1:\d+$/);
+        assert.match(argument(12), /^127\.0\.0\.1:\d+$/);
         const optionsEnd = 16 + addonArgs.length;
         assert.deepEqual(args.slice(13, optionsEnd), [
           "--kubeconfig-update-default=false",
@@ -872,7 +951,7 @@ async function fakeCommand({
         }
       } else {
         assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
-        assert.match(args[10], /^127\.0\.0\.1:\d+$/);
+        assert.match(argument(10), /^127\.0\.0\.1:\d+$/);
         const options = [
           "--kubeconfig-update-default=false",
           "--kubeconfig-switch-context=false",
@@ -885,12 +964,11 @@ async function fakeCommand({
               equals(args.slice(11), [...options, "--no-rollback"])),
         );
       }
-      state.cluster = args[2];
+      state.cluster = cluster;
       state.agents = Number(args[args.indexOf("--agents") + 1]);
       state.clusterDeleted = false;
-      const hangOnce = ["cluster-create-hangs-once", "cluster-create-hangs-escaped"].includes(
-        scenario,
-      );
+      const hangOnce =
+        scenario === "cluster-create-hangs-once" || scenario === "cluster-create-hangs-escaped";
       if (scenario === "cluster-create-hangs" || (hangOnce && !state.createHung)) {
         state.createHung = true;
         commitState();
@@ -901,7 +979,7 @@ async function fakeCommand({
         // A descendant that shares the output pipes, as a credential helper would.
         // The timeout must reach it, or "close" never comes. The command records its
         // own and the descendant's process IDs in hung-pids (escaped: escaped-pids).
-        spawnPipeHolder({ escaped });
+        spawnPipeHolder(escaped);
         return hang();
       }
       if (scenario === "cluster-create-failed") {
@@ -934,7 +1012,7 @@ async function fakeCommand({
       args[2] === "--context" &&
       args[3] === "k3d-" + state.cluster
     ) {
-      if (!existsSync(resolve(cwd, args[1]))) {
+      if (!existsSync(resolve(cwd, argument(1)))) {
         stderr("kubeconfig is unavailable\n");
         return exit(1);
       }
@@ -947,7 +1025,8 @@ async function fakeCommand({
         // The worker can register after the server (finding 1006), and the API server can
         // refuse the first listing.
         state.nodeListings = (state.nodeListings ?? 0) + 1;
-        const worker = state.agents > 0 && !(scenario === "late-worker" && state.nodeListings <= 2);
+        const worker =
+          (state.agents ?? 0) > 0 && !(scenario === "late-worker" && state.nodeListings <= 2);
         commitState();
         if (scenario === "late-worker" && state.nodeListings === 1) {
           stderr("The connection to the server 127.0.0.1:6443 was refused\n");
@@ -963,7 +1042,12 @@ async function fakeCommand({
       if (
         equals(args.slice(4), ["wait", "--for=condition=Ready", "nodes", "--all", "--timeout=120s"])
       ) {
-        assert.equal(state.nodeListings > 0, true, "the Ready wait follows node registration");
+        assert.equal(
+          (state.nodeListings ?? 0) > 0,
+          true,
+          "the Ready wait follows node registration",
+        );
+        assert.ok(typeof scenario === "string", "the kubectl fixture requires CI_FIXTURE_SCENARIO");
         if (scenario.startsWith("nodes-unready")) {
           stderr("synthetic node readiness timeout\n");
           return exit(1);
@@ -1007,6 +1091,7 @@ async function fakeCommand({
         return finish(JSON.stringify({ spec: { podCIDR: "10.42.7.0/24" } }));
       }
       if (equals(args.slice(4), ["get", "nodes", "-o", "json"])) {
+        assert.ok(typeof scenario === "string", "the kubectl fixture requires CI_FIXTURE_SCENARIO");
         if (scenario.startsWith("nodes-unready")) {
           return finish(
             JSON.stringify({
@@ -1094,7 +1179,9 @@ async function fakeCommand({
           );
         }
         if (equals(args.slice(6, 8), ["apply", "-f"]) && args.length === 9) {
-          const manifest = JSON.parse(readFileSync(resolve(cwd, args[8]), "utf8"));
+          const manifest = JSON.parse(
+            readFileSync(resolve(cwd, argument(8)), "utf8"),
+          ) as PinManifest;
           assert.equal(manifest.kind, "DaemonSet");
           assert.equal(manifest.metadata.name, "openclaw-ci-fixture-image-pin");
           assert.equal(manifest.metadata.namespace, "kube-system");
@@ -1102,10 +1189,13 @@ async function fakeCommand({
           assert.equal(pod.automountServiceAccountToken, false);
           assert.deepEqual(pod.tolerations, [{ operator: "Exists" }]);
           assert.equal(pod.containers.length, 1);
-          assert.equal(pod.containers[0].image, Object.values(state.aliases)[0]);
-          assert.equal(pod.containers[0].imagePullPolicy, "Never");
-          assert.deepEqual(pod.containers[0].securityContext.capabilities.drop, ["ALL"]);
-          assert.equal(pod.containers[0].securityContext.readOnlyRootFilesystem, true);
+          const [container] = pod.containers;
+          assert.ok(container);
+          assert.ok(state.aliases, "the fixture image is tagged before pinning");
+          assert.equal(container.image, Object.values(state.aliases)[0]);
+          assert.equal(container.imagePullPolicy, "Never");
+          assert.deepEqual(container.securityContext.capabilities.drop, ["ALL"]);
+          assert.equal(container.securityContext.readOnlyRootFilesystem, true);
           state.fixtureImagePinned = true;
           return finish();
         }
@@ -1201,20 +1291,22 @@ async function fakeCommand({
 }
 
 // A fake command for this fixture's server; see fixture-command-server.ts.
-export function commandShim(options) {
+export function commandShim(
+  options: Omit<Parameters<typeof fixtureCommandShim>[0], "forwardedEnv">,
+) {
   return fixtureCommandShim({ ...options, forwardedEnv });
 }
 
 // One server per fixture, writing to the fixture directory root.
-export async function startFixtureCommandServer({ root, hungCommandExitMs }) {
+export async function startFixtureCommandServer({ root, hungCommandExitMs }: FixtureServerOptions) {
   assert.ok(Number.isSafeInteger(hungCommandExitMs));
   assert.ok(typeof root === "string" && root.length > 0);
   const store = createStateStore();
-  const postgresServers = new Map();
+  const postgresServers: PostgresRegistry = new Map();
   const server = await startCommandServer({
     forwardedEnv,
-    handle: ({ command, args, env, cwd, io }) =>
-      fakeCommand({ command, args, env, cwd, root, store, postgresServers, hungCommandExitMs, io }),
+    handle: (request) =>
+      fakeCommand({ ...request, root, store, postgresServers, hungCommandExitMs }),
   });
   return {
     ...server,

@@ -1,17 +1,43 @@
 import { setTimeout as delay } from "node:timers/promises";
+import type { ControlRequest } from "../../../apps/controller/src/drivers/repo/access/control-contracts.ts";
+
+export type ResourceCleanup = (signal?: AbortSignal) => Promise<void>;
+
+type CleanupRequest =
+  | { method: "GET" | "DELETE"; path: string; body?: never }
+  | { method: "PATCH"; path: string; body: { state: "closed" } };
+
+type ResourceCleanupOptions = {
+  request: (request: CleanupRequest, signal?: AbortSignal) => Promise<unknown>;
+  repository: string;
+  marker: string;
+  head?: string | undefined;
+} & ({ kind: "issues" | "pulls"; issueNumber?: number } | { kind: "comment"; issueNumber: number });
+
+type CleanupCandidate = {
+  body?: unknown;
+  pull_request?: unknown;
+  head?: { ref?: unknown };
+  id?: unknown;
+  number?: unknown;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
 
 class ResourceCleanupError extends Error {}
 
 // Register before dispatch: a missing creation response never proves that the
 // provider did not accept the write. These reads stay inside the admitted repo.
 export function registerResourceCleanup(
-  cleanups,
-  { request, repository, kind, marker, head, issueNumber },
+  cleanups: ResourceCleanup[],
+  { request, repository, kind, marker, head, issueNumber }: ResourceCleanupOptions,
 ) {
   const prefix = `repos/${repository}`;
   const collection = kind === "comment" ? `issues/${issueNumber}/comments` : kind;
-  const reconcile = async (signal) => {
-    const matches = [];
+  const reconcile = async (signal?: AbortSignal) => {
+    const matches: CleanupCandidate[] = [];
     let complete = false;
     for (let page = 1; page <= 5; page++) {
       signal?.throwIfAborted();
@@ -32,7 +58,7 @@ export function registerResourceCleanup(
         throw new ResourceCleanupError(`unresolved ${kind} identity: ${marker}`);
       }
       matches.push(
-        ...values.filter(
+        ...(values as CleanupCandidate[]).filter(
           (value) =>
             typeof value.body === "string" &&
             value.body.split("\n").includes(marker) &&
@@ -47,12 +73,12 @@ export function registerResourceCleanup(
     }
     // Absence after a lost response remains unresolved: provider visibility may
     // lag. Multiple matches or a truncated search also cannot establish ownership.
-    if (!complete || matches.length !== 1) {
+    const [value] = matches;
+    if (!complete || matches.length !== 1 || !value) {
       throw new ResourceCleanupError(`unresolved ${kind} identity: ${marker}`);
     }
-    const value = matches[0];
     const id = kind === "comment" ? value.id : value.number;
-    if (!Number.isSafeInteger(id) || id <= 0) {
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
       throw new ResourceCleanupError(`unresolved ${kind} identity: ${marker}`);
     }
     const path = `${prefix}/${kind === "comment" ? "issues/comments" : kind}/${id}`;
@@ -61,7 +87,7 @@ export function registerResourceCleanup(
     } else {
       await request({ method: "PATCH", path, body: { state: "closed" } }, signal);
       const closed = await request({ method: "GET", path }, signal);
-      if (closed.number !== id || closed.state !== "closed") {
+      if (!isRecord(closed) || closed.number !== id || closed.state !== "closed") {
         throw new ResourceCleanupError(`unresolved ${kind} closure: ${marker}`);
       }
     }
@@ -79,14 +105,22 @@ export function registerResourceCleanup(
 }
 
 export async function closeAndDispose(
-  callControl,
-  socket,
-  sessionId,
-  { timeoutMs = 10000, pollMs = 100, signal } = {},
+  callControl: (socket: string, request: ControlRequest) => Promise<unknown>,
+  socket: string,
+  sessionId: string,
+  {
+    timeoutMs = 10000,
+    pollMs = 100,
+    signal,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    signal?: AbortSignal;
+  } = {},
 ) {
   const deadline = performance.now() + timeoutMs;
   let locallyClosed = false;
-  const control = async (request) => {
+  const control = async (request: ControlRequest) => {
     try {
       return await callControl(socket, request);
     } catch {
@@ -95,24 +129,23 @@ export async function closeAndDispose(
       );
     }
   };
-  const inspect = (status) => {
+  const inspect = (status: unknown) => {
     if (
-      !status ||
-      typeof status !== "object" ||
+      !isRecord(status) ||
       "error" in status ||
       status.sessionId !== sessionId ||
-      !["CLOSED", "DISPOSED"].includes(status.state)
+      (status.state !== "CLOSED" && status.state !== "DISPOSED")
     ) {
       throw new Error(
         `session cleanup failed: local closure ${locallyClosed ? "confirmed" : "unconfirmed"}`,
       );
     }
     locallyClosed = true;
-    const cleanup = status.cleanup;
+    const { cleanup } = status;
     return (
       status.state === "DISPOSED" &&
       status.activeUses === 0 &&
-      cleanup &&
+      isRecord(cleanup) &&
       cleanup.active === 0 &&
       cleanup.pending === 0 &&
       cleanup.uncertain === 0 &&

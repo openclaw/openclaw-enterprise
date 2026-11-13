@@ -1,9 +1,69 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import type { Readable } from "node:stream";
 import { setTimeout } from "node:timers/promises";
-import { callGatewayFromCli } from "openclaw/plugin-sdk/gateway-runtime";
+import type { WorkspaceNodeGatewayReplies } from "./runtime-workspace-node.ts";
+
+interface GatewayReplies extends WorkspaceNodeGatewayReplies {
+  "plugins.list": {
+    plugins: { id: string; runtime?: { state?: string } }[];
+    generation: number;
+  };
+  "agents.files.get": { file?: { content?: string } };
+}
+
+interface GatewayRuntime {
+  callGatewayFromCli<Method extends keyof GatewayReplies>(
+    method: Method,
+    connection: { url: string; password: string | undefined; json: boolean; timeout: string },
+    params: Record<string, unknown>,
+    options: { progress: boolean },
+  ): Promise<GatewayReplies[Method]>;
+}
+
+interface GatewayProcess {
+  pid: number;
+  startTicks: string;
+  argv: string;
+}
+
+interface FileTransferState {
+  state: string | undefined;
+  generation: number;
+}
+
+interface RuntimeStatus {
+  workspaceNodeId?: string;
+  workspaceNodeFailure?: { code: string; checkedAt: string };
+}
+
+interface GatewayConfig {
+  gateway: unknown;
+  plugins: {
+    allow: string[];
+    entries: Record<
+      string,
+      { enabled: boolean; config: { workspaces: { main: { nodeId: string; remoteRoot: string } } } }
+    >;
+  };
+}
+
+export interface WorkspaceNodeHotApplyReceipt {
+  nodeId: string;
+  ackMs: number;
+  gatewayProcesses: GatewayProcess[];
+  sameProcesses: boolean;
+  fileTransferBefore: FileTransferState;
+  fileTransferAfter: FileTransferState;
+  readBefore: string;
+  readAfter: string;
+}
+
+const gatewayRuntimeSpecifier = "openclaw/plugin-sdk/gateway-runtime";
+const { callGatewayFromCli } = (await import(gatewayRuntimeSpecifier)) as GatewayRuntime;
 
 // Runs inside a runtime image Gateway container started by the Kubernetes
 // Gateway wrapper with an absent workspace node binding. It pairs a real node
@@ -17,8 +77,13 @@ const statusUrl = `http://127.0.0.1:${process.env.OPENCLAW_RUNTIME_STATUS_PORT}/
 const configPath = "/home/node/.openclaw/openclaw.json";
 const nodeRoot = "/home/node/workspace";
 const localRoot = process.env.OCC_TEST_GATEWAY_WORKSPACE;
+assert.ok(localRoot, "OCC_TEST_GATEWAY_WORKSPACE is required.");
+assert.ok(bindingPath, "OPENCLAW_WORKSPACE_NODE_PATH is required.");
 
-async function call(method, params = {}) {
+async function call<Method extends keyof GatewayReplies>(
+  method: Method,
+  params: Record<string, unknown> = {},
+): Promise<GatewayReplies[Method]> {
   try {
     return await callGatewayFromCli(
       method,
@@ -32,22 +97,24 @@ async function call(method, params = {}) {
       { progress: false },
     );
   } catch (error) {
-    throw new Error(method + ": " + error.message, { cause: error });
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${method}: ${message}`, { cause: error });
   }
 }
 
 // The OpenClaw Gateway process the wrapper spawned, with its kernel start time.
 // OpenClaw retitles itself, so its command line reads `openclaw-gateway`.
 async function gatewayProcesses() {
-  const found = [];
+  const found: GatewayProcess[] = [];
   for (const pid of await readdir("/proc")) {
     if (!/^\d+$/.test(pid) || Number(pid) === process.pid) {
       continue;
     }
     const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")).split("\0");
-    if (argv[0].trim() === "openclaw-gateway") {
+    if (argv[0]?.trim() === "openclaw-gateway") {
       const stat = await readFile(`/proc/${pid}/stat`, "utf8");
       const startTicks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+      assert.ok(startTicks, "Expected the Gateway process start time.");
       found.push({
         pid: Number(pid),
         startTicks,
@@ -59,22 +126,22 @@ async function gatewayProcesses() {
   return found.sort((left, right) => left.pid - right.pid);
 }
 
-async function fileTransfer() {
+async function fileTransfer(): Promise<FileTransferState> {
   const list = await call("plugins.list");
   const plugin = list.plugins.find(({ id }) => id === "file-transfer");
   return { state: plugin?.runtime?.state, generation: list.generation };
 }
 
-async function runtimeStatus() {
-  return await (await fetch(statusUrl)).json();
+async function runtimeStatus(): Promise<RuntimeStatus> {
+  return (await (await fetch(statusUrl)).json()) as RuntimeStatus;
 }
 
-async function readAgentFile(name) {
+async function readAgentFile(name: string) {
   const result = await call("agents.files.get", { agentId: "main", name });
   return result.file?.content;
 }
 
-let node;
+let node: ChildProcessByStdio<null, Readable, Readable> | undefined;
 let nodeLog = "";
 try {
   // Distinct content on each side shows which host served the read.
@@ -126,9 +193,9 @@ try {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  node.stdout.on("data", (data) => (nodeLog += data));
-  node.stderr.on("data", (data) => (nodeLog += data));
-  let nodeId;
+  node.stdout.on("data", (data: Buffer) => (nodeLog += data));
+  node.stderr.on("data", (data: Buffer) => (nodeLog += data));
+  let nodeId: string | undefined;
   for (let attempt = 0; attempt < 120 && nodeId === undefined; attempt++) {
     if (node.exitCode !== null) {
       throw new Error(`Node host exited: ${nodeLog}`);
@@ -142,7 +209,7 @@ try {
   assert.ok(nodeId, `node host did not connect: ${nodeLog}`);
 
   const gatewayBefore = await gatewayProcesses();
-  const configBefore = JSON.parse(await readFile(configPath, "utf8"));
+  const configBefore = JSON.parse(await readFile(configPath, "utf8")) as GatewayConfig;
   const transferBefore = await fileTransfer();
   const statusBefore = await runtimeStatus();
   const beforeContent = await readAgentFile("AGENTS.md");
@@ -160,7 +227,7 @@ try {
   );
   await rename(`${bindingPath}.new`, bindingPath);
 
-  let status;
+  let status: RuntimeStatus | undefined;
   for (let attempt = 0; attempt < 240; attempt++) {
     status = await runtimeStatus();
     if (status.workspaceNodeId !== undefined || status.workspaceNodeFailure !== undefined) {
@@ -169,17 +236,20 @@ try {
     await setTimeout(250);
   }
   const ackMs = Date.now() - writtenAt;
+  assert.ok(status);
   assert.equal(status.workspaceNodeFailure, undefined, JSON.stringify(status));
   assert.equal(status.workspaceNodeId, nodeId);
 
   const transferAfter = await fileTransfer();
   assert.equal(transferAfter.state, "active");
   assert.notEqual(transferAfter.generation, transferBefore.generation);
-  const configAfter = JSON.parse(await readFile(configPath, "utf8"));
+  const configAfter = JSON.parse(await readFile(configPath, "utf8")) as GatewayConfig;
   assert.deepEqual(configAfter.gateway, configBefore.gateway, "gateway.* is untouched");
   assert.equal(configAfter.plugins.allow.includes("file-transfer"), true);
-  assert.equal(configAfter.plugins.entries["file-transfer"].enabled, true);
-  assert.deepEqual(configAfter.plugins.entries["file-transfer"].config.workspaces.main, {
+  const transferEntry = configAfter.plugins.entries["file-transfer"];
+  assert.ok(transferEntry);
+  assert.equal(transferEntry.enabled, true);
+  assert.deepEqual(transferEntry.config.workspaces.main, {
     nodeId,
     remoteRoot: nodeRoot,
   });
@@ -190,18 +260,17 @@ try {
   const afterContent = await readAgentFile("AGENTS.md");
   assert.equal(afterContent, "served by the workspace node\n");
 
-  console.log(
-    JSON.stringify({
-      nodeId,
-      ackMs,
-      gatewayProcesses: gatewayAfter,
-      sameProcesses: JSON.stringify(gatewayAfter) === JSON.stringify(gatewayBefore),
-      fileTransferBefore: transferBefore,
-      fileTransferAfter: transferAfter,
-      readBefore: beforeContent.trim(),
-      readAfter: afterContent.trim(),
-    }),
-  );
+  const receipt: WorkspaceNodeHotApplyReceipt = {
+    nodeId,
+    ackMs,
+    gatewayProcesses: gatewayAfter,
+    sameProcesses: JSON.stringify(gatewayAfter) === JSON.stringify(gatewayBefore),
+    fileTransferBefore: transferBefore,
+    fileTransferAfter: transferAfter,
+    readBefore: beforeContent.trim(),
+    readAfter: afterContent.trim(),
+  };
+  console.log(JSON.stringify(receipt));
 } finally {
   if (node && node.exitCode === null && node.signalCode === null) {
     const exited = once(node, "exit");

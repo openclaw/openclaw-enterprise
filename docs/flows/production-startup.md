@@ -85,7 +85,7 @@ The process continues; the next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
-`scripts/diagnose-kubernetes-prerequisites.mjs:diagnose` reads CRDs, controllers,
+`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` reads CRDs, controllers,
 addresses and object quota headroom. EKS binds account, ARN, endpoint and CA.
 [Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 

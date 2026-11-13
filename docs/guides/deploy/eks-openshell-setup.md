@@ -194,7 +194,7 @@ reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
 and put the intended cluster ARN in `eks.clusterArn`.
 
 ```bash
-node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
 ```
 
 Resolve failed and unknown checks before installing. Matching address inventory

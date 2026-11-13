@@ -565,7 +565,7 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
         volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
       });
       const source = await readFile(
-        new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
+        new URL("../fixtures/runtime-workspace-node.ts", import.meta.url),
         "utf8",
       );
       // Only the unrelated Codex sibling is inert. Native setup, the node, Gateway,
@@ -589,7 +589,7 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
         {},
         JSON.stringify({
           "/tmp/workspace-node-supervisor.cjs": supervisor,
-          "/tmp/runtime-workspace-node.mjs": source,
+          "/tmp/runtime-workspace-node.ts": source,
         }),
       );
       // The fixture bounds every CLI call and wait by one deadline 10 s inside this
@@ -602,7 +602,7 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
           `WORKSPACE_PROOF_BUDGET_MS=${execTimeoutMs - 10_000}`,
           containerName,
           "node",
-          "/tmp/runtime-workspace-node.mjs",
+          "/tmp/runtime-workspace-node.ts",
         ],
         { timeout: execTimeoutMs },
       );

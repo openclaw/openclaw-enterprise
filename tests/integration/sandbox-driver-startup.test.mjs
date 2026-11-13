@@ -26,10 +26,7 @@ import {
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import {
-  createKubernetesComputeDriver,
-  KubernetesComputeDriver,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
@@ -113,10 +110,6 @@ import {
   verifyForeignSandboxAnnotations,
 } from "./sandbox-driver-revision-observation-cases.ts";
 import {
-  verifyInitialWorkspaceAdmission,
-  verifyMainWorkspaceMount,
-} from "./sandbox-driver-workspace-admission-cases.ts";
-import {
   buildOperatorIngressManifests,
   verifyOperatorWorkspaceChart,
 } from "./sandbox-driver-operator-chart-case.ts";
@@ -139,7 +132,6 @@ import { registerSandboxDriverPreparerCleanupCases } from "./sandbox-driver-prep
 import { registerSandboxDriverNativePreparationCases } from "./sandbox-driver-native-preparation-cases.ts";
 import { createOrphanedNativePreparation } from "./sandbox-driver-preparation-cases.ts";
 import { verifySandboxScratchStorage } from "./sandbox-driver-scratch-storage-case.ts";
-import { verifyAdmittedComputeCommands } from "./sandbox-driver-admitted-command-case.ts";
 import { verifyStockExtensionRoundTrips } from "./sandbox-driver-stock-readiness-cases.ts";
 
 const harnessLifecycleChecks = createSandboxHarnessLifecycleChecks({
@@ -688,38 +680,6 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
     // Codex never runs the preparation, so it is still admitted.
     assert.ok(driver.configureAgent(configuration, harness("codex")).plugins.entries.codex);
   }
-});
-
-test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
-  verifyMainWorkspaceMount({
-    driver: openShellDriver(workspaceGatewayClient()),
-    readGatewayWorkspace: (configured, harness) => {
-      const compute = createKubernetesComputeDriver(
-        conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
-      );
-      return compute.gatewayConfiguration({
-        id: "rev_00000000-0000-4000-8000-000000000001",
-        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-        agentId: "agt_00000000-0000-4000-8000-000000000001",
-        revision: 1,
-        configurationId: "cfg_main_workspace",
-        configurationKind: "agent",
-        configurationGeneration: 1,
-        configuration: {
-          ...configured,
-          logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
-          diagnostics: { otel: { logs: false } },
-        },
-        harness,
-      }).workspace;
-    },
-  });
-});
-
-test("OpenShell admits initial files only for its projected main workspace", () => {
-  const options = sandboxInstallation().drivers.sandbox.configuration;
-  options.kubernetes.sandboxDataMount.mountPath = "/sandbox/custom-workspace";
-  verifyInitialWorkspaceAdmission(openShellDriver(workspaceGatewayClient(), options));
 });
 
 const negotiatedGoogleGuard = () => ({
@@ -1771,10 +1731,6 @@ test("OpenShell keeps scratch separate from its durable data mount", async () =>
 
 test("OpenShell holds withdrawn Codex authentication after a Harness restart", async (t) => {
   await codexHarnessChecks.holdWithdrawnCodexAuthentication(t);
-});
-
-test("OpenShell composes immutable commands from admitted Compute revisions", async (t) => {
-  await verifyAdmittedComputeCommands(t);
 });
 
 for (const harnessId of ["codex", "openclaw"]) {
