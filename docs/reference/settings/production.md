@@ -123,9 +123,11 @@ Revoking one account's cookies needs no rotation: reset its password.
 
 ### Control Plane audit
 
-Control Plane audit is off by default in production. To enable it, first check
-ledger capacity and review the covered operations in the
-[audit guide](../../guides/topics/audit-log.md). Set Helm
+Control Plane audit is off by default in production. Before you enable it,
+restrict API access to approved clients and check ledger capacity. Rejected
+requests can also add records. A sustained request load can fill the ledger and
+block audited actions. See the [audit guide](../../guides/topics/audit-log.md)
+for the storage check and covered operations. Set Helm
 `controlPlaneAudit.enabled: true`, or set `OCC_CONTROL_PLANE_AUDIT_ENABLED=true`
 on both the API and worker in a deployment that does not use Helm.
 
