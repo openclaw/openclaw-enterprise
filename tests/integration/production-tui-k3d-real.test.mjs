@@ -516,8 +516,7 @@ test(
         const { prepareMaterialization } = await import("../helpers/signin/materialization.mjs");
         const { providerDns } = await import("../helpers/signin/dns.mjs");
         dns = providerDns({ system, suffix, custody, localCluster, kubectl, kubeArgs, run });
-        const { createOidcProviderMaterial } =
-          await import("../helpers/oidc-provider-material.mjs");
+        const { createOidcProviderMaterial } = await import("../helpers/oidc-provider-material.ts");
         providerMaterial = await createOidcProviderMaterial(directory, {
           hostname: "idp.signin-rehearsal.test",
           redirectUri: "https://console.signin-rehearsal.test/api/auth/providers/oidc/callback",
