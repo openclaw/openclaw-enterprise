@@ -20,30 +20,19 @@ Use `--controller-image` for API and worker. Repository credentials also require
 concurrently. Allow capacity for overlapping versions. API and worker stop during
 migration and rollout.
 
-Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
-Chart files are verified before cluster access.
+Keep the checkout exclusive and unchanged. Store evidence outside the chart.
 
-Configure endpoint and TLS settings in the selected kubeconfig.
+Configure endpoints and TLS in kubeconfig.
 Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
 `HELM_KUBEINSECURE_SKIP_TLS_VERIFY` before starting or resuming.
 These override kubeconfig/context flags.
 
-For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
+[Prepare candidates](#include-reviewed-settings) for settings changes.
 For the experimental two-cluster profile, first
 [upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart).
 
-### Check the installed repository policy
-
-If the live Installation selects `drivers.repo` or has a GitHub Backend with
-`drivers`, keep the current release serving. The helper refuses a direct upgrade,
-including a runtime replacement. The old Worker can renew credentials, and a
-deleted Agent can still have cleanup on its original sender. An empty list of
-Agents cannot establish that cleanup has finished.
-
-Use the original release to [inspect known sessions and reconcile cleanup](../repository-credentials/standalone-service.md#drain-an-existing-signing-gateway).
-Preserve the installed policy, approvals and sender. Editing the live file to
-remove the selection cannot settle its obligations. This release provides no
-maintenance transition from that baseline.
+A live `drivers.repo` or GitHub Backend `drivers` blocks direct upgrades. Keep the
+original sender running and [reconcile its cleanup](../repository-credentials/standalone-service.md#drain-an-existing-signing-gateway), including deleted Agents.
 
 ## Prepare the release
 

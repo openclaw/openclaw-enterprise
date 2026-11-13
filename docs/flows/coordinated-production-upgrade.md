@@ -85,26 +85,23 @@ aliases before access. Other edits/image provenance are unchecked.
 `yq -r` tests for nonempty `preprovisionedNamespace`. Continue on success
 with one `false`; otherwise refuse before access (`preprovisioned-namespace.err`).
 
-Resume locks evidence paths/devices/inodes/aliases and runtime dispatch journals.
+Resume locks physical evidence and runtime dispatch journals.
 
 `matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings and validates candidates.
-Invalid inputs/unwritable evidence cause `Cannot compare upgrade YAML`.
+Invalid inputs or writes cause `Cannot compare upgrade YAML`.
 Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
 and array-wrapping one registration.
 Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
 live comparison stays exact. Immutable reference switches require string keys.
 Startup validates controllers; broker checks only references.
-Before preflight resources or writer shutdown, the helper inspects the live
-Installation for a legacy repository Driver selection. That baseline requires
-the original Worker for settlement, including cleanup after Agent deletion.
-The refusal also applies when replacing runtime images.
+Live legacy repository Driver selections block preflight, including runtime replacements.
+Deleted revisions can still own credential cleanup.
 
-`read_restart_inventory` validates complete authorized inventory ownership, IDs and selection states. Retained running revisions require accepted
-[restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only `occ agent revision AGENT_ID REVISION_ID` requires one owned
-revision with object-valued Harness settings; retain IDs and validation outcome.
-Drafts cannot substitute. Runtime upgrades record replacements; draft validation requires image
-support/size compliance. Quiescence is nonatomic; repository continuity is unverified.
+`read_restart_inventory` validates authorized fleet IDs, states and running revisions’
+[restart dispositions](../reference/repository-credentials/worker-replacement.md).
+Controller-only upgrades verify Harness settings on the owned active revision.
+Runtime upgrades record replacements. Draft checks require image support and size compliance.
+Quiescence is nonatomic.
 
 `OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`:
 unreadable snapshots yield `unknown`; database/identity errors propagate. `getInstallationDeploymentInventory` invokes Compute outside State
