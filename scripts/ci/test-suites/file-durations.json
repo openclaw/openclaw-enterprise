@@ -55,7 +55,7 @@
     "tests/conformance/audit.test.mjs": 100,
     "tests/conformance/bounded-response-reads.test.ts": 1700,
     "tests/conformance/codex-native-startup.test.mjs": 600,
-    "tests/conformance/codex-seccomp-profile.test.mjs": 1900,
+    "tests/conformance/codex-seccomp-profile.test.ts": 1900,
     "tests/conformance/codex-stderr-filter.test.ts": 100,
     "tests/conformance/compute-lifecycle-hooks.test.mjs": 200,
     "tests/conformance/model-discovery.test.mjs": 300,
