@@ -636,6 +636,18 @@ provider token. Consumed attempts are deleted before exchange.
 - `code_verifier`
 - `created_at`
 - `expires_at`
+- `link_hash` records which pending link the sign-in can finish.
+- `link_existing` records a request to connect a sign-in method to an existing account.
+
+### `human_authentication_links`
+
+Stores a verified OpenID Connect (OIDC) identity while the user signs in to their
+existing account. The link expires after five minutes. OpenClaw deletes the row
+in the transaction that adds the sign-in method and issues the session.
+
+- `link_hash`, `installation_id`, `attempt_id`
+- `provider_id`, `provider_binding`, `subject`
+- `created_at`, `expires_at`
 
 ### `native_browser_intents`
 

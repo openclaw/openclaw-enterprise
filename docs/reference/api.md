@@ -82,7 +82,7 @@ the paths.
 
 | Resource | Operations |
 | --- | --- |
-| [Authentication](#authentication) | 23 operations |
+| [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
@@ -113,14 +113,18 @@ the paths.
 | [`POST /api/auth/accounts/{userId}/methods/{methodId}/detach`](#post-apiauthaccountsuseridmethodsmethodiddetach) | Detach an external sign-in identity from an account |
 | [`POST /api/auth/accounts/{userId}/providers/google`](#post-apiauthaccountsuseridprovidersgoogle) | Attach an exact Google identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/providers/oidc`](#post-apiauthaccountsuseridprovidersoidc) | Attach an exact OIDC identity to an existing account |
+| [`POST /api/auth/accounts/{userId}/providers/oidc/{providerKey}`](#post-apiauthaccountsuseridprovidersoidcproviderkey) | Attach an exact identity from a named OIDC provider to an existing account |
 | [`POST /api/auth/accounts/{userId}/revoke`](#post-apiauthaccountsuseridrevoke) | Revoke all sessions for a human account |
 | [`GET /api/auth/providers`](#get-apiauthproviders) | List configured browser sign-in methods |
-| [`GET /api/auth/providers/google/callback`](#get-apiauthprovidersgooglecallback) | Complete an enrolled Google sign-in |
+| [`GET /api/auth/providers/google/callback`](#get-apiauthprovidersgooglecallback) | Complete Google sign-in |
 | [`POST /api/auth/providers/google/result`](#post-apiauthprovidersgoogleresult) | Confirm which session a Google sign-in created |
-| [`POST /api/auth/providers/google/start`](#post-apiauthprovidersgooglestart) | Start Google sign-in for an enrolled account |
-| [`GET /api/auth/providers/oidc/callback`](#get-apiauthprovidersoidccallback) | Complete an enrolled OIDC sign-in |
+| [`POST /api/auth/providers/google/start`](#post-apiauthprovidersgooglestart) | Start Google sign-in |
+| [`GET /api/auth/providers/oidc/callback`](#get-apiauthprovidersoidccallback) | Complete OIDC sign-in |
 | [`POST /api/auth/providers/oidc/result`](#post-apiauthprovidersoidcresult) | Confirm which session an OIDC sign-in created |
-| [`POST /api/auth/providers/oidc/start`](#post-apiauthprovidersoidcstart) | Start OIDC sign-in for an enrolled account |
+| [`POST /api/auth/providers/oidc/start`](#post-apiauthprovidersoidcstart) | Start OIDC sign-in |
+| [`GET /api/auth/providers/oidc/{providerKey}/callback`](#get-apiauthprovidersoidcproviderkeycallback) | Complete OIDC provider sign-in |
+| [`POST /api/auth/providers/oidc/{providerKey}/result`](#post-apiauthprovidersoidcproviderkeyresult) | Confirm which session an OIDC provider sign-in created |
+| [`POST /api/auth/providers/oidc/{providerKey}/start`](#post-apiauthprovidersoidcproviderkeystart) | Start OIDC provider sign-in |
 | [`GET /api/auth/recovery`](#get-apiauthrecovery) | Inspect the recovery account designation |
 | [`POST /api/auth/recovery`](#post-apiauthrecovery) | Move the recovery designation to another Installation administrator |
 | [`POST /api/auth/service-keys`](#post-apiauthservicekeys) | Issue a service API key |
@@ -700,6 +704,81 @@ Example response
 }
 ```
 
+#### `POST /api/auth/accounts/{userId}/providers/oidc/{providerKey}`
+
+<span id="post-apiauthaccountsuseridprovidersoidcproviderkey"></span>
+
+Attach an exact identity from a named OIDC provider to an existing account
+
+**Operation ID:** `attachNamedOidcIdentity`
+
+**Permissions:** Requires a current human Native IAM Installation administrator who holds every grant of the target account's Principal, trusted Origin and expectedVersion from a guarded account read. Commits state and audit together. An unknown outcome must be inspected without automatic retry; present state does not attribute the earlier request.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
+| `providerKey` | path | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,31}$` | "keycloak" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+| `subject` | `string` | Yes | pattern: `^[\x21-\x7E]{1,255}$` |
+
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "subject": "provider-subject-docs-admin"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.userId` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /api/auth/accounts/{userId}/revoke`
 
 <span id="post-apiauthaccountsuseridrevoke"></span>
@@ -796,7 +875,13 @@ List configured browser sign-in methods
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.google` | `boolean` | Yes | — |
-| `data.oidc` | `boolean` | Yes | — |
+| `data.oidc` | `boolean` | Yes | The legacy OIDC route is available. |
+| `data.oidcProviders` | `array<object>` | No | Configured named OIDC sign-in choices and their browser routes. |
+| `data.oidcProviders[].allowSelfLink` | `boolean` | Yes | This provider permits self-service links to other opt-in providers. |
+| `data.oidcProviders[].authorizationUrl` | `string (uri)` | Yes | — |
+| `data.oidcProviders[].key` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,31}$` |
+| `data.oidcProviders[].label` | `string` | Yes | min length: 1; max length: 40 |
+| `data.oidcProviders[].route` | `string` | Yes | pattern: `^oidc(/[a-z][a-z0-9-]{0,31})?$` |
 | `data.oidcSignIn` | `object` | No | Present only when OIDC sign-in is configured: the Console's button label and the configured authorization endpoint that the start URL must use. |
 | `data.oidcSignIn.authorizationUrl` | `string (uri)` | Yes | — |
 | `data.oidcSignIn.label` | `string` | Yes | min length: 1; max length: 40 |
@@ -824,11 +909,11 @@ Example response
 
 <span id="get-apiauthprovidersgooglecallback"></span>
 
-Complete an enrolled Google sign-in
+Complete Google sign-in
 
 **Operation ID:** `completeGoogleSignIn`
 
-**Permissions:** Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.
+**Permissions:** Consumes the browser-bound attempt before provider exchange. Redirects to Console after the session and audit commit, when the user must prove an existing account, or with a fixed failure classification.
 
 ##### Responses
 
@@ -900,7 +985,7 @@ Example response
 
 <span id="post-apiauthprovidersgooglestart"></span>
 
-Start Google sign-in for an enrolled account
+Start Google sign-in
 
 **Operation ID:** `startGoogleSignIn`
 
@@ -942,11 +1027,11 @@ Example response
 
 <span id="get-apiauthprovidersoidccallback"></span>
 
-Complete an enrolled OIDC sign-in
+Complete OIDC sign-in
 
 **Operation ID:** `completeOidcSignIn`
 
-**Permissions:** Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.
+**Permissions:** Consumes the browser-bound attempt before provider exchange. Redirects to Console after the session and audit commit, when the user must prove an existing account, or with a fixed failure classification.
 
 ##### Responses
 
@@ -1018,19 +1103,38 @@ Example response
 
 <span id="post-apiauthprovidersoidcstart"></span>
 
-Start OIDC sign-in for an enrolled account
+Start OIDC sign-in
 
 **Operation ID:** `startOidcSignIn`
 
 **Permissions:** Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.
+
+##### Request body
+
+**Required:** No
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `linkAttemptId` | `string` | No | pattern: `^[A-Za-z0-9_-]{43}$`; The first sign-in attempt when proving an existing account. |
+| `linkExisting` | `boolean` | No | Verify a new provider identity for an existing account. |
+
+Example request
+```json
+{}
+```
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
+| `400` | Bad Request |
 | `401` | Unauthorized |
 | `403` | Forbidden |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
 | `503` | Service Unavailable |
 
 **`200` response body:** `application/json`
@@ -1049,6 +1153,163 @@ Example response
   "data": {
     "attemptId": "example000000000000000000000000000000000000",
     "url": "https://identity.example.com/authorize?client_id=example&state=example-browser-bound-state"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /api/auth/providers/oidc/{providerKey}/callback`
+
+<span id="get-apiauthprovidersoidcproviderkeycallback"></span>
+
+Complete OIDC provider sign-in
+
+**Operation ID:** `completeNamedOidcSignIn`
+
+**Permissions:** Consumes the browser-bound attempt before provider exchange. Redirects to Console after the session and audit commit, when the user must prove an existing account, or with a fixed failure classification.
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `providerKey` | path | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,31}$` | "keycloak" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `302` | Redirect to Console |
+
+#### `POST /api/auth/providers/oidc/{providerKey}/result`
+
+<span id="post-apiauthprovidersoidcproviderkeyresult"></span>
+
+Confirm which session an OIDC provider sign-in created
+
+**Operation ID:** `confirmNamedOidcSignIn`
+
+**Permissions:** Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `providerKey` | path | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,31}$` | "keycloak" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `attemptId` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
+
+Example request
+```json
+{
+  "attemptId": "example000000000000000000000000000000000000"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.sessionKey` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "sessionKey": "example-session-binding-not-a-credential"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/providers/oidc/{providerKey}/start`
+
+<span id="post-apiauthprovidersoidcproviderkeystart"></span>
+
+Start OIDC provider sign-in
+
+**Operation ID:** `startNamedOidcSignIn`
+
+**Permissions:** Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `providerKey` | path | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,31}$` | "keycloak" |
+
+##### Request body
+
+**Required:** No
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `linkAttemptId` | `string` | No | pattern: `^[A-Za-z0-9_-]{43}$`; The first sign-in attempt when proving an existing account. |
+| `linkExisting` | `boolean` | No | Verify a new provider identity for an existing account. |
+
+Example request
+```json
+{
+  "linkExisting": true
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.attemptId` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
+| `data.url` | `string (uri)` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "attemptId": "example000000000000000000000000000000000000",
+    "url": "https://keycloak.example.com/realms/team/protocol/openid-connect/auth?client_id=example&state=example-browser-bound-state"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

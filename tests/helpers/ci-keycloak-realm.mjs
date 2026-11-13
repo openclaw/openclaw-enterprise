@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 
-/** Calls the Keycloak admin API as the lane's bootstrap administrator. */
-export async function keycloakRealmAdmin(issuer, admin, method, path, body) {
+async function keycloakAdmin(issuer, admin, method, path, body) {
   const base = new URL(issuer).origin;
   const token = await fetch(`${base}/realms/master/protocol/openid-connect/token`, {
     method: "POST",
@@ -14,7 +13,7 @@ export async function keycloakRealmAdmin(issuer, admin, method, path, body) {
     signal: AbortSignal.timeout(10_000),
   });
   assert.equal(token.status, 200, "the lane administrator signs in to Keycloak");
-  const response = await fetch(`${base}/admin/realms/oce${path}`, {
+  const response = await fetch(`${base}${path}`, {
     method,
     headers: {
       authorization: `Bearer ${(await token.json()).access_token}`,
@@ -29,6 +28,30 @@ export async function keycloakRealmAdmin(issuer, admin, method, path, body) {
     );
   }
   return response.status === 200 ? response.json() : response;
+}
+
+/** Calls the Keycloak admin API for the lane's imported realm. */
+export async function keycloakRealmAdmin(issuer, admin, method, path, body) {
+  return keycloakAdmin(issuer, admin, method, `/admin/realms/oce${path}`, body);
+}
+
+/** Matches the configured client locally so fixture data stays out of the request URL. */
+export async function findKeycloakRealmClient(issuer, admin, clientId) {
+  const clients = await keycloakRealmAdmin(issuer, admin, "GET", "/clients");
+  return clients.find((client) => client.clientId === clientId);
+}
+
+/** Creates a realm for one test and returns a function that deletes it. */
+export async function createKeycloakTestRealm(issuer, admin, realm) {
+  const name = realm.realm;
+  assert.ok(
+    typeof name === "string" && name.length > 0 && name !== "." && name !== "..",
+    "the test realm has a name",
+  );
+  await keycloakAdmin(issuer, admin, "POST", "/admin/realms", realm);
+  return async () => {
+    await keycloakAdmin(issuer, admin, "DELETE", `/admin/realms/${encodeURIComponent(name)}`);
+  };
 }
 
 /** Regenerate one real client's secret, then verify its previous secret no longer authenticates. */

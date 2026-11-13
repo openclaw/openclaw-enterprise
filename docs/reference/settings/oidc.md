@@ -5,6 +5,20 @@ the [single-controller external sign-in profile](../authentication/external-sign
 and a recovery account. Use [Enable OIDC sign-in](../../guides/deploy/oidc-sign-in.md)
 for setup.
 
+To configure named providers, put the settings below under
+`auth.oidc.providers.<key>`. Start each key with a lowercase letter. Use a maximum
+of 32 lowercase letters, digits, and hyphens. Give each provider its own `secretName`
+and a distinct button label. Label comparison ignores case and surrounding
+spaces. For example, `Équipe` and `équipe` count as the same label. The default
+label is the provider key. The default Secret keys are `client-id` and
+`client-secret`.
+
+Helm sets `OCC_AUTH_OIDC_PROVIDERS` to the comma-separated list of provider keys.
+For each named provider it inserts the uppercase key after `OCC_AUTH_OIDC_` and
+changes hyphens to underscores. For example, `keycloak-sso` uses
+`OCC_AUTH_OIDC_KEYCLOAK_SSO_ISSUER`. For a single provider you can use the flat
+settings and variables in the table.
+
 | Variable                                                     | Helm value                                          | Behavior                                                                                    |
 | ------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `OCC_AUTH_OIDC_ISSUER`                                       | `auth.oidc.issuer`                                  | The exact `iss`; with the client ID it determines the provider instance.                    |
@@ -13,22 +27,35 @@ for setup.
 | `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
 | `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
 
-`OCC_AUTH_OIDC_ENROLLMENT` (Helm `auth.oidc.enrollment`) accepts the JSON
-[OIDC enrollment policy](../authentication/team-enrollment.md). The installation
-profile uses `controlPlane.oidc.enrollment`. Absence requires explicit identity
-attachment and disables automatic account creation.
+The `enrollment` setting becomes an `ENROLLMENT` variable with the JSON
+[OIDC enrollment policy](../authentication/team-enrollment.md). This policy
+controls account creation at first sign-in.
+
+The `legacyCallback` setting keeps the existing `/api/auth/providers/oidc/callback`
+path. Set it to `true` on at most one named provider. Helm sets the provider's
+`LEGACY_CALLBACK` variable. Other named providers use
+`/api/auth/providers/oidc/<key>/callback`.
+
+The named provider setting `allowSelfLink` defaults to `false`. Set it to `true`
+on both providers to permit [self-service linking](../authentication/external-sign-in.md#external-sign-in-profile)
+between them. Helm sets the provider's `ALLOW_SELF_LINK` variable. Administrator
+attachment and enrollment use their own rules.
+
+In an installation profile, put named provider settings under
+`controlPlane.oidc.providers.<key>`. For the flat settings, use `controlPlane.oidc`.
 
 With `auth.oidc.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
-allows any address except link-local `169.254.0.0/16`. The port is the destination Pod's
+`openclaw-enterprise-api-oidc-login-egress` on TCP 443. The policy allows the ranges
+from each provider's `egressCidrs`. An empty list for any provider opens TCP 443
+to every IPv4 address outside link-local `169.254.0.0/16`. The port is the destination Pod's
 port; an IdP inside the cluster on another target port needs
 [its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering rejects invalid endpoint settings,
 a Secret shared with Google or another chart credential Secret, or an HTTP base URL.
 OIDC supports native Agent access.
 
-`auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
-CA bundle from a Secret in the release namespace. Both default to empty; set both
-or neither, and only while OIDC is enabled. The CA Secret must not be a credential
+`auth.oidc.caSecretName` and `auth.oidc.caSecretKey` select an optional public PEM
+CA bundle for all configured providers from a Secret in the release namespace.
+Set both values when you enable OIDC with a private CA. The CA Secret must not be a credential
 Secret the chart reads or `database.caSecretName`; it may share a public trust bundle
 Secret with `gatewayRouting.caSecretName` or `repositoryCredentials.publicCaSecretName`.
 Helm rejects invalid names, keys, shared credential Secrets and partial

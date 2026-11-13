@@ -1,9 +1,12 @@
 # OIDC account enrollment
 
-Configure `auth.oidc.enrollment` to admit selected identities and optionally create
-OCE accounts at first sign-in. The same object is available as installation
-profile `controlPlane.oidc.enrollment` or JSON in `OCC_AUTH_OIDC_ENROLLMENT`.
-Without it, OIDC sign-in requires an explicitly attached account.
+Set `enrollment` on a configured OIDC provider to choose who can sign in and
+whether OCE creates an account at first sign-in. Use
+`auth.oidc.providers.<key>.enrollment` in Helm values or
+`controlPlane.oidc.providers.<key>.enrollment` in an installation profile.
+For flat settings, use `auth.oidc.enrollment` or `controlPlane.oidc.enrollment`.
+The API reads the JSON policy from the provider's
+[`ENROLLMENT` variable](../settings/oidc.md).
 See [OIDC setup](../../guides/deploy/oidc-sign-in.md) and the
 [upgrade from direct GitHub sign-in](../../guides/deploy/oidc-upgrade.md).
 
@@ -12,19 +15,21 @@ See [OIDC setup](../../guides/deploy/oidc-sign-in.md) and the
 ```yaml
 auth:
   oidc:
-    enrollment:
-      admission:
-        groupsClaim: groups
-        anyOf: [oce-members]
-      additionalScopes: [groups]
-      createAccount:
-        enabled: true
-        requireVerifiedEmail: true
-        role:
-          id: role_config_agent_creator
-          scope:
-            namespaceId: "<existing Namespace ID>"
-      groupIds: [group_config_default-user]
+    providers:
+      okta:
+        enrollment:
+          admission:
+            groupsClaim: groups
+            anyOf: [oce-members]
+          additionalScopes: [groups]
+          createAccount:
+            enabled: true
+            requireVerifiedEmail: true
+            role:
+              id: role_config_agent_creator
+              scope:
+                namespaceId: "<existing Namespace ID>"
+          groupIds: [group_config_default-user]
 ```
 
 The referenced Role, Namespace and Groups must exist. Startup validates these
@@ -34,11 +39,11 @@ fail activation.
 
 `admission` is required. The verified ID token must contain the named top-level
 claim as a string or an array of strings, with at least one exact `anyOf` value.
-A string is one group; OCE does not split commas or trim group values. Values and
-claim names are case-sensitive; the allowlist cannot be empty. Missing or malformed
-claims refuse sign-in for both new and attached identities. This is an admission
-rule, not a mapping from IdP groups to Roles. Configure the IdP to emit the claim
-in its signed ID token.
+A string is one group. OCE matches exact values, including commas and spaces.
+Values and claim names are case-sensitive. The allowlist cannot be empty.
+OCE refuses sign-in for new and attached identities if the claim is missing or
+malformed. The claim controls sign-in. The configured Role and Groups control
+initial access. Configure the IdP to include the claim in its signed ID token.
 
 With enrollment configured, OCE requests `openid email profile` and any explicit
 `additionalScopes`. It does not call UserInfo. Without enrollment it requests only
@@ -60,30 +65,32 @@ restore or change them. Review the Role's permissions and scope together.
 
 `groupIds` selects existing Installation Groups by exact ID. Omission inherits
 [configured default Groups](../authorization/default-users.md); an explicit list
-replaces those defaults, and `[]` disables Group enrollment. Every admitted login
-adds missing memberships, including for an existing account. It does not remove
-memberships or change the Groups' bindings. Effective access combines direct
-and Group grants.
+replaces those defaults, and `[]` disables Group enrollment. A normal sign-in
+adds missing memberships from the provider's policy. Existing memberships and
+Group bindings stay in effect. Effective access combines direct and Group grants.
 
 ## Identity, profile and transactions
 
 OCE resolves the exact provider instance and `sub`. An existing identity keeps its
-OCE user ID, Principal, name, email, resource ownership and grants. It needs no
-profile claims to sign in. To use a manually created account, an administrator must
-[attach its OIDC identity explicitly](../../guides/deploy/oidc-sign-in.md#attach-and-detach).
-Email matching never attaches or transfers an identity.
+OCE user ID, Principal, name, email, resource ownership and grants. To add the
+first provider to a manually created account, an administrator can
+[attach its OIDC identity](../../guides/deploy/oidc-sign-in.md#attach-and-detach).
 
-An unknown identity can create an account only when creation is enabled. Its
-standard `email` must be valid, and the trimmed, lowercased email must be unused
+An unknown identity can create an account only when creation is enabled. OCE
+reads only the standard `email` claim. It must be valid, and the trimmed, lowercased email must be unused
 in OCE. `createAccount.requireVerifiedEmail` defaults to `true` and requires
 `email_verified` to be boolean `true`. Set it to `false` to accept boolean `true`,
 boolean `false`, or an absent claim. A present non-boolean claim always refuses
 creation. The stored email verification is true only for a true claim.
-This policy applies only to first-login account creation; returning identities
-keep their stored profile and verification status. The optional `name` supplies the
-display name; otherwise OCE uses the email. Alternative email claims are not read.
+This policy applies only to first-login account creation. Returning identities
+keep their stored profile and verification status. OCE uses `name` for the
+display name when it contains text. Otherwise it uses the email.
 Perform profile mapping at the IdP. Configure verified email only when the IdP can
-vouch for that address. A collision requires administrator resolution.
+vouch for that address. If the email already exists, the user can
+[link the new provider](../../guides/deploy/oidc-sign-in.md#link-an-existing-account)
+by proving access to another provider on the account. Both providers must
+permit self-service linking. An administrator can attach the identity if the
+user has no eligible OIDC method.
 
 Creation commits the account, Principal, external method, initial Role binding,
 Group memberships and their audit records together. OCE hashes a random local
@@ -98,6 +105,19 @@ start a new login. Only the transaction that creates an identity may issue its
 initial proof without an older account snapshot. Disabled or stale accounts are
 never repaired by enrollment. Changing the effective policy invalidates pending
 attempts, including changes to `requireVerifiedEmail` and inherited default Groups.
+
+## Link a provider to an existing account
+
+When the Console shows two or more OIDC providers, select **Link an existing
+account**. Sign in with the provider you want to add. Then sign in with an OIDC
+provider already on your account. Use the same browser and complete the second
+sign-in within five minutes. Each sign-in must pass its provider's admission rule
+if one is configured. The second provider must authenticate you again and return
+the time in its ID token's `auth_time` claim.
+
+OCE adds the new method to your existing user ID. It ends earlier sessions and
+starts a new session in this browser. If the new provider has an enrollment
+policy, its Group settings apply at the next normal sign-in with that provider.
 
 ## Offboarding and troubleshooting
 

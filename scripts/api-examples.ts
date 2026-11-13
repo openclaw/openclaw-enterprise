@@ -257,6 +257,7 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  providerKey: "keycloak",
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
   oauthClientId,
@@ -404,6 +405,7 @@ export const requestExamples = {
   detachAuthMethod: { expectedVersion: 1 },
   attachGoogleIdentity: { expectedVersion: 1, subject: "123456789012345678901" },
   attachOidcIdentity: { expectedVersion: 1, subject: "provider-subject-docs-admin" },
+  attachNamedOidcIdentity: { expectedVersion: 1, subject: "provider-subject-docs-admin" },
   revokeAuthAccountSessions: { expectedVersion: 1 },
   replaceAuthRecovery: {
     expectedCurrentUserId: userId,
@@ -417,7 +419,10 @@ export const requestExamples = {
     expiresIn: 86400,
   },
   confirmGoogleSignIn: { attemptId: "example".padEnd(43, "0") },
+  startOidcSignIn: {},
+  startNamedOidcSignIn: { linkExisting: true },
   confirmOidcSignIn: { attemptId: "example".padEnd(43, "0") },
+  confirmNamedOidcSignIn: { attemptId: "example".padEnd(43, "0") },
 };
 
 // Values below are data members. The generator adds the common meta envelope.
@@ -710,6 +715,7 @@ export const responseExamples = {
   detachAuthMethod: { userId },
   attachGoogleIdentity: { userId },
   attachOidcIdentity: { userId },
+  attachNamedOidcIdentity: { userId },
   revokeAuthAccountSessions: { userId },
   enrolAuthAccount: { userId, principalId: authAccount.principalId, version: 1, created: true },
   getAuthProviders: {
@@ -745,8 +751,13 @@ export const responseExamples = {
     attemptId: "example".padEnd(43, "0"),
     url: "https://identity.example.com/authorize?client_id=example&state=example-browser-bound-state",
   },
+  startNamedOidcSignIn: {
+    attemptId: "example".padEnd(43, "0"),
+    url: "https://keycloak.example.com/realms/team/protocol/openid-connect/auth?client_id=example&state=example-browser-bound-state",
+  },
   confirmGoogleSignIn: { sessionKey },
   confirmOidcSignIn: { sessionKey },
+  confirmNamedOidcSignIn: { sessionKey },
   resolveAgentNativeAdminReturn: { agentId, namespaceId },
 };
 

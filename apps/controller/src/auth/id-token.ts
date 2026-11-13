@@ -12,6 +12,8 @@ export interface IdTokenExpectation {
   readonly jwks: unknown;
   // Milliseconds since the epoch.
   readonly now: number;
+  /** Time when a fresh sign-in request started, in milliseconds since the epoch. */
+  readonly authenticatedAfter?: number;
 }
 
 const segmentPattern = /^[A-Za-z0-9_-]+$/;
@@ -124,6 +126,15 @@ export function verifyIdToken(
       return undefined;
     }
     if (expected.nonce.length === 0 || claims.nonce !== expected.nonce) {
+      return undefined;
+    }
+    if (
+      expected.authenticatedAfter !== undefined &&
+      (typeof claims.auth_time !== "number" ||
+        !Number.isInteger(claims.auth_time) ||
+        claims.auth_time < Math.floor(expected.authenticatedAfter / 1000) - clockAllowanceSeconds ||
+        claims.auth_time > now + clockAllowanceSeconds)
+    ) {
       return undefined;
     }
     if (typeof claims.sub !== "string" || !subjectPattern.test(claims.sub)) {

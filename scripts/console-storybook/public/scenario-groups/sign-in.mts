@@ -51,9 +51,11 @@ type SignInScenario = {
   signedOut?: true;
   buildRevision?: string;
   oidcEnabled?: true;
+  multipleOidcProviders?: true;
+  oidcSelfLink?: true;
   googleEnabled?: true;
   passwordRecoveryOnly?: true;
-  pendingOidcAttempt?: true;
+  pendingOidcAttempt?: "oidc" | "oidc/keycloak";
   pendingGoogleAttempt?: true;
   expiredSession?: true;
   steps?: readonly string[];
@@ -104,7 +106,44 @@ export function signInScenarios({
         "Retry, then press Shift+Tab while waiting. Focus moves to Password and stays there after the refusal.",
         "Tab to Continue with single sign-on and press Enter. Repeat Enter and Space while waiting: focus stays on the provider button through the refusal.",
       ],
-      gap: "An administrator must attach the OIDC subject to an existing account through the API. Enrollment, account creation, and recovery administration have no console controls. OAuth navigation and session issuance require backend verification.",
+    },
+    multipleOidcLogin: {
+      group: "Pages/Sign in",
+      name: "Multiple OIDC providers",
+      path: "/console/login",
+      signedOut: true,
+      multipleOidcProviders: true,
+      oidcSelfLink: true,
+      description:
+        "Choose Okta, Keycloak, or Dex to sign in. Okta and Keycloak permit self-service linking.",
+      steps: [
+        "Select Link an existing account. The page offers Okta and Keycloak.",
+        "Select Back to sign in to see all three provider buttons again.",
+      ],
+    },
+    multipleOidcLoginWithoutLinking: {
+      group: "Pages/Sign in",
+      name: "Multiple OIDC providers, linking disabled",
+      path: "/console/login",
+      signedOut: true,
+      multipleOidcProviders: true,
+      description: "Choose a provider to sign in. An administrator manages account links.",
+    },
+    oidcLinkAccount: {
+      group: "Pages/Sign in",
+      name: "Link an existing account",
+      path: "/console/?authLink=oidc%2Fkeycloak",
+      signedOut: true,
+      multipleOidcProviders: true,
+      oidcSelfLink: true,
+      pendingOidcAttempt: "oidc/keycloak",
+      rules: [{ path: "/api/auth/providers/oidc/okta/start", method: "POST", status: 401 }],
+      description:
+        "This preview starts after the user returns from Keycloak. OpenClaw asks the user to sign in with a method already on their account.",
+      steps: [
+        "Select Continue with Okta. The simulated link has expired, so the page asks you to start again.",
+        "Select Back to sign in to see all three provider buttons.",
+      ],
     },
     oidcUnavailable: {
       group: "Pages/Sign in",
@@ -182,7 +221,7 @@ export function signInScenarios({
       group: "Pages/Sign in",
       name: "OIDC result not confirmed",
       path: "/console/",
-      pendingOidcAttempt: true,
+      pendingOidcAttempt: "oidc",
       oidcEnabled: true,
       rules: [{ path: "/api/auth/providers/oidc/result", method: "POST", status: 401 }],
       description:

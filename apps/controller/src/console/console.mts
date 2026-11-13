@@ -82,7 +82,11 @@ type Session = {
   user: { id: string; name: string; email: string };
   sessionKey: string;
 };
-type Provider = keyof typeof externalAttemptStorageKeys;
+type OidcRoute = "oidc" | `oidc/${string}`;
+type ProviderRoute = "google" | OidcRoute;
+type ExternalProvider = { route: ProviderRoute; label: string; origin: string; pathname: string };
+type OidcProvider = ExternalProvider & { allowSelfLink: boolean };
+type ExternalAttempt = Pick<ExternalProvider, "route" | "label"> & { attemptId: string };
 type LoginMessage = string | ((password: boolean) => string);
 type NamespacePermissions = Static<typeof NamespaceCallerPermissionsResponse>["data"];
 type InstallationAccess = { url: string | null; admin: boolean | null; settled: boolean };
@@ -167,12 +171,8 @@ let draftUserId: string | null = null;
 // The session this tab signed in to or first observed; see api-client.mjs.
 let pinnedSessionKey: string | null = null;
 let externalSessionBinding = false;
-const externalAttemptStorageKeys = {
-  google: "occ.console.googleAttempt",
-  oidc: "occ.console.oidcAttempt",
-};
-// The last discovered OIDC label, kept per tab so messages after the IdP round trip, which
-// reloads the Console before discovery answers, name the provider the person chose.
+const externalAttemptStorageKey = "occ.console.externalAttempt";
+// Keep the label for legacy callbacks that return without a tab attempt.
 const oidcLabelStorageKey = "occ.console.oidcLabel";
 const loginIntentStorageKey = "occ.console.loginIntent";
 const loginIntentLifetimeMs = 10 * 60 * 1000;
@@ -203,23 +203,18 @@ function settledRefusal(error: unknown): error is { status: 403 | 404 } {
   return status === 403 || status === 404;
 }
 
-const externalProviders: Record<
-  Provider,
-  { label: string; origin: string | null; pathname: string | null }
-> = {
-  google: {
-    label: "Google",
-    origin: "https://accounts.google.com",
-    pathname: "/o/oauth2/v2/auth",
-  },
-  // The operator configures the IdP: discovery supplies its label and authorization
-  // endpoint, and the start URL must use exactly that HTTPS endpoint.
-  oidc: {
-    label: rememberedOidcLabel() ?? "single sign-on",
-    origin: null,
-    pathname: null,
-  },
+const googleProvider: ExternalProvider = {
+  route: "google",
+  label: "Google",
+  origin: "https://accounts.google.com",
+  pathname: "/o/oauth2/v2/auth",
 };
+
+function isOidcRoute(route: unknown): route is OidcRoute {
+  return (
+    typeof route === "string" && /^oidc(?:\/[a-z][a-z0-9-]{0,31})?$/.exec(route)?.[0] === route
+  );
+}
 
 // 1 to 40 code points, as the server's discovery schema allows.
 function validOidcLabel(label: string) {
@@ -235,28 +230,82 @@ function rememberedOidcLabel() {
   }
 }
 
-// Adopts discovery's OIDC settings; false when they are missing or malformed.
-function configureOidc(signIn: unknown) {
+// Discovery supplies the exact HTTPS authorization endpoint a provider can redirect to.
+function oidcProvider(signIn: unknown, route: OidcRoute): OidcProvider | null {
   try {
-    const { authorizationUrl, label } = responseFields(signIn);
-    if (typeof authorizationUrl !== "string") {
-      return false;
+    const { authorizationUrl, label, allowSelfLink } = responseFields(signIn);
+    if (
+      typeof authorizationUrl !== "string" ||
+      typeof label !== "string" ||
+      !validOidcLabel(label)
+    ) {
+      return null;
     }
     const endpoint = new URL(authorizationUrl);
-    if (endpoint.protocol !== "https:" || typeof label !== "string" || !validOidcLabel(label)) {
-      return false;
+    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password) {
+      return null;
     }
-    externalProviders.oidc = { label, origin: endpoint.origin, pathname: endpoint.pathname };
+    return {
+      route,
+      label,
+      origin: endpoint.origin,
+      pathname: endpoint.pathname,
+      allowSelfLink: allowSelfLink === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function discoverOidcProviders(available: Record<string, unknown>) {
+  const providers = new Map<ProviderRoute, OidcProvider>();
+  if (Array.isArray(available.oidcProviders)) {
+    for (const entry of available.oidcProviders) {
+      const { key, route } = responseFields(entry);
+      if (
+        typeof key !== "string" ||
+        !isOidcRoute(`oidc/${key}`) ||
+        !isOidcRoute(route) ||
+        (route !== "oidc" && route !== `oidc/${key}`) ||
+        providers.has(route)
+      ) {
+        continue;
+      }
+      const provider = oidcProvider(entry, route);
+      if (provider !== null) {
+        providers.set(route, provider);
+      }
+    }
+  } else if (available.oidc === true) {
+    const provider = oidcProvider(available.oidcSignIn, "oidc");
+    if (provider !== null) {
+      providers.set("oidc", provider);
+    }
+  }
+  const legacy = providers.get("oidc");
+  if (legacy !== undefined) {
     try {
-      sessionStorage.setItem(oidcLabelStorageKey, label);
+      sessionStorage.setItem(oidcLabelStorageKey, legacy.label);
     } catch {
       // Without tab storage, post-redirect messages use the default label.
     }
-    return true;
-  } catch {
-    return false;
   }
+  return providers;
 }
+
+function callbackProviderLabel(route: string | null, attempt: ExternalAttempt | null) {
+  if (attempt !== null && attempt.route === route) {
+    return attempt.label;
+  }
+  if (route === "google") {
+    return googleProvider.label;
+  }
+  if (route === "oidc") {
+    return rememberedOidcLabel() ?? "single sign-on";
+  }
+  return isOidcRoute(route) ? "single sign-on" : null;
+}
+
 const bindingValue = /^[A-Za-z0-9_-]{43}$/;
 
 // Only a tab that had a session says it expired; a first visit to a deep link, or one after
@@ -287,12 +336,9 @@ function pinSessionKey(value: unknown) {
 }
 
 // The attemptId is per tab: another tab's provider callback cannot complete this tab's sign-in.
-function rememberExternalAttempt(provider: Provider, attemptId: string) {
+function rememberExternalAttempt({ route, label }: ExternalProvider, attemptId: string) {
   try {
-    for (const key of Object.values(externalAttemptStorageKeys)) {
-      sessionStorage.removeItem(key);
-    }
-    sessionStorage.setItem(externalAttemptStorageKeys[provider], attemptId);
+    sessionStorage.setItem(externalAttemptStorageKey, JSON.stringify({ route, label, attemptId }));
   } catch {
     // Without tab storage the callback still signs in; this tab adopts the session it sees.
   }
@@ -719,26 +765,25 @@ function forgetDeniedReads() {
   }
 }
 
-// Returns and clears this tab's pending attempt as { provider, attemptId }, or null.
-function takeExternalAttempt() {
-  let pendingAttempt: { provider: Provider; attemptId: string } | null = null;
-  for (const [provider, key] of Object.entries(externalAttemptStorageKeys)) {
-    try {
-      const attemptId = sessionStorage.getItem(key);
-      sessionStorage.removeItem(key);
-      if (
-        pendingAttempt === null &&
-        hasKey(externalAttemptStorageKeys, provider) &&
-        attemptId !== null &&
-        bindingValue.test(attemptId)
-      ) {
-        pendingAttempt = { provider, attemptId };
-      }
-    } catch {
-      // Unavailable tab storage leaves no attempt to adopt.
+// An attempt can be consumed once by the tab that started it.
+function takeExternalAttempt(): ExternalAttempt | null {
+  try {
+    const stored = sessionStorage.getItem(externalAttemptStorageKey);
+    sessionStorage.removeItem(externalAttemptStorageKey);
+    const { route, label, attemptId } = responseFields(JSON.parse(stored ?? "null"));
+    if (
+      (route === "google" || isOidcRoute(route)) &&
+      typeof label === "string" &&
+      validOidcLabel(label) &&
+      typeof attemptId === "string" &&
+      bindingValue.test(attemptId)
+    ) {
+      return { route, label, attemptId };
     }
+  } catch {
+    // Unavailable or unreadable tab storage leaves no attempt to adopt.
   }
-  return pendingAttempt;
+  return null;
 }
 const navigation = createNavigation({
   getNamespaceId: () => namespaceId,
@@ -1356,9 +1401,23 @@ function showExpiredLogin() {
   showLogin("Your session has expired.", destination);
 }
 
-function showLogin(message: LoginMessage = "", destination: Intent | null = null) {
+const linkUnavailable = "Go back and start the link again.";
+
+function showLogin(
+  message: LoginMessage = "",
+  destination: Intent | null = null,
+  link: "new" | ExternalAttempt | null = null,
+) {
   // A message may depend on whether ordinary accounts can use a password.
   const describe = typeof message === "function" ? message : () => message;
+  const linking = link !== null;
+  const linkSource = link === "new" ? null : link;
+  let linkRequest: { linkExisting: true } | { linkAttemptId: string } | undefined;
+  if (link === "new") {
+    linkRequest = { linkExisting: true };
+  } else if (linkSource !== null) {
+    linkRequest = { linkAttemptId: linkSource.attemptId };
+  }
   clearDrafts();
   const loginView = resetReads();
   clearPrivate();
@@ -1391,6 +1450,11 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     { id: "username-hint", className: "muted auth-intro" },
     "Checking sign-in methods…",
   );
+  if (link === "new") {
+    usernameHint.textContent = "Choose the sign-in method you want to add.";
+  } else if (linkSource !== null) {
+    usernameHint.textContent = `To link ${linkSource.label}, use a sign-in method already on your account.`;
+  }
   // Recovery-only password sign-in hides the form until the recovery path is chosen.
   let recoveryOnly = false;
   const submit = element(
@@ -1408,8 +1472,8 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     feedback,
     submit,
   );
-  const providerButton = (provider: Provider) => {
-    const { label, origin, pathname } = externalProviders[provider];
+  const providerButton = (provider: ExternalProvider) => {
+    const { route, label, origin, pathname } = provider;
     const control = button(`Continue with ${label}`, async () => {
       if (pending) {
         return;
@@ -1418,16 +1482,20 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       setButtonsUnavailable(true);
       feedback.textContent = "";
       try {
-        const result = await request(`/api/auth/providers/${provider}/start`, { method: "POST" });
+        const result = await request(`/api/auth/providers/${route}/start`, {
+          method: "POST",
+          body: linkRequest,
+        });
         if (!lifetime.isCurrent(loginView)) {
           return;
         }
         const { url, attemptId } = responseFields(result);
         const authorization = new URL(typeof url === "string" ? url : "");
         if (
-          origin === null ||
           authorization.origin !== origin ||
           authorization.pathname !== pathname ||
+          authorization.username ||
+          authorization.password ||
           (externalSessionBinding &&
             (typeof attemptId !== "string" || !bindingValue.test(attemptId)))
         ) {
@@ -1442,20 +1510,32 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
         if (!lifetime.isCurrent(loginView)) {
           return;
         }
-        feedback.textContent = providerStartFailure(error, label, recoveryOnly);
+        feedback.textContent =
+          linkSource !== null && requestFailure(error).status === 401
+            ? linkUnavailable
+            : providerStartFailure(error, label, recoveryOnly || linking);
         pending = false;
         setButtonsUnavailable(false);
       }
     });
-    const icon = providerIcon(provider);
+    const icon = providerIcon(route === "google" ? "google" : "oidc");
     if (icon !== null) {
       control.prepend(icon);
     }
     return control;
   };
-  const google = providerButton("google");
-  // Created once discovery has supplied its label and endpoint.
-  let oidc: HTMLButtonElement | null = null;
+  const google = providerButton(googleProvider);
+  const oidcButtons: HTMLButtonElement[] = [];
+  const toggleLink = button(
+    linking ? "Back to sign in" : "Link an existing account",
+    () => {
+      if (!pending) {
+        showLogin("", destination, linking ? null : "new").focus();
+      }
+    },
+    { tone: "link", className: "auth-recovery" },
+  );
+  toggleLink.hidden = !linking;
   const recovery = button(
     "Recovery sign-in",
     () => {
@@ -1465,6 +1545,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     },
     { tone: "link", className: "auth-recovery" },
   );
+  recovery.hidden = linking;
   function showPasswordForm() {
     const recoveryFocused = document.activeElement === recovery;
     recovery.hidden = true;
@@ -1481,7 +1562,8 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
   function setButtonsUnavailable(unavailable: boolean) {
     setUnavailable(submit, unavailable, null);
     setUnavailable(google, unavailable, null);
-    if (oidc !== null) {
+    setUnavailable(toggleLink, unavailable, null);
+    for (const oidc of oidcButtons) {
       setUnavailable(oidc, unavailable, null);
     }
   }
@@ -1522,16 +1604,22 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       }
     }
   });
+  const heading = element(
+    "h1",
+    { tabindex: "-1" },
+    linking ? "Link an existing account" : "Sign in",
+  );
   app.replaceChildren(
     element(
       "main",
       { className: "auth" },
       element("p", { className: "brand" }, ...brandContents("sign-in")),
-      element("h1", {}, "Sign in"),
+      heading,
       usernameHint,
       form,
       providers,
       feedback,
+      toggleLink,
       recovery,
     ),
     ...signInFooter(),
@@ -1541,17 +1629,37 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       const available = responseFields(data);
       if (lifetime.isCurrent(loginView)) {
         externalSessionBinding = available?.sessionBinding === true;
-        if (available?.google === true) {
+        const oidc = discoverOidcProviders(available);
+        const linkOptions = [...oidc.values()].filter(({ allowSelfLink }) => allowSelfLink);
+        const canLink = externalSessionBinding && linkOptions.length > 1;
+        if (
+          linking &&
+          (!canLink || (linkSource !== null && oidc.get(linkSource.route)?.allowSelfLink !== true))
+        ) {
+          feedback.textContent = linkUnavailable;
+          return;
+        }
+        if (!linking && available?.google === true) {
           providers.append(google);
         }
-        if (available?.oidc === true && configureOidc(available.oidcSignIn)) {
-          oidc = providerButton("oidc");
-          setUnavailable(oidc, pending, null);
-          providers.append(oidc);
+        for (const provider of linking ? linkOptions : oidc.values()) {
+          if (provider.route !== linkSource?.route) {
+            const choice = providerButton(provider);
+            oidcButtons.push(choice);
+            setUnavailable(choice, pending, null);
+            providers.append(choice);
+          }
         }
+        if (linking) {
+          return;
+        }
+        toggleLink.hidden = !canLink;
         // Wait for policy before offering passwords. Recovery remains available
         // during discovery, and an explicitly opened form is never pulled away.
-        if (available?.password === false && (available.google || available.oidc)) {
+        if (
+          available?.password === false &&
+          (available.google || available.oidc || oidc.size > 0)
+        ) {
           recoveryOnly = true;
           if (feedback.textContent === describe(true)) {
             feedback.textContent = describe(false);
@@ -1568,9 +1676,14 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     .catch(() => {
       // Password sign-in remains available when provider discovery fails.
       if (lifetime.isCurrent(loginView)) {
-        showPasswordForm();
+        if (linking) {
+          feedback.textContent = linkUnavailable;
+        } else {
+          showPasswordForm();
+        }
       }
     });
+  return heading;
 }
 
 // The sign-in page footer names the build it serves, from the meta tag the image bakes in; a
@@ -1873,15 +1986,26 @@ async function loadPage({
     loadingTimer = null;
   };
   const authError = current.url.searchParams.get("authError");
-  const providerError = hasKey(externalProviders, authError) ? externalProviders[authError] : null;
   const authReason = current.url.searchParams.get("authReason");
   const externalAttempt = takeExternalAttempt();
   const externalIntent = takeLoginIntent(externalAttempt?.attemptId);
+  const providerError = callbackProviderLabel(authError, externalAttempt);
+  const authLink = current.url.searchParams.get("authLink");
+  // Continue linking only when the callback route matches the attempt started in this tab.
+  if (authLink !== null && providerError === null && externalAttempt !== null) {
+    stopLoadingTimer();
+    if (isOidcRoute(authLink) && externalAttempt.route === authLink) {
+      showLogin("", externalIntent, externalAttempt);
+    } else {
+      showLogin("Start sign-in again to link your account.", externalIntent);
+    }
+    return;
+  }
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.
     try {
       const confirmed = responseFields(
-        await request(`/api/auth/providers/${externalAttempt.provider}/result`, {
+        await request(`/api/auth/providers/${externalAttempt.route}/result`, {
           method: "POST",
           body: { attemptId: externalAttempt.attemptId },
         }),
@@ -1896,9 +2020,7 @@ async function loadPage({
       pendingIntent = externalIntent;
     } catch (error) {
       if (lifetime.isCurrent(active)) {
-        showLogin(
-          providerExchangeFailure(error, externalProviders[externalAttempt.provider].label),
-        );
+        showLogin(providerExchangeFailure(error, externalAttempt.label));
       }
       return;
     }
@@ -1926,7 +2048,7 @@ async function loadPage({
           : (pendingIntent ?? loginDestination(current));
       showLogin(
         providerError !== null
-          ? providerCallbackFailure(providerError.label, authReason)
+          ? providerCallbackFailure(providerError, authReason)
           : hadSession &&
               current.feature !== "login" &&
               current.url.pathname !== "/console/" &&

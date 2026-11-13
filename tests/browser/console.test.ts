@@ -1692,7 +1692,12 @@ test("an abandoned Google attempt does not turn password sign-in into a Google f
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByLabel("Email", { exact: true }).waitFor();
   // Models returning from accounts.google.com without completing the callback.
-  await page.evaluate(() => sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43)));
+  await page.evaluate(() => {
+    sessionStorage.setItem(
+      "occ.console.externalAttempt",
+      JSON.stringify({ route: "google", label: "Google", attemptId: "a".repeat(43) }),
+    );
+  });
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -2071,6 +2076,138 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByLabel("Email", { exact: true }).waitFor();
   await expectNoText(page, /Continue with Acme SSO/, () => waitForIdleFetches(page));
+});
+
+test("the Console sends both OIDC attempts when linking a sign-in", async (t) => {
+  const fixture = await signInApp(t);
+  const { page } = await newPage(t, fixture);
+  const envelope = (data: unknown) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data, meta: { requestId: "browser-oidc-link" } }),
+  });
+  const oktaUrl = "https://okta.example.test/authorize";
+  const keycloakUrl = "https://keycloak.example.test/authorize";
+  const linkUrl = `${fixture.origin}/console/?authLink=oidc%2Fkeycloak`;
+  const expiredAttemptId = "e".repeat(43);
+  const keycloakAttemptId = "k".repeat(43);
+  const oktaAttemptId = "o".repeat(43);
+  const exchanges: { path: string; body: unknown }[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/api/auth/providers/")) {
+      exchanges.push({ path, body: request.postDataJSON() });
+    }
+  });
+  // Simulate provider discovery and redirects. The controller issues the fixture session.
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill(
+      envelope({
+        google: false,
+        oidc: false,
+        oidcProviders: [
+          {
+            key: "okta",
+            route: "oidc/okta",
+            label: "Okta",
+            authorizationUrl: oktaUrl,
+            allowSelfLink: true,
+          },
+          {
+            key: "keycloak",
+            route: "oidc/keycloak",
+            label: "Keycloak",
+            authorizationUrl: keycloakUrl,
+            allowSelfLink: true,
+          },
+          {
+            key: "dex",
+            route: "oidc/dex",
+            label: "Dex",
+            authorizationUrl: "https://dex.example.test/authorize",
+            allowSelfLink: false,
+          },
+        ],
+        password: false,
+        sessionBinding: true,
+      }),
+    ),
+  );
+  await page.route("**/api/auth/providers/oidc/keycloak/start", (route) =>
+    route.fulfill(
+      envelope({
+        url: keycloakUrl,
+        attemptId: route.request().postDataJSON() === null ? expiredAttemptId : keycloakAttemptId,
+      }),
+    ),
+  );
+  await page.route(`${keycloakUrl}**`, (route) =>
+    route.fulfill({ status: 302, headers: { location: linkUrl } }),
+  );
+  await page.route("**/api/auth/providers/oidc/okta/start", (route) => {
+    const body: unknown = route.request().postDataJSON();
+    return route.fulfill(
+      jsonObject(body).linkAttemptId === expiredAttemptId
+        ? apiErrorResponse(401, "UNAUTHENTICATED", "Okta sign-in could not be started.")
+        : envelope({ url: oktaUrl, attemptId: oktaAttemptId }),
+    );
+  });
+  let sessionKey: string | undefined;
+  await page.route(`${oktaUrl}**`, async (route) => {
+    const signedIn = await page.context().request.post(`${fixture.origin}/api/auth/sign-in/email`, {
+      headers: { origin: fixture.origin },
+      data: { email: fixture.credentials.email, password: fixture.credentials.password },
+    });
+    assert.equal(signedIn.status(), 200);
+    const session = await page.context().request.get(`${fixture.origin}/api/auth/session`);
+    const body: unknown = await session.json();
+    const key = jsonObject(jsonObject(body).data).sessionKey;
+    assert.ok(typeof key === "string");
+    sessionKey = key;
+    await route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } });
+  });
+  await page.route("**/api/auth/providers/oidc/okta/result", (route) =>
+    route.fulfill(envelope({ sessionKey })),
+  );
+
+  // A callback link needs the attempt that this tab started.
+  await page.goto(linkUrl);
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.deepEqual(exchanges, []);
+  const destination = `${fixture.origin}/console/namespaces`;
+  await page.goto(destination);
+  const okta = page.getByRole("button", { name: "Continue with Okta", exact: true });
+  const keycloak = page.getByRole("button", { name: "Continue with Keycloak", exact: true });
+  const dex = page.getByRole("button", { name: "Continue with Dex", exact: true });
+  await okta.waitFor();
+  await keycloak.waitFor();
+  await dex.waitFor();
+  const linkPrompt = page.getByText(
+    "To link Keycloak, use a sign-in method already on your account.",
+    { exact: true },
+  );
+  await keycloak.click();
+  await linkPrompt.waitFor();
+  assert.equal(await keycloak.count(), 0);
+  assert.equal(await dex.count(), 0);
+  await okta.click();
+  await page.getByText("Go back and start the link again.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Back to sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Link an existing account", exact: true }).click();
+  await page.getByText("Choose the sign-in method you want to add.", { exact: true }).waitFor();
+  await keycloak.click();
+  await linkPrompt.waitFor();
+  assert.equal(await keycloak.count(), 0);
+  await okta.click();
+  await page.waitForURL(destination);
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  assert.deepEqual(exchanges, [
+    { path: "/api/auth/providers/oidc/keycloak/start", body: null },
+    { path: "/api/auth/providers/oidc/okta/start", body: { linkAttemptId: expiredAttemptId } },
+    { path: "/api/auth/providers/oidc/keycloak/start", body: { linkExisting: true } },
+    { path: "/api/auth/providers/oidc/okta/start", body: { linkAttemptId: keycloakAttemptId } },
+    { path: "/api/auth/providers/oidc/okta/result", body: { attemptId: oktaAttemptId } },
+  ]);
 });
 
 test("unknown provider callback reasons keep the generic refusal", async (t) => {
@@ -3122,7 +3259,10 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
   ]) {
     await page.evaluate(
       ({ attemptId, stored }) => {
-        sessionStorage.setItem("occ.console.googleAttempt", attemptId);
+        sessionStorage.setItem(
+          "occ.console.externalAttempt",
+          JSON.stringify({ route: "google", label: "Google", attemptId }),
+        );
         sessionStorage.setItem("occ.console.loginIntent", JSON.stringify(stored));
       },
       { attemptId, stored },

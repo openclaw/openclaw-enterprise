@@ -197,24 +197,27 @@ suites for those outcomes.
 
 ## Keycloak OIDC tests
 
-The `keycloak-oidc` lane checks real browser sign-in, key rotation, rejection,
-and sign-out against a disposable Keycloak server. It uses generated fixture
-credentials and an in-process production API with PostgreSQL.
+The `keycloak-oidc` lane uses Chromium, disposable Keycloak, the production API,
+PostgreSQL, and generated fixture credentials.
 
 ### Verified Keycloak flows
 
-The [cases](../../tests/integration/keycloak-oidc-sign-in.test.mjs) check:
+A skipped or missing [sign-in case](../../tests/integration/keycloak-oidc-sign-in.test.mjs) fails the lane.
 
-| Case                               | Evidence                                                                                                                                                                    |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Discovery and signing keys         | Configured endpoints match discovery; the published RS256 key has at least 2,048 bits.                                                                                      |
-| Sign-in with `client_secret_post`  | An attached user receives an OCE session through the real browser and callback.                                                                                             |
-| Sign-in with `client_secret_basic` | The same flow succeeds with HTTP Basic client authentication at the token endpoint.                                                                                         |
-| Signing-key rotation               | A new key signs the next successful sign-in without a controller restart.                                                                                                   |
-| Unattached user                    | Sign-in is rejected and audited; no OCE user or session is created.                                                                                                         |
-| Sign-out and user disablement      | OCE sign-out ends its session; the surviving Keycloak session permits sign-in again. Disabling the user blocks the next sign-in but leaves the existing OCE session active. |
+| Case                          | Evidence                                                                                                                           |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Discovery and signing keys    | Discovery matches the configured endpoints and publishes an RS256 key of at least 2,048 bits.                                      |
+| `client_secret_post` sign-in  | An attached user receives an OCE session.                                                                                          |
+| `client_secret_basic` sign-in | Sign-in uses HTTP Basic at the token endpoint.                                                                                     |
+| First-login enrollment        | OCE checks the configured email and group claims before account creation.                                                          |
+| One named Keycloak provider   | Sign-in uses the named callback and creates a PostgreSQL session.                                                                  |
+| Two named OIDC providers      | Both realms sign in to one account. Ownership or access changes block links and replacement sessions.                              |
+| Signing-key rotation          | The next sign-in succeeds with the new key before a controller restart.                                                            |
+| Unattached user               | OCE audits refusal without creating a user or session.                                                                             |
+| Sign-out and user disablement | Sign-out ends the OCE session and keeps the Keycloak session. Disablement blocks future sign-in and keeps the current OCE session. |
 
-A skipped or missing case fails the lane.
+For standalone Keycloak, `OCC_TEST_KEYCLOAK_TLS_PORT` maps browser HTTPS from
+port 443 to a loopback port. Node.js connects to the issuer on port 443.
 
 ### Run the Keycloak lane
 
@@ -228,19 +231,17 @@ node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
 node scripts/ci/cleanup.mjs --state "$state"
 ```
 
-Preparation creates a private CA, fixture credentials and a Keycloak container.
-It may add a tagged line to `/etc/hosts` using `sudo -n`; cleanup removes its
-container, private files, and the line it added. If passwordless `sudo` is
-unavailable, add this line yourself before preparation and remove it afterward:
+Preparation creates a private CA, credentials, and a Keycloak container. It can
+add a tagged `/etc/hosts` line with `sudo -n`. Cleanup removes these resources.
+Without passwordless `sudo`, add this line before preparation and remove it
+afterward.
 
 ```sh
 echo '127.0.0.1 keycloak.oce.localhost keycloak.oce.test' | sudo tee -a /etc/hosts
 ```
 
-Resolve both names to `127.0.0.1`, optionally also `::1`, with no nonloopback
-answers. Readiness uses IPv4 to match Docker. For preparation errors, check the named step: image pull,
-port availability, placeholders, hosts resolution, or the printed Keycloak log
-for readiness errors.
+Resolve both names only to `127.0.0.1`, with optional `::1`. Readiness uses
+IPv4. If preparation fails, check the reported step and Keycloak log.
 
 ### Keycloak local launcher coverage
 

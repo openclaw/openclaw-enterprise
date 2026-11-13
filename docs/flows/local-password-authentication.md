@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-12 09:36"
-last_updated_session: "authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37"
+updated: "2026-11-13 14:55"
+last_updated_session: "authoring-run/f3e6e2ec-49cf-4fd3-960e-935718683930"
 ---
 
 # Bootstrap and human authentication flow
@@ -38,7 +38,7 @@ graph TD
     D --> E["Sync private key JSON and production password file"]
     E --> F["Commit Installation, IAM seed, and audit"]
   end
-  F --> G["Complete startup"]
+  F --> G["Validate sign-in and end removed provider sessions"]
   B --> G
   Bootstrap -->|Any error| H["Exit unsuccessfully; preserve tracked artifacts for manual repair"]
   subgraph Request["Human controller request"]
@@ -165,22 +165,24 @@ Better Auth releases the cookie. Session reads check the current account, method
 version, and Principal; sessions expire after eight hours without refresh. HTTPS uses the [shared session cookie](../reference/authentication.md#native-admin-shared-sessions);
 session reads and logout reject duplicates.
 
-For OIDC, the Console reads provider discovery and posts to
-`/api/auth/providers/oidc/start`. `auth/human-login.ts:oidcProvider` binds the
-five-minute attempt to the provider instance, client-secret digest, and effective
-enrollment-policy digest. `createPostgresControllerAuth` resolves omitted Group
-IDs from the Installation defaults before computing that digest.
-The attempt stores state and browser-secret digests, callback and PKCE verifier.
-A host-only HttpOnly cookie binds the browser. Callback consumption commits before
-code exchange, so an invalid or consumed attempt cannot exchange a code.
+The Console starts named OIDC sign-in at `/api/auth/providers/oidc/<key>/start`.
+The legacy path omits `<key>`. `auth/human-login.ts:oidcProvider` binds the
+five-minute attempt to the provider instance, client-secret digest, and enrollment
+policy with default Groups resolved. The attempt stores state and browser-secret
+digests, callback, and PKCE verifier. A host-only HttpOnly cookie binds the
+browser. The callback consumes the attempt before code exchange.
 
-`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` verifies the ID token and,
-when configured, its admission claim. A string is one group; an array must contain
-only strings. Matching is exact and case-sensitive without trimming or comma
-splitting. A matching claim reaches account lookup;
-a missing, malformed or unmatched claim is refused. The signed `sub` selects the
-identity. Profile claims are read only for an eligible unknown identity; see
-[enrollment](#6-enroll-an-oidc-identity). No provider token enters State.
+At startup, `apps/controller/src/auth/index.ts:createPostgresControllerAuth` calls
+`packages/occ/src/state/human-authentication.ts:retireUnconfiguredProviders`.
+State ends and audits removed providers' sessions and deletes obsolete attempts
+and links. Attached methods remain.
+
+`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` verifies the ID token.
+When admission is configured, an exact group match allows account lookup.
+See [claim rules](../reference/authentication/team-enrollment.md#select-admission-and-initial-access).
+The signed `sub` selects the identity. Only eligible unknown identities use
+profile claims for [enrollment](#6-enroll-an-oidc-identity). State stores no
+provider tokens.
 
 The signed login receipt binds provider, session and attempt. The Console
 consumes it once with the matching origin and session cookie; see the
@@ -197,14 +199,15 @@ IPv4 or IPv6 address. `resolveClientAddress` uses dotted IPv4 for mapped peers a
 header hops.
 
 Password admission validates email before known-device or State reads. Both
-password-only and guarded profiles audit refusals through their existing owners;
-[session lifecycle](../reference/authentication.md#session-lifecycle) defines
-error responses and failure accounting. Google and OIDC share process-local rate and concurrency limits
-for start, callback and result admission (`keyedAdmission`), keyed on
-client addresses behind trusted proxies and browser cookies otherwise. Provider
-HTTP shares a deadline and response-byte cap; State bounds pending attempts and expired cleanup.
-State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
-elapsed work. Expired completion releases no cookie.
+password-only and guarded profiles audit refusals. See [session lifecycle](../reference/authentication.md#session-lifecycle)
+for error responses and failure accounting.
+
+`keyedAdmission` shares rate and concurrency limits across providers for each step.
+Without a trusted client address, callback and result admission use browser
+cookies. With multiple providers, each can use half the callback slots.
+Provider HTTP has a deadline and byte limit. State bounds pending attempts and
+expired cleanup. Cookie Max-Age subtracts monotonic elapsed work from State's
+deadline. Expired completion releases no cookie.
 
 `scripts/auth-maintain.mjs` parses arguments with
 `scripts/lib/auth-maintain-arguments.mjs:parseAuthMaintainArguments` before
@@ -237,8 +240,9 @@ Attachment, disablement and account-wide revocation advance the version and inva
 target sessions and proofs without changing IAM.
 Guarded reads return current account and method state, not operation receipts.
 Unknown completion returns a dependency failure without replay or compensation. Resolve uncertainty before proceeding.
-Without an external sign-in provider, composition omits account operations; routes
-still authorize the caller, then return `409 RESOURCE_CONFLICT`.
+`createPostgresControllerAuth` resolves attachment keys from named OIDC settings.
+After authorization, an unconfigured provider returns `409 RESOURCE_CONFLICT`.
+Without an external provider, composition omits account operations.
 Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#external-sign-in-profile)
 owns configuration, recovery limits, and operator-visible behavior.
 
@@ -351,12 +355,18 @@ rechecks the resulting proof before issuing its cookie.
 
 ## Changelog
 
+- 2026-11-13 14:55: Trace named OIDC attachment. (authoring-run/f3e6e2ec-49cf-4fd3-960e-935718683930 - 11ea9c2e7578ccb6fa91e1af955797dc0f149276)
+
+- 2026-11-12 09:44: Reconcile named-provider admission and enrollment with main. (authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6 - d3da453e6b84907f013c52c0391b3eb32e177d63)
+
 - 2026-11-12 09:36: Clarify the Native IAM account-creation guarantee. (authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37 - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
 - 2026-11-12 09:25: Retain account authority through commit. (authoring-run/276118f6-2838-4088-8f68-2deba06ca89d - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
 
 - 2026-11-11 10:23: Document exact scalar group admission and creation-only email verification policy. (authoring-run/4ed1deac-0365-4912-90fb-946108b6abaa - 1fefb0644)
 
 - 2026-11-11 09:25: Document how a session check preserves a newer browser cookie. (authoring-run/020599f2-46fb-4eca-94b0-53f51af3deca - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
+
+- 2026-11-10 14:49: Trace session retirement on API replacement and callback limits for each provider. (authoring-run/0a21b7ac-a801-4bfa-991f-4703fe578258 - 3488c97f215ae3f80beb14ca3d11a6a6b8f011)
 
 - 2026-11-09 16:10: Trace startup policy resolution and the single external identity lookup. (authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755 - 65aa5bd78)
 

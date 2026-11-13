@@ -217,7 +217,7 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
-{{- if and .Values.auth.oidc .Values.auth.oidc.enabled }}
+{{- with $oidcProviders := (include "openclaw.oidc.providers" . | fromJson) }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -227,18 +227,20 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
     # The API calls only the configured token and JWKS URLs, whose host names were checked
     # at startup; this bounds the addresses they resolve to. Empty egressCidrs permits HTTPS
     # to any address except link-local (cloud metadata) 169.254.0.0/16.
+    {{- range $provider := $oidcProviders }}
     - to:
-        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.oidc.egressCidrs | nindent 8 }}
+        {{- include "openclaw.networkPolicy.signInEgressPeers" $provider.egressCidrs | nindent 8 }}
       ports:
         - protocol: TCP
           port: 443
+    {{- end }}
 {{- end }}
 
 

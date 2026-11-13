@@ -257,6 +257,33 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  helm-oidc-agent-chat:
+    name: QA advisory (Helm OIDC Agent chat)
+    needs: eligibility
+    if: needs.eligibility.outputs.oidc == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: integration-qa-pr
+    env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
+      OCC_TEST_QA_SCENARIOS: helm-oidc-agent-chat
+      OCC_TEST_QA_PRESET: OpenClaw
+      OCC_TEST_QA_INSTALLATION: kubernetes
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: qa-matrix
+          profile: full
+          node-version: "24.22.1"
+          artifact-prefix: qa-advisory-helm-oidc-agent-chat
+          job-timeout-minutes: 120
+
   openshell:
     name: QA advisory (OpenShell / ${{ matrix.shard }})
     needs: eligibility

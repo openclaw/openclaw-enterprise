@@ -434,10 +434,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw new Error("Native admin UI access requires an Agent domain.");
     }
     if (exchangeMode) {
+      const oidcConfigured =
+        options.auth?.oidcEnabled === true || (options.auth?.oidcProviders?.length ?? 0) > 0;
       if (
         !nativeBrowser ||
         options.auth.humanProfile !== "guarded" ||
-        !options.auth.oidcEnabled ||
+        !oidcConfigured ||
         options.auth.googleEnabled ||
         options.auth.sharedCookieDomain !== undefined
       ) {

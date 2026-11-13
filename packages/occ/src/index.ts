@@ -719,6 +719,7 @@ export type {
   HumanAuthenticationSession,
   HumanAuthenticationAttemptKey,
   HumanAuthenticationAttempt,
+  HumanAuthenticationLinkCandidate,
   HumanAuthenticationDenial,
   PostgresHumanAuthenticationOptions,
 } from "./state/human-authentication.ts";

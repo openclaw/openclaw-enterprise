@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 const scenarioPresets = {
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
+  "helm-oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
   "scratch-volume": ["Codex"],
   "plugin-install": ["Codex"],
@@ -34,6 +35,7 @@ export function selectQaMatrix(env = process.env) {
       ![
         "namespace-lifecycle",
         "oidc-agent-chat",
+        "helm-oidc-agent-chat",
         "sandbox-policy",
         "scratch-volume",
         "plugin-install",
@@ -51,10 +53,12 @@ export function selectQaMatrix(env = process.env) {
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
   const oidcAgentChat = scenarios.includes("oidc-agent-chat");
-  if (oidcAgentChat) {
-    assert.equal(scenarios.length, 1, "oidc-agent-chat requires an exclusive QA selection");
-    assert.equal(installation, "kubernetes", "oidc-agent-chat requires Kubernetes");
-    assert.equal(preset, "OpenClaw", "oidc-agent-chat requires the OpenClaw preset");
+  const helmOidcAgentChat = scenarios.includes("helm-oidc-agent-chat");
+  if (oidcAgentChat || helmOidcAgentChat) {
+    const name = helmOidcAgentChat ? "helm-oidc-agent-chat" : "oidc-agent-chat";
+    assert.equal(scenarios.length, 1, `${name} requires an exclusive QA selection`);
+    assert.equal(installation, "kubernetes", `${name} requires Kubernetes`);
+    assert.equal(preset, "OpenClaw", `${name} requires the OpenClaw preset`);
   }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
@@ -84,6 +88,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "helm-oidc-agent-chat",
           ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
@@ -97,6 +102,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "helm-oidc-agent-chat",
           ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
@@ -112,6 +118,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "helm-oidc-agent-chat",
           ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
@@ -158,6 +165,9 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_KEYCLOAK_CONTAINER",
       "NODE_EXTRA_CA_CERTS",
     );
+  }
+  if (helmOidcAgentChat) {
+    requiredEnv.push("OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL");
   }
   if (codexSearchConfig) {
     if (env.OCC_TEST_QA_MODEL_API_KEY !== undefined) {
@@ -266,6 +276,7 @@ export function selectQaMatrix(env = process.env) {
     namespaceLifecycle,
     gitModel,
     oidcAgentChat,
+    helmOidcAgentChat,
     sandboxPolicy,
     scratchVolume,
     pluginInstall,

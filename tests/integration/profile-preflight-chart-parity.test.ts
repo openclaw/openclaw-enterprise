@@ -7,13 +7,16 @@ import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+
 import { clientAddressConfiguration } from "../../apps/controller/src/auth/client-address.ts";
+import { oidcLoginConfigurations } from "../../apps/controller/src/auth/oidc.ts";
+import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   RenderRefusal,
   renderInstallationProfile,
 } from "../../scripts/render-installation-profile.mjs";
-
+import { findResource } from "../helpers/production-chart-resource.ts";
 import {
   profileComputeCases,
   type FieldParityCases,
@@ -22,6 +25,9 @@ import {
   type TestInput,
   type VerdictCase,
 } from "./profile-preflight-chart-compute-cases.ts";
+
+type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
+type ChartResource = { kind: string; metadata: { name: string } };
 
 // Each case runs through the profile preflight and through `helm template`, so the
 // renderer cannot accept a value the chart then refuses (or refuse one it accepts).
@@ -33,9 +39,15 @@ try {
 } catch {
   helmSkip = "Install Helm, or set OCC_HELM_BIN, to compare the preflight with the chart.";
 }
-const { loadYaml }: { loadYaml: (text: string) => unknown } = createRequire(
-  new URL("../../apps/controller/package.json", import.meta.url),
-)("@kubernetes/client-node");
+const {
+  loadYaml,
+  loadAllYaml,
+}: {
+  loadYaml: (text: string) => unknown;
+  loadAllYaml: (text: string) => unknown[];
+} = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
+  "@kubernetes/client-node",
+);
 
 function input(controlPlane: TestInput = {}) {
   return {
@@ -687,6 +699,226 @@ test(
     });
   },
 );
+
+test(
+  "named OIDC provider settings reach the API and the network policy",
+  { skip: helmSkip },
+  async () => {
+    const enrollment = { admission: { groupsClaim: "groups", anyOf: ["employees"] } };
+    const providers = {
+      okta: {
+        ...oidcEndpoints,
+        secretName: "occ-okta-login",
+        displayName: "Okta",
+        legacyCallback: true,
+        allowSelfLink: true,
+        egressCidrs: ["198.51.100.0/24"],
+      },
+      "keycloak-sso": {
+        issuer: "https://keycloak.example.com/realms/enterprise",
+        authorizationUrl: "https://keycloak.example.com/authorize",
+        tokenUrl: "https://keycloak.example.com/token",
+        jwksUrl: "https://keycloak.example.com/keys",
+        tokenAuth: "client_secret_basic",
+        secretName: "occ-keycloak-login",
+        clientIdKey: "oidc-id",
+        clientSecretKey: "oidc-secret",
+        enrollment,
+        egressCidrs: ["203.0.113.0/24"],
+      },
+    };
+    const manifests = await assertParity({
+      label: "named Okta and Keycloak providers",
+      controlPlane: { oidc: { providers } },
+      accepted: true,
+    });
+    const objects = loadAllYaml(manifests) as ChartResource[];
+    const api = findResource(objects, "Deployment", "openclaw-enterprise-api") as
+      InstanceType<KubernetesSdk["V1Deployment"]> | undefined;
+    const worker = findResource(objects, "Deployment", "openclaw-enterprise-worker") as
+      InstanceType<KubernetesSdk["V1Deployment"]> | undefined;
+    const apiEnv = api?.spec?.template.spec?.containers.find(({ name }) => name === "api")?.env;
+    const workerEnv = worker?.spec?.template.spec?.containers.find(
+      ({ name }) => name === "worker",
+    )?.env;
+    assert.ok(apiEnv);
+    assert.ok(workerEnv);
+    assert.equal(
+      workerEnv.some(({ name }) => name.startsWith("OCC_AUTH_OIDC_")),
+      false,
+    );
+    const oidcEnv = apiEnv.filter(({ name }) => name.startsWith("OCC_AUTH_OIDC_"));
+    assert.equal(
+      oidcEnv.find(({ name }) => name === "OCC_AUTH_OIDC_PROVIDERS")?.value,
+      "keycloak-sso,okta",
+    );
+    assert.equal(
+      oidcEnv.some(({ name }) => name === "OCC_AUTH_OIDC_ISSUER"),
+      false,
+    );
+    const secretRefs = Object.fromEntries(
+      oidcEnv
+        .filter(({ valueFrom }) => valueFrom)
+        .map(({ name, valueFrom }) => [name, { ...valueFrom?.secretKeyRef }]),
+    );
+    assert.deepEqual(secretRefs, {
+      OCC_AUTH_OIDC_KEYCLOAK_SSO_CLIENT_ID: { name: "occ-keycloak-login", key: "oidc-id" },
+      OCC_AUTH_OIDC_KEYCLOAK_SSO_CLIENT_SECRET: { name: "occ-keycloak-login", key: "oidc-secret" },
+      OCC_AUTH_OIDC_OKTA_CLIENT_ID: { name: "occ-okta-login", key: "client-id" },
+      OCC_AUTH_OIDC_OKTA_CLIENT_SECRET: { name: "occ-okta-login", key: "client-secret" },
+    });
+    // Give the API parser dummy values for the references Kubernetes resolves at Pod startup.
+    const environment = Object.fromEntries(
+      oidcEnv.map(({ name, value }) => [name, value ?? `fixture-${name}`]),
+    );
+    const configured = oidcLoginConfigurations(environment);
+    assert.deepEqual(
+      configured.map(({ route, config }) => [
+        route,
+        config.issuer,
+        config.displayName,
+        config.tokenAuth,
+      ]),
+      [
+        [
+          "oidc/keycloak-sso",
+          providers["keycloak-sso"].issuer,
+          "keycloak-sso",
+          "client_secret_basic",
+        ],
+        ["oidc", providers.okta.issuer, "Okta", "client_secret_post"],
+      ],
+    );
+    assert.deepEqual(configured[0]?.config.enrollment?.admission, enrollment.admission);
+    assert.deepEqual(
+      configured.map(({ key, allowSelfLink }) => [key, allowSelfLink]),
+      [
+        ["keycloak-sso", false],
+        ["okta", true],
+      ],
+    );
+    const policy = findResource(
+      objects,
+      "NetworkPolicy",
+      "openclaw-enterprise-api-oidc-login-egress",
+    ) as InstanceType<KubernetesSdk["V1NetworkPolicy"]> | undefined;
+    const egress = policy?.spec?.egress;
+    assert.ok(egress);
+    assert.deepEqual(
+      egress.map(({ to, ports }) => ({
+        cidrs: to?.map(({ ipBlock }) => ipBlock?.cidr),
+        ports: ports?.map((port) => ({ ...port })),
+      })),
+      [
+        { cidrs: ["203.0.113.0/24"], ports: [{ protocol: "TCP", port: 443 }] },
+        { cidrs: ["198.51.100.0/24"], ports: [{ protocol: "TCP", port: 443 }] },
+      ],
+    );
+    assert.equal(apiEnv.find(({ name }) => name === "OCC_API_HTTPS_EGRESS_OPEN")?.value, "false");
+
+    // The three entry points must reject the same case variants before sign-in starts.
+    // Simple folding handles both forms of lowercase sigma and keeps dotted İ distinct from i.
+    await each(
+      [
+        [" Équipe ", "équipe", false],
+        ["ΟΣ", "ος", false],
+        ["İ", "i", true],
+        ["Equipe.*", "Equipe West", true],
+      ] as const,
+      async ([oktaLabel, keycloakLabel, accepted]) => {
+        const oidc = {
+          providers: {
+            okta: { ...providers.okta, displayName: oktaLabel },
+            "keycloak-sso": { ...providers["keycloak-sso"], displayName: keycloakLabel },
+          },
+        };
+        await assertParity({
+          label: `OIDC button labels ${JSON.stringify(oktaLabel)} and ${JSON.stringify(keycloakLabel)}`,
+          controlPlane: { oidc },
+          values: { auth: { oidc: { enabled: true, ...oidc } } },
+          accepted,
+          chartError: /distinct button labels/,
+          rendererError: /distinct button labels/,
+        });
+        const configure = () =>
+          oidcLoginConfigurations({
+            ...environment,
+            OCC_AUTH_OIDC_OKTA_DISPLAY_NAME: oktaLabel,
+            OCC_AUTH_OIDC_KEYCLOAK_SSO_DISPLAY_NAME: keycloakLabel,
+          });
+        if (accepted) {
+          assert.deepEqual(
+            configure().map(({ config }) => config.displayName),
+            [keycloakLabel, oktaLabel],
+          );
+        } else {
+          assert.throws(
+            configure,
+            /must have distinct keys, routes, issuer\/client pairs, and labels/,
+          );
+        }
+      },
+    );
+  },
+);
+
+test("invalid named OIDC provider settings fail preflight and Helm", { skip: helmSkip }, () => {
+  const okta = { ...oidcEndpoints, secretName: "occ-okta-login", legacyCallback: true };
+  const keycloak = { ...oidcEndpoints, secretName: "occ-keycloak-login" };
+  const providers = { okta, keycloak };
+  const cases: Array<[string, TestInput, RegExp]> = [
+    ["bad provider key", { providers: { Okta_SSO: okta } }, /providers key "Okta_SSO"/],
+    [
+      "explicit label collides with another provider's default label",
+      { providers: { okta: { ...okta, displayName: "Keycloak" }, keycloak } },
+      /distinct button labels/,
+    ],
+    [
+      "non-boolean enrollment email verification",
+      {
+        providers: {
+          keycloak: {
+            ...keycloak,
+            enrollment: {
+              admission: { groupsClaim: "groups", anyOf: ["employees"] },
+              createAccount: { requireVerifiedEmail: "false" },
+            },
+          },
+        },
+      },
+      /auth\.oidc\.providers\.keycloak\.enrollment\.createAccount\.requireVerifiedEmail must be a boolean/,
+    ],
+    [
+      "missing Secret name",
+      { providers: { okta: oidcEndpoints } },
+      /providers\.okta requires a dedicated operator-created Secret name/,
+    ],
+    [
+      "shared Secret name",
+      { providers: { okta, keycloak: { ...keycloak, secretName: okta.secretName } } },
+      /providers\.okta\.secretName must name a dedicated Secret/,
+    ],
+    [
+      "duplicate legacy callback",
+      { providers: { okta, keycloak: { ...keycloak, legacyCallback: true } } },
+      /providers permits at most one legacyCallback: true/,
+    ],
+    [
+      "mixed single and named settings",
+      { issuer: oidcEndpoints.issuer, providers },
+      /auth\.oidc\.issuer belongs in auth\.oidc\.providers/,
+    ],
+  ];
+  return each(cases, ([label, oidc, chartError]) =>
+    assertParity({
+      label,
+      controlPlane: { oidc },
+      values: { auth: { oidc: { enabled: true, ...oidc } } },
+      accepted: false,
+      chartError,
+    }),
+  );
+});
 
 fieldParity("bootstrap password claim names get the same verdict from preflight and the chart", {
   cases: [

@@ -748,6 +748,70 @@ test(
     });
 
     await context.test(
+      "a failed session insert rolls back account linking and its session revocation",
+      async () => {
+        const { actor: admin, session: adminSession } = signedInAdmin();
+        const existingProvider = `oidc:${randomBytes(32).toString("hex")}`;
+        const newProvider = `oidc:${randomBytes(32).toString("hex")}`;
+        const oidc = new PostgresHumanAuthentication(state, installationId, issuer, {
+          externalProviderIds: [existingProvider, newProvider],
+        });
+        const user = await preparedAccount("self-service-link");
+        const userSeed = auth.principalSeed(user, { roleId });
+        await oidc.provisionPasswordAccount(user, userSeed);
+        const account = await oidc.readAccount(user.id, admin);
+        await oidc.attachExternal(user.id, existingProvider, subject, admin, account.version);
+        const snapshot = await oidc.snapshotExternal(existingProvider, subject);
+        assert.ok(snapshot && "proof" in snapshot);
+        const { proof } = snapshot;
+        const previous = await oidc.issueSession(proof, sessionRecord(user.id));
+
+        const candidate = {
+          linkHash: randomBytes(32).toString("hex"),
+          attemptId: randomBytes(32).toString("base64url"),
+          providerId: newProvider,
+          providerBinding: `${newProvider}:${randomBytes(32).toString("hex")}:${randomBytes(32).toString("hex")}`,
+          subject: "new-provider-subject",
+        };
+        await oidc.createLinkCandidate(candidate);
+        const link = { linkHash: candidate.linkHash, providerBinding: candidate.providerBinding };
+        await assert.rejects(
+          oidc.issueSession(
+            proof,
+            { ...sessionRecord(user.id), token: adminSession.token },
+            undefined,
+            randomBytes(32).toString("base64url"),
+            link,
+          ),
+          { name: "ResourceConflictError" },
+        );
+        assert.equal((await oidc.currentSession(previous.token))?.id, previous.id);
+        assert.deepEqual(await oidc.snapshotExternal(newProvider, candidate.subject), {
+          missing: true,
+        });
+        assert.equal(
+          (await oidc.readLinkCandidate(candidate.linkHash, candidate.attemptId))?.subject,
+          candidate.subject,
+        );
+
+        const linked = await oidc.issueSession(
+          proof,
+          sessionRecord(user.id),
+          undefined,
+          randomBytes(32).toString("base64url"),
+          link,
+        );
+        const attached = await oidc.snapshotExternal(newProvider, candidate.subject);
+        assert.ok(attached && "proof" in attached);
+        assert.equal(attached.proof.principalId, userSeed.principal.id);
+        assert.equal(attached.proof.version, proof.version + 1);
+        assert.equal((await oidc.currentSession(linked.token))?.id, linked.id);
+        assert.equal(await oidc.currentSession(previous.token), undefined);
+        assert.equal(await oidc.readLinkCandidate(candidate.linkHash), undefined);
+      },
+    );
+
+    await context.test(
       "attempts require the exact browser and destination and are consumed once across controllers",
       async () => {
         const attempt = {

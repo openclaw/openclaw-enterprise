@@ -72,13 +72,15 @@ auth:
     # link-local 169.254.0.0/16; Google publishes no small stable range, so narrow it with
     # an egress proxy.
     egressCidrs: []
-  # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0) for
-  # existing password accounts (API Pod only). Requires HTTPS and a recovery account. Its
-  # Secret must differ from auth.google's. Copy issuer and the three URLs
-  # from the IdP's discovery document: each must be https on port 443 on the issuer's
-  # host, with no query or fragment. The API never runs discovery.
+  # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0).
+  # Requires HTTPS and a recovery account. Use a dedicated Secret for each provider.
+  # Copy the issuer and the three URLs from each provider's discovery document.
+  # Use HTTPS on port 443 on the issuer's host, with no query or fragment.
   oidc:
     enabled: false
+    # Named providers. Move the settings below into one map entry per provider.
+    # caSecretName and caSecretKey stay at this level.
+    providers: {}
     # The exact "iss" value, trailing slash included where the IdP uses one.
     issuer: ""
     authorizationUrl: ""
@@ -87,7 +89,7 @@ auth:
     secretName: occ-oidc-login
     clientIdKey: client-id
     clientSecretKey: client-secret
-    # Optional CA certificate bundle for the IdP (no private keys). Both or neither.
+    # Optional CA certificate bundle for the OIDC providers (no private keys). Both or neither.
     # API-only process-wide Node trust, combined with Gateway roots. Replace API Pods on rotation.
     # Requires a separate database.caSecretName and an application URL with a DNS host
     # (not an IP), sslmode=verify-full and sslrootcert=database.caMountPath/database.caKey.

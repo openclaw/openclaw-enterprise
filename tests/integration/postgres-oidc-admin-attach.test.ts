@@ -135,6 +135,19 @@ test(
         403,
       );
       const requestsBefore = oidc.requests;
+      // Flat settings support attachment on the legacy path only.
+      const unavailable = await injectLocalhost(
+        app,
+        "POST",
+        `/api/auth/accounts/${admin.id}/providers/oidc/default`,
+        {
+          headers: adminHeaders,
+          body: { subject: adminSubject, expectedVersion: before.version },
+        },
+      );
+      assertApiError(unavailable, 409, "RESOURCE_CONFLICT");
+      assert.deepEqual(await readAccount(app, adminHeaders, admin.id), before);
+
       const attached = await attach(adminHeaders, admin.id, adminSubject, before.version);
       assert.equal(attached.statusCode, 200, attached.body);
       assert.equal(oidc.requests, requestsBefore, "attaching never contacts OIDC");

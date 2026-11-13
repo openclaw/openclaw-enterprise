@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-11-10
-last_updated_session: authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761
+updated: "2026-11-12 09:44"
+last_updated_session: "authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6"
 ---
 
 # Console sign-in and destination recovery
@@ -24,7 +24,12 @@ only after session admission and ends at ordinary Agent detail.
 graph TD
   A["Open console route or recovery link"] --> B["Check session"]
   B -->|Null result| C["Sign in"]
-  C --> B
+  C -->|Password or Google| B
+  C -->|OIDC| I["Sign in with selected provider"]
+  I -->|Account ready| B
+  I -->|Link permitted| J["Sign in with existing OIDC method"]
+  J --> K["Save identity link and session"]
+  K --> B
   B -->|Malformed reply| R["Show Session unavailable"]
   R -->|Retry| B
   B -->|Valid account and binding| D["Confirm session"]
@@ -65,10 +70,11 @@ takes the status over in place while checking the session and announces
 and name. If the reply is malformed, the console shows **Session unavailable**
 and withholds private content and reads. **Retry** repeats the session check.
 
-`showLogin` reads `GET /api/auth/providers`; a true `google` flag adds its **Continue
-with Google** button, and discovery failure keeps password login. A true `oidc` flag adds a button
-labelled from `oidcSignIn.label` only when `oidcSignIn.authorizationUrl` is `https:`; its start
-URL must use that endpoint's origin and path, as Google's must use its fixed endpoint.
+`showLogin` reads `GET /api/auth/providers`. A true `google` flag adds **Continue
+with Google**. `oidcProviders` supplies a button label and route for each named
+provider. A provider on the legacy route supplies its label and authorization
+URL in `oidcSignIn`. The start URL must match the provider's configured HTTPS origin and
+path. Discovery failure keeps password sign-in.
 An explicit `password: false` makes the form recovery-only and changes the
 provider-error advice from "use your password" to asking an administrator. The
 console keeps the password form behind **Recovery sign-in** while discovery is
@@ -108,6 +114,28 @@ had one: a mark in tab `sessionStorage`, set when a session resolves and cleared
 by logout, tells a reload after expiry from a first visit. Sign-in reauthorizes
 that destination; it never restores drafts or replays a mutation. A `403` remains
 an access denial and does not start login. The login page accepts no return URL.
+
+The Console shows each configured provider on the sign-in page.
+`console.mts:showLogin` offers linking when at least two providers report
+`allowSelfLink: true`. The link view shows those providers.
+
+When Maya first uses Keycloak, `human-login.ts:externalProviderEndpoints`
+checks the ID token and looks for the Keycloak identity in `occ.account`.
+If enrollment permits account creation and the email is available, OpenClaw
+creates the account. If Maya already has an account, she can choose **Link an
+existing account** before starting. OpenClaw also offers this step when a verified
+identity has no link and cannot create an account. Keycloak must permit linking.
+
+OpenClaw writes the verified identity to `occ.human_authentication_links`
+with a five-minute expiry. The browser keeps a cookie and the original tab keeps
+the attempt ID. Both are necessary to start the proof with another OIDC provider.
+Maya signs in again with Okta. OpenClaw checks that Okta permits linking and
+is already linked to her account. In one PostgreSQL transaction,
+`human-authentication.ts:issueSession`
+consumes the pending link, adds the Keycloak row to `occ.account`, ends earlier
+sessions, records the audit event, and writes the new session. Maya keeps her
+existing user ID and permissions. The tab confirms the new session with the
+Okta result route and opens its original destination.
 
 A native Agent recovery link can supply a 32-character lowercase hexadecimal key
 in the console root fragment. `loadPage` removes the fragment before sign-in and
@@ -155,6 +183,10 @@ until Retry” in `tests/browser/console-refocus-focus.test.ts` checks that a
 successful reply without a binding hides private content and sends no private
 reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 
+`tests/integration/postgres-oidc-linking.test.ts` checks separate enrollment
+policies, opt-in linking, administrator attachment, and the two identity rows
+for one user.
+
 ## Related docs
 
 - [Parent console flow](../platform-console.md)
@@ -165,6 +197,12 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 09:44: Distinguish discovery for named providers and the legacy route. (authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6 - d3da453e6b84907f013c52c0391b3eb32e177d63)
+
+- 2026-11-10 14:49: Trace provider opt-in for self-service linking. (authoring-run/0a21b7ac-a801-4bfa-991f-4703fe578258 - 3488c97f215ae3f80beb14ca3d11a6a6b8f011)
+
+- 2026-11-10 14:03: Trace named OIDC sign-in and linking with a second provider. (authoring-run/94464a93-4082-414c-853d-34ba1c1c347b - 3488c97f215ae3f80beb14ca3d11a6a6b8f011)
 
 - 2026-11-10 08:33: Keep password entry behind explicit recovery until sign-in discovery settles. (authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

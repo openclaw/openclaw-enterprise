@@ -114,6 +114,11 @@ management under **Customize access** to use its approved access level.
 
 ## Return navigation
 
+In **Pages/Sign in → Multiple OIDC Providers**, select **Link an existing
+account**. Check that Okta and Keycloak appear. Select **Back to sign in** and
+check that Dex appears again. In **Multiple OIDC Providers Without Linking**,
+check that all three sign-in choices appear.
+
 **Return while deployments load** shows the rechecked Agents list first. Watch
 “Reading deployment…” become “Deployment access denied,” without the old result reappearing.
 

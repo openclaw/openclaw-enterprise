@@ -10,7 +10,7 @@ last_verified: "2026-11-04"
 ## Overview
 
 Scheduled QA runs Console Secret management on Compose/Kubernetes, OpenShell
-security and lifecycle files, local installation, and OIDC Agent chat. Jobs use
+security and lifecycle files, local installation, and both OIDC Agent chat jobs. Jobs use
 real dependencies on disposable installations. Results are advisory, not merge
 or publication gates.
 
@@ -18,15 +18,15 @@ or publication gates.
 
 ## Trigger
 
-| Trigger                                            | Jobs selected                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                              |
-| Manual run of `qa-advisory.yml` on `main`          | All four groups                                                              |
-| Eligible PR with `full-qa`                         | All four groups                                                              |
-| Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                       |
-| Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                             |
-| Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                      |
-| Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
+| Trigger                                            | Jobs selected                                                                       |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                                     |
+| Manual run of `qa-advisory.yml` on `main`          | All four groups                                                                     |
+| Eligible PR with `full-qa`                         | All four groups                                                                     |
+| Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                              |
+| Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                                    |
+| Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                             |
+| Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, both OIDC Agent chat jobs, and all OpenShell jobs; no local installation |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
 are ineligible. Narrow labels select their union. `full-qa` overrides them and
@@ -65,6 +65,7 @@ for Codex.
 | `model-ui`              | Focused label only   | OpenClaw        | Real model turn and native browser response.                                                                                                                                     |
 | `scratch-volume`        | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                 |
 | `oidc-agent-chat`       | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
+| `helm-oidc-agent-chat`  | Yes, separate job    | OpenClaw        | Two Helm-configured Keycloak realms sign in to one account. Both receive an Agent reply and are denied access to administration and sibling Agents.                              |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
 | `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
 | `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |
@@ -172,26 +173,24 @@ gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
-Local instructions run the **QA matrix only**. For other suites, follow
-[OpenShell setup](../openshell.md#openshell-sandbox) or
+For other suites, see [OpenShell setup](../openshell.md#openshell-sandbox) or
 [local installation tests](../kubernetes.md#local-kubernetes-installation).
 
 ### Select scenarios
 
-`OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
+`OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, or `kubernetes`.
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
-`openshell-linear-read`, `openshell-git-model`, `codex-search-config`, `harness-overrides` and
-`oidc-agent-chat` selectors.
-Invalid or wholly inapplicable selections fail before provisioning; missing
-inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+`all` excludes `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`,
+`plugin-install`, `openshell-linear-read`, `openshell-git-model`, `codex-search-config`,
+`harness-overrides`, `oidc-agent-chat`, and `helm-oidc-agent-chat`.
+Invalid or wholly inapplicable selections fail before provisioning. Missing
+inputs fail selected checks. Omit `OCC_TEST_QA_MATRIX=1` to skip the suite.
 
-Select `oidc-agent-chat` alone with `kubernetes` and `OpenClaw`. It uses the
-`gateway-routing` lane to prepare Keycloak, PostgreSQL, native routing and
-runtime images. Follow the [native browser proof](../native-agent-browser.md)
-for inputs, execution and proof limits. It does not use the ordinary matrix's
-installation launcher.
+Select one OIDC scenario with `kubernetes` and `OpenClaw`.
+
+- `oidc-agent-chat` uses `gateway-routing`. See [Keycloak setup](../native-agent-browser.md).
+- `helm-oidc-agent-chat` uses [two providers configured in Helm](../native-agent-browser.md#run-agent-chat-through-two-helm-configured-providers).
 
 Select `scratch-volume` with `kubernetes` and `Codex`. The
 [fixture](../openshell.md#openshell-sandbox) uses an OpenAI API key for

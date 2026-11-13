@@ -32,13 +32,16 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_SECRET` — Production requires a high-entropy session-signing secret; development has a local-only fallback.
 - `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when Google or OIDC sign-in is enabled.
-- `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy, including `createAccount.requireVerifiedEmail` (default `true`); see [OIDC enrollment](../authentication/team-enrollment.md).
+- `OCC_AUTH_OIDC_PROVIDERS` — Comma-separated named provider keys. Set each provider's variables with the `OCC_AUTH_OIDC_<KEY>_` prefix. See [OIDC settings](../settings/oidc.md).
+- `OCC_AUTH_OIDC_ENROLLMENT`, `OCC_AUTH_OIDC_<KEY>_ENROLLMENT` — Optional JSON admission and account creation policy. `createAccount.requireVerifiedEmail` defaults to `true`. See [OIDC enrollment](../authentication/team-enrollment.md).
+- `OCC_AUTH_OIDC_<KEY>_ALLOW_SELF_LINK` — Named provider opt-in for self-service linking, `true` or `false` (default). See [OIDC settings](../settings/oidc.md).
+- `OCC_AUTH_OIDC_<KEY>_LEGACY_CALLBACK` — Set to `true` on one named provider to keep the legacy callback path. See [OIDC settings](../settings/oidc.md).
 - `OCC_AUTH_PASSWORD_SIGN_IN` — `all` (default) or `recovery-only`, which lets only the recovery account sign in with a password; requires Google or OIDC sign-in. See [recovery-only password sign-in](../authentication/external-sign-in.md#recovery-only-password-sign-in).
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
 - `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` — Optional comma-separated Google Workspace hosted domains; when set, sign-in requires a matching `hd` claim and a verified email.
 - `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
-- `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client; with the issuer, they select the provider instance.
+- `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client credentials. The issuer and client ID identify the provider instance.
 - `OCC_AUTH_OIDC_TOKEN_AUTH` — `client_secret_post` (default) or `client_secret_basic`.
 - `OCC_AUTH_OIDC_DISPLAY_NAME` — Optional Console button label, 1–40 printable characters; default `single sign-on`.
 - `OCC_AUTH_TRUSTED_PROXY_CIDRS` — Production-only, off by default: comma-separated ingress or load balancer CIDRs. IPv4-mapped IPv6 counts as IPv4 (prefix 1–32); entries covering every IPv4 or every IPv6 address are refused. Trusted peers may report client addresses for sign-in limits; see [trusted proxies](../settings/production.md#external-sign-in-and-trusted-proxies).

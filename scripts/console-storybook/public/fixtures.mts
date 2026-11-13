@@ -86,13 +86,15 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     };
     rules?: Parameters<typeof createFixtureFetch>[0];
     signedOut?: boolean;
-    pendingOidcAttempt?: boolean;
+    pendingOidcAttempt?: "oidc" | "oidc/keycloak";
     expiredSession?: boolean;
     pendingGoogleAttempt?: boolean;
     emptyNamespaces?: boolean;
     emptyBackends?: boolean;
     harnessGrantMissing?: boolean;
     oidcEnabled?: boolean;
+    multipleOidcProviders?: boolean;
+    oidcSelfLink?: boolean;
     googleEnabled?: boolean;
     passwordRecoveryOnly?: boolean;
     namespaceDeleteDenied?: boolean;
@@ -191,6 +193,29 @@ const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
 const secretRef = (id: string): SecretReference => ({ kind: "secret", namespaceId, id });
 const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_demo_model") };
+const oidcProviders = [
+  {
+    key: "okta",
+    label: "Okta",
+    route: "oidc/okta",
+    authorizationUrl: "https://okta.example.test/authorize",
+    allowSelfLink: true,
+  },
+  {
+    key: "keycloak",
+    label: "Keycloak",
+    route: "oidc/keycloak",
+    authorizationUrl: "https://keycloak.example.test/authorize",
+    allowSelfLink: true,
+  },
+  {
+    key: "dex",
+    label: "Dex",
+    route: "oidc/dex",
+    authorizationUrl: "https://dex.example.test/authorize",
+    allowSelfLink: false,
+  },
+];
 
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
@@ -199,9 +224,21 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
-  if (scenario.pendingOidcAttempt) {
-    // Simulates returning from an OIDC callback started in this tab.
-    sessionStorage.setItem("occ.console.oidcAttempt", "a".repeat(43));
+  sessionStorage.removeItem("occ.console.externalAttempt");
+  // Select fixed callback data so the fixture never copies scenario data to browser storage.
+  let pendingAttempt: { route: string; label: string } | undefined;
+  if (scenario.pendingOidcAttempt === "oidc") {
+    pendingAttempt = { route: "oidc", label: "single sign-on" };
+  } else if (scenario.pendingOidcAttempt === "oidc/keycloak") {
+    pendingAttempt = { route: "oidc/keycloak", label: "Keycloak" };
+  } else if (scenario.pendingGoogleAttempt) {
+    pendingAttempt = { route: "google", label: "Google" };
+  }
+  if (pendingAttempt !== undefined) {
+    sessionStorage.setItem(
+      "occ.console.externalAttempt",
+      JSON.stringify({ ...pendingAttempt, attemptId: "a".repeat(43) }),
+    );
   }
   // Preview frames share tab storage, so every scenario sets the signed-in mark itself: only
   // one whose tab had a session before it expired keeps it; a first visit has none.
@@ -209,10 +246,6 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     sessionStorage.setItem("occ.console.signedIn", "1");
   } else {
     sessionStorage.removeItem("occ.console.signedIn");
-  }
-  if (scenario.pendingGoogleAttempt) {
-    // Simulates returning from a Google callback started in this tab.
-    sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43));
   }
   let serial = 100;
   const nextId = (prefix: string) =>
@@ -434,13 +467,26 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
               },
             }
           : {}),
+        ...(scenario.multipleOidcProviders
+          ? {
+              oidcProviders: oidcProviders.map((provider) => ({
+                ...provider,
+                allowSelfLink: scenario.oidcSelfLink === true && provider.allowSelfLink,
+              })),
+            }
+          : {}),
         google: scenario.googleEnabled === true,
         password: scenario.passwordRecoveryOnly !== true,
-        sessionBinding: scenario.oidcEnabled === true || scenario.googleEnabled === true,
+        sessionBinding:
+          scenario.oidcEnabled === true ||
+          scenario.multipleOidcProviders === true ||
+          scenario.googleEnabled === true,
       });
     }
     if (
-      (path === "/api/auth/providers/oidc/start" || path === "/api/auth/providers/google/start") &&
+      (path === "/api/auth/providers/oidc/start" ||
+        path === "/api/auth/providers/google/start" ||
+        oidcProviders.some(({ route }) => path === `/api/auth/providers/${route}/start`)) &&
       method === "POST"
     ) {
       // Keep the preview local; provider navigation needs real backend verification.

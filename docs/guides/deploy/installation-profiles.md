@@ -207,18 +207,18 @@ refresh itself.
 
 ### External sign-in and trusted proxies
 
-Activation of Google or OIDC sign-in is one-way, so keep the selected provider in
-later renders. `controlPlane.google: {}` uses the chart's Secret defaults.
-`controlPlane.oidc` requires `issuer`, `authorizationUrl`, `tokenUrl` and `jwksUrl`;
-see [OIDC setup](oidc-sign-in.md). Both require an HTTPS Console origin and the
-existing `recoveryUserId`. Google disables native access; OIDC supports it. To use host-only exchange,
+Keep enabled providers in later renders. `controlPlane.google: {}` uses the
+chart's Secret defaults. For OIDC, configure named entries under
+`controlPlane.oidc.providers.<key>` or one provider under `controlPlane.oidc`.
+See [OIDC setup](oidc-sign-in.md) for required URLs and Secrets. Both require
+an HTTPS Console origin and the existing `recoveryUserId`. Google disables native access.
+To use OIDC with host-only exchange,
 set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
 same-site HTTPS Console and Agent domains.
 
-Use `controlPlane.oidc.enrollment` for the
-[enrollment policy](../../reference/authentication/team-enrollment.md), including
-admission, initial Role and Group selection. `controlPlane.github` is rejected;
-existing installations must follow the [upgrade instructions](oidc-upgrade.md).
+Set `enrollment` for each OIDC provider that uses an
+[enrollment policy](../../reference/authentication/team-enrollment.md).
+For installations with direct GitHub sign-in, follow the [upgrade instructions](oidc-upgrade.md).
 Follow [external sign-in activation](production-installation.md#enable-external-browser-sign-in)
 before enabling the provider. Confirm existing users' attachments before selecting
 `passwordSignIn: "recovery-only"`.
@@ -230,8 +230,8 @@ through a shared proxy address. A source-preserving load balancer needs no prese
 
 Client-ID and client-secret Secret keys must differ; an omitted key counts as
 the chart default (`client-id` or `client-secret`).
-As the chart requires, each credential Secret is dedicated: a sign-in
-`secretName` (default `occ-google-login` or `occ-oidc-login`),
+Give each named provider a `secretName`. Flat OIDC and Google settings default
+to `occ-oidc-login` and `occ-google-login`. Each sign-in Secret,
 `gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
 `repository.publicCaSecretName`), the ChatGPT admin Secret (with
 `codex.managedServiceAccounts`) and each repository Secret must differ from
