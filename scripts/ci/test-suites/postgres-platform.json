@@ -26,7 +26,7 @@
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
-    "tests/integration/postgres-repository-sessions.test.mjs",
+    "tests/integration/postgres-repository-sessions.test.ts",
     "tests/integration/postgres-secret-state.test.mjs",
     "tests/integration/postgres-service-account-deletion.test.ts",
     "tests/integration/postgres-service-account-issuance-recovery.test.ts",
@@ -365,7 +365,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-repository-sessions.test.mjs"
+      "path": "tests/integration/postgres-repository-sessions.test.ts"
     },
     {
       "path": "tests/integration/postgres-repository-broker-receipts.test.mjs",

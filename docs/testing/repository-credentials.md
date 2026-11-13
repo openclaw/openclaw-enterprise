@@ -87,7 +87,7 @@ node --test tests/integration/repository-credentials-admission.test.mjs \
 
 For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
-Run `postgres-repository-sessions.test.mjs`,
+Run `postgres-repository-sessions.test.ts`,
 `postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
 worker version tests with `OCC_TEST_DATABASE_URL` set. The
 `postgres-openshell-standing-selected-repository.test.ts` case follows one
