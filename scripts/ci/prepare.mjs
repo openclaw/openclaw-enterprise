@@ -197,21 +197,26 @@ async function timedPreparation(lane, phase, operation) {
     const elapsedMs = Math.round(performance.now() - started);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
-    if (
-      process.env.GITHUB_ACTIONS === "true" &&
-      lane === "k3d-model" &&
-      [
-        "postgres-start",
-        "k3d-cluster-preparation",
-        "image-build-or-reuse",
-        "runtime-image-preparation",
-        "gateway-routing",
-      ].includes(phase)
-    ) {
+    if (lane === "k3d-model" && process.env.GITHUB_ACTIONS === "true") {
       const outcome = succeeded ? "success" : "failure";
-      process.stderr.write(
-        `::notice title=k3d Model Runtime preparation::stage=${phase} elapsed_ms=${elapsedMs} outcome=${outcome}\n`,
-      );
+      if (phase === "controller" || phase === "runtime") {
+        // Each role measures its own build or reuse. Their wall times can overlap.
+        process.stderr.write(
+          `::notice title=k3d Model Runtime image::role=${phase} elapsed_ms=${elapsedMs} outcome=${outcome}\n`,
+        );
+      } else if (
+        [
+          "postgres-start",
+          "k3d-cluster-preparation",
+          "image-build-or-reuse",
+          "runtime-image-preparation",
+          "gateway-routing",
+        ].includes(phase)
+      ) {
+        process.stderr.write(
+          `::notice title=k3d Model Runtime preparation::stage=${phase} elapsed_ms=${elapsedMs} outcome=${outcome}\n`,
+        );
+      }
     }
     if (lane === "logging-collector" && phase === "image-pulls") {
       await recordLoggingSetupTiming("image-pulls", succeeded ? "success" : "failure", elapsedMs);
@@ -1695,14 +1700,16 @@ async function buildRuntimeImages(
         entry.env = Object.fromEntries(Object.keys(entry.env).map((name) => [name, reference]));
         await rm(entry.metadataFile, { force: true });
       } else {
-        // The warm job builds every step so its export has them all.
-        if (
-          cacheWarm ||
-          !reuseEngineImages ||
-          !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
-        ) {
-          await build(entry.role, entry.args);
-        }
+        await timedK3dModelPreparation(state.lane, entry.role, async () => {
+          // The warm job builds every step so its export has them all.
+          if (
+            cacheWarm ||
+            !reuseEngineImages ||
+            !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
+          ) {
+            await build(entry.role, entry.args);
+          }
+        });
         await markResourceReady(statePath, state, entry.resource);
       }
     }),
