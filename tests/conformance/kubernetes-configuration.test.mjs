@@ -20,7 +20,7 @@ import { withMutationDeadline } from "../../apps/controller/src/admission/mutati
 import {
   FakeConfigurationCoreV1Api,
   FlakyConfigurationCoreV1Api,
-} from "../helpers/kubernetes-configuration-core.mjs";
+} from "../helpers/kubernetes-configuration-core.ts";
 import {
   controlledRequestTimeouts,
   frozenClock,
