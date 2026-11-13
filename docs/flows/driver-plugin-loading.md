@@ -122,7 +122,7 @@ validation and lockfile integrity do not establish publisher trust.
 
 Local Setup also calls the shared admission path before provisioning:
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` invokes
-`scripts/validate-sandbox-network-policy.mjs`, which uses `requireConfiguration`
+`scripts/validate-sandbox-network-policy.ts`, which uses `requireConfiguration`
 for platform structural validation and Driver semantic checks. A failure stops before creating development state
 or invoking a container engine. API and worker startup log
 `DRIVER_CONFIGURATION_INVALID` with field diagnostics that identify the setting
