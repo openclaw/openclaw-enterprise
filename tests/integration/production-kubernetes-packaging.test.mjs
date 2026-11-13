@@ -1733,19 +1733,24 @@ test("control-plane node selectors are optional unless configured", tooling, asy
   }
 });
 
-test("Installation checksum rolls both control-plane Deployments", tooling, async () => {
+test("Installation checksum rolls only its consumers", tooling, async () => {
   const checksum = "c".repeat(64);
-  const objects = await resources(
-    (await render({ "controlPlane.installationChecksum": checksum })).stdout,
+  const before = await resources((await render(slackProxyValues)).stdout);
+  const after = await resources(
+    (await render({ ...slackProxyValues, "controlPlane.installationChecksum": checksum })).stdout,
   );
-  const deployments = objects.filter(({ kind }) => kind === "Deployment");
-  assert.equal(deployments.length, 2);
-  for (const deployment of deployments) {
+  for (const component of ["api", "worker"]) {
+    const deployment = findResource(after, "Deployment", `openclaw-enterprise-${component}`);
     assert.equal(
       deployment.spec.template.metadata.annotations["openclaw.dev/installation-checksum"],
       checksum,
     );
   }
+  const proxyName = "openclaw-enterprise-slack-proxy";
+  assert.deepEqual(
+    findResource(after, "Deployment", proxyName).spec.template,
+    findResource(before, "Deployment", proxyName).spec.template,
+  );
   for (const invalid of ["not-a-checksum", "c".repeat(63), "c".repeat(65), "C".repeat(64)]) {
     await assert.rejects(
       render({ "controlPlane.installationChecksum": invalid }),
