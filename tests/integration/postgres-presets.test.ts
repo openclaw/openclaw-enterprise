@@ -1,22 +1,31 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+
+import type { Namespace, Preset, PresetResponse } from "../../packages/contracts/src/index.ts";
+import {
+  InMemoryPlatformState,
+  type PlatformStateStore,
+} from "../../packages/occ/src/state/platform-state.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { PRESET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { startController, request } from "../helpers/postgres-platform-state.ts";
 
-const identifier = (kind) => `${kind}_${randomUUID()}`;
+const identifier = (kind: string) => `${kind}_${randomUUID()}`;
 
-async function exercisePresets(store, reopened = store) {
+async function exercisePresets(store: PlatformStateStore, reopened = store) {
   const createdAt = new Date().toISOString();
-  const namespace = {
+  const namespace: Namespace = {
     id: identifier("ns"),
     name: `Presets ${randomUUID()}`,
     status: "ready",
     createdAt,
   };
-  const otherNamespace = { ...namespace, id: identifier("ns"), name: `${namespace.name} other` };
+  const otherNamespace: Namespace = {
+    ...namespace,
+    id: identifier("ns"),
+    name: `${namespace.name} other`,
+  };
   await store.transact(async (state) => {
     if ((await state.installations.getInstallation()) === undefined) {
       await state.installations.createInstallation({
@@ -28,7 +37,7 @@ async function exercisePresets(store, reopened = store) {
     await state.namespaces.createNamespace(namespace);
     await state.namespaces.createNamespace(otherNamespace);
   });
-  const preset = {
+  const preset: Preset = {
     id: identifier("pre"),
     namespaceId: namespace.id,
     name: "Chat assistant",
@@ -48,6 +57,7 @@ async function exercisePresets(store, reopened = store) {
   // A fresh storage instance reads the complete unresolved template, not rendered launch data.
   const copy = await reopened.read((state) => state.presets.findPreset(namespace.id, preset.id));
   assert.deepEqual(copy, preset);
+  assert.ok(copy);
   assert.equal(Object.isFrozen(copy.template), true);
   await reopened.read(async (state) => {
     assert.equal(await state.presets.findPreset(otherNamespace.id, preset.id), undefined);
@@ -70,7 +80,11 @@ async function exercisePresets(store, reopened = store) {
     name: "ResourceStateConflictError",
     message: PRESET_NAME_CONFLICT,
   };
-  const { name, message } = contenders.find((result) => result.status === "rejected").reason;
+  const refused = contenders.find((result) => result.status === "rejected");
+  assert.ok(refused);
+  const error: unknown = refused.reason;
+  assert.ok(error instanceof Error);
+  const { name, message } = error;
   assert.deepEqual({ name, message }, presetNameConflict);
   await store.transact((state) =>
     state.presets.createPreset({
@@ -92,10 +106,12 @@ async function exercisePresets(store, reopened = store) {
   const renamed = await store.transact((state) =>
     state.presets.updatePreset(namespace.id, preset.id, { name: "Renamed" }),
   );
+  assert.ok(renamed);
   assert.deepEqual(renamed.template, preset.template);
   const updated = await store.transact((state) =>
     state.presets.updatePreset(namespace.id, preset.id, { template: {} }),
   );
+  assert.ok(updated);
   assert.deepEqual(updated.template, {});
   assert.equal(updated.name, "Renamed");
   assert.equal(updated.createdAt, preset.createdAt);
@@ -143,12 +159,13 @@ test(
   "shipped Preset API preserves contract-sized templates through PostgreSQL",
   requiresPostgres,
   async (context) => {
+    assert.ok(databaseUrl);
     const api = await startController(context);
     const { PostgresPlatformState } =
       await import("../../packages/occ/src/state/postgres-state.ts");
     const pool = testPool(context, { connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);
-    const namespace = {
+    const namespace: Namespace = {
       id: identifier("ns"),
       name: `Preset HTTP fixture ${randomUUID()}`,
       status: "ready",
@@ -167,18 +184,29 @@ test(
       },
     };
     const path = `/namespaces/${namespace.id}/presets`;
-    const created = await request(api, "POST", path, { name: "Full workspace", template });
+    const created = await request<PresetResponse["data"]>(api, "POST", path, {
+      name: "Full workspace",
+      template,
+    });
     assert.equal(created.status, 201, JSON.stringify(created.error));
-    const replacement = await request(api, "POST", path, { name: "Replacement", template: {} });
+    const replacement = await request<PresetResponse["data"]>(api, "POST", path, {
+      name: "Replacement",
+      template: {},
+    });
     assert.equal(replacement.status, 201);
     const updated = await request(api, "PATCH", `${path}/${replacement.data.id}`, { template });
     assert.equal(updated.status, 200, JSON.stringify(updated.error));
-    const readback = await request(api, "GET", `${path}/${replacement.data.id}`);
+    const readback = await request<PresetResponse["data"]>(
+      api,
+      "GET",
+      `${path}/${replacement.data.id}`,
+    );
     assert.equal(readback.status, 200);
     assert.deepEqual(readback.data.template, template);
     const persisted = await state.read((store) =>
       store.presets.findPreset(namespace.id, created.data.id),
     );
+    assert.ok(persisted);
     assert.deepEqual(persisted.template, template);
   },
 );
@@ -187,6 +215,7 @@ test(
   "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion",
   requiresPostgres,
   async (context) => {
+    assert.ok(databaseUrl);
     const { PostgresPlatformState } =
       await import("../../packages/occ/src/state/postgres-state.ts");
     const pool = testPool(context, { connectionString: databaseUrl });
@@ -196,8 +225,11 @@ test(
       new PostgresPlatformState(secondPool),
     );
     const stored = (
-      await pool.query("SELECT id FROM occ.presets WHERE namespace_id = $1", [otherNamespace.id])
+      await pool.query<{ id: string }>("SELECT id FROM occ.presets WHERE namespace_id = $1", [
+        otherNamespace.id,
+      ])
     ).rows[0];
+    assert.ok(stored);
     // The application role cannot rewrite identity/ownership or bypass the namespace FK.
     await assert.rejects(
       pool.query("UPDATE occ.presets SET namespace_id = $2 WHERE id = $1", [

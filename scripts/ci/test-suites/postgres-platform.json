@@ -31,7 +31,7 @@
     "tests/integration/postgres-service-account-deletion.test.ts",
     "tests/integration/postgres-service-account-issuance-recovery.test.ts",
     "tests/integration/postgres-service-account-compensation.test.ts",
-    "tests/integration/postgres-presets.test.mjs",
+    "tests/integration/postgres-presets.test.ts",
     "tests/integration/postgres-workspace-setup.test.ts",
     "tests/integration/postgres-connection-auth.test.ts",
     "tests/integration/postgres-pool-options.test.ts",
@@ -210,7 +210,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-presets.test.mjs",
+      "path": "tests/integration/postgres-presets.test.ts",
       "expectedTests": [
         "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
         "shipped Preset API preserves contract-sized templates through PostgreSQL",

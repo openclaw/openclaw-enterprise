@@ -278,7 +278,7 @@
     "tests/integration/postgres-prepared-standing-expiry.test.ts": 2900,
     "tests/integration/postgres-prepared-standing-removal.test.ts": 1700,
     "tests/integration/postgres-prepared-token-service.test.ts": 2700,
-    "tests/integration/postgres-presets.test.mjs": 2100,
+    "tests/integration/postgres-presets.test.ts": 2100,
     "tests/integration/postgres-production-wireup.test.ts": 16300,
     "tests/integration/postgres-protected-credential-free.test.mjs": 2400,
     "tests/integration/postgres-protected-git-recipient-custody.test.ts": 8600,
