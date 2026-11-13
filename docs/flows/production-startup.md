@@ -145,9 +145,9 @@ Database/API ports accept 1–65535 without leading zeros; worker metrics/reposi
 ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
 numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
-On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
-Installation without database/Kubernetes access; refusal stops migration and API
-replacement. It uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
+On install and upgrade, `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
+validates Installation offline before migration, bootstrap and API rollout.
+It uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
 and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
 diagnostics, without submitted values, except
 `apps/controller/src/composition/installation-fields.ts:requireChartListener`:
