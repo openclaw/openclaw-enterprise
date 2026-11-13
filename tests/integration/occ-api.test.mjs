@@ -5862,7 +5862,8 @@ test("plugin preview and publication share an upload budget per authenticated pr
   );
   assert.ok(previews.some((response) => response.status === 400));
   assert.ok(previews.some((response) => response.status === 429));
-  const publish = await controller.request("POST", path, upload);
+  // An exhausted caller receives the shared limit before Fastify parses the publication body.
+  const publish = await controller.request("POST", path, { rawBody: "{" });
   assertApiError(publish, 429, "RATE_LIMITED");
   assert.ok(Number(publish.headers.get("retry-after")) >= 1);
 
