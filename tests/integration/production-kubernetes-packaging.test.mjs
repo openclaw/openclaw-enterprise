@@ -153,6 +153,13 @@ async function renderObjects(overrides = {}, options = {}) {
   return resources((await render(overrides, options)).stdout);
 }
 
+function findResourceByComponent(objects, kind, component) {
+  return objects.find(
+    (object) =>
+      object.kind === kind && object.metadata.labels?.["app.kubernetes.io/component"] === component,
+  );
+}
+
 test(
   "console theme settings reject YAML booleans and invalid ConfigMap names",
   tooling,
@@ -1133,33 +1140,33 @@ test(
 test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await renderProductionValuesExample([], { maxBuffer: 2_000_000 });
   const objects = await resources(stdout);
-  const selected = (kind, component) =>
-    objects.find(
-      (object) =>
-        object.kind === kind &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === component,
-    );
   assert.ok(
     objects.some(
       ({ kind, metadata }) =>
         kind === "Job" && metadata.labels?.["app.kubernetes.io/component"] === "initialization",
     ),
   );
-  const initialization = selected("Job", "initialization");
+  const initialization = findResourceByComponent(objects, "Job", "initialization");
   assert.deepEqual(initialization.spec.template.spec.nodeSelector, { "oce-role": "control" });
   for (const component of ["api", "worker"]) {
-    assert.deepEqual(selected("Deployment", component).spec.template.spec.nodeSelector, {
-      "oce-role": "control",
-    });
+    assert.deepEqual(
+      findResourceByComponent(objects, "Deployment", component).spec.template.spec.nodeSelector,
+      {
+        "oce-role": "control",
+      },
+    );
   }
-  assert.deepEqual(selected("Deployment", "worker").spec.strategy, {
+  assert.deepEqual(findResourceByComponent(objects, "Deployment", "worker").spec.strategy, {
     type: "RollingUpdate",
     rollingUpdate: { maxSurge: "25%", maxUnavailable: "25%" },
   });
   // Session admission and sign-in limits are process-local: never overlap two API Pods.
-  assert.deepEqual(selected("Deployment", "api").spec.strategy, { type: "Recreate" });
+  assert.deepEqual(findResourceByComponent(objects, "Deployment", "api").spec.strategy, {
+    type: "Recreate",
+  });
   for (const component of ["api", "worker"]) {
-    const env = selected("Deployment", component).spec.template.spec.containers[0].env;
+    const env = findResourceByComponent(objects, "Deployment", component).spec.template.spec
+      .containers[0].env;
     assert.ok(!env.some(({ name }) => /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name)));
   }
   assert.ok(
@@ -1343,16 +1350,15 @@ test(
 
 test("control-plane node selectors are optional unless configured", tooling, async () => {
   const objects = await renderObjects();
-  const selected = (kind, component) =>
-    objects.find(
-      (object) =>
-        object.kind === kind &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === component,
-    );
-
-  assert.equal(selected("Job", "initialization").spec.template.spec.nodeSelector, undefined);
+  assert.equal(
+    findResourceByComponent(objects, "Job", "initialization").spec.template.spec.nodeSelector,
+    undefined,
+  );
   for (const component of ["api", "worker"]) {
-    assert.equal(selected("Deployment", component).spec.template.spec.nodeSelector, undefined);
+    assert.equal(
+      findResourceByComponent(objects, "Deployment", component).spec.template.spec.nodeSelector,
+      undefined,
+    );
   }
 });
 
@@ -2487,13 +2493,6 @@ test(
   async () => {
     const { stdout } = await render(controlPlaneSelectorValues);
     const objects = await resources(stdout);
-    const selected = (kind, component) =>
-      objects.find(
-        (object) =>
-          object.kind === kind &&
-          object.metadata.labels?.["app.kubernetes.io/component"] === component,
-      );
-
     // The chart exposes exactly one internal controller Service and no public ingress surface.
     const services = objects.filter(({ kind }) => kind === "Service");
     assert.equal(services.length, 1);
@@ -2541,9 +2540,9 @@ test(
 
     // Initialization, API, and worker use distinct identities; database credentials remain isolated.
     for (const component of ["initialization", "api", "worker"]) {
-      assert.ok(selected("ServiceAccount", component));
+      assert.ok(findResourceByComponent(objects, "ServiceAccount", component));
     }
-    const initialization = selected("Job", "initialization");
+    const initialization = findResourceByComponent(objects, "Job", "initialization");
     assert.equal(initialization.spec.backoffLimit, 0);
     const pod = initialization.spec.template.spec;
     assert.equal(pod.automountServiceAccountToken, false);
@@ -2694,7 +2693,7 @@ test(
 
     // Real rendered workloads retain restricted execution and mount credentials only by Secret reference.
     for (const component of ["api", "worker"]) {
-      const pod = selected("Deployment", component).spec.template.spec;
+      const pod = findResourceByComponent(objects, "Deployment", component).spec.template.spec;
       const container = pod.containers[0];
       assert.deepEqual(pod.nodeSelector, { "oce-role": "control" });
       assert.equal(pod.securityContext.runAsNonRoot, true);
@@ -3297,14 +3296,8 @@ test(
   tooling,
   async () => {
     const objects = await renderObjects(databaseCaValues);
-    const selected = (kind, component) =>
-      objects.find(
-        (object) =>
-          object.kind === kind &&
-          object.metadata.labels?.["app.kubernetes.io/component"] === component,
-      );
-
-    const initializationPod = selected("Job", "initialization").spec.template.spec;
+    const initializationPod = findResourceByComponent(objects, "Job", "initialization").spec
+      .template.spec;
     assert.deepEqual(initializationPod.volumes.find(({ name }) => name === "database-ca")?.secret, {
       secretName: "occ-rds-ca",
       items: [{ key: "ca.pem", path: "ca.pem" }],
@@ -3319,7 +3312,7 @@ test(
     );
 
     for (const component of ["api", "worker"]) {
-      const pod = selected("Deployment", component).spec.template.spec;
+      const pod = findResourceByComponent(objects, "Deployment", component).spec.template.spec;
       assert.deepEqual(pod.volumes.find(({ name }) => name === "database-ca")?.secret, {
         secretName: "occ-rds-ca",
         items: [{ key: "ca.pem", path: "ca.pem" }],
@@ -3347,10 +3340,7 @@ test(
       ["api", ["get", "create", "update", "delete"]],
       ["worker", ["get", "delete"]],
     ]) {
-      const pod = objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
-      ).spec.template.spec;
+      const pod = findResourceByComponent(objects, "Deployment", component).spec.template.spec;
       const namespace = pod.containers[0].env.find(
         ({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE",
       ).value;
@@ -3391,14 +3381,8 @@ test(
   async () => {
     const { stdout } = await render(chatgptValues);
     const objects = await resources(stdout);
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
-      );
-
     // The operator-owned admin Secret is available only to the API through its fixed file path.
-    const apiPod = deployment("api").spec.template.spec;
+    const apiPod = findResourceByComponent(objects, "Deployment", "api").spec.template.spec;
     const adminVolume = apiPod.volumes.find(({ name }) => name === "chatgpt-admin");
     assert.deepEqual(adminVolume.secret, {
       secretName: "occ-chatgpt-admin",
@@ -3408,7 +3392,7 @@ test(
       apiPod.containers[0].volumeMounts.find(({ name }) => name === "chatgpt-admin"),
       { name: "chatgpt-admin", mountPath: "/etc/openclaw/chatgpt", readOnly: true },
     );
-    const workerPod = deployment("worker").spec.template.spec;
+    const workerPod = findResourceByComponent(objects, "Deployment", "worker").spec.template.spec;
     assert.ok(!workerPod.volumes.some(({ name }) => name === "chatgpt-admin"));
     assert.ok(!workerPod.containers[0].volumeMounts.some(({ name }) => name === "chatgpt-admin"));
     assert.equal(objects.filter(({ kind }) => kind === "Secret").length, 0);
@@ -3458,12 +3442,7 @@ const signInEnv = /^OCC_AUTH_(GOOGLE_|OIDC_|TRUSTED_PROXY_CIDRS|CLIENT_IP_HEADER
 
 async function signInObjects(overrides) {
   const objects = await resources((await render(overrides)).stdout);
-  const selected = (kind, component) =>
-    objects.find(
-      (object) =>
-        object.kind === kind &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === component,
-    );
+  const selected = (kind, component) => findResourceByComponent(objects, kind, component);
   const apiEnv = Object.fromEntries(
     selected("Deployment", "api").spec.template.spec.containers[0].env.map(({ name, ...value }) => [
       name,
@@ -3845,11 +3824,7 @@ test("the chart refuses administrator emails the bootstrap Job refuses", tooling
     "\u0085a@b.com",
   ]) {
     const objects = await renderObjects({}, { strings: { "bootstrap.adminEmail": email } });
-    const job = objects.find(
-      (object) =>
-        object.kind === "Job" &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
-    );
+    const job = findResourceByComponent(objects, "Job", "initialization");
     const value = job.spec.template.spec.containers
       .find((container) => container.name === "bootstrap")
       .env.find((entry) => entry.name === "OCC_BOOTSTRAP_ADMIN_EMAIL").value;
@@ -3870,11 +3845,7 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
     );
   }
   const objects = await renderObjects({}, { strings: { "bootstrap.password.claimName": longest } });
-  const job = objects.find(
-    (object) =>
-      object.kind === "Job" &&
-      object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
-  );
+  const job = findResourceByComponent(objects, "Job", "initialization");
   const claim = job.spec.template.spec.volumes.find(
     (volume) => volume.name === "bootstrap-password-output",
   ).persistentVolumeClaim.claimName;
