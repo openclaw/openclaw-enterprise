@@ -133,11 +133,11 @@ import {
 } from "./sandbox-driver-startup-installation-fixture.ts";
 import { verifySandboxDriverHarnessObservation } from "./sandbox-driver-harness-observation-cases.ts";
 import { registerSandboxDriverNamespaceGatewayCleanupCases } from "./sandbox-driver-namespace-gateway-cleanup-cases.ts";
-import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
 import { registerSandboxDriverWorkspaceRenewalCases } from "./sandbox-driver-workspace-renewal-cases.ts";
 import { registerSandboxDriverWorkspaceExpiryCases } from "./sandbox-driver-workspace-expiry-cases.ts";
 import { registerSandboxDriverPreparerCleanupCases } from "./sandbox-driver-preparer-cleanup-cases.ts";
 import { registerSandboxDriverNativePreparationCases } from "./sandbox-driver-native-preparation-cases.ts";
+import { createOrphanedNativePreparation } from "./sandbox-driver-preparation-cases.ts";
 import { verifySandboxScratchStorage } from "./sandbox-driver-scratch-storage-case.ts";
 import { verifyAdmittedComputeCommands } from "./sandbox-driver-admitted-command-case.ts";
 import { verifyStockExtensionRoundTrips } from "./sandbox-driver-stock-readiness-cases.ts";
@@ -205,7 +205,7 @@ function sandboxStartupGuardChecks() {
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
-const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
+const { KubernetesObjectApi, V1Deployment } = controllerRequire("@kubernetes/client-node");
 const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
 
 function harnessRuntimeCommand(program) {
@@ -2650,54 +2650,12 @@ test("OpenShell refuses repository provision and enrollment before any gateway o
   }
 });
 
-// These cases invoke the production Driver over controlled Kubernetes/Gateway
-// transports. They prove cleanup selection, fencing and completion ordering, not
-// Kubernetes garbage collection, filesystem isolation, or live Pod termination.
-async function orphanedNativePreparation({
-  scratch = false,
-  dataMountPath = "/sandbox/enterprise",
-} = {}) {
-  const gateway = workspaceGatewayClient();
-  gateway.deleteSandbox = async () => gateway.calls.push(["deleteSandbox"]);
-  const configuration = sandboxInstallation().drivers.sandbox.configuration;
-  configuration.kubernetes.userNamespaces = false;
-  configuration.kubernetes.sandboxDataMount.mountPath = dataMountPath;
-  const driver = openShellDriver(gateway, configuration);
-  const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
-  fixture.revision = completeWorkspaceRevision(fixture.revision, fixture.requirements);
-  // Revision cleanup confirms an absent Sandbox through the Workspace ensureNamespace created.
-  const { name, id } = fixture.context.namespace;
-  gateway.workspaces.set(name, ownedWorkspace(name, id));
-  const { revision, requirements, prepared } = fixture;
-  if (scratch) {
-    requirements.workspaceMounts.push({
-      claimName: "operator-scratch",
-      subPath: "scratch",
-      mountPath: "/sandbox/scratch",
-      readOnly: false,
-    });
-  }
-  const api = fixture.context.kubernetes;
-  const create = api.create;
-  // The API stored the real manifest, but the response never reached the Driver.
-  api.create = async (resource) => {
-    await create(resource);
-    throw new Error("preparation create response lost");
-  };
-  await assert.rejects(
-    driver.provisionHarness({ ...fixture.context, revision, requirements }),
-    /preparation create response lost/,
-  );
-  assert.equal(gateway.providers.size, 1);
-  assert.equal(
-    gateway.calls.some(([method]) => method === "deleteSandbox"),
-    false,
-  );
-  const resource = prepared[0];
-  const deployment = await api.read(resource);
-  const context = { ...fixture.context, revision };
-  return { driver, gateway, api, resource, deployment, context, requirements };
-}
+const orphanedNativePreparation = createOrphanedNativePreparation({
+  V1Deployment,
+  openShellDriver,
+  runtimeSandboxFixture,
+  ownedWorkspace,
+});
 
 registerSandboxDriverNativePreparationCases(orphanedNativePreparation);
 
