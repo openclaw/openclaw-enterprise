@@ -108,7 +108,7 @@ export function registerNativeWorkerProofCases(): void {
   test("native history proof keeps exact run, explicit success and marker predicates", () => {
     const prefix = "FIRST_AGENT_NATIVE_TOOL ";
     const marker = "FIRST_AGENT_NATIVE_expected";
-    const history = { runId: "selected", toolPrefix: prefix, marker };
+    const history = { runId: "selected", toolPrefix: prefix, marker, command: undefined };
     const output = prefix + JSON.stringify({ hostname: "private-host", content: "private-value" });
     const tool = {
       role: "toolResult",
@@ -123,7 +123,7 @@ export function registerNativeWorkerProofCases(): void {
       content: marker,
       __openclaw: { runId: history.runId },
     };
-    for (const [name, messages, toolPresent, finalPresent, flag] of [
+    for (const [name, messages, toolPresent, finalPresent, flag, counters] of [
       ["valid", [tool, final], true, true, "false"],
       [
         "wrapped",
@@ -135,17 +135,51 @@ export function registerNativeWorkerProofCases(): void {
       ["missing flag", [{ ...tool, isError: undefined }, final], false, true, "absent"],
       ["error", [{ ...tool, isError: true }, final], false, true, "true"],
       ["invalid flag", [{ ...tool, isError: 0 }, final], false, true, "other"],
-      ["source echo", [{ ...tool, content: "command: " + output }, final], false, true, "false"],
+      [
+        "source echo",
+        [{ ...tool, content: "command: " + output }, final],
+        false,
+        true,
+        "false",
+        [
+          ["historyToolPrefixContainsCount", 1],
+          ["historyToolPrefixCount", 0],
+        ],
+      ],
       ["wrong run", [{ ...tool, __openclaw: { runId: "other" } }, final], false, true, "none"],
       ["foreign final", [tool, { ...final, __openclaw: { runId: "other" } }], true, false, "false"],
-      ["wrong marker", [tool, { ...final, content: "Done: " + marker }], true, false, "false"],
-      ["unsupported content", [{ ...tool, content: { output } }, final], false, true, "false"],
+      [
+        "wrong marker",
+        [tool, { ...final, content: "Done: " + marker }],
+        true,
+        false,
+        "false",
+        [
+          ["historyFinalMarkerContainsCount", 1],
+          ["historyFinalMarkerCount", 0],
+        ],
+      ],
+      [
+        "unsupported content",
+        [{ ...tool, content: { output } }, final],
+        false,
+        true,
+        "false",
+        [
+          ["historyOtherContentCount", 1],
+          ["historyExecNonemptyTextCount", 0],
+        ],
+      ],
       [
         "unrecognized envelope",
         [{ ...tool, content: JSON.stringify({ output }) }, final],
         false,
         true,
         "false",
+        [
+          ["historyExecOtherJsonCount", 1],
+          ["historyExecAggregatedCount", 0],
+        ],
       ],
       [
         "tool continuation",
@@ -155,29 +189,12 @@ export function registerNativeWorkerProofCases(): void {
         "false",
       ],
     ] as const) {
-      const evidence = nativeWorkerHistoryEvidence({
-        messages,
-        ...history,
-        command: undefined,
-      });
+      const evidence = nativeWorkerHistoryEvidence({ ...history, messages });
       assert.equal(Boolean(evidence.tool), toolPresent, name);
       assert.equal(Boolean(evidence.final), finalPresent, name);
       assert.equal(evidence.observation.historyExecErrorFlag, flag, name);
-      if (name === "source echo") {
-        assert.equal(evidence.observation.historyToolPrefixContainsCount, 1);
-        assert.equal(evidence.observation.historyToolPrefixCount, 0);
-      }
-      if (name === "wrong marker") {
-        assert.equal(evidence.observation.historyFinalMarkerContainsCount, 1);
-        assert.equal(evidence.observation.historyFinalMarkerCount, 0);
-      }
-      if (name === "unsupported content") {
-        assert.equal(evidence.observation.historyOtherContentCount, 1);
-        assert.equal(evidence.observation.historyExecNonemptyTextCount, 0);
-      }
-      if (name === "unrecognized envelope") {
-        assert.equal(evidence.observation.historyExecOtherJsonCount, 1);
-        assert.equal(evidence.observation.historyExecAggregatedCount, 0);
+      for (const [counter, expected] of counters ?? []) {
+        assert.equal(evidence.observation[counter], expected, `${name}: ${counter}`);
       }
       assert.doesNotMatch(
         JSON.stringify(evidence.observation),
@@ -216,7 +233,6 @@ export function registerNativeWorkerProofCases(): void {
           { ...result, __openclaw: { runId: "other" } },
         ],
         ...history,
-        command: undefined,
       });
       assert.equal(evidence.observation.historyExecCodeStringCount, 1);
       assert.equal(evidence.observation.historyExecCodeToolPrefixContainsCount, 1);
@@ -257,7 +273,6 @@ export function registerNativeWorkerProofCases(): void {
       const evidence = nativeWorkerHistoryEvidence({
         messages: [{ ...tool, content: JSON.stringify({ value: { exitCode, aggregated } }) }],
         ...history,
-        command: undefined,
       });
       const diagnostic = modelHistoryDiagnostic(evidence.observation);
       assert.equal(diagnostic.worker.historyExecFailureOperation, undefined);
