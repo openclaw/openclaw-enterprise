@@ -1,36 +1,48 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
+import type { Stats } from "node:fs";
 import { lstat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import type { ControlRequest } from "../../../apps/controller/src/drivers/repo/access/control-contracts.ts";
+import type { RepositoryCredentialBoundSessionInput } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import { within } from "../../helpers/wait-for.mjs";
 import { appModule, appRoot } from "./runtime.mjs";
 import { createControlledClock } from "./clock.mjs";
 import { cleanEnvironment, createTlsMaterial } from "./process.mjs";
 import { createResourceScope } from "./resources.mjs";
 import { createServiceConfiguration } from "./service.mjs";
 import { startGitHubFixture, fixtureRepository, fixtureRepositoryId } from "./github.mjs";
-import { createRegistryMaterial } from "./registry/material.mjs";
-import { within } from "../../helpers/wait-for.mjs";
+import { createRegistryMaterial, type FixtureOwner } from "./registry/material.ts";
+import type { GitHubFixture } from "./registry/provider.ts";
+import type { ServiceProcessRequest, ServiceProcessGeneration } from "./service-process-child.ts";
 
-/** @import { ServiceProcessRequest, ServiceProcessGeneration } from "./service-process-child.ts" */
+type ExitReceipt = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  pid: number | undefined;
+};
+type PendingRequest = {
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+};
+type StartInput = Extract<ServiceProcessRequest, { command: "start" }>["input"];
 
-/** @param {ReturnType<typeof createResourceScope>} resources */
-function launchService(resources) {
+function launchService(resources: FixtureOwner) {
   const child = fork(new URL("./service-process-child.ts", import.meta.url), [], {
     env: cleanEnvironment({ REPOSITORY_CREDENTIALS_APP_ROOT: appRoot }),
     execArgv: [],
     serialization: "advanced",
     stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
-  /** @type {Map<number, { resolve: (result: unknown) => void, reject: (error: Error) => void }>} */
-  const pending = new Map();
+  const pending = new Map<number, PendingRequest>();
   const maximumOutputBytes = 65_536;
   let sequence = 0;
   let outputBytes = 0;
   let stderr = "";
-  let failure;
-  let receipt;
-  const closed = new Promise((resolve) => {
+  let failure: Error | undefined;
+  let receipt: ExitReceipt | undefined;
+  const closed = new Promise<ExitReceipt>((resolve) => {
     child.once("error", () => {
       failure = new Error("service fixture spawn failed");
     });
@@ -60,8 +72,7 @@ function launchService(resources) {
       await stop();
     }
   });
-  /** @param {Buffer} chunk */
-  const collect = (chunk) => {
+  const collect = (chunk: Buffer) => {
     outputBytes += chunk.length;
     if (outputBytes > maximumOutputBytes) {
       failure = new Error("service fixture output overflow");
@@ -70,13 +81,13 @@ function launchService(resources) {
     }
     return true;
   };
-  child.stdout.on("data", collect);
-  child.stderr.on("data", (chunk) => {
+  child.stdout!.on("data", collect);
+  child.stderr!.on("data", (chunk: Buffer) => {
     if (collect(chunk)) {
       stderr += chunk;
     }
   });
-  child.on("message", (/** @type {unknown} */ reply) => {
+  child.on("message", (reply: unknown) => {
     if (!reply || typeof reply !== "object" || !("id" in reply) || typeof reply.id !== "number") {
       return;
     }
@@ -90,16 +101,10 @@ function launchService(resources) {
       }
     }
   });
-  /**
-   * @param {Extract<ServiceProcessRequest, { command: "start" }>["input"]} input
-   * @returns {Promise<ServiceProcessGeneration>}
-   */
-  async function start(input) {
+  async function start(input: StartInput): Promise<ServiceProcessGeneration> {
     const id = ++sequence;
-    /** @type {ServiceProcessRequest} */
-    const request = { id, command: "start", input };
-    /** @type {Promise<unknown>} */
-    const response = new Promise((resolve, reject) => {
+    const request: ServiceProcessRequest = { id, command: "start", input };
+    const response = new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
       child.send(request, (error) => {
         if (error) {
@@ -108,7 +113,7 @@ function launchService(resources) {
         }
       });
     });
-    let result;
+    let result: unknown;
     try {
       result = await within(response, "service fixture command got no answer", 5_000);
     } finally {
@@ -144,12 +149,18 @@ function launchService(resources) {
   };
 }
 
+type ServiceProcessOptions = {
+  shutdownGraceMs?: number;
+  namespaceId?: string;
+  sessions?: number;
+};
+
 export async function startServiceProcessFixture(
-  t,
-  { shutdownGraceMs, namespaceId = "namespace-fixture", sessions = 1 } = {},
+  t: FixtureOwner,
+  { shutdownGraceMs, namespaceId = "namespace-fixture", sessions = 1 }: ServiceProcessOptions = {},
 ) {
   const resources = createResourceScope();
-  const ownedDirectories = [];
+  const ownedDirectories: string[] = [];
   t.after(async () => {
     await resources.close();
     for (const directory of ownedDirectories) {
@@ -164,7 +175,10 @@ export async function startServiceProcessFixture(
     ...(shutdownGraceMs === undefined ? {} : { shutdownGraceMs }),
   });
   ownedDirectories.push(dirname(base.gateway.controlSocket));
-  const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+  const config: StartInput["config"] = {
+    ...base,
+    gateway: { ...base.gateway, listen: "127.0.0.1:0" },
+  };
   const registryMaterial = await createRegistryMaterial(resources, {
     definitions: [
       { repositoryRef: "repo-a", repository: fixtureRepository, repositoryId: fixtureRepositoryId },
@@ -174,16 +188,17 @@ export async function startServiceProcessFixture(
     maximumDurationSeconds: 172800,
   });
   ownedDirectories.push(registryMaterial.directory);
-  const github = await startGitHubFixture(resources, {
-    clock,
-    tls,
-  });
-  const [{ callControl }, { loadGitHubRepositoryRegistry }, { resolveGitHubRepositoryBinding }] =
-    await Promise.all([
-      appModule("drivers/repo/github/access/client/operator"),
-      appModule("composition/repository-credentials/registry"),
-      appModule("drivers/repo/github/access/registry"),
-    ]);
+  const githubOptions = { clock, tls };
+  const github: GitHubFixture = await startGitHubFixture(resources, githubOptions);
+  const [{ callControl }, { loadGitHubRepositoryRegistry }, { resolveGitHubRepositoryBinding }]: [
+    typeof import("../../../apps/controller/src/drivers/repo/github/access/client/operator.ts"),
+    typeof import("../../../apps/controller/src/composition/repository-credentials/registry.ts"),
+    typeof import("../../../apps/controller/src/drivers/repo/github/access/registry.ts"),
+  ] = await Promise.all([
+    appModule("drivers/repo/github/access/client/operator"),
+    appModule("composition/repository-credentials/registry"),
+    appModule("drivers/repo/github/access/registry"),
+  ]);
   const registry = await loadGitHubRepositoryRegistry(
     registryMaterial.registryFile,
     "github-fixture",
@@ -193,7 +208,7 @@ export async function startServiceProcessFixture(
     repositoryRef: "repo-a",
     profile: "git-write",
   });
-  const input = {
+  const input: RepositoryCredentialBoundSessionInput = {
     durationSeconds: 86400,
     profile: binding.profile,
     namespaceId,
@@ -201,15 +216,15 @@ export async function startServiceProcessFixture(
     expectedBinding: binding.grant,
     deadlineWallMs: clock.wallNow() + 86400000,
   };
-  let processOwner;
-  /** @type {ServiceProcessGeneration} */
-  let generation;
-  let socketIdentity;
+  let processOwner: ReturnType<typeof launchService> | undefined;
+  let generation: ServiceProcessGeneration;
+  let socketIdentity: Stats;
 
   async function start() {
     assert.equal(processOwner, undefined, "join the previous service before replacement");
-    processOwner = launchService(resources);
-    generation = await processOwner.start({
+    const owner = launchService(resources);
+    processOwner = owner;
+    generation = await owner.start({
       config,
       tls,
       origin: github.origin,
@@ -221,6 +236,7 @@ export async function startServiceProcessFixture(
     return generation;
   }
   async function kill() {
+    assert.ok(processOwner, "the fixture must own a running service");
     const death = await processOwner.stop();
     assert.equal(death.code, null);
     assert.equal(death.signal, "SIGKILL");
@@ -236,6 +252,7 @@ export async function startServiceProcessFixture(
     return death;
   }
   async function shutdown(expectedCode = 0) {
+    assert.ok(processOwner, "the fixture must own a running service");
     const result = await processOwner.stopGracefully();
     assert.equal(
       result.code,
@@ -248,12 +265,8 @@ export async function startServiceProcessFixture(
     return result;
   }
   const admissionId = () => `${clock.wallNow()}-${randomUUID()}`;
-  const control = (method, path, body, id = admissionId()) =>
-    callControl(
-      config.gateway.controlSocket,
-      { method, path, ...(body === undefined ? {} : { body }) },
-      id,
-    );
+  const control = (request: ControlRequest, id = admissionId()) =>
+    callControl(config.gateway.controlSocket, request, id);
   await start();
   return {
     github,
@@ -266,20 +279,25 @@ export async function startServiceProcessFixture(
     generation: () => generation,
     tls,
     // The running process's log lines (each JSON line is one event), for log assertions.
-    stderr: () => processOwner.stderr(),
+    stderr() {
+      assert.ok(processOwner, "the fixture must own a running service");
+      return processOwner.stderr();
+    },
     admissionId,
-    open: (id, recoverOnly = false, durableAdmission = false) =>
+    open: (id: string, recoverOnly = false, durableAdmission = false) =>
       control(
-        "POST",
-        "/v1/sessions",
         {
-          ...input,
-          ...(recoverOnly ? { recoverOnly } : {}),
-          ...(durableAdmission ? { durableAdmission, preparedOnly: true } : {}),
+          method: "POST",
+          path: "/v1/sessions",
+          body: {
+            ...input,
+            ...(recoverOnly ? { recoverOnly: true } : {}),
+            ...(durableAdmission ? { durableAdmission: true, preparedOnly: true } : {}),
+          },
         },
         id,
       ),
-    status: (id) => control("GET", `/v1/sessions/${id}`),
-    close: (id) => control("POST", `/v1/sessions/${id}/close`),
+    status: (id: string) => control({ method: "GET", path: `/v1/sessions/${id}` }),
+    close: (id: string) => control({ method: "POST", path: `/v1/sessions/${id}/close` }),
   };
 }
