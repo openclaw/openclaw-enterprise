@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { constants, existsSync, statSync } from "node:fs";
-import { open, readFile, readdir } from "node:fs/promises";
+import { open, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 type PreflightIdentity = { kind: string; name: string; uid: string };
-type PreflightResource = { metadata: { name: string; uid: string } };
+type PreflightResource = {
+  metadata: {
+    name: string;
+    uid: string;
+    annotations?: Record<string, string>;
+    labels?: Record<string, string>;
+    ownerReferences?: { uid: string }[];
+  };
+};
 
 type PreflightState = {
   created?: PreflightIdentity[];
@@ -23,9 +31,11 @@ type FixtureOptions = {
   controllerOnly: true;
   preflightPolicy: true;
   preflightFault: {
-    target: "networkpolicy.networking.k8s.io" | "secret" | "api" | "worker" | "job.batch";
+    target:
+      "networkpolicy.networking.k8s.io" | "secret" | "api" | "worker" | "migration" | "job.batch";
     mode:
       | "interrupt"
+      | "interrupt-hard"
       | "evidence-file"
       | "evidence-symlink"
       | "conflict"
@@ -34,9 +44,15 @@ type FixtureOptions = {
       | "newline"
       | "decode"
       | "replacement"
+      | "replacement-after-delete"
+      | "child-replacement-after-delete"
       | "delete-refused"
       | "foreign-child"
-      | "retained-child";
+      | "retained-child"
+      | "already-absent"
+      | "absent-job-retained-child"
+      | "delayed-delete"
+      | "retained-dependency";
     uid?: string;
   };
   preflightResults?: { api?: PreflightResult; worker: PreflightResult };
@@ -45,12 +61,14 @@ type FixtureOptions = {
 type UpgradeFixture = {
   directory: string;
   evidence: string;
+  commands: string[];
   run(...args: string[]): Promise<unknown>;
+  cleanup(...args: string[]): Promise<unknown>;
   state(): Promise<{ preflight: PreflightState }>;
   events(): Promise<string[]>;
 };
 
-async function runForFailure(fixture: UpgradeFixture, ...args: string[]) {
+async function runForFailure(fixture: Pick<UpgradeFixture, "run">, ...args: string[]) {
   try {
     await fixture.run(...args);
   } catch (error) {
@@ -129,9 +147,360 @@ export async function preflightIdentities(f: { evidence: string }): Promise<Pref
   return records;
 }
 
+async function assertCleanupOmitsMarker(evidence: string, marker: string) {
+  for (const entry of await readdir(evidence, { withFileTypes: true })) {
+    if (!entry.name.startsWith("preflight-cleanup")) {
+      continue;
+    }
+    const path = join(evidence, entry.name);
+    const files = entry.isDirectory()
+      ? (await readdir(path)).map((name) => join(path, name))
+      : [path];
+    for (const file of files) {
+      assert.ok(!(await readFile(file, "utf8")).includes(marker), `${file} excludes private data`);
+    }
+  }
+}
+
 export function registerPreflightCleanupTests(
   fixture: (t: TestContext, options: FixtureOptions) => Promise<UpgradeFixture>,
 ): void {
+  const settlement = ["--previous-process-settled", "--evidence-unrestored"];
+
+  for (const mode of ["interrupt", "interrupt-hard"] as const) {
+    test(`cleanup restart: ${mode} producer is cleaned by a separate invocation`, async (t) => {
+      const f = await fixture(t, {
+        controllerOnly: true,
+        preflightPolicy: true,
+        preflightFault: { target: "secret", mode },
+      });
+      // Kill the real producer at its first Job read, after create ACKs but
+      // before any Pod receipt. The next process must recover from disk alone.
+      await assert.rejects(f.run("--preflight-only"), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        if (mode === "interrupt-hard") {
+          assert.ok("signal" in error && error.signal === "SIGKILL");
+        } else {
+          assert.ok("code" in error && error.code === 143);
+        }
+        return true;
+      });
+      const original = await preflightIdentities(f);
+      assert.equal(original.length, 5);
+      const lock = statSync(join(f.evidence, ".upgrade-lock"));
+      const before = f.commands.length;
+      await f.cleanup(...settlement);
+      const { preflight } = await f.state();
+      for (const kind of ["jobs", "pods", "secrets", "networkpolicies"] as const) {
+        assert.deepEqual(preflight[kind], {});
+      }
+      assert.equal(preflight.deleted.length, 5);
+      assert.deepEqual(await preflightIdentities(f), original, "preserve original ACK evidence");
+      assert.ok(f.commands.slice(before).every((command) => command === "kubectl"));
+      assert.equal(statSync(join(f.evidence, ".upgrade-lock")).ino, lock.ino);
+      assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+      assert.deepEqual(await f.events(), [], "cleanup never deploys or stops writers");
+      // Already-absent originals are a successful retry, not a new create.
+      await f.cleanup(...settlement);
+      assert.equal((await f.state()).preflight.deleted.length, 5);
+      assert.equal(statSync(join(f.evidence, ".upgrade-lock")).ino, lock.ino);
+    });
+  }
+
+  test("cleanup restart: settlement and original target are required before cluster access", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightPolicy: true,
+      preflightFault: { target: "secret", mode: "interrupt" },
+    });
+    await runForFailure(f, "--preflight-only");
+    const before = f.commands.length;
+    const original = await f.state();
+    for (const flags of [[], [settlement[0]!], [settlement[1]!], [...settlement, "--resume"]]) {
+      const failure = await runForFailure({ run: (...args) => f.cleanup(...args) }, ...flags);
+      assert.equal(failure.code, 2);
+    }
+    const kubeconfig = join(f.directory, "kubeconfig");
+    const bytes = await readFile(kubeconfig);
+    await writeFile(kubeconfig, "different-cluster-config");
+    const failure = await runForFailure({ run: (...args) => f.cleanup(...args) }, ...settlement);
+    assert.equal(failure.code, 2);
+    assert.equal(f.commands.length, before, "invalid local evidence never reaches kubectl");
+    assert.deepEqual(await f.state(), original);
+    await writeFile(kubeconfig, bytes);
+    await f.cleanup(...settlement);
+  });
+
+  test("cleanup restart: a lost Job ACK preserves dependencies and never adopts the current UID", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightPolicy: true,
+      preflightFault: { target: "worker", mode: "lost" },
+    });
+    await runForFailure(f, "--preflight-only");
+    const original = (await f.state()).preflight;
+    const [unknown] = Object.values(original.jobs);
+    assert.ok(unknown);
+    assert.ok(
+      !(await preflightIdentities(f)).some((record) => record.uid === unknown.metadata.uid),
+    );
+    // The earlier EXIT cleanup may already have removed the acknowledged API
+    // Job. Neither that absence nor a live GET authorizes adopting the lost ACK.
+    const failure = await runForFailure({ run: (...args) => f.cleanup(...args) }, ...settlement);
+    assert.equal(failure.code, 1);
+    const after = (await f.state()).preflight;
+    assert.deepEqual(after.jobs, original.jobs);
+    assert.deepEqual(after.pods, original.pods);
+    assert.deepEqual(after.secrets, original.secrets);
+    assert.deepEqual(after.networkpolicies, original.networkpolicies);
+    assert.deepEqual(after.deleted, original.deleted);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  for (const [mode, when] of [
+    ["replacement", "before DELETE"],
+    ["replacement-after-delete", "after accepted DELETE"],
+  ] as const) {
+    test(`cleanup restart: a same-name Job replacement ${when} keeps dependencies`, async (t) => {
+      const f = await fixture(t, {
+        controllerOnly: true,
+        preflightPolicy: true,
+        preflightFault: { target: "secret", mode: "interrupt" },
+      });
+      await runForFailure(f, "--preflight-only");
+      const path = join(f.directory, "state.json");
+      const state = JSON.parse(await readFile(path, "utf8"));
+      state.preflightFault = { target: "migration", mode };
+      await writeFile(path, JSON.stringify(state));
+      const failure = await runForFailure({ run: (...args) => f.cleanup(...args) }, ...settlement);
+      assert.equal(failure.code, 1, failure.stderr);
+      const { preflight } = await f.state();
+      const [replacement] = Object.values(preflight.jobs);
+      assert.ok(replacement?.foreign);
+      assert.ok(
+        !(await preflightIdentities(f)).some((record) => record.uid === replacement.metadata.uid),
+      );
+      assert.equal(preflight.deleted.length, mode === "replacement" ? 2 : 3);
+      assert.equal(Object.keys(preflight.secrets).length, 1);
+      assert.equal(Object.keys(preflight.networkpolicies).length, 1);
+      const marker = replacement.metadata.annotations?.fixture;
+      assert.ok(marker);
+      assert.ok(!(failure.stdout + failure.stderr).includes(marker));
+      await assertCleanupOmitsMarker(f.evidence, marker);
+      assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+      assert.deepEqual(await f.events(), []);
+    });
+  }
+
+  test("cleanup ownership: a recorded child replacement after accepted Job DELETE keeps dependencies", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightPolicy: true,
+      preflightFault: { target: "migration", mode: "child-replacement-after-delete" },
+    });
+    // Normal preflight records the original child before cleanup. The fixture
+    // replaces it only after DELETE accepts its owner Job, with a foreign owner
+    // and no discovery label, so the saved child name must fail closed on UID.
+    const failure = await runForFailure(f, "--preflight-only");
+    assert.equal(failure.code, 1);
+    assert.match(failure.stderr, /startup preflight cleanup is incomplete/);
+    const { preflight } = await f.state();
+    assert.deepEqual(preflight.jobs, {});
+    const children = Object.values(preflight.pods);
+    assert.equal(children.length, 1);
+    const [replacement] = children;
+    assert.ok(replacement);
+    const recorded = (await preflightIdentities(f)).find(
+      (record) => record.kind === "pod" && record.name === replacement.metadata.name,
+    );
+    assert.ok(recorded, "the original child was acknowledged before its replacement");
+    assert.notEqual(replacement.metadata.uid, recorded.uid);
+    assert.deepEqual(replacement.metadata.labels, {});
+    const marker = replacement.metadata.annotations?.fixture;
+    assert.ok(marker);
+    assert.ok(!(failure.stdout + failure.stderr).includes(marker));
+    await assertCleanupOmitsMarker(f.evidence, marker);
+    assert.equal(preflight.deleted.length, 3, "only original Jobs were deleted");
+    assert.equal(Object.keys(preflight.secrets).length, 1);
+    assert.equal(Object.keys(preflight.networkpolicies).length, 1);
+    assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("cleanup restart: an unrecorded child with changed labels retains dependencies", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightPolicy: true,
+      preflightFault: { target: "secret", mode: "interrupt" },
+    });
+    await runForFailure(f, "--preflight-only");
+    const path = join(f.directory, "state.json");
+    const state = JSON.parse(await readFile(path, "utf8"));
+    const api = (await preflightIdentities(f)).find((record) => record.name.includes("-api-"));
+    assert.ok(api);
+    const child = Object.values((await f.state()).preflight.pods).find((pod) =>
+      pod.metadata.ownerReferences?.some((owner) => owner.uid === api.uid),
+    );
+    assert.ok(child);
+    // A controller-created child may precede its observer receipt. Label
+    // changes must not conceal that consumer from the restarted cleanup.
+    delete state.preflight.pods[child.metadata.name].metadata.labels;
+    state.preflightFault = { target: "api", mode: "retained-child" };
+    await writeFile(path, JSON.stringify(state));
+    const failure = await runForFailure({ run: (...args) => f.cleanup(...args) }, ...settlement);
+    assert.equal(failure.code, 1);
+    const { preflight } = await f.state();
+    assert.deepEqual(preflight.jobs, {});
+    assert.equal(Object.keys(preflight.pods).length, 1);
+    assert.equal(Object.keys(preflight.secrets).length, 1);
+    assert.equal(Object.keys(preflight.networkpolicies).length, 1);
+    // Explicitly model later external settlement, then retry the same journal.
+    const settled = JSON.parse(await readFile(path, "utf8"));
+    delete settled.preflight.pods[child.metadata.name];
+    await writeFile(path, JSON.stringify(settled));
+    await f.cleanup(...settlement);
+    assert.deepEqual((await f.state()).preflight.secrets, {});
+    assert.deepEqual((await f.state()).preflight.networkpolicies, {});
+    assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("cleanup ownership: already absent originals permit verified completion", async (t) => {
+    for (const target of ["api", "secret", "networkpolicy.networking.k8s.io"] as const) {
+      await t.test(target, async (t) => {
+        const f = await fixture(t, {
+          controllerOnly: true,
+          preflightPolicy: true,
+          preflightFault: { target, mode: "already-absent" },
+        });
+        // Another actor removes the original before DELETE reaches the API.
+        // Its NotFound reply must still lead to verified consumer/dependency absence.
+        await f.run("--preflight-only");
+        const { preflight } = await f.state();
+        for (const kind of ["jobs", "pods", "secrets", "networkpolicies"] as const) {
+          assert.deepEqual(preflight[kind], {});
+        }
+        assert.equal(preflight.deleted.length, 4);
+        assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
+        assert.deepEqual(await f.events(), [], "cleanup never stops OCC writers");
+      });
+    }
+  });
+
+  test("cleanup ownership: absent original Job still waits for its child", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightPolicy: true,
+      preflightFault: { target: "api", mode: "absent-job-retained-child" },
+    });
+    // The Job's NotFound reply does not establish that its original Pod stopped.
+    const failure = await runForFailure(f, "--preflight-only");
+    assert.match(failure.stderr, /retained the candidate Secret and NetworkPolicy/);
+    const { preflight } = await f.state();
+    assert.deepEqual(preflight.jobs, {});
+    assert.equal(Object.keys(preflight.pods).length, 1);
+    assert.equal(Object.keys(preflight.secrets).length, 1);
+    assert.equal(Object.keys(preflight.networkpolicies).length, 1);
+    assert.match(
+      await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8"),
+      /Timed out stopping job\.batch\//,
+    );
+    assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("cleanup ownership: accepted dependency deletion waits for absence", async (t) => {
+    for (const target of ["secret", "networkpolicy.networking.k8s.io"] as const) {
+      await t.test(target, async (t) => {
+        const f = await fixture(t, {
+          controllerOnly: true,
+          preflightPolicy: true,
+          preflightFault: { target, mode: "delayed-delete" },
+        });
+        // DELETE is accepted while a finalizer still retains the original.
+        // The fixture removes it only after later GETs observe that pending state.
+        await f.run("--preflight-only");
+        const { preflight } = await f.state();
+        assert.deepEqual(preflight.secrets, {});
+        assert.deepEqual(preflight.networkpolicies, {});
+        assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
+        assert.deepEqual(await f.events(), []);
+      });
+    }
+  });
+
+  test("cleanup ownership: retained dependency blocks successful preflight", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightPolicy: true,
+      preflightFault: { target: "secret", mode: "retained-dependency" },
+    });
+    const failure = await runForFailure(f, "--preflight-only");
+    assert.match(failure.stderr, /startup preflight cleanup is incomplete/);
+    const { preflight } = await f.state();
+    assert.deepEqual(preflight.jobs, {});
+    assert.deepEqual(preflight.pods, {});
+    assert.equal(Object.keys(preflight.secrets).length, 1);
+    const [secret] = Object.values(preflight.secrets);
+    assert.ok(secret);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(f.evidence, "preflight-cleanup-dependency.json"), "utf8")),
+      { metadata: { uid: secret.metadata.uid } },
+      "pending deletion evidence contains identity only",
+    );
+    assert.deepEqual(preflight.networkpolicies, {});
+    assert.match(
+      await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8"),
+      /Timed out deleting secret\//,
+    );
+    assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("cleanup ownership: replacement Secret contents never enter cleanup evidence", async (t) => {
+    for (const mode of ["replacement", "replacement-after-delete"] as const) {
+      await t.test(mode, async (t) => {
+        const f = await fixture(t, {
+          controllerOnly: true,
+          preflightPolicy: true,
+          preflightFault: { target: "secret", mode },
+        });
+        // Check both a refused UID-guarded DELETE and replacement before the
+        // first observation after an accepted DELETE. Neither permits retaining
+        // Secret contents in cleanup evidence.
+        const failure = await runForFailure(f, "--preflight-only");
+        const { preflight } = await f.state();
+        const [replacement] = Object.values(preflight.secrets);
+        assert.ok(replacement);
+        const original = (await preflightIdentities(f)).find((record) => record.kind === "secret");
+        assert.ok(original);
+        assert.notEqual(replacement.metadata.uid, original.uid);
+        const encoded = replacement.data.credential;
+        assert.ok(encoded);
+        const marker = Buffer.from(encoded, "base64").toString("utf8");
+        const output = failure.stdout + failure.stderr;
+        assert.ok(!output.includes(marker) && !output.includes(encoded));
+        for (const name of await readdir(f.evidence)) {
+          if (!name.startsWith("preflight-cleanup")) {
+            continue;
+          }
+          const text = await readFile(join(f.evidence, name), "utf8");
+          assert.ok(
+            !text.includes(marker) && !text.includes(encoded),
+            `${name} excludes Secret contents`,
+          );
+        }
+        assert.deepEqual(
+          JSON.parse(await readFile(join(f.evidence, "preflight-cleanup-dependency.json"), "utf8")),
+          { metadata: { uid: replacement.metadata.uid } },
+        );
+        assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+        assert.deepEqual(await f.events(), []);
+      });
+    }
+  });
+
   test("cleanup ownership: acknowledged identities survive a real interruption", async (t) => {
     // Valid opaque UIDs need not be UUIDs, safe filenames, or unescaped JSON strings.
     const uid = '../opaque/"\\雪;$(value)';
@@ -345,7 +714,8 @@ export function registerPreflightCleanupTests(
     const f = await fixture(t, {
       controllerOnly: true,
       preflightPolicy: true,
-      preflightFault: { target: "api", mode: "replacement" },
+      // Replace the last Job so later cleanup reads cannot overwrite its evidence.
+      preflightFault: { target: "migration", mode: "replacement" },
       preflightResults: {
         worker: { phase: "Failed", log: "primary startup failure\n" },
       },
@@ -357,6 +727,19 @@ export function registerPreflightCleanupTests(
     const [replacement] = jobs;
     assert.ok(replacement);
     assert.equal(replacement.foreign, true);
+    const marker = replacement.metadata.annotations?.fixture;
+    assert.ok(marker, "the replacement carries an unrelated private annotation");
+    for (const filename of await readdir(f.evidence)) {
+      if (filename.startsWith("preflight-cleanup")) {
+        const contents = await readFile(join(f.evidence, filename), "utf8");
+        assert.ok(!contents.includes(marker), `${filename} excludes replacement Job contents`);
+      }
+    }
+    assert.ok(!(failure.stdout + failure.stderr).includes(marker));
+    assert.deepEqual(
+      JSON.parse(await readFile(join(f.evidence, "preflight-cleanup-job.json"), "utf8")),
+      { metadata: { uid: replacement.metadata.uid } },
+    );
     const records = await preflightIdentities(f);
     assert.ok(state.preflight.created);
     assert.ok(state.preflight.children);
@@ -378,7 +761,7 @@ export function registerPreflightCleanupTests(
     );
     assert.match(
       await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8"),
-      /^job\.batch\/[^\n]+-api-[^\n]+:\nError from server \(Conflict\): .*Precondition failed: UID in precondition: /m,
+      /^job\.batch\/[^\n]+-migration-[^\n]+:\nError from server \(Conflict\): .*Precondition failed: UID in precondition: /m,
     );
     assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
     assert.deepEqual(await f.events(), []);

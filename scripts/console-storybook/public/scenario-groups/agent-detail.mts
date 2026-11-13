@@ -3098,11 +3098,19 @@ export function createAgentDetailScenarios({
             skip: 1,
             once: true,
           },
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            delayMs: 2500,
+          },
         ],
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
-          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
-          "Switch to another browser tab and return. The draft and focus return without selecting Retry.",
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit and scroll until the page header is out of view.",
+          "Switch to another browser tab and return. After one second, Still checking… appears at the bottom of the viewport while the draft is hidden. The delayed retry restores the draft, selection, focus, and scroll without selecting Retry, and the status disappears.",
+          "Repeat at 390 px wide. The status fits the viewport and does not block navigation. Reset the story to repeat the delayed retry.",
         ],
       },
       configurationReadUnavailableOnRefocus: {

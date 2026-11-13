@@ -758,7 +758,8 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
 
       await assert.rejects(load(owner, configuration, "production"), /activat|stage/i);
 
-      // Development can still use a real four-method package without promising production staging.
+      // Development still accepts ensureNamespace, deleteNamespace, prepareRevision,
+      // stopRevision, and retireRevision without promising production staging.
       const development = await load(owner, configuration, "development");
       assert.equal(typeof development.computeDriver.activateRevision, "undefined");
       assert.equal(typeof development.computeDriver.deactivateRevision, "undefined");
@@ -786,6 +787,33 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
     } finally {
       await writeFile(manifestPath, originalManifest, "utf8");
     }
+  });
+
+  await t.test("IAM capability mismatch", async () => {
+    const configuration = installation();
+    configuration.drivers.iam = {
+      ...selectedIAM(),
+      package: configurationPackage,
+      configuration: selectedConfiguration().configuration,
+    };
+
+    // A schema-valid selection must reach the deferred factory used by production consumers.
+    const drivers = await load(owner, configuration, "production");
+    const state = {
+      async loadNativeIAMState(): Promise<NativeIAMState> {
+        return {
+          identities: [],
+          groups: [],
+          memberships: [],
+          roles: [],
+          bindings: [],
+          restrictions: [],
+        };
+      },
+    };
+    assert.throws(() => drivers.createIAMDriver(state), {
+      message: "drivers.iam factory returned an unselected Driver identity.",
+    });
   });
 
   await t.test(
@@ -832,15 +860,6 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
           },
           "development",
           /configuration|endpoint|string/i,
-        ],
-        [
-          "IAM capability mismatch",
-          (value) => {
-            value.drivers.iam = selectedIAM();
-            value.drivers.iam.package = configurationPackage;
-          },
-          "production",
-          /iam|capability|package|version|configuration/i,
         ],
       ];
       for (const [description, mutate, mode, pattern] of cases) {

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import type { OpenShellCredentialGatewayDriver as CredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { OpenShellSandboxExecRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   OpenShellSandboxDriver,
@@ -13,14 +13,20 @@ import {
 import type {
   AgentRevision,
   ConfigurationValidationError,
+  CredentialSourceControl,
+  RepositoryGitDeliveryProfile,
+  RevisionHarnessDescriptor,
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.mjs";
-import type { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
-import type { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
+import { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
+import {
+  buildSandboxInstallation,
+  rejectsAtStartup,
+} from "./sandbox-driver-startup-installation-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 type Installation = ReturnType<typeof buildSandboxInstallation>;
@@ -41,17 +47,9 @@ type OperatorWire = OperatorPolicy & {
   };
 };
 
-export async function verifySharedBackendComposition({
-  t,
-  sandboxInstallation,
-  OpenShellCredentialGatewayDriver,
-}: {
-  t: TestContext;
-  sandboxInstallation: () => Installation;
-  OpenShellCredentialGatewayDriver: typeof CredentialGatewayDriver;
-}) {
+export async function verifySharedBackendComposition(t: TestContext) {
   // An explicit hard_requirement composes like the omitted default above.
-  const configuration = sandboxInstallation();
+  const configuration = buildSandboxInstallation();
   Object.assign(configuration.drivers.sandbox.configuration.policy, {
     landlockCompatibility: "hard_requirement",
   });
@@ -64,6 +62,18 @@ export async function verifySharedBackendComposition({
     sandbox: createdDriver.sandboxDriver?.id,
     credential_gateway: createdDriver.credentialGatewayDriver.id,
   });
+}
+
+export function verifyRejectedCredentialGatewayExecutable(t: TestContext): Promise<void> {
+  return rejectsAtStartup(
+    t,
+    (configuration) => {
+      Object.assign(configuration.drivers.credential_gateway.configuration, {
+        toolBinaries: ["bin/curl"],
+      });
+    },
+    makeStructuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
+  );
 }
 
 export function verifyDedicatedHarnessSelection({
@@ -353,4 +363,31 @@ export async function prepareStockWorkspaceChart({
   });
   await loadInstallationFile(t, installation);
   return { chart, forms, crd, installation };
+}
+
+export async function verifyProtectedGatewayAdmission({
+  signal,
+  setGatewayVersion,
+  sourceControl,
+  validateRepositoryCredentials,
+}: {
+  signal: AbortSignal;
+  setGatewayVersion: (version: string) => void;
+  sourceControl: Pick<CredentialSourceControl, "assertAvailable">;
+  validateRepositoryCredentials: (harness: Pick<RevisionHarnessDescriptor, "id" | "mode">) => void;
+}) {
+  setGatewayVersion("unknown");
+  const profiles: readonly RepositoryGitDeliveryProfile[] = ["repository_git", "github_repository"];
+  for (const profile of profiles) {
+    assert.deepEqual(await sourceControl.assertAvailable(signal, profile), {
+      profile,
+      authorization: "online-request",
+    });
+  }
+
+  setGatewayVersion("0.1.5");
+  validateRepositoryCredentials({ id: "codex", mode: "dedicated" });
+  assert.throws(() => validateRepositoryCredentials({ id: "openclaw", mode: "embedded" }), {
+    message: /[Rr]epository credentials require/,
+  });
 }

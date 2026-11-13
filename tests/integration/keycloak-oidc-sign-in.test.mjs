@@ -1,6 +1,6 @@
 import { keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
 import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.mjs";
@@ -224,11 +224,14 @@ async function prepareInstallation(t) {
  * HTTPS origin. One composition serves every page a test opens, so a flow that spans two
  * sign-ins runs against one controller, never a restarted one.
  */
-async function serveConsole(t, tokenAuth) {
+async function serveConsole(t, tokenAuth, overrides = {}) {
   const prepared = await prepareInstallation(t);
   const app = await composeProductionSignIn(t, {
     ...prepared.composition,
-    settings: prepared.settings(tokenAuth),
+    settings: { ...prepared.settings(tokenAuth), ...overrides.settings },
+    ...(overrides.secrets
+      ? { secrets: { ...prepared.composition.secrets, ...overrides.secrets } }
+      : {}),
   });
   t.after(() => app.close());
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -564,5 +567,220 @@ test(
     assert.equal(refused.callbacks.length, 0, "Keycloak never redirected to OCE");
     assert.equal(new URL(refused.page.url()).origin, new URL(issuer).origin);
     assert.deepEqual(await aliceSessions(prepared), signedIn, "no OCE session was created");
+  },
+);
+
+test(
+  "real Keycloak enrollment enforces groups and email policy without inventing verification",
+  { skip: requiresKeycloak, timeout: 300_000 },
+  async (t) => {
+    const prepared = await prepareInstallation(t);
+    // This lane owns the disposable realm. Temporarily suppress its standard
+    // email mappings so per-client mappings can exercise absent claims. Restore
+    // them before any later lane file uses the realm.
+    const scopes = await keycloakAdmin(prepared, "GET", "/client-scopes");
+    const emailScope = scopes.find((scope) => scope.name === "email");
+    assert.ok(emailScope);
+    const emailMappers = await keycloakAdmin(
+      prepared,
+      "GET",
+      `/client-scopes/${emailScope.id}/protocol-mappers/models`,
+    );
+    for (const mapper of emailMappers) {
+      await keycloakAdmin(
+        prepared,
+        "PUT",
+        `/client-scopes/${emailScope.id}/protocol-mappers/models/${mapper.id}`,
+        {
+          ...mapper,
+          config: { ...mapper.config, "id.token.claim": "false" },
+        },
+      );
+      t.after(() =>
+        keycloakAdmin(
+          prepared,
+          "PUT",
+          `/client-scopes/${emailScope.id}/protocol-mappers/models/${mapper.id}`,
+          mapper,
+        ),
+      );
+    }
+    // Each row states independent expectations for strict and permissive policy.
+    const cases = [];
+    for (const [verification, strict, permissive] of [
+      [true, true, true],
+      [false, false, true],
+      [undefined, false, true],
+      ["true", false, false],
+      [1, false, false],
+      [null, false, false],
+      [[], false, false],
+      [{}, false, false],
+    ]) {
+      for (const [requireVerifiedEmail, allowed] of [
+        [true, strict],
+        [false, permissive],
+      ]) {
+        cases.push({
+          name: `email policy ${requireVerifiedEmail}, claim ${JSON.stringify(verification)}`,
+          requireVerifiedEmail,
+          verification,
+          groups: "members",
+          allowed,
+        });
+      }
+    }
+    for (const [name, groups, allowed] of [
+      ["array", ["other", "members"], true],
+      ["missing", undefined, false],
+      ["null", null, false],
+      ["number", 1, false],
+      ["object", {}, false],
+      ["empty array", [], false],
+      ["mixed array", ["members", 1], false],
+      ["case mismatch", "Members", false],
+      ["leading space", " members", false],
+      ["trailing space", "members ", false],
+      ["comma joined", "members,other", false],
+    ]) {
+      cases.push({
+        name: `groups ${name}`,
+        groups,
+        verification: true,
+        requireVerifiedEmail: true,
+        allowed,
+      });
+    }
+    for (const email of ["alice@example.test", " ALICE@EXAMPLE.TEST ", null, 42, "not-an-email"]) {
+      cases.push({
+        name: `invalid or occupied email ${JSON.stringify(email)}`,
+        email,
+        groups: "members",
+        verification: false,
+        requireVerifiedEmail: false,
+        allowed: false,
+      });
+    }
+    cases.push({
+      name: "unsupported token signature",
+      groups: "members",
+      verification: true,
+      requireVerifiedEmail: false,
+      signingAlgorithm: "HS256",
+      allowed: false,
+    });
+    for (const scenario of cases) {
+      await t.test(scenario.name, async (subtest) => {
+        const username = `enrollment-${randomUUID()}`;
+        const password = randomBytes(24).toString("base64url");
+        const email = scenario.email === undefined ? `${username}@example.test` : scenario.email;
+        const clientId = `client-${randomUUID()}`;
+        const clientSecret = randomBytes(32).toString("base64url");
+        const mapper = (name, value) => ({
+          name,
+          protocol: "openid-connect",
+          protocolMapper: "oidc-hardcoded-claim-mapper",
+          config: {
+            "claim.name": name,
+            "claim.value": typeof value === "string" ? value : JSON.stringify(value),
+            "jsonType.label": typeof value === "string" ? "String" : "JSON",
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "userinfo.token.claim": "false",
+          },
+        });
+        // The IdP emits exactly this client's profile claims in its signed token.
+        await keycloakAdmin(prepared, "POST", "/clients", {
+          clientId,
+          secret: clientSecret,
+          enabled: true,
+          protocol: "openid-connect",
+          publicClient: false,
+          standardFlowEnabled: true,
+          redirectUris: [`${origin}${callbackPath}`],
+          defaultClientScopes: ["email", "profile"],
+          optionalClientScopes: [],
+          attributes: { "id.token.signed.response.alg": scenario.signingAlgorithm ?? "RS256" },
+          protocolMappers: [
+            ...(email === null ? [] : [mapper("email", email)]),
+            ...(scenario.groups === undefined ? [] : [mapper("groups", scenario.groups)]),
+            ...(scenario.verification === undefined
+              ? []
+              : [mapper("email_verified", scenario.verification)]),
+          ],
+        });
+        const [client] = await keycloakAdmin(prepared, "GET", `/clients?clientId=${clientId}`);
+        subtest.after(() => keycloakAdmin(prepared, "DELETE", `/clients/${client.id}`));
+        await keycloakAdmin(prepared, "POST", "/users", {
+          username,
+          enabled: true,
+          firstName: "Enrollment",
+          lastName: "User",
+          email: `${username}@example.test`,
+          emailVerified: true,
+          credentials: [{ type: "password", value: password, temporary: false }],
+        });
+        const [user] = await keycloakAdmin(
+          prepared,
+          "GET",
+          `/users?username=${username}&exact=true`,
+        );
+        subtest.after(() => keycloakAdmin(prepared, "DELETE", `/users/${user.id}`));
+        const count = async () =>
+          (await prepared.pool.query('SELECT count(*)::int AS n FROM occ."user"')).rows[0].n;
+        const before = await count();
+        await serveConsole(subtest, "client_secret_post", {
+          secrets: {
+            "occ-oidc-login/client-id": clientId,
+            "occ-oidc-login/client-secret": clientSecret,
+          },
+          settings: {
+            OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify({
+              admission: { groupsClaim: "groups", anyOf: ["members"] },
+              createAccount: {
+                enabled: true,
+                role: null,
+                requireVerifiedEmail: scenario.requireVerifiedEmail,
+              },
+              groupIds: [],
+            }),
+          },
+        });
+        const open = async () => {
+          const flow = await openPage(subtest, prepared);
+          await flow.page.goto(`${origin}/console/`);
+          await flow.page.getByRole("button", { name: "Continue with Keycloak" }).click();
+          await flow.page.waitForURL((url) => url.origin === new URL(issuer).origin);
+          await flow.page.locator("#username").fill(username);
+          await flow.page.locator("#password").fill(password);
+          await flow.page.locator("#kc-login").click();
+          const callback = await flow.callback;
+          return { flow, callback };
+        };
+        const { flow, callback } = await open();
+        if (!scenario.allowed) {
+          assert.match(callback.headers().location, /authError=oidc/);
+          assert.equal(await count(), before, "denial cannot create an account");
+          return;
+        }
+        assert.equal(callback.headers().location, "/console/");
+        await flow.page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
+        const { rows } = await prepared.pool.query(
+          'SELECT id, email_verified FROM occ."user" WHERE email = $1',
+          [email],
+        );
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].email_verified, scenario.verification === true);
+        assert.equal(await count(), before + 1);
+        const { callback: returning } = await open();
+        assert.equal(returning.headers().location, "/console/");
+        assert.equal(await count(), before + 1, "returning login reuses the account");
+        assert.equal(
+          (await prepared.pool.query('SELECT id FROM occ."user" WHERE email = $1', [email])).rows[0]
+            .id,
+          rows[0].id,
+        );
+      });
+    }
   },
 );

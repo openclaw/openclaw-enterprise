@@ -6,10 +6,11 @@ import { splitSetCookieHeader } from "better-auth/cookies";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { apiKey } from "@better-auth/api-key";
 import type { ApiKey } from "@better-auth/api-key/types";
-import type { ServicePrincipal } from "@openclaw-enterprise/contracts";
+import type { AuditEvent, ServicePrincipal } from "@openclaw-enterprise/contracts";
 import {
   NativeIAMDriver,
   createAuthPrincipalSeed,
+  validateAuthAccountPrincipalSeed,
   type AuthPrincipalSeed,
   type AuthPrincipalSeedOptions,
 } from "@openclaw-enterprise/iam";
@@ -42,6 +43,7 @@ import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } 
 import { resolveOidcEnrollmentPolicy } from "./oidc-enrollment.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { sessionAuthority } from "./session-authority.ts";
+import { createServiceKeyVerification } from "./service-key-verification.ts";
 import { passwordSignOut } from "./password-sign-out.ts";
 import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
@@ -183,13 +185,17 @@ export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 export const OCC_SHARED_AUTH_COOKIE_PREFIX = "openclaw_occ_shared";
 export const OCC_SERVICE_KEY_HEADER = "x-api-key";
 const SERVICE_KEY_CONFIG = "occ-service";
+const serviceKeyVerification = createServiceKeyVerification();
 // The createServiceKey schema allows 1 to 32 characters, which Ajv counts in code points.
 // Better Auth counts UTF-16 units, so its own cap is twice that: a 32-emoji name is 64 units.
 // The schema stays the authority; storage is unbounded text.
 export const SERVICE_KEY_NAME_MAX_LENGTH = 32;
 const SERVICE_KEY_NAME_MAX_UTF16_UNITS = SERVICE_KEY_NAME_MAX_LENGTH * 2;
 type ControllerPlugins = (
-  ReturnType<typeof apiKey> | ReturnType<typeof createHumanLogin>["plugin"] | typeof passwordSignOut
+  | ReturnType<typeof apiKey>
+  | ReturnType<typeof createHumanLogin>["plugin"]
+  | ReturnType<typeof createServiceKeyVerification>["plugin"]
+  | typeof passwordSignOut
 )[];
 type ControllerBetterAuth = Auth<BetterAuthOptions & { plugins: ControllerPlugins }>;
 
@@ -294,6 +300,50 @@ export interface ProvisionAuthAccountInput {
   readonly email: string;
   readonly password: string;
   readonly name?: string;
+}
+
+/** The administrator account writer requires its authority on the creating State unit. */
+export type ProvisionAuthAccount = (
+  seed: AuthPrincipalSeed,
+  auditEvent: AuditEvent,
+  prepared: PreparedAuthAccount,
+  external: { readonly providerId: string; readonly subject: string } | undefined,
+  authority: {
+    readonly holdSession: (unit: PlatformUnitOfWork) => Promise<void>;
+    readonly authorize: (unit: PlatformUnitOfWork) => Promise<AuditEvent>;
+  },
+) => Promise<void>;
+
+export function createPostgresAuthAccountProvisioner({
+  state,
+  installationId,
+}: {
+  readonly state: PostgresPlatformState;
+  readonly installationId: string;
+}): ProvisionAuthAccount {
+  const persistence = new PostgresHumanAuthentication(
+    state,
+    installationId,
+    betterAuthIssuer(installationId),
+  );
+  return async (seed, auditEvent, prepared, external, authority) => {
+    if (
+      authority === undefined ||
+      typeof authority.holdSession !== "function" ||
+      typeof authority.authorize !== "function"
+    ) {
+      throw new ScopeViolationError("Account provisioning requires complete assigning authority.");
+    }
+    await persistence.provisionPasswordAccount(prepared, seed, auditEvent, external, {
+      holdSession: authority.holdSession,
+      authorize: async (unit) => {
+        const currentAuditEvent = await authority.authorize(unit);
+        const current = await state.loadNativeIAMStateInTransaction(unit, installationId);
+        validateAuthAccountPrincipalSeed(seed, current, installationId);
+        return currentAuditEvent;
+      },
+    });
+  };
 }
 
 export {
@@ -862,9 +912,11 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
     const headers = authHeaders(request.headers);
     // An explicitly supplied key never falls back to a potentially more privileged cookie.
     if (headers.has(OCC_SERVICE_KEY_HEADER)) {
-      const result = await this.#auth.api.verifyApiKey({
-        body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
-      });
+      const result = await serviceKeyVerification.verify(() =>
+        this.#auth.api.verifyApiKey({
+          body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
+        }),
+      );
       if (!result.valid || !result.key) {
         throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid service API key is required.");
       }
@@ -1027,6 +1079,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         rateLimit: { enabled: false },
         keyExpiration: { defaultExpiresIn: 30 * 24 * 60 * 60 },
       }),
+      serviceKeyVerification.plugin,
     ],
     emailAndPassword: {
       enabled: true,
@@ -1176,6 +1229,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     }
     return Object.freeze({
       id: preparedId(context, "user"),
+      emailVerified: true,
       email,
       name: accountName({ ...input, email }),
       passwordHash: await context.password.hash(password),
@@ -1197,7 +1251,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         id: prepared.id,
         email: prepared.email,
         name: prepared.name,
-        emailVerified: true,
+        emailVerified: prepared.emailVerified,
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -1228,7 +1282,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     const prepared = await prepareAccount(input);
     const context = await auth.$context;
     const created = await context.internalAdapter.createUser(
-      { email: prepared.email, name: prepared.name, emailVerified: true },
+      { email: prepared.email, name: prepared.name, emailVerified: prepared.emailVerified },
       { method: "admin" },
     );
     try {

@@ -14,12 +14,31 @@ Select the Credential Proxy Driver only with a Kubernetes Compute and OpenShell 
 enforces the whole-execution profile below. The security principal is one freshly
 admitted Agent execution. Its parent, a sibling and an ordinary client can use the
 same allowed operation. A different execution, even of the same Agent, cannot
-inherit that authority. There is no caller binary allowlist or client hook.
+inherit that authority. The generated model routes use OpenShell's `/**` binary
+matcher to accept any verified absolute executable path in that execution.
+OpenShell still checks process identity, and credential middleware checks the
+admitted operation. Clients need no hook.
 
 The bundled legacy OpenShell release cannot enforce this profile. Before using a
 candidate pair, [qualify its installed dispatch and response custody](../../testing/protected-repository-custody.md)
 and test the actual static inference path. A repository metadata read exercises the
 shared exchange but does not establish static inference or Git transport support.
+
+## Bundled OpenShell admission
+
+The bundled OpenShell Credential Proxy Driver refuses new protected static
+OpenAI sources, live adoption or re-admission of a saved source, and new
+protected revisions using one. OCC returns `409 RESOURCE_CONFLICT`. Source
+admission is refused before reading its Secret material. Deployment retirement
+is checked before contacting the counterpart, so an unavailable Gateway cannot
+turn the refusal into a retryable error. Ask an Installation administrator to
+configure a supported model access path.
+
+Existing revisions keep the recorded provider for request authorization and recovery
+under the current Sandbox contract. Adoption still requires the exact current spec,
+including the inference `/**` matcher; older Sandboxes without it are unsupported.
+Withdrawal and cleanup still go to their original owners.
+This restriction does not change ordinary Gateway-only OpenAI sources.
 
 ## Execution admission cutoff
 
@@ -116,7 +135,10 @@ For `request_kind: "compaction"`, turn metadata may include a `compaction` objec
 with a native trigger, reason and phase, `implementation: "responses"` and
 `strategy: "memento"`. All five fields are required in that object.
 Replayed assistant `output_text` parts can include `annotations` and `logprobs`.
-Each field must be an empty array if present. The proxy refuses unknown request fields.
+Each field must be an empty array if present. Replayed `reasoning` items accept
+`content: null` or an array of `reasoning_text` parts. Codex can send null after
+loading a saved thread whose reasoning item omitted the field. The proxy refuses
+unknown request fields.
 
 In streamed Responses envelopes, tool echoes may contain null descriptions,
 `strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain
@@ -169,6 +191,8 @@ client transformations; they do not reinterpret function-call argument data.
 
 For retained controller installations, consult the
 [OpenShell Backend and Sandbox configuration](../drivers/openshell-credential-gateway.md).
+These settings describe the existing installation and do not enable new bundled
+protected static inference admission.
 The retired local launcher cannot prepare this configuration.
 Select the same Driver ID in `backend[].drivers.credential_proxy` and the
 Installation's `drivers.credential_proxy` selection. Configuring only one is an

@@ -7,7 +7,7 @@ import https from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { availablePort } from "./available-port.mjs";
+import { availablePort } from "./available-port.ts";
 
 const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");

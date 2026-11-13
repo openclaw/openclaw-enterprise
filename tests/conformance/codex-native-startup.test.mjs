@@ -84,23 +84,34 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     "Reconnecting... 2/3 stream disconnected - retrying sampling request",
   );
   const completedTurn = (...events) => [started, ...events, assistant, completed];
+  // The pinned CLI reports the denied upgrade as retry errors and the HTTPS switch
+  // as an advisory item. The fixture replays those events through the real wrapper.
+  const threadStarted = { type: "thread.started", thread_id: "fixture-thread" };
+  const completedFallbackTurn = (...events) => [threadStarted, ...completedTurn(...events)];
+  const deniedUpgrade =
+    'unexpected status 403 Forbidden: {"error":"unsupported_l7_protocol","detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules"}, url: wss://chatgpt.com/backend-api/codex/responses';
+  const detailFirstDenial =
+    'unexpected status 403 Forbidden: {"detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules","error":"unsupported_l7_protocol"}, url: wss://chatgpt.com/backend-api/codex/responses';
+  const reconnectUpgrade = (cause = deniedUpgrade, attempts = "2/5") =>
+    errorEvent("Reconnecting... " + attempts + " (" + cause + ")");
+  const fallbackAdvisory = (cause) => ({
+    type: "item.completed",
+    item: {
+      id: "item_0",
+      ...errorEvent("Falling back from WebSockets to HTTPS transport. " + cause),
+    },
+  });
+  const httpsFallback = fallbackAdvisory(deniedUpgrade);
+  const denialWithExtraField = deniedUpgrade.replace('{"error"', '{"policy":"denied","error"');
+  const forbiddenUpgradeFailure = probeFailure(
+    { kind: "PROBE_STATUS", detail: "error-event" },
+    { status: 403 },
+  );
   const scenarios = [
     {
       name: "protected profile without enrollment refuses before any native process",
       protectedInference: "missing",
       native: [],
-    },
-    {
-      name: "protected probe retains zero retry settings despite ignoring user config",
-      protectedInference: "signed",
-      events: completedTurn(),
-      expect: ready,
-    },
-    {
-      name: "protected probe timeout never starts a second business request",
-      protectedInference: "signed",
-      native: [login(), probe([], timedOut, 30000)],
-      expect: probeTimeout,
     },
     {
       name: "protected probe refuses an unexpected native stream retry",
@@ -130,6 +141,149 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       providerPat: true,
       events: completedTurn(),
       expect: ready,
+    },
+    {
+      name: "OpenShell provider PAT accepts the released error-first denial after HTTPS answers",
+      providerPat: true,
+      events: completedFallbackTurn(
+        ...["2/5", "3/5", "4/5", "5/5"].map((attempts) =>
+          reconnectUpgrade(deniedUpgrade, attempts),
+        ),
+        httpsFallback,
+      ),
+      expect: ready,
+    },
+    {
+      name: "OpenShell provider PAT also accepts the equivalent detail-first denial",
+      providerPat: true,
+      events: completedFallbackTurn(
+        reconnectUpgrade(detailFirstDenial),
+        fallbackAdvisory(detailFirstDenial),
+      ),
+      expect: ready,
+    },
+    {
+      name: "ordinary Codex authentication cannot recover an OpenShell upgrade denial",
+      events: completedFallbackTurn(reconnectUpgrade(), httpsFallback),
+      expect: forbiddenUpgradeFailure,
+    },
+    {
+      name: "protected PAT authentication cannot recover an OpenShell upgrade denial",
+      protectedInference: "signed",
+      providerPat: true,
+      events: completedFallbackTurn(reconnectUpgrade(), httpsFallback),
+      expect: forbiddenUpgradeFailure,
+    },
+    ...[
+      ["wrong host", deniedUpgrade.replace("chatgpt.com", "example.com")],
+      ["wrong path", deniedUpgrade.replace("/responses", "/models")],
+      ["query parameter", deniedUpgrade + "?fixture=1"],
+      ["URL user information", deniedUpgrade.replace("wss://", "wss://fixture@")],
+      ["wrong status", deniedUpgrade.replace("403 Forbidden", "401 Unauthorized")],
+      [
+        "method denied",
+        deniedUpgrade.replace(
+          "HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules",
+          "POST is not allowed for this endpoint",
+        ),
+      ],
+      ["wrong protocol code", deniedUpgrade.replace("unsupported_l7_protocol", "policy_denied")],
+      ["an unexpected body field", denialWithExtraField],
+    ].map(([label, cause]) => ({
+      name: "OpenShell provider PAT refuses a reconnect with " + label,
+      providerPat: true,
+      events: completedFallbackTurn(reconnectUpgrade(cause), httpsFallback),
+      expect:
+        label === "wrong status"
+          ? probeFailure({ kind: "PROBE_STATUS", detail: "error-event" }, { status: 401 })
+          : forbiddenUpgradeFailure,
+    })),
+    ...[
+      [
+        "an invalid native retry limit",
+        completedFallbackTurn(reconnectUpgrade(deniedUpgrade, "2/11"), httpsFallback),
+      ],
+      [
+        "too many retry events",
+        completedFallbackTurn(
+          ...Array.from({ length: 11 }, () => reconnectUpgrade()),
+          httpsFallback,
+        ),
+      ],
+      [
+        "an unrelated reconnect",
+        completedFallbackTurn(reconnectUpgrade(), httpsFallback, recoveredStreamError),
+      ],
+      ["no fallback advisory", completedFallbackTurn(reconnectUpgrade())],
+      ["a different fallback advisory", completedFallbackTurn(reconnectUpgrade(), advisory)],
+      [
+        "an unexpected field in the fallback advisory",
+        completedFallbackTurn(reconnectUpgrade(), fallbackAdvisory(denialWithExtraField)),
+      ],
+      [
+        "a second thread",
+        completedFallbackTurn(
+          reconnectUpgrade(),
+          { ...threadStarted, thread_id: "second-thread" },
+          httpsFallback,
+        ),
+      ],
+      ["no thread marker", completedTurn(reconnectUpgrade(), httpsFallback)],
+      [
+        "a reconnect after the fallback advisory",
+        completedFallbackTurn(reconnectUpgrade(), httpsFallback, reconnectUpgrade(), httpsFallback),
+      ],
+      [
+        "a second turn",
+        [...completedFallbackTurn(reconnectUpgrade(), httpsFallback), ...completedTurn()],
+      ],
+      [
+        "a nonfinal turn completion",
+        [...completedFallbackTurn(reconnectUpgrade(), httpsFallback), advisory],
+      ],
+      [
+        "no turn completion",
+        [threadStarted, started, reconnectUpgrade(), httpsFallback, assistant],
+      ],
+      [
+        "no answer after the transport failure",
+        [threadStarted, started, assistant, reconnectUpgrade(), httpsFallback, completed],
+      ],
+    ].map(([label, events]) => ({
+      name: "OpenShell provider PAT remains unready with " + label,
+      providerPat: true,
+      events,
+      expect: forbiddenUpgradeFailure,
+    })),
+    ...[
+      ["a nonzero exit", { status: 1 }],
+      ["a signal", { status: null, signal: "SIGTERM" }],
+      ["a timeout", timedOut],
+    ].map(([label, result]) => ({
+      name: "OpenShell provider PAT remains unready after " + label,
+      providerPat: true,
+      events: completedFallbackTurn(reconnectUpgrade(), httpsFallback),
+      result,
+      expect: forbiddenUpgradeFailure,
+    })),
+    ...[
+      failedTurn("unexpected status 403 Forbidden: credential rejected"),
+      errorEvent("unexpected status 401 Unauthorized: credential rejected"),
+    ].map((refusal) => ({
+      name:
+        "OpenShell provider PAT rejects a terminal HTTPS authorization failure in " + refusal.type,
+      providerPat: true,
+      events: [threadStarted, started, reconnectUpgrade(), httpsFallback, refusal],
+      expect: probeAuthenticationFailure,
+    })),
+    {
+      name: "OpenShell provider PAT rejects a tool event after fallback",
+      providerPat: true,
+      events: completedFallbackTurn(reconnectUpgrade(), httpsFallback, {
+        type: "item.completed",
+        item: { type: "command_execution" },
+      }),
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event" }),
     },
     {
       name: "provider PAT metadata rejection keeps the revision unready",

@@ -115,26 +115,17 @@ const { agent, revision } = await admitRevision(scenario.agents, "embedded");
 assert.equal(revision.harness.id, "openclaw");
 assert.equal(revision.harness.mode, "embedded");
 const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`;
-const put = () =>
+const put = (content) =>
   call(path, {
     method: "PUT",
-    body: { content: scenario.content },
+    body: { content },
   });
-const write = await put();
+const write = await put(scenario.content);
 assert.equal(write.response.status, 200, JSON.stringify(write.payload));
 assert.equal(write.payload.data.size, Buffer.byteLength(scenario.content));
 const read = await call(path);
 assert.equal(read.response.status, 200, JSON.stringify(read.payload));
 assert.equal(read.payload.data.content, scenario.content);
-
-// Identity-specific native grants retain the existing read/admin write boundary.
-await writeFile(keyPath, "proof-read");
-assert.equal((await call(path)).response.status, 200);
-assert.equal((await put()).response.status, 503);
-await writeFile(keyPath, "proof-write");
-assert.equal((await call(path)).response.status, 503);
-assert.equal((await put()).response.status, 503);
-await writeFile(keyPath, "proof-admin");
 
 if (scenario.explicitAgentId !== undefined) {
   const request = {
@@ -174,4 +165,19 @@ if (scenario.explicitAgentId !== undefined) {
   }));
   assert.deepEqual(await main.read(request), { status: "unavailable" });
 }
-process.stdout.write(JSON.stringify({ apiWrite: 200, apiRead: 200, scopeControls: true }) + "\n");
+// Finish with one denied write so the parent can inspect native disk before
+// another probe's successful admin PUT could hide an unauthorized file change.
+const deniedWrite = scenario.deniedWrite;
+assert.ok(deniedWrite.identity === "proof-read" || deniedWrite.identity === "proof-write");
+assert.notEqual(deniedWrite.content, scenario.content);
+await writeFile(keyPath, deniedWrite.identity);
+assert.equal((await call(path)).response.status, deniedWrite.identity === "proof-read" ? 200 : 503);
+assert.equal((await put(deniedWrite.content)).response.status, 503);
+process.stdout.write(
+  JSON.stringify({
+    apiWrite: 200,
+    apiRead: 200,
+    scopeControls: true,
+    deniedIdentity: deniedWrite.identity,
+  }) + "\n",
+);

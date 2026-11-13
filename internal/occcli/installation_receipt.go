@@ -124,8 +124,10 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			}
 			runCtx := cmd.Context()
 			install := exec.CommandContext(runCtx, "helm", "install", release, frozenChart, "--kubeconfig", frozenConfig, "--kube-context", kctx, "--namespace", namespace, "--values", frozenValues, "--set-string", "installation.attemptId="+intent.Attempt, "--wait", "--timeout", wait.String())
-			// Helm/auth-plugin diagnostics may contain sensitive values. Keep them out
-			// of the receipt and terminal; operator diagnosis uses the named Job reader.
+			// Helm/auth-plugin diagnostics may contain sensitive values. Retain only
+			// bounded in-memory evidence for static guidance, never raw output.
+			var diagnostic installationDiagnostic
+			install.Stderr = &diagnostic
 			install.WaitDelay = time.Second
 			err = install.Start()
 			observeCtx, stopObserving := context.WithCancel(runCtx)
@@ -133,6 +135,11 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			if err == nil {
 				go func() { observed <- observeInstallationJob(observeCtx, frozenConfig, kctx, intent, receipt) }()
 				err = install.Wait()
+				// ErrWaitDelay means Helm exited successfully but a child retained
+				// the diagnostic pipe. Capturing stderr must not change that outcome.
+				if errors.Is(err, exec.ErrWaitDelay) {
+					err = nil
+				}
 			} else {
 				observed <- nil
 			}
@@ -162,6 +169,13 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			result := readInstallationAttempt(finalCtx, frozenConfig, kctx, intent, uid)
 			_, outputErr := fmt.Fprintf(cmd.OutOrStdout(), "Helm outcome: %s.\n%s\nUse installation doctor or plan with --receipt and the same explicit target. Do not replay an uncertain installation.\n", outcome, result.message)
 			if err != nil {
+				text := diagnostic.buf.String()
+				if !diagnostic.overflow && (strings.Contains(text, "execution error at (") || strings.Contains(text, "parse error at (") || strings.Contains(text, "YAML parse error on ")) {
+					fmt.Fprintln(cmd.OutOrStdout(), "Helm reported a template validation failure. Run offline helm template with the same chart, values, release and namespace; keep manifests and diagnostics in protected local outputs. This does not establish cluster effects or permission to retry; preserve the receipt and reconcile the original attempt.")
+					if strings.Contains(text, "auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix") {
+						fmt.Fprintln(cmd.OutOrStdout(), "Check auth.baseUrl and agentNativeAdmin.domain: the host in auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix.")
+					}
+				}
 				return &ExitStatusError{Code: 1}
 			}
 			return outputErr
@@ -180,6 +194,17 @@ func (app *application) installationInstallCommand() *cobra.Command {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
+}
+
+// Drain excess stderr without changing Helm's exit status or retaining more data.
+// doctorBuffer owns the existing bound; overflow disables diagnostic guidance.
+type installationDiagnostic struct{ doctorBuffer }
+
+func (b *installationDiagnostic) Write(p []byte) (int, error) {
+	if !b.overflow {
+		_, _ = b.doctorBuffer.Write(p)
+	}
+	return len(p), nil
 }
 
 func installationDigest(data []byte) string {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import type { normalizeServiceUrl } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { serviceTarget } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import type { buildEndpointInstallation } from "./sandbox-driver-installation-fixture.ts";
 
 type EndpointConsumers = {

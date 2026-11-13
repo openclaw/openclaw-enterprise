@@ -231,6 +231,103 @@ isolatedTest("gh rechecks expiry after reading private session files", async (t)
   assert.deepEqual(spawned, []);
 });
 
+const malformedSessionIds = [
+  undefined,
+  null,
+  123,
+  true,
+  ["session-test"],
+  "",
+  "a".repeat(129),
+  "a.b",
+  " a",
+  "a\n",
+];
+
+test("session ID encoder rejects nonstring and out-of-grammar material", () => {
+  for (const sessionId of malformedSessionIds) {
+    const session = { ...opened.session, sessionId };
+    if (sessionId === undefined) {
+      delete session.sessionId;
+    }
+    assert.throws(
+      () => encodeRepositoryCredentialSessionFiles({ ...opened, session }),
+      { message: "invalid-client-configuration" },
+      `sessionId=${JSON.stringify(sessionId)}`,
+    );
+  }
+});
+
+test("session ID reader rejects nonstring and out-of-grammar material", async (t) => {
+  const parent = await temporaryDirectory(t);
+  const fields = {
+    deadlineWallMs: opened.session.deadlineWallMs,
+    client: opened.client,
+    hasPublicCa: false,
+  };
+  for (const sessionId of malformedSessionIds) {
+    await writeFile(join(parent, "client.json"), JSON.stringify({ ...fields, sessionId }), {
+      mode: 0o600,
+    });
+    await assert.rejects(
+      readClientConfiguration(parent),
+      { message: "invalid-client-configuration" },
+      `sessionId=${JSON.stringify(sessionId)}`,
+    );
+  }
+});
+
+test("session ID strings retain their value through encoding and private-file reading", async (t) => {
+  const parent = await temporaryDirectory(t);
+  for (const sessionId of [
+    "a",
+    "a".repeat(128),
+    "null",
+    "123",
+    "undefined",
+    "_session",
+    "-session",
+    "AZaz09_-",
+  ]) {
+    const files = encodeRepositoryCredentialSessionFiles({
+      ...opened,
+      session: { ...opened.session, sessionId },
+    });
+    const expected = {
+      sessionId,
+      deadlineWallMs: opened.session.deadlineWallMs,
+      client: opened.client,
+      hasPublicCa: false,
+    };
+    assert.equal(files["client.json"], JSON.stringify(expected) + "\n");
+    await writeFile(join(parent, "client.json"), files["client.json"], { mode: 0o600 });
+    assert.deepEqual(await readClientConfiguration(parent), expected);
+  }
+});
+
+test("session ID encoder serializes the validated value and refuses invalid bearer first", () => {
+  let reads = 0;
+  const input = {
+    ...opened,
+    session: {
+      ...opened.session,
+      get sessionId() {
+        reads += 1;
+        return reads === 1 ? "session-test" : null;
+      },
+    },
+  };
+  assert.throws(() => encodeRepositoryCredentialSessionFiles({ ...input, bearer: "invalid" }), {
+    message: "invalid-client-configuration",
+  });
+  assert.equal(reads, 0);
+  assert.equal(
+    JSON.parse(encodeRepositoryCredentialSessionFiles(input)["client.json"]).sessionId,
+    "session-test",
+  );
+  assert.equal(reads, 1);
+});
+
 test("push-ref policies use the existing complete client metadata size limit", () => {
   const encode = (rules) =>
     encodeRepositoryCredentialSessionFiles({
@@ -952,6 +1049,42 @@ test(
     );
   },
 );
+
+test("a public CA with a leading UTF-8 BOM stays usable by Git", async (t) => {
+  const parent = await realpath(await temporaryDirectory(t));
+  const { key, cert, certPath } = await selfSigned(parent, {
+    commonName: "localhost",
+    subjectAltName: "IP:127.0.0.1",
+  });
+  const pem = await readFile(certPath);
+  const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), pem]);
+  // The sender's UTF-8 check uses the default decoder, which accepts this file.
+  new TextDecoder("utf-8", { fatal: true }).decode(withBom);
+  const files = encodeRepositoryCredentialSessionFiles(opened, withBom);
+  const caPath = join(parent, "ca.pem");
+  await writeFile(caPath, files["ca.pem"], { mode: 0o600 });
+  const requests = [];
+  const server = createServer({ key, cert }, (_request, response) => {
+    requests.push(1);
+    response.writeHead(200);
+    response.end();
+  });
+  const origin = await listen(t, server);
+  const result = await run("/usr/bin/git", ["ls-remote", `${origin}/example/project.git`], {
+    env: clean({
+      HOME: parent,
+      GIT_SSL_CAINFO: caPath,
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "maintenance.auto",
+      GIT_CONFIG_VALUE_0: "false",
+      GIT_CONFIG_KEY_1: "http.sslCAInfo",
+      GIT_CONFIG_VALUE_1: caPath,
+    }),
+    allowFailure: true,
+  });
+  assert.equal(result.stderr.includes("certificate verify locations"), false, result.stderr);
+  assert.ok(requests.length > 0, result.stderr);
+});
 
 describe("repository credential client configuration", { concurrency: 2 }, () => {
   for (const registration of cases) {
