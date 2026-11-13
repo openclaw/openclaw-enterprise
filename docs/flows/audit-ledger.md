@@ -101,8 +101,10 @@ describes the response OCC prepared. If its append fails, the hook logs
 `http.audit_append_failed` and sends the selected response. The resource
 handler still owns its own permission checks and any audit record for a change.
 If a separate authorization-denial record fails to save on a covered route,
-the API logs that write failure and sends the refusal. A permission denial
-that uses HTTP `404` to conceal a resource still records outcome `denied`.
+the API logs the write failure and usually sends the selected refusal.
+A [device login scope denial](credential-source-refresh.md) requires its own
+record and returns HTTP `503` if that write fails. A permission denial that
+uses HTTP `404` to conceal a resource still records outcome `denied`.
 
 For example, the `getAgent` handler checks read permission and loads the Agent
 from its Namespace. For an HTTP `200` result from `GET` or `HEAD`, the hook uses

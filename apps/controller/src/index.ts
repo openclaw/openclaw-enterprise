@@ -1820,6 +1820,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       readonly decisionReason: string;
       readonly reasonCode?: string;
       readonly details: Readonly<Record<string, unknown>>;
+      readonly requireAuditWrite?: true;
     },
   ): Promise<void> {
     const audit = requestAuditState.get(request);
@@ -1842,7 +1843,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } catch (error) {
       if (audit !== undefined && controller !== undefined) {
         logRequestAuditFailure(request, operation, auditAction(operation, request), error);
-        return;
+        if (explanation?.requireAuditWrite !== true) {
+          return;
+        }
       }
       throw failure(
         503,
@@ -5211,6 +5214,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               decisionReason: "The device login does not belong to the requested scope.",
               reasonCode: "DEVICE_AUTHORIZATION_SCOPE_MISMATCH",
               details: {},
+              requireAuditWrite: true,
             },
           );
         } catch (auditError) {

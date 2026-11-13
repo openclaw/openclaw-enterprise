@@ -42,8 +42,9 @@ changed. These records omit request bodies, response bodies, and raw URLs.
 
 If OCC cannot save admission, it returns `503` before running the handler.
 If it cannot save the result, it keeps the selected response and logs
-`http.audit_append_failed` with the request ID. This also applies if it cannot
-save the separate permission-denial record on a covered route. If OCC cannot
+`http.audit_append_failed` with the request ID. This usually applies if it
+cannot save a separate permission-denial record. A device login scope denial
+returns `503` if OCC cannot save its required denial record. If OCC cannot
 confirm a commit, look for `http.commit_outcome_unknown` and check the current
 resource or job state before retrying. Bootstrap and runtime log reads use
 their own audit paths. Authentication callbacks, native proxy traffic, and
