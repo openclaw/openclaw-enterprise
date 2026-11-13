@@ -18,7 +18,12 @@ import {
 } from "../../apps/controller/src/console/agents/list.mts";
 import { requestedValues } from "../../apps/controller/src/http/caller-denial.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { ERROR_CODES, PresetValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  ERROR_CODES,
+  PresetValidationError,
+  type ErrorResponse,
+  type ResourceRef,
+} from "../../packages/contracts/src/index.ts";
 import { normalizeRequestSecretBindings } from "../../packages/occ/src/agent-provisioning.ts";
 import {
   AgentCredentialSourceBindingError,
@@ -63,6 +68,7 @@ import {
   RetryLaterError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
+  type RuntimeLogsErrorCode,
   ScopeViolationError,
   SecretBindingDriverError,
   SecretBindingValidationError,
@@ -101,23 +107,29 @@ import {
 // Text that must never reach a client: the mappings below that answer with fixed text are
 // checked with an error carrying this message.
 const INTERNAL = "internal detail: postgres row agent_abc in ns_secret";
-const agentResource = { kind: "agent", id: "agt_1", namespaceId: "ns_1" };
+const agentResource: ResourceRef = { kind: "agent", id: "agt_1", namespaceId: "ns_1" };
 
-function apiError(statusCode) {
+function apiError(statusCode: number) {
   return Object.assign(new Error(INTERNAL), { name: "APIError", statusCode });
 }
 
-function fastifyError(code) {
+function fastifyError(code: string) {
   return Object.assign(new Error(INTERNAL), { code });
 }
 
-function namedError(name) {
+function namedError(name: string) {
   return Object.assign(new Error(INTERNAL), { name });
 }
 
-function admissionFailure(fields) {
+function admissionFailure(fields: { statusCode?: number; status?: number; reason?: string }) {
   return Object.assign(new Error(INTERNAL), { name: "AdmissionFailure", ...fields });
 }
+
+type ErrorCase = readonly [
+  name: string,
+  error: Error,
+  expected: Pick<RequestFailure, "status" | "code" | "message" | "details">,
+];
 
 // Many OCC errors subclass ScopeViolationError, ResourceConflictError or
 // AuthorizationDeniedError, so each row also guards the order of the checks in
@@ -530,10 +542,12 @@ const cases = [
   ],
   // The detail path cap is 512 characters: a key that ends the path exactly there is named,
   // and one character more points at the bindings instead.
-  ...[
-    ["exactly at", "K".repeat(482), `/configuration/secretBindings/${"K".repeat(482)}`],
-    ["one past", "K".repeat(483), "/configuration/secretBindings"],
-  ].map(([where, key, path]) => [
+  ...(
+    [
+      ["exactly at", "K".repeat(482), `/configuration/secretBindings/${"K".repeat(482)}`],
+      ["one past", "K".repeat(483), "/configuration/secretBindings"],
+    ] as const
+  ).map<ErrorCase>(([where, key, path]) => [
     `a Secret binding destination whose path ends ${where} the 512-character cap`,
     new SecretBindingValidationError("A secret binding destination is invalid.", {
       bindingsPath: "/configuration/secretBindings",
@@ -677,11 +691,16 @@ const cases = [
   ],
   // Only a recognized reason may pick the public message and code. Each of these is another
   // discovery's reason or an inherited property name, so none maps.
-  ...[
-    ["channel directory", new ChannelDirectoryError("constructor")],
-    ["model discovery", new ModelDiscoveryError("missing_scope")],
-    ["plugin discovery", new PluginDiscoveryError("missing_scope")],
-  ].map(([kind, error]) => [
+  ...(
+    [
+      // @ts-expect-error Exercise an inherited property name at the mapping boundary.
+      ["channel directory", new ChannelDirectoryError("constructor")],
+      // @ts-expect-error Exercise a reason from another discovery error.
+      ["model discovery", new ModelDiscoveryError("missing_scope")],
+      // @ts-expect-error Exercise a reason from another discovery error.
+      ["plugin discovery", new PluginDiscoveryError("missing_scope")],
+    ] as const
+  ).map<ErrorCase>(([kind, error]) => [
     `a ${kind} reason it does not define`,
     error,
     {
@@ -801,7 +820,7 @@ const cases = [
       message: "Requests must use application/json.",
     },
   ],
-  ...[
+  ...Array.of<readonly [RuntimeLogsErrorCode, number, string]>(
     [
       "RUNTIME_LOGS_POD_INVALID",
       400,
@@ -829,7 +848,7 @@ const cases = [
       503,
       "The runtime log view could not be audited, so no output was read.",
     ],
-  ].map(([code, status, message]) => [
+  ).map<ErrorCase>(([code, status, message]) => [
     `a runtime log failure ${code}`,
     new RuntimeLogsError(code),
     { status, code, message },
@@ -900,7 +919,7 @@ const cases = [
     "The human administrator session is no longer current.",
     "The assigning session is no longer current.",
     "The acting identity is unavailable.",
-  ].map((reason) => [
+  ].map<ErrorCase>((reason) => [
     `a denial about the caller's own state says so: ${reason}`,
     new CallerStateDeniedError(reason),
     { status: 403, code: "FORBIDDEN", message: reason },
@@ -1156,7 +1175,7 @@ const cases = [
       message: "The platform request could not be completed.",
     },
   ],
-];
+] satisfies readonly ErrorCase[];
 
 for (const [name, error, expected] of cases) {
   test(`HTTP error mapping: ${name} (${expected.status} ${expected.code})`, () => {
@@ -1172,24 +1191,27 @@ for (const [name, error, expected] of cases) {
     );
     assert.doesNotMatch(failure.message, /internal detail/);
     // The wire cap (256 characters) must not cut a mapped message, such as a trailing doc link.
-    let sent;
-    const headers = new Map();
+    type WireError = { error: Pick<ErrorResponse["error"], "message" | "reason"> };
+    const sent: { body?: WireError } = {};
+    const headers = new Map<string, string>();
     const reply = {
       request: { id: "req_1" },
-      header: (name, value) => {
+      header: (name: string, value: string) => {
         headers.set(name, value);
         return reply;
       },
       status: () => reply,
-      send: (body) => {
-        sent = body;
+      send: (body: WireError) => {
+        sent.body = body;
         return reply;
       },
     };
-    canonicalFailure(reply, failure);
-    assert.equal(sent.error.message, failure.message);
+    // This reply implements only the methods the wire mapper exercises.
+    canonicalFailure(reply as unknown as Parameters<typeof canonicalFailure>[0], failure);
+    assert.ok(sent.body);
+    assert.equal(sent.body.error.message, failure.message);
     assert.equal(
-      sent.error.reason,
+      sent.body.error.reason,
       undefined,
       "unrelated failures must not request a registration retry",
     );
@@ -1227,7 +1249,9 @@ const NOT_PROVISIONING_REFUSALS = [
 ];
 
 test("every API error code that may answer 503 is classified for Create Agent's and Deploy's pre-admission refusals", () => {
-  const statuses = new Map(cases.map(([, , expected]) => [expected.code, expected.status]));
+  const statuses = new Map<string, number>(
+    cases.map(([, , expected]) => [expected.code, expected.status]),
+  );
   const unclassified = ERROR_CODES.filter((code) => (statuses.get(code) ?? 503) === 503);
   assert.deepEqual(
     [...PROVISIONING_REFUSAL_CODES, ...NOT_PROVISIONING_REFUSALS].sort(),
@@ -1276,14 +1300,14 @@ test("Create Agent and Deploy show the API's reason only for a named 503 refusal
 test("only the Configuration generation conflict reads as a stale save in the console", () => {
   // The console error fields isStaleGeneration reads. api-client.mts also drops detail paths
   // outside its pattern and past 32 details; none of these errors have such paths.
-  const consoleError = (error) => {
+  const consoleError = (error: Error) => {
     const failure = requestFailure(error);
     const detailPaths = failure.details?.map(({ path }) => path);
     return { status: failure.status, code: failure.code, ...(detailPaths && { detailPaths }) };
   };
   const reserved =
     "The Configuration is reserved for provisioning and is not available for this operation.";
-  const conflicts = [
+  const conflicts: readonly (ErrorCase | readonly [name: string, error: Error])[] = [
     ...cases.filter(([, , expected]) => expected.code === "RESOURCE_CONFLICT"),
     ["a provisioning reservation", new ResourceStateConflictError(reserved)],
     [
@@ -1296,7 +1320,7 @@ test("only the Configuration generation conflict reads as a stale save in the co
   );
   assert.equal(stale.length, 1);
   for (const [name, error] of conflicts) {
-    assert.equal(isStaleGeneration(consoleError(error)), stale[0][1] === error, name);
+    assert.equal(isStaleGeneration(consoleError(error)), stale[0]?.[1] === error, name);
   }
 });
 
@@ -1322,8 +1346,13 @@ test("a submitted Secret binding destination names its rule and key, never the S
       // A malformed key is not echoed; the detail points at the binding map.
       [{ path: "/secretBindings", code: "INVALID_FORMAT" }],
     ],
-  ]) {
-    let failure;
+  ] satisfies readonly [
+    string,
+    string | undefined,
+    string,
+    NonNullable<RequestFailure["details"]>,
+  ][]) {
+    let failure: RequestFailure | undefined;
     try {
       normalizeRequestSecretBindings({ [destination]: { source } }, bindingsPath);
     } catch (error) {
@@ -1350,8 +1379,8 @@ test("a denial for an unprovisioned principal other than the caller names no gra
       bindings: [],
     }),
   });
-  const resource = { kind: "secret", namespaceId: "ns_1", id: "sec_1" };
-  const checked = (principalId) =>
+  const resource: ResourceRef = { kind: "secret", namespaceId: "ns_1", id: "sec_1" };
+  const checked = (principalId: string) =>
     driver.authorize({ principalId, action: "operate", resource }).then((decision) => {
       assert.equal(decision.allowed, false);
       assert.equal(decision.evidence?.identityId, undefined);
@@ -1377,7 +1406,7 @@ test("a denial for an unprovisioned principal other than the caller names no gra
 // and keeps its own text for an older API's generic denial.
 test("the console shows a named denial unless the view names the grant itself", () => {
   const named = callerDenied("Agent read", "Agent agt_1");
-  const denial = (serverMessage) => ({ status: 403, code: "FORBIDDEN", serverMessage });
+  const denial = (serverMessage: string) => ({ status: 403, code: "FORBIDDEN", serverMessage });
   assert.equal(message(denial(named)), named);
   assert.equal(message(denial(GENERIC_DENIAL)), CONSOLE_ACCESS_DENIED);
   assert.equal(message(denial(serviceKeyOutsideNamespace("ns_1"))), CONSOLE_ACCESS_DENIED);
