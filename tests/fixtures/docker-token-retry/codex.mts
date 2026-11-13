@@ -79,7 +79,10 @@ if (command === "login") {
       if (message.id === undefined) {
         return;
       }
-      let response;
+      let response:
+        | { result: { userAgent: "oce-token-retry-fixture" } }
+        | { result: { data: []; nextCursor: null } }
+        | { error: { code: -32601; message: "Unsupported fixture method" } };
       if (message.method === "initialize") {
         response = { result: { userAgent: "oce-token-retry-fixture" } };
       } else if (message.method === "plugin/search") {
