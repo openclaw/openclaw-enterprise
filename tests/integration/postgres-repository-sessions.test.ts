@@ -84,44 +84,44 @@ type SeedCredentials = RepositoryRevisionState & {
   })[];
 };
 type SessionSeed = Awaited<ReturnType<typeof buildSeedSessionRevision>>;
-type SeedAgent = Pick<
-  Agent,
-  Exclude<
-    keyof SessionSeed["agent"],
-    "backendId" | "harnessAuth" | "gatewayManagedMode" | "repositoryBindings"
-  >
-> &
-  Required<Pick<Agent, "repositoryBindings">> & {
-    readonly backendId: null;
+type SeedScope = Pick<ConfigurationOwnership, "namespaceId" | "createdAt">;
+type SeedHarnessAuth = Extract<
+  Agent["harnessAuth"],
+  { method: "api_key"; source: { kind: "secret" } }
+>;
+type SeedAgent = Omit<SessionSeed["agent"], keyof SeedScope | "executionMode" | "harnessAuth"> &
+  SeedScope & {
+    readonly executionMode: Agent["executionMode"];
     readonly gatewayManagedMode: true;
-    readonly harnessAuth: Extract<
-      Agent["harnessAuth"],
-      { method: "api_key"; source: { kind: "secret" } }
-    >;
+    readonly harnessAuth: SeedHarnessAuth;
   };
-type SeedRevision = Pick<
-  SessionCase["revision"],
-  Exclude<
-    keyof SessionSeed["revision"],
-    "executionAdmission" | "harnessAuth" | "repositoryCredentials"
-  >
-> & {
-  readonly executionAdmission: Extract<
-    SessionCase["revision"]["executionAdmission"],
-    { mode: "unprotected" }
-  >;
-  readonly harnessAuth: SeedAgent["harnessAuth"] & { readonly secretDriverId: string };
-};
+type SeedRevision = Omit<
+  SessionSeed["revision"],
+  keyof SeedScope | "harness" | "harnessAuth" | "repositoryCredentials"
+> &
+  SeedScope & {
+    readonly configurationKind: ConfigurationOwnership["kind"];
+    readonly executionAdmission: Extract<
+      SessionCase["revision"]["executionAdmission"],
+      { mode: "unprotected" }
+    >;
+    readonly gatewayManagedMode: true;
+    readonly harness: Omit<SessionSeed["revision"]["harness"], "mode"> & {
+      readonly mode: SeedAgent["executionMode"];
+    };
+    readonly harnessAuth: SeedHarnessAuth &
+      Pick<SessionSeed["revision"]["harnessAuth"], "secretDriverId">;
+  };
 type SeedOptions = {
   readonly createdAt?: string | undefined;
   readonly namespaceId?: string | undefined;
   readonly executionMode?: Agent["executionMode"] | undefined;
 };
 type SeededSession<Credentials extends RepositoryRevisionState> = {
-  readonly namespace: Pick<Namespace, keyof SessionSeed["namespace"]> & {
-    readonly status: "ready";
-  };
-  readonly configuration: ConfigurationOwnership;
+  readonly namespace: Omit<SessionSeed["namespace"], "id" | "createdAt"> &
+    Pick<Namespace, "id" | "createdAt"> & { readonly status: "ready" };
+  readonly configuration: Omit<SessionSeed["configuration"], keyof SeedScope> &
+    SeedScope & { readonly kind: ConfigurationOwnership["kind"] };
   readonly agent: SeedAgent;
   readonly revision: SeedRevision & { readonly repositoryCredentials: Credentials };
 };
