@@ -14217,13 +14217,9 @@ export class OpenClawController {
         );
       }
       const presets = await state.presets.listPresets(namespace.id);
-      const seededPresets = presets.filter((preset) => this.isUnmodifiedDefaultPreset(preset));
-      if (seededPresets.length < presets.length) {
-        await remaining(
-          "Presets",
-          "preset",
-          presets.filter((preset) => !seededPresets.includes(preset)),
-        );
+      const blockingPresets = presets.filter((preset) => !this.isUnmodifiedDefaultPreset(preset));
+      if (blockingPresets.length > 0) {
+        await remaining("Presets", "preset", blockingPresets);
       }
       if (await state.namespaces.hasSecrets(namespace.id)) {
         await remaining("Secrets", "secret", await state.secrets.listSecrets(namespace.id));
@@ -14262,7 +14258,7 @@ export class OpenClawController {
       }
       // Installation defaults were seeded by Namespace creation, so deletion removes
       // them only while they still match the defaults; edited copies block above.
-      for (const preset of seededPresets) {
+      for (const preset of presets) {
         const removed = await this.deletePresetInState(state, principalId, namespace.id, preset.id);
         await state.audit.append({
           id: `aud_${crypto.randomUUID()}`,
