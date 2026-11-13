@@ -114,7 +114,7 @@
     "tests/conformance/repository-client-environment.test.mjs": 100,
     "tests/conformance/repository-credentials-contracts.test.ts": 800,
     "tests/conformance/repository-credentials-custody.test.ts": 100,
-    "tests/conformance/repository-credentials-fixture-ownership.test.mjs": 1500,
+    "tests/conformance/repository-credentials-fixture-ownership.test.ts": 1500,
     "tests/conformance/repository-credentials-github-token.test.mjs": 200,
     "tests/conformance/repository-credentials-github.test.mjs": 300,
     "tests/conformance/repository-credentials-lifecycle.test.ts": 100,
