@@ -9681,9 +9681,11 @@ export function registerProviderLifecycleTest(workflow) {
             harnessId: selectedHarness,
             observeReplacementNode: workflow === "upstream" && selectedScenario === "full",
             ...(workflow === "scratch" ? { withScratch: true, withOAuthToolSources: false } : {}),
-            // Keep periodic OAuth rotation out of static upstream outage checks.
+            // Keep periodic OAuth rotation out of static outage and withdrawal checks.
             // The refresh workflow exercises OAuth delivery and renewal.
-            ...(workflow === "upstream" ? { withOAuthToolSources: false } : {}),
+            ...(workflow === "upstream" || workflow === "withdrawal"
+              ? { withOAuthToolSources: false }
+              : {}),
             ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
             ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
           }),

@@ -15,8 +15,8 @@ keeps its dependent operations serial, including recovery before later assertion
 The upstream workflow replaces the Harness used by its positive model turns before
 redirecting DNS to the untrusted TLS receiver. It requires a rejected handshake
 at that receiver, with no completed handshake or HTTP request.
-The upstream workflow selects static model and tool credential sources and
-excludes unused OAuth sources with periodic refresh. Gateway/OAuth recovery owns
+The upstream and withdrawal workflows select static model and tool credential sources and
+exclude unused OAuth sources with periodic refresh. Gateway/OAuth recovery owns
 automatic token-renewal and recovery checks. The shared
 [scenario implementation](../../../tests/helpers/openshell-sandbox-workflows.mjs)
 registers only the workflow selected by each test entry point. The two first-Agent files provision and clean up
