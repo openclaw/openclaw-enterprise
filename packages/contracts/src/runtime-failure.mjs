@@ -60,6 +60,13 @@ export const WORKSPACE_SETUP_FAILED = "WORKSPACE_SETUP_FAILED";
 export const WORKSPACE_SETUP_REFUSED = "WORKSPACE_SETUP_REFUSED";
 
 /**
+ * The check of the evidence Kubernetes Compute builds itself, from Pod status, for a runtime
+ * container the kubelet keeps restarting after exits no deliberate restart explains (finding
+ * 3041). Its code is UNAVAILABLE, which fails the deployment with RUNTIME_STARTUP_FAILED.
+ */
+export const CRASH_LOOP_CHECK = "crash-loop";
+
+/**
  * The checks a runtime diagnostics read reports besides a held startup failure: the Gateway's
  * Slack channel checks, and Compute's own check for a runtime status it could not read. OCC's
  * own Sandbox check is not here: OCC adds it after it masks what Compute returned.

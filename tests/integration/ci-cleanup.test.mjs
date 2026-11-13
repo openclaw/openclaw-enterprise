@@ -1,90 +1,33 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
-import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { cleanupState, deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.ts";
 import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
-import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
+import {
+  registerInheritedOutputCases,
+  registerInheritedPipeCases,
+  registerCommandOwnershipCases,
+} from "./ci-cleanup-process-cases.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
 const resetK3dModelPath = join(repositoryRoot, "scripts/ci/reset-k3d-model.mjs");
+const processCaseInputs = { repositoryRoot, cleanupPath, fixture, writeState, runCleanup };
 
 async function fixture(t) {
   const root = await temporaryDirectory(t, "ci-cleanup-test-");
   await mkdir(join(root, "bin"), { recursive: true });
   return root;
-}
-
-// The process state letter of `pid` ("S", "Z", ...), or "" when no such process exists.
-// On Linux it reads /proc/<pid>/stat: forking ps from a loaded runner took over a second
-// and failed the observation (finding 2942), while the fixture process had already ended.
-// Other errors (an unreadable /proc, a ps failure) still fail the caller.
-function processState(pid) {
-  if (process.platform === "linux") {
-    let stat;
-    try {
-      stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    } catch (error) {
-      if (error.code === "ENOENT" || error.code === "ESRCH") {
-        return "";
-      }
-      throw error;
-    }
-    // Field 3, after the parenthesized command name, which may itself contain ") ".
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ", 1)[0];
-  }
-  const observation = spawnSync("ps", ["-p", String(pid), "-o", "stat="], {
-    encoding: "utf8",
-    timeout: 5000,
-  });
-  assert.equal(observation.error, undefined, `could not observe process ${pid}`);
-  const state = observation.stdout.trim();
-  if (observation.status === 1 && state === "" && observation.stderr.trim() === "") {
-    return "";
-  }
-  assert.equal(observation.status, 0, `process ${pid} observation failed`);
-  return state;
-}
-
-async function commandTreeFixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-cleanup-descendant-"));
-  await mkdir(join(root, "bin"));
-  const descendantPidPath = join(root, "descendant.pid");
-  const pidPaths = [descendantPidPath];
-  // Observe the exact process created by this wrapper before removing its
-  // files. A zombie has terminated but awaits its host parent's reap. Never
-  // signal a PID that may have been reused; an unexpected live PID fails.
-  async function waitForTermination(timeoutMs, pidPath = descendantPidPath) {
-    const pid = Number(await readFile(pidPath, "utf8"));
-    assert.ok(Number.isInteger(pid) && pid > 1);
-    const status = await waitFor(
-      `fixture descendant ${pid} to stop running`,
-      () => {
-        const state = processState(pid);
-        return state === "" || /^Z/.test(state) ? state : undefined;
-      },
-      { timeoutMs, intervalMs: 50 },
-    );
-    t.diagnostic(`fixture process ${pid}: ${status === "" ? "absent" : "terminated (zombie)"}`);
-  }
-  t.after(async () => {
-    for (const path of pidPaths) {
-      await waitForTermination(7000, path);
-    }
-    await rm(root, { recursive: true, force: true });
-  });
-  return { root, descendantPidPath, waitForTermination, trackPid: (path) => pidPaths.push(path) };
 }
 
 async function writeState(path, state) {
@@ -489,6 +432,12 @@ test("cleanup continues after a failed database drop and retains only the failed
   );
   const statePath = join(root, "state.json");
   const state = failedDropState(postgres.port);
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  await mkdir(directory);
+  await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
+  state.resources[0].directory = directory;
+  state.resources[0].directoryCreated = true;
+  state.resources[0].initSqlCreated = true;
   await writeState(statePath, state);
 
   const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
@@ -511,7 +460,85 @@ test("cleanup continues after a failed database drop and retains only the failed
     resources: state.resources.filter(({ id }) => id === "database-1"),
   });
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
 });
+
+for (const location of ["unrelated-name", "matching-name-under-other-parent"]) {
+  test(`cleanup rejects a PostgreSQL bootstrap directory at ${location}`, async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const state = failedDropState();
+    const directory =
+      location === "unrelated-name"
+        ? join(root, "unrelated-inputs")
+        : join(root, "other-parent", `${state.resources[0].name}-bootstrap`);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "sentinel"), "unrelated content");
+    state.resources = [
+      { ...state.resources[0], directory, directoryCreated: true, initSqlCreated: true },
+    ];
+    await writeState(statePath, state);
+    const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
+
+    // A matching basename does not grant ownership of another directory.
+    const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
+    assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "unrelated content");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /outside the owned PostgreSQL directory/);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  });
+}
+
+test("cleanup preserves unexpected PostgreSQL bootstrap contents and state", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  const state = failedDropState();
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  await mkdir(directory);
+  await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
+  await writeFile(join(directory, "sentinel"), "unrelated content");
+  state.resources = [
+    { ...state.resources[0], directory, directoryCreated: true, initSqlCreated: true },
+  ];
+  await writeState(statePath, state);
+  const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
+
+  // Even an owned directory cannot authorize deleting files preparation did not create.
+  const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
+  assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "unrelated content");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unexpected PostgreSQL bootstrap contents/);
+  assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "-- public bootstrap\n");
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+});
+
+for (const directoryCreated of [false, true]) {
+  test(`cleanup handles empty PostgreSQL staging with directory confirmation ${directoryCreated}`, async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const state = failedDropState();
+    const directory = join(root, `${state.resources[0].name}-bootstrap`);
+    // A crash can leave mkdir either unconfirmed or confirmed, before SQL creation.
+    await mkdir(directory);
+    state.resources = [
+      { ...state.resources[0], directory, directoryCreated, initSqlCreated: false },
+    ];
+    await writeState(statePath, state);
+
+    const result = await runAsync(statePath, { OCC_DOCKER_BIN: join(root, "must-not-run") });
+
+    if (directoryCreated) {
+      assert.equal(result.status, 0, result.stderr);
+      await assert.rejects(stat(directory), { code: "ENOENT" });
+      await assert.rejects(stat(statePath), { code: "ENOENT" });
+    } else {
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /unconfirmed PostgreSQL bootstrap ownership/);
+      assert.equal((await stat(directory)).isDirectory(), true);
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+    }
+  });
+}
 
 test("cleanup drops a selected database before waiting for the CI state lock", async (t) => {
   const root = await fixture(t);
@@ -561,71 +588,7 @@ await cleanupResourceIds(process.argv[1], ["database-1"]);`,
   });
 });
 
-for (const stream of ["stdout", "stderr"]) {
-  test(
-    `cleanup drains inherited ${stream} before reporting a command failure`,
-    {
-      skip: process.platform === "win32" && "POSIX executable fixture",
-    },
-    async (t) => {
-      const { root, descendantPidPath } = await commandTreeFixture(t);
-      // The wrapper exits before its descendant writes the diagnostic. Waiting
-      // only for exit loses the reason even though the pipes close within budget.
-      await writeCommand(
-        join(root, "bin"),
-        "docker",
-        `      const { spawn } = require("node:child_process");
-      const fs = require("node:fs");
-      const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => process.${stream}.write("late cleanup failure detail"), 100)`)}], {
-        stdio: ["ignore", "inherit", "inherit"],
-      });
-      fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));
-      process.exit(23);
-    `,
-        { interpreter: "node" },
-      );
-      const prefix = "openclaw-ci-local-output1234567890";
-      const statePath = join(root, "state.json");
-      const state = {
-        version: 1,
-        repositoryRoot,
-        prefix,
-        resources: [
-          {
-            id: "image-1",
-            kind: "image-tag",
-            owner: prefix,
-            name: "localhost/openclaw-ci-image-output:local",
-          },
-        ],
-      };
-      await writeState(statePath, state);
-      const result = runCleanup(statePath, { OCC_DOCKER_BIN: join(root, "bin/docker") });
-      assert.equal(result.status, 1, result.stderr);
-      assert.match(result.stderr, /failed: late cleanup failure detail/);
-      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
-    },
-  );
-}
-
-// A cleanup whose only resource is an owned image tag; its removal is a container engine
-// command under cleanup's command budget.
-function imageTagState() {
-  const prefix = "openclaw-ci-local-hungimage1234567890";
-  return {
-    version: 1,
-    repositoryRoot,
-    prefix,
-    resources: [
-      {
-        id: "image-1",
-        kind: "image-tag",
-        owner: prefix,
-        name: "localhost/openclaw-ci-image-hung:local",
-      },
-    ],
-  };
-}
+registerInheritedOutputCases(processCaseInputs);
 
 // Preparation and cleanup classify these failures (run-tests.mjs keeps `failure`); psql's
 // ON_ERROR_STOP ran statements in order on one session and stopped at the first error.
@@ -711,166 +674,7 @@ await cleanupResourceIds(process.argv[1], ["database-1"]);`,
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
 });
 
-// These are real command trees behind the supported container-binary override. The
-// wrapper and descendant do no container work; the descendant inherits both output
-// pipes and ignores TERM. Its finite lifetime also bounds a failed regression run.
-// Cleanup must leave the escaped descendant running, so the test releases it once it
-// has been observed alive instead of waiting out that lifetime in teardown. The hung
-// command is an image removal: database drops connect to the server directly (the case
-// above bounds those).
-for (const scenario of [
-  "exit-before-timeout",
-  "exit-on-term",
-  "ignore-term",
-  "close-on-term",
-  "escaped-group",
-]) {
-  test(
-    `cleanup bounds inherited pipes and retains a failed image removal: ${scenario}`,
-    {
-      skip: process.platform === "win32" && "POSIX process groups and executable fixtures",
-    },
-    async (t) => {
-      const { root, descendantPidPath, waitForTermination } = await commandTreeFixture(t);
-      const heartbeat = join(root, "heartbeat");
-      const release = join(root, "release");
-      const descendantPath = join(root, "descendant.cjs");
-      await writeFile(
-        descendantPath,
-        `
-      const fs = require("node:fs");
-      process.on("SIGTERM", () => {
-        if (${JSON.stringify(scenario)} === "close-on-term") {
-          fs.closeSync(1);
-          fs.closeSync(2);
-        }
-      });
-      let ticks = 0;
-      const timer = setInterval(() => {
-        if (fs.existsSync(${JSON.stringify(release)})) process.exit(0);
-        fs.writeFileSync(${JSON.stringify(heartbeat)}, String(++ticks));
-      }, 50);
-      fs.writeFileSync(${JSON.stringify(heartbeat)}, "0");
-      process.send("ready");
-      process.disconnect();
-      setTimeout(() => { clearInterval(timer); process.exit(0); }, 4000);
-    `,
-      );
-      await writeCommand(
-        join(root, "bin"),
-        "docker",
-        `      const { spawn } = require("node:child_process");
-      const fs = require("node:fs");
-      if (process.argv.slice(2, 4).join(" ") !== "image rm") throw new Error("expected image removal");
-      process.on("SIGTERM", () => {
-        if (["exit-on-term", "close-on-term"].includes(${JSON.stringify(scenario)})) process.exit(0);
-      });
-      const descendant = spawn(process.execPath, [${JSON.stringify(descendantPath)}], {
-        stdio: ["ignore", "inherit", "inherit", "ipc"],
-        detached: ${scenario === "escaped-group"},
-      });
-      fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));
-      descendant.once("message", () => {
-        if (["exit-before-timeout", "escaped-group"].includes(${JSON.stringify(scenario)})) process.exit(0);
-      });
-    `,
-        { interpreter: "node" },
-      );
-      const statePath = join(root, "state.json");
-      const state = imageTagState();
-      await writeState(statePath, state);
-
-      // Apply the short command budget only to the hung removal. A separate test checks
-      // that cleanup continues to Compose down after a deterministic failure.
-      // The deadline starts at fork, but the supervisor, wrapper and descendant are
-      // Node processes that handle TERM only once booted. Under CPU pressure a TERM
-      // during startup killed the descendant before its first heartbeat (finding
-      // 1652). The driver starts the removal's deadline once the heartbeat exists, when
-      // every process in the tree has its TERM handler, and records that start.
-      const budgetStartPath = join(root, "budget-start");
-      const drop = `import { existsSync, writeFileSync } from "node:fs";
-        import { cleanupResourceIds } from ${JSON.stringify(pathToFileURL(cleanupPath).href)};
-        const [statePath, readyPath, budgetStartPath] = process.argv.slice(1);
-        const budgetMs = Number(process.env.OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS);
-        const setTimer = globalThis.setTimeout;
-        let deadline;
-        let ready = false;
-        globalThis.setTimeout = (callback, ms, ...args) => {
-          if (deadline || ms !== budgetMs) return setTimer(callback, ms, ...args);
-          deadline = setTimer(() => ready && callback(...args), ms);
-          const poll = setInterval(check, 10);
-          poll.unref();
-          function check() {
-            if (ready || !existsSync(readyPath)) return;
-            ready = true;
-            clearInterval(poll);
-            writeFileSync(budgetStartPath, String(Date.now()));
-            deadline.refresh();
-          }
-          check();
-          return deadline;
-        };
-        process.on("exit", () => {
-          if (!ready) {
-            process.stderr.write(deadline ? "fixture never became ready\\n" : "no command deadline\\n");
-            process.exitCode = 2;
-          }
-        });
-        await cleanupResourceIds(statePath, ["image-1"]);`;
-      const started = Date.now();
-      const result = spawnSync(
-        process.execPath,
-        ["--input-type=module", "-e", drop, statePath, heartbeat, budgetStartPath],
-        {
-          cwd: repositoryRoot,
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            OCC_DOCKER_BIN: join(root, "bin/docker"),
-            OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS: "500",
-            OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "200",
-          },
-          timeout: 6000,
-          killSignal: "SIGKILL",
-        },
-      );
-      assert.equal(result.error, undefined, "cleanup waited for the inherited pipes");
-      assert.equal(result.status, 1, result.stderr);
-      const budgetStart = Number(await readFile(budgetStartPath, "utf8"));
-      const elapsed = Date.now() - budgetStart;
-      t.diagnostic(`command tree ready after ${budgetStart - started} ms`);
-      t.diagnostic(`cleanup command completed ${elapsed} ms after its deadline started`);
-      assert.ok(elapsed < 2500, "cleanup exceeded the command and pipe deadlines");
-      assert.match(
-        result.stderr,
-        /Cleanup failed for image-tag:localhost\/openclaw-ci-image-hung:local:.* image rm .* timed out after 500 ms/,
-      );
-      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
-      // PID state, not heartbeat timing, is the evidence: a heartbeat can stall under
-      // CPU pressure, and the descendant's own four-second expiry runs from its boot.
-      if (scenario === "escaped-group") {
-        // A separate group is outside the executor's signalling authority. Cleanup
-        // must end without killing that process.
-        const pid = Number(await readFile(descendantPidPath, "utf8"));
-        let state;
-        try {
-          state = processState(pid);
-        } finally {
-          // Released only after the observation, so a cleanup that waited for the
-          // descendant's pipes still waits out its four-second lifetime and fails the
-          // elapsed-time assertion above.
-          await writeFile(release, "");
-        }
-        assert.notEqual(state, "", "escaped descendant stopped during cleanup");
-        assert.doesNotMatch(state, /^Z/, "escaped descendant stopped during cleanup");
-      } else {
-        // Every owned kill path fires before the driver exits; the limit only covers
-        // observing the reaped or zombie process.
-        await waitForTermination(1000);
-      }
-    },
-  );
-}
+registerInheritedPipeCases(processCaseInputs);
 
 test("cleanup rejects a k3d cluster directory outside the owned cluster prefix", async (t) => {
   const root = await fixture(t);
@@ -932,274 +736,7 @@ test("cleanup rejects ownerless resources before invoking cleanup commands", asy
   assert.equal((await stat(clusterDirectory)).isDirectory(), true);
 });
 
-function waitForFile(path) {
-  return waitFor(
-    path,
-    () =>
-      readFile(path, "utf8").catch((error) => {
-        if (error.code !== "ENOENT") {
-          throw error;
-        }
-        return undefined;
-      }),
-    { timeoutMs: 5000, intervalMs: 25 },
-  );
-}
-
-for (const scenario of [
-  "cli-SIGTERM",
-  "cli-SIGINT",
-  "runner-SIGTERM",
-  "runner-SIGINT",
-  "runner-timeout",
-  "runner-file-exit",
-  "runner-cleanup-exit",
-  "fixture-exit",
-  "natural-exit",
-]) {
-  test(
-    `cleanup command ownership survives ${scenario}`,
-    {
-      skip: process.platform === "win32" && "POSIX command ownership",
-    },
-    async (t) => {
-      const { root, descendantPidPath, waitForTermination, trackPid } = await commandTreeFixture(t);
-      const heartbeat = join(root, "heartbeat");
-      const supervisorPidPath = join(root, "supervisor.pid");
-      const wrapperPidPath = join(root, "wrapper.pid");
-      trackPid(supervisorPidPath);
-      trackPid(wrapperPidPath);
-      const descendantPath = join(root, "descendant.cjs");
-      // The command exits before cancellation; its TERM/INT-ignoring descendant
-      // retains pipes unless testing natural completion. It self-expires even on
-      // the broken implementation; teardown observes its PID without signalling it.
-      await writeFile(
-        descendantPath,
-        `
-      const fs = require("node:fs");
-      process.on("SIGTERM", () => {});
-      process.on("SIGINT", () => {});
-      let ticks = 0;
-      const timer = setInterval(() => fs.writeFileSync(${JSON.stringify(heartbeat)}, String(++ticks)), 50);
-      fs.writeFileSync(${JSON.stringify(heartbeat)}, "0");
-      process.send("ready");
-      process.disconnect();
-      setTimeout(() => { clearInterval(timer); process.exit(0); }, 6000);
-    `,
-      );
-      await writeCommand(
-        join(root, "bin"),
-        "docker",
-        `      const fs = require("node:fs");
-      const { spawn } = require("node:child_process");
-      fs.writeFileSync(${JSON.stringify(supervisorPidPath)}, String(process.ppid));
-      fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, String(process.pid));
-      const descendant = spawn(process.execPath, [${JSON.stringify(descendantPath)}], {
-        stdio: ["ignore", ${JSON.stringify(scenario === "natural-exit" ? "ignore" : "inherit")}, ${JSON.stringify(scenario === "natural-exit" ? "ignore" : "inherit")}, "ipc"],
-      });
-      fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));
-      descendant.once("message", () => process.exit(0));
-    `,
-        { interpreter: "node" },
-      );
-      const prefix = "openclaw-ci-local-cancellation123456";
-      const statePath = join(root, "state.json");
-      const state = {
-        version: 1,
-        repositoryRoot,
-        prefix,
-        resources: [
-          {
-            id: "image-1",
-            kind: "image-tag",
-            owner: prefix,
-            name: "localhost/openclaw-ci-image-cancellation:local",
-          },
-        ],
-      };
-      await writeState(statePath, state);
-      const env = {
-        ...process.env,
-        OCC_DOCKER_BIN: join(root, "bin/docker"),
-        OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS: "15000",
-        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "100",
-        CI_RUNNER_DEADLINE_MS: "",
-        CI_RUNNER_TEST_TIMEOUT_MS: scenario === "runner-timeout" ? "1500" : "15000",
-        CI_RUNNER_TIMEOUT_GRACE_MS: "100",
-        CI_RUNNER_CLEANUP_TIMEOUT_MS: "1500",
-        GIT_CEILING_DIRECTORIES: tmpdir(),
-      };
-      delete env.NODE_TEST_CONTEXT;
-      delete env.NODE_ENV;
-      let args = [cleanupPath, "--state", statePath];
-      const resultsPath = join(root, "results.json");
-      if (scenario.startsWith("runner-") || scenario === "fixture-exit") {
-        await mkdir(join(root, "tests/integration"), { recursive: true });
-        const testPath = join(root, "tests/integration/cleanup.test.mjs");
-        const cleanupImport = JSON.stringify(pathToFileURL(cleanupPath).href);
-        const fixtureImport = JSON.stringify(
-          new URL("../helpers/postgres-worker-revision-fixture.mjs", import.meta.url).href,
-        );
-        const body =
-          scenario === "fixture-exit"
-            ? `import { createWorkerRevisionFixtures, disposeStep } from ${fixtureImport};
-           // A shorter exit grace than the fixture's 2 s: this file has one test to report.
-           const { cleanup } = createWorkerRevisionFixtures(import.meta.url, { exitGraceMs: 500 });
-           after(cleanup);
-           test("abandons cleanup", async () => {
-             await assert.rejects(disposeStep("cleanup command", 500, () => cleanupState(${JSON.stringify(statePath)})), /did not finish within 500 ms/);
-             console.log("fixture cleanup abandoned");
-           });`
-            : scenario === "runner-cleanup-exit"
-              ? 'test("finishes before cleanup", () => {});'
-              : `test("owns cleanup", async () => {
-             const operation = cleanupState(${JSON.stringify(statePath)});
-             ${
-               scenario === "runner-file-exit"
-                 ? `
-               while (!existsSync(${JSON.stringify(heartbeat)})) await delay(25);
-               process.exit(23);`
-                 : "await operation;"
-             }
-           });`;
-        await writeFile(
-          testPath,
-          `
-        import assert from "node:assert/strict";
-        import test, { after } from "node:test";
-        import { existsSync } from "node:fs";
-        import { setTimeout as delay } from "node:timers/promises";
-        import { cleanupState } from ${cleanupImport};
-        ${body}
-      `,
-        );
-        if (scenario === "fixture-exit") {
-          args = ["--test", testPath];
-        } else {
-          if (scenario === "runner-cleanup-exit") {
-            await mkdir(join(root, "scripts/ci"), { recursive: true });
-            await writeFile(
-              join(root, "scripts/ci/prepare.mjs"),
-              `
-              import { cleanupState } from ${cleanupImport};
-              export async function prepareFile() {
-                return { cleanup: () => cleanupState(${JSON.stringify(statePath)}) };
-              }
-            `,
-            );
-          }
-          await writeFile(
-            join(root, "manifest.json"),
-            JSON.stringify({
-              version: 1,
-              lanes: { cleanup: { files: [{ path: "tests/integration/cleanup.test.mjs" }] } },
-              groups: { ci: ["cleanup"] },
-            }),
-          );
-          args = [
-            join(repositoryRoot, "scripts/ci/run-tests.mjs"),
-            "run",
-            "cleanup",
-            "--root",
-            root,
-            "--manifest",
-            "manifest.json",
-            "--state",
-            join(root, "runner-state.json"),
-            "--results",
-            resultsPath,
-          ];
-        }
-      }
-      const owner = spawn(process.execPath, args, {
-        cwd: repositoryRoot,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let output = "";
-      owner.stdout.on("data", (chunk) => {
-        output += chunk;
-      });
-      owner.stderr.on("data", (chunk) => {
-        output += chunk;
-      });
-      const completion = new Promise((resolvePromise, reject) => {
-        owner.once("error", reject);
-        owner.once("close", (code, signal) => resolvePromise({ code, signal }));
-      });
-      // A finite fixture bounds failed assertions too. Join the exact owner before
-      // its temporary files are removed; no cleanup signal can mask the assertion.
-      t.after(async () => {
-        await completion;
-      });
-      await waitForFile(heartbeat);
-      const signal = scenario.endsWith("SIGTERM")
-        ? "SIGTERM"
-        : scenario.endsWith("SIGINT")
-          ? "SIGINT"
-          : undefined;
-      if (signal) {
-        owner.kill(signal);
-      }
-      const outcome = await completion;
-      if (signal) {
-        assert.deepEqual(outcome, { code: null, signal }, output);
-      } else if (scenario.startsWith("runner-")) {
-        assert.equal(outcome.code, 1, output);
-        const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-        assert.equal(summary.status, "failed");
-        if (scenario === "runner-timeout") {
-          assert.ok(summary.issues.some(({ code }) => code === "test-timeout"));
-        }
-        if (scenario === "runner-cleanup-exit") {
-          assert.ok(summary.issues.some(({ code }) => code === "cleanup-timeout"));
-        }
-      } else {
-        assert.equal(outcome.code, 0, output);
-        if (scenario === "fixture-exit") {
-          assert.match(output, /fixture cleanup abandoned/);
-        }
-      }
-      // Assert termination well before the six-second self-expiry. A heartbeat
-      // alone can stall under scheduling pressure; the PID must also be terminal.
-      await waitForTermination(1000);
-      await waitForTermination(1000, supervisorPidPath);
-      await waitForTermination(1000, wrapperPidPath);
-      const ticks = await readFile(heartbeat, "utf8");
-      await delay(200);
-      assert.equal(await readFile(heartbeat, "utf8"), ticks, "command outlived its owner");
-      if (scenario === "natural-exit") {
-        await assert.rejects(stat(statePath), { code: "ENOENT" });
-      } else {
-        assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
-      }
-    },
-  );
-}
-
-test("cleanup preserves command spawn diagnostics and failed resource state", async (t) => {
-  const root = await fixture(t);
-  const prefix = "openclaw-ci-local-spawn123456";
-  const statePath = join(root, "state.json");
-  const state = {
-    version: 1,
-    repositoryRoot,
-    prefix,
-    resources: [
-      {
-        id: "image-1",
-        kind: "image-tag",
-        owner: prefix,
-        name: "localhost/openclaw-ci-image-spawn:local",
-      },
-    ],
-  };
-  await writeState(statePath, state);
-  const result = runCleanup(statePath, { OCC_DOCKER_BIN: join(root, "missing-command") });
-  assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /spawn .*missing-command ENOENT/);
-  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
-});
+registerCommandOwnershipCases(processCaseInputs);
 
 // QA jobs share the runners' Docker image store, which commits a job's images when they
 // differ from its starting snapshot (finding 1345). This drives the shipped preparation
@@ -1388,4 +925,396 @@ test("QA image cleanup reports an unavailable final inventory without inventing 
     changed: null,
     missing: null,
   });
+});
+
+// Test ownership decisions against Docker's inspect contract. The credentialed
+// first-Agent shards separately prove creation and removal of real resources.
+test("first-Agent registry cleanup refuses foreign ownership and replaced containers", async (t) => {
+  for (const scenario of [
+    "owned",
+    "absent-container",
+    "foreign-image",
+    "foreign-container",
+    "replaced-container",
+    "foreign-owner",
+  ]) {
+    const root = await fixture(t);
+    const prefix = "openclaw-ci-local-first-images-test";
+    const name = "openclaw-ci-first-images-test";
+    const containerId = "b".repeat(64);
+    const controllerImage = `127.0.0.1:5000/${name}/controller@sha256:${"d".repeat(64)}`;
+    const log = join(root, "calls.jsonl");
+    const container = {
+      Id: scenario === "replaced-container" ? "c".repeat(64) : containerId,
+      Config: {
+        Labels: {
+          "openclaw.dev/ci-owner": scenario === "foreign-container" ? "another-owner" : prefix,
+        },
+      },
+    };
+    const docker = await writeCommand(
+      join(root, "bin"),
+      "docker",
+      `
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (${JSON.stringify(scenario)} === 'absent-container' && args[0] === 'container' && args[1] === 'inspect') { console.error('No such container'); process.exit(1); }
+if (args[1] === 'inspect') { console.log(JSON.stringify([${JSON.stringify(container)}])); }
+else if (args[1] !== 'rm') { process.exit(99); }
+`,
+      { interpreter: process.execPath },
+    );
+    const statePath = join(root, "state.json");
+    await writeState(statePath, {
+      version: 1,
+      repositoryRoot,
+      prefix,
+      resources: [
+        {
+          id: "first-images",
+          kind: "first-agent-image-registry",
+          owner: scenario === "foreign-owner" ? "another-owner" : prefix,
+          name,
+          port: 5000,
+          containerId,
+          controllerImage:
+            scenario === "foreign-image"
+              ? controllerImage.replace(name, "another-repository")
+              : controllerImage,
+        },
+      ],
+    });
+    const result = runCleanup(statePath, { OCC_DOCKER_BIN: docker });
+    const calls = await readFile(log, "utf8").catch((error) => {
+      if (error.code === "ENOENT") {
+        return "";
+      }
+      throw error;
+    });
+    if (["owned", "absent-container"].includes(scenario)) {
+      assert.equal(result.status, 0, result.stderr);
+      await assert.rejects(readFile(statePath), { code: "ENOENT" });
+      assert.ok(calls.includes(JSON.stringify(["image", "rm", controllerImage])));
+      assert.equal(
+        calls.includes(JSON.stringify(["container", "rm", "--force", "--volumes", containerId])),
+        scenario === "owned",
+      );
+    } else {
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(JSON.parse(await readFile(statePath, "utf8")).resources.length, 1);
+      assert.doesNotMatch(calls, /"rm"/);
+    }
+  }
+});
+
+// The engine changes ownership after the caller's custody observation. The
+// destructive owner must use that observation instead of resolving the name again.
+test("bound k3d cleanup refuses a replacement before deleting its resources", async () => {
+  const name = "openclaw-k8s-bound-abc123def456";
+  const identity = {
+    cluster: name,
+    serverID: "1".repeat(64),
+    networkID: "2".repeat(64),
+    volumes: [{ name: `k3d-${name}-images`, createdAt: "2026-11-11T00:00:00Z" }],
+  };
+  let replacementDeleted = false;
+  const run = async (command, args) => {
+    if (command === "k3d") {
+      if (args[1] === "delete") {
+        replacementDeleted = true;
+        return { stdout: "" };
+      }
+      return { stdout: JSON.stringify(replacementDeleted ? [] : [{ name }]) };
+    }
+    if (args[0] === "ps" && args.includes("--no-trunc")) {
+      return { stdout: "3".repeat(64) + "\n" };
+    }
+    return { stdout: "" };
+  };
+  await assert.rejects(
+    deleteOwnedK3dCluster({ name }, { execFile: run, identity }),
+    /bound k3d server identity/,
+  );
+  assert.equal(replacementDeleted, false, "replacement must survive the owner's refusal");
+});
+
+// This protocol fixture models Docker responses, not live Docker effects. The
+// real staged-cleanup cases cover the latter through the supported cleanup CLI.
+for (const scenario of ["owned", "replaced-network", "shared-volume", "late-volume-consumer"]) {
+  test(`bound k3d cleanup preserves destructive authority: ${scenario}`, async () => {
+    const name = "openclaw-k8s-bound-abc123def456";
+    const identity = {
+      cluster: name,
+      serverID: "1".repeat(64),
+      networkID: "2".repeat(64),
+      volumes: [{ name: `k3d-${name}-images`, createdAt: "2026-11-11T00:00:00Z" }],
+    };
+    const removed = [];
+    let serverPresent = true;
+    let networkPresent = true;
+    let volumePresent = true;
+    const run = async (command, args) => {
+      assert.equal(command, "docker", "bound cleanup must not resolve a cluster name through k3d");
+      const [kind, action] = args;
+      if (kind === "ps") {
+        const volume = args.some((arg) => arg.startsWith("volume="));
+        const shared =
+          scenario === "shared-volume" || (scenario === "late-volume-consumer" && !serverPresent);
+        return {
+          stdout: [serverPresent ? identity.serverID : "", volume && shared ? "3".repeat(64) : ""]
+            .filter(Boolean)
+            .join("\n"),
+        };
+      }
+      if (kind === "network" && action === "ls") {
+        // Real k3d networks have no k3d.cluster label; names are used only
+        // for the final absence observation, never as deletion authority.
+        return { stdout: networkPresent && !args.includes("--filter") ? `k3d-${name}` : "" };
+      }
+      if (kind === "network" && action === "inspect") {
+        return {
+          stdout: args.includes("{{.Name}}")
+            ? `k3d-${name}`
+            : JSON.stringify({ [identity.serverID]: {} }),
+        };
+      }
+      if (kind === "container" && action === "inspect") {
+        if (args.includes("{{json .NetworkSettings.Networks}}")) {
+          return {
+            stdout: JSON.stringify({
+              [`k3d-${name}`]: {
+                NetworkID: scenario === "replaced-network" ? "4".repeat(64) : identity.networkID,
+              },
+            }),
+          };
+        }
+        return { stdout: identity.volumes[0].name };
+      }
+      if (kind === "volume" && action === "inspect") {
+        return {
+          stdout: JSON.stringify({
+            Name: identity.volumes[0].name,
+            CreatedAt: identity.volumes[0].createdAt,
+            Driver: "local",
+            Scope: "local",
+          }),
+        };
+      }
+      if (kind === "rm") {
+        assert.deepEqual(args, ["rm", "-f", identity.serverID]);
+        serverPresent = false;
+        removed.push("server");
+        return { stdout: identity.serverID };
+      }
+      if (kind === "network" && action === "rm") {
+        assert.equal(args[2], identity.networkID);
+        networkPresent = false;
+        removed.push("network");
+        return { stdout: identity.networkID };
+      }
+      if (kind === "volume" && action === "rm") {
+        assert.deepEqual(args, ["volume", "rm", identity.volumes[0].name]);
+        volumePresent = false;
+        removed.push("volume");
+        return { stdout: identity.volumes[0].name };
+      }
+      if (kind === "volume" && action === "ls") {
+        return { stdout: volumePresent ? identity.volumes[0].name : "" };
+      }
+      throw new Error(`Unexpected Docker operation: ${args.join(" ")}`);
+    };
+    const operation = deleteOwnedK3dCluster({ name }, { execFile: run, identity });
+    if (scenario === "owned") {
+      await operation;
+      assert.deepEqual(removed, ["server", "network", "volume"]);
+    } else {
+      await assert.rejects(
+        operation,
+        scenario === "replaced-network" ? /network identity/ : /volume is shared/,
+      );
+      assert.deepEqual(removed, scenario === "late-volume-consumer" ? ["server", "network"] : []);
+      assert.equal(volumePresent, true, "shared resource must survive refusal");
+    }
+  });
+}
+
+test("bound cleanup refuses changed prepared state before destructive work", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  await writeFile(
+    statePath,
+    JSON.stringify({ version: 1, repositoryRoot, prefix: "openclaw-ci-bound", resources: [] }),
+  );
+  await assert.rejects(
+    cleanupState(statePath, {
+      expectedStateSha256: "0".repeat(64),
+      k3dIdentity: {
+        cluster: "openclaw-k8s-bound",
+        serverID: "1".repeat(64),
+        networkID: "2".repeat(64),
+        volumes: [],
+      },
+    }),
+    /cleanup state changed after preparation/,
+  );
+  assert.ok((await readFile(statePath, "utf8")).includes("openclaw-ci-bound"));
+});
+
+test("parent cleanup retains failed child journals and rejects paths outside its owner", async (t) => {
+  const root = await fixture(t);
+  const prefix = "openclaw-ci-parent-0123456789ab";
+  const name = `${prefix}-child-0123456789ab`;
+  const statePath = join(root, "state.json");
+  const childPath = join(root, `${name}.json`);
+  const id = "child-state-0123456789ab";
+  const child = {
+    version: 1,
+    repositoryRoot,
+    cleanupOwner: id,
+    statePath: childPath,
+    lane: "postgres-auth",
+    prefix: "openclaw-ci-child-0123456789ab",
+    resources: [{ id: "unknown", kind: "unsupported" }],
+  };
+  const parent = {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres",
+    prefix,
+    resources: [{ id, kind: "child-state", owner: prefix, name }],
+  };
+  await writeState(statePath, parent);
+  await writeState(childPath, child);
+  // A child's refused cleanup must keep the parent reference for recovery.
+  await assert.rejects(cleanupState(statePath), /Unknown cleanup resource kind/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+  assert.deepEqual(JSON.parse(await readFile(childPath, "utf8")), child);
+  await writeState(childPath, { ...child, resources: [] });
+  await cleanupState(statePath);
+  await assert.rejects(stat(statePath), { code: "ENOENT" });
+  await assert.rejects(stat(childPath), { code: "ENOENT" });
+
+  // A correctly named file is not custody: preserve a replaced or foreign journal.
+  for (const cleanupOwner of [undefined, "another-owner"]) {
+    const foreign = { ...child, cleanupOwner, resources: [] };
+    await writeState(statePath, parent);
+    await writeState(childPath, foreign);
+    const before = await readFile(childPath, "utf8");
+    await assert.rejects(cleanupState(statePath), /CI cleanup owner mismatch/);
+    assert.equal(await readFile(childPath, "utf8"), before);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+  }
+
+  // Neither another lane/path nor a symlink can inherit this child's authority.
+  for (const change of [{ lane: "postgres" }, { statePath: join(root, "other.json") }]) {
+    const foreign = { ...child, ...change, resources: [] };
+    await writeState(childPath, foreign);
+    const before = await readFile(childPath, "utf8");
+    await assert.rejects(cleanupState(statePath), /CI cleanup (lane|state path) mismatch/);
+    assert.equal(await readFile(childPath, "utf8"), before);
+  }
+  await rm(childPath);
+  const target = join(root, "linked.json");
+  await writeState(target, { ...child, resources: [] });
+  await symlink(target, childPath);
+  const before = await readFile(target, "utf8");
+  await assert.rejects(cleanupState(statePath), /ELOOP|symbolic link/);
+  assert.equal(await readFile(target, "utf8"), before);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+
+  // Even a dangling link is a refused journal, not an already-cleaned child.
+  await rm(target);
+  await assert.rejects(cleanupState(statePath), /ELOOP|symbolic link/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+
+  // A forged path cannot redirect the parent's canonical child cleanup.
+  parent.resources[0].name = `${prefix}-child-../../unrelated`;
+  await writeState(statePath, parent);
+  await assert.rejects(cleanupState(statePath), /unowned child state path/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+});
+
+test("real PostgreSQL test does not adopt state when preparation refuses an existing path", async (t) => {
+  const root = await fixture(t);
+  const prefix = "openclaw-ci-real-parent";
+  const parentPath = join(root, "parent.json");
+  const children = ["0123456789ab", "123456789abc"].map((suffix) => ({
+    id: `child-state-${suffix}`,
+    kind: "child-state",
+    owner: prefix,
+    name: `${prefix}-child-${suffix}`,
+  }));
+  const states = children.map((child) => ({
+    path: join(root, `${child.name}.json`),
+    owner: child.id,
+  }));
+  const foreign = JSON.stringify({
+    version: 1,
+    repositoryRoot,
+    prefix: "openclaw-ci-foreign",
+    lane: "postgres-auth",
+    cleanupOwner: "foreign-owner",
+    resources: [],
+  });
+  for (const state of states) {
+    await writeFile(state.path, foreign);
+  }
+  await writeState(parentPath, {
+    version: 1,
+    repositoryRoot,
+    statePath: parentPath,
+    lane: "postgres",
+    prefix,
+    resources: children,
+  });
+  const log = join(root, "docker.log");
+  const docker = await writeCommand(root, "docker", "exit 97", { log });
+  const env = {
+    ...process.env,
+    OCC_DOCKER_BIN: docker,
+    TMPDIR: root,
+    OCC_TEST_CI_POSTGRES_REAL: "1",
+    OPENCLAW_ENTERPRISE_CI_STATE: parentPath,
+  };
+  delete env.NODE_TEST_CONTEXT;
+  // The actual test refuses preexisting registered children before adopting them,
+  // and rejects foreign/duplicate environment paths before attempting preparation.
+  for (const selected of [
+    states,
+    [states[0], states[0]],
+    [...states, { path: join(root, "extra.json"), owner: "other" }],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
+      {
+        cwd: repositoryRoot,
+        env: { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(selected) },
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(
+      result.stdout + result.stderr,
+      /CI state already exists|Managed PostgreSQL states must match/,
+    );
+    for (const state of states) {
+      assert.equal(await readFile(state.path, "utf8"), foreign);
+    }
+  }
+  const missingParent = { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(states) };
+  delete missingParent.OPENCLAW_ENTERPRISE_CI_STATE;
+  const refused = spawnSync(
+    process.execPath,
+    ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
+    { cwd: repositoryRoot, env: missingParent, encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout + refused.stderr, /require their parent journal/);
+  for (const state of states) {
+    assert.equal(await readFile(state.path, "utf8"), foreign);
+  }
+  assert.deepEqual(await commandCalls(log), []);
 });

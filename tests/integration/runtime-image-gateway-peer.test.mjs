@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { stripTypeScriptTypes } from "node:module";
 import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { runWritableGatewayRestart } from "../fixtures/runtime-gateway-writable-restart.mjs";
+import { runWritableGatewayRestart } from "../fixtures/runtime-gateway-writable-restart.ts";
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN,
@@ -19,6 +20,80 @@ import {
   failureTail,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
+
+// Only emit known diagnostic fields and values; fixture output and runtime logs are untrusted.
+const diagnosticPhases = new Set([
+  "initial-ready",
+  "peer2-switch",
+  "replacement-request",
+  "third-request-entry",
+  "identity-check",
+  "credential-check",
+  "native-ready",
+  "wrapper-ready",
+  "peer3-switch",
+  "peer3-response",
+  "deadline",
+]);
+const startupPhases = new Set([
+  "codex-login",
+  "container-restart",
+  "egress-enrollment",
+  "gateway-respawn",
+  "model-probe",
+  "native-spawn",
+  "node-setup",
+  "peer-bridge-record",
+  "peer-status-changed",
+  "peer-status-restored",
+  "peer-verification-changed",
+  "plugin-install",
+  "runtime-assets",
+  "supervisor-spawn",
+  "workspace-baseline",
+  "workspace-node",
+  "workspace-node-changed",
+]);
+
+function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
+  for (const entry of jsonLogEntries(fixtureOutput)) {
+    if (entry?.event !== "stale-peer-diagnostic" || !diagnosticPhases.has(entry.phase)) {
+      continue;
+    }
+    const record = { phase: entry.phase };
+    if (Number.isFinite(entry.elapsedMs) && entry.elapsedMs >= 0) {
+      record.elapsedMs = entry.elapsedMs;
+    }
+    if (Number.isSafeInteger(entry.ordinal) && entry.ordinal >= 0) {
+      record.ordinal = entry.ordinal;
+    }
+    if (diagnosticPhases.has(entry.lastPhase) || entry.lastPhase === "initial") {
+      record.lastPhase = entry.lastPhase;
+    }
+    for (const field of ["singleProcess", "sameIdentity", "sameCredential", "ready"]) {
+      if (typeof entry[field] === "boolean") {
+        record[field] = entry[field];
+      }
+    }
+    t.diagnostic(`stale peer: ${JSON.stringify(record)}`);
+  }
+  for (const entry of jsonLogEntries(containerOutput)) {
+    if (entry?.event !== "runtime.startup_phase" || !startupPhases.has(entry.phase)) {
+      continue;
+    }
+    if (!["ok", "failed", "started"].includes(entry.outcome)) {
+      continue;
+    }
+    const record = { phase: entry.phase, outcome: entry.outcome };
+    if (Number.isFinite(entry.ms) && entry.ms >= 0) {
+      record.ms = entry.ms;
+    }
+    if (Number.isFinite(entry.sinceStartMs) && entry.sinceStartMs >= 0) {
+      record.sinceStartMs = entry.sinceStartMs;
+    }
+    t.diagnostic(`wrapper phase: ${JSON.stringify(record)}`);
+  }
+}
 
 // The dedicated Gateway's Harness peer scenarios on the real runtime image: an
 // in-place OpenClaw respawn for a changed peer, and an exit when OpenClaw crashes
@@ -101,7 +176,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
           waitUntilReady: false,
         });
         const fixture = await readFile(
-          new URL("../fixtures/runtime-gateway-peer-respawn.mjs", import.meta.url),
+          new URL("../fixtures/runtime-gateway-peer-respawn.ts", import.meta.url),
           "utf8",
         );
         let stdout;
@@ -118,7 +193,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
               "node",
               "--input-type=module",
               "-e",
-              fixture,
+              stripTypeScriptTypes(fixture),
             ],
             { timeout: 780_000 * imageSmokeTimeoutMultiplier },
           ));
@@ -234,7 +309,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
       waitUntilReady: false,
     });
     const fixture = await readFile(
-      new URL("../fixtures/runtime-gateway-peer-respawn.mjs", import.meta.url),
+      new URL("../fixtures/runtime-gateway-peer-respawn.ts", import.meta.url),
       "utf8",
     );
     let failure;
@@ -250,7 +325,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
           "node",
           "--input-type=module",
           "-e",
-          fixture,
+          stripTypeScriptTypes(fixture),
         ],
         { timeout: 300_000 * imageSmokeTimeoutMultiplier },
       );
@@ -258,10 +333,16 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
       failure = error;
     }
     assert.ok(failure, `the container should exit for ${scenario}`);
+    if (scenario === "stale-replacement") {
+      const logs = await runDocker(["logs", containerName]).catch((error) => error);
+      emitPeerDiagnostics(t, commandOutput(failure), commandOutput(logs));
+    }
     if (!(failure.stdout ?? "").includes(`"phase":"${expectedPhase}"`)) {
       const logs = await runDocker(["logs", containerName]).catch((error) => error);
       assert.fail(
-        `Expected ${expectedPhase} was not observed.\n${failureTail(commandOutput(failure), 4096)}\n${failureTail(commandOutput(logs), 8192)}`,
+        scenario === "stale-replacement"
+          ? `Expected ${expectedPhase} was not observed; see allowlisted diagnostics above.`
+          : `Expected ${expectedPhase} was not observed.\n${failureTail(commandOutput(failure), 4096)}\n${failureTail(commandOutput(logs), 8192)}`,
       );
     }
     // The fixture fails on its own only when the wrapper outlives its deadline;
@@ -280,11 +361,15 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
         `The Gateway container did not exit.\n${error.message}\n${failureTail(commandOutput(logs))}`,
       );
     });
-    assert.equal(exited.stdout.trim(), "1");
+    // A crashed OpenClaw ends the container with 1. Rejecting a changed peer is a deliberate
+    // restart: 75 (EX_TEMPFAIL), which Kubernetes Compute never counts toward a crash loop
+    // (finding 3041).
+    const exitCode = scenario === "stale-replacement" ? 75 : 1;
+    assert.equal(exited.stdout.trim(), String(exitCode));
     const inspect = await runDocker(["inspect", containerName, "--format", "{{json .State}}"]);
     const state = JSON.parse(inspect.stdout);
     assert.equal(state.Status, "exited");
-    assert.equal(state.ExitCode, 1);
+    assert.equal(state.ExitCode, exitCode);
     if (scenario === "stale-replacement") {
       const logs = await runDocker(["logs", containerName]);
       const entries = jsonLogEntries(`${logs.stdout}\n${logs.stderr}`);
@@ -296,6 +381,15 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
             entry.outcome === "failed",
         ),
         "the Gateway must reject the changed peer, not merely fail its status request",
+      );
+      assert.ok(
+        entries.some(
+          (entry) =>
+            entry.event === "runtime.startup_phase" &&
+            entry.phase === "container-restart" &&
+            entry.code === "HARNESS_PEER_CHANGED",
+        ),
+        "the Gateway must name its deliberate restart",
       );
     }
   }

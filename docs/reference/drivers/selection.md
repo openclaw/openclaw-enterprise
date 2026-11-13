@@ -59,7 +59,7 @@ Sandbox packages in trusted YAML in either mode.
 | `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
 | `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
 | `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
-| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                                                                          |
+| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                             |
 | `repo`               | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                          |
 
 Installed packages run unsandboxed with control-plane authority and
@@ -102,6 +102,10 @@ recipient before release.
 | v5        | Online authorization returns a decision by `replyBy`. Bundled OpenShell supports selected repository sets and single `git-write` grants with a verified mandatory pre-credentials binding. An authorized request may finish after withdrawal. |
 | v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
+
+Observed OpenShell Git routes keep the original launch acknowledgment during credential
+rotation. They reopen only after the model provider observation matches the new
+shared provider environment; stale or incomplete observations leave the route pending.
 
 A lost authorization reply records possible use. Do not retry the exchange.
 Stock OpenShell lacks v7 qualification. For isolation and release requirements,
@@ -286,11 +290,11 @@ function returning the current reconciliation operation's `AbortSignal`, or
 work when an operation loses its lease or is cancelled. Tenants and operator
 YAML cannot supply or replace the function.
 
-Production startup rejects bundled or installed Compute Drivers missing either
-`activateRevision` or `deactivateRevision`; development permits four-method
-Drivers. See the [ComputeDriver contract](compute.md) for
-core operations, staged activation, and preflight. Startup checks structure,
-not whether installed code actually preserves workload isolation.
+Every Compute Driver must implement `ensureNamespace`, `deleteNamespace`,
+`prepareRevision`, `stopRevision`, and `retireRevision`. Production also requires
+`activateRevision` and `deactivateRevision`; development permits their absence.
+See the [ComputeDriver contract](compute.md) for staged activation and preflight.
+Startup checks structure, not workload isolation.
 
 Provide any defaults explicitly in Installation YAML or document them in the
 Driver package. OCC does not merge package-provided defaults.
@@ -350,10 +354,12 @@ checkout, readable only by its owner. Local dependency installation can select
 it through `NPM_CONFIG_USERCONFIG`; image builds accept it as the ephemeral
 BuildKit secret `id=npmrc`, not as a build argument or copied source file.
 
-The Dockerfile runs `pnpm install --frozen-lockfile --prod --ignore-scripts` and
-mounts the npmrc only for that installation. `.dockerignore` excludes npmrc
-files. Registry tokens must not enter source, image layers, lockfiles, Helm
-values, startup YAML, logs, or runtime Pods.
+The controller image mounts npmrc only for `pnpm install --frozen-lockfile --prod --ignore-scripts`.
+`.dockerignore` excludes npmrc files. Keep registry tokens out of source, image
+layers, lockfiles, Helm values, startup YAML, logs, and runtime Pods.
+
+For image builds that also need to download pnpm from a mirror, follow the
+[registry mirror procedure](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 
 ## Loading, updates, and startup failures
 
@@ -382,3 +388,5 @@ The [Driver package loader](../../../apps/controller/src/composition/driver-pack
 resolves installed packages and checks their factories;
 [Installation composition](../../../apps/controller/src/composition/installation-config.ts)
 validates selections and constructs the runtime bundle.
+
+Namespace setup follows the [registration lifecycle](namespace-lifecycle.md).

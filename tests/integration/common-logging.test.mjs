@@ -30,7 +30,7 @@ import {
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { occLogLine, unloggedFields } from "../helpers/occ-log-line.ts";
@@ -586,24 +586,31 @@ test("worker emitter reports health at debug and failures at error", () => {
     namespaceId: "ns_test",
     outcome: "success",
   });
-  emit({
+  const deploymentCompletion = {
     event: "worker.completed",
     workId: "agent_revision:rev_test:reconcile",
     attempt: 1,
+    operation: "agent_revision.reconcile",
+    namespaceId: "ns_test",
+    agentId: "agt_test",
+    revisionId: "rev_test",
+    result: "success",
     outcome: "success",
-    durationMs: 120,
+    code: "REVISION_ACTIVATED",
+    durationMs: 125.25,
     deployPasses: 3,
     prepareMs: 450,
     readinessWaitMs: 2100,
     activationMs: 80,
-    elapsedMs: 2900,
-  });
+    elapsedMs: 2900.123456,
+  };
+  emit(deploymentCompletion);
   emit({
     event: "worker.error",
     code: "DEPENDENCY_UNAVAILABLE",
     method: "CreateSandbox",
-    grpcStatus: 3,
-    validationCategory: "UNKNOWN",
+    grpcStatus: 9,
+    validationCategory: "PVC_ADMISSION_LABELS",
   });
   // A graceful shutdown that aborts a pass is no failure (finding 1040).
   emit({
@@ -627,8 +634,8 @@ test("worker emitter reports health at debug and failures at error", () => {
   assert.equal(output.lines.at(-1).cause, "WorkerStopping");
   const failure = output.lines.find((line) => line.event === "worker.error");
   assert.equal(failure.method, "CreateSandbox");
-  assert.equal(failure.grpcStatus, 3);
-  assert.equal(failure.validationCategory, "UNKNOWN");
+  assert.equal(failure.grpcStatus, 9);
+  assert.equal(failure.validationCategory, "PVC_ADMISSION_LABELS");
   const completed = output.lines.find((line) => line.event === "worker.completed");
   assert.equal(completed.workId, "namespace:ns_test:reconcile:ready");
   assert.equal(completed.attempt, 1);
@@ -645,14 +652,38 @@ test("worker emitter reports health at debug and failures at error", () => {
       elapsedMs: deployed.elapsedMs,
     },
     {
-      durationMs: 120,
+      durationMs: 125.25,
       deployPasses: 3,
       prepareMs: 450,
       readinessWaitMs: 2100,
       activationMs: 80,
-      elapsedMs: 2900,
+      elapsedMs: 2900.123456,
     },
   );
+
+  // Work age advances on the monotonic clock and can retain sub-millisecond precision.
+  for (const elapsedMs of [2900, 0, Number.MAX_SAFE_INTEGER]) {
+    emit({ ...deploymentCompletion, elapsedMs });
+    assert.equal(output.lines.at(-1).elapsedMs, elapsedMs);
+    assert.equal(typeof output.lines.at(-1).elapsedMs, "number");
+  }
+  for (const elapsedMs of [-1, -0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    emit({ ...deploymentCompletion, elapsedMs });
+    assert.equal(
+      Object.hasOwn(output.lines.at(-1), "elapsedMs"),
+      false,
+      `elapsedMs: ${String(elapsedMs)}`,
+    );
+  }
+
+  // Allowing fractional work ages must not allow fractional attempt or deployment counts.
+  emit({ ...deploymentCompletion, attempt: 1.5, deployPasses: 3.5, stopYields: 1.5 });
+  const fractionalCounts = output.lines.at(-1);
+  assert.equal(Object.hasOwn(fractionalCounts, "attempt"), false);
+  assert.equal(Object.hasOwn(fractionalCounts, "deployPasses"), false);
+  assert.equal(Object.hasOwn(fractionalCounts, "stopYields"), false);
+  assert.equal(fractionalCounts.elapsedMs, 2900.123456);
+  assert.equal(fractionalCounts.durationMs, 125.25);
 });
 
 test("worker stop-yield counts survive local JSON logging on pending and completed passes", () => {

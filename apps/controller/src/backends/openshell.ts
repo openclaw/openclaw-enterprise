@@ -12,8 +12,11 @@ import {
   GrpcOpenShellGatewayClient,
   type OpenShellGatewayClient,
   type OpenShellGatewayClientOptions,
+  type OpenShellProviderProfile,
+  type OpenShellProviderResponse,
 } from "../drivers/sandbox/openshell-gateway-client.ts";
 
+const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const DEFAULT_GATEWAY_PORT = 8080;
 const OPENSHELL_MAX_WORKSPACE_NAME_LENGTH = 19;
 /** Provider names OCC creates; the paired Sandbox Driver accepts only this shape. */
@@ -221,11 +224,57 @@ export function openShellWorkspaceName(namespace: Readonly<Namespace>): string {
   return name;
 }
 
+export const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
+export const MANAGED_BY = "openclaw-enterprise";
+export const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
+
 /** One OpenShell provider per OCC credential source, named without exposing the source ID. */
 export function openShellProviderName(sourceId: string): string {
   return `oce-cs-${sha256Hex(sourceId, 24)}`;
 }
 
+export function openShellOwnedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
+  return (
+    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
+    provider.labels[SOURCE_ID_LABEL] === sourceId &&
+    provider.type === openShellProviderName(sourceId)
+  );
+}
+
 export function isOpenShellProviderName(value: string): boolean {
   return OCC_PROVIDER_NAME.test(value);
+}
+
+/** Reconcile an already-built profile using the caller's selected client and Workspace. */
+export async function ensureOpenShellProviderProfile(
+  client: OpenShellGatewayClient,
+  workspace: string,
+  base: Omit<OpenShellProviderProfile, "annotations">,
+  signal: AbortSignal,
+): Promise<void> {
+  const digest = sha256Hex(JSON.stringify(base));
+  const profile: OpenShellProviderProfile = {
+    ...base,
+    annotations: { [PROFILE_DIGEST_ANNOTATION]: digest },
+  };
+  const existing = await client.getProviderProfile(workspace, base.id, signal);
+  if (existing?.annotations[PROFILE_DIGEST_ANNOTATION] === digest) {
+    return;
+  }
+  try {
+    if (existing === undefined) {
+      await client.importProviderProfile(workspace, profile, signal);
+    } else {
+      await client.updateProviderProfile(workspace, profile, existing.resourceVersion, signal);
+    }
+  } catch (error) {
+    // A concurrent writer with the same configuration (another deployment, or a replay)
+    // already stored this exact profile.
+    const current = await client
+      .getProviderProfile(workspace, base.id, signal)
+      .catch(() => undefined);
+    if (current?.annotations[PROFILE_DIGEST_ANNOTATION] !== digest) {
+      throw error;
+    }
+  }
 }

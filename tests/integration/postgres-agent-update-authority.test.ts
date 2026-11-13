@@ -12,8 +12,8 @@ import {
   assertConsoleSignIn,
   assertProviderAttached,
   consoleOrigin as origin,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 
@@ -61,12 +61,13 @@ test(
   async (t) => {
     const apps: { close(): Promise<void> }[] = [];
     const fixture = await preparePostgresSignInInstallation(t, () => apps, {
+      oidc: true,
       email: "agent-update-admin@example.test",
       password: "agent-update-fixture-password",
       secrets: {
         "occ-auth/secret": "agent-update-fixture-cookie-secret",
-        "occ-github-login/client-id": "agent-update-fixture",
-        "occ-github-login/client-secret": "agent-update-fixture-client-secret",
+        "occ-oidc-login/client-id": "agent-update-fixture",
+        "occ-oidc-login/client-secret": "agent-update-fixture-client-secret",
       },
     });
     const { pool, state } = fixture;
@@ -78,7 +79,7 @@ test(
     });
     const admin = onboarded.admin as Account;
     const { first, second } = onboarded.accounts as Record<"first" | "second", Account>;
-    const app = await fixture.composeApp(githubUpgradeSettings(admin.id));
+    const app = await fixture.composeApp(oidcUpgradeSettings(admin.id));
     apps.push(app);
     const adminHeaders = await signedInHeaders(app, origin, admin);
     const principalIds: string[] = [];
@@ -87,8 +88,10 @@ test(
       [first, 8_102_001],
       [second, 8_102_002],
     ] as const) {
-      await assertProviderAttached(app, adminHeaders, account.id, "github", String(subject));
-      const { callback } = await githubSignIn(app, origin, subject);
+      await assertProviderAttached(app, adminHeaders, account.id, "oidc", String(subject));
+      const { callback } = await oidcSignIn(app, origin, fixture.oidc, {
+        subject: String(subject),
+      });
       memberHeaders.push({ cookie: await assertConsoleSignIn(app, callback, account.id), origin });
       principalIds.push(await accountPrincipalId(pool, account.id));
     }

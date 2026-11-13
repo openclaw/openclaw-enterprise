@@ -1,3 +1,9 @@
+{{- if not (has .Values.database.upgradeMigration (list "hook" "separate")) }}
+{{- fail "database.upgradeMigration must be hook or separate" }}
+{{- end }}
+{{- if and .Values.preprovisionedNamespace (eq .Values.database.upgradeMigration "separate") }}
+{{- fail "database.upgradeMigration separate requires the initialization Job" }}
+{{- end }}
 {{- if not .Values.preprovisionedNamespace }}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
 {{- $jobName := printf "%s-initialization" .Release.Name | trunc 63 | trimSuffix "-" -}}
@@ -15,6 +21,12 @@ metadata:
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "initialization") | nindent 4 }}
   annotations:
+    {{- if and .Release.IsInstall .Values.installation.attemptId }}
+    openclaw.dev/installation-attempt: {{ .Values.installation.attemptId | quote }}
+    {{- end }}
+    {{- if and .Release.IsUpgrade .Values.installation.upgradeAttemptId }}
+    openclaw.dev/upgrade-attempt: {{ .Values.installation.upgradeAttemptId | quote }}
+    {{- end }}
     helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: before-hook-creation
@@ -22,6 +34,10 @@ spec:
   backoffLimit: 0
   template:
     metadata:
+      {{- if and .Release.IsUpgrade .Values.installation.upgradeAttemptId }}
+      annotations:
+        openclaw.dev/upgrade-attempt: {{ .Values.installation.upgradeAttemptId | quote }}
+      {{- end }}
       labels:
         {{- include "openclaw.labels" (dict "root" . "component" "initialization") | nindent 8 }}
     spec:
@@ -141,6 +157,8 @@ spec:
             - scripts/migrate-production.mjs
             {{- if .Release.IsInstall }}
             - --expect-empty
+            {{- else if eq .Values.database.upgradeMigration "separate" }}
+            - --require-current
             {{- end }}
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}
@@ -171,6 +189,8 @@ spec:
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_SECRET" "secretName" .Values.auth.secretName "key" .Values.auth.secretKey) | nindent 12 }}
             - name: OCC_AUTH_BASE_URL
               value: {{ .Values.auth.baseUrl | quote }}
+            - name: OCC_AGENT_NATIVE_ADMIN_DOMAIN
+              value: {{ .Values.agentNativeAdmin.domain | quote }}
             - name: OCC_BOOTSTRAP_ADMIN_EMAIL
               value: {{ .Values.bootstrap.adminEmail | quote }}
             - name: OCC_BOOTSTRAP_PASSWORD_FILE

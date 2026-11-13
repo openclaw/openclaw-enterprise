@@ -1,16 +1,26 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
-import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
+import { withoutShellStartup } from "./environment.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const serviceKey = "sk-test-secret-value";
@@ -53,7 +63,7 @@ async function writeExecutable(path, body) {
 
 // The external commands dev-up runs (the container engine, yq, uname, the project's occ,
 // and k3d, kubectl and helm for Kubernetes Compute) are bash scripts answered by the
-// fixture's command server (fixture-command-server.mjs), so their logic below runs in
+// fixture's command server (fixture-command-server.ts), so their logic below runs in
 // the test process: a command costs a bash start instead of a node start. The real CLI,
 // scripts/dev-up and scripts/dev-down still start each one as a process. A command
 // sends the environment variables below.
@@ -76,9 +86,16 @@ const forwardedEnv = [
   "DOCKER_HOST",
   "OCC_CONTAINER_ENGINE_SOCKET",
   "OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR",
+  "OCC_DEVELOPMENT_BROWSER_ORIGIN",
+  "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN",
+  "OCC_DEVELOPMENT_BROWSER_PORT",
+  "OCC_DEVELOPMENT_BROWSER_TLS_CERT",
+  "OCC_DEVELOPMENT_BROWSER_TLS_KEY",
+  "OCC_AGENT_NATIVE_ADMIN_ENABLED",
   "OCC_DOCKER_AGENT_IMAGE",
   "OCC_DOCKER_GATEWAY_IMAGE",
   "OCC_DOCKER_RUNTIME_IMAGE",
+  "OPENCLAW_DEV_PORT",
   "PODMAN_COMPOSE_PROVIDER",
   "SAFETY_LOG",
 ];
@@ -168,7 +185,8 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     );
   const composeCommandIndex = () =>
     args.findIndex(
-      (arg, index) => index > 0 && ["config", "build", "up", "ps", "cp", "exec"].includes(arg),
+      (arg, index) =>
+        index > 0 && ["config", "build", "up", "ps", "cp", "exec", "down"].includes(arg),
     );
   // The real Compose renders the configuration, as this command's own child did: the
   // command runs it with its own environment and these overrides.
@@ -301,7 +319,7 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   if (command === "build") {
     exit(0);
   }
-  if (command === "up") {
+  if (command === "up" || command === "down") {
     exit(0);
   }
   if (command === "ps") {
@@ -536,6 +554,19 @@ function lifecycleCommand(fake, invocation, io) {
       exit(1);
     } else if (
       args[0] === "ps" &&
+      args[1] === "--format" &&
+      scenario === "docker-stack-holds-api-port"
+    ) {
+      // The default Docker-compatible stack's controller still publishes the API port.
+      output(
+        [
+          "openclaw-enterprise-development-controller-1",
+          `127.0.0.1:${env.OPENCLAW_DEV_PORT}->3000/tcp`,
+          "com.docker.compose.project=openclaw-enterprise-development,com.docker.compose.service=controller",
+        ].join("\t"),
+      );
+    } else if (
+      args[0] === "ps" &&
       args.some((arg) => arg.startsWith("label=com.docker.compose.service="))
     ) {
       if (state.compose) {
@@ -546,6 +577,11 @@ function lifecycleCommand(fake, invocation, io) {
             .at(-1) + "-container-id",
         );
       }
+    } else if (args[0] === "run" && args.includes("-p")) {
+      output("[1000,1000]");
+    } else if (args[0] === "run" && args.includes("CHOWN")) {
+      // This command fixture covers launcher lifecycle, not filesystem custody.
+      // The real Compose QA workflow exercises the non-root TLS reader.
     } else if (
       args[0] === "ps" ||
       (["volume", "network"].includes(args[0]) && args[1] === "ls") ||
@@ -560,6 +596,8 @@ function lifecycleCommand(fake, invocation, io) {
         output("exited");
       } else if (args.includes("{{.State.ExitCode}}")) {
         output("0");
+      } else if (args.at(-1) === "browser-proxy-container-id") {
+        output(JSON.stringify({ image: "sha256:" + "a".repeat(64), user: "node" }));
       } else {
         fail("unexpected inspect: " + args.join(" "));
       }
@@ -587,15 +625,15 @@ function lifecycleCommand(fake, invocation, io) {
             ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
             [
               "openclaw-development/openshell-gateway:occ-dev-owned",
-              "f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+              "d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
             ],
             [
               "openclaw-development/openshell-sandbox:occ-dev-owned",
-              "1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+              "f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
             ],
             [
               "openclaw-development/openshell-supervisor:occ-dev-owned",
-              "ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+              "deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
             ],
           ]
             .map(
@@ -637,6 +675,15 @@ function lifecycleCommand(fake, invocation, io) {
     if (args[0] === "cluster" && args[1] === "list") {
       output(JSON.stringify(state.clusters.map((name) => ({ name }))));
     } else if (args[0] === "cluster" && args[1] === "create") {
+      if (scenario === "cluster-create-rolled-back") {
+        // k3d's own rollback after a port clash: nothing of the cluster remains.
+        return fail(
+          "ERRO[0009] Failed Cluster Start: Failed to start server k3d-" +
+            args[2] +
+            "-serverlb: Bind for 127.0.0.1:3000 failed: port is already allocated\n" +
+            "FATA[0009] Cluster creation FAILED, all changes have been rolled back!",
+        );
+      }
       state.clusters.push(args[2]);
       save();
       if (scenario === "cluster-create-failed") {
@@ -819,7 +866,7 @@ async function writeFakeCommand(fake, path, command) {
 }
 
 async function createFixture(t, options = {}) {
-  const directory = await temporaryDirectory(t, "openclaw-dev-up-");
+  const directory = await realpath(await temporaryDirectory(t, "openclaw-dev-up-"));
 
   const fixtureRepository = join(directory, "repository");
   await mkdir(join(fixtureRepository, "scripts"), { recursive: true });
@@ -839,9 +886,9 @@ async function createFixture(t, options = {}) {
     "go.mod",
     "compose.yaml",
     "compose.podman.yaml",
+    "compose.native-admin.yaml",
     "compose.postgres.yaml",
     "compose.kubernetes.yaml",
-    "compose.native-admin.yaml",
   ]) {
     await symlink(join(repository, source), join(fixtureRepository, source));
   }
@@ -915,8 +962,9 @@ exit 86
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("OCC_DEVELOPMENT_")),
   );
-  const env = {
+  const env = withoutShellStartup({
     ...inherited,
+    TMPDIR: directory,
     PATH: engine === "podman" ? bin : `${bin}${delimiter}${process.env.PATH ?? ""}`,
     OPENAI_API_KEY: "",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
@@ -936,12 +984,7 @@ exit 86
     DEV_UP_REAL_PATH: process.env.PATH ?? "",
     DEV_UP_REPOSITORY: repository,
     DEV_UP_FIXTURE_REPOSITORY: fixtureRepository,
-  };
-
-  // Shell startup configuration is outside this disposable command environment.
-  delete env.BASH_ENV;
-  delete env.ENV;
-  delete env.SHELLOPTS;
+  });
 
   const fixture = {
     directory,

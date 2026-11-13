@@ -4,8 +4,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
+import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
+import { createObservabilityCollector } from "./production-observability-collector.ts";
 import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import {
+  createHarnessConfiguration,
+  withStubbedProviderEndpoint,
+} from "./harness-configuration.mjs";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
@@ -24,7 +29,10 @@ export const observabilitySelection = {
 
 // Own only test resources. API calls, lifecycle, telemetry and policy enforcement
 // all use the installed production implementations, with a credential-free runtime fixture.
-export async function installObservabilityControlPlane(t, { modelTurns = false } = {}) {
+export async function installObservabilityControlPlane(
+  t,
+  { modelTurns = false, nativeRepository = false } = {},
+) {
   if (modelTurns) {
     for (const name of ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]) {
       assert.ok(process.env[name], `${name} is required for explicit model-turn validation`);
@@ -37,6 +45,7 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       ["controller", "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"],
       ["postgres", "OCC_TEST_PRODUCTION_POSTGRES_IMAGE"],
       ["node", "OCC_TEST_PRODUCTION_NODE_IMAGE"],
+      ...(nativeRepository ? [["credentials", "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE"]] : []),
       ...(modelTurns
         ? [
             ["runtime", "OCC_TEST_KUBERNETES_GATEWAY_IMAGE"],
@@ -78,7 +87,13 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       ...options,
       allowFailure: true,
     });
-    assert.equal(result.code, 0, redact(`${command}: ${result.stderr}`));
+    // Validation errors can quote the submitted Secret, including escaped PEM
+    // or base64 data. Never expose diagnostics from a command with private stdin.
+    assert.equal(
+      result.code,
+      0,
+      options.input ? `${command} failed with input` : redact(`${command}: ${result.stderr}`),
+    );
     return result.stdout;
   };
   const kubectl = (...args) => run("kubectl", kubectlArguments(selection, args));
@@ -156,6 +171,27 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       : {}),
     cluster: `observability-${suffix}`,
   });
+  if (!modelTurns) {
+    // The Installation's resolved provider and the fixture Agent's native configuration must agree.
+    configuration.drivers.compute.configuration.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: "https://model.stub.invalid/v1",
+    };
+  }
+  const repositoryCredentials = nativeRepository
+    ? await prepareObservabilityNativeRepository({
+        configuration,
+        system,
+        release,
+        directory,
+        suffix,
+        images,
+        secrets,
+        run,
+        apply,
+        metadata,
+      })
+    : undefined;
   await installProductionHelmControlPlane({
     selection,
     images,
@@ -165,7 +201,9 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
     suffix,
     configuration,
     authBaseURL: "https://observability.example.invalid",
+    agentNativeAdminDomain: "agents.example.invalid",
     installationName: "Observability acceptance",
+    repositoryCredentials,
     databaseName: `openclaw_k8s_observability_${suffix}`,
     apiClients: [{ namespace: system, podLabels: { app: "operator" } }],
     run,
@@ -356,8 +394,7 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
     scraperNamespaceLabels: { "kubernetes.io/metadata.name": monitoring },
     scraperPodLabels: { app: "scraper" },
   };
-  async function createAgent(executionMode = "embedded") {
-    const namespace = await api("POST", "/namespaces", { name: `Observability ${suffix}` }, 201);
+  async function readyNamespace(namespace) {
     const placements = [];
     // Namespace readiness now requires scoped grants in both managed targets,
     // even when this scenario uses an embedded runtime in the data namespace.
@@ -391,12 +428,16 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
         });
       }
     }
-    const [tenant, gatewayRuntimeNamespace] = placements;
-    const gatewayPlacement = executionMode === "dedicated" ? gatewayRuntimeNamespace : tenant;
     await waitFor(
       "Namespace ready",
       async () => (await api("GET", `/namespaces/${namespace.id}`)).status === "ready",
     );
+    return placements;
+  }
+  async function createAgent(executionMode = "embedded") {
+    const namespace = await api("POST", "/namespaces", { name: `Observability ${suffix}` }, 201);
+    const [tenant, gatewayRuntimeNamespace] = await readyNamespace(namespace);
+    const gatewayPlacement = executionMode === "dedicated" ? gatewayRuntimeNamespace : tenant;
     const sentinel = modelTurns ? process.env.OPENAI_API_KEY : `fixture-only-${secret()}`;
     secrets.push(sentinel);
     const credential = await api(
@@ -405,10 +446,12 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       { name: "Fixture credential", value: sentinel },
       201,
     );
-    const native = createHarnessConfiguration(
+    const configuration = createHarnessConfiguration(
       executionMode === "dedicated" ? "codex" : "openclaw",
       modelTurns ? process.env.OCC_TEST_OPENAI_MODEL.replace(/^(?:openai|codex)\//, "") : "gpt-4.1",
     );
+    // The fixture answers model probes locally; its synthetic key must never target OpenAI.
+    const native = modelTurns ? configuration : withStubbedProviderEndpoint(configuration);
     native.agents.defaults.skipBootstrap = true;
     const config = await api(
       "POST",
@@ -480,147 +523,6 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
   }
   const createSecret = (name, stringData, namespace = system) =>
     apply({ apiVersion: "v1", kind: "Secret", metadata: metadata(name, namespace), stringData });
-  async function configureCollector(exporter, endpoint, scraperSelectors = selectors) {
-    const data = {};
-    for (const name of ["collector.yaml", "kubernetes.yaml", "exporter.yaml"]) {
-      data[name] = await readFile(`deploy/logging/${name}`, "utf8");
-    }
-    await createSecret("occ-otel-collector-config", data);
-    await createSecret("occ-otel-collector-exporter", {
-      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: endpoint,
-    });
-    await upgrade({
-      metrics: { ...scraperSelectors },
-      logging: {
-        collector: {
-          enabled: true,
-          image: images.collector,
-          exporter,
-          metrics: { enabled: true, ...scraperSelectors },
-        },
-      },
-    });
-    await kubectl(
-      "-n",
-      system,
-      "rollout",
-      "status",
-      "daemonset/openclaw-enterprise-collector",
-      "--timeout=180s",
-    );
-  }
-  async function installLogReceiver() {
-    // Use the already-imported Collector as a real OTLP receiver. Its file
-    // exporter exposes decoded records without installing a storage/query stack.
-    await apply({
-      apiVersion: "v1",
-      kind: "ConfigMap",
-      metadata: metadata("otlp-receiver", monitoring),
-      data: {
-        "receiver.yaml": `receivers:
-  otlp:
-    protocols:
-      http:
-        endpoint: 0.0.0.0:4318
-exporters:
-  file:
-    path: /records/logs.jsonl
-service:
-  telemetry:
-    logs:
-      level: error
-  pipelines:
-    logs:
-      receivers: [otlp]
-      exporters: [file]
-`,
-      },
-    });
-    await apply({
-      apiVersion: "v1",
-      kind: "Pod",
-      metadata: metadata("otlp-receiver", monitoring, { app: "otlp-receiver" }),
-      spec: {
-        automountServiceAccountToken: false,
-        terminationGracePeriodSeconds: 1,
-        securityContext: {
-          runAsNonRoot: true,
-          runAsUser: 1000,
-          runAsGroup: 1000,
-          fsGroup: 1000,
-          seccompProfile: { type: "RuntimeDefault" },
-        },
-        containers: [
-          {
-            name: "reader",
-            image: images.node,
-            securityContext,
-            command: ["node", "-e", "setInterval(()=>{},1000)"],
-            resources: {
-              requests: { cpu: "10m", memory: "32Mi" },
-              limits: { cpu: "500m", memory: "128Mi" },
-            },
-            volumeMounts: [{ name: "records", mountPath: "/records", readOnly: true }],
-          },
-          {
-            name: "receiver",
-            image: images.collector,
-            securityContext,
-            args: ["--config=/config/receiver.yaml"],
-            readinessProbe: { tcpSocket: { port: 4318 }, periodSeconds: 1 },
-            resources: {
-              requests: { cpu: "50m", memory: "64Mi" },
-              limits: { cpu: "500m", memory: "256Mi" },
-            },
-            volumeMounts: [
-              { name: "config", mountPath: "/config", readOnly: true },
-              { name: "records", mountPath: "/records" },
-            ],
-          },
-        ],
-        volumes: [
-          { name: "config", configMap: { name: "otlp-receiver" } },
-          { name: "records", emptyDir: { sizeLimit: "32Mi" } },
-        ],
-      },
-    });
-    await apply({
-      apiVersion: "v1",
-      kind: "Service",
-      metadata: metadata("otlp-receiver", monitoring),
-      spec: { selector: { app: "otlp-receiver" }, ports: [{ port: 4318, targetPort: 4318 }] },
-    });
-    await kubectl(
-      "-n",
-      monitoring,
-      "wait",
-      "--for=condition=Ready",
-      "pod/otlp-receiver",
-      "--timeout=180s",
-    );
-    await configureCollector(
-      {
-        cidr: "",
-        namespaceLabels: { "kubernetes.io/metadata.name": monitoring },
-        podLabels: { app: "otlp-receiver" },
-        port: 4318,
-      },
-      `http://otlp-receiver.${monitoring}.svc:4318/v1/logs`,
-    );
-    return async () =>
-      JSON.parse(
-        await node(
-          "otlp-receiver",
-          monitoring,
-          `
-      import fs from 'node:fs';
-      const text=fs.existsSync('/records/logs.jsonl')?fs.readFileSync('/records/logs.jsonl','utf8'):'';
-      // Only complete lines are records; a concurrent exporter write may be partial.
-      console.log(JSON.stringify(text.split('\\n').slice(0,-1).filter(Boolean).map(JSON.parse)));
-    `,
-        ),
-      );
-  }
   return {
     selection,
     images,
@@ -649,9 +551,21 @@ service:
     probePod,
     selectors,
     createAgent,
+    readyNamespace,
     createSecret,
-    configureCollector,
-    installLogReceiver,
+    ...createObservabilityCollector({
+      images,
+      system,
+      monitoring,
+      selectors,
+      securityContext,
+      createSecret,
+      upgrade,
+      kubectl,
+      apply,
+      metadata,
+      node,
+    }),
     record,
   };
 }

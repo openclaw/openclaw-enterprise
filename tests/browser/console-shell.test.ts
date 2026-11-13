@@ -12,7 +12,7 @@ import {
   login,
   newPage,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();

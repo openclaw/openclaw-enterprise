@@ -36,7 +36,8 @@ const CHANNEL_SECRET_INPUTS: Readonly<Record<string, SecretInputFields>> = {
 
 /**
  * The `channels.<provider>` entries a Configuration enables, in Configuration order: every key
- * but the shared settings, unless its `enabled` is `false`.
+ * but the shared settings, unless its `enabled` is `false`. gateway-security-defaults.ts repeats
+ * this rule for the `session.dmScope` default, since it cannot import it.
  */
 export function enabledChannelEntries(
   configuration: Readonly<OpenClawConfigurationDocument>,

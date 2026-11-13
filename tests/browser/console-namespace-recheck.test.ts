@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { createRequire } from "node:module";
 import type { Locator, Page } from "playwright";
 
 import {
@@ -10,21 +9,22 @@ import {
 
 import {
   fileBrowser,
-  fulfillPatchedJson,
   login,
   newPage,
-  settledFetches,
   settledView,
-  trackSettledFetches,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
-import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
-import { refocus } from "./console-refocus-helpers.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { refocus } from "./console-refocus-helpers.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Create Agent open on a provisioning Namespace rechecks it every 10 s while a Dedicated plan
 // waits for it (finding 2012). These cases pin when that recheck runs and stops: a failed read
@@ -42,13 +42,6 @@ const REFUSES = "This Namespace cannot hold new Agents, so Create Agent is unava
 const ADOPTED_WAITS = "Create Agent is unavailable until this Namespace is ready.";
 const MISSING = `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`;
 const MISSING_LINE = "Create Agent is unavailable until you choose another Namespace.";
-
-const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
-const {
-  Check,
-}: {
-  Check(schema: typeof NamespaceListResponse, value: unknown): value is NamespaceListResponse;
-} = require("typebox/value");
 
 const browser = fileBrowser();
 
@@ -99,11 +92,7 @@ async function routeNamespace(page: Page, namespaceId: NamespaceWire["id"]) {
         await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
         return;
       }
-      await fulfillPatchedJson(route, (body: unknown) => {
-        assert.ok(
-          Check(NamespaceListResponse, body),
-          "expected a Namespace list from the controller",
-        );
+      await fulfillPatchedJson(route, NamespaceListResponse, (body) => {
         body.data = body.data.filter((item) => !(state.absent && item.id === namespaceId));
         body.data = body.data.map((item) =>
           item.id === namespaceId && state.status
@@ -146,25 +135,10 @@ async function openGatedForm(
     };
   });
   const namespaces = await routeNamespace(page, namespace.id);
-  await routeInstallationProvisioning(page, fixture);
   if (keepable) {
-    // A return reuses the form only if every read it made succeeded and reads the same again:
-    // this fixture has no GitHub App, and the shared route stamps each answer anew.
+    // This fixture has no GitHub App. The form can only be kept if its repository options read succeeds.
     await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
       route.fulfill({ json: { data: [], meta: { requestId: "req_repository_choices" } } }),
-    );
-    await page.route(`${fixture.origin}/installation`, (route) =>
-      route.fulfill({
-        json: {
-          data: {
-            id: "ins_00000000-0000-4000-8000-000000000001",
-            name: "Console test installation",
-            createdAt: "2026-10-19T12:00:00.000Z",
-            capabilities: { agentProvisioning: { executionModes: ["dedicated"] } },
-          },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-        },
-      }),
     );
   }
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -233,7 +207,7 @@ async function setHidden(page: Page, hidden: boolean) {
 // One console for every case; each case's page reads the Namespace as provisioning until it
 // changes the status.
 test("the open Create Agent form's Namespace recheck", async (t) => {
-  const team = await createReadyConsoleNamespace(t, "team");
+  const team = await createReadyConsoleNamespace(t, "team", { agentProvisioning: true });
 
   await t.test("a failed read keeps the recheck going at its 10 s cadence", async (t) => {
     const { view, create, name, namespaces, poll } = await openGatedForm(t, team);

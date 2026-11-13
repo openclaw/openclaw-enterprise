@@ -1,17 +1,16 @@
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { domainToASCII } from "node:url";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { APIError, betterAuth, type Auth, type BetterAuthOptions } from "better-auth";
 import { splitSetCookieHeader } from "better-auth/cookies";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { apiKey } from "@better-auth/api-key";
 import type { ApiKey } from "@better-auth/api-key/types";
-import { parse as parseDomain } from "tldts";
-import type { ServicePrincipal } from "@openclaw-enterprise/contracts";
+import type { AuditEvent, ServicePrincipal } from "@openclaw-enterprise/contracts";
 import {
   NativeIAMDriver,
   createAuthPrincipalSeed,
+  validateAuthAccountPrincipalSeed,
   type AuthPrincipalSeed,
   type AuthPrincipalSeedOptions,
 } from "@openclaw-enterprise/iam";
@@ -34,18 +33,17 @@ import {
 import type { IAMDriver } from "@openclaw-enterprise/contracts";
 import {
   createHumanLogin,
-  githubLoginConfiguration,
-  githubProviderId,
   googleProviderId,
-  type GitHubLoginConfiguration,
   CALLBACK_DENIALS,
   PASSWORD_DENIAL_AUDIT_UNAVAILABLE,
-} from "./github.ts";
-import type { ExternalProviderName } from "./github.ts";
+} from "./human-login.ts";
+import type { ExternalProviderName } from "./human-login.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
+import { resolveOidcEnrollmentPolicy } from "./oidc-enrollment.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { sessionAuthority } from "./session-authority.ts";
+import { createServiceKeyVerification } from "./service-key-verification.ts";
 import { passwordSignOut } from "./password-sign-out.ts";
 import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
@@ -66,7 +64,6 @@ import {
   type KnownDeviceAccountState,
 } from "./known-device.ts";
 
-export { githubLoginConfiguration, type GitHubLoginConfiguration } from "./github.ts";
 export {
   googleLoginConfiguration,
   type GoogleLoginConfiguration,
@@ -92,7 +89,6 @@ export type PasswordSlowLaneFloors = Pick<
 >;
 
 export interface HumanLoginConfiguration {
-  readonly github?: GitHubLoginConfiguration;
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
   /** Set only for `recovery-only`; absent means every enrolled account keeps its password. */
@@ -114,29 +110,35 @@ export function passwordSignInPolicy(
 }
 
 /**
- * Parses every external sign-in provider. The recovery user ID (still named
- * OCC_AUTH_GITHUB_RECOVERY_USER_ID) seeds the guarded profile, so it is required exactly
+ * Parses every external sign-in provider. The recovery user ID
+ * (OCC_AUTH_RECOVERY_USER_ID) seeds the guarded profile, so it is required exactly
  * when at least one provider is configured. Recovery-only password sign-in needs a
  * provider: without one it would leave only the recovery account able to sign in.
  */
 export function humanLoginConfiguration(
   environment: Readonly<Record<string, string | undefined>>,
 ): HumanLoginConfiguration {
-  const github = githubLoginConfiguration(environment);
+  if (
+    Object.keys(environment).some(
+      (key) => key.startsWith("OCC_AUTH_GITHUB_") && environment[key] !== undefined,
+    )
+  ) {
+    throw new Error(
+      "Direct GitHub sign-in settings are retired. Use OIDC; see docs/guides/deploy/oidc-upgrade.md.",
+    );
+  }
   const google = googleLoginConfiguration(environment);
   const oidc = oidcLoginConfiguration(environment);
-  const recoveryUserId = environment.OCC_AUTH_GITHUB_RECOVERY_USER_ID;
+  const recoveryUserId = environment.OCC_AUTH_RECOVERY_USER_ID;
   const passwordSignIn = passwordSignInPolicy(environment);
-  if (github === undefined && google === undefined && oidc === undefined) {
+  if (google === undefined && oidc === undefined) {
     if (recoveryUserId !== undefined) {
       throw new Error(
-        "External sign-in requires client ID, client secret and recovery user ID for GitHub, Google or OIDC.",
+        "External sign-in requires client ID, client secret and recovery user ID for Google or OIDC.",
       );
     }
     if (passwordSignIn !== "all") {
-      throw new Error(
-        "OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires GitHub, Google or OIDC sign-in.",
-      );
+      throw new Error("OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires Google or OIDC sign-in.");
     }
     return {};
   }
@@ -148,7 +150,6 @@ export function humanLoginConfiguration(
     throw new Error("OIDC sign-in requires its provider settings and a recovery user ID.");
   }
   return {
-    ...(github === undefined ? {} : { github }),
     ...(google === undefined ? {} : { google: { ...google, recoveryUserId: recoveryUserId! } }),
     ...(oidc === undefined ? {} : { oidc: { ...oidc, recoveryUserId: recoveryUserId! } }),
     ...(passwordSignIn === "all" ? {} : { passwordSignIn }),
@@ -168,25 +169,33 @@ import type {
 } from "../admission/admission-verifier.ts";
 import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import { RequestFailure, unstorableTextFailure } from "../http/errors.ts";
-import { betterAuthIssuer, validHttpBaseURL } from "./configuration.ts";
+import { betterAuthIssuer, deriveSharedCookieDomain, validHttpBaseURL } from "./configuration.ts";
 
-export { betterAuthIssuer, OCC_BETTER_AUTH_ISSUER_PREFIX } from "./configuration.ts";
+export {
+  betterAuthIssuer,
+  deriveSharedCookieDomain,
+  normalizeSharedCookieDomain,
+  hostnameMatchesSharedCookieDomain,
+  OCC_BETTER_AUTH_ISSUER_PREFIX,
+} from "./configuration.ts";
 
-export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 const LOCAL_PASSWORD_MIN_LENGTH = 12;
 const LOCAL_PASSWORD_MAX_LENGTH = 128;
+export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 export const OCC_SHARED_AUTH_COOKIE_PREFIX = "openclaw_occ_shared";
 export const OCC_SERVICE_KEY_HEADER = "x-api-key";
 const SERVICE_KEY_CONFIG = "occ-service";
+const serviceKeyVerification = createServiceKeyVerification();
 // The createServiceKey schema allows 1 to 32 characters, which Ajv counts in code points.
 // Better Auth counts UTF-16 units, so its own cap is twice that: a 32-emoji name is 64 units.
 // The schema stays the authority; storage is unbounded text.
 export const SERVICE_KEY_NAME_MAX_LENGTH = 32;
 const SERVICE_KEY_NAME_MAX_UTF16_UNITS = SERVICE_KEY_NAME_MAX_LENGTH * 2;
-const SAFE_COOKIE_DOMAIN =
-  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 type ControllerPlugins = (
-  ReturnType<typeof apiKey> | ReturnType<typeof createHumanLogin>["plugin"] | typeof passwordSignOut
+  | ReturnType<typeof apiKey>
+  | ReturnType<typeof createHumanLogin>["plugin"]
+  | ReturnType<typeof createServiceKeyVerification>["plugin"]
+  | typeof passwordSignOut
 )[];
 type ControllerBetterAuth = Auth<BetterAuthOptions & { plugins: ControllerPlugins }>;
 
@@ -205,8 +214,9 @@ export interface ControllerAuthOptions {
   readonly secret: string;
   readonly database?: BetterAuthOptions["database"];
   readonly memoryDatabase?: MemoryDB;
-  readonly secureCookies?: boolean;
-  readonly sharedCookieDomain?: string;
+  readonly agentDomain: string;
+  /** Shared sessions are the default; native exchange keeps the parent session host-only. */
+  readonly sessionMode?: "shared-cookie" | "host-only-exchange";
   readonly humanLogin?: ReturnType<typeof createHumanLogin>;
   /** Trusted proxies whose client-address header keys sign-in admission. */
   readonly clientAddress?: ClientAddressConfiguration;
@@ -264,7 +274,7 @@ export interface PostgresControllerAuthOptions extends Omit<
   readonly pool: SchemaAuthPoolV1;
   readonly state?: PostgresPlatformState;
   readonly iamDriver?: IAMDriver;
-  readonly github?: GitHubLoginConfiguration;
+  readonly defaultUserGroupIds?: readonly string[];
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
   /** Guarded profile only: `recovery-only` admits only the recovery account's password. */
@@ -292,6 +302,50 @@ export interface ProvisionAuthAccountInput {
   readonly name?: string;
 }
 
+/** The administrator account writer requires its authority on the creating State unit. */
+export type ProvisionAuthAccount = (
+  seed: AuthPrincipalSeed,
+  auditEvent: AuditEvent,
+  prepared: PreparedAuthAccount,
+  external: { readonly providerId: string; readonly subject: string } | undefined,
+  authority: {
+    readonly holdSession: (unit: PlatformUnitOfWork) => Promise<void>;
+    readonly authorize: (unit: PlatformUnitOfWork) => Promise<AuditEvent>;
+  },
+) => Promise<void>;
+
+export function createPostgresAuthAccountProvisioner({
+  state,
+  installationId,
+}: {
+  readonly state: PostgresPlatformState;
+  readonly installationId: string;
+}): ProvisionAuthAccount {
+  const persistence = new PostgresHumanAuthentication(
+    state,
+    installationId,
+    betterAuthIssuer(installationId),
+  );
+  return async (seed, auditEvent, prepared, external, authority) => {
+    if (
+      authority === undefined ||
+      typeof authority.holdSession !== "function" ||
+      typeof authority.authorize !== "function"
+    ) {
+      throw new ScopeViolationError("Account provisioning requires complete assigning authority.");
+    }
+    await persistence.provisionPasswordAccount(prepared, seed, auditEvent, external, {
+      holdSession: authority.holdSession,
+      authorize: async (unit) => {
+        const currentAuditEvent = await authority.authorize(unit);
+        const current = await state.loadNativeIAMStateInTransaction(unit, installationId);
+        validateAuthAccountPrincipalSeed(seed, current, installationId);
+        return currentAuditEvent;
+      },
+    });
+  };
+}
+
 export {
   AuthAccountRoleInvalidError,
   AuthAccountRoleNotFoundError,
@@ -300,14 +354,12 @@ export {
 } from "@openclaw-enterprise/iam";
 
 export interface ControllerAuth {
+  readonly nativeBrowser?: PostgresHumanAuthentication["nativeBrowser"];
   readonly auth: ControllerBetterAuth;
   readonly issuer: string;
   readonly sessionCookieName: string;
   readonly sharedCookieDomain?: string;
   readonly admissionVerifier: ControllerAdmissionVerifier;
-  readonly githubEnabled: boolean;
-  /** Provider-instance key for GitHub identities; set only while GitHub sign-in is configured. */
-  readonly githubProviderId?: string;
   /** Users this startup's activation left unenrolled (no Principal or not exactly one password). */
   readonly activationSkipped?: readonly string[];
   /** Who may sign in with a password: `recovery-only` only in the guarded profile. */
@@ -317,9 +369,6 @@ export interface ControllerAuth {
    * no identity for a configured provider. They cannot sign in until one is attached.
    */
   readonly withoutExternalIdentity?: readonly string[];
-  githubStart(request: FastifyRequest, reply: FastifyReply): Promise<void>;
-  githubCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
-  githubResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   readonly googleEnabled: boolean;
   /** Provider-instance key for Google identities; set only while Google sign-in is configured. */
   readonly googleProviderId?: string;
@@ -338,12 +387,6 @@ export interface ControllerAuth {
     userId: string,
     actor: HumanAuthenticationActor,
   ): Promise<HumanAuthenticationAccount>;
-  attachGitHub?(
-    userId: string,
-    subject: string,
-    actor: HumanAuthenticationActor,
-    expectedVersion: number,
-  ): Promise<unknown>;
   attachGoogle?(
     userId: string,
     subject: string,
@@ -409,27 +452,6 @@ export interface ControllerAuth {
   revokeServiceKey(key: ServiceKey): Promise<void>;
 }
 
-export function normalizeSharedCookieDomain(domain: string | undefined): string | undefined {
-  const trimmed = domain?.trim().replace(/^\./, "").replace(/\.$/, "");
-  if (!isNonEmptyString(trimmed)) {
-    return undefined;
-  }
-  const normalized = domainToASCII(trimmed).toLowerCase();
-  if (!SAFE_COOKIE_DOMAIN.test(normalized)) {
-    throw new Error("OCC_AUTH_COOKIE_DOMAIN must be a DNS parent domain.");
-  }
-  const parsed = parseDomain(normalized, { allowPrivateDomains: true, validateHostname: true });
-  if (parsed.isIp || parsed.domain === null || parsed.publicSuffix === normalized) {
-    throw new Error("OCC_AUTH_COOKIE_DOMAIN must not be a public suffix.");
-  }
-  return normalized;
-}
-
-export function hostnameMatchesSharedCookieDomain(hostname: string, domain: string): boolean {
-  const normalizedHost = domainToASCII(hostname.trim().replace(/\.$/, "")).toLowerCase();
-  return normalizedHost === domain || normalizedHost.endsWith(`.${domain}`);
-}
-
 function authHeaders(headers: AdmissionHeaders | FastifyRequest["headers"] | undefined): Headers {
   if (headers instanceof Headers) {
     return new Headers(headers);
@@ -464,48 +486,11 @@ function sessionHeaders(
   return prepared;
 }
 
-function sessionCookieNames(prefix: string): readonly string[] {
-  return [`${prefix}.session_token`, `__Secure-${prefix}.session_token`];
-}
-
-function activeSessionCookieName(
-  prefix: string,
-  secureOrigin: boolean,
-  humanLogin: boolean,
-): string {
-  const name = `${prefix}.session_token`;
-  if (!secureOrigin) {
-    return name;
-  }
-  return `${humanLogin ? "__Host-" : "__Secure-"}${name}`;
-}
-
-function hostOnlySessionCookieClearance(enabled: boolean, activePrefix: string): readonly string[] {
-  if (!enabled) {
-    return [];
-  }
-  const names = new Set([
-    ...sessionCookieNames(OCC_AUTH_COOKIE_PREFIX),
-    ...sessionCookieNames(activePrefix),
-  ]);
-  return [...names].map((name) => {
-    const secure = name.startsWith("__Secure-") ? "; Secure" : "";
-    return `${name}=; Max-Age=0; Path=/; HttpOnly${secure}; SameSite=Lax`;
-  });
-}
-
-function setAuthHeaders(
-  reply: FastifyReply,
-  headers?: Headers | null,
-  additionalCookies: readonly string[] = [],
-): void {
+function setAuthHeaders(reply: FastifyReply, headers?: Headers | null): void {
   if (!headers) {
-    if (additionalCookies.length > 0) {
-      reply.header("set-cookie", [...additionalCookies]);
-    }
     return;
   }
-  const cookies: string[] = [...additionalCookies];
+  const cookies: string[] = [];
   headers.forEach((value, name) => {
     if (name.toLowerCase() === "set-cookie") {
       cookies.push(...splitSetCookieHeader(value));
@@ -591,12 +576,9 @@ class DenialAuditUnavailable extends Error {
   }
 }
 
-// The Console reason for each GitHub allowlist refusal (RFC-0061), for an attached identity
-// whose account is disabled, for a provider that could not answer, and for a callback that
-// failed inside OCE (`unavailable`). No other value reaches the redirect.
+// Only account disablement and provider unavailability have specific Console reasons.
+// Other callback failures use the generic rejection or unavailable response.
 const callbackReasons: Readonly<Record<(typeof CALLBACK_DENIALS)[number], string>> = {
-  MEMBERSHIP_REQUIRED: "membership",
-  MEMBERSHIP_UNAVAILABLE: "membership-unavailable",
   ACCOUNT_DISABLED: "account-disabled",
   PROVIDER_UNAVAILABLE: "provider-unavailable",
 };
@@ -842,11 +824,10 @@ async function sendAuthEndpoint(
   } | null>,
   data: (response: unknown) => unknown,
   failureText: AuthEndpointFailure,
-  additionalCookies: readonly string[] = [],
 ): Promise<void> {
   try {
     const result = await run();
-    setAuthHeaders(reply, result?.headers, additionalCookies);
+    setAuthHeaders(reply, result?.headers);
     reply.status(result?.status ?? 200).send({
       data: data(result?.response ?? null),
       meta: { requestId: request.id },
@@ -931,9 +912,11 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
     const headers = authHeaders(request.headers);
     // An explicitly supplied key never falls back to a potentially more privileged cookie.
     if (headers.has(OCC_SERVICE_KEY_HEADER)) {
-      const result = await this.#auth.api.verifyApiKey({
-        body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
-      });
+      const result = await serviceKeyVerification.verify(() =>
+        this.#auth.api.verifyApiKey({
+          body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
+        }),
+      );
       if (!result.valid || !result.key) {
         throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid service API key is required.");
       }
@@ -1020,33 +1003,27 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   }
 
   const expectedBrowserOrigin = new URL(options.baseURL).origin;
-  const sharedCookieDomain = normalizeSharedCookieDomain(options.sharedCookieDomain);
-  if (
-    sharedCookieDomain !== undefined &&
-    !hostnameMatchesSharedCookieDomain(new URL(expectedBrowserOrigin).hostname, sharedCookieDomain)
-  ) {
-    throw new Error("OCC_AUTH_COOKIE_DOMAIN must contain the OCC_AUTH_BASE_URL host.");
+  if (Object.hasOwn(options, "sharedCookieDomain")) {
+    throw new Error(
+      "sharedCookieDomain has been removed; session cookie scope is derived from Console and Agent hostnames.",
+    );
   }
-  if (
-    sharedCookieDomain !== undefined &&
-    (new URL(options.baseURL).protocol !== "https:" || options.secureCookies === false)
-  ) {
-    throw new Error("OCC_AUTH_COOKIE_DOMAIN requires secure HTTPS session cookies.");
+  const sessionMode = options.sessionMode ?? "shared-cookie";
+  if (sessionMode !== "shared-cookie" && sessionMode !== "host-only-exchange") {
+    throw new Error("Session mode must be shared-cookie or host-only-exchange.");
   }
+  const derivedCookieDomain = deriveSharedCookieDomain(options.baseURL, options.agentDomain);
+  const hostBoundSession = sessionMode === "host-only-exchange";
+  const sharedCookieDomain = hostBoundSession ? undefined : derivedCookieDomain;
   const humanLogin = options.humanLogin;
-  const secureOrigin = new URL(options.baseURL).protocol === "https:";
-  const hostBoundSession = humanLogin !== undefined && secureOrigin;
-  const cookiePrefix =
-    sharedCookieDomain === undefined ? OCC_AUTH_COOKIE_PREFIX : OCC_SHARED_AUTH_COOKIE_PREFIX;
-  const sessionCookieName = activeSessionCookieName(
-    cookiePrefix,
-    secureOrigin,
-    humanLogin !== undefined,
-  );
-  const hostOnlySessionCookieCleanup = hostOnlySessionCookieClearance(
-    sharedCookieDomain !== undefined,
-    cookiePrefix,
-  );
+  if (
+    hostBoundSession &&
+    (humanLogin?.oidcProviderId === undefined || humanLogin.googleProviderId !== undefined)
+  ) {
+    throw new Error("Host-only exchange requires guarded OIDC sign-in without Google.");
+  }
+  const cookiePrefix = hostBoundSession ? OCC_AUTH_COOKIE_PREFIX : OCC_SHARED_AUTH_COOKIE_PREFIX;
+  const sessionCookieName = `${hostBoundSession ? "__Host-" : "__Secure-"}${cookiePrefix}.session_token`;
   const issuer = betterAuthIssuer(options.installationId);
   const withSessionAuthority = sessionAuthority();
   if (humanLogin !== undefined && typeof options.database !== "function") {
@@ -1102,6 +1079,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         rateLimit: { enabled: false },
         keyExpiration: { defaultExpiresIn: 30 * 24 * 60 * 60 },
       }),
+      serviceKeyVerification.plugin,
     ],
     emailAndPassword: {
       enabled: true,
@@ -1125,26 +1103,22 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             useSecureCookies: false,
             cookies: { session_token: { name: sessionCookieName } },
           }
-        : {}),
-      ...(sharedCookieDomain === undefined
-        ? {}
-        : { crossSubDomainCookies: { enabled: true, domain: sharedCookieDomain } }),
+        : {
+            useSecureCookies: true,
+            crossSubDomainCookies: { enabled: true, domain: derivedCookieDomain },
+          }),
       defaultCookieAttributes: {
         httpOnly: true,
         path: "/",
         sameSite: "lax",
-        secure:
-          hostBoundSession ||
-          sharedCookieDomain !== undefined ||
-          (options.secureCookies ?? options.mode === "production"),
+        secure: true,
       },
     },
   });
   const api = auth.api;
   // The known-device cookie is host-only (__Host-) whenever the origin is HTTPS. With an
   // external provider its name follows the curated endpoints that issue it.
-  const knownDeviceSecure =
-    humanLogin?.knownDeviceSecure ?? (secureOrigin && options.secureCookies !== false);
+  const knownDeviceSecure = humanLogin?.knownDeviceSecure ?? true;
   // What a known-device entry is bound to: with an external provider, the guarded account
   // state (versions and enabled state); otherwise the composition's password state.
   const knownDeviceState: KnownDeviceAccountState =
@@ -1255,6 +1229,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     }
     return Object.freeze({
       id: preparedId(context, "user"),
+      emailVerified: true,
       email,
       name: accountName({ ...input, email }),
       passwordHash: await context.password.hash(password),
@@ -1276,7 +1251,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         id: prepared.id,
         email: prepared.email,
         name: prepared.name,
-        emailVerified: true,
+        emailVerified: prepared.emailVerified,
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -1307,7 +1282,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     const prepared = await prepareAccount(input);
     const context = await auth.$context;
     const created = await context.internalAdapter.createUser(
-      { email: prepared.email, name: prepared.name, emailVerified: true },
+      { email: prepared.email, name: prepared.name, emailVerified: prepared.emailVerified },
       { method: "admin" },
     );
     try {
@@ -1403,13 +1378,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   // Browser endpoints for one external provider; its absence is a 403 (start/result) or
   // the console error redirect (callback), as before.
-  function externalProviderRoutes(name: "github" | "google" | "oidc", label: string) {
+  function externalProviderRoutes(name: "google" | "oidc", label: string) {
     const configured =
-      name === "github"
-        ? humanLogin?.githubProviderId !== undefined
-        : name === "google"
-          ? humanLogin?.googleProviderId !== undefined
-          : humanLogin?.oidcProviderId !== undefined;
+      name === "google"
+        ? humanLogin?.googleProviderId !== undefined
+        : humanLogin?.oidcProviderId !== undefined;
     return {
       async start(request: FastifyRequest, reply: FastifyReply): Promise<void> {
         await sendAuthEndpoint(
@@ -1477,7 +1450,6 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       },
     };
   }
-  const githubRoutes = externalProviderRoutes("github", "GitHub");
   const googleRoutes = externalProviderRoutes("google", "Google");
   const oidcRoutes = externalProviderRoutes("oidc", "OIDC");
 
@@ -1617,7 +1589,6 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         refused: "The caller did not provide valid authentication credentials.",
         action: "Sign-in",
       },
-      hostOnlySessionCookieCleanup,
     );
   }
 
@@ -1662,7 +1633,6 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       },
       (response) => response,
       { refused: "The controller session could not be revoked.", action: "Sign-out" },
-      hostOnlySessionCookieCleanup,
     );
   }
 
@@ -1673,6 +1643,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       async () => {
         const headers = sessionHeaders(request.headers, sessionCookieName);
         requireSessionKey(headers, options.secret, undefined);
+        // An old session check can finish after a fresh sign-in in another tab.
+        // Its response must never clear the new session's browser cookie.
         const result = await api.getSession({
           headers,
           query: { disableCookieCache: true, disableRefresh: true },
@@ -1681,6 +1653,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           returnStatus: true,
         });
         requireSessionKey(headers, options.secret, responseSessionId(result?.response));
+        result?.headers?.delete("set-cookie");
         return result;
       },
       (response) => safeSessionResponse(response, options.secret),
@@ -1734,12 +1707,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         account,
         seedOptions,
       ),
-    githubEnabled: humanLogin?.githubProviderId !== undefined,
     humanProfile: humanLogin === undefined ? "password" : "guarded",
     passwordSignIn: humanLogin?.passwordSignIn ?? "all",
-    githubStart: githubRoutes.start,
-    githubCallback: githubRoutes.callback,
-    githubResult: githubRoutes.result,
     googleEnabled: humanLogin?.googleProviderId !== undefined,
     googleStart: googleRoutes.start,
     googleCallback: googleRoutes.callback,
@@ -1912,18 +1881,27 @@ export async function createPostgresControllerAuth(
     pool,
     state,
     iamDriver,
-    github,
     google,
-    oidc,
+    oidc: configuredOidc,
+    defaultUserGroupIds = [],
     passwordSignIn,
     onWarning,
     onUnmatchedCallback,
     ...controllerOptions
   } = options;
+  const oidc =
+    configuredOidc === undefined
+      ? undefined
+      : {
+          ...configuredOidc,
+          enrollment:
+            configuredOidc.enrollment === undefined
+              ? undefined
+              : resolveOidcEnrollmentPolicy(configuredOidc.enrollment, defaultUserGroupIds),
+        };
   // Sessions from an external provider instance outside this set (removed, or a changed
   // issuer or client ID) stop authenticating; password sessions are unaffected.
   const externalProviderIds = [
-    ...(github === undefined ? [] : [githubProviderId(github)]),
     ...(google === undefined ? [] : [googleProviderId(google)]),
     ...(oidc === undefined ? [] : [oidcProviderId(oidc)]),
   ];
@@ -1937,11 +1915,11 @@ export async function createPostgresControllerAuth(
           { externalProviderIds },
         );
   // Any external provider activates the guarded profile; all share its recovery user.
-  const recoveryUserId = github?.recoveryUserId ?? google?.recoveryUserId ?? oidc?.recoveryUserId;
+  const recoveryUserId = google?.recoveryUserId ?? oidc?.recoveryUserId;
   const guarded = recoveryUserId !== undefined;
-  const providerLabel = github !== undefined ? "GitHub" : google !== undefined ? "Google" : "OIDC";
+  const providerLabel = google !== undefined ? "Google" : "OIDC";
   if (!guarded && passwordSignIn !== undefined) {
-    throw new Error("Recovery-only password sign-in requires GitHub, Google or OIDC sign-in.");
+    throw new Error("Recovery-only password sign-in requires Google or OIDC sign-in.");
   }
   if (!guarded && persistence && (await persistence.recoveryDesignation())) {
     throw new Error(
@@ -1950,25 +1928,27 @@ export async function createPostgresControllerAuth(
   }
   if (guarded) {
     if (
-      [github, google, oidc].some(
+      [google, oidc].some(
         (provider) => provider !== undefined && provider.recoveryUserId !== recoveryUserId,
       )
     ) {
-      throw new Error("GitHub, Google and OIDC sign-in require the same recovery user ID.");
+      throw new Error("Google and OIDC sign-in require the same recovery user ID.");
     }
     if (!persistence || !(iamDriver instanceof NativeIAMDriver)) {
       throw new Error(
         `${providerLabel} sign-in requires original PostgreSQL State and the native IAM Driver.`,
       );
     }
-    if (options.sharedCookieDomain !== undefined) {
-      throw new Error(
-        `${providerLabel} sign-in supports host-only cookies without shared native administration.`,
-      );
-    }
+
     if (options.mode === "production" && new URL(options.baseURL).protocol !== "https:") {
       throw new Error(`Production ${providerLabel} sign-in requires HTTPS.`);
     }
+  }
+  if (oidc?.enrollment !== undefined) {
+    await persistence!.validateEnrollment({
+      groupIds: oidc.enrollment.groupIds,
+      role: oidc.enrollment.createAccount.role,
+    });
   }
   const humanLogin = !guarded
     ? undefined
@@ -1976,7 +1956,6 @@ export async function createPostgresControllerAuth(
         persistence!,
         {
           recoveryUserId,
-          ...(github === undefined ? {} : { github }),
           ...(google === undefined ? {} : { google }),
           ...(oidc === undefined ? {} : { oidc }),
           ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
@@ -1984,6 +1963,13 @@ export async function createPostgresControllerAuth(
         options.baseURL,
         {
           trustedClientAddress: controllerOptions.clientAddress !== undefined,
+          enrollmentPrincipal: (account, role) =>
+            createAuthPrincipalSeed(
+              options.installationId,
+              betterAuthIssuer(options.installationId),
+              account,
+              role == null ? { grant: "none" } : { roleId: role.id, scope: role.scope },
+            ),
           ...(controllerOptions.onOperationalEvent === undefined
             ? {}
             : { onOperationalEvent: controllerOptions.onOperationalEvent }),
@@ -2029,7 +2015,7 @@ export async function createPostgresControllerAuth(
       onWarning?.({
         event: "authentication.recovery-seed-warning",
         message:
-          "OCC_AUTH_GITHUB_RECOVERY_USER_ID differs from the recorded recovery designation, which is kept.",
+          "OCC_AUTH_RECOVERY_USER_ID differs from the recorded recovery designation, which is kept.",
       });
     }
     activationSkipped = activation.skipped;
@@ -2042,11 +2028,9 @@ export async function createPostgresControllerAuth(
     humanLogin!.designateRecovery(designation.email);
     if (passwordSignIn === "recovery-only") {
       withoutExternalIdentity = await persistence!.accountsWithoutExternalIdentity(
-        [
-          humanLogin!.githubProviderId,
-          humanLogin!.googleProviderId,
-          humanLogin!.oidcProviderId,
-        ].filter((providerId): providerId is string => providerId !== undefined),
+        [humanLogin!.googleProviderId, humanLogin!.oidcProviderId].filter(
+          (providerId): providerId is string => providerId !== undefined,
+        ),
       );
     }
   }
@@ -2060,14 +2044,12 @@ export async function createPostgresControllerAuth(
         throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
+    ...(guarded && persistence ? { nativeBrowser: persistence.nativeBrowser } : {}),
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),
     ...(withoutExternalIdentity.length === 0 ? {} : { withoutExternalIdentity }),
     ...(humanLogin === undefined
       ? {}
       : {
-          ...(humanLogin.githubProviderId === undefined
-            ? {}
-            : { githubProviderId: humanLogin.githubProviderId }),
           ...(humanLogin.googleProviderId === undefined
             ? {}
             : { googleProviderId: humanLogin.googleProviderId }),
@@ -2076,23 +2058,6 @@ export async function createPostgresControllerAuth(
             : { oidcProviderId: humanLogin.oidcProviderId }),
           readAccount: (userId: string, actor: HumanAuthenticationActor) =>
             persistence!.readAccount(userId, actor),
-          ...(humanLogin.githubProviderId === undefined
-            ? {}
-            : {
-                attachGitHub: (
-                  userId: string,
-                  subject: string,
-                  actor: HumanAuthenticationActor,
-                  expectedVersion: number,
-                ) =>
-                  persistence!.attachExternal(
-                    userId,
-                    humanLogin.githubProviderId!,
-                    subject,
-                    actor,
-                    expectedVersion,
-                  ),
-              }),
           ...(humanLogin.googleProviderId === undefined
             ? {}
             : {

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-03
-last_updated_session: authoring-run/e4018630-07e7-4296-a60f-d51180ca700d
+updated: 2026-11-12
+last_updated_session: authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec
 ---
 
 # Agent provisioning flow
@@ -34,10 +34,12 @@ graph TD
   Agent --> Transport["<b>Compute Driver</b><br/>Trusted-proxy credentials"]
   Transport --> Deploy["<b>Ordinary deploy</b><br/>Record first version"]
   Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
-  Observe -->|Pending| Observe
-  Observe -->|Activated| UI["<b>Agent deployment view</b><br/>Open existing version"]
+  Observe -->|Pending; version readable| UI["<b>Agent deployment view</b><br/>Open the deploying version"]
+  Observe -->|Pending; version refused or unavailable| Observe
+  Observe -->|Success seen in Create| Settings["<b>Agent configuration view</b><br/>Open the activated version"]
   Observe -->|Superseded| Superseded["<b>Create stays open</b><br/>Newer deployment took over"]
-  Observe -->|Failed| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
+  Observe -->|Malformed present ID| Unknown["<b>Outcome unknown</b><br/>Keep job; offer Retry"]
+  Observe -->|Confirmed failure| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
   Claim -->|Failure| Failed["<b>Retain outputs</b><br/>Retry known failures"]
   Failed -->|Uncertain write| Recovery["<b>Recovery required</b><br/>Do not repeat blindly"]
 
@@ -45,8 +47,8 @@ graph TD
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
-  class Claim,Config,Agent,Transport,Deploy,Observe,UI operation
-  class Failed,Recovery,Terminal,Superseded,RepoRefused condition
+  class Claim,Config,Agent,Transport,Deploy,Observe,UI,Settings operation
+  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown condition
 ```
 
 ## Execution Trace
@@ -81,13 +83,13 @@ For Harness authentication from a credential source, OCC reads the catalog entry
 from the recorded Gateway. Compute validates that same entry and its login mode
 for this admission. A later provisioning request reads the catalog again.
 
-OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority, then refuses a taken Agent name with Agent create's `409`. Reserved Secret destinations, cross-Namespace Secret references, and missing or `runtime` Harness authentication give `400 INVALID_REQUEST` naming the rule; a Secret absent from the Namespace stays `404`. Before the Compute plan check, a Secret binding gets Agent save's Harness authentication check and its named `400`.
+OCC first authorizes Agent `create`, Configuration `create`, and Installation `administer` for the Namespace. Status and retry use the same grants; absence gives `403` regardless of the body. It validates Configuration, references, workspace inputs, execution mode, and current authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
 
 A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
 After an Installation selects another Secret Driver, request, status and retry answer `503` for a Secret owned by the previous Driver, after authorization and lookup. The message asks the caller to save replacement Secrets and submit a new request. The worker fails that attempt with `PROVISIONING_REJECTED`; an unavailable Secret Driver still retries.
 
-Before admission, OCC applies Configuration rules, then the ChannelDriver checks credentials through authorized Secret callbacks. Slack reads a token that is one whole `${NAME}` as the env reference to NAME, and checks token roles and bot authentication without pinning Secret versions or adding worker revalidation. OCC validates repository selections against the Namespace before queueing. Undeliverable repository bindings, including Sandbox repositories, keep Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup` capability; Compute delegates validation or refuses unsupported placement before staging files. Deployment checks the exact Harness topology.
+OCC applies Configuration rules before Channel credential validation. Its Secret callbacks recheck provisioning grants before storage and after I/O, then confirm current same-Namespace backend and selected-Driver ownership before provider use. Slack accepts whole `${NAME}` environment references and checks token roles and bot authentication. This does not pin Secret versions or revalidate queued work. OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
 OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
 
@@ -109,10 +111,12 @@ Admission, replay, retry and execution recheck caller authority, source readines
 ownership. Queued or running work prevents source deletion.
 
 Compute prepares runtime credentials without loopback HTTP. Kubernetes
-`kubernetesGatewayConfigurationDocument` renders trusted-proxy configuration
-and preserves explicit human identities/scopes alongside
-machine administration, defaulting to machine-only. Provisioning and deploy
-admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Configuration
+`apps/controller/src/drivers/compute/kubernetes/index.ts:provisionAgentRuntimeCredentials` confirms complete owned Secrets after
+create-only provisioning. Failure retains them and blocks configured success or
+first revision admission.
+`kubernetesGatewayConfigurationDocument` defaults to machine-only trusted-proxy
+administration and preserves human identities/scopes. Provisioning and
+deploy admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Configuration
 save also refuses both), unknown or padded operator scopes, blank or padded identity keys,
 grants for identities outside `allowUsers`, malformed `requiredHeaders`, and human
 admission with admin device scopes, including whitespace; human allowlists render
@@ -121,8 +125,8 @@ also refuses a Codex Configuration without `gateway.auth.password`, which the
 workspace node check signs in with. These refusals precede workload replacement.
 Human ingress and its network policy remain operator-managed; no OCE human
 account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
-Provisioning supplies no Gateway token or trust override. Losing its claim cancels
-Kubernetes Configuration requests, freeing the worker.
+Provisioning supplies no Gateway token or trust override; losing its claim cancels
+Kubernetes Configuration requests.
 
 ### 4. Deployment becomes the lifecycle owner
 
@@ -133,15 +137,40 @@ defers work without consuming retries until that version activates or fails. The
 success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
 before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
 
-Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) shows the job's named
-wait and waits one second between status reads, spending it on details such as a full Pod quota, cancelling unfinished reads
-at the next poll. Admission, status and retry report the stored client `requestId`.
+Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) polls the job.
+When a pending job names its Agent and first revision, Create gives the deployment read one
+second to finish. If it succeeds, Create stops polling and opens that revision's Deployment tab
+for progress, Stop, and recovery. A 403 or 404 keeps Create on the job with generic status and
+ends deployment checks for this attempt. If the read is unavailable or times out, Create shows
+any wait reported by the job and checks the deployment again on the next poll. A 401 sends the
+caller to sign in again. If Create sees job success before opening Deployment, it opens Configuration.
+
+The **Latest visible deployment** summary shows the version's recorded wait, even with Deployment
+details folded. A temporary read failure labels a retained wait as last recorded. A refused read
+clears it.
+
+Admission, status, and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
 `meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
-If a newer deployment takes over, Create explains what happened without a retry or a link:
-the job identifies only the deployment that ended. For a failure, follow the linked version's
-recovery guidance. After a Stop, deploy when ready.
+If Create sees that a newer deployment took over, it explains what happened without a retry
+or a link. The job identifies only the deployment that ended. For a failure, follow the linked
+version's recovery guidance. After a Stop, deploy when ready.
 Reconciliation owns startup and activation; later versions use Deploy.
+
+Console parses each reply in
+`apps/controller/src/console/agents/provisioning-job.mts:provisioningJob` before
+`apps/controller/src/console/agents/create.mts:submitProvisioningAttempt` selects
+recovery. A malformed present `agentId` or `revisionId` makes even a terminal
+`failed` reply unknown. The form keeps the accepted job URL and original request,
+disables Create, and offers Retry without a recovery link. Retry posts to the same
+job's `/retry`. `packages/occ/src/index.ts:retryAgentProvisioning` refuses a changed
+Agent lifecycle or an existing deployment handoff with `409`. After refusal during
+unknown-outcome recovery, the form enables a resend of the original request ID.
+
+With valid IDs, a failure whose message is absent or not a nonempty string stays
+confirmed. `ProvisioningFailure` uses “Provisioning did not complete.” while keeping
+the failure code and any applicable recovery link. For a confirmed failure with a linked
+version, follow its [recovery guidance](../reference/console/create-and-deploy.md).
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
@@ -194,6 +223,16 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
+
+- 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
+
+- 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
+
+- 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
+
+- 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
 
 - 2026-11-03 20:51: Document the selected repository policy during queued provisioning and the ordering of Configuration writes. (authoring-run/e4018630-07e7-4296-a60f-d51180ca700d - 43485a276ad6891f42ba7e0016ba8d0b3f574ae4)
 

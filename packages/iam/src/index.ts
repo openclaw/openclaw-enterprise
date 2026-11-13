@@ -2,8 +2,12 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import {
+  AGENT_CHILD_RESOURCE_KINDS,
+  CONFIGURED_IAM_ID_PREFIXES,
   PERMISSION_ACTIONS,
   RESOURCE_KINDS,
+  isConfiguredRoleId,
+  isSupportedPermission,
   type AccessBinding,
   type AuthorizationDecision,
   type AuthorizationEvidence,
@@ -11,7 +15,10 @@ import {
   type Group,
   type GroupMembership,
   type IAMDriver,
+  type IAMConfiguredPolicyChanges,
+  type IAMConfiguredPolicyInput,
   type IAMManagedAccessBindingInput,
+  type IAMOwnerBindingInput,
   type IAMManagedRoleInput,
   type IAMManagedServicePrincipalInput,
   type IAMPolicyManagementContext,
@@ -26,7 +33,6 @@ import {
   type PermissionAction,
   type Principal,
   type ResourceKind,
-  type ResourceRef,
   type Restriction,
   type Role,
   type ServicePrincipal,
@@ -54,6 +60,8 @@ export interface AuthPrincipalSeed {
   readonly principal: Principal;
   readonly roles: readonly Role[];
   readonly bindings: readonly AccessBinding[];
+  /** Configured Installation Groups the new Principal joins (`iam.defaultUserGroups`). */
+  readonly groupIds?: readonly string[];
 }
 
 export interface BootstrapAdministratorSeed extends AuthPrincipalSeed {
@@ -112,8 +120,18 @@ export function createBootstrapAdministratorSeed(
  * create a fresh administrator Role, or grant nothing.
  */
 export type AuthPrincipalSeedOptions =
-  | { readonly roleId: string; readonly grant?: undefined }
+  | {
+      readonly roleId: string;
+      readonly scope?: AccountEnrollmentRole["scope"];
+      readonly grant?: undefined;
+    }
   | { readonly grant: "administrator" | "none"; readonly roleId?: undefined };
+
+/** Operator-selected initial grant for a newly enrolled human account. */
+export interface AccountEnrollmentRole {
+  readonly id: string;
+  readonly scope: "installation" | "all" | { readonly namespaceId: string };
+}
 
 /** IAM owns the Principal plus explicit administrator creation, exact Role binding, or no grant. */
 export function createAuthPrincipalSeed(
@@ -131,7 +149,9 @@ export function createAuthPrincipalSeed(
   // Fail closed: untyped JavaScript callers can omit or misspell the options, and
   // a missing or unknown grant must never fall through to a new administrator.
   const requested = options as
-    { readonly roleId?: unknown; readonly grant?: unknown } | null | undefined;
+    | { readonly roleId?: unknown; readonly grant?: unknown; readonly scope?: unknown }
+    | null
+    | undefined;
   const requestedRoleId = requested?.roleId;
   const grant = requested?.grant;
   if (requestedRoleId !== undefined && grant !== undefined) {
@@ -142,6 +162,20 @@ export function createAuthPrincipalSeed(
   }
   if (requestedRoleId === undefined && grant !== "administrator" && grant !== "none") {
     throw new Error("Auth Principal seeds require a Role id or an explicit grant.");
+  }
+  const requestedScope = requested?.scope;
+  if (
+    requestedScope !== undefined &&
+    (requestedRoleId === undefined ||
+      (requestedScope !== "all" &&
+        requestedScope !== "installation" &&
+        (requestedScope === null ||
+          typeof requestedScope !== "object" ||
+          Object.keys(requestedScope).length !== 1 ||
+          !("namespaceId" in requestedScope) ||
+          !isNonEmptyString(requestedScope.namespaceId))))
+  ) {
+    throw new Error("Auth account Role scope must be installation, all, or a Namespace ID.");
   }
   const existingRoleId = typeof requestedRoleId === "string" ? requestedRoleId : undefined;
 
@@ -198,6 +232,15 @@ export function createAuthPrincipalSeed(
       { action: "read", resourceKind: "agent_revision" },
     ],
   };
+  let scope: Pick<AccessBinding, "namespaceId" | "resourceKind" | "resourceId"> = {};
+  if (existingRoleId !== undefined && requestedScope !== "all") {
+    scope =
+      typeof requestedScope === "object" &&
+      requestedScope !== null &&
+      "namespaceId" in requestedScope
+        ? { namespaceId: requestedScope.namespaceId as string }
+        : { resourceKind: "installation", resourceId: installationId };
+  }
   return {
     principal,
     roles: existingRoleId === undefined ? [administrator] : [],
@@ -207,9 +250,7 @@ export function createAuthPrincipalSeed(
         subjectKind: "identity",
         subjectId: principal.id,
         roleId,
-        ...(existingRoleId === undefined
-          ? {}
-          : { resourceKind: "installation", resourceId: installationId }),
+        ...scope,
       },
     ],
   };
@@ -232,9 +273,11 @@ export function validateAuthAccountPrincipalSeed(
     if (role === undefined) {
       throw new AuthAccountRoleNotFoundError(binding.roleId);
     }
-    // A caller-supplied Namespace Role is a request error; the binding shape
-    // below is built by createAuthPrincipalSeed, so a mismatch is an internal fault.
-    if (role.namespaceId !== undefined) {
+    // A caller-supplied Namespace or configured Role is a request error: a configured Role
+    // holds no Installation permission, so its exact Installation binding would grant nothing.
+    // The binding shape below is built by createAuthPrincipalSeed, so a mismatch is an internal
+    // fault.
+    if (role.namespaceId !== undefined || isConfiguredRoleId(role.id)) {
       throw new AuthAccountRoleInvalidError(binding.roleId);
     }
     if (
@@ -422,6 +465,17 @@ function immutableRole(role: Readonly<Role>): Readonly<Role> {
 
 function immutableBinding(binding: Readonly<AccessBinding>): Readonly<AccessBinding> {
   return Object.freeze({ ...binding });
+}
+
+function sameBinding(left: Readonly<AccessBinding>, right: Readonly<AccessBinding>): boolean {
+  return (
+    left.namespaceId === right.namespaceId &&
+    left.subjectKind === right.subjectKind &&
+    left.subjectId === right.subjectId &&
+    left.roleId === right.roleId &&
+    left.resourceKind === right.resourceKind &&
+    left.resourceId === right.resourceId
+  );
 }
 
 export function validateNativeIAMState(state: NativeIAMState): void {
@@ -673,17 +727,12 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): NativeIAMPolicy 
       subject !== undefined,
       `AccessBinding ${binding.id} references an unknown subject`,
     );
-    if (binding.subjectKind === "group") {
-      assertCondition(
-        subject.namespaceId === binding.namespaceId,
-        `AccessBinding ${binding.id} and Group subject have different scopes`,
-      );
-    } else {
-      assertCondition(
-        subject.namespaceId === undefined || subject.namespaceId === binding.namespaceId,
-        `AccessBinding ${binding.id} and subject cross a Namespace`,
-      );
-    }
+    // An Installation identity or Group, such as Default users, can be bound in one Namespace;
+    // a Namespace subject is bound only in its own Namespace.
+    assertCondition(
+      subject.namespaceId === undefined || subject.namespaceId === binding.namespaceId,
+      `AccessBinding ${binding.id} and subject cross a Namespace`,
+    );
   }
 
   for (const restriction of state.restrictions) {
@@ -816,22 +865,33 @@ function validRequest(request: AuthorizationRequest): boolean {
     (request.resource.kind !== "secret" || isNonEmptyString(request.resource.namespaceId)) &&
     (!["credential_source", "sandbox_policy"].includes(request.resource.kind) ||
       isNonEmptyString(request.resource.namespaceId)) &&
+    (request.parentAgentId === undefined ||
+      (isNonEmptyString(request.parentAgentId) &&
+        isNonEmptyString(request.resource.namespaceId) &&
+        AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === request.resource.kind))) &&
     ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind)
   );
 }
 
-function sameResource(binding: AccessBinding, resource: ResourceRef): boolean {
+function sameResource(binding: AccessBinding, request: AuthorizationRequest): boolean {
   if (binding.resourceKind === undefined) {
     return true;
   }
-  return binding.resourceKind === resource.kind && binding.resourceId === resource.id;
+  const { resource } = request;
+  return (
+    (binding.resourceKind === resource.kind && binding.resourceId === resource.id) ||
+    // An Agent's revisions and sandbox policy belong to it, so its exact bindings apply to them.
+    (request.parentAgentId !== undefined &&
+      binding.resourceKind === "agent" &&
+      binding.resourceId === request.parentAgentId)
+  );
 }
 
-function bindingScopeMatches(binding: AccessBinding, resource: ResourceRef): boolean {
+function bindingScopeMatches(binding: AccessBinding, request: AuthorizationRequest): boolean {
   return (
-    (binding.namespaceId === undefined || binding.namespaceId === resource.namespaceId) &&
-    sameResource(binding, resource)
+    (binding.namespaceId === undefined || binding.namespaceId === request.resource.namespaceId) &&
+    sameResource(binding, request)
   );
 }
 
@@ -895,7 +955,7 @@ function evaluateValidatedAuthorization(
     ...[...applicableGroupIds].flatMap((groupId) => policy.groupBindings.get(groupId) ?? []),
   ];
   for (const binding of subjectBindings) {
-    if (!bindingScopeMatches(binding, request.resource)) {
+    if (!bindingScopeMatches(binding, request)) {
       continue;
     }
 
@@ -997,7 +1057,11 @@ function effectiveGrants(identity: Identity, policy: NativeIAMPolicy): Effective
         resourceId: binding.resourceId,
         permissions: role.permissions.filter(
           (permission) =>
-            binding.resourceKind === undefined || permission.resourceKind === binding.resourceKind,
+            binding.resourceKind === undefined ||
+            permission.resourceKind === binding.resourceKind ||
+            // An exact Agent binding also grants these permissions on the Agent's own children.
+            (binding.resourceKind === "agent" &&
+              AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === permission.resourceKind)),
         ),
       });
     }
@@ -1313,6 +1377,192 @@ export class NativeIAMDriver implements IAMDriver {
         id: input.id,
         namespaceId: input.namespaceId,
       })),
+    });
+  }
+
+  async createOwnerBinding(
+    context: IAMPolicyManagementContext,
+    input: IAMOwnerBindingInput,
+  ): Promise<Readonly<AccessBinding>> {
+    const repository = this.policyRepository(context, ["createOCCBinding"]);
+    assertCondition(
+      typeof input === "object" &&
+        input !== null &&
+        exactOptionalKeys(
+          input,
+          ["id", "namespaceId", "principalId", "roleId"],
+          ["resourceKind", "resourceId"],
+        ),
+      "Owner binding input contains unsupported fields",
+    );
+    this.assertIdentifier(input.id, "AccessBinding");
+    this.assertNamespace(input.namespaceId);
+    this.assertIdentifier(input.principalId, "Principal");
+    assertCondition(isConfiguredRoleId(input.roleId), "An owner binding names a configured Role");
+    assertCondition(
+      (input.resourceKind === undefined) === (input.resourceId === undefined) &&
+        input.resourceKind !== "namespace" &&
+        input.resourceKind !== "installation" &&
+        (input.resourceKind === undefined || RESOURCE_KINDS.includes(input.resourceKind)),
+      "An owner binding names one resource inside its Namespace, or none for the Namespace",
+    );
+    if (input.resourceId !== undefined) {
+      this.assertIdentifier(input.resourceId, "resource");
+    }
+    const binding: AccessBinding = {
+      id: input.id,
+      namespaceId: input.namespaceId,
+      subjectKind: "identity",
+      subjectId: input.principalId,
+      roleId: input.roleId,
+      ...(input.resourceKind === undefined
+        ? {}
+        : { resourceKind: input.resourceKind, resourceId: input.resourceId }),
+    };
+    assertCondition(
+      await repository.createOCCBinding(binding),
+      "The server generated an existing IAM AccessBinding identity",
+    );
+    return immutableBinding(binding);
+  }
+
+  async applyConfiguredPolicy(
+    context: IAMPolicyManagementContext,
+    input: IAMConfiguredPolicyInput,
+  ): Promise<IAMConfiguredPolicyChanges> {
+    const repository = this.policyRepository(context, [
+      "listConfiguredPolicy",
+      "putConfiguredRole",
+      "deleteConfiguredRole",
+      "createConfiguredGroup",
+      "deleteConfiguredGroup",
+      "createOCCBinding",
+      "deleteConfiguredBinding",
+    ]);
+    assertCondition(
+      typeof input === "object" &&
+        input !== null &&
+        exactOptionalKeys(input, ["policy"], ["namespaceId"]),
+      "Configured policy input contains unsupported fields",
+    );
+    const { policy } = input;
+    for (const role of policy.roles) {
+      assertCondition(
+        isConfiguredRoleId(role.id) &&
+          role.namespaceId === undefined &&
+          role.permissions.length > 0 &&
+          role.permissions.every(
+            (permission) =>
+              permission.resourceKind !== "installation" && isSupportedPermission(permission),
+          ),
+        `Configured Role ${role.id} is invalid`,
+      );
+    }
+    const roleIds = new Set(policy.roles.map((role) => role.id));
+    const groupIds = new Set(policy.groups.map((group) => group.id));
+    for (const group of policy.groups) {
+      assertCondition(
+        group.id.startsWith(CONFIGURED_IAM_ID_PREFIXES.group) && group.namespaceId === undefined,
+        `Configured Group ${group.id} is invalid`,
+      );
+    }
+    for (const binding of policy.bindings) {
+      assertCondition(
+        binding.id.startsWith(CONFIGURED_IAM_ID_PREFIXES.binding) &&
+          binding.subjectKind === "group" &&
+          groupIds.has(binding.subjectId) &&
+          roleIds.has(binding.roleId) &&
+          binding.resourceKind === undefined &&
+          binding.resourceId === undefined,
+        `Configured AccessBinding ${binding.id} is invalid`,
+      );
+    }
+    if (input.namespaceId !== undefined) {
+      this.assertNamespace(input.namespaceId);
+    }
+
+    const current = await repository.listConfiguredPolicy();
+    const inScope = (binding: AccessBinding): boolean =>
+      input.namespaceId === undefined || binding.namespaceId === input.namespaceId;
+    const created: { roles: Role[]; groups: string[]; bindings: AccessBinding[] } = {
+      roles: [],
+      groups: [],
+      bindings: [],
+    };
+    const updatedRoles: Role[] = [];
+    const deleted: { roles: string[]; groups: string[]; bindings: AccessBinding[] } = {
+      roles: [],
+      groups: [],
+      bindings: [],
+    };
+    // For one Namespace, only the missing Roles and Groups are written, so its bindings can
+    // name them; changes to existing ones wait for the whole policy.
+    const wholePolicy = input.namespaceId === undefined;
+    const existingRoles = new Set(current.roles.map((role) => role.id));
+    for (const role of policy.roles) {
+      if (!wholePolicy && existingRoles.has(role.id)) {
+        continue;
+      }
+      const outcome = await repository.putConfiguredRole(role);
+      if (outcome === "created") {
+        created.roles.push(role);
+      } else if (outcome === "updated") {
+        updatedRoles.push(role);
+      }
+    }
+    const existingGroups = new Set(current.groups.map((group) => group.id));
+    for (const group of policy.groups) {
+      if (!existingGroups.has(group.id)) {
+        await repository.createConfiguredGroup(group);
+        created.groups.push(group.id);
+      }
+    }
+    const desired = new Map(
+      policy.bindings.filter(inScope).map((binding) => [binding.id, binding]),
+    );
+    for (const binding of current.bindings.filter(inScope)) {
+      const wanted = desired.get(binding.id);
+      if (wanted !== undefined && sameBinding(wanted, binding)) {
+        desired.delete(binding.id);
+        continue;
+      }
+      if (await repository.deleteConfiguredBinding(binding.id)) {
+        deleted.bindings.push(binding);
+      }
+    }
+    for (const binding of desired.values()) {
+      if (await repository.createOCCBinding(binding)) {
+        created.bindings.push(binding);
+      }
+    }
+    if (wholePolicy) {
+      for (const group of current.groups) {
+        if (!groupIds.has(group.id)) {
+          await repository.deleteConfiguredGroup(group.id);
+          deleted.groups.push(group.id);
+        }
+      }
+      for (const role of current.roles) {
+        if (!roleIds.has(role.id)) {
+          await repository.deleteConfiguredRole(role.id);
+          deleted.roles.push(role.id);
+        }
+      }
+    }
+    return Object.freeze({
+      roles: Object.freeze({
+        created: Object.freeze(created.roles),
+        updated: Object.freeze(updatedRoles),
+        deleted: Object.freeze(deleted.roles),
+      }),
+      groups: Object.freeze({
+        created: Object.freeze(created.groups),
+        deleted: Object.freeze(deleted.groups),
+      }),
+      bindings: Object.freeze({
+        created: Object.freeze(created.bindings.map(immutableBinding)),
+        deleted: Object.freeze(deleted.bindings.map(immutableBinding)),
+      }),
     });
   }
 

@@ -1,0 +1,352 @@
+{
+  "title": "How OpenShell gets a GitHub token",
+  "width": 1180,
+  "height": 702,
+  "items": [
+    {
+      "kind": "text",
+      "text": "How OpenShell gets a GitHub token",
+      "x": 20,
+      "y": 33,
+      "size": 28,
+      "role": "title"
+    },
+    {
+      "kind": "text",
+      "text": "The worker prepares tokens in the background. Startup waits for installation readback.",
+      "x": 20,
+      "y": 55,
+      "size": 16,
+      "role": "subtitle"
+    },
+    { "kind": "box", "id": "worker", "x": 20, "y": 76, "w": 735, "h": 559, "role": "control" },
+    {
+      "kind": "text",
+      "text": "OpenClaw Enterprise worker",
+      "x": 32,
+      "y": 94,
+      "size": 16,
+      "role": "group"
+    },
+    {
+      "kind": "box",
+      "id": "github-api",
+      "x": 946,
+      "y": 83,
+      "w": 214,
+      "h": 117,
+      "role": "external"
+    },
+    { "kind": "text", "text": "External service", "x": 958, "y": 101, "size": 16, "role": "group" },
+    { "kind": "box", "id": "openshell", "x": 866, "y": 266, "w": 294, "h": 369, "role": "runtime" },
+    {
+      "kind": "text",
+      "text": "OpenShell runtime",
+      "x": 878,
+      "y": 284,
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "box", "id": "sandbox", "x": 884, "y": 519, "w": 258, "h": 103, "role": "boundary" },
+    { "kind": "text", "text": "Sandbox", "x": 896, "y": 537, "size": 16, "role": "group" },
+    {
+      "kind": "node",
+      "id": "preparation",
+      "x": 390,
+      "y": 114,
+      "w": 265,
+      "h": 75,
+      "lines": ["GitHub preparation owner", "Uses the App signer to", "prepare or renew tokens"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "token-store",
+      "x": 48,
+      "y": 114,
+      "w": 229,
+      "h": 75,
+      "lines": ["PostgreSQL token store", "Holds the sealed token"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "github",
+      "x": 958,
+      "y": 114,
+      "w": 190,
+      "h": 75,
+      "lines": ["GitHub", "Issues an installation", "token"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "external"
+    },
+    {
+      "kind": "node",
+      "id": "proxy-driver",
+      "x": 48,
+      "y": 388,
+      "w": 245,
+      "h": 75,
+      "lines": ["CredentialProxyDriver", "Supplies the repository Git binding"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "adapter",
+      "x": 425,
+      "y": 388,
+      "w": 320,
+      "h": 75,
+      "lines": ["Git transport adapter", "Installs committed material", "and checks the readback"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "gateway",
+      "x": 886,
+      "y": 388,
+      "w": 254,
+      "h": 75,
+      "lines": ["OpenShell Gateway", "Attaches the provider to Sandbox", "policy"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "supervisor",
+      "x": 886,
+      "y": 300,
+      "w": 254,
+      "h": 55,
+      "lines": ["Credential Proxy", "Loads the provider generation"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "compute",
+      "x": 425,
+      "y": 558,
+      "w": 320,
+      "h": 55,
+      "lines": ["Kubernetes Compute", "Rechecks installation before release"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "harness",
+      "x": 903,
+      "y": 558,
+      "w": 220,
+      "h": 55,
+      "lines": ["Harness", "Held at startup"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "boundary"
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "preparation", "side": "right" },
+        { "node": "github", "side": "left" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "POST /app/installations/{id}/access_tokens\nSigned App JWT",
+      "x": 666,
+      "y": 118,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "github", "side": "bottom" },
+        [1053, 224],
+        [522.5, 224],
+        { "node": "preparation", "side": "bottom" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Installation token",
+      "x": 810,
+      "y": 214,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "preparation", "side": "left" },
+        { "node": "token-store", "side": "right" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Validates and\ncommits",
+      "x": 290,
+      "y": 119,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "token-store", "side": "bottom" },
+        [162.5, 302],
+        [585, 302],
+        { "node": "adapter", "side": "top" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Committed token for startup or renewal",
+      "x": 220,
+      "y": 292,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "proxy-driver", "side": "right" },
+        { "node": "adapter", "side": "left" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Binds transport",
+      "x": 309,
+      "y": 415,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "adapter", "side": "right" },
+        { "node": "gateway", "side": "left" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Install or renew\nwith readback",
+      "x": 762,
+      "y": 395,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "gateway", "side": "top" },
+        { "node": "supervisor", "side": "bottom" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Provider settings",
+      "x": 1025,
+      "y": 375,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "adapter", "side": "bottom" },
+        { "node": "compute", "side": "top" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Verified recipient\nand generation",
+      "x": 601,
+      "y": 501,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "compute", "side": "right" },
+        { "node": "harness", "side": "left" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Startup only\nSigned release",
+      "x": 760,
+      "y": 556,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "text",
+      "text": "At selected-repository startup, OCE matches the held launcher request to an authenticated denial before issuing the token.",
+      "x": 20,
+      "y": 657,
+      "size": 14,
+      "role": "note"
+    },
+    {
+      "kind": "text",
+      "text": "Renewal updates the provider for an existing Sandbox. Each Git request still needs authorization.",
+      "x": 20,
+      "y": 679,
+      "size": 14,
+      "role": "note"
+    }
+  ]
+}

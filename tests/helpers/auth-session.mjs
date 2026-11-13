@@ -31,7 +31,7 @@ export function setCookieHeaders(response) {
 
 export async function signInWithEmailPassword({
   fetch: fetchRequest = globalThis.fetch,
-  origin = "http://127.0.0.1",
+  origin = "https://console.oce.localhost",
   path = betterAuthSignInPath,
   email,
   password,
@@ -89,19 +89,19 @@ export function authenticatedHeaders(session, headers = {}) {
 export async function createTestAuthPrincipal({
   installationId = `ins_${randomUUID()}`,
   mode = "development",
-  baseURL = "http://127.0.0.1",
+  baseURL = "https://console.oce.localhost",
   email = `admin-${randomUUID()}@example.com`,
   password = `generated-password-${randomUUID()}`,
   name = "Test Administrator",
   secret = `test-auth-secret-${randomUUID()}-${randomUUID()}`,
-  secureCookies = false,
+  agentDomain = "agents.oce.localhost",
 } = {}) {
   const auth = createControllerAuth({
     mode,
     installationId,
     baseURL,
+    agentDomain,
     secret,
-    secureCookies,
   });
   const account = await auth.createAccount({ email, password, name });
   const seed = auth.principalSeed(account, { grant: "administrator" });
@@ -149,16 +149,16 @@ export async function signInToControllerApp(app, credentials, { origin } = {}) {
 export async function createAuthenticatedControllerRequest(
   app,
   credentials,
-  requestOrigin = "http://127.0.0.1",
+  requestOrigin = "https://console.oce.localhost",
 ) {
-  const session = await signInToControllerApp(app, credentials);
+  const session = await signInToControllerApp(app, credentials, { origin: requestOrigin });
   return async (method, url, payload) => {
     const response = await app.inject({
       method,
       url,
       headers: {
         ...authenticatedHeaders(session),
-        host: "127.0.0.1",
+        host: new URL(requestOrigin).host,
         origin: requestOrigin,
       },
       ...(payload === undefined ? {} : { payload }),

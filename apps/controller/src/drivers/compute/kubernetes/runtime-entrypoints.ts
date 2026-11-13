@@ -15,9 +15,12 @@ import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
-import { nodeProgramArguments } from "../node-program.ts";
+import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
+  DELIBERATE_RESTART_EXIT_STATUS,
+  DELIBERATE_RESTART_MESSAGE,
+  UNEXPLAINED_EXITS_MESSAGE,
   gatewayManagedModeEnvironment,
   gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
@@ -294,10 +297,14 @@ function verifiedPluginFile(path, expected) {
   return bytes;
 }
 
-function managedPluginInstallation() {
+function managedPluginInstallations() {
   const selection = process.env[${JSON.stringify(MANAGED_PLUGIN_ENVIRONMENT)}];
-  if (selection === undefined) return undefined;
-  const { id, kind, packageName, releaseSha256, slotId, toolNames = [] } = JSON.parse(selection);
+  if (selection === undefined) return [];
+  const settings = JSON.parse(selection);
+  return (Array.isArray(settings) ? settings : [settings]).map(readManagedPluginInstallation);
+}
+
+function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [] }) {
   if ((kind !== "cli" && kind !== "mcp") || typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
     throw new Error("The managed plugin package type or name is invalid.");
   }
@@ -383,13 +390,263 @@ function holdStartupFailure(check, code) {
 }
 `;
 
+const OPENCLAW_PLUGIN_INSTALL_HELPERS = String.raw`
+function openClawPluginPackageSpec(plugin) {
+  const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
+  const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
+  return packageName + "@" + version;
+}
+
+function runOpenClaw(args, description, diagnostic) {
+  const result = pluginSpawnSync("node", ["/app/openclaw.mjs", ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error !== undefined || typeof result.status !== "number") {
+    throw new Error(description + " failed.");
+  }
+  if (result.status !== 0 && diagnostic !== undefined) {
+    throw new PluginTerminalDiagnosticError(diagnostic, description + " failed.");
+  }
+  if (result.status !== 0) {
+    throw new Error(description + " failed.");
+  }
+  return result.stdout;
+}
+
+function runOpenClawJson(args, description) {
+  const stdout = runOpenClaw(args, description);
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(description + " returned invalid JSON.");
+  }
+}
+
+function installRecordIntegrity(record) {
+  return record?.integrity ?? record?.npmIntegrity ?? record?.acceptedSurfaceIntegrity;
+}
+
+function assertPathInside(parent, child, description) {
+  const root = pluginResolve(parent);
+  const candidate = pluginResolve(child);
+  if (candidate !== root && !candidate.startsWith(root + "/")) {
+    throw new Error(description + " does not resolve inside the admitted install path.");
+  }
+}
+
+function verifyOpenClawPluginInstall(plugin) {
+  const nativeId = requireNonEmptyString(plugin.nativeId, "OpenClaw plugin native ID");
+  const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
+  const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
+  const report = runOpenClawJson(["plugins", "inspect", nativeId, "--json"], "OpenClaw plugin inspect");
+  if (report?.plugin?.id !== nativeId) {
+    throw new Error("OpenClaw plugin installed identity does not match the admitted release.");
+  }
+  if (report.plugin.version !== version) {
+    throw new Error("OpenClaw plugin runtime version does not match the admitted release.");
+  }
+  const record = report.install;
+  if (record?.source !== "npm") {
+    throw new Error("OpenClaw plugin install record source does not match the admitted release.");
+  }
+  if (record.resolvedName !== packageName) {
+    throw new Error("OpenClaw plugin installed package does not match the admitted release.");
+  }
+  if ((record.resolvedVersion ?? record.version) !== version) {
+    throw new Error("OpenClaw plugin installed version does not match the admitted release.");
+  }
+  if (plugin.integrity !== undefined && installRecordIntegrity(record) !== plugin.integrity) {
+    throw new Error("OpenClaw plugin installed integrity does not match the admitted release.");
+  }
+  const installPath = requireNonEmptyString(record.installPath, "OpenClaw plugin install path");
+  const rootDir = requireNonEmptyString(report.plugin.rootDir, "OpenClaw plugin runtime root directory");
+  assertPathInside(installPath, rootDir, "OpenClaw plugin runtime root directory");
+  if (typeof report.plugin.source === "string" && report.plugin.source.startsWith("/")) {
+    assertPathInside(installPath, report.plugin.source, "OpenClaw plugin runtime source");
+  }
+}
+
+function installOpenClawPlugins(runtime, failures = []) {
+  const artifact =
+    runtime.manifest?.kind === "openclaw"
+      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
+      : { installs: [] };
+  const installs = artifact.installs ?? [];
+  const failed = [...failures];
+  const successfulPluginIds = [];
+  const failedIds = pluginFailureIds(failed);
+  const originalTools = readOpenClawConfig().tools;
+  applyOpenClawPluginConfiguration(runtime, failed);
+  for (const plugin of installs) {
+    if (failedIds.has(plugin.pluginId)) continue;
+    const spec = openClawPluginPackageSpec(plugin);
+    try {
+      runOpenClaw(
+        ["plugins", "install", spec, "--pin", "--force", "--no-enable"],
+        "OpenClaw plugin install",
+        pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
+      );
+      successfulPluginIds.push(plugin.pluginId);
+    } catch (error) {
+      if (isPluginTerminalDiagnosticError(error)) {
+        if (!pluginBestEffortEnabled()) throw error;
+        failed.push(error.diagnostic);
+        failedIds.add(error.diagnostic.pluginId);
+        continue;
+      }
+      throw error;
+    }
+  }
+  if (successfulPluginIds.length > 0) {
+    runOpenClawJson(["plugins", "registry", "--refresh", "--json"], "OpenClaw plugin registry refresh");
+  }
+  // Rebuild grants from the operator's policy so failed installs cannot leave
+  // generated allow entries behind or erase an original restrictive allowlist.
+  const installedConfig = readOpenClawConfig();
+  installedConfig.tools = originalTools;
+  writeOpenClawConfig(installedConfig);
+  const overlay = applyOpenClawPluginConfiguration(runtime, failed, { allowManagedOpenClawPluginReplacement: true });
+  if (overlay !== undefined) {
+    assertConfigContainsOverlay(readOpenClawConfig(), overlay);
+  }
+  for (const plugin of installs) {
+    if (failedIds.has(plugin.pluginId)) continue;
+    verifyOpenClawPluginInstall(plugin);
+  }
+  return { successfulPluginIds, failures: failed };
+}
+`;
+
 // pluginTimerMs reads a Harness timer setting as whole milliseconds from 1 to 2147483647, the
 // longest delay a Node.js timer honours (MAX_TIMER_DELAY_MS in @openclaw-enterprise/utils, which
 // this script cannot import). The request timeout feeds AbortSignal.timeout, where Number() read
 // "12abc" as NaN, "" as 0 and 3e9 as a timer that fires after 1 ms (finding 2312); the install
 // deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
 // drops them before the dedicated Harness command is measured against the exec string budget.
-export const PLUGIN_RUNTIME_HELPERS = String.raw`
+const OPENCLAW_PLUGIN_CONFIGURATION_HELPERS = String.raw`// The Gateway serves browsers through an OCC-authenticated public origin only
+// when native admin routes that exact origin to it with trusted-proxy auth.
+function gatewayServesPublicOrigin(config) {
+  const gateway = config?.gateway;
+  const raw = gateway?.publicOrigin;
+  return (
+    typeof raw === "string" &&
+    /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/.test(raw) &&
+    gateway.auth?.mode === "trusted-proxy" &&
+    Array.isArray(gateway.controlUi?.allowedOrigins) &&
+    gateway.controlUi.allowedOrigins.includes(raw)
+  );
+}
+
+function conflictingApproverList(configured, managedList) {
+  return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
+    managedList !== undefined &&
+    (!Array.isArray(configured.approvers) ||
+      !pluginDeepEqual(
+        configured.approvers.map((id) => typeof id === "string" ? id.toLowerCase() : id).sort(),
+        managedList.map((id) => id.toLowerCase()).sort(),
+      ));
+}
+
+function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
+  const managedApprovers = objectAtPath(overlay, ["approvals", "plugin", "slack"]);
+  const configuredApprovers = objectAtPath(base, ["approvals", "plugin", "slack"]);
+  if (managedApprovers !== undefined && configuredApprovers !== undefined) {
+    // A native child list must not bypass an inherited Agent or plugin approver list.
+    const managedDefault = managedApprovers.approvers;
+    const configuredPlugins = isPlainObject(configuredApprovers.plugins)
+      ? Object.entries(configuredApprovers.plugins)
+      : [];
+    const conflictingPlugin = configuredPlugins.some(([pluginId, configuredPlugin]) => {
+      const managedPlugin = isPlainObject(managedApprovers.plugins)
+        ? managedApprovers.plugins[pluginId]
+        : undefined;
+      const pluginList = managedPlugin?.approvers ?? managedDefault;
+      if (conflictingApproverList(configuredPlugin, pluginList)) return true;
+      const configuredTools = isPlainObject(configuredPlugin?.tools)
+        ? Object.entries(configuredPlugin.tools)
+        : [];
+      return configuredTools.some(([toolId, configuredTool]) => {
+        const managedTool = isPlainObject(managedPlugin?.tools)
+          ? managedPlugin.tools[toolId]
+          : undefined;
+        return conflictingApproverList(configuredTool, managedTool?.approvers ?? pluginList);
+      });
+    });
+    if (conflictingApproverList(configuredApprovers, managedDefault) || conflictingPlugin) {
+      throw new Error("OpenClaw plugin approval configuration conflicts with managed Agent approvers.");
+    }
+  }
+  const baseEntries = objectAtPath(base, ["plugins", "entries"]);
+  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
+  if (overlayEntries === undefined) return;
+  const policyIds = (value) => Array.isArray(value)
+    ? value.map((id) => id.trim().toLowerCase()).filter(Boolean)
+    : [];
+  const allow = policyIds(base?.plugins?.allow);
+  const deny = policyIds(base?.plugins?.deny);
+  for (const pluginId of Object.keys(overlayEntries)) {
+    if (overlayEntries[pluginId].enabled === true) {
+      let conflict;
+      if (base?.plugins?.enabled === false) conflict = "plugins.enabled is false";
+      else if (deny.includes(pluginId)) conflict = "plugins.deny includes the plugin";
+      else if (allow.length > 0 && !allow.includes(pluginId)) conflict = "plugins.allow excludes the plugin";
+      if (conflict !== undefined) {
+        throw new Error("OpenClaw plugin configuration conflicts with managed plugin selection " + pluginId + ": " + conflict + ". Update Configuration or the Agent plugin selection.");
+      }
+    }
+    if (pluginId === "codex") continue;
+    if (
+      baseEntries?.[pluginId] !== undefined &&
+      JSON.stringify(baseEntries[pluginId]) !== JSON.stringify(overlayEntries[pluginId])
+    ) {
+      if (
+        options.allowManagedOpenClawPluginReplacement === true &&
+        isManagedOpenClawPluginEntry(baseEntries[pluginId], pluginId) &&
+        isManagedOpenClawPluginEntry(overlayEntries[pluginId], pluginId)
+      ) {
+        continue;
+      }
+      throw new Error("OpenClaw plugin configuration conflicts with managed plugin selections.");
+    }
+  }
+  const overlayBridge = objectAtPath(overlay, ["plugins", "entries", "codex", "config", "codexPlugins"]);
+  if (overlayBridge === undefined) return;
+  const baseBridge = objectAtPath(base, ["plugins", "entries", "codex", "config", "codexPlugins"]);
+  if (baseBridge === undefined) return;
+  if (JSON.stringify(baseBridge) !== JSON.stringify(overlayBridge)) {
+    throw new Error("OpenClaw Codex bridge configuration conflicts with managed Codex plugin selections.");
+  }
+}
+
+function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
+  assertNoOpenClawPluginConfigConflict(base, overlay, options);
+  const next = mergeConfig(base, overlay);
+  for (const key of ["allow", "alsoAllow", "deny"]) {
+    const baseAllow = Array.isArray(base?.tools?.[key]) ? base.tools[key] : [];
+    const overlayAllow = Array.isArray(overlay?.tools?.[key]) ? overlay.tools[key] : [];
+    if (overlayAllow.length === 0) continue;
+    next.tools[key] = [
+      ...baseAllow,
+      ...overlayAllow.filter((tool) => !baseAllow.includes(tool)),
+    ];
+  }
+  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
+  if (overlayEntries !== undefined) {
+    const disabledManagedTools = Object.entries(overlayEntries)
+      .filter(([pluginId, entry]) => pluginId !== "codex" && isManagedOpenClawPluginEntry(entry, pluginId) && entry.enabled === false)
+      .map(([pluginId]) => pluginId);
+    if (disabledManagedTools.length > 0 && Array.isArray(next.tools?.alsoAllow)) {
+      next.tools.alsoAllow = next.tools.alsoAllow.filter((tool) => !disabledManagedTools.includes(tool));
+    }
+  }
+  return next;
+}
+
+`;
+
+function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+  return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
   dirname: pluginDirname,
@@ -1084,126 +1341,7 @@ function isManagedOpenClawPluginEntry(value, pluginId) {
   );
 }
 
-// The Gateway serves browsers through an OCC-authenticated public origin only
-// when native admin routes that exact origin to it with trusted-proxy auth.
-function gatewayServesPublicOrigin(config) {
-  const gateway = config?.gateway;
-  const raw = gateway?.publicOrigin;
-  return (
-    typeof raw === "string" &&
-    /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/.test(raw) &&
-    gateway.auth?.mode === "trusted-proxy" &&
-    Array.isArray(gateway.controlUi?.allowedOrigins) &&
-    gateway.controlUi.allowedOrigins.includes(raw)
-  );
-}
-
-function conflictingApproverList(configured, managedList) {
-  return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
-    managedList !== undefined &&
-    (!Array.isArray(configured.approvers) ||
-      !pluginDeepEqual(
-        configured.approvers.map((id) => typeof id === "string" ? id.toLowerCase() : id).sort(),
-        managedList.map((id) => id.toLowerCase()).sort(),
-      ));
-}
-
-function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
-  const managedApprovers = objectAtPath(overlay, ["approvals", "plugin", "slack"]);
-  const configuredApprovers = objectAtPath(base, ["approvals", "plugin", "slack"]);
-  if (managedApprovers !== undefined && configuredApprovers !== undefined) {
-    // A native child list must not bypass an inherited Agent or plugin approver list.
-    const managedDefault = managedApprovers.approvers;
-    const configuredPlugins = isPlainObject(configuredApprovers.plugins)
-      ? Object.entries(configuredApprovers.plugins)
-      : [];
-    const conflictingPlugin = configuredPlugins.some(([pluginId, configuredPlugin]) => {
-      const managedPlugin = isPlainObject(managedApprovers.plugins)
-        ? managedApprovers.plugins[pluginId]
-        : undefined;
-      const pluginList = managedPlugin?.approvers ?? managedDefault;
-      if (conflictingApproverList(configuredPlugin, pluginList)) return true;
-      const configuredTools = isPlainObject(configuredPlugin?.tools)
-        ? Object.entries(configuredPlugin.tools)
-        : [];
-      return configuredTools.some(([toolId, configuredTool]) => {
-        const managedTool = isPlainObject(managedPlugin?.tools)
-          ? managedPlugin.tools[toolId]
-          : undefined;
-        return conflictingApproverList(configuredTool, managedTool?.approvers ?? pluginList);
-      });
-    });
-    if (conflictingApproverList(configuredApprovers, managedDefault) || conflictingPlugin) {
-      throw new Error("OpenClaw plugin approval configuration conflicts with managed Agent approvers.");
-    }
-  }
-  const baseEntries = objectAtPath(base, ["plugins", "entries"]);
-  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
-  if (overlayEntries === undefined) return;
-  const policyIds = (value) => Array.isArray(value)
-    ? value.map((id) => id.trim().toLowerCase()).filter(Boolean)
-    : [];
-  const allow = policyIds(base?.plugins?.allow);
-  const deny = policyIds(base?.plugins?.deny);
-  for (const pluginId of Object.keys(overlayEntries)) {
-    if (overlayEntries[pluginId].enabled === true) {
-      let conflict;
-      if (base?.plugins?.enabled === false) conflict = "plugins.enabled is false";
-      else if (deny.includes(pluginId)) conflict = "plugins.deny includes the plugin";
-      else if (allow.length > 0 && !allow.includes(pluginId)) conflict = "plugins.allow excludes the plugin";
-      if (conflict !== undefined) {
-        throw new Error("OpenClaw plugin configuration conflicts with managed plugin selection " + pluginId + ": " + conflict + ". Update Configuration or the Agent plugin selection.");
-      }
-    }
-    if (pluginId === "codex") continue;
-    if (
-      baseEntries?.[pluginId] !== undefined &&
-      JSON.stringify(baseEntries[pluginId]) !== JSON.stringify(overlayEntries[pluginId])
-    ) {
-      if (
-        options.allowManagedOpenClawPluginReplacement === true &&
-        isManagedOpenClawPluginEntry(baseEntries[pluginId], pluginId) &&
-        isManagedOpenClawPluginEntry(overlayEntries[pluginId], pluginId)
-      ) {
-        continue;
-      }
-      throw new Error("OpenClaw plugin configuration conflicts with managed plugin selections.");
-    }
-  }
-  const overlayBridge = objectAtPath(overlay, ["plugins", "entries", "codex", "config", "codexPlugins"]);
-  if (overlayBridge === undefined) return;
-  const baseBridge = objectAtPath(base, ["plugins", "entries", "codex", "config", "codexPlugins"]);
-  if (baseBridge === undefined) return;
-  if (JSON.stringify(baseBridge) !== JSON.stringify(overlayBridge)) {
-    throw new Error("OpenClaw Codex bridge configuration conflicts with managed Codex plugin selections.");
-  }
-}
-
-function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
-  assertNoOpenClawPluginConfigConflict(base, overlay, options);
-  const next = mergeConfig(base, overlay);
-  for (const key of ["allow", "alsoAllow", "deny"]) {
-    const baseAllow = Array.isArray(base?.tools?.[key]) ? base.tools[key] : [];
-    const overlayAllow = Array.isArray(overlay?.tools?.[key]) ? overlay.tools[key] : [];
-    if (overlayAllow.length === 0) continue;
-    next.tools[key] = [
-      ...baseAllow,
-      ...overlayAllow.filter((tool) => !baseAllow.includes(tool)),
-    ];
-  }
-  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
-  if (overlayEntries !== undefined) {
-    const disabledManagedTools = Object.entries(overlayEntries)
-      .filter(([pluginId, entry]) => pluginId !== "codex" && isManagedOpenClawPluginEntry(entry, pluginId) && entry.enabled === false)
-      .map(([pluginId]) => pluginId);
-    if (disabledManagedTools.length > 0 && Array.isArray(next.tools?.alsoAllow)) {
-      next.tools.alsoAllow = next.tools.alsoAllow.filter((tool) => !disabledManagedTools.includes(tool));
-    }
-  }
-  return next;
-}
-
-function pluginFailureIds(failures) {
+${includeOpenClawInstaller ? OPENCLAW_PLUGIN_CONFIGURATION_HELPERS : ""}function pluginFailureIds(failures) {
   return new Set((failures ?? []).map((failure) => failure.pluginId));
 }
 
@@ -1444,133 +1582,7 @@ function assertCodexPluginRuntime(runtime) {
     throw new Error("Codex protected inference profile is invalid.");
   }
 }
-
-function openClawPluginPackageSpec(plugin) {
-  const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
-  const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
-  return packageName + "@" + version;
-}
-
-function runOpenClaw(args, description, diagnostic) {
-  const result = pluginSpawnSync("node", ["/app/openclaw.mjs", ...args], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.error !== undefined || typeof result.status !== "number") {
-    throw new Error(description + " failed.");
-  }
-  if (result.status !== 0 && diagnostic !== undefined) {
-    throw new PluginTerminalDiagnosticError(diagnostic, description + " failed.");
-  }
-  if (result.status !== 0) {
-    throw new Error(description + " failed.");
-  }
-  return result.stdout;
-}
-
-function runOpenClawJson(args, description) {
-  const stdout = runOpenClaw(args, description);
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    throw new Error(description + " returned invalid JSON.");
-  }
-}
-
-function installRecordIntegrity(record) {
-  return record?.integrity ?? record?.npmIntegrity ?? record?.acceptedSurfaceIntegrity;
-}
-
-function assertPathInside(parent, child, description) {
-  const root = pluginResolve(parent);
-  const candidate = pluginResolve(child);
-  if (candidate !== root && !candidate.startsWith(root + "/")) {
-    throw new Error(description + " does not resolve inside the admitted install path.");
-  }
-}
-
-function verifyOpenClawPluginInstall(plugin) {
-  const nativeId = requireNonEmptyString(plugin.nativeId, "OpenClaw plugin native ID");
-  const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
-  const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
-  const report = runOpenClawJson(["plugins", "inspect", nativeId, "--json"], "OpenClaw plugin inspect");
-  if (report?.plugin?.id !== nativeId) {
-    throw new Error("OpenClaw plugin installed identity does not match the admitted release.");
-  }
-  if (report.plugin.version !== version) {
-    throw new Error("OpenClaw plugin runtime version does not match the admitted release.");
-  }
-  const record = report.install;
-  if (record?.source !== "npm") {
-    throw new Error("OpenClaw plugin install record source does not match the admitted release.");
-  }
-  if (record.resolvedName !== packageName) {
-    throw new Error("OpenClaw plugin installed package does not match the admitted release.");
-  }
-  if ((record.resolvedVersion ?? record.version) !== version) {
-    throw new Error("OpenClaw plugin installed version does not match the admitted release.");
-  }
-  if (plugin.integrity !== undefined && installRecordIntegrity(record) !== plugin.integrity) {
-    throw new Error("OpenClaw plugin installed integrity does not match the admitted release.");
-  }
-  const installPath = requireNonEmptyString(record.installPath, "OpenClaw plugin install path");
-  const rootDir = requireNonEmptyString(report.plugin.rootDir, "OpenClaw plugin runtime root directory");
-  assertPathInside(installPath, rootDir, "OpenClaw plugin runtime root directory");
-  if (typeof report.plugin.source === "string" && report.plugin.source.startsWith("/")) {
-    assertPathInside(installPath, report.plugin.source, "OpenClaw plugin runtime source");
-  }
-}
-
-function installOpenClawPlugins(runtime, failures = []) {
-  const artifact =
-    runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
-      : { installs: [] };
-  const installs = artifact.installs ?? [];
-  const failed = [...failures];
-  const successfulPluginIds = [];
-  const failedIds = pluginFailureIds(failed);
-  const originalTools = readOpenClawConfig().tools;
-  applyOpenClawPluginConfiguration(runtime, failed);
-  for (const plugin of installs) {
-    if (failedIds.has(plugin.pluginId)) continue;
-    const spec = openClawPluginPackageSpec(plugin);
-    try {
-      runOpenClaw(
-        ["plugins", "install", spec, "--pin", "--force", "--no-enable"],
-        "OpenClaw plugin install",
-        pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
-      );
-      successfulPluginIds.push(plugin.pluginId);
-    } catch (error) {
-      if (isPluginTerminalDiagnosticError(error)) {
-        if (!pluginBestEffortEnabled()) throw error;
-        failed.push(error.diagnostic);
-        failedIds.add(error.diagnostic.pluginId);
-        continue;
-      }
-      throw error;
-    }
-  }
-  if (successfulPluginIds.length > 0) {
-    runOpenClawJson(["plugins", "registry", "--refresh", "--json"], "OpenClaw plugin registry refresh");
-  }
-  // Rebuild grants from the operator's policy so failed installs cannot leave
-  // generated allow entries behind or erase an original restrictive allowlist.
-  const installedConfig = readOpenClawConfig();
-  installedConfig.tools = originalTools;
-  writeOpenClawConfig(installedConfig);
-  const overlay = applyOpenClawPluginConfiguration(runtime, failed, { allowManagedOpenClawPluginReplacement: true });
-  if (overlay !== undefined) {
-    assertConfigContainsOverlay(readOpenClawConfig(), overlay);
-  }
-  for (const plugin of installs) {
-    if (failedIds.has(plugin.pluginId)) continue;
-    verifyOpenClawPluginInstall(plugin);
-  }
-  return { successfulPluginIds, failures: failed };
-}
-
+${includeOpenClawInstaller ? OPENCLAW_PLUGIN_INSTALL_HELPERS : ""}
 function pluginRuntimeDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2233,6 +2245,9 @@ function codexPluginStartupFailureCode(error) {
   }
 }
 `;
+}
+
+export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(true);
 
 // Holds unready until an explicit restart; readiness polls never submit model calls.
 // A failed probe's cause is a closed kind and a fixed token, never native output,
@@ -2268,14 +2283,28 @@ function probeExitFailure({ error, status, signal }) {
 //
 // The probe is a whole embedded agent run. Its local work (Node and OpenClaw
 // boot, SQLite session state, cleanup) took about 16 CPU-seconds on the runtime
-// image, on one core however many it may use; --probe-timeout bounds the model
-// turn itself. A fixed 30-second cap let the example 500m CPU limit starve that
+// image, on one core however many it may use. --probe-timeout bounds OpenClaw's
+// whole isolated completion, its local agent preparation included, not only the
+// model turn. A fixed 30-second cap let the example 500m CPU limit starve that
 // local work into MODEL_PROBE_TIMEOUT before the turn finished. The cap is now
-// the 15-second turn, 5 seconds of slack, and 45 CPU-seconds of local work at
+// the 15-second timeout, 5 seconds of slack, and 45 CPU-seconds of local work at
 // the container's CPU limit (cgroup cpu.max, at most one core), at most 600 s.
-// A probe that still reaches it after waiting for CPU for over a quarter of the
+// A probe that reaches the cap after waiting for CPU for over a quarter of the
 // time reports MODEL_PROBE_CPU_STARVED: a restart would get the same CPU. The
-// wait is the larger of the cgroup cpu.pressure delta (throttling and node
+// same holds when OpenClaw's own timer fires first (status "timeout"), but its
+// window is only the last 15 s: Node and OpenClaw boot before it start, and at
+// 500m that boot alone is throttled 6-7 s of a ~24 s hung-provider probe, over a
+// quarter of the whole run. So a CLI timeout is judged on its window only, from
+// per-second samples a preload in the CLI takes: it is CPU starvation when over
+// a quarter of the window waited for CPU and no 5 s stretch of it was idle
+// (each second under a tenth waiting). A hung provider leaves the CLI idle for
+// most of the window; its own local work there at the limit still read up to
+// 26% waiting on a remote test VM, so the quarter alone misread 2 of 40 hung
+// probes (finding 2675). Without a window reading it stays MODEL_PROBE_TIMEOUT.
+// The preload (OPENCLAW_PROBE_CPU_WINDOW) samples the cgroup each second on the
+// CLI's main thread with the wrapper's own cpuWaitSample and, at exit, writes
+// the samples from the last one at least 15 s old, then the exit sample.
+// The wait is the larger of the cgroup cpu.pressure delta (throttling and node
 // contention) and the cpu.stat throttled time (throttling only), each used only
 // when both of its samples are valid: on one CI VM pressure read 8x low and hid
 // a starved probe as a timeout (finding 2271). throttled_usec adds up every
@@ -2295,18 +2324,14 @@ const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
 function probeOpenClawAuthenticationFailure() {
   const fs = require("node:fs");
-  const cgroup = (name) => { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } };
-  const [quota, period] = cgroup("cpu.max").split(" ");
-  const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
-  const sample = () => { const stat = cgroup("cpu.stat"); return [/^some .*total=(\d+)/m.exec(cgroup("cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000); };
-  const startedAt = Date.now(), before = sample();
+  const [quota, period] = cpuCgroupFile(fs, "cpu.max").split(" ");
+  const capMs = Math.min(600000, OPENCLAW_PROBE_TIMEOUT_MS + 5000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
+  const before = cpuWaitSample(fs);
   const cleanup = {};
   let code = runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;
   if (typeof code === "object") ({ code, cause, ...provider } = code);
-  const elapsedMs = Date.now() - startedAt, [pressure, throttled, periods] = sample().map((total, i) => { const wait = total - before[i]; return Number.isFinite(wait) && wait >= 0 ? wait : NaN; });
-  const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
-  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite), cpuWaitMs = waits.length ? Math.max(...waits) : NaN;
-  if (code === "CAP") code = cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
+  const { elapsedMs, cpuWaitMs, pressureWaitMs, throttledWaitMs } = cpuWaitBetween(before, cpuWaitSample(fs));
+  if (code === "CAP") code = cpuStarved(elapsedMs, cpuWaitMs);
   console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, pressureWaitMs, throttledWaitMs, code: code ?? "READY", cause, ...provider, ...cleanup }));
   return code === undefined ? undefined : { code, cause };
 }
@@ -2382,6 +2407,33 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
     ...upfrontToken("bodyShape", bodyShape, UPFRONT_BODY_SHAPES), ...upfrontToken("providerErrorCode", errorCode, [...UPFRONT_ERROR_CODES, "other"]), ...upfrontToken("providerErrorType", errorType, [...UPFRONT_ERROR_TYPES, "other"]) };
 }
 
+function cpuCgroupFile(fs, name) { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } }
+function cpuWaitSample(fs) {
+  const period = cpuCgroupFile(fs, "cpu.max").split(" ")[1], stat = cpuCgroupFile(fs, "cpu.stat");
+  return [Date.now(), ...[/^some .*total=(\d+)/m.exec(cpuCgroupFile(fs, "cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000)];
+}
+function cpuWaitBetween(before, after) {
+  const [elapsedMs, pressure, throttled, periods] = after.map((total, i) => { const wait = total - before[i]; return Number.isFinite(total) && Number.isFinite(before[i]) && wait >= 0 ? wait : NaN; });
+  const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
+  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite);
+  return { elapsedMs, cpuWaitMs: waits.length ? Math.max(...waits) : NaN, pressureWaitMs, throttledWaitMs };
+}
+const cpuStarved = (elapsedMs, cpuWaitMs) => (cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT");
+const OPENCLAW_PROBE_TIMEOUT_MS = 15000;
+const OPENCLAW_PROBE_CPU_WINDOW = (file) => "try{if(require(\"node:worker_threads\").isMainThread){const fs=require(\"node:fs\");" + cpuCgroupFile + cpuWaitSample +
+  "const a=[cpuWaitSample(fs)];setInterval(()=>a.push(cpuWaitSample(fs)),1000).unref();process.on(\"exit\",()=>{try{const e=cpuWaitSample(fs);fs.writeFileSync(" +
+  JSON.stringify(file) + ",JSON.stringify([...a.slice(Math.max(0,a.findLastIndex((s)=>s[0]<=e[0]-" + OPENCLAW_PROBE_TIMEOUT_MS + "))),e]))}catch{}})}}catch{}";
+function cpuWindowFailure(samples) {
+  const window = cpuWaitBetween(samples[0], samples.at(-1));
+  let idleMs = 0, stretchMs = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const step = cpuWaitBetween(samples[i - 1], samples[i]);
+    stretchMs = step.cpuWaitMs <= step.elapsedMs / 10 ? stretchMs + step.elapsedMs : 0;
+    idleMs = Math.max(idleMs, stretchMs);
+  }
+  return { code: idleMs < 5000 ? cpuStarved(window.elapsedMs, window.cpuWaitMs) : "MODEL_PROBE_TIMEOUT", timeoutWindowMs: window.elapsedMs, timeoutWindowCpuWaitMs: window.cpuWaitMs, timeoutWindowIdleMs: idleMs };
+}
+
 function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();
   const stage = (stage) => console.error(JSON.stringify({ event: "openclaw.model_probe_stage", stage, elapsedMs: Date.now() - stageStartedAt, capMs }));
@@ -2404,11 +2456,14 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     fs.mkdirSync(directory + "/workspace", { mode: 0o700 });
     const configPath = directory + "/openclaw.json";
     fs.writeFileSync(configPath, JSON.stringify(configuration), { mode: 0o600 });
+    const windowPath = directory + "/cpu-window.json";
+    fs.writeFileSync(directory + "/cpu-window.cjs", OPENCLAW_PROBE_CPU_WINDOW(windowPath), { mode: 0o600 });
     stage("spawn");
     const result = spawnSync("node", [
+      "--require", directory + "/cpu-window.cjs",
       "/app/openclaw.mjs", "models", "status", "--json", "--probe",
       "--probe-provider", provider, "--probe-concurrency", "1",
-      "--probe-timeout", "15000", "--probe-max-tokens", "256",
+      "--probe-timeout", String(OPENCLAW_PROBE_TIMEOUT_MS), "--probe-max-tokens", "256",
     ], {
       cwd: directory,
       env: {
@@ -2440,7 +2495,9 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     const status = results[0].status;
     if (status === "ok") return undefined;
     if (status === "auth") return "AUTHENTICATION_FAILED";
-    if (status === "timeout") return "MODEL_PROBE_TIMEOUT";
+    if (status === "timeout") {
+      try { return cpuWindowFailure(JSON.parse(fs.readFileSync(windowPath, "utf8"))); } catch { return "MODEL_PROBE_TIMEOUT"; }
+    }
     return { ...probeFailure("PROBE_STATUS", ["format", "rate_limit", "billing", "unknown", "no_model"].includes(status) ? status : "other"), ...providerErrorSummary(results[0].error) };
   } catch {
     return probeFailure("WRAPPER_ERROR");
@@ -2514,6 +2571,58 @@ const { spawn } = require("node:child_process");
 // OCE upgrades this runtime by rolling out a selected image.
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
+// Kubernetes Compute fails a crash-looping Gateway on the consecutive unexplained exits of
+// its container (finding 3041), which the kubelet does not keep. The wrapper counts them in
+// /tmp, the Pod's runtime-temporary emptyDir, which outlives a container restart but not the
+// Pod, and states the count in the termination message the kubelet records at exit. Each
+// start counts its own exit in advance, so an exit the wrapper never sees (an out-of-memory
+// kill) counts too; readiness counts from 1 again, and a deliberate restart (exit 75) clears
+// the count and states its reason instead. Only Kubernetes creates the termination log.
+const TERMINATION_LOG_PATH = "/dev/termination-log";
+const UNEXPLAINED_EXITS_PATH = "/tmp/.oce-unexplained-exits";
+const countsUnexplainedExits = (() => {
+  try {
+    return require("node:fs").existsSync(TERMINATION_LOG_PATH);
+  } catch {
+    return false;
+  }
+})();
+// Set once readiness or a deliberate restart has set the count for this instance's exit.
+let unexplainedExitsSettled = false;
+
+function writeTerminationMessage(message) {
+  if (!countsUnexplainedExits) return;
+  try {
+    require("node:fs").writeFileSync(TERMINATION_LOG_PATH, message);
+  } catch {}
+}
+
+// A count that cannot be saved only lowers the next start's count. The count is replaced
+// whole, so an exit during the write leaves the previous count, not a torn one.
+function countUnexplainedExits(count) {
+  if (!countsUnexplainedExits) return;
+  const fs = require("node:fs");
+  const pending = UNEXPLAINED_EXITS_PATH + ".pending";
+  try {
+    fs.writeFileSync(pending, String(count));
+    fs.renameSync(pending, UNEXPLAINED_EXITS_PATH);
+  } catch {
+    try {
+      fs.rmSync(pending, { force: true });
+    } catch {}
+  }
+  writeTerminationMessage(${JSON.stringify(UNEXPLAINED_EXITS_MESSAGE)} + count);
+}
+
+if (countsUnexplainedExits) {
+  let previous = 0;
+  try {
+    const saved = String(require("node:fs").readFileSync(UNEXPLAINED_EXITS_PATH, "utf8")).trim();
+    if (/^[0-9]{1,6}$/.test(saved)) previous = Number(saved);
+  } catch {}
+  countUnexplainedExits(previous + 1);
+}
+
 ${PLUGIN_RUNTIME_HELPERS}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
@@ -2564,7 +2673,13 @@ async function gatewayRuntimeReady() {
   }
   const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
   if (answers[1]) gatewayServed = true;
-  return answers.every((ready) => ready);
+  const ready = answers.every((answer) => answer);
+  if (ready && !unexplainedExitsSettled) {
+    // Earlier exits no longer make a crash loop; this instance's own exit would be the first.
+    unexplainedExitsSettled = true;
+    countUnexplainedExits(1);
+  }
+  return ready;
 }
 
 startPluginRuntimeStatusServer(gatewayRuntimeReady);
@@ -2678,26 +2793,29 @@ function requireWorkspaceNodePlugins(config) {
   }
 }
 
-function installGatewayPlugins(runtime, failures, install) {
-  if (runtime.manifest.kind !== "openclaw" || !install) return installOpenClawPlugins(runtime, failures);
+function installGatewayPlugins(runtime, failures, installs) {
+  if (installs.length === 0) return installOpenClawPlugins(runtime, failures);
 
-  // The image supplies the managed skill. Only native packages go through OpenClaw's installer.
-  const { id, release, skills: skillsDirectory, skill } = install;
-  if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
-  const { [id]: selection, ...selections } = runtime.manifest.selections ?? {};
-  if (!selection || Boolean(selection.enabled) !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
+  // Only native packages go through OpenClaw's installer. Managed releases are in the image.
+  const selections = { ...runtime.manifest.selections };
+  for (const { id, release, skill } of installs) {
+    if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
+    if (selections[id]?.enabled !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
+    delete selections[id];
+  }
   const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
   const result = installOpenClawPlugins(native, failures);
-
   const config = readOpenClawConfig();
-  if (skill || config.skills?.load?.extraDirs?.includes(skillsDirectory)) {
-    const skills = config.skills ??= {};
-    const load = skills.load ??= {};
-    const directories = (load.extraDirs ?? []).filter((path) => path !== skillsDirectory);
-    load.extraDirs = skill ? [...directories, skillsDirectory] : directories;
-    writeOpenClawConfig(config);
+  for (const { id, release, skills: skillsDirectory, skill } of installs) {
+    if (skill || (skillsDirectory && config.skills?.load?.extraDirs?.includes(skillsDirectory))) {
+      const skills = config.skills ??= {};
+      const load = skills.load ??= {};
+      const directories = (load.extraDirs ?? []).filter((path) => path !== skillsDirectory);
+      load.extraDirs = skill ? [...directories, skillsDirectory] : directories;
+      writeOpenClawConfig(config);
+    }
+    if (release) result.successfulPluginIds.push(id);
   }
-  if (release) result.successfulPluginIds.push(id);
   return result;
 }
 
@@ -2742,7 +2860,8 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
     // Native workspace.skills checks the source root for discovery, the skill directory for
     // resources and the instruction file for reads. This release needs exactly those paths.
-    const install = managedPluginInstallation();
+    const managedSkillPaths = managedPluginInstallations().flatMap(({ skills, skill }) =>
+      skill ? [skills, skill.directory, skill.instructions] : []);
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
@@ -2750,7 +2869,7 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
         remoteRoot + "/**",
         "/home/node/.openclaw",
         ...skillRoots.flatMap((root) => [root, root + "/**"]),
-        ...(install?.skill ? [install.skills, install.skill.directory, install.skill.instructions] : []),
+        ...managedSkillPaths,
       ],
       allowWritePaths: [
         ...editable.map((name) => remoteRoot + "/" + name),
@@ -2884,12 +3003,22 @@ function pinCodexProviderTransport(config) {
       if (!Array.isArray(provider.models) || !provider.models.every(isPlainObject)) {
         throw new Error("The " + id + " model provider models setting must be a list of objects.");
       }
-      for (const model of provider.models) {
+      pinned.models = provider.models.map((model) => {
+        const kept = keepKeys(model, CODEX_MODEL_KEPT_KEYS);
+        // The pinned native adapter accepts these affirmative capabilities without
+        // declaring a request-transport override. Other compat fields can trigger
+        // a handoff to the Gateway-local runtime, including thinkingLevels.
+        const efforts = isPlainObject(model.compat) ? model.compat.supportedReasoningEfforts : undefined;
+        const keepsEfforts = Array.isArray(efforts) && efforts.length > 0 && efforts.every(
+          (effort) => typeof effort === "string" && /^(minimal|low|medium|high|xhigh|max|ultra)$/u.test(effort),
+        );
+        if (keepsEfforts) kept.compat = { supportedReasoningEfforts: efforts };
         for (const name of Object.keys(model)) {
+          if (name === "compat" && keepsEfforts && Object.keys(model.compat).length === 1) continue;
           if (!CODEX_MODEL_KEPT_KEYS.has(name)) overridden.add(row + "models[]." + name);
         }
-      }
-      pinned.models = provider.models.map((model) => keepKeys(model, CODEX_MODEL_KEPT_KEYS));
+        return kept;
+      });
     }
     // An openai row that names no transport keeps OpenClaw's default, which has
     // no credential in the Gateway, and Codex keeps owning its account's models.
@@ -3111,14 +3240,14 @@ function configureGateway(peerStatus) {
     process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(peerStatus.startupId);
   }
   const pluginInstallStartedAt = Date.now();
-  const install = pluginRuntime?.manifest.kind === "openclaw" ? managedPluginInstallation() : undefined;
+  const installs = pluginRuntime?.manifest.kind === "openclaw"
+    ? managedPluginInstallations() : [];
   const pluginResult =
     pluginRuntime === undefined
       ? { successfulPluginIds: [], failures: peerFailures }
-      : installGatewayPlugins(pluginRuntime, peerFailures, install);
-  const mcp = install?.mcp;
+      : installGatewayPlugins(pluginRuntime, peerFailures, installs);
   // Reviewed MCP names fit OpenClaw's node-host descriptor limits without normalization.
-  const managedMcpGatewayTools = mcp?.toolNames.map((name) => mcp.localServer + "_" + name) ?? [];
+  const managedMcpGatewayTools = installs.flatMap(({ mcp }) => mcp?.toolNames.map((name) => mcp.localServer + "_" + name) ?? []);
   if (pluginRuntime !== undefined) {
     logStartupPhase("plugin-install", pluginInstallStartedAt);
   }
@@ -3169,6 +3298,7 @@ let respawning = false;
 let waitingForPeerDuringOutage = false;
 let verifyingServingReplacement = false;
 let stoppingContainer = false;
+const DELIBERATE_RESTART_EXIT_STATUS = ${DELIBERATE_RESTART_EXIT_STATUS};
 let gatewayGeneration = 0;
 
 // OpenClaw backs up a config file it can write. One OCC mounted read-only is
@@ -3232,30 +3362,42 @@ function startGatewayProcess() {
       if (spawned === child) childRunning = false;
       resolve();
       if (stoppingContainer) {
-        process.exit(1);
+        process.exit(DELIBERATE_RESTART_EXIT_STATUS);
         return;
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
         if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
           return;
         }
-        process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
+        // A native exit never passes as a deliberate restart, which Compute does not count
+        // toward a crash loop.
+        process.exit(code === DELIBERATE_RESTART_EXIT_STATUS ? 1 : (code ?? (signal === "SIGTERM" ? 0 : 1)));
       }
     });
   });
   return Date.now();
 }
 
-// Fall back to a container restart, which the kubelet backs off.
-function stopContainer() {
+// Fall back to a container restart, which the kubelet backs off. The wrapper exits
+// DELIBERATE_RESTART_EXIT_STATUS, which Kubernetes Compute never counts toward a crash loop
+// (finding 3041), and names the reason in its log and in the container's termination message.
+function stopContainer(reason) {
   if (stoppingContainer) return;
   stoppingContainer = true;
+  logStartupPhase("container-restart", startupPhaseOrigin, "failed", reason);
+  unexplainedExitsSettled = true;
+  if (countsUnexplainedExits) {
+    try {
+      require("node:fs").rmSync(UNEXPLAINED_EXITS_PATH, { force: true });
+    } catch {}
+  }
+  writeTerminationMessage(${JSON.stringify(DELIBERATE_RESTART_MESSAGE)} + reason.toLowerCase().replaceAll("_", "-"));
   if (!childRunning) {
-    process.exit(1);
+    process.exit(DELIBERATE_RESTART_EXIT_STATUS);
     return;
   }
   stopNativeGateway(child, "SIGTERM");
-  setTimeout(() => process.exit(1), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
+  setTimeout(() => process.exit(DELIBERATE_RESTART_EXIT_STATUS), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
 }
 
 let pluginResult;
@@ -3277,7 +3419,7 @@ const started = configureGateway(peerStatus);
 const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
 const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
 if (
-  outdatedDatabases.length > 0 &&
+  (outdatedDatabases.length > 0 || openClawMaintenancePending(gatewayStateDirectory)) &&
   !(await migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env))
 ) {
   setInterval(() => {}, 3600000);
@@ -3334,7 +3476,7 @@ if (workspaceNodeBindingPath !== undefined) {
       stoppingForChangedWorkspaceNode = true;
       clearInterval(workspaceNodePoll);
       logStartupPhase("workspace-node-changed", startupPhaseOrigin);
-      stopContainer();
+      stopContainer("WORKSPACE_NODE_CHANGED");
       return;
     }
     firstSeenAt ??= Date.now();
@@ -3449,7 +3591,11 @@ if (followsPeerStatus) {
   // A changed Harness peer requires a new credential for the replacement and
   // may change the configured plugin result. Respawn only the native process:
   // the container, its volumes and runtime assets stay, and there is no kubelet
-  // crash-loop backoff.
+  // crash-loop backoff. A respawn that fails falls back to a deliberate container
+  // restart, named HARNESS_PEER_CHANGED when the peer kept changing or went away and
+  // HARNESS_PEER_RESPAWN_FAILED otherwise (a replacement that never served). A fresh
+  // container that cannot start then exits on its own, and that exit counts.
+  const peerChangeFailure = (message) => Object.assign(new Error(message), { peerChanged: true });
   const respawnForPeerStatus = async (current) => {
     respawning = true;
     // Mark plugin status unready before replacing the native Gateway.
@@ -3474,7 +3620,7 @@ if (followsPeerStatus) {
         recentRespawns.shift();
       }
       if (recentRespawns.length >= GATEWAY_RESPAWN_LIMIT) {
-        throw new Error("The Harness peer changed too often to respawn the Gateway in place.");
+        throw peerChangeFailure("The Harness peer changed too often to respawn the Gateway in place.");
       }
       recentRespawns.push(respawnStartedAt);
       await stopGatewayProcess();
@@ -3506,11 +3652,11 @@ if (followsPeerStatus) {
       }
       if (gatewayTerminating || !childRunning) return;
       if (verifiedPeer === undefined) {
-        throw new Error("The Harness peer became unavailable during Gateway startup.");
+        throw peerChangeFailure("The Harness peer became unavailable during Gateway startup.");
       }
       if (peerChanged(verifiedPeer)) {
         logStartupPhase("peer-verification-changed", respawnStartedAt, "failed");
-        throw new Error("The Harness peer changed during Gateway startup.");
+        throw peerChangeFailure("The Harness peer changed during Gateway startup.");
       }
       publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
       logStartupPhase("gateway-respawn", respawnStartedAt);
@@ -3519,7 +3665,7 @@ if (followsPeerStatus) {
       if (holdGatewayToolPolicyFailure(error)) {
         clearInterval(peerStatusPoll);
       } else {
-        stopContainer();
+        stopContainer(error?.peerChanged === true ? "HARNESS_PEER_CHANGED" : "HARNESS_PEER_RESPAWN_FAILED");
       }
     } finally {
       waitingForPeerDuringOutage = false;
@@ -3796,24 +3942,142 @@ function codexRetryDelay(retry) {
 }
 `;
 
-// Preserve the legacy command bytes: running Sandboxes compare their immutable command.
+// Both the resident HTTP handler and the standalone healthcheck use this RPC boundary.
+const CODEX_READINESS_HELPER = String.raw`
+function codexReadinessFailure(url, token) {
+  return new Promise((resolve) => {
+    let socket;
+    let settled = false;
+    let timeout;
+    const settle = (reason) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (socket) {
+        if (reason === undefined) {
+          // A complete response is authoritative; Codex may omit its close reply.
+          // Bound cleanup without making transport closure another health condition.
+          const cleanup = setTimeout(() => socket.terminate(), 250);
+          cleanup.unref();
+          socket.once("close", () => clearTimeout(cleanup));
+          socket.close(1000);
+        } else {
+          socket.terminate();
+        }
+      }
+      resolve(reason);
+    };
+    try {
+      const ReadinessWebSocket = require("ws");
+      socket = new ReadinessWebSocket(url, {
+        headers: { Authorization: "Bearer " + token },
+        perMessageDeflate: false,
+        maxPayload: 65536,
+      });
+    } catch {
+      settle("Codex app-server WebSocket unavailable");
+      return;
+    }
+    timeout = setTimeout(() => settle("Codex app-server initialize request timed out"), 2_000);
+    socket.on("open", () => {
+      // Codex exempts its probe identity from changing the process-wide originator.
+      socket.send(JSON.stringify({
+        id: 1,
+        method: "initialize",
+        params: { clientInfo: { name: "codex_app_server_daemon", version: "1.0.0" } },
+      }));
+    });
+    socket.on("message", (data) => {
+      if (settled) return;
+      let response;
+      try {
+        response = JSON.parse(data.toString("utf8"));
+      } catch {
+        settle("Codex app-server initialize response is invalid");
+        return;
+      }
+      if (response?.id !== 1) return;
+      if (response.error !== undefined) {
+        settle("Codex app-server initialize request failed");
+      } else if (typeof response.result?.userAgent !== "string" || !response.result.userAgent.trim()) {
+        settle("Codex app-server initialize response is invalid");
+      } else {
+        // No later RPC needs an initialized notification (which Codex logs).
+        settle();
+      }
+    });
+    socket.on("close", () => settle("Codex app-server closed before initialization completed"));
+    socket.on("error", () => settle("Codex app-server WebSocket unavailable"));
+  });
+}
+`;
+
+// Only newly admitted OpenShell PAT launches carry this transcript rule.
+const OPENSHELL_PAT_RECOVERY = String.raw`
+    function openShellPatRecovery(events) {
+      if (!providerManagedPat || protectedStartup || pluginRuntime?.manifest.providerTools === "none" ||
+          pluginRuntime?.manifest.modelEndpoint !== undefined) return;
+      // The released supervisor emits this exact object in either key order.
+      const error = "unsupported_l7_protocol";
+      const detail = "HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules";
+      const refusals = [{ error, detail }, { detail, error }].map(
+        (body) => "unexpected status 403 Forbidden: " + JSON.stringify(body) + ", url: wss://chatgpt.com/backend-api/codex/responses");
+      const errors = events.filter((event) => event.type === "error");
+      const upgrades = new Set(errors.filter(({ message }) => {
+        const retry = typeof message === "string" &&
+          /^Reconnecting\.\.\. ([1-9][0-9]?)\/([1-9][0-9]?) \(/.exec(message);
+        return retry && Number(retry[1]) <= Number(retry[2]) &&
+          Number(retry[2]) <= MAX_RECOVERED_STREAM_RETRIES &&
+          refusals.some((cause) => message === retry[0] + cause + ")");
+      }));
+      const advisories = new Set(events.filter((event) => event.type === "item.completed" &&
+        event.item?.type === "error" && refusals.some(
+          (cause) => event.item.message === "Falling back from WebSockets to HTTPS transport. " + cause)));
+      const advisoryIndex = events.findIndex((event) => advisories.has(event));
+      const singleThread = events[0]?.type === "thread.started" &&
+        !events.slice(1).some((event) => event.type === "thread.started");
+      const answerStart = singleThread && upgrades.size === errors.length && advisories.size === 1 &&
+        advisoryIndex > events.findLastIndex((event) => upgrades.has(event)) ? advisoryIndex + 1 : undefined;
+      return {
+        upgrades,
+        answerStart,
+        afterHttpsAdvisory(event) {
+          const boundary = events.slice(0, events.indexOf(event)).findLast((prior) =>
+            advisories.has(prior) || upgrades.has(prior) ||
+            ["thread.started", "turn.started", "turn.completed"].includes(prior.type));
+          return advisories.has(boundary);
+        },
+      };
+    }
+    const pat = openShellPatRecovery(events);
+    let deniedUpgrade;
+`;
+
+// Nested Codex children use their own plugin lifecycle. Keep standalone commands
+// stable while omitting the unused native installer from the bounded supervisor.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
-function agentRuntimeEntrypoint(disableUnboundedConnectionRetries: boolean): string {
+function agentRuntimeEntrypoint({
+  protected: disableUnboundedConnectionRetries = false,
+  computeOwned = false,
+  withNode = false,
+  patRecovery = false,
+} = {}): string {
+  const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${PLUGIN_RUNTIME_HELPERS}
+${pluginRuntimeHelpers(!withNode)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_PLUGIN_STDIO_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
-
+${computeOwned ? CODEX_READINESS_HELPER + "\n" : ""}
 // codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
 // running (finding 2274). Login and the model check run that native binary instead.
 function codexExecutable() {
@@ -3837,13 +4101,17 @@ function agentRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
     return false;
   }
-  let ReadinessWebSocket;
+${
+  computeOwned
+    ? ""
+    : String.raw`  let ReadinessWebSocket;
   try {
     ReadinessWebSocket = require("ws");
   } catch {
     return false;
   }
-  let token = pluginBaseAppServerToken;
+`
+}  let token = pluginBaseAppServerToken;
   try {
     if (pluginRuntimeStatusPort() !== undefined) {
       token = derivePluginAppServerToken(pluginStatusReport.startupId);
@@ -3851,7 +4119,10 @@ function agentRuntimeReady() {
   } catch {
     return false;
   }
-  return new Promise((resolve) => {
+${
+  computeOwned
+    ? "  return codexReadinessFailure(codexAppServerUrl(), token).then((reason) => reason === undefined);"
+    : String.raw`  return new Promise((resolve) => {
     let settled = false;
     let timeout;
     const socket = new ReadinessWebSocket(codexAppServerUrl(), {
@@ -3874,7 +4145,8 @@ function agentRuntimeReady() {
     timeout = setTimeout(() => settle(false), 2_000);
     onSocket("open", () => settle(true));
     onSocket("error", () => settle(false));
-  });
+  });`
+}
 }
 
 startPluginRuntimeStatusServer(agentRuntimeReady);
@@ -4120,8 +4392,15 @@ function codexTransientFailure(message, summary) {
   return summary.providerStatus >= 500 ||
     /server_error|overloaded|at capacity|high demand|stream disconnected|error sending request|connection (?:failed|reset|refused|closed)|broken pipe/i.test(message);
 }
-function codexProbeStatusFailure(message, detail) {
+function codexProbeStatusFailure(message, detail, modelId) {
   const summary = providerErrorSummary(message);
+  // Codex 0.164 formats a provider JSON error as status + error.message and drops error.code.
+  // Recognize that specific 404 for the model sent by this probe, including a reconnect notice.
+  if (summary.providerStatus === 404 && summary.providerCode === undefined) {
+    const match = /^(?:Reconnecting\.\.\. [1-9]\d*\/[1-9]\d* \()?unexpected status 404 Not Found: The model \x60([^\x60\r\n]+)\x60 does not exist or you do not have access to it\.?(?=$|, |\))/.exec(message);
+    if (match?.[1] === modelId) summary.providerCode = "model_not_found";
+  }
+  if (summary.providerCode === "model_not_found") detail = "model_not_found";
   return {
     ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail),
     ...summary,
@@ -4151,6 +4430,7 @@ function probeCodexAuthentication(timeout) {
   try {
     const selectedModel = process.env.OPENCLAW_HARNESS_MODEL;
     if (typeof selectedModel !== "string" || !/^(openai|codex)\/.+/.test(selectedModel)) return finish("UNAVAILABLE");
+    const modelId = selectedModel.slice(selectedModel.indexOf("/") + 1);
     // Pinned native features suppress executable and external tools. Metadata may
     // still advertise apply_patch: read-only + never denies its writes. Any tool
     // event makes this probe unsuccessful, including harmless request_user_input.
@@ -4167,7 +4447,7 @@ function probeCodexAuthentication(timeout) {
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
-      "--model", selectedModel.slice(selectedModel.indexOf("/") + 1),
+      "--model", modelId,
       "-c", "cli_auth_credentials_store=file",
       "-c", 'web_search="disabled"',
       "-c", "project_doc_max_bytes=0",
@@ -4233,11 +4513,19 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     // of an attempt that exits 0 with an answer counts as recovered, like a stream notice.
     let transientFailure;
     let unrecoveredTransientFailure = false;
-    for (const event of events) {
+${patRecovery ? OPENSHELL_PAT_RECOVERY : ""}    for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
-      const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event")
-        : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed") : undefined;
-      // A protected profile (provider tools none) retries nothing, so its transient
+      const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event", modelId)
+        : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed", modelId) : undefined;
+${
+  patRecovery
+    ? `      const upgradeDenied = pat?.upgrades.has(event);
+      if (event.type === "error" && typeof event.message === "string" &&
+          !event.message.startsWith("Reconnecting...") && codexAuthenticationRejected(event.message) &&
+          pat?.afterHttpsAdvisory(event)) return finish("AUTHENTICATION_FAILED");
+`
+    : ""
+}      // A protected profile (provider tools none) retries nothing, so its transient
       // failure is held like any other error event (finding 1599).
       if (failure?.transient === true && pluginRuntime?.manifest.providerTools !== "none") {
         transientFailure ??= failure;
@@ -4245,11 +4533,11 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
         continue;
       }
       if (event.type === "error") {
-        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
-          ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(codexProbeStatusFailure(event.message, "error-event"));
-        continue;
+        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || ${patRecovery ? "(!upgradeDenied && !isRecoveredNativeStreamError(event))" : "!isRecoveredNativeStreamError(event)"} ||
+          ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(failure);
+${patRecovery ? "        if (upgradeDenied) deniedUpgrade = failure;\n" : ""}        continue;
       }
-      if (event.type === "turn.failed") return finish(codexProbeStatusFailure(event.error?.message, "turn-failed"));
+      if (event.type === "turn.failed") return finish(failure);
       if (!allowed.has(event.type) ||
         (event.type.startsWith("item.") && !["agent_message", "reasoning", "error"].includes(event.item?.type))) {
         return finish(probeFailure("PROBE_STATUS", event.type.startsWith("item.") ? "tool-event" : "unexpected-event"));
@@ -4259,14 +4547,22 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     const answered = events.filter((event) => event.type === "turn.completed").length === 1 &&
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
-      events.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
+      events${patRecovery ? ".slice(deniedUpgrade === undefined ? 0 : pat.answerStart)" : ""}.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
         typeof event.item.text === "string" && event.item.text.trim().length > 0);
-    if (transientFailure !== undefined &&
-      (unrecoveredTransientFailure || !answered || result.status !== 0 || result.error)) return finish(transientFailure);
+${
+  patRecovery
+    ? `    const cleanExit = result.status === 0 && !result.error && (deniedUpgrade === undefined || !result.signal);
+    if (deniedUpgrade !== undefined && (pat.answerStart === undefined || !answered || !cleanExit)) {
+      return finish(deniedUpgrade);
+    }
+`
+    : ""
+}    if (transientFailure !== undefined &&
+      (unrecoveredTransientFailure || !answered || ${processFailed})) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.
     if (result.error?.code === "ETIMEDOUT") return finish("MODEL_PROBE_TIMEOUT");
     // A probe killed from outside (not by its own timeout) may pass on a second try.
-    if (result.status !== 0 || result.error) {
+    if (${processFailed}) {
       const exit = probeExitFailure(result);
       return finish(result.error === undefined && ["SIGKILL", "SIGTERM"].includes(result.signal) ? { ...exit, transient: true } : exit);
     }
@@ -4469,8 +4765,81 @@ if (!protectedStartup) {
 `;
 }
 
-export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
-export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint();
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ protected: true });
+// Compute owns these mutable Pod/process launches. Provider-owned immutable
+// Sandbox commands keep their existing bytes and provider readiness contract.
+export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ computeOwned: true });
+export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({
+  computeOwned: true,
+  protected: true,
+});
+
+const WORKSPACE_NODE_SETUP_CODE_HELPER = String.raw`
+// Match OpenShell's provider-file limit and the native connect target-file limit.
+// Bound both delivered bytes and the resulting base64url code before retirement.
+const WORKSPACE_NODE_SETUP_MAX_BYTES = 65_536;
+function readSetupProjection(path) {
+  let descriptor;
+  try {
+    // Secret-volume symlinks and provider-backed files are intentional inputs.
+    descriptor = openSync(path, "r");
+    const buffer = Buffer.alloc(WORKSPACE_NODE_SETUP_MAX_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(descriptor, buffer, length, buffer.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > WORKSPACE_NODE_SETUP_MAX_BYTES) return undefined;
+    const bytes = buffer.subarray(0, length);
+    if (!require("node:buffer").isUtf8(bytes)) return undefined;
+    return bytes.toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+// Both the Gateway's node-only setup producer and the OpenShell provider emit
+// this envelope. Native pairing still owns authentication and expiry handling.
+function completeSetupCode(payload) {
+  if (
+    payload === null || typeof payload !== "object" || Array.isArray(payload) ||
+    typeof payload.bootstrapToken !== "string" || payload.bootstrapToken.trim() === "" ||
+    typeof payload.url !== "string" || payload.url.trim() === "" ||
+    !Number.isSafeInteger(payload.expiresAtMs) || payload.expiresAtMs < 0 ||
+    Object.keys(payload).some((key) => !["url", "bootstrapToken", "expiresAtMs", "tlsFingerprint"].includes(key))
+  ) return undefined;
+  try {
+    const rawUrl = payload.url.trim();
+    if (!/^wss?:\/\/[^/\\]/iu.test(rawUrl) || /[\u0000-\u0020\\]/u.test(rawUrl)) return undefined;
+    const url = new URL(rawUrl);
+    if (
+      (url.protocol !== "ws:" && url.protocol !== "wss:") ||
+      url.username || url.password || url.search || url.hash
+    ) return undefined;
+    let tlsFingerprint;
+    if (payload.tlsFingerprint !== undefined) {
+      if (url.protocol !== "wss:" || typeof payload.tlsFingerprint !== "string") return undefined;
+      const fingerprint = payload.tlsFingerprint.trim().replace(/^sha256:/iu, "");
+      if (!/^[a-f0-9]{64}$/iu.test(fingerprint) && !/^(?:[a-f0-9]{2}:){31}[a-f0-9]{2}$/iu.test(fingerprint)) return undefined;
+      tlsFingerprint = fingerprint.replaceAll(":", "").toLowerCase();
+    }
+    // Compare decoded content, not projection formatting, JSON property order,
+    // or the optional oc-pair prefix. Rewriting the same setup is not renewal.
+    const encoded = Buffer.from(JSON.stringify({
+      url: url.origin + (url.pathname === "/" ? "" : url.pathname),
+      bootstrapToken: payload.bootstrapToken.trim(),
+      expiresAtMs: payload.expiresAtMs,
+      ...(tlsFingerprint === undefined ? {} : { tlsFingerprint }),
+    }), "utf8").toString("base64url");
+    return encoded.length <= WORKSPACE_NODE_SETUP_MAX_BYTES ? encoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+`;
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -4485,7 +4854,8 @@ export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 // the saved device identity. No deadline here: the controller's convergence
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
-function agentWithNodeEntrypoint(entrypoint: string): string {
+
+function agentWithNodeEntrypoint(childArguments: readonly string[]): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
@@ -4535,6 +4905,9 @@ const harnessPath = [
 ].filter(Boolean).join(":");
 const nodeEnv = {
   HOME: process.env.HOME,
+  // Persistent mount ancestors can be root-owned and group-writable. Keep
+  // SQLite staging beneath the container's sticky /tmp; OpenClaw owns its private children.
+  XDG_CACHE_HOME: "/tmp",
   PATH: harnessPath,
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: configPath,
@@ -4602,7 +4975,7 @@ function workspaceBaselineReport(path) {
 // the Harness unready rather than restarting into another Doctor backup.
 (async () => {
 const outdatedDatabases = outdatedOpenClawDatabases(state);
-if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
+if ((outdatedDatabases.length > 0 || openClawMaintenancePending(state)) && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
   holdStartupFailure("state-migration", "UNAVAILABLE");
   return;
 }
@@ -4716,37 +5089,38 @@ const nodeCommands = [
 // whenever the projection is readable and retain the latest complete snapshot
 // as a fallback while the projection is temporarily absent.
 let cachedProviderSetupCode;
-function readSetupCode() {
+${WORKSPACE_NODE_SETUP_CODE_HELPER}
+function readSetupCode({ allowCachedProviderSetup = false } = {}) {
   if (setupEnvironment) return setupEnvironment;
   if (providerSetup) {
     try {
-      const payload = JSON.parse(readFileSync(setupEnvelopePath, "utf8"));
-      if (
-        payload === null ||
-        typeof payload !== "object" ||
-        Array.isArray(payload) ||
-        typeof payload.bootstrapToken !== "string" ||
-        payload.bootstrapToken.length === 0
-      ) {
+      const content = readSetupProjection(setupEnvelopePath);
+      if (content === undefined) return allowCachedProviderSetup ? cachedProviderSetupCode : undefined;
+      const payload = JSON.parse(content);
+      const code = completeSetupCode(payload);
+      if (code === undefined) {
         return undefined;
       }
-      cachedProviderSetupCode = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
-      return cachedProviderSetupCode;
+      cachedProviderSetupCode = code;
+      return code;
     } catch {
-      return cachedProviderSetupCode;
+      return allowCachedProviderSetup ? cachedProviderSetupCode : undefined;
     }
   }
   let code;
   try {
-    code = readFileSync(setupPath, "utf8").trim();
+    code = readSetupProjection(setupPath)?.trim();
+    if (code === undefined) return undefined;
   } catch {
     return undefined;
   }
   const encoded = code.toLowerCase().startsWith("oc-pair://") ? code.slice("oc-pair://".length) : code;
   if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) return undefined;
   try {
-    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-    return payload !== null && typeof payload === "object" && !Array.isArray(payload) ? code : undefined;
+    const decoded = Buffer.from(encoded, "base64url");
+    if (!require("node:buffer").isUtf8(decoded)) return undefined;
+    const payload = JSON.parse(decoded.toString("utf8"));
+    return completeSetupCode(payload);
   } catch {
     return undefined;
   }
@@ -4775,13 +5149,18 @@ function checkSavedIdentity() {
     });
 }
 let nodeSetupWait;
+let runningSetupCode;
+let pendingSetupCode;
 function nodeArguments() {
-  const code = readSetupCode();
+  // A cached provider setup bridges launch-time gaps, but cannot initiate renewal.
+  const code = readSetupCode({ allowCachedProviderSetup: true }) ?? pendingSetupCode;
+  pendingSetupCode = undefined;
+  runningSetupCode = code;
   if (code !== undefined) {
     savedIdentity = "unknown";
     identityRetryAt = 0;
     identityBackoff = 2_000;
-    return ["/app/openclaw.mjs", "node", "run", "--pair-if-needed", code, ...nodeCommands];
+    return ["/app/openclaw.mjs", "node", "run", "--pair-or-reconnect", code, ...nodeCommands];
   }
   if (savedIdentity === "present") return ["/app/openclaw.mjs", "node", "run", ...nodeCommands];
   if (savedIdentity === "unknown" && Date.now() >= identityRetryAt) checkSavedIdentity();
@@ -4791,7 +5170,7 @@ const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
   {
     name: "Codex",
-    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint)])},
+    args: ${JSON.stringify(["-e", ...childArguments])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
@@ -4835,6 +5214,8 @@ function start(slot) {
   function finish() {
     if (finished) return;
     finished = true;
+    clearTimeout(slot.retirementTimer);
+    slot.retirementTimer = undefined;
     slot.child = undefined;
     if (stopping) {
       if (processes.every((entry) => !entry.child)) process.exit(0);
@@ -4875,11 +5256,32 @@ function start(slot) {
     finish();
   });
 }
+// A refreshed Secret or provider projection must reach an already-connected node.
+// Retire only its owned process group; Codex keeps running and the replacement reads
+// the latest complete setup. Missing projections and code removal do not interrupt it.
+const workspaceNode = processes[0];
+const setupRefreshTimer = setupEnvironment ? undefined : setInterval(() => {
+  if (stopping || !workspaceNode.child) return;
+  const code = readSetupCode();
+  if (code === undefined) return;
+  if (workspaceNode.retirementTimer !== undefined) {
+    pendingSetupCode = code;
+    return;
+  }
+  if (code === runningSetupCode) return;
+  pendingSetupCode = code;
+  const child = workspaceNode.child;
+  killGroup(child, "SIGTERM");
+  workspaceNode.retirementTimer = setTimeout(() => killGroup(child, "SIGKILL"), 5_000);
+}, 1_000);
+setupRefreshTimer?.unref();
 function stop(signal) {
   if (stopping) return;
   stopping = true;
+  clearInterval(setupRefreshTimer);
   for (const slot of processes) {
     clearTimeout(slot.timer);
+    clearTimeout(slot.retirementTimer);
     killGroup(slot.child, signal);
   }
   if (processes.every((slot) => !slot.child)) process.exit(0);
@@ -4901,14 +5303,80 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
-export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
+const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  nodeProgramArguments(providerCodexChild),
 );
+export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  nodeProgramArguments(protectedProviderCodexChild),
+);
+export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, computeOwned: true })),
+);
+export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  nodeProgramArguments(
+    agentRuntimeEntrypoint({ withNode: true, computeOwned: true, protected: true }),
+  ),
+);
+
+let patEntrypoint: string | undefined;
+let compactPatLaunch: string | undefined;
+let compactProviderLaunch: string | undefined;
+let compactProtectedLaunch: string | undefined;
+
+function compactWorkspaceNodeLaunch(child: string): string {
+  return agentWithNodeEntrypoint(compactNodeChildArguments(child));
+}
+
+export interface CodexLaunch {
+  readonly providerOwned: boolean;
+  readonly protected: boolean;
+  readonly openShellProgram?: "pat" | "ordinary";
+  readonly withNode?: boolean;
+  readonly workspaceSetup?: boolean;
+}
+
+export function codexLaunchEntrypoint(
+  {
+    providerOwned,
+    protected: protectedLaunch,
+    openShellProgram,
+    withNode,
+    workspaceSetup,
+  }: CodexLaunch = { providerOwned: false, protected: false },
+): string {
+  if (!providerOwned) {
+    if (protectedLaunch) {
+      return withNode
+        ? COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+        : COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
+    }
+    return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (!protectedLaunch && openShellProgram === "pat") {
+    if (withNode) {
+      return (compactPatLaunch ??= compactWorkspaceNodeLaunch(
+        agentRuntimeEntrypoint({ withNode: true, patRecovery: true }),
+      ));
+    }
+    return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
+  }
+  if (!withNode) {
+    return protectedLaunch ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (workspaceSetup && openShellProgram !== undefined) {
+    if (protectedLaunch) {
+      return (compactProtectedLaunch ??= compactWorkspaceNodeLaunch(protectedProviderCodexChild));
+    }
+    return (compactProviderLaunch ??= compactWorkspaceNodeLaunch(providerCodexChild));
+  }
+  return protectedLaunch ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT;
+}
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
-const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${MANAGED_INSTALL_HELPERS}
@@ -4947,35 +5415,37 @@ if (
 // The node state on the Agent's workspace claim outlives runtime image upgrades.
 // Until Doctor has brought it current, readiness does not open it.
 const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
-let nodeStateCurrent = outdatedNodeDatabases.length === 0;
+let nodeStateCurrent = outdatedNodeDatabases.length === 0 && !openClawMaintenancePending(state);
 
-const install = managedPluginInstallation();
-const release = install?.release;
+const installs = managedPluginInstallations();
 const boundCredentialEnv = process.env[${JSON.stringify(managedCredentialEnvironment)}];
 const boundMarker = boundCredentialEnv === undefined ? undefined : process.env[boundCredentialEnv];
 if (boundCredentialEnv !== undefined && (
-  install?.kind !== "cli" || install.credential?.delivery?.env !== boundCredentialEnv ||
+  !installs.some(({ kind, credential }) => kind === "cli" && credential?.delivery?.env === boundCredentialEnv) ||
   (boundMarker !== undefined && !isManagedPluginPlaceholder(boundCredentialEnv, boundMarker, "cli"))
 )) throw new Error("The selected account requires its issued credential placeholder.");
 // The credential adapter recognizes issued markers. A withdrawn attachment supplies no
 // marker after restart; unrelated raw environment values are never treated as credentials.
 const credentialEnvironments = [
   ...${JSON.stringify(managedPluginCredentialEnvironments)},
-  ...Object.values(release?.credentials ?? {}).map((slot) => ({ env: slot.delivery.env, kind: install.kind })),
+  ...installs.flatMap(({ kind, release }) => Object.values(release?.credentials ?? {}).map((slot) => ({ env: slot.delivery.env, kind }))),
 ];
 for (const { env, kind } of credentialEnvironments) {
   if (!isManagedPluginPlaceholder(env, process.env[env], kind)) delete process.env[env];
 }
-const pluginBin = install?.kind === "cli" && release ? join(release.runtimeDirectory, "bin") : undefined;
-if (pluginBin) {
-  const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
-  verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
-}
 
-// The selected credential runtime supplies the placeholder. A withdrawn account
-// leaves the MCP definition staged with discovery disabled.
-let nodeMcp;
-if (install?.mcp) {
+const pluginBins = [];
+const mcpServers = {};
+for (const install of installs) {
+  const { kind, release } = install;
+  if (kind === "cli" && release) {
+    const pluginBin = join(release.runtimeDirectory, "bin");
+    const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
+    verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
+    pluginBins.push(pluginBin);
+  }
+  // A withdrawn account leaves only its own MCP definition staged with discovery disabled.
+  if (!install.mcp) continue;
   const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
   const manifest = JSON.parse(bytes);
   const { delivery, server, localServer, toolNames } = install.mcp;
@@ -4987,18 +5457,14 @@ if (install?.mcp) {
   const matchingPlaceholder = isManagedPluginPlaceholder(delivery.env, placeholder, "mcp");
   const enabled = toolNames.length > 0 && matchingPlaceholder;
   if (!matchingPlaceholder) delete process.env[delivery.env];
-  nodeMcp = {
-    servers: {
-      [localServer]: {
-        enabled,
-        transport: endpoint.type,
-        url: endpoint.url,
-        ...(enabled && {
-          headers: { Authorization: "Bearer " + placeholder },
-          toolFilter: { include: toolNames },
-        }),
-      },
-    },
+  mcpServers[localServer] = {
+    enabled,
+    transport: endpoint.type,
+    url: endpoint.url,
+    ...(enabled && {
+      headers: { Authorization: "Bearer " + placeholder },
+      toolFilter: { include: toolNames },
+    }),
   };
 }
 
@@ -5063,7 +5529,7 @@ writeFileSync(workerConfigPath, JSON.stringify({
     entries: { "file-transfer": { enabled: true } },
   },
   nodeHost: {
-    ...(nodeMcp && { mcp: nodeMcp }),
+    ...(Object.keys(mcpServers).length > 0 && { mcp: { servers: mcpServers } }),
     workerRuns: {
       enabled: true,
       capacity: workerCapacity,
@@ -5076,7 +5542,8 @@ delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
   ...process.env,
-  ...(pluginBin && { PATH: [pluginBin, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
+  XDG_CACHE_HOME: "/tmp",
+  ...(pluginBins.length > 0 && { PATH: [...pluginBins, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };
@@ -5100,6 +5567,7 @@ if (gatewayCa) {
 // restarting into another Doctor backup.
 const doctorEnv = {
   HOME: process.env.HOME,
+  XDG_CACHE_HOME: nodeEnv.XDG_CACHE_HOME,
   PATH: process.env.PATH,
   TMPDIR: temporary,
   OPENCLAW_STATE_DIR: state,
@@ -5113,34 +5581,112 @@ if (!nodeStateCurrent && !(await migrateOpenClawState(state, outdatedNodeDatabas
   return;
 }
 nodeStateCurrent = true;
-// Provider files carry the exact revision's setup envelope. Convert it to the
-// private one-shot target file consumed by connect, without exposing it in argv.
-const target = setupCode ?? Buffer.from(readFileSync(setupEnvelopePath, "utf8")).toString("base64url");
+// Provider updates replace the virtual setup file without restarting this wrapper.
+// Admit a complete envelope before retiring the current connection. Native pairing
+// owns authentication; the wrapper preserves the state directory and device identity.
+${WORKSPACE_NODE_SETUP_CODE_HELPER}
+function readWorkerSetupCode() {
+  if (setupCode !== undefined) return setupCode;
+  try {
+    const content = readSetupProjection(setupEnvelopePath);
+    return content === undefined ? undefined : completeSetupCode(JSON.parse(content));
+  } catch {
+    return undefined;
+  }
+}
 const connectTargetPath = join(state, "connect-target");
-writeFileSync(connectTargetPath, target, { mode: 0o600 });
-const child = spawn(
-  process.execPath,
-  [
-    "/app/openclaw.mjs",
-    "connect",
-    "--target-file",
-    connectTargetPath,
-    "--ephemeral",
-    "--display-name",
-    "OpenClaw Enterprise native worker",
-  ],
-  { stdio: "inherit", env: nodeEnv },
-);
+let child;
+let runningSetupCode;
+let pendingSetupCode;
+let retirementTimer;
+let stopTimer;
 let terminating = false;
+function killWorkerGroup(worker, signal) {
+  if (!worker?.pid) return;
+  try { process.kill(-worker.pid, signal); }
+  catch (error) {
+    // Provider sandboxes can reject signaling a group containing only zombies.
+    if (error.code === "EPERM") worker.kill(signal);
+    else if (error.code !== "ESRCH") throw error;
+  }
+}
+function startWorker(target) {
+  if (terminating) return;
+  runningSetupCode = target;
+  pendingSetupCode = undefined;
+  writeFileSync(connectTargetPath, target, { mode: 0o600 });
+  const worker = spawn(
+    process.execPath,
+    [
+      "/app/openclaw.mjs",
+      "connect",
+      "--target-file",
+      connectTargetPath,
+      "--ephemeral",
+      "--pair-or-reconnect",
+      "--display-name",
+      "OpenClaw Enterprise native worker",
+    ],
+    { stdio: "inherit", env: nodeEnv, detached: true },
+  );
+  child = worker;
+  worker.on("error", () => {
+    console.error("Native worker failed to start.");
+    process.exit(1);
+  });
+  worker.on("exit", (code, signal) => {
+    // A connection may leave worker descendants behind. Retire its entire group
+    // before another connection is allowed to consume the same workspace state.
+    killWorkerGroup(worker, "SIGKILL");
+    clearTimeout(retirementTimer);
+    retirementTimer = undefined;
+    child = undefined;
+    if (!terminating && pendingSetupCode !== undefined) {
+      startWorker(readWorkerSetupCode() ?? pendingSetupCode);
+      return;
+    }
+    clearInterval(setupRefreshTimer);
+    clearTimeout(stopTimer);
+    process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
+  });
+}
+const setupRefreshTimer = setupEnvelopePath ? setInterval(() => {
+  if (terminating) return;
+  const target = readWorkerSetupCode();
+  if (target === undefined) return;
+  if (child === undefined) {
+    startWorker(target);
+    return;
+  }
+  if (retirementTimer !== undefined) {
+    pendingSetupCode = target;
+    return;
+  }
+  if (target === runningSetupCode) return;
+  pendingSetupCode = target;
+  const retiring = child;
+  retirementTimer = setTimeout(() => killWorkerGroup(retiring, "SIGKILL"), 5_000);
+  killWorkerGroup(retiring, "SIGTERM");
+}, 1_000) : undefined;
 const stop = (signal) => {
   if (terminating) return;
   terminating = true;
-  child.kill(signal);
-  setTimeout(() => child.kill("SIGKILL"), 8_000).unref();
+  clearInterval(setupRefreshTimer);
+  clearTimeout(retirementTimer);
+  pendingSetupCode = undefined;
+  if (child === undefined) {
+    process.exit(0);
+    return;
+  }
+  const stopping = child;
+  killWorkerGroup(stopping, signal);
+  stopTimer = setTimeout(() => killWorkerGroup(stopping, "SIGKILL"), 8_000);
+  stopTimer.unref();
 };
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
-child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+const initialSetupCode = readWorkerSetupCode();
+if (initialSetupCode !== undefined) startWorker(initialSetupCode);
 })().catch((error) => {
   console.error(error);
   process.exit(1);
@@ -5257,10 +5803,6 @@ const timeout = setTimeout(
 const { existsSync } = require("node:fs");
 const { createHmac } = require("node:crypto");
 ${PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER}
-let ReadinessWebSocket;
-try {
-  ReadinessWebSocket = require("ws");
-} catch {}
 function derivedToken(startupId) {
   try {
     return derivePluginAppServerTokenFromBase(
@@ -5272,31 +5814,24 @@ function derivedToken(startupId) {
     readinessExit("Codex app-server token inputs are invalid");
   }
 }
+${CODEX_READINESS_HELPER}
 function checkWebSocket(token) {
-  readinessWaitingFor = "the Codex app-server WebSocket";
-  const socket = new ReadinessWebSocket("ws://127.0.0.1:" + process.env.APP_SERVER_PORT, {
-    headers: { Authorization: "Bearer " + token },
-  });
-  const onSocket = (event, listener) => {
-    if (typeof socket.addEventListener === "function") socket.addEventListener(event, listener);
-    else socket.on(event, listener);
-  };
-  onSocket("open", () => {
+  readinessWaitingFor = "the Codex app-server initialize response";
+  codexReadinessFailure("ws://127.0.0.1:" + process.env.APP_SERVER_PORT, token).then((reason) => {
+    if (reason !== undefined) {
+      readinessFail(reason);
+      return;
+    }
     clearTimeout(timeout);
-    socket.close();
     process.exit(0);
   });
-  onSocket("error", (error) =>
-    readinessFail("Codex app-server WebSocket unavailable: " + readinessErrorCode(error)),
-  );
 }
+
 if (
   process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined &&
   !existsSync(process.env.OPENCLAW_PLUGIN_READY_MARKER)
 ) {
   readinessFail("plugin ready marker is missing");
-} else if (ReadinessWebSocket === undefined) {
-  readinessExit("WebSocket client module is unavailable");
 } else if (process.env.OPENCLAW_PLUGIN_STATUS_PORT === undefined) {
   checkWebSocket(process.env.APP_SERVER_TOKEN);
 } else {

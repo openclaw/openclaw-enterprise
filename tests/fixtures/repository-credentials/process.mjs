@@ -26,6 +26,8 @@ export function cleanEnvironment(extra = {}) {
   };
 }
 
+export class FixtureCommandTimeoutError extends Error {}
+
 export async function run(
   command,
   args,
@@ -106,6 +108,9 @@ export async function run(
     const code = await closed;
     // Do not serialize command arguments, output, or cancellation reasons:
     // any of them can contain credentials supplied by the client.
+    if (failure === "timeout") {
+      throw new FixtureCommandTimeoutError("command failed (timeout)");
+    }
     if (failure || (code !== 0 && !allowFailure)) {
       throw new Error(`command failed (${failure ?? `exit ${code}`})`);
     }
@@ -170,7 +175,7 @@ export async function createTlsMaterial(t) {
   const keyFile = join(directory, "key.pem");
   const certFile = join(directory, "cert.pem");
   await writeFile(keyFile, sharedRsaPrivateKeyPem("repository-credentials-tls"), { mode: 0o600 });
-  await writeFile(certFile, cert);
+  await writeFile(certFile, cert, { mode: 0o644 });
   return {
     key: await readFile(keyFile),
     cert: Buffer.from(cert),
@@ -180,7 +185,7 @@ export async function createTlsMaterial(t) {
   };
 }
 
-// Like tests/helpers/listen.mjs (note: positional `port` before `host`, and it returns an
+// Like tests/helpers/listen.ts (note: positional `port` before `host`, and it returns an
 // https URL), but self-contained: the isolation fixture mounts this directory alone into
 // its containers, where tests/helpers is absent.
 export async function listen(t, server, port = 0, host = "127.0.0.1") {

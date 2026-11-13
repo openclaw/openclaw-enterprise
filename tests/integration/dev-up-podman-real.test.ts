@@ -12,8 +12,8 @@ import { availablePort } from "../helpers/available-port.mjs";
 import {
   createQaInstallation,
   launcherEnvironment,
+  prepareQaBundledPresets,
   prepareQaConsoleTheme,
-  prepareQaPreset,
 } from "../helpers/qa-installation.mjs";
 
 const execute = promisify(execFile);
@@ -311,7 +311,8 @@ test(
     // not recovery after Podman assigns a new IP outside the exact source policy.
     await prepareQaConsoleTheme(f);
     await probe();
-    await prepareQaPreset(f, "Codex");
+    const presets = await prepareQaBundledPresets(f);
+    assert.ok(presets.some(({ name }: { name: string }) => name === "Standard Codex"));
     await probe();
   },
 );

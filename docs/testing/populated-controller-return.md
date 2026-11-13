@@ -1,7 +1,14 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Rehearse a populated controller return
 
 Use this local test to check whether the previous OpenClaw Control Plane (OCC)
-controller can serve a draft that the candidate saved. The test creates a new
+controller can serve a draft that the candidate saved after recovering an
+interrupted upgrade. The test creates a new
 installation and PostgreSQL instance, then uses the
 [local image upgrade command](../guides/deploy/local-k3d-image-upgrade.md)
 to change the controller image.
@@ -29,9 +36,8 @@ Stage two distinct, compatible controller images in Docker and k3d. Use
 [verified publications](../guides/deploy/published-images.md#check-publication-and-source)
 or transfer the OCI artifacts from successful
 [native image checks](../release/containers.md#check-native-images-without-publication).
-Public registry publication is not required. For transferred artifacts, retain
-the source SHA, native build/check run and attempt, platform receipt, and OCI
-blob hashes. Verify the archive's root, platform receipt, and reachable blobs
+Public registry publication is not required. For transferred artifacts,
+[retain and verify native export evidence](../release/containers.md#retain-native-export-evidence)
 before loading the images; the source revision label alone does not establish
 approval.
 
@@ -67,7 +73,23 @@ OCC_TEST_PRODUCTION_TUI_REHEARSAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Require the rehearsal to pass without a skip. The archive taken before the upgrade
+Require the rehearsal to pass without a skip. During the forward upgrade, the
+test suspends the exact Helm client after observing its attempt-bound initializer
+Job. Kubernetes finishes the real initialization while Helm remains pending.
+The test terminates and reaps that client, checks the committed PostgreSQL
+history with the candidate's migrator, and runs the supported
+`--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
+The baseline selects an unused documentation-range directory proxy; the candidate
+clears it. Recovery must first refuse the retained egress NetworkPolicy, then
+refuse the retained API environment entry. The fixture explicitly reconciles
+those two removals with UID/resource-version guards while writers remain stopped,
+then retries the same recovery command. Product recovery performs no deletion.
+Recovery must advance exactly one revision without replacing the completed
+initializer Job or Pod or changing the committed migration history. The test
+does not edit Helm storage or disable hooks. If Helm finishes before the
+interruption, the rehearsal fails rather than claiming recovery coverage.
+
+The archive taken before the upgrade
 must omit the candidate's acknowledged draft. The archive taken after the write
 must contain it. The previous controller must accept the restored migration
 history. After the return, both OCC components must use the restored database.
@@ -78,11 +100,104 @@ of the Installation.
 
 See `proof.json` for completed checks and timings and `return-progress.json` for
 the last phase started. Both are in the private evidence directory reported by
-the test. Inspect retained fixture resources after a failure. Set
+the test. The forward upgrade records authenticated HTTPS `GET /installation`
+samples before, during, and after the upgrade, including a failed upgrade. Each
+request has a five-second deadline. Requests run serially on a nominal one-second
+cadence during the upgrade, with at least one second between actual starts.
+Slow requests, evidence writes, and late timer wakes can leave slots unprobed;
+the sampler does not replay those slots. The evidence includes timestamps,
+request durations, received HTTP status even for invalid response bodies,
+and outcomes. Only
+HTTP 200 with the original Installation ID counts as a successful observation.
+A successful sample includes `requestId` when the `x-request-id` header and
+`meta.requestId` match and have the controller’s request ID format. The client omits
+the ID if it contains a known protected value. To identify the serving Pod, find
+that ID in a corresponding `http.completed` record from a known Pod. Samples without the ID still count as successful.
+Response bodies and credentials are omitted. If recording fails, the test reports
+the write failure alongside any upgrade failure, preserving the upgrade as the
+primary cause.
+
+Each completed observation also updates `forward-api-availability.json` in that
+same directory by atomic replacement. If the runner stops, this file retains the
+last saved observations. `upgradeSucceeded: null` means the action has not been
+recorded as finished; do not infer success or recovery from an incomplete file.
+A final boolean records whether the upgrade action succeeded, independently of
+the observed HTTP results. Process interruption does not add an `after` sample.
+This protects completed writes against process termination, not host or disk loss.
+
+In receipt version 2, `nominalIntervalMs` replaces the old sleep interval
+(`intervalAfterResponseMs` is null). Compare `cadence.probedSlots` with
+`cadence.scheduledSlots` to see how many one-second opportunities received a
+completed first attempt. `unprobedSlots` counts the remainder. Slot 0 begins
+when the helper invokes the upgrade. Each `during` sample records the slot
+in which it started and its delay within that slot. Boundary reads have no slot.
+An HTTP error or timeout still counts as a probe.
+
+`gapMs` measures the previous finish to the next start. Use `startGapMs` for
+the interval between starts. `maxStartGapMs` includes the boundary reads.
+`tailGapMs` covers the last start through the last completed response.
+All offsets use the same monotonic clock. Wall-clock timestamps support log
+correlation.
+
+An interrupted receipt covers completed observations through `throughOffsetMs`.
+An open slot can still receive a probe. On settlement, `cadence.endOffsetMs`
+records when the helper observed the upgrade finish, including an exact slot
+boundary. The last in-flight request and the final read can finish later.
+The final file write and time after the last response are outside coverage.
+
+These observations do not add an outage-free pass requirement. They measure the
+fixture's HTTPS route, not exact downtime, public ingress, Slack, or model
+continuity. Availability between requests remains unobserved.
+
+Inspect retained fixture resources after a failure. Set
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` to retain fixture resources after a success.
 Remove the disposable cluster when you finish inspecting the evidence.
 
-A result applies only to the selected source and image pair. A historical
+A result applies only to the selected source and image pair. A pair with
+identical migration catalogs proves the real idempotent initialization and
+committed-history path, not a schema-changing migration. This draft-only
+rehearsal does not prove active Agent, model, or Slack continuity. A historical
 compatible pair does not qualify later schema changes or a deployment of current
 main. Recheck migration, restore and saved-configuration compatibility when
 selecting another pair; retain those limits with the evidence.
+
+## Retain ordinary upgrade observations
+
+The [ordinary TUI upgrade lane](kubernetes.md#run-an-isolated-upgrade-qualification-lane) samples authenticated `GET /installation` through the operator Pod’s
+HTTPS proxy. The runtime window starts before the deliberate interruption and
+includes the checks while both controllers are stopped and the single resume.
+Its success flag covers that sequence. Later fleet checks and model replies have
+their own results. Both receipts use the sample outcomes and cadence described above.
+
+In the fresh `run_dir` from the lane command, retain each available receipt before removing the runner. A phase
+the test never reached has no receipt. An interrupted phase can leave a partial one.
+
+```sh
+for receipt in forward-api-availability.json runtime-api-availability.json; do
+  for source in "$run_dir"/oce-production-tui-*/"$receipt"; do
+    if [ -f "$source" ]; then
+      install -m 600 "$source" "$run_dir/$receipt" || exit 1
+    fi
+  done
+done
+```
+
+## Check a separate migration while the incumbent serves
+
+Use the same local fixture and image inputs with
+`OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION=1` in place of
+`OCC_TEST_PRODUCTION_TUI_REHEARSAL=1`. Select an image pair whose candidate
+appends entries to the incumbent's canonical PostgreSQL migration catalog.
+
+The test installs the previous release and runs the candidate chart's migrator
+in a separate Job. It holds the real PostgreSQL migration lock and confirms the
+candidate is waiting for it on both sides of a successful authenticated HTTPS
+request. After releasing the lock, it checks the Job exit, verifies the complete
+ordered migration history against the candidate catalog, and repeats the read
+through the original API endpoint. The original API and worker Pod identities
+and Helm release must remain unchanged at the measured checks.
+
+This test does not change how the production upgrade command runs. The reads
+show that the incumbent served before, while the candidate waited, and after
+the migration completed. They do not measure availability during SQL execution
+or qualify overlapping API or worker versions, browser sessions, or rollback.

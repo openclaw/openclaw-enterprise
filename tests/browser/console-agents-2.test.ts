@@ -1,9 +1,20 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  openCreateSecretDialog,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  assertAgentNameTaken,
+  optionValues,
+  runProvisioningPolls,
+  waitForProvisioningFailure,
+  createAgentThroughForm,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { ServerResponse } from "node:http";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page, Response, Route } from "playwright";
 
@@ -21,52 +32,45 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  persistedDeploymentError,
   apiRequests,
   login,
+  isRecord,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
   pathRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   takeLayoutShifts,
-  trackSettledFetches,
-  waitForCondition,
   waitForEnabled,
-  waitForIdleFetches,
-  waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
-  openCreateSecretDialog,
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
+  settledFetches,
+  trackSettledFetches,
+  waitForIdleFetches,
+} from "./console-fetch-accounting.ts";
+import {
   configurationPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
-  assertAgentNameTaken,
-  optionValues,
   raceAgentName,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
-  createAgentThroughForm,
-  submitCreateAgent,
-  routeProvisioningJob,
-  provisioningJob,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_NAME_CONFLICT,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -75,8 +79,6 @@ import {
   RESOURCE_CONFLICT,
   POD_QUOTA_FULL,
   PROVISIONING_NOT_COMPLETED,
-  IMAGE_PULL_FAILING,
-  codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
@@ -85,8 +87,6 @@ const defaultCodexPreset = JSON.parse(
 );
 const createConsoleAppFixture = (t: TestContext, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
-
-type ProvisioningMessage = NonNullable<ProvisioningStatus["error"]>;
 
 declare global {
   var provisioningWrites: string[];
@@ -220,6 +220,170 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
   assert.equal(pathRequests(requests, "POST", `${url}/retry`).length, 1);
   assert.equal(pathRequests(requests, "POST", `${other}/retry`).length, 0);
 });
+
+for (const malformed of ["revision ID", "error message"] as const) {
+  test(`Create handles a terminal provisioning reply with malformed ${malformed}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Malformed ${malformed}`, { ready: true });
+    // The job has already handed off a real saved Agent/version. Corrupt only its HTTP reply.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Malformed reply Agent",
+      nativeValues("reply"),
+    );
+    const revision = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+    const root = `/namespaces/${namespace.id}/agents/provision`;
+    const work = provisioningJob(namespace.id, `work_${randomUUID()}`);
+    const served = await routeProvisioningJob(page, fixture, work, null);
+    const meta = { requestId: `req_${randomUUID()}` };
+    const malformedMessage = { detail: "Unreadable provisioning message" };
+    await page.route(`${fixture.origin}${work.url}`, (route) => {
+      if (
+        route.request().method() !== "GET" ||
+        new URL(route.request().url()).pathname !== work.url
+      ) {
+        return route.continue();
+      }
+      return route.fulfill({
+        status: 200,
+        json: {
+          data: work.job("failed", {
+            requestId: served.requestId,
+            phase: "handoff",
+            agentId: agent.id,
+            revisionId: malformed === "revision ID" ? 17 : revision.id,
+            error: {
+              code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+              message:
+                malformed === "error message"
+                  ? malformedMessage
+                  : "Credential initialization failed.",
+            },
+          }),
+          meta,
+        },
+      });
+    });
+    const retryPath = `${work.url}/retry`;
+    await page.route(`${fixture.origin}${retryPath}`, (route) => {
+      if (
+        route.request().method() !== "POST" ||
+        new URL(route.request().url()).pathname !== retryPath
+      ) {
+        return route.continue();
+      }
+      return route.fulfill(
+        apiErrorResponse(
+          409,
+          "RESOURCE_CONFLICT",
+          "The Agent lifecycle does not allow provisioning retry.",
+        ),
+      );
+    });
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill(agent.name);
+    await enterManualModel(page, "test-malformed-reply-key");
+    // Start the write trace after credential setup: submission must only admit this one job.
+    const requests = apiRequests(page, fixture.origin);
+    const responseAt = (method: string, path: string) =>
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === method && response.url() === `${fixture.origin}${path}`,
+      );
+    const admittedResponse = responseAt("POST", root);
+    const terminalResponse = responseAt("GET", work.url);
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    await runProvisioningPolls(page, () => create.click(), work.url, 1);
+    const admitted = await admittedResponse;
+    assert.equal(admitted.status(), 202);
+    const accepted = await admitted.json();
+    const submitted = pathRequests(requests, "POST", root)[0];
+    const body = submitted?.body;
+    assert.ok(body && typeof body === "object" && "requestId" in body);
+    assert.equal(typeof body.requestId, "string");
+    assert.equal(accepted.data.provisioning.requestId, body.requestId);
+    assert.equal(accepted.data.provisioning.url, work.url);
+    const httpRequestId: unknown = accepted.meta.requestId;
+    assert.ok(
+      typeof httpRequestId === "string" && httpRequestId.trim().length > 0,
+      "admission includes a nonempty HTTP request ID",
+    );
+    assert.notEqual(
+      httpRequestId,
+      body.requestId,
+      "HTTP request metadata is not the original provisioning request identity",
+    );
+    const terminal = await terminalResponse;
+    assert.equal(terminal.status(), 200);
+    const reply = await terminal.json();
+    assert.equal(reply.data.status, "failed");
+    assert.equal(reply.data.requestId, body.requestId);
+    assert.equal(reply.data.workId, work.workId);
+    assert.equal(reply.data.url, work.url);
+    assert.equal(reply.data.agentId, agent.id);
+    assert.equal(reply.meta.requestId, meta.requestId);
+    assert.notEqual(reply.meta.requestId, body.requestId);
+    assert.equal(reply.data.error.code, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+    assert.deepEqual(reply.data.revisionId, malformed === "revision ID" ? 17 : revision.id);
+    assert.deepEqual(
+      reply.data.error.message,
+      malformed === "error message" ? malformedMessage : "Credential initialization failed.",
+    );
+    const writePaths = () =>
+      nonAuthWriteRequests(requests).map(({ method, path }) => [method, path]);
+    assert.deepEqual(writePaths(), [["POST", root]]);
+    assert.equal(served.submitted, 1);
+    const alert = page.locator("#create-agent-form ~ p[role=alert]");
+    const retry = page.getByRole("button", { name: "Retry provisioning request", exact: true });
+    const link = page.getByRole("link", { name: "Open Agent and deployment details", exact: true });
+    await alert.filter({ hasText: /\S/ }).waitFor();
+    const feedback = await alert.innerText();
+    if (malformed === "revision ID") {
+      assert.match(feedback, /^Outcome unknown after provisioning admission/);
+      assert.equal(await create.isDisabled(), true);
+      assert.equal(
+        await alert.getByRole("link").count(),
+        0,
+        "an invalid version must not offer recovery for a different or absent version",
+      );
+      assert.equal(await retry.isVisible(), true);
+      const refusedResponse = responseAt("POST", retryPath);
+      await retry.click();
+      const refused = await refusedResponse;
+      assert.equal(refused.status(), 409);
+      assert.equal(
+        (await refused.json()).error.message,
+        "The Agent lifecycle does not allow provisioning retry.",
+      );
+      await alert.filter({ hasText: "resend the same request ID" }).waitFor();
+      await waitForEnabled(create);
+      assert.deepEqual(writePaths(), [
+        ["POST", root],
+        ["POST", retryPath],
+      ]);
+      assert.equal(served.submitted, 1, "retry refusal must not admit another job");
+    } else {
+      assert.match(feedback, /^Provisioning did not complete\./);
+      assert.doesNotMatch(
+        feedback,
+        /\[object Object\]|Unreadable provisioning message|Outcome unknown|submit a new request/,
+      );
+      const href = await link.getAttribute("href");
+      assert.ok(href);
+      const target = new URL(href, fixture.origin);
+      assert.equal(target.pathname, `/console/agents/${agent.id}`);
+      assert.equal(target.searchParams.get("namespace"), namespace.id);
+      assert.equal(target.searchParams.get("revision"), revision.id);
+      assert.equal(await retry.isVisible(), false);
+      assert.deepEqual(writePaths(), [["POST", root]]);
+    }
+  });
+}
 
 test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -787,16 +951,10 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
     },
   ];
   let current = cases[0]!;
-  // A versioned job already identifies its revision when Create admits it.
-  await routeProvisioningJob(
-    page,
-    {
-      ...work,
-      job: (status, extra) =>
-        current.job.revisionId ? work.job("running", handoff) : work.job(status, extra),
-    },
-    () => work.job("failed", current.job),
-  );
+  // Create admits each job before handoff, and its first read already finds it ended: a job seen
+  // past handoff while still running opens its Agent instead (see the handoff test below), so
+  // the form explains only an ending it observed before then.
+  await routeProvisioningJob(page, fixture, work, () => work.job("failed", current.job));
   await page.route(`**/namespaces/${namespace.id}/agents/${kept.id}`, (route) =>
     current.read
       ? route.fulfill({
@@ -888,6 +1046,11 @@ test("Dedicated Agent creation keeps the first revision observed after admission
     const work = provisioningJob(namespace.id, "work_revision");
     const { page } = await newPage(t, fixture);
     await routeDedicatedProvisioning(page, fixture, namespace);
+    // A refused deployment keeps the form following the job past handoff.
+    await page.route(
+      `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+      (route) => route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
+    );
     const handoff = {
       agentId: agent.id,
       configurationId: agent.configurationId,
@@ -908,7 +1071,7 @@ test("Dedicated Agent creation keeps the first revision observed after admission
         error: { code: "REVISION_SUPERSEDED", message: "Deployment was superseded." },
       }),
     ];
-    const served = await routeProvisioningJob(page, work, (index) => {
+    const served = await routeProvisioningJob(page, fixture, work, (index) => {
       const observation = observations[index];
       assert.ok(observation, "unexpected additional provisioning poll");
       return observation;
@@ -947,6 +1110,366 @@ test("Dedicated Agent creation keeps the first revision observed after admission
     await page.close();
   }
 });
+
+// At handoff the job has created its Agent and admitted the first revision, and only waits for
+// that deployment. Create Agent opens the Agent's Deployment tab then, where the deployment's
+// waits, Stop and recovery show, instead of holding the form until the deployment ends (plan 35:
+// "progress switches to the exact ordinary deployment view"). It stops polling the job.
+test("Dedicated Agent creation opens the Agent's deployment at handoff", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Open at handoff", { ready: true });
+  // A real Agent and revision, so the page it opens can read them through the API.
+  const agent = await fixture.createAgent(namespace.id, "Handed off Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const work = provisioningJob(namespace.id, "work_handoff");
+  const viewport = { width: 390, height: 844 };
+  const { page } = await newPage(t, fixture, { context: { viewport } });
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const handoff = {
+    agentId: agent.id,
+    configurationId: agent.configurationId,
+    revisionId: revision.id,
+    phase: "handoff",
+  };
+  // The job creates its Configuration, then hands off its first deployment, which still runs.
+  const observations = [
+    work.job("running", { configurationId: agent.configurationId }),
+    work.job("running", handoff),
+  ];
+  const served = await routeProvisioningJob(page, fixture, work, (index) => {
+    const observation = observations[index];
+    assert.ok(observation, "Create polled the job after it handed off");
+    return observation;
+  });
+  // A first deployment this caller may read, waiting on a full Pod quota; the test API has
+  // no Compute and would answer 503, which the form treats as "ask again at the next poll".
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
+  let deploymentReadError: 403 | 503 | undefined;
+  await page.route(`**${deploymentPath}`, (route) => {
+    if (deploymentReadError === 403) {
+      return route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL));
+    }
+    if (deploymentReadError === 503) {
+      return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable."));
+    }
+    return route.fulfill({
+      json: {
+        data: {
+          deploymentId: revision.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status: "queued",
+          error: null,
+          warnings: [],
+          // A wait the operator must act on, which the Deployment tab must show them.
+          progress: {
+            lastAttempt: {
+              at: new Date().toISOString(),
+              code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+              message: POD_QUOTA_FULL,
+            },
+            nextAttemptAt: new Date().toISOString(),
+          },
+        },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      },
+    });
+  });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Handed off Agent");
+  await enterManualModel(page, "test-model-key");
+  await runProvisioningPolls(
+    page,
+    () => page.getByRole("button", { name: "Create Agent" }).click(),
+    work.url,
+    observations.length,
+  );
+  await page.waitForURL((location) => location.pathname === `/console/agents/${agent.id}`);
+  const location = new URL(page.url());
+  assert.equal(location.searchParams.get("revision"), revision.id);
+  assert.equal(location.searchParams.get("tab"), "deployment");
+  await page.getByRole("heading", { name: "Handed off Agent" }).waitFor();
+  await page.getByRole("tab", { name: "Deployment", selected: true }).waitFor();
+  const deployment = page
+    .getByRole("region", { name: "Agent state at a glance", exact: true })
+    .getByText("Latest visible deployment", { exact: true })
+    .locator("..");
+  const quota = deployment.getByText(POD_QUOTA_FULL, { exact: true });
+  await quota.waitFor();
+  await deployment.getByText("v1", { exact: true }).waitFor();
+  // The operator can read the entire remedy on arrival at phone width.
+  const bounds = await quota.boundingBox();
+  assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= viewport.height);
+  assert.equal(await quota.getAttribute("data-tone"), null);
+  const activity = page.getByRole("region", { name: "Deployment activity", exact: true });
+  const details = activity.locator("details");
+  await details.waitFor();
+  const disclosure = details.getByText("Deployment details", { exact: true });
+  if ((await details.getAttribute("open")) !== null) {
+    await disclosure.click();
+  }
+  // Folding the details leaves the summary as the only visible copy of the wait.
+  await quota.waitFor();
+  assert.equal(await activity.getByText(POD_QUOTA_FULL).filter({ visible: true }).count(), 0);
+  await waitForIdleFetches(page);
+
+  // An unavailable status keeps a marked last-known wait. A refusal clears it.
+  for (const status of [503, 403] as const) {
+    deploymentReadError = status;
+    const [response] = await Promise.all([
+      page.waitForResponse(
+        (reply) => reply.request().method() === "GET" && reply.url().endsWith(deploymentPath),
+      ),
+      page.clock.runFor(DEPLOYMENT_POLL_MS),
+    ]);
+    assert.equal(response.status(), status);
+    if (status === 503) {
+      await deployment
+        .getByText(`Update delayed. Last recorded: ${POD_QUOTA_FULL}`, { exact: true })
+        .waitFor();
+      assert.equal(await details.getAttribute("open"), null);
+    }
+  }
+  await waitForIdleFetches(page);
+  await deployment
+    .getByText("Recorded deployment status could not be read.", { exact: true })
+    .waitFor();
+  assert.equal(await deployment.getByText(POD_QUOTA_FULL).count(), 0);
+  assert.equal(await activity.getByText(POD_QUOTA_FULL).count(), 0);
+  // The Agent page follows its deployment throughout, using no more job reads.
+  assert.equal(served.reads, observations.length);
+  assert.equal(await settledFetches(page, work.url), observations.length);
+});
+
+// While the form still follows the job, it shows the wait the job names (a full Pod quota) when
+// the deployment read is only unavailable, so the operator can act on it; a refused read keeps
+// the line generic, since the details belong to a deployment this caller may not read.
+for (const mode of ["unavailable", "refused"] as const) {
+  test(`Create names the job's quota wait when the first deployment read is ${mode}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Quota ${mode}`, { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Quota Agent", nativeValues("v1"));
+    const revision = await fixture.deployAgent(namespace.id, agent.id);
+    const work = provisioningJob(namespace.id, `work_quota_${mode}`);
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+    const handoff = {
+      agentId: agent.id,
+      configurationId: agent.configurationId,
+      revisionId: revision.id,
+      phase: "handoff",
+    };
+    const quota = {
+      ...handoff,
+      progress: {
+        lastAttempt: {
+          at: work.updatedAt,
+          code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+          message: POD_QUOTA_FULL,
+        },
+        nextAttemptAt: work.updatedAt,
+      },
+    };
+    const observations = [
+      work.job("running", quota),
+      work.job("running", quota),
+      work.job("failed", handoff),
+    ];
+    const served = await routeProvisioningJob(page, fixture, work, observations);
+    await page.route(
+      `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+      (route) =>
+        route.fulfill(
+          mode === "refused"
+            ? apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)
+            : apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable."),
+        ),
+    );
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill("Quota Agent");
+    await enterManualModel(page, "test-model-key");
+    await page.evaluate(recordProvisioningWrites, ["Provisioning", "The Namespace"]);
+    await runProvisioningPolls(
+      page,
+      () => page.getByRole("button", { name: "Create Agent" }).click(),
+      work.url,
+      observations.length,
+    );
+    await waitForProvisioningFailure(page);
+    assert.equal(served.reads, observations.length);
+    assert.equal(new URL(page.url()).pathname, "/console/agents/new");
+    assert.deepEqual(
+      await page.evaluate(() => globalThis.provisioningWrites),
+      mode === "refused"
+        ? ["Provisioning request accepted.", "Provisioning queued…", "Provisioning Agent…"]
+        : ["Provisioning request accepted.", "Provisioning queued…", POD_QUOTA_FULL],
+    );
+  });
+}
+
+// A revision read Restriction can refuse the first deployment to a caller its provisioning job
+// still answers (tests/integration/postgres-agent-provisioning.test.mjs). That caller would find
+// nothing on the Deployment tab, so the form keeps following the job, asks once whether the
+// deployment is readable, and opens the Agent when the job succeeds, as before handoff opened it.
+test("Dedicated Agent creation keeps following the job when the first deployment is unreadable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unreadable handoff", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Restricted Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const work = provisioningJob(namespace.id, "work_restricted");
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const handoff = {
+    agentId: agent.id,
+    configurationId: agent.configurationId,
+    revisionId: revision.id,
+    phase: "handoff",
+  };
+  const observations = [
+    work.job("running", { configurationId: agent.configurationId }),
+    work.job("running", handoff),
+    work.job("running", handoff),
+    work.job("succeeded", handoff),
+  ];
+  const served = await routeProvisioningJob(page, fixture, work, (index) => {
+    const observation = observations[index];
+    assert.ok(observation, "Create polled the job after it ended");
+    return observation;
+  });
+  // The deployment is refused to this caller, as the Restriction refuses it.
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
+  // Reads the form makes; the Agent page it opens reads the deployment again on its own.
+  let formDeploymentReads = 0;
+  await page.route(`**${deploymentPath}`, (route) => {
+    if (new URL(page.url()).pathname === "/console/agents/new") {
+      formDeploymentReads += 1;
+    }
+    return route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL));
+  });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Restricted Agent");
+  await enterManualModel(page, "test-model-key");
+  await runProvisioningPolls(
+    page,
+    () => page.getByRole("button", { name: "Create Agent" }).click(),
+    work.url,
+    observations.length,
+  );
+  await page.waitForURL((location) => location.pathname === `/console/agents/${agent.id}`);
+  const location = new URL(page.url());
+  assert.equal(location.searchParams.get("revision"), revision.id);
+  assert.equal(location.searchParams.get("tab"), "configuration");
+  assert.equal(served.reads, observations.length);
+  // The form asked once; the refusal settled it for the rest of the job.
+  assert.equal(formDeploymentReads, 1);
+});
+
+// The readability check is optional. Even a response whose headers arrived and whose body
+// stalls gets only the time until the next job read (as 56ee73f8 kept for the form's earlier
+// deployment read), so a job that ends meanwhile is seen at its one-second poll, not after the
+// API client's 15-second timeout.
+for (const leave of [false, true]) {
+  const name = leave
+    ? "Leaving Create Agent while the first deployment read stalls stops following the job"
+    : "Create reads the job at the next poll while the first deployment read stalls";
+  test(name, async (t) => {
+    const deploymentReads = { started: Promise.withResolvers<void>(), path: "" };
+    const fixture = await createConsoleAppFixture(t, {
+      async onSend(request: { url: string }, reply: StalledReply, payload: unknown) {
+        if (!deploymentReads.path || !request.url.endsWith(deploymentReads.path)) {
+          return payload;
+        }
+        reply.hijack();
+        reply.raw.writeHead(200, { "content-type": "application/json" });
+        reply.raw.write('{"data":', () => deploymentReads.started.resolve());
+      },
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Stalled handoff", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Stalled Agent", nativeValues("v1"));
+    const revision = await fixture.deployAgent(namespace.id, agent.id);
+    deploymentReads.path = `/agents/${agent.id}/deployments/${revision.id}`;
+    const work = provisioningJob(namespace.id, "work_stalled_probe");
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+    const handoff = {
+      agentId: agent.id,
+      configurationId: agent.configurationId,
+      revisionId: revision.id,
+      phase: "handoff",
+    };
+    const observations = [work.job("running", handoff), work.job("succeeded", handoff)];
+    const served = await routeProvisioningJob(page, fixture, work, (index) => {
+      const observation = observations[index];
+      assert.ok(observation, "Create polled the job after it ended");
+      return observation;
+    });
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill("Stalled Agent");
+    await enterManualModel(page, "test-model-key");
+    await page.clock.install();
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    await page.getByText("Provisioning queued…").waitFor();
+    // Admission answered queued. The next poll reads the handoff and starts the deployment read;
+    // the browser must receive its 200 headers before the clock moves again, so the check is
+    // cancelled with its body open, not before it was answered.
+    const [response] = await Promise.all([
+      page.waitForResponse((candidate) => candidate.url().endsWith(deploymentReads.path), {
+        timeout: 5_000,
+      }),
+      page.clock.runFor(1_000),
+    ]);
+    assert.equal(response.status(), 200);
+    await deploymentReads.started.promise;
+    const cancelled = page.waitForEvent("requestfailed", {
+      predicate: (request) => request === response.request(),
+      timeout: 5_000,
+    });
+    if (leave) {
+      await page.getByRole("link", { name: "Agents", exact: true }).click();
+      await cancelled;
+      await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+      await page.clock.runFor(2_000);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      // The departed view neither reads the old job again nor opens its Agent.
+      assert.equal(served.reads, 1);
+      assert.equal(new URL(page.url()).pathname, "/console/agents");
+      return;
+    }
+    // Hold the terminal job read until the deployment read is cancelled, so navigation to the
+    // Agent cannot be what cancels it.
+    await page.route(`**${work.url}`, async (route) => {
+      await cancelled;
+      await route.fallback();
+    });
+    await Promise.all([
+      page.waitForRequest((request) => request.url().endsWith(work.url), { timeout: 5_000 }),
+      page.clock.runFor(1_000),
+    ]);
+    await page.waitForURL((location) => location.pathname === `/console/agents/${agent.id}`);
+    assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
+    assert.equal(served.reads, observations.length);
+  });
+}
+
+type StalledReply = {
+  hijack(): void;
+  raw: {
+    writeHead(status: number, headers: Record<string, string>): void;
+    write(chunk: string, callback: () => void): void;
+  };
+};
 
 test("Create preserves the admitted version when the operator resends the same provisioning request", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -1002,6 +1525,12 @@ test("Create preserves the admitted version when the operator resends the same p
           json: { data: { provisioning }, meta: { requestId: `req_${randomUUID()}` } },
         });
       });
+      // The first deployment is refused to this caller, so the form keeps following the job it
+      // admitted and the guard that pins its first revision across a resend stays in play.
+      await page.route(
+        `**/namespaces/${namespace.id}/agents/${first.agentId}/deployments/${first.revisionId}`,
+        (route) => route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
+      );
       await page.route(`**${jobUrl}`, (route) =>
         route.fulfill(
           apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Provisioning status unavailable."),
@@ -1127,7 +1656,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   const { url, job, failed } = work;
   // The worker starts the job, waits to retry it, then retries it twice before it fails.
   const reads = [job("running"), job("queued"), job("running"), job("running"), failed()];
-  const served = await routeProvisioningJob(page, work, reads);
+  const served = await routeProvisioningJob(page, fixture, work, reads);
 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -1152,455 +1681,6 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
     "Provisioning Agent…",
   ]);
 });
-
-// Show the Pod quota reason while the deployment reports it. If the reason changes or the
-// reader loses access, show generic progress again. A cancelled poll or a temporary outage
-// does not establish either change (findings 1617, 1637). The page clock drives the one-second
-// polls, so the four modes don't wait for them in real time.
-test("Dedicated Agent creation names a full Namespace Pod quota while it waits", async (t) => {
-  for (const mode of ["readable", "refused", "interrupted", "access lost"] as const) {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Pod quota ${mode}`, {
-      ready: true,
-    });
-    const { page } = await newPage(t, fixture);
-    await routeDedicatedProvisioning(page, fixture, namespace);
-    const work = provisioningJob(namespace.id, "work_quota");
-    const { updatedAt, job, failed } = work;
-    const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
-    const agentId = "agt_00000000-0000-4000-8000-00000000a617";
-    const revisionId = "rev_00000000-0000-4000-8000-00000000a617";
-    const handedOff = {
-      phase: "handoff",
-      agentId,
-      configurationId: "cfg_quota",
-      revisionId,
-    } as const;
-    // The job starts, creates its Agent, hands off its first deployment, which waits on the
-    // quota for two reads and then on the runtime, and the job then fails.
-    const reads = [
-      job("running"),
-      job("running", { phase: "transport", agentId }),
-      job("running", handedOff),
-      job("running", handedOff),
-      job("running", handedOff),
-      failed(handedOff),
-    ];
-    const served = await routeProvisioningJob(page, work, reads);
-    const attempts: (ProvisioningMessage | "stalled" | "unavailable")[] =
-      mode === "interrupted"
-        ? [
-            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: POD_QUOTA_FULL },
-            "stalled",
-            "unavailable",
-          ]
-        : [
-            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: POD_QUOTA_FULL },
-            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: POD_QUOTA_FULL },
-            { code: "REVISION_INCOMPLETE", message: "Waiting for the runtime to become ready." },
-          ];
-    const deploymentReads: number[] = [];
-    const deploymentRequests = [];
-    const stalledRead = Promise.withResolvers<void>();
-    let stalledCancelled = Promise.resolve(false);
-    page.on("request", (request) => {
-      if (new URL(request.url()).pathname.includes("/deployments/")) {
-        deploymentRequests.push(new URL(request.url()).pathname);
-      }
-    });
-    await page.route(
-      `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
-      async (route) => {
-        // The job read that handed this deployment off is the one this read follows.
-        deploymentReads.push(served.reads);
-        const lastAttempt = attempts[Math.min(deploymentReads.length - 1, attempts.length - 1)];
-        if (lastAttempt === "stalled") {
-          // Hold this read until the next poll cancels it.
-          stalledCancelled = page
-            .waitForEvent("requestfailed", {
-              predicate: (failed) => failed === route.request(),
-              timeout: 10_000,
-            })
-            .then(
-              () => true,
-              () => false,
-            );
-          stalledRead.resolve();
-          await stalledCancelled;
-          await route.abort().catch(() => {});
-          return;
-        }
-        if (lastAttempt === "unavailable") {
-          return route.fulfill(
-            apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.", meta),
-          );
-        }
-        const deploymentReadable =
-          mode !== "refused" && (mode !== "access lost" || deploymentReads.length === 1);
-        return route.fulfill(
-          deploymentReadable
-            ? {
-                status: 200,
-                contentType: "application/json",
-                body: JSON.stringify({
-                  data: {
-                    deploymentId: revisionId,
-                    namespaceId: namespace.id,
-                    agentId,
-                    status: "queued",
-                    error: null,
-                    warnings: [],
-                    progress: {
-                      lastAttempt: { at: updatedAt, ...lastAttempt },
-                      nextAttemptAt: updatedAt,
-                    },
-                  },
-                  meta,
-                }),
-              }
-            : {
-                status: 404,
-                contentType: "application/json",
-                body: JSON.stringify({
-                  error: { code: "NOT_FOUND", message: "Resource not found." },
-                  meta,
-                }),
-              },
-        );
-      },
-    );
-
-    await trackSettledFetches(page);
-    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-    await page.getByRole("button", { name: "Start without Preset" }).click();
-    await page.getByLabel("Agent name").fill("Pod quota");
-    await page.getByLabel("Authentication method").selectOption("codex_pat");
-    await createModelCredentialSecret(page, "model-secret-value");
-    await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-    await page.evaluate(recordProvisioningWrites, ["Provisioning", "The Namespace"]);
-    const start = Date.now();
-    await page.clock.install({ time: start });
-    await page.clock.pauseAt(start + 1_000);
-    await page.getByRole("button", { name: "Create Agent" }).click();
-    // Each poll waits one second, spent on an optional deployment read. Advance the clock only
-    // once the page has handled this poll's job read and its deployment read, so it waits on the
-    // poll timer alone. The stalled read is still pending when the clock moves, so the next poll
-    // cancels it. Job reads 3 to 5 hand off the deployment.
-    for (let poll = 0; poll < reads.length; poll += 1) {
-      await waitForCondition(
-        () => served.submitted > 0 && served.reads === poll,
-        `job read ${poll} in ${mode}`,
-      );
-      const deploymentRead = poll - 2;
-      if (deploymentRead > 0) {
-        await waitForCondition(
-          () => deploymentReads.length === deploymentRead,
-          `deployment read ${deploymentRead} in ${mode}`,
-        );
-      }
-      if (deploymentRead > 0 && attempts[deploymentRead - 1] === "stalled") {
-        await stalledRead.promise;
-      } else {
-        await waitForIdleFetches(page);
-      }
-      await page.clock.runFor(1_000);
-    }
-    await waitForProvisioningFailure(page);
-    assert.equal(served.reads, reads.length);
-    // Only a running job that handed off its deployment reads it, once per job read.
-    assert.deepEqual(deploymentReads, [3, 4, 5]);
-    assert.equal(deploymentRequests.length, 3);
-    assert.equal(
-      await stalledCancelled,
-      mode === "interrupted",
-      "the next poll must cancel the stalled deployment read",
-    );
-    assert.deepEqual(
-      await page.evaluate(() => globalThis.provisioningWrites),
-      {
-        readable: [
-          "Provisioning request accepted.",
-          "Provisioning queued…",
-          "Provisioning Agent…",
-          POD_QUOTA_FULL,
-          "Provisioning Agent…",
-        ],
-        refused: ["Provisioning request accepted.", "Provisioning queued…", "Provisioning Agent…"],
-        interrupted: [
-          "Provisioning request accepted.",
-          "Provisioning queued…",
-          "Provisioning Agent…",
-          POD_QUOTA_FULL,
-        ],
-      }[mode === "access lost" ? "readable" : mode],
-      `deployment reads: ${mode}`,
-    );
-  }
-});
-
-// Since #2744 a job past handoff names its first deployment's wait, but Create Agent showed one
-// "Provisioning Agent…" line until the job ended, about 48 s on oce-dogfood-b (finding 1690). It
-// now adds the wait's sentence, the one the deployment status shows. A fresh deployment read's
-// quota or image pull wait (finding 1881) comes first and stands alone, a refused read clears
-// the detail, and an unavailable one keeps the job's newer wait. A member who can't read the
-// deployment gets only the job's own pending code, which adds nothing, so the line stays as is.
-test("Dedicated Agent creation names the first deployment's wait while it provisions", async (t) => {
-  const runtime = "Waiting for the runtime to become ready.";
-  const node = "Workloads are ready; waiting for the workspace node to connect to the Gateway.";
-  const stopping =
-    "The Agent was stopped; its gateway is finishing active work before the stop completes.";
-  for (const reader of ["deployment reader", "member without deployment access"]) {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Named wait ${reader}`, { ready: true });
-    const { page } = await newPage(t, fixture);
-    await routeDedicatedProvisioning(page, fixture, namespace);
-    const work = provisioningJob(namespace.id, "work_named");
-    const { updatedAt, job, failed } = work;
-    const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
-    const agentId = "agt_00000000-0000-4000-8000-00000000a690";
-    const revisionId = "rev_00000000-0000-4000-8000-00000000a690";
-    const handedOff = {
-      phase: "handoff",
-      agentId,
-      configurationId: "cfg_named",
-      revisionId,
-    } as const;
-    const pending = {
-      code: "PROVISIONING_DEPLOYMENT_PENDING",
-      message: "Waiting for the initial deployment to complete.",
-    };
-    const waiting = (lastAttempt: ProvisioningMessage | null) => ({
-      ...handedOff,
-      progress: {
-        phase: "deployment" as const,
-        lastAttempt: lastAttempt && { at: updatedAt, ...lastAttempt },
-      },
-    });
-    const deploymentReader = reader === "deployment reader";
-    // Each poll: the job's named wait, then what the deployment read that follows it answers.
-    // The job hands off its first deployment, which waits for the runtime. The read names an
-    // image pull failure before the job does. The deployment then waits for the Pod quota, then
-    // the job names the image pull and the workspace node while the read is briefly unavailable
-    // (503). Then the job still names the runtime wait while the read already reports the Pod
-    // quota, and then the reader loses access (403). The refusal cleared the quota the earlier
-    // read named, so a later unavailable read, while the job names only its own pending code,
-    // adds nothing to the line. A stop's gateway drain follows, then no recorded wait, and the job
-    // fails. The image pull, the quota and the stop stand alone. A member can't read the
-    // deployment and gets the job's own code.
-    const runtimeWait = { code: "REVISION_INCOMPLETE", message: runtime };
-    const quotaWait = { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: POD_QUOTA_FULL };
-    const pullWait = { code: "REVISION_IMAGE_PULL_FAILED", message: IMAGE_PULL_FAILING };
-    const stopWait = { code: "AGENT_STOP_YIELDED", message: stopping };
-    const polls: [ProvisioningMessage, ProvisioningMessage | 403 | 503][] = deploymentReader
-      ? [
-          [runtimeWait, runtimeWait],
-          [runtimeWait, pullWait],
-          [quotaWait, quotaWait],
-          [pullWait, 503],
-          [{ code: "WORKSPACE_NODE_PENDING", message: node }, 503],
-          [runtimeWait, quotaWait],
-          [runtimeWait, 403],
-          // Writes nothing: the refusal dropped the quota, and the pending code adds no detail.
-          [pending, 503],
-          [stopWait, stopWait],
-        ]
-      : Array.from({ length: 6 }, () => [pending, 403]);
-    const reads = [
-      job("running"),
-      job("queued", waiting(null)),
-      ...polls.map(([wait]) => job("queued", waiting(wait))),
-      job("queued", waiting(null)),
-      failed(handedOff),
-    ];
-    const served = await routeProvisioningJob(page, work, reads);
-    await page.route(
-      `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
-      (route) => {
-        // Job reads from 2 on carry the polls; the first handed-off one and the last name no wait.
-        const answer = deploymentReader ? (polls[served.reads - 3]?.[1] ?? null) : 403;
-        if (typeof answer === "number") {
-          return route.fulfill(
-            answer === 503
-              ? apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.", meta)
-              : apiErrorResponse(403, "FORBIDDEN", "Access denied.", meta),
-          );
-        }
-        return route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            data: {
-              deploymentId: revisionId,
-              namespaceId: namespace.id,
-              agentId,
-              status: "queued",
-              error: null,
-              warnings: [],
-              progress: answer && {
-                lastAttempt: { at: updatedAt, ...answer },
-                nextAttemptAt: updatedAt,
-              },
-            },
-            meta,
-          }),
-        });
-      },
-    );
-
-    await trackSettledFetches(page);
-    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-    await page.getByRole("button", { name: "Start without Preset" }).click();
-    await page.getByLabel("Agent name").fill("Named wait");
-    await page.getByLabel("Authentication method").selectOption("codex_pat");
-    await createModelCredentialSecret(page, "model-secret-value");
-    await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-    await page.evaluate(recordProvisioningWrites, ["Provisioning", "The ", "Kubernetes "]);
-    const start = Date.now();
-    await page.clock.install({ time: start });
-    await page.clock.pauseAt(start + 1_000);
-    await page.getByRole("button", { name: "Create Agent" }).click();
-    // Advance the clock only once the page has handled this poll's reads.
-    for (let poll = 0; poll < reads.length; poll += 1) {
-      await waitForCondition(
-        () => served.submitted > 0 && served.reads === poll,
-        `job read ${poll} for a ${reader}`,
-      );
-      await waitForIdleFetches(page);
-      await page.clock.runFor(1_000);
-    }
-    await waitForProvisioningFailure(page);
-    assert.equal(served.reads, reads.length);
-    assert.deepEqual(
-      await page.evaluate(() => globalThis.provisioningWrites),
-      deploymentReader
-        ? [
-            "Provisioning request accepted.",
-            "Provisioning queued…",
-            "Provisioning Agent…",
-            `Provisioning Agent… ${runtime}`,
-            IMAGE_PULL_FAILING,
-            POD_QUOTA_FULL,
-            IMAGE_PULL_FAILING,
-            `Provisioning Agent… ${node}`,
-            POD_QUOTA_FULL,
-            "Provisioning Agent…",
-            stopping,
-            "Provisioning Agent…",
-          ]
-        : ["Provisioning request accepted.", "Provisioning queued…", "Provisioning Agent…"],
-      `provisioning lines for a ${reader}`,
-    );
-  }
-});
-
-// A deployment read is optional. Even an unfinished response body gets only the time until
-// the next provisioning poll; a second full interval after cancelling it would also be wrong.
-for (const [name, leave] of [
-  [
-    "Create observes successful provisioning at the next poll despite stalled deployment details",
-    false,
-  ],
-  ["Leaving Create Agent during a stalled deployment detail read stops polling the old job", true],
-] as const) {
-  test(name, async (t) => {
-    const agentId = "agt_00000000-0000-4000-8000-00000000a681";
-    const revisionId = "rev_00000000-0000-4000-8000-00000000a681";
-    const detailPath = `/agents/${agentId}/deployments/${revisionId}`;
-    const bodyStarted = Promise.withResolvers<void>();
-    const fixture = await createConsoleAppFixture(t, {
-      async onSend(
-        request: { url: string },
-        reply: { hijack(): void; raw: ServerResponse },
-        payload: unknown,
-      ) {
-        if (!request.url.endsWith(detailPath)) {
-          return payload;
-        }
-        reply.hijack();
-        reply.raw.writeHead(200, { "content-type": "application/json" });
-        reply.raw.write('{"data":', () => bodyStarted.resolve());
-      },
-    });
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Slow deployment details", { ready: true });
-    const { page } = await newPage(t, fixture);
-    await routeDedicatedProvisioning(page, fixture, namespace);
-
-    const provision = `/namespaces/${namespace.id}/agents/provision`;
-    const url = `${provision}/work_slow_detail`;
-    const job = {
-      workId: "work_slow_detail",
-      url,
-      agentId,
-      revisionId,
-      phase: "handoff",
-      status: "running",
-    };
-    let requestId: string;
-    await page.route(`**${provision}`, (route) => {
-      requestId = route.request().postDataJSON().requestId;
-      return route.fulfill({
-        status: 202,
-        json: { data: { provisioning: { ...job, requestId } } },
-      });
-    });
-    const finishPoll = Promise.withResolvers<void>();
-    await page.route(`**${url}`, async (route) => {
-      // Let the browser report cancellation before navigation can cancel the detail read itself.
-      await finishPoll.promise;
-      await route.fulfill({
-        json: { data: { provisioning: { ...job, requestId, status: "succeeded" } } },
-      });
-    });
-
-    await trackSettledFetches(page);
-    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByRole("button", { name: "Start without Preset" }).click();
-    await page.getByLabel("Agent name").fill("Slow deployment details");
-    await page.getByLabel("Authentication method").selectOption("codex_pat");
-    await createModelCredentialSecret(page, "model-secret-value");
-    await page.getByLabel("Model", { exact: true }).selectOption({ index: 1 });
-    await page.clock.install({ time: 0 });
-    await page.clock.pauseAt(1_000);
-    await page.getByRole("button", { name: "Create Agent" }).click();
-    await bodyStarted.promise;
-
-    const detailCancelled = page.waitForEvent("requestfailed", {
-      predicate: (request) => request.url().endsWith(detailPath),
-      timeout: 5_000,
-    });
-    if (leave) {
-      finishPoll.resolve();
-      await page.getByRole("link", { name: "Agents", exact: true }).click();
-      await detailCancelled;
-      await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
-      await waitForSettledFetches(page, `/namespaces/${namespace.id}${detailPath}`, 1);
-      await page.clock.runFor(2_000);
-      await waitForIdleFetches(page);
-      assert.equal(
-        await settledFetches(page, url),
-        0,
-        "A departed view must not poll the old job.",
-      );
-      return;
-    }
-
-    try {
-      await Promise.all([
-        detailCancelled,
-        page.waitForRequest((request) => request.url().endsWith(url), { timeout: 5_000 }),
-        page.clock.runFor(1_000),
-      ]);
-    } finally {
-      finishPoll.resolve();
-    }
-    await page.waitForURL((location) => location.pathname.endsWith(`/agents/${agentId}`));
-  });
-}
 
 test("Agent creation rejects non-object native Configuration JSON before Configuration or Agent writes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -1739,6 +1819,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
   const credentialSecret = await createModelCredentialSecret(page, "test-anthropic-api-key");
+  assert.ok(credentialSecret, "Expected the created model credential Secret");
   assert.equal(await choice.inputValue(), "claude-fable-5-1");
   assert.equal(await page.getByLabel("Configuration JSON").inputValue(), selectedConfiguration);
   assert.deepEqual(
@@ -1794,33 +1875,42 @@ test("Static model selection survives credential edits and resets for provider o
   assert.equal(await choice.isEnabled(), true);
   assert.deepEqual(
     (await optionValues(choice)).map(({ value }) => value),
-    ["", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+    [
+      "",
+      "gpt-6.1-sol",
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ],
   );
   assert.equal(await choice.locator('option[value=""]').textContent(), "Choose a model");
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
-  await choice.selectOption("gpt-6-astra");
+  await choice.selectOption("gpt-6.1-sol");
   const selectedConfiguration = await configuration.inputValue();
-  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-6-astra");
+  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-6.1-sol");
   for (const credential of ["first-openai-key", "replacement-openai-key"]) {
     await page.getByLabel("Agent name").fill(`Static model ${credential}`);
     await createModelCredentialSecret(page, credential);
-    assert.equal(await choice.inputValue(), "gpt-6-astra");
+    assert.equal(await choice.inputValue(), "gpt-6.1-sol");
     assert.equal(await configuration.inputValue(), selectedConfiguration);
   }
 
   // Switching compatible harnesses changes the native transport without clearing the model.
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-  assert.equal(await choice.inputValue(), "gpt-6-astra");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "openai/gpt-6-astra",
+    "openai/gpt-6.1-sol",
   );
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await choice.inputValue(), "gpt-6-astra");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "codex/gpt-6-astra",
+    "codex/gpt-6.1-sol",
   );
 
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
@@ -1875,6 +1965,233 @@ test("Static model selection survives credential edits and resets for provider o
   );
 });
 
+// Exercise the real draft editor without submitting or providing model credentials.
+for (const width of [1440, 390]) {
+  test(`Create preserves invalid plugins.allow through model changes at ${width}px`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Model JSON correction");
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 } },
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    const requests = apiRequests(page, fixture.origin);
+    await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const choice = page.getByLabel("Model", { exact: true });
+    const manual = page.getByLabel("Model ID", { exact: true });
+    const chooseList = page.getByRole("button", {
+      name: "Choose a model from the list",
+      exact: true,
+    });
+    const template = await configuration.inputValue();
+    const record = (value: unknown): Record<string, unknown> => {
+      assert.ok(value && typeof value === "object" && !Array.isArray(value));
+      return Object.fromEntries(Object.entries(value));
+    };
+    const readValues = async () => record(JSON.parse(await configuration.inputValue()));
+    const primary = (values: Record<string, unknown>) =>
+      record(record(values.agents).defaults).model;
+    const editAllow = async (allow: unknown, base?: string) => {
+      const values = record(JSON.parse(base ?? (await configuration.inputValue())));
+      values.plugins = { ...record(values.plugins ?? {}), allow };
+      const raw = JSON.stringify(values, null, 2) + "\n";
+      await configuration.fill(raw);
+      return raw;
+    };
+    const assertBlocked = async (raw: string) => {
+      assert.equal(await configuration.inputValue(), raw, "the raw draft must remain exact");
+      assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+      const feedback = await configuration.evaluate((node) => ({
+        focused: node.ownerDocument.activeElement === node,
+        messages: (node.getAttribute("aria-describedby") ?? "")
+          .split(" ")
+          .map((id) => node.ownerDocument.getElementById(id)?.textContent ?? ""),
+      }));
+      assert.equal(feedback.focused, true);
+      assert.ok(
+        feedback.messages.includes(
+          'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+        ),
+      );
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+    };
+
+    // With no primary in JSON, the list remains visible. Native change must be rolled back.
+    for (const allow of ["codex", 7, null, ["keep-plugin", 7]]) {
+      assert.equal(await choice.inputValue(), "");
+      const raw = await editAllow(allow, template);
+      await choice.selectOption("gpt-6-luna");
+      await assertBlocked(raw);
+      assert.equal(await choice.inputValue(), "");
+      assert.equal(await manual.isVisible(), false);
+    }
+    await editAllow([], template);
+    await choice.selectOption("gpt-6-luna");
+    assert.equal(primary(await readValues()), "codex/gpt-6-luna");
+
+    // A selected model must also roll back, then accept a genuine change after correction.
+    const raw = await editAllow(7, template);
+    await choice.selectOption("gpt-6-sol");
+    await assertBlocked(raw);
+    assert.equal(await choice.inputValue(), "gpt-6-luna");
+    await editAllow([], template);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(await choice.inputValue(), "gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // A blocked return to the list must keep the manual choice, including noncatalog IDs.
+    for (const allow of ["codex", 7, null, ["keep-plugin", 7]]) {
+      const raw = await editAllow(allow);
+      assert.equal(await manual.inputValue(), "gpt-6-sol");
+      await chooseList.click();
+      await assertBlocked(raw);
+      assert.equal(await manual.isVisible(), true);
+      assert.equal(await manual.inputValue(), "gpt-6-sol");
+      await manual.fill("custom-model-id");
+      await manual.press("Tab");
+      await assertBlocked(raw);
+      assert.equal(await manual.inputValue(), "custom-model-id", "keep the manual draft for retry");
+      await chooseList.click();
+      await assertBlocked(raw);
+      assert.equal(await manual.inputValue(), "custom-model-id");
+      await editAllow(["keep-plugin"]);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-sol");
+      assert.deepEqual(record((await readValues()).plugins).allow, ["keep-plugin", "codex"]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    }
+
+    // Absence, an empty array, and whole string entries all permit the same merge and retry.
+    for (const allow of [undefined, [], ["keep-plugin", "codex"]]) {
+      await editAllow(allow);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-luna");
+      const values = await readValues();
+      assert.equal(primary(values), "codex/gpt-6-luna");
+      assert.deepEqual(record(values.plugins).allow, allow?.length ? allow : ["codex"]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    }
+
+    // Switching to Anthropic does not merge this field and must not acquire this validation.
+    await editAllow(7);
+    const provider = page.getByLabel("Provider", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+    const mode = page.getByLabel("Execution mode", { exact: true });
+    const authMethod = page.getByLabel("Authentication method", { exact: true });
+    await provider.selectOption("anthropic");
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await choice.isVisible(), true);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(record((await readValues()).plugins).allow, 7);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+
+    // Returning to Codex must preflight before changing the provider, catalog, or credentials.
+    await choice.selectOption("claude-opus-5-5");
+    assert.equal(primary(await readValues()), "anthropic/claude-opus-5-5");
+    const anthropicDraft = await configuration.inputValue();
+    const anthropicOptions = await optionValues(choice);
+    const previousMode = await mode.inputValue();
+    const previousAuth = await authMethod.inputValue();
+    await provider.selectOption("openai");
+    await assertBlocked(anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), previousMode);
+    assert.equal(await authMethod.inputValue(), previousAuth);
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+
+    // Refresh rebuilds the form from its kept draft; rollback must use the restored provider.
+    const originalProvider = await provider.elementHandle();
+    assert.ok(originalProvider);
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction((element) => !element.isConnected, originalProvider);
+    await provider.waitFor({ state: "visible" });
+    assert.equal(await configuration.inputValue(), anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+    await provider.selectOption("openai");
+    await assertBlocked(anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), previousMode);
+    assert.equal(await authMethod.inputValue(), previousAuth);
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+
+    await editAllow([]);
+    await provider.selectOption("openai");
+    assert.equal(await provider.inputValue(), "openai");
+    assert.equal(await harness.inputValue(), "codex");
+    assert.equal(await choice.isVisible(), true);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(primary(await readValues()), undefined);
+    assert.equal(await choice.locator('option[value="claude-opus-5-5"]').count(), 0);
+    assert.equal(await choice.locator('option[value="gpt-6-sol"]').count(), 1);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // Authentication owns its picker even when the model reset cannot merge the draft.
+    const keySecret = page.getByLabel("API key Secret", { exact: true });
+    const tokenSecret = page.getByLabel("Service account token Secret", { exact: true });
+    const authDraft = await editAllow("codex");
+    const authModel = await manual.inputValue();
+    const authMode = await mode.inputValue();
+    await authMethod.selectOption("codex_pat");
+    await assertBlocked(authDraft);
+    assert.equal(await authMethod.inputValue(), "codex_pat");
+    assert.equal(await keySecret.isVisible(), false);
+    assert.equal(await tokenSecret.isVisible(), true);
+    assert.equal(await manual.inputValue(), authModel);
+    assert.equal(await manual.isVisible(), true);
+    assert.equal(await mode.inputValue(), authMode);
+    await editAllow([]);
+    await authMethod.selectOption("api_key");
+    assert.equal(await keySecret.isVisible(), true);
+    assert.equal(await tokenSecret.isVisible(), false);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // A refused Codex transition must leave the OpenClaw controls and policy together.
+    await harness.selectOption("openclaw");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(primary(await readValues()), "openai/gpt-6-sol");
+    const harnessDraft = await editAllow("codex");
+    const harnessModel = await manual.inputValue();
+    const openClawMode = await mode.inputValue();
+    const openClawAuth = await authMethod.inputValue();
+    await harness.selectOption("codex");
+    await assertBlocked(harnessDraft);
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), openClawMode);
+    assert.equal(await authMethod.inputValue(), openClawAuth);
+    assert.equal(await manual.inputValue(), harnessModel);
+    assert.equal(await manual.isVisible(), true);
+    assert.equal(await keySecret.isVisible(), true);
+    assert.equal(await tokenSecret.isVisible(), false);
+    await editAllow([]);
+    await harness.selectOption("codex");
+    assert.equal(await harness.inputValue(), "codex");
+    assert.equal(await mode.inputValue(), "dedicated");
+    assert.equal(await authMethod.inputValue(), openClawAuth);
+    assert.equal(await manual.inputValue(), harnessModel);
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+    assert.deepEqual(record((await readValues()).plugins).allow, ["codex"]);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  });
+}
+
 test("Agent creation can return from manual model entry to the list and save the selected model", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1889,6 +2206,168 @@ test("Agent creation can return from manual model entry to the list and save the
   const choice = page.getByLabel("Model", { exact: true });
   const model = page.getByLabel("Model ID", { exact: true });
   const configuration = page.getByLabel("Configuration JSON");
+
+  await t.test(
+    "Malformed selected-provider catalogs preserve the draft and recover through model choices",
+    async () => {
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const requests = apiRequests(page, fixture.origin);
+      await openAdvancedSettings(page);
+      const record = (value: unknown): Record<string, unknown> => {
+        assert.ok(isRecord(value));
+        return value;
+      };
+      const readValues = async () => record(JSON.parse(await configuration.inputValue()));
+      const primary = (values: Record<string, unknown>) =>
+        record(record(values.agents).defaults).model;
+      const chooseList = page.getByRole("button", {
+        name: "Choose a model from the list",
+        exact: true,
+      });
+      const original = await configuration.inputValue();
+      const base = record(JSON.parse(original));
+      const models = record(base.models ?? {});
+      const providers = record(models.providers ?? {});
+      const provider = record(providers.codex ?? {});
+      const editCatalog = async (catalog: unknown, selected = false) => {
+        const values = record(JSON.parse(original));
+        const agents = record(values.agents ?? {});
+        const defaults = record(agents.defaults ?? {});
+        if (selected) {
+          defaults.model = "codex/gpt-6-astra";
+        } else {
+          delete defaults.model;
+        }
+        values.agents = { ...agents, defaults };
+        values.models = {
+          ...models,
+          providers: {
+            ...providers,
+            // An unrelated malformed list must not block a Codex selection.
+            openai: { models: {} },
+            codex: { ...provider, extra: { keep: true }, models: catalog },
+          },
+        };
+        const raw = JSON.stringify(values, null, 2) + "\n";
+        await configuration.fill(raw);
+        return raw;
+      };
+      const assertBlocked = async (raw: string) => {
+        assert.equal(await configuration.inputValue(), raw);
+        assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+        assert.equal(
+          await configuration.evaluate((node) => node.ownerDocument.activeElement === node),
+          true,
+        );
+        assert.equal(
+          await page.locator("#configuration-json-error").textContent(),
+          "Set models.providers.codex.models to an array of model objects with an id, or remove the field.",
+        );
+        assert.deepEqual(errors, []);
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+      };
+
+      // A native list change must roll back before it changes the hidden manual control.
+      const raw = await editCatalog({});
+      await page.getByText("Advanced settings", { exact: true }).click();
+      await choice.selectOption("gpt-6-sol");
+      await assertBlocked(raw);
+      assert.equal(await choice.inputValue(), "");
+      assert.equal(await model.inputValue(), "");
+      assert.equal(await choice.isVisible(), true);
+
+      // JSON selection edits expose manual entry. Preserve the attempted ID for a retry.
+      for (const catalog of [null, [null], [{ name: "missing id" }], [{ id: 7 }], {}]) {
+        const invalid = await editCatalog(catalog, true);
+        await model.fill("gpt-6-sol");
+        await model.press("Tab");
+        await assertBlocked(invalid);
+        assert.equal(await model.inputValue(), "gpt-6-sol");
+      }
+      const invalid = await configuration.inputValue();
+      await chooseList.click();
+      await assertBlocked(invalid);
+      assert.equal(await model.isVisible(), true);
+
+      // Clearing a selection leaves the malformed catalog in place, so keep its warning.
+      await model.fill("");
+      await model.press("Tab");
+      const cleared = await readValues();
+      assert.equal(primary(cleared), undefined);
+      assert.deepEqual(record(record(record(cleared.models).providers).codex).models, {});
+      assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), true);
+      await model.fill("gpt-6-sol");
+      await model.press("Tab");
+      await assertBlocked(JSON.stringify(cleared, null, 2));
+
+      // Provider replacement repairs the transport without an intervening raw JSON edit.
+      const providerChoice = page.getByLabel("Provider", { exact: true });
+      await providerChoice.selectOption("anthropic");
+      assert.equal(await providerChoice.inputValue(), "anthropic");
+      assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+      assert.equal(await choice.inputValue(), "");
+      assert.ok((await optionValues(choice)).some(({ value }) => value === "claude-opus-5-5"));
+      const replaced = await readValues();
+      assert.deepEqual(record(replaced.models).providers, {});
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), false);
+      assert.doesNotMatch(
+        (await configuration.getAttribute("aria-describedby")) ?? "",
+        /\bconfiguration-json-error\b/,
+      );
+      await choice.selectOption("claude-opus-5-5");
+      const anthropic = await readValues();
+      assert.equal(primary(anthropic), "anthropic/claude-opus-5-5");
+      assert.deepEqual(record(record(record(anthropic.models).providers).anthropic).models, [
+        { id: "claude-opus-5-5", name: "claude-opus-5-5" },
+      ]);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+      await providerChoice.selectOption("openai");
+
+      // Correcting the list clears feedback and preserves extra catalog/provider fields.
+      const retained = { id: "another-model", contextWindow: 8192, extra: { keep: true } };
+      await editCatalog([{ id: "gpt-6-astra", cost: { input: 1 } }, retained], true);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      await model.fill("  gpt-6-sol  ");
+      await model.press("Tab");
+      const corrected = await readValues();
+      assert.equal(primary(corrected), "codex/gpt-6-sol");
+      const correctedProviders = record(record(corrected.models).providers);
+      const correctedProvider = record(correctedProviders.codex);
+      assert.deepEqual(correctedProvider.extra, { keep: true });
+      assert.deepEqual(correctedProviders.openai, { models: {} });
+      assert.deepEqual(correctedProvider.models, [
+        { id: "gpt-6-sol", name: "gpt-6-sol", cost: { input: 1 } },
+        retained,
+      ]);
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), false);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-luna");
+      assert.equal(primary(await readValues()), "codex/gpt-6-luna");
+
+      // Removing the field is also a supported correction; explicit null above is not.
+      await editCatalog(undefined, true);
+      await model.fill("gpt-6-sol");
+      await model.press("Tab");
+      const withoutCatalog = await readValues();
+      assert.equal(primary(withoutCatalog), "codex/gpt-6-sol");
+      assert.deepEqual(record(record(record(withoutCatalog.models).providers).codex).models, [
+        { id: "gpt-6-sol", name: "gpt-6-sol" },
+      ]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+      // Return this shared browser to the original round-trip scenario.
+      await configuration.fill(original);
+      if (await model.isVisible()) {
+        await chooseList.click();
+      }
+    },
+  );
 
   // JSON edits can change the provider; returning to the list must show its models.
   await choice.selectOption("gpt-6-astra");
@@ -1915,6 +2394,7 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   const secret = await createModelCredentialSecret(page, "round-trip-model-key");
+  assert.ok(secret, "Expected the created model credential Secret");
   await choice.selectOption("gpt-6-astra");
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   assert.equal(await choice.isVisible(), false);
@@ -1956,24 +2436,24 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   assert.equal(await credential.inputValue(), secretOptionLabel(secret));
   assert.equal(await page.getByLabel("Agent name").inputValue(), "Model selection round trip");
-  await choice.selectOption("gpt-6-sol");
+  await choice.selectOption("gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "codex/gpt-6-sol",
+    "codex/gpt-6.1-sol",
   );
 
   // Repeated switches must still offer both modes without leaving a hidden required input.
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  assert.equal(await model.inputValue(), "gpt-6-sol");
+  assert.equal(await model.inputValue(), "gpt-6.1-sol");
   await page.getByRole("button", { name: "Choose a model from the list", exact: true }).click();
-  assert.equal(await choice.inputValue(), "gpt-6-sol");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   const agent: AgentWire = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(agent.harnessAuth, { method: "api_key", source: secret.ref });
   const savedConfiguration = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assert.equal(savedConfiguration.data.values.agents.defaults.model, "codex/gpt-6-sol");
+  assert.equal(savedConfiguration.data.values.agents.defaults.model, "codex/gpt-6.1-sol");
 });
 
 test("Agent creation accepts a manual model outside the static list and saves through the real Agent API", async (t) => {
@@ -2026,6 +2506,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
     "manual-model-key",
     "gpt-manual-account-model",
   );
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.deepEqual(
     secretPostRequests(requests, namespace.id).map((request) => request.body),
     [{ name: "Manual model Agent model credential", value: "manual-model-key" }],
@@ -2134,7 +2615,8 @@ test("Agent creation names the Configuration field that holds an inline model cr
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 400);
   const feedback = page.getByRole("alert").filter({
-    hasText: codexApiKeyRefusal("models.providers.openai.apiKey"),
+    hasText:
+      "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.
@@ -2355,6 +2837,15 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const pluginDriver = new CodexPluginDriver();
+  // Keep optional catalog prefetch local while exercising the real Agent creation conflict.
+  t.mock.method(
+    pluginDriver,
+    "discoverCatalog",
+    async (): ReturnType<typeof pluginDriver.discoverCatalog> => ({
+      plugins: [],
+      nextCursor: null,
+    }),
+  );
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
@@ -2433,6 +2924,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   requests.length = 0;
   await page.getByLabel("Agent name").fill("Retry Agent");
   const selectedSecret = await createModelCredentialSecret(page, "at-browser-pat");
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
     secretOptionLabel(selectedSecret),
@@ -2655,6 +3147,7 @@ for (const swapped of ["Agent", "service principal"]) {
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await page.getByLabel("Agent name").fill("New Agent");
     const secret = await enterManualModel(page, "test-create-response-key");
+    assert.ok(secret, "Expected the created model credential Secret");
     await page.getByRole("button", { name: "Create Agent" }).click();
     const warning = page.getByRole("alert").filter({
       hasText: swapped === "Agent" ? "Outcome unknown" : "service principal could not be confirmed",

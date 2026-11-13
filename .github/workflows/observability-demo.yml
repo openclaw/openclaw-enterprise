@@ -5,11 +5,12 @@ on:
     paths:
       - ".github/workflows/observability-demo.yml"
       - ".github/actions/run-ci-lane/**"
+      - ".github/actions/setup-ci-tools/**"
       - ".github/actions/setup-pnpm-store-cache/**"
       - "deploy/helm/openclaw-observability-demo/**"
-      - "tests/integration/observability-demo-chart.test.mjs"
-      - "tests/integration/observability-demo-k3d.test.mjs"
-      - "tests/helpers/observability-demo-k3d.mjs"
+      - "tests/integration/observability-demo-chart.test.ts"
+      - "tests/integration/observability-demo-k3d.test.ts"
+      - "tests/helpers/observability-demo-k3d.ts"
       - "tests/helpers/kubernetes-real.mjs"
       - "tests/fixtures/repository-credentials/process.mjs"
       - "scripts/ci/**"
@@ -19,11 +20,12 @@ on:
     paths:
       - ".github/workflows/observability-demo.yml"
       - ".github/actions/run-ci-lane/**"
+      - ".github/actions/setup-ci-tools/**"
       - ".github/actions/setup-pnpm-store-cache/**"
       - "deploy/helm/openclaw-observability-demo/**"
-      - "tests/integration/observability-demo-chart.test.mjs"
-      - "tests/integration/observability-demo-k3d.test.mjs"
-      - "tests/helpers/observability-demo-k3d.mjs"
+      - "tests/integration/observability-demo-chart.test.ts"
+      - "tests/integration/observability-demo-k3d.test.ts"
+      - "tests/helpers/observability-demo-k3d.ts"
       - "tests/helpers/kubernetes-real.mjs"
       - "tests/fixtures/repository-credentials/process.mjs"
       - "scripts/ci/**"
@@ -41,7 +43,7 @@ concurrency:
 jobs:
   demo:
     name: Demo Observability Smoke
-    runs-on: ubuntu-22.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

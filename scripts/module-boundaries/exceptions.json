@@ -23,7 +23,7 @@
       "typeOnly": false,
       "bindings": [
         "value:AGENT_READINESS_ENTRYPOINT",
-        "value:AGENT_RUNTIME_ENTRYPOINT",
+        "value:COMPUTE_AGENT_RUNTIME_ENTRYPOINT",
         "value:PLUGIN_RUNTIME_HELPERS"
       ],
       "owner": "Compute runtime helpers",
@@ -128,8 +128,8 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/console-assets.ts",
-      "to": "packages/contracts/src/workspace-defaults.mjs",
-      "specifier": "file:packages/contracts/src/workspace-defaults.mjs",
+      "to": "packages/contracts/src/workspace-defaults.ts",
+      "specifier": "file:packages/contracts/src/workspace-defaults.ts",
       "kind": "path",
       "typeOnly": false,
       "bindings": ["*"],
@@ -140,8 +140,8 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/console-assets.ts",
-      "to": "packages/contracts/src/preset-variables.mjs",
-      "specifier": "file:packages/contracts/src/preset-variables.mjs",
+      "to": "packages/contracts/src/preset-variables.mts",
+      "specifier": "file:packages/contracts/src/preset-variables.mts",
       "kind": "path",
       "typeOnly": false,
       "bindings": ["*"],
@@ -381,30 +381,6 @@
       "owner": "Work status projection",
       "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State. This separately tracked edge imports types only.",
       "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-work-queue.ts",
-      "specifier": "./state/postgres-work-queue.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["type:ClaimedWork", "value:WorkClaimLostError"],
-      "owner": "Work claim lifecycle",
-      "reason": "OCC handles lost work claims using the existing shared error constructor and claim type exposed by the PostgreSQL queue module.",
-      "removeWhen": "Move the claim contract and shared lost-claim error into neutral Work ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-work-queue.ts",
-      "specifier": "./state/postgres-work-queue.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:ClaimedWork"],
-      "owner": "Work claim lifecycle",
-      "reason": "OCC handles lost work claims using the existing shared error constructor and claim type exposed by the PostgreSQL queue module. This separately tracked edge imports types only.",
-      "removeWhen": "Move the claim contract and shared lost-claim error into neutral Work ports and update this import."
     },
     {
       "rule": "domain-to-implementation",

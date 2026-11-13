@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
@@ -29,6 +29,7 @@ async function scenario(
     signal,
     beforeCreate,
     beforeBuild,
+    builder,
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "oce-provider-contract-"));
@@ -42,6 +43,7 @@ async function scenario(
   const environment = {
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     DOCKER_HOST: "unix:///owned.sock",
+    ...(builder === undefined ? {} : { BUILDX_BUILDER: builder }),
   };
   const events = [{ event: "listening", at: 1 }];
   const faults = { inspectError: undefined };
@@ -233,6 +235,168 @@ test("provider prepares a scoped immutable image pair and requires a completed t
       .filter(({ args }) => args[0] === "image" && args[1] === "rm")
       .every(({ args }) => !args.includes("--force")),
   );
+});
+
+test("provider builds checkout images with the selected installer builder", async (t) => {
+  const { fixture, calls } = await scenario(t, { builder: "owned-installer-builder" });
+  await fixture.prepare();
+  const builds = calls.filter(({ args }) => args[0] === "buildx");
+  assert.equal(builds.length, 3);
+  for (const { args } of builds.slice(0, 2)) {
+    assert.equal(args[args.indexOf("--builder") + 1], "owned-installer-builder");
+  }
+  // The trust layer intentionally consumes the just-loaded base image in the host engine.
+  assert.equal(builds[2].args[builds[2].args.indexOf("--builder") + 1], "default");
+  await fixture.cleanup();
+});
+
+test("checkout build failures identify failed roles without exposing child output", async (t) => {
+  const privateOutput = "private-build-output-canary";
+  const controllerError = Object.assign(new Error(privateOutput), {
+    code: 23,
+    signal: null,
+    killed: false,
+    stdout: privateOutput,
+    stderr: privateOutput,
+  });
+  const runtimeError = Object.assign(new Error(privateOutput), {
+    code: null,
+    signal: "SIGKILL",
+    killed: true,
+  });
+  const malformedError = Object.assign(new Error(privateOutput), {
+    code: privateOutput,
+    signal: privateOutput,
+    killed: privateOutput,
+  });
+  let accessorReads = 0;
+  const throwingAccessor = Object.defineProperty(new Error(privateOutput), "code", {
+    get() {
+      accessorReads += 1;
+      throw new Error(privateOutput);
+    },
+  });
+  const changingAccessor = Object.defineProperty(new Error(privateOutput), "signal", {
+    get() {
+      accessorReads += 1;
+      return accessorReads === 1 ? "SIGTERM" : privateOutput;
+    },
+  });
+  for (const [name, failures, expected] of [
+    [
+      "controller only",
+      { controller: controllerError },
+      ["controller: exit=23 code=unknown signal=unknown killed=false"],
+    ],
+    [
+      "both builds",
+      { controller: controllerError, runtime: runtimeError },
+      [
+        "controller: exit=23 code=unknown signal=unknown killed=false",
+        "runtime: exit=unknown code=unknown signal=SIGKILL killed=true",
+      ],
+    ],
+    [
+      "unrecognized metadata",
+      { runtime: malformedError },
+      ["runtime: exit=unknown code=unknown signal=unknown killed=unknown"],
+    ],
+    [
+      "throwing metadata accessor",
+      { controller: throwingAccessor },
+      ["controller: exit=unknown code=unknown signal=unknown killed=unknown"],
+    ],
+    [
+      "changing metadata accessor",
+      { runtime: changingAccessor },
+      ["runtime: exit=unknown code=unknown signal=unknown killed=unknown"],
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      accessorReads = 0;
+      const { fixture } = await scenario(t, {
+        beforeBuild: ({ name }) => {
+          const role = name.includes("/controller:") ? "controller" : "runtime";
+          if (failures[role]) {
+            throw failures[role];
+          }
+        },
+      });
+      await assert.rejects(fixture.prepare(), (error) => {
+        assert.ok(error instanceof AggregateError);
+        // Local callers keep the original errors; the CI message keeps only
+        // failed roles and known process metadata, even with hostile fields.
+        assert.deepEqual(error.errors, Object.values(failures));
+        error.errors.forEach((cause, index) => assert.equal(cause, Object.values(failures)[index]));
+        assert.deepEqual(
+          error.message
+            .replace(/^Checkout image builds failed: /, "")
+            .split("; ")
+            .map((message) => message.replace(/ elapsedMs=\d+ budgetMs=600000$/, "")),
+          expected,
+        );
+        assert.equal(error.message.includes(privateOutput), false);
+        assert.equal(accessorReads, 0, "error accessors must not execute during reporting");
+        return true;
+      });
+    });
+  }
+});
+
+test("checkout build cancellation before dispatch has no child process metadata", async (t) => {
+  const controller = new AbortController();
+  const { fixture, calls } = await scenario(t, {
+    signal: controller.signal,
+    // The other build is waiting for its serialized journal write. Abort now
+    // so that its post-write cancellation check refuses dispatch to Docker.
+    beforeBuild: () => controller.abort(),
+  });
+  await assert.rejects(fixture.prepare(), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.errors.length, 1);
+    assert.equal(error.errors[0], controller.signal.reason);
+    assert.equal(error.errors[0].code, 20, "the cancellation has a DOM code, not an exit code");
+    assert.match(error.message, /runtime: exit=unknown code=unknown signal=unknown killed=unknown/);
+    return true;
+  });
+  assert.equal(calls.filter(({ args }) => args[0] === "buildx").length, 1);
+});
+
+test("checkout build journal failures have no child process metadata", async (t) => {
+  const release = Promise.withResolvers();
+  let started = 0;
+  const { fixture, directory } = await scenario(t, {
+    beforeBuild: async () => {
+      if (++started === 2) {
+        // Both pre-dispatch writes have completed. Move the journal directory
+        // so successful commands encounter a real ENOENT in the final write.
+        try {
+          await rename(directory, `${directory}.moved`);
+        } finally {
+          release.resolve();
+        }
+      }
+      await release.promise;
+    },
+  });
+  try {
+    await assert.rejects(fixture.prepare(), (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length, 2);
+      assert.ok(error.errors.every(({ code }) => code === "ENOENT"));
+      for (const role of ["controller", "runtime"]) {
+        assert.ok(
+          error.message.includes(
+            `${role}: exit=unknown code=unknown signal=unknown killed=unknown`,
+          ),
+        );
+      }
+      return true;
+    });
+  } finally {
+    await rename(`${directory}.moved`, directory);
+  }
+  await fixture.cleanup();
 });
 
 test("provider reconciles a creation whose acknowledgement was lost", async (t) => {

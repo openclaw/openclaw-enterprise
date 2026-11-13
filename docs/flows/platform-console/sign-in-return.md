@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-11-04
-last_updated_session: authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042
+updated: 2026-11-10
+last_updated_session: authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761
 ---
 
 # Console sign-in and destination recovery
@@ -44,8 +44,20 @@ graph TD
 
 On a cold visit, the shell's static “Loading OpenClaw Enterprise…” status paints
 before any script runs; CSS shows it only after 400 ms, so a fast load never
-flashes it. `loadPage` takes that status over in place while checking the session
-and announces “Checking session…” only if still pending after 400 ms.
+flashes it. The independent async observer in
+`apps/controller/src/console/startup-recovery.mts` handles the native entry-module
+load error from `#console-entry` in `apps/controller/src/console/index.html`.
+If the observer arrives after the error, it checks at window `load` (or immediately
+if the document is already complete). While the `.startup-recovery` marker remains,
+it reports that the Console could not load and offers **Reload page**. Clicking
+the button reloads the same URL. If the observer is unavailable, the static text
+still directs the reader to browser Reload. Recovery never automatically reloads
+the page or retries API requests.
+
+The healthy `console.mts` entry removes the marker synchronously before session
+reads, so a slow or unavailable session follows its own path below. `loadPage`
+takes the status over in place while checking the session and announces
+“Checking session…” only if still pending after 400 ms.
 
 `readSession` reads `GET /api/auth/session`. Of successful replies, only
 `null` confirms that the browser is signed out. A non-null reply must include
@@ -53,13 +65,23 @@ and announces “Checking session…” only if still pending after 400 ms.
 and name. If the reply is malformed, the console shows **Session unavailable**
 and withholds private content and reads. **Retry** repeats the session check.
 
-`showLogin` reads `GET /api/auth/providers`; true `github`/`google` flags add their **Continue
-with** buttons, and discovery failure keeps password login. A true `oidc` flag adds a button
+`showLogin` reads `GET /api/auth/providers`; a true `google` flag adds its **Continue
+with Google** button, and discovery failure keeps password login. A true `oidc` flag adds a button
 labelled from `oidcSignIn.label` only when `oidcSignIn.authorizationUrl` is `https:`; its start
-URL must use that endpoint's origin and path, as GitHub's and Google's must use their fixed ones. `password: false`
-(recovery-only) hides the form behind **Recovery sign-in** and changes the
-provider-error advice from "use your password" to asking an administrator. Pending login disables
-all; generations reject late redirects. With `sessionBinding`, `loadPage`
+URL must use that endpoint's origin and path, as Google's must use its fixed endpoint.
+An explicit `password: false` makes the form recovery-only and changes the
+provider-error advice from "use your password" to asking an administrator. The
+console keeps the password form behind **Recovery sign-in** while discovery is
+pending, so early focus or autofill cannot make it the default sign-in method.
+Selecting recovery opens the form immediately; a later discovery reply preserves
+that choice, its input, and keyboard focus. Discovery that permits passwords or
+fails shows the form without requiring the recovery action. If that action has
+keyboard focus, focus moves to Email when the form replaces it.
+
+While sign-in is pending, the console ignores repeat password submissions and
+provider activations. Keyboard focus stays on the control that started the
+request unless the reader moves it. Generations reject late redirects. With
+`sessionBinding`, `loadPage`
 exchanges the button's stored `attemptId` once for its key. Tabs then send
 their pinned `x-occ-session-key`, so a replaced cookie yields login.
 A refused callback returns with `authError` and makes no exchange, so a failed
@@ -94,10 +116,8 @@ confirmation with `GET /native-admin/return/:key`.
 A valid authorized response routes to ordinary Agent detail; failed or malformed
 responses open Agents, and a failed lookup says so once. The [native Agent host](../agent-native-admin.md) redirects
 a qualifying root or chat navigation here. Opening native chat still requires a separate user action.
-`authError=<provider>` shows a generic, one-time error; with `authError=github`, an
-`authReason` of `membership` or `membership-unavailable` explains a GitHub
-[allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist)
-refusal instead. With any provider, `account-disabled` says the account is disabled and to ask
+`authError=<provider>` shows a generic, one-time error. With Google or OIDC,
+`account-disabled` says the account is disabled and to ask
 an administrator to enable it; `provider-unavailable` and `unavailable` say to try again
 later. The
 [authentication flow](../local-password-authentication.md#3-construct-session-authentication)
@@ -124,8 +144,9 @@ See the [parent flow](../platform-console.md#3-authorize-the-selected-page-resou
 
 ## Debugging and Verification
 
-The focused cases in `tests/browser/console.test.mjs` exercise the console
-against controller sessions and resource reads. Their external provider exchange
+The focused cases in `tests/browser/console.test.ts` exercise the console
+against controller sessions and resource reads, including a late startup observer
+after a native entry failure and during a pending session read. Their external provider exchange
 and recovery endpoint are modeled; they do not establish a deployed OAuth or
 native-gateway integration.
 
@@ -144,6 +165,14 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 08:33: Keep password entry behind explicit recovery until sign-in discovery settles. (authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
+
+- 2026-11-09 15:08: Remove direct GitHub discovery and membership errors in the accompanying changes. (authoring-run/e00c2688-0a25-4443-a852-69dea27e73d0 - daecab29c452af39945f5526257288771a77bdfc)
+
+- 2026-11-04 22:07: Document Console startup failure and reload recovery. (authoring-run/b22db461-d5cf-40f5-b1c1-43443569364c - f18e8948b89cdeaabec5ae0f5824b23b7c82b906)
+
+- 2026-11-04 12:53: Explain keyboard focus while sign-in is pending. (authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1 - 15f0c1d443090f1346dc3d94444dad2397cb4fdc)
 
 - 2026-11-04 12:29: Document recovery from a malformed Console session reply. (authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042 - 9f1dcbeb2361006e7bea52d0cee595d9616ed16a)
 
