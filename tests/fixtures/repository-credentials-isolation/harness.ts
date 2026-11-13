@@ -12,6 +12,8 @@ import type {
 import type { ClientCommand } from "../repository-credentials/clients.ts";
 import { run as runProcess } from "../repository-credentials/process.mjs";
 import { forwardWork, ownedNetwork } from "./ownership.ts";
+import type { AgentSnapshot } from "./probe.ts";
+import type { ProviderReport } from "./provider.ts";
 
 type CommandOptions = Parameters<ClientCommand>[2];
 
@@ -31,22 +33,6 @@ type DockerState = {
   OOMKilled: boolean;
 };
 
-type ProviderReport = {
-  ready: boolean;
-  pushedRef: string | null;
-  errors: string[];
-  issues: unknown[];
-  tokens: { static: boolean; revoked: boolean }[];
-  apiTrace: { method: string; target: string; tokenIndex?: number }[];
-  gitTrace: { path: string; gitProtocol?: string | string[] }[];
-};
-
-type AgentSnapshot = {
-  present: string[];
-  environment: Record<string, string>;
-  surfaces: string[];
-  bytes: number;
-};
 type ServiceOutput = { event: "shutdown" } & ShutdownSummary;
 
 const runCommand = runProcess as ClientCommand;
@@ -260,7 +246,7 @@ export async function qualifyIsolation(
       "--entrypoint",
       "node",
       clientId,
-      "/fixtures/repository-credentials-isolation/provider.mjs",
+      "/fixtures/repository-credentials-isolation/provider.ts",
     ]);
     async function report(): Promise<ProviderReport | undefined> {
       try {
@@ -461,10 +447,10 @@ export async function qualifyIsolation(
       }),
     );
 
-    const probeSource = await readFile(new URL("./probe.mjs", import.meta.url), "utf8");
+    const probeSource = await readFile(new URL("./probe.ts", import.meta.url), "utf8");
     async function scan({ duringClone = false } = {}) {
       const result = await docker(
-        ["exec", "--interactive", names.agent, "node", "--input-type=module"],
+        ["exec", "--interactive", names.agent, "node", "--input-type=module-typescript"],
         { input: probeSource },
       );
       const snapshot = JSON.parse(result.stdout) as AgentSnapshot;

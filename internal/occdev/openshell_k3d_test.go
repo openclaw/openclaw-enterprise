@@ -31,8 +31,8 @@ func developmentCodexProfileNames(t *testing.T) []string {
 	// appends the reviewed bwrap rules, so the resulting digest is stable
 	// without needing a cluster to report a real node profile.
 	const script = `
-const { deriveCodexBwrapProfile, reviewedCodexVersions } = await import("../../scripts/lib/codex-seccomp-profile.mjs");
-const { developmentCodexProfileName } = await import("../../scripts/lib/codex-seccomp-k3d.mjs");
+const { deriveCodexBwrapProfile, reviewedCodexVersions } = await import("../../scripts/lib/codex-seccomp-profile.ts");
+const { developmentCodexProfileName } = await import("../../scripts/lib/codex-seccomp-k3d.ts");
 const baseline = {
   architectures: ["SCMP_ARCH_X86_64"],
   defaultAction: "SCMP_ACT_ERRNO",
@@ -266,7 +266,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 "create -f ` + filepath.Join(state, "network-probe-") + `"*"-occ-netcheck-target-"*".json -o json") : > ` + shellQuote(transport.waitFor) + `; while :; do :; done ;;
 "delete --raw /api/v1/namespaces/occ-netcheck-other-"*) echo 'probe cleanup refused' >&2; exit 46 ;;`,
 				"helm": `"show chart "*) ` + chartResult + ` ;;`,
-				"node": `"scripts/prepare-development-codex-seccomp.mjs ` + state + ` ` + imported + ` 41") [ -f ` + shellQuote(filepath.Join(state, "state.json")) + ` ] && [ ! -e ` + shellQuote(filepath.Join(state, "installation.yaml")) + ` ] || exit 96
+				"node": `"scripts/prepare-development-codex-seccomp.ts ` + state + ` ` + imported + ` 41") [ -f ` + shellQuote(filepath.Join(state, "state.json")) + ` ] && [ ! -e ` + shellQuote(filepath.Join(state, "installation.yaml")) + ` ] || exit 96
 ` + probe + ` ;;`,
 			})
 			driver := "none"
@@ -385,7 +385,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			stages := []string{"k3d cluster create ", "docker exec k3d-occ-dev-order-server-0 nslookup ", "k3d kubeconfig get ", "kubectl --kubeconfig "}
 			runtimeImport := "k3d image import --mode direct " + filepath.Join(state, developmentImportArchive(staging)) + " "
 			if driver == "none" && scenario != "API failure" {
-				stages = append(stages, "docker tag "+runtimeImage, runtimeImport, "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag "+staging+" ", "node scripts/prepare-development-codex-seccomp.mjs ")
+				stages = append(stages, "docker tag "+runtimeImage, runtimeImport, "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag "+staging+" ", "node scripts/prepare-development-codex-seccomp.ts ")
 			} else if scenario == "routing and rollback failure" {
 				if index(runtimeImport) < 0 || index("helm show chart ") < 0 || index("node ") >= 0 {
 					t.Fatal("expected OpenShell asset preparation before routing refusal")

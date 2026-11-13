@@ -192,7 +192,7 @@ audit. Its sender is synthetic.
 Run focused Configuration conformance and integration checks:
 
 ```bash
-node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.mjs tests/conformance/filesystem-configuration.test.ts
+node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.ts tests/conformance/filesystem-configuration.test.ts
 node --test tests/integration/configuration-controller.test.mjs tests/integration/postgres-platform-state.test.mjs
 node --test tests/integration/postgres-platform-state-kubernetes.test.ts
 ```

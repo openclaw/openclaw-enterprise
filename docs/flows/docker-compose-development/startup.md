@@ -211,7 +211,7 @@ Probe Pods use short grace periods and UID-preconditioned deletes. Cleanup waits
 for selector-matching Pods before removing their egress policy; probe or cleanup
 failure fails startup. Checks are point-in-time and single-node.
 
-Before Installation, `scripts/prepare-development-codex-seccomp.mjs` probes
+Before Installation, `scripts/prepare-development-codex-seccomp.ts` probes
 `RuntimeDefault` in a credential-free Pod. Confirmed denial triggers
 [verified, content-addressed Localhost profile derivation](../../guides/deploy/local-kubernetes-development.md#start-the-profile).
 Failure triggers cluster rollback. On readiness failure, writable stderr receives

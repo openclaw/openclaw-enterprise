@@ -2187,68 +2187,12 @@ function credentialGatewayOverProviders({
   };
 }
 
-const providerProfileChecks = createSandboxProviderProfileChecks({
-  credentialGatewayOverProviders,
-  ready,
-  ScopeViolationError,
-});
 const credentialContractChecks = createSandboxCredentialContractChecks({
   credentialGatewayOverProviders,
-  ready,
   structuralRefusal,
 });
 
-async function ready(operation) {
-  assert.deepEqual(await operation, { state: "ready" });
-}
-
-test("Codex PAT profiles restrict native startup and plugin routes", async () => {
-  await providerProfileChecks.restrictCodexPatNativeStartupAndPluginRoutes();
-});
-
-test("each Codex PAT source gets its own provider profile, stable across replays", async () => {
-  await providerProfileChecks.keepCodexPatProviderProfilesDistinctAcrossReplays();
-});
-
-test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
-  await providerProfileChecks.restrictGatewayToItsOwnedProvider();
-});
-
-test("OpenShell preserves the main-era owned profile lifecycle without a migration", async () => {
-  await providerProfileChecks.preserveOwnedProfileLifecycle();
-});
-
-test("OpenShell main-era interrupted registration survives restart without replaying credentials", async () => {
-  await providerProfileChecks.resumeInterruptedRegistrationWithoutCredentialReplay();
-});
-
-test("OpenShell main-era cleanup resumes after provider deletion without losing another source", async () => {
-  await providerProfileChecks.resumeCleanupWithoutLosingAnotherSource();
-});
-
-test("OpenShell concurrent registrations preserve the first provider's credentials", async () => {
-  await providerProfileChecks.preserveFirstProviderCredentialsDuringConcurrentRegistration();
-});
-
-test("OpenShell rejects a foreign provider appearing after preflight without erasing the profile", async () => {
-  await providerProfileChecks.rejectForeignProviderAfterPreflight();
-});
-
-test("OpenShell registration does not adopt an unknown provider create outcome", async () => {
-  await providerProfileChecks.rejectUnknownProviderCreateOutcome();
-});
-
-test("the OpenShell Credential Gateway never attaches a source of another Namespace", async () => {
-  await providerProfileChecks.rejectCrossNamespaceAttachment();
-});
-
-test("the OpenShell Credential Gateway refuses an empty secret before creating a provider", async () => {
-  await providerProfileChecks.rejectEmptySecretBeforeProviderCreation();
-});
-
-test("OpenShell credential source removal fails while the provider survives deletion", async () => {
-  await providerProfileChecks.failRemovalWhenProviderSurvivesDeletion();
-});
+createSandboxProviderProfileChecks({ credentialGatewayOverProviders, ScopeViolationError });
 
 test("Google requires an OAuth source whose effective binary list is exactly the pinned executable", async () => {
   const pinned = managedGoogleInstall.binaryPath;

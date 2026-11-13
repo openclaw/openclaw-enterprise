@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { Pool } from "pg";
 import type { App, Request, Session } from "./postgres-production-sharing-cases.ts";
@@ -107,6 +107,24 @@ async function defaultNamespaceRows(pool: Pool) {
   ).rows;
 }
 
+async function iamPolicySnapshot(pool: Pool) {
+  const result = await pool.query<{ policy: string; audit: string }>(`
+    SELECT jsonb_build_object(
+      'identities', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_identities row),
+      'roles', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_roles row),
+      'groups', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_groups row),
+      'memberships', (SELECT COALESCE(jsonb_agg(row ORDER BY group_id, principal_id), '[]'::jsonb) FROM occ.iam_group_memberships row),
+      'bindings', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_access_bindings row),
+      'restrictions', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_restrictions row)
+    )::text AS policy,
+    (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb)::text
+     FROM occ.audit_events row
+     WHERE kind = 'mutation' AND action LIKE 'openclaw.iam.%') AS audit
+  `);
+  assert.equal(result.rows.length, 1);
+  return result.rows[0]!;
+}
+
 function createPassiveComputeDriver() {
   return createReadyComputeDriver("compute-production-wireup", {
     implementation: "production-wireup-memory-compute",
@@ -156,17 +174,24 @@ function parseLogEvents(stderr: string) {
     .map((line) => record(parsePrivateJson(line, "bootstrap error log")));
 }
 
-type DriverOptions = { includeDefaults?: boolean; files?: string[]; configurationRoot?: string };
+type DriverOptions = {
+  includeDefaults?: boolean;
+  files?: string[];
+  configurationRoot?: string;
+  iam?: Record<string, unknown>;
+};
 
 async function productionDrivers({
   includeDefaults = false,
   files,
   configurationRoot,
+  iam,
 }: DriverOptions = {}): Promise<InstallationRuntimeDrivers> {
   const base = createInstallationDriverConfiguration();
   const configuration = {
     ...base,
     drivers: { ...base.drivers, plugin: [{ id: "occ-plugin", configuration: {} }] },
+    ...(iam === undefined ? {} : { iam }),
     presets: { includeDefaults, ...(files === undefined ? {} : { files }) },
   };
   configuration.drivers.compute.id = "compute-production-wireup";
@@ -468,6 +493,95 @@ test(
         "SELECT has_schema_privilege(current_user, 'occ', 'CREATE') AS can_create_schema",
       );
       assert.equal(row(privileges).can_create_schema, false);
+
+      await t.test(
+        "invalid production auth leaves configured IAM policy and audit unchanged",
+        async () => {
+          assert.ok(pool);
+          const roleName = "startup-namespace-reader";
+          const groupName = "startup-readers";
+          const iam = {
+            roles: [{ id: roleName, permissions: ["namespace:read"] }],
+            defaultUserGroups: [],
+            roleBindings: [{ group: groupName, role: roleName, scope: "installation" }],
+          };
+          const before = await iamPolicySnapshot(pool);
+          const config = {
+            mode: "production" as const,
+            host: "127.0.0.1",
+            databaseUrl,
+            authBaseURL,
+            nativeAdmin,
+          };
+          // The existing Installation has no such policy. A refused restart must not
+          // commit it for other API or worker processes sharing this database.
+          await assert.rejects(
+            composeProduction({
+              ...config,
+              authSecret: "insecure",
+              drivers: await productionDrivers({ iam }),
+            }),
+            /OCC_AUTH_SECRET/,
+          );
+          assert.deepEqual(
+            await iamPolicySnapshot(pool),
+            before,
+            "refused startup must preserve every IAM row and IAM mutation audit record",
+          );
+
+          // The same admitted configuration must still apply through the locked writer.
+          const validSecret = randomBytes(32).toString("base64url");
+          const started = await composeProduction({
+            ...config,
+            authSecret: validSecret,
+            drivers: await productionDrivers({ iam }),
+          });
+          await started.close();
+          const roleId = `role_config_${roleName}`;
+          const groupId = `group_config_${groupName}`;
+          const appliedRole = await pool.query<{ permissions: unknown }>(
+            "SELECT permissions FROM occ.iam_roles WHERE id = $1",
+            [roleId],
+          );
+          assert.deepEqual(appliedRole.rows, [
+            { permissions: [{ action: "read", resourceKind: "namespace" }] },
+          ]);
+          const appliedBinding = await pool.query<{ group_subject_id: string; role_id: string }>(
+            "SELECT group_subject_id, role_id FROM occ.iam_access_bindings WHERE group_subject_id = $1 AND role_id = $2",
+            [groupId, roleId],
+          );
+          assert.deepEqual(appliedBinding.rows, [{ group_subject_id: groupId, role_id: roleId }]);
+          const policyAudit = await pool.query<{ action: string }>(
+            `SELECT action FROM occ.audit_events
+           WHERE details->>'reason' = 'installation_configuration'
+             AND (details->>'roleId' = $1 OR details->>'groupId' = $2)
+           ORDER BY action`,
+            [roleId, groupId],
+          );
+          assert.deepEqual(
+            policyAudit.rows.map(({ action }) => action),
+            [
+              "openclaw.iam.access_bindings.create",
+              "openclaw.iam.groups.create",
+              "openclaw.iam.roles.create",
+            ],
+          );
+          const applied = await iamPolicySnapshot(pool);
+          assert.notEqual(applied.policy, before.policy);
+          assert.notEqual(applied.audit, before.audit);
+          const restarted = await composeProduction({
+            ...config,
+            authSecret: validSecret,
+            drivers: await productionDrivers({ iam }),
+          });
+          await restarted.close();
+          assert.deepEqual(
+            await iamPolicySnapshot(pool),
+            applied,
+            "unchanged restart must not rewrite IAM policy",
+          );
+        },
+      );
 
       // Exercise both API builders against PostgreSQL while failures at owned Driver seams
       // verify that shutdown and failed startup still release later owners.

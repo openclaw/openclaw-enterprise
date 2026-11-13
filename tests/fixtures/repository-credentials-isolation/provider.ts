@@ -1,19 +1,43 @@
 import { randomBytes } from "node:crypto";
-import { createServer, request } from "node:https";
 import { lstat, readFile, writeFile, rename } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { createServer, request } from "node:https";
+import type { Socket } from "node:net";
 import { startGitHubFixture } from "../repository-credentials/github.mjs";
 import { startGitSmartHttpFixture } from "../repository-credentials/git.mjs";
 
+export type ProviderReport = {
+  ready: boolean;
+  pushedRef: string | null;
+  errors: string[];
+  issues: unknown[];
+  tokens: { static?: boolean; revoked: boolean }[];
+  apiTrace: { method: string; target: string; tokenIndex?: number | undefined }[];
+  gitTrace: { path: string; gitProtocol?: string | string[] | undefined }[];
+};
+
+type Cleanup = () => void | Promise<void>;
+type FixtureContext = { after: (callback: Cleanup) => void };
+type GitHubFixture = {
+  origin: string;
+  acceptStatic(token: string): number;
+  authorize(authorization: string | undefined, boundary: "git"): boolean;
+  issuesOfTokens: ProviderReport["issues"];
+  tokenState(): ProviderReport["tokens"];
+  trace: ProviderReport["apiTrace"];
+  errors: ProviderReport["errors"];
+};
+
 // Only this trusted fixture container sees provider material. The production
 // service still uses its fixed HTTPS origins and verifies their certificates.
-const cleanup = [];
-const context = { after: (callback) => cleanup.push(callback) };
+const cleanup: Cleanup[] = [];
+const context: FixtureContext = { after: (callback) => cleanup.push(callback) };
 const tls = {
   key: await readFile("/inputs/tls.key"),
   cert: await readFile("/inputs/tls.crt"),
   ca: await readFile("/inputs/tls.crt"),
 };
-const secrets = [];
+const secrets: string[] = [];
 // Hold the first credential use once, so the host can probe the Agent container
 // while a Git launcher and helper are running against the gateway.
 let held = false;
@@ -32,7 +56,7 @@ async function holdOnce() {
       await lstat("/state/release-hold");
       return;
     } catch (error) {
-      if (error.code !== "ENOENT") {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
     }
@@ -43,11 +67,16 @@ async function holdOnce() {
   }
   throw new Error("fixture-hold-timeout");
 }
-const github = await startGitHubFixture(context, {
-  tls,
-  clock: { wallNow: () => Date.now() },
-});
-secrets.push(tls.key.toString().split("\n")[1]);
+// The mounted peers accept loaded TLS material. GitHub only reads the clock's
+// wall time, and neither peer needs the paths produced by their default TLS setup.
+type GitHubClock = NonNullable<Parameters<typeof startGitHubFixture>[1]>["clock"];
+type GitFixtureTls = NonNullable<
+  NonNullable<Parameters<typeof startGitSmartHttpFixture>[1]>["tls"]
+>;
+
+const githubOptions = { tls, clock: { wallNow: () => Date.now() } as GitHubClock };
+const github: GitHubFixture = await startGitHubFixture(context, githubOptions);
+secrets.push(tls.key.toString().split("\n")[1]!);
 {
   // The token exists only here and in the service's read-only input mount. The host
   // compares Agent surfaces against it and patterns derived from it; none of these
@@ -62,15 +91,32 @@ secrets.push(tls.key.toString().split("\n")[1]);
   );
   await writeFile("/inputs/token", `${token}\n`, { mode: 0o600 });
 }
-const git = await startGitSmartHttpFixture(context, { tls, authorize: github.authorize });
-const relayErrors = [];
-const sockets = new Set();
+const git = await startGitSmartHttpFixture(context, {
+  tls: tls as GitFixtureTls,
+  authorize: github.authorize,
+});
+const githubOrigin = new URL(github.origin);
+const gitOrigin = new URL(git.origin);
+const relayErrors: string[] = [];
+const sockets = new Set<Socket>();
 const relay = createServer(tls, (incoming, outgoing) => {
   const host = incoming.headers.host;
   const origin =
-    host === "api.github.com" ? github.origin : host === "github.com" ? git.origin : undefined;
+    host === "api.github.com" ? githubOrigin : host === "github.com" ? gitOrigin : undefined;
   if (!origin) {
     outgoing.writeHead(421).end();
+    return;
+  }
+  const target = incoming.url ?? "";
+  const [pathname = ""] = target.split("?", 1);
+  // Both peers parse the path again. Refuse targets that could change meaning there.
+  if (
+    !/^\/[\x21-\x7e]*$/.test(target) ||
+    target.startsWith("//") ||
+    /[\\#]/.test(target) ||
+    URL.parse(pathname, origin)?.pathname !== pathname
+  ) {
+    outgoing.writeHead(400).end();
     return;
   }
   // Include actual JWT and encoded Git authorization in the trusted comparison,
@@ -89,7 +135,7 @@ const relay = createServer(tls, (incoming, outgoing) => {
     incoming.once("close", () => (gone = !incoming.complete));
     incoming.pause();
     holdOnce().then(
-      () => (gone ? outgoing.destroy() : forward(incoming, outgoing, origin)),
+      () => (gone ? outgoing.destroy() : forward(incoming, outgoing, origin, target)),
       () => {
         relayErrors.push("hold-failed");
         outgoing.destroy();
@@ -97,20 +143,21 @@ const relay = createServer(tls, (incoming, outgoing) => {
     );
     return;
   }
-  forward(incoming, outgoing, origin);
+  forward(incoming, outgoing, origin, target);
 });
-function forward(incoming, outgoing, origin) {
+function forward(incoming: IncomingMessage, outgoing: ServerResponse, origin: URL, target: string) {
   const upstream = request(
-    new URL(incoming.url, origin),
+    origin,
     {
+      path: target,
       method: incoming.method,
-      headers: incoming.headers,
+      headers: { ...incoming.headers, host: origin.host },
       ca: tls.ca,
       rejectUnauthorized: true,
       agent: false,
     },
     (response) => {
-      outgoing.writeHead(response.statusCode, response.headers);
+      outgoing.writeHead(response.statusCode!, response.headers);
       response.pipe(outgoing);
       response.once("error", () => outgoing.destroy());
     },
@@ -127,7 +174,7 @@ relay.on("connection", (socket) => {
   sockets.add(socket);
   socket.once("close", () => sockets.delete(socket));
 });
-await new Promise((resolve, reject) => {
+await new Promise<void>((resolve, reject) => {
   relay.once("error", reject);
   relay.listen(443, "0.0.0.0", resolve);
 });
@@ -139,7 +186,7 @@ async function snapshot() {
   }
   writing = true;
   try {
-    const report = {
+    const report: ProviderReport = {
       ready: true,
       issues: github.issuesOfTokens,
       tokens: github.tokenState(),

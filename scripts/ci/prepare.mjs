@@ -66,7 +66,7 @@ import {
   prepareRepositoryCredentials,
   prepareRepositoryCredentialsFile,
 } from "./repository-credentials.mjs";
-import { prepareCodexSeccompProfile } from "./codex-seccomp.mjs";
+import { prepareCodexSeccompProfile } from "../lib/codex-seccomp-k3d.ts";
 import {
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
