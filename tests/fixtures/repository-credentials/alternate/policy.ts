@@ -1,6 +1,16 @@
-export const denied = Object.freeze({ kind: "denied", status: 403, code: "route-denied" });
+import type {
+  Denied,
+  RequestPlan,
+  ResolvedGrant,
+  SessionAuthenticatedRequest,
+} from "../../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 
-export function resolveAlternateProfile(profile, { binding, gatewayOrigin }) {
+export const denied: Denied = Object.freeze({ kind: "denied", status: 403, code: "route-denied" });
+
+export function resolveAlternateProfile(
+  profile: string,
+  { binding, gatewayOrigin }: { binding: ResolvedGrant["binding"]; gatewayOrigin: string },
+): ResolvedGrant {
   if (profile !== "git-write") {
     throw new Error("unsupported-profile");
   }
@@ -17,7 +27,10 @@ export function resolveAlternateProfile(profile, { binding, gatewayOrigin }) {
   });
 }
 
-export function createAlternatePlan(request, { sessionId, origin, operationMs }) {
+export function createAlternatePlan(
+  request: SessionAuthenticatedRequest,
+  { sessionId, origin, operationMs }: { sessionId: string; origin: string; operationMs: number },
+): RequestPlan | Denied {
   if (
     request.authority.sessionId !== sessionId ||
     request.head.rawTarget !== "/team/nested/project" ||
@@ -25,7 +38,7 @@ export function createAlternatePlan(request, { sessionId, origin, operationMs })
   ) {
     return denied;
   }
-  return Object.freeze({
+  const plan: Omit<RequestPlan, symbol> = {
     origin,
     target: "/v2/projects/team%2Fnested%2Fproject",
     method: request.head.method,
@@ -52,5 +65,6 @@ export function createAlternatePlan(request, { sessionId, origin, operationMs })
       }),
       rewriteJson: undefined,
     }),
-  });
+  };
+  return Object.freeze(plan) as RequestPlan;
 }

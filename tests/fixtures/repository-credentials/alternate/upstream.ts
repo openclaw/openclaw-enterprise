@@ -1,15 +1,39 @@
 import { createHash } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
-export function createAlternateUpstreamHandler({ authorize, observe, beforeWriteChunk, revision }) {
-  return (request, response) => {
+export type AlternateTraceEntry = {
+  method: string;
+  path: string;
+  authorizationPresent: boolean;
+  cookiePresent: boolean;
+  bodyBytes?: number;
+  bodyDigest?: string;
+  committed?: boolean;
+};
+
+type AlternateUpstreamControls = {
+  authorize(key: string | string[] | undefined): boolean;
+  observe(entry: AlternateTraceEntry): void;
+  beforeWriteChunk(): void | Promise<void>;
+  revision(): number;
+};
+
+export function createAlternateUpstreamHandler({
+  authorize,
+  observe,
+  beforeWriteChunk,
+  revision,
+}: AlternateUpstreamControls) {
+  return (request: IncomingMessage, response: ServerResponse) => {
     const key = request.headers["x-repository-key"];
     if (!authorize(key)) {
       response.writeHead(401).end();
       return;
     }
-    const entry = {
-      method: request.method,
-      path: request.url,
+    const entry: AlternateTraceEntry = {
+      // Node fills these fields when it parses the incoming server request.
+      method: request.method!,
+      path: request.url!,
       authorizationPresent: Object.hasOwn(request.headers, "authorization"),
       cookiePresent: Object.hasOwn(request.headers, "cookie"),
     };
@@ -19,7 +43,7 @@ export function createAlternateUpstreamHandler({ authorize, observe, beforeWrite
         const hash = createHash("sha256");
         entry.bodyBytes = 0;
         entry.committed = false;
-        for await (const chunk of request) {
+        for await (const chunk of request as AsyncIterable<Buffer>) {
           hash.update(chunk);
           entry.bodyBytes += chunk.length;
           await beforeWriteChunk();
