@@ -227,6 +227,7 @@ export function createRepositoryFields(
   // Set before any render: a held form renders before its first read (finding 2909).
   let searchState: SearchState = { query: "", browsing: false, dismissed: false, page: 0 };
   let loadGeneration = 0;
+  let loadedAfterReset = false;
   const status = element(
     "p",
     { className: "hint", role: "status" },
@@ -1075,16 +1076,8 @@ export function createRepositoryFields(
       });
       state.discovery = "ready";
       choices.setAttribute("aria-busy", "false");
-      if (!state.options.length) {
-        const next = clearSelections
-          ? "Start a new draft to continue without repository access."
-          : "You can continue without repository access.";
-        status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories. ${next}`;
-      } else {
-        status.textContent = clearSelections
-          ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
-          : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
-      }
+      loadedAfterReset = clearSelections;
+      showReadyStatus();
       revealInvalidSelections();
       render();
       onChange(false);
@@ -1158,6 +1151,19 @@ export function createRepositoryFields(
           ? "unavailable"
           : state.discovery,
     };
+  }
+
+  function showReadyStatus() {
+    if (!state.options.length) {
+      const next = loadedAfterReset
+        ? " Start a new draft to continue without repository access."
+        : " You can continue without repository access.";
+      status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories.${next}`;
+    } else {
+      status.textContent = loadedAfterReset
+        ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
+        : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
+    }
   }
 
   // The status line for an Installation without repository access. Only an Installation

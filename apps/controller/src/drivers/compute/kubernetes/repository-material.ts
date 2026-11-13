@@ -6,11 +6,18 @@ import type {
   RepositoryCredentialRuntimeBinding,
   RepositoryCredentialSessionFiles,
 } from "@openclaw-enterprise/contracts";
-import type { RepositoryCredentialClientConfiguration } from "../../repo/credentials/client-contracts.ts";
+import type { RepositoryCredentialClientConfiguration } from "../../repo/access/client-contracts.ts";
 import {
+  clientSessionFileMaxBytes as limits,
+  clientGitconfig,
+  clientGhConfiguration,
+  renderClientGhHosts,
   hasControlCharacter,
+  isValidGitClientConnection,
+  matchesRepositorySessionId,
+  isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
-} from "../../repo/credentials/client-contracts.ts";
+} from "../../repo/access/client-contracts.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -31,19 +38,7 @@ export const REPOSITORY_MATERIAL_KEYS = {
   "ca.pem": "ca.pem",
 } as const;
 
-const limits = {
-  bearer: 256,
-  "client.json": 16 * 1024,
-  gitconfig: 16 * 1024,
-  "gh/hosts.yml": 16 * 1024,
-  "gh/config.yml": 16 * 1024,
-  "ca.pem": 64 * 1024,
-};
 const refPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const sessionPattern = /^[A-Za-z0-9_-]{1,128}$/;
-const gitconfig =
-  "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n";
-const ghConfiguration = "version: 1\nprompt: disabled\ngit_protocol: https\n";
 
 interface RepositoryMaterialIdentity {
   readonly repositoryRef: string;
@@ -153,23 +148,10 @@ function validateClient(value: unknown): RepositoryCredentialClientConfiguration
     return invalid();
   }
   if (
-    origin.protocol !== "https:" ||
-    origin.origin !== client.gatewayOrigin ||
-    origin.username ||
-    origin.password ||
-    origin.search ||
-    origin.hash ||
-    remote.origin !== origin.origin ||
-    remote.username ||
-    remote.password ||
-    remote.search ||
-    remote.hash ||
+    !isValidGitClientConnection(origin, remote, client) ||
     !/^\/[A-Za-z0-9._/-]+\.git$/.test(remote.pathname) ||
     remote.pathname.includes("..") ||
-    !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) ||
-    client.apiHost !== origin.hostname ||
+    !isValidGitClientUsernameAndHosts(origin, client) ||
     !/^[A-Za-z0-9._/-]{1,512}$/.test(client.repository)
   ) {
     return invalid();
@@ -188,7 +170,7 @@ export function repositorySessionFiles(
   const keys = Object.keys(files);
   if (
     typeof binding.sessionId !== "string" ||
-    !sessionPattern.test(binding.sessionId) ||
+    !matchesRepositorySessionId(binding.sessionId) ||
     !Number.isSafeInteger(binding.deadlineWallMs) ||
     binding.deadlineWallMs <= Date.now() ||
     keys.length < 5 ||
@@ -230,10 +212,10 @@ export function repositorySessionFiles(
     return invalid();
   }
   const client = validateClient(document.client);
-  const hosts = `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(files.bearer)}\n`;
+  const hosts = renderClientGhHosts(client, files.bearer as string);
   if (
-    files.gitconfig !== gitconfig ||
-    files["gh/config.yml"] !== ghConfiguration ||
+    files.gitconfig !== clientGitconfig ||
+    files["gh/config.yml"] !== clientGhConfiguration ||
     files["gh/hosts.yml"] !== hosts
   ) {
     return invalid();
@@ -288,7 +270,7 @@ export function repositoryMaterialSpec(
         !refPattern.test(binding.repositoryRef) ||
         !references.delete(binding.repositoryRef) ||
         typeof binding.sessionId !== "string" ||
-        !sessionPattern.test(binding.sessionId) ||
+        !matchesRepositorySessionId(binding.sessionId) ||
         sessions.has(binding.sessionId) ||
         (binding.kind !== "new" && binding.kind !== "retained") ||
         !Number.isSafeInteger(binding.deadlineWallMs) ||

@@ -5,8 +5,9 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
-import { availablePort } from "./available-port.mjs";
+import { registryImage } from "../../scripts/ci/fixture-support-images.mjs";
+import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
+import { availablePort } from "./available-port.ts";
 import {
   configureModelProviderDNS,
   createModelProviderFiles,
@@ -15,8 +16,6 @@ import {
 
 const repository = resolve(import.meta.dirname, "../..");
 const ownerLabel = "dev.openclaw.model-provider-owner";
-const registryImage =
-  "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
 const nodeBaseImage =
   "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a";
 
@@ -166,7 +165,7 @@ export function createDevUpModelProvider({
     }
   }
 
-  async function create(name, args, options) {
+  async function create(name, args, options, onCommandFailure) {
     lifetime.throwIfAborted();
     const resource = resources.find((entry) => entry.name === name);
     resource.uncertain = true;
@@ -178,7 +177,10 @@ export function createDevUpModelProvider({
       delete resource.uncertain;
       throw error;
     }
-    await docker(args, options);
+    await Promise.resolve(docker(args, options)).catch((error) => {
+      onCommandFailure?.(error);
+      throw error;
+    });
     delete resource.uncertain;
     await record();
   }
@@ -265,11 +267,69 @@ export function createDevUpModelProvider({
             "--cache-from",
             `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
           ]
-        : // The ordinary launcher builds on the engine's default builder. Reuse
-          // those layers when this lane has no hosted cache credentials.
-          ["--builder", "default"];
+        : // Reuse the installer's selected builder without passing hosted cache
+          // credentials into the test. Local runs retain the engine builder.
+          ["--builder", env.BUILDX_BUILDER || "default"];
+    const build = async (role, tag, args, { timeout: budgetMs }) => {
+      const started = performance.now();
+      let processFailure = {};
+      try {
+        await create(tag, args, { timeout: budgetMs }, (error) => {
+          // Read only command-owned data fields, never accessors. Journal and
+          // pre-dispatch cancellation errors do not describe a child process.
+          try {
+            for (const key of ["code", "signal", "killed"]) {
+              const value = Object.getOwnPropertyDescriptor(error, key)?.value;
+              if (["string", "number", "boolean"].includes(typeof value)) {
+                processFailure[key] = value;
+              }
+            }
+          } catch {
+            processFailure = {};
+          }
+        });
+      } catch (error) {
+        // Only fixed labels and process metadata enter CI output. The original
+        // errors retain their private command output for local inspection.
+        const exit =
+          Number.isInteger(processFailure.code) &&
+          processFailure.code >= 0 &&
+          processFailure.code <= 255
+            ? processFailure.code
+            : "unknown";
+        const code = [
+          "ENOENT",
+          "EACCES",
+          "ENOMEM",
+          "EAGAIN",
+          "ABORT_ERR",
+          "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        ].includes(processFailure.code)
+          ? processFailure.code
+          : "unknown";
+        const signal = [
+          "SIGTERM",
+          "SIGKILL",
+          "SIGABRT",
+          "SIGSEGV",
+          "SIGPIPE",
+          "SIGINT",
+          "SIGHUP",
+        ].includes(processFailure.signal)
+          ? processFailure.signal
+          : "unknown";
+        const killed =
+          typeof processFailure.killed === "boolean" ? processFailure.killed : "unknown";
+        const elapsedMs = Math.round(performance.now() - started);
+        throw new Error(
+          `${role}: exit=${exit} code=${code} signal=${signal} killed=${killed} elapsedMs=${elapsedMs} budgetMs=${budgetMs}`,
+          { cause: error },
+        );
+      }
+    };
     const builds = await Promise.allSettled([
-      create(
+      build(
+        "controller",
         controllerTag,
         [
           "buildx",
@@ -291,7 +351,8 @@ export function createDevUpModelProvider({
         ],
         { timeout: 600_000 },
       ),
-      create(
+      build(
+        "runtime",
         baseTag,
         [
           "buildx",
@@ -317,7 +378,10 @@ export function createDevUpModelProvider({
       .filter((result) => result.status === "rejected")
       .map((result) => result.reason);
     if (failures.length) {
-      throw new AggregateError(failures, "Checkout image builds failed");
+      throw new AggregateError(
+        failures.map((failure) => failure.cause),
+        `Checkout image builds failed: ${failures.map((failure) => failure.message).join("; ")}`,
+      );
     }
     const context = join(directory, "runtime-trust");
     await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });

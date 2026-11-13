@@ -25,8 +25,9 @@ python3 -m http.server 6006 --bind 127.0.0.1 \
 ```
 
 Serve at the origin root for absolute `/console/` URLs. Build fingerprints keep
-cached fixture pages and module imports current. CI uploads a static artifact
-without publishing the documentation site.
+cached fixture pages and module imports current. The [Console Storybook workflow](../../.github/workflows/console-storybook.yml)
+uploads a static artifact without publishing the documentation site. It needs
+no provider secrets.
 
 ## Write Console modules in TypeScript
 
@@ -40,9 +41,10 @@ Node 24 to remove types, preserve line numbers, and serve JavaScript at the same
 URL as before.
 
 Node resolves imports literally, including imports inside an `.mts` file. Point
-Node callers of a standalone module directly at its `.mts` source. For example,
-when the starter model moves, change the first-agent scripts and test helpers to
-import `agents/starter-model.mts`.
+Node callers of a standalone module directly at its `.mts` source. The first-agent
+CLI (`scripts/first-agent.ts`), model helper (`scripts/first-agent-model.ts`), and CI
+smoke Agent checks (`scripts/ci/first-agent-smoke/agents.ts`) all import
+`agents/starter-model.mts` directly.
 Test browser behavior through the served `.mjs` URLs, where the controller
 resolves the whole module graph.
 
@@ -58,6 +60,11 @@ desktop (1440 × 1000), tablet (768 × 1024), and mobile (390 × 844).
 Check keyboard focus, search, navigation, an open dialog, and empty, loading,
 error, permission-denied, and missing-credential stories. The console stays light
 under either system appearance.
+
+In **Components/Native admin → Available on tablet**, check that the 768px preview
+keeps the Agent name readable beside the visible sidebar. The title uses its own
+row below the back link and actions. Open Agent UI must still open the fixture.
+Compare **Available** at desktop and phone widths to check the surrounding layouts.
 
 The Claw palette, type scale, and surface geometry reference
 [OpenClaw `6e8d06876fd166064abbec4928fb3bb109ebe999`](https://github.com/openclaw/openclaw/tree/6e8d06876fd166064abbec4928fb3bb109ebe999/ui),
@@ -81,7 +88,7 @@ Stories reach error states through real controls after loading fixture data.
 
 | Group                                                                              | Coverage                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign in                                                                            | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                                  |
+| Sign in                                                                            | Password, Google and OIDC sign-in, discovery failure, provider errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                          |
 | Agents                                                                             | Populated, empty, no matches, loading, inaccessible Namespaces, denied or failed reads; row Stop and Delete restrictions, refusals, uncertain outcomes.                                                                                                                                                                                                                                                           |
 | Backends                                                                           | Configured, empty, discovery failure, and access denied.                                                                                                                                                                                                                                                                                                                                                          |
 | [Namespaces](../../scripts/console-storybook/namespace-create-workflow.md)         | Creation, status cards, empty, denied, recovery.                                                                                                                                                                                                                                                                                                                                                                  |
@@ -101,6 +108,10 @@ Stories reach error states through real controls after loading fixture data.
 
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
+
+In **Pages → Create Agent → Repository-only Credential Proxy**, check that the
+model-only Dedicated OpenClaw form permits creation without a repository selection. Choose Codex, select the repository, and turn off issue
+management under **Customize access** to use its approved access level.
 
 ## Return navigation
 
@@ -185,8 +196,26 @@ Moved to [Agent workflows](console-storybook-agent-workflows.md#delete).
 In **Pages/Settings → Nested Driver values**, expand a Driver and switch between
 **Fields** and **JSON**. Confirm that nesting, arrays, empty values, and redaction
 stay intact and the open groups remain open. Scroll the long page to verify that
-the sidebar and account control reach the bottom. Repeat on a phone and open the
+the account control stays at the viewport bottom. Open its menu at both ends of
+the page, with Debug mode off and on. Repeat on a phone and open the
 navigation drawer; the page must not scroll horizontally.
+
+When changing the Settings Driver access stories, build and serve the preview
+and open each indexed story in a fresh browser context. Inspect the embedded
+frame's `story` query and the fixture requests from its first load:
+
+- `pages-settings--driver-configuration-denied` loads
+  `story=settingsDriverConfigurationsDenied`. Permissions say the account cannot
+  administer the Installation. Settings sends no Driver GET.
+- `pages-settings--driver-configuration-endpoint-refused` loads
+  `story=settingsDriverConfigurationsEndpointRefused`. Permissions allow
+  Installation administration. The first Driver GET returns 403, and the
+  permissions recheck still allows administration. The Driver section shows the
+  refusal without values.
+
+In both stories, the Account and Session cards stay usable. Check the empty
+and unavailable stories as controls: a 200 with no configurations shows the
+empty message, and a 503 shows the read failure.
 
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
 seven-day release-age policy, independently of root dependencies.
@@ -194,15 +223,45 @@ seven-day release-age policy, independently of root dependencies.
 - `prepare-assets.ts` reads the public Console assets through the controller's
   asset reader, then versions the preview in `dist/assets/`. Rebuild after source
   edits so the development server serves the new assets.
-- `public/scenarios.mjs` assembles the story catalog. Edit sign-in scenarios in
+- `public/scenarios.mts` assembles the story catalog and emits as
+  `/storybook-fixtures/scenarios.mjs`; the asset builder keeps its versioned URL.
+  Check local entries with `satisfies LocalScenario`. Keep partial or invalid
+  response fixtures explicit in their owning scenario types. Theme source IDs
+  must name an authored entry; generated policy sources are checked before use.
+  Preserve insertion order and shared fixture values when adding variants.
+  Edit sign-in scenarios in
   `public/scenario-groups/sign-in.mts` and Secrets scenarios in
-  `public/scenario-groups/secrets.mts`. The asset builder publishes typed
+  `public/scenario-groups/secrets.mts`. Edit Settings scenarios in
+  `public/scenario-groups/settings.mts` and Create Agent scenarios in
+  `public/scenario-groups/create-agent.mts`. The asset builder publishes typed
   scenario groups as versioned `.mjs` modules for the preview frames.
-- `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
+  Edit Credentials scenarios in `public/scenario-groups/credentials.mts`; the
+  catalog keeps their three runs in their original positions.
+  Edit Plugins component and Agent detail approver variant previews in
+  `public/scenario-groups/plugins.mts`; shared plugin data stays in
+  `public/plugin-scenario-data.mts`.
+- `public/fixtures.mts` intercepts API calls inside the preview. Unconfigured
   requests report an error and return 501, never reaching a server. Preview CSP
   also blocks network connections. Authentication and authorization
-  responses are examples, not a security implementation.
-- `public/frame.mjs` starts the production console and opens configured controls.
+  responses are examples, not a security implementation. Its typed
+  `public/configuration-store.mts` owns Configuration persistence;
+  `public/create-agent-routes.mts` owns Create and provisioning job routes.
+  `public/preset-fixture.mts` prepares Preset variants, and
+  `public/network-policy-fixture.mts` owns simulated policy saves and application polls.
+  The router emits as `/storybook-fixtures/fixtures.mjs`. It checks the names and
+  policy fields it consumes before changing fixture state and returns
+  `400 INVALID_REQUEST` for malformed writes or validation request envelopes.
+  Network validation returns HTTP 200 with `data.success: false` and field details
+  for malformed additions inside a valid envelope. Authored rules and scenario
+  refusals run first. IAM payloads and unused registration fields remain opaque.
+- `public/frame.mts` starts the production console and opens configured controls.
+  The asset builder emits it as `/storybook-fixtures/frame.mjs` with an asset
+  version in the URL.
+- Edit Namespace scenarios in `public/scenario-groups/namespaces.mts`. Imports
+  within Storybook's `public/` fixture source use the `.mts` path for a typed
+  fixture. Asset preparation rewrites those imports to versioned `.mjs` URLs.
+  When defining actions in a typed scenario group, import the `StoryAction`
+  type from `scripts/console-storybook/story-action.mts`.
 - `*.stories.ts` exports named stories by group. `story.ts` adds instructions,
   UI-gap notices, the preview, and Reset story. The repository's `pnpm typecheck`
   checks these files without installing the separate Storybook dependencies.
@@ -216,8 +275,12 @@ messages and UI markup.
 Open **Pages / Navigation / Debug runtime images**, expand an Agent, and inspect
 the gateway image reference, digest, Enterprise source commit, and upstream
 OpenClaw commit. The sidecar has unknown provenance for both commits.
-Navigate to Namespaces, confirm `debug=true` persists, and repeat in the mobile
-drawer. **Debug metadata unavailable** covers a failed read; ordinary navigation
+Navigate to Namespaces, confirm diagnostics stay enabled, and repeat in the mobile
+drawer. In **Pages / Settings / Account**, turn **Debug mode** on and off.
+**Debug mode enabled** starts with the saved preference enabled; **Browser storage
+unavailable** shows a refused save without enabling diagnostics. Use the live
+Console to verify that the preference survives a reload; each Storybook frame
+starts with its scenario's preference. **Debug metadata unavailable** covers a failed read; ordinary navigation
 stories hide diagnostics. Docker image inspection and the Kubernetes API/worker
 integration suite, not these fixtures, verify Driver behavior.
 

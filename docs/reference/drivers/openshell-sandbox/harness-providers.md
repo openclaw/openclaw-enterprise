@@ -94,7 +94,8 @@ replayable Create receipt must be removed, not mutated by `ExposeService`.
 Compute replaces the fail-closed Gateway target and omits its direct Agent
 Service and Harness route. Drivers without provider transport retain Kubernetes transport.
 
-A native worker's node opens its Gateway connection. Its exposure serves
+Compute reports native OpenClaw ready only after its Gateway carries the enrolled
+node identity and completes rollout. A native worker's node opens its Gateway connection. Its exposure serves
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
 (`DeleteService`, fail closed); adoption or recreation has none. A missing
@@ -104,6 +105,20 @@ missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's
 sweep covers Agent revisions without a current reconciliation pass and failed candidates.
 
 ## Harness observation
+
+Dedicated Codex revisions using a `credential_source` with login mode `codex_pat`
+require authentication in the serving app-server before `harnessStatus` reports
+`serving`. The Driver initializes the exact bearer-authenticated WebSocket service,
+then calls `getAuthStatus` with `includeToken: false` and `refreshToken: false`.
+It requires `authMethod: personalAccessToken`, `authToken: null` and
+`requiresOpenaiAuth: true`. Missing, mismatched or malformed authentication stays
+`starting` under the existing readiness deadline. The earlier `codex login status`
+check alone does not establish authentication in this fresh process.
+
+The check neither logs in nor refreshes credentials, and successful authentication
+is not model-inference proof. Other login modes retain their existing transport
+handshake. TLS verification, cancellation and held-startup-failure reporting remain
+in force; an unavailable WebSocket still permits the held-failure document read.
 
 OpenShell reads the phase from `GetSandbox`. A completed phase maps to `lost`
 with `HARNESS_EXITED`. An error phase, including a deleted or evicted Pod, maps

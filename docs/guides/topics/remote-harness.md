@@ -120,6 +120,68 @@ defines Kubernetes claim sizes, mounts, and persistence. A Sandbox provider may
 supply a different Harness layout. Neither workload mounts the other's private
 state.
 
+## Add operator-owned scratch storage
+
+For a dedicated OpenShell Harness, provision a separate filesystem PVC in its
+execution namespace, then add an exact Agent binding under
+`drivers.compute.configuration` in the Installation YAML:
+
+```yaml
+runtime:
+  # Keep the other required runtime settings.
+  scratchVolumes:
+    - namespaceId: "<OCE namespace ID>"
+      agentId: "<OCE agent ID>"
+      namespace: "<execution Kubernetes namespace>"
+      claimName: "<existing scratch PVC name>"
+      claimUid: "<existing scratch PVC metadata.uid>"
+```
+
+Before restarting API/worker and deploying a new Agent revision:
+
+1. Verify the claim's identity, writable filesystem, private-directory permissions,
+   and actual available capacity and quotas. For native OpenClaw, existing scratch
+   directories must be owned by the preparation process with mode `0700`;
+   the initializer refuses to repair them. Kubernetes may still change volume
+   group/modes; see the [storage contract](../../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes). Prevent concurrent PVC deletion or
+   recreation: Kubernetes mounts reference claim names, so a UID check alone
+   cannot prevent replacement after verification.
+2. Check the selected OpenShell provider's resource admission policy for every
+   PVC mounted by the Harness, including the durable workspace. With the default
+   labels on providers that enable resource admission, the operator sets
+   `openshell.ai/sandbox-attachable=true` and
+   `openshell.ai/sandbox-attachable-workspace=<OpenShell workspace name>`
+   on each approved PVC. In operator mode, use the execution Kubernetes
+   namespace name as the workspace name. A selected RuntimeClass needs the
+   shared approval label. Check the actual policy if it uses custom labels.
+3. For [local storage](https://kubernetes.io/docs/concepts/storage/volumes/#local), set the PV's node affinity to the prepared storage node.
+   Check that all Harness claims can mount there together, including the durable
+   disk's availability zone, and that resources, taints, and RuntimeClass permit
+   both preparation and execution. A Bound PVC does not establish schedulability;
+   Compute's `runtime.nodeSelector` is not forwarded to OpenShell.
+4. Preserve workspace and Gateway state claims. Replacement stops existing
+   workloads before checking scratch; a failed preparation causes downtime.
+   See [replacement and recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+
+After deployment, use an ordinary Agent tool turn to inspect the mount at
+`/sandbox/scratch`, report total and available bytes, and write, read, and remove
+a small file in a new private temporary directory there. Correlate the mount with
+the operator's PV and backing filesystem. A directory name or PVC requested size
+does not prove NVMe backing or usable capacity. Check that durable workspace and
+conversation state remain available.
+
+Select `/sandbox/scratch` explicitly for disposable build outputs or caches;
+the mount does not widen native tool permissions or redirect existing paths.
+A separate PVC's capacity is independent of the container's ephemeral-storage
+limit, which still covers logs and writable-layer files.
+
+The operator owns scratch cleanup after consumers stop. Local storage can survive
+same-node Pod replacement but cannot move with the Pod. [Instance-store data is lost](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-store-lifetime.html)
+when its instance is stopped, hibernated, or terminated; provision and qualify replacement
+storage, update the binding, and deploy a new revision after such loss. Keep
+irreplaceable data on durable storage. The [storage contract](../../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes)
+defines binding and retention behavior.
+
 ## Files across the boundary
 
 ### Agent documents

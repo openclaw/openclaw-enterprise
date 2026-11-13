@@ -22,6 +22,7 @@ export function supervisorPeerLabels(revisionId) {
 }
 
 export function providerReadinessFixture({
+  credentialGatewayDriver,
   provisionHarness,
   harnessEndpoint,
   providerNetwork = {
@@ -33,6 +34,13 @@ export function providerReadinessFixture({
   revisionOverrides = {},
   lifecycleDrivers = [],
   nodeEnrollment,
+  servicePrincipalCredentials = {
+    mode: "projectedServiceAccountToken",
+    audience: "openclaw-controller",
+    expirationSeconds: 900,
+  },
+  gatewayRouting,
+  sandboxDriver,
   workspaceNodePeerLabels = async ({ revision }) => supervisorPeerLabels(revision.id),
 } = {}) {
   const driver = new KubernetesComputeDriver(
@@ -41,11 +49,8 @@ export function providerReadinessFixture({
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
       },
-      servicePrincipalCredentials: {
-        mode: "projectedServiceAccountToken",
-        audience: "openclaw-controller",
-        expirationSeconds: 900,
-      },
+      servicePrincipalCredentials,
+      ...(gatewayRouting === undefined ? {} : { gatewayRouting }),
       ...(harnessEndpoint === undefined
         ? {}
         : {
@@ -56,12 +61,13 @@ export function providerReadinessFixture({
     }),
     {
       lifecycleDrivers,
+      credentialGatewayDriver,
       nodeEnrollment: nodeEnrollment ?? {
         async isConnected() {
           return true;
         },
       },
-      sandboxDriver: {
+      sandboxDriver: sandboxDriver ?? {
         id: "sandbox-provider",
         implementation: "openshell",
         async provisionHarness(context) {
@@ -76,7 +82,7 @@ export function providerReadinessFixture({
     },
   );
   const revision = routedRevision(driver, {
-    sandboxDriverId: "sandbox-provider",
+    sandboxDriverId: sandboxDriver?.id ?? "sandbox-provider",
     configuration: admitLoggingConfiguration(
       {
         agents: { defaults: { model: "codex/gpt-5" } },

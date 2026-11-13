@@ -31,7 +31,7 @@ unaccepted remainder of the [credential-injection RFC](../rfcs/0016-sandbox-cred
 ### Select the first-Agent Harness
 
 Add `--harness openclaw|codex` to
-[`scripts/first-agent.mjs`](../../scripts/first-agent.mjs), defaulting to the
+[`scripts/first-agent.mjs`](https://github.com/openclaw/openclaw-enterprise/blob/a66a9cdfd379c37a20c54e6f5402054c52d1da98/scripts/first-agent.mjs), defaulting to the
 current embedded OpenClaw behavior. Freeze the choice in the helper's private
 record so a rerun cannot silently change topology.
 

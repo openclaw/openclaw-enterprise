@@ -3,6 +3,8 @@
 Find an operation, check its permissions, and copy a complete request or response
 example. For a text-only view, use the [Markdown reference](api.md), which is also
 available in site search. Both views use the same generated OpenAPI contract.
+Use the documentation header’s theme button to switch both views between light
+and dark mode.
 
 Examples contain synthetic IDs and credentials. Replace them with your own values.
 **Test Request affects the selected server**, initially `http://127.0.0.1:3000`.

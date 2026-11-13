@@ -48,7 +48,7 @@ func (r *runner) loadSandboxNetworkPolicies(ctx context.Context, sandboxDriver s
 	if err != nil {
 		return nil, fmt.Errorf("invalid Sandbox network policy values: %w", err)
 	}
-	command := r.command(ctx, "node", filepath.Join(r.opts.Repository, "scripts", "validate-sandbox-network-policy.mjs"))
+	command := r.command(ctx, "node", filepath.Join(r.opts.Repository, "scripts", "validate-sandbox-network-policy.ts"))
 	command.Stdin = bytes.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -89,7 +89,7 @@ func (r *runner) loadSandboxNetworkPolicyCeiling(ctx context.Context, sandboxDri
 	if err != nil {
 		return nil, err
 	}
-	command := r.command(ctx, "node", filepath.Join(r.opts.Repository, "scripts", "validate-sandbox-network-policy.mjs"), "--ceiling")
+	command := r.command(ctx, "node", filepath.Join(r.opts.Repository, "scripts", "validate-sandbox-network-policy.ts"), "--ceiling")
 	command.Stdin = bytes.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {

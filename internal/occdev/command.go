@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,7 +31,7 @@ type runner struct {
 	opts             Options
 	env              map[string]string
 	engine           string
-	composeUnsettled bool
+	composeUnsettled *atomic.Bool
 	// automaticNodeResolver is the host upstream resolver that startup chose for
 	// the k3d node because OCC_DEVELOPMENT_K3D_DNS_RESOLVER was unset.
 	automaticNodeResolver string
@@ -54,7 +55,7 @@ func newRunner(opts Options) *runner {
 		key, value, _ := strings.Cut(item, "=")
 		env[key] = value
 	}
-	return &runner{opts: opts, env: env}
+	return &runner{opts: opts, env: env, composeUnsettled: new(atomic.Bool)}
 }
 func (r *runner) command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -67,7 +68,9 @@ func (r *runner) command(ctx context.Context, name string, args ...string) *exec
 func (r *runner) output(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := r.command(ctx, name, args...)
 	cmd.Stderr = io.Discard
+	started := time.Now()
 	data, err := cmd.Output()
+	r.commandTiming(name, args, started, err)
 	// Never include subprocess output here: bootstrap/config output can contain credentials.
 	if err != nil {
 		return nil, fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), errors.Join(ctx.Err(), err))
@@ -78,7 +81,10 @@ func (r *runner) run(ctx context.Context, name string, args ...string) error {
 	cmd := r.command(ctx, name, args...)
 	cmd.Stdout = r.opts.Out
 	cmd.Stderr = r.opts.Err
-	if err := cmd.Run(); err != nil {
+	started := time.Now()
+	err := cmd.Run()
+	r.commandTiming(name, args, started, err)
+	if err != nil {
 		return fmt.Errorf("%s failed: %w", name, errors.Join(ctx.Err(), err))
 	}
 	return nil
@@ -112,14 +118,17 @@ func (r *runner) invokeCompose(ctx context.Context, state *developmentState, cap
 	if capture {
 		cmd.Stdout, cmd.Stderr = &output, io.Discard
 	}
+	started := time.Now()
 	runErr := cmd.Run()
 	groupErr := finish()
+	err = errors.Join(ctx.Err(), runErr, groupErr)
+	r.commandTiming(r.engine, cmd.Args[1:], started, err)
 	if groupErr != nil {
 		// An unconfirmed provider must not race rollback or state removal.
-		r.composeUnsettled = true
+		r.composeUnsettled.Store(true)
 	}
 	if runErr != nil || groupErr != nil {
-		return nil, fmt.Errorf("%s Compose failed: %w", r.engine, errors.Join(ctx.Err(), runErr, groupErr))
+		return nil, fmt.Errorf("%s Compose failed: %w", r.engine, err)
 	}
 	return bytes.TrimSpace(output.Bytes()), nil
 }
@@ -227,6 +236,9 @@ func (r *runner) selectContainerEngine(ctx context.Context, requested string, re
 		}
 		r.engine = engine
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if requireCompose {
 		return fmt.Errorf("a running %s container engine with its Compose provider is required", requested)

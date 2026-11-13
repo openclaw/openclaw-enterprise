@@ -734,8 +734,10 @@ for (const scenario of [
         const advanced = await f.advanceMaintenance(revision);
         if (handoff) {
           assert.equal(advanced.rowCount, 1, "only the naturally scheduled maintenance is due");
-          handoffMaintenanceKey = advanced.rows[0].idempotency_key;
-          assert.equal(advanced.rows[0].actor_id, f.actor.id);
+          const [maintenance] = advanced.rows;
+          assert.ok(maintenance, "expected the scheduled maintenance row");
+          handoffMaintenanceKey = maintenance.idempotency_key;
+          assert.equal(maintenance.actor_id, f.actor.id);
         } else {
           await advanceRetainedCleanup(f);
         }
@@ -937,7 +939,7 @@ for (const scenario of [
           events.length = 0;
           const retry = await f.advanceMaintenance(revision);
           assert.equal(retry.rowCount, 1);
-          assert.equal(retry.rows[0].idempotency_key, handoffMaintenanceKey);
+          assert.equal(retry.rows[0]?.idempotency_key, handoffMaintenanceKey);
           await start();
           await waitFor("the same ordinary claim recovers after its dependency returns", async () =>
             events.find(
@@ -952,7 +954,7 @@ for (const scenario of [
         }
         const originalWork = await f.workResult(revision);
         assert.equal((await queue.findWork(revision.idempotencyKey))?.state, "succeeded");
-        assert.equal(originalWork.rows[0].reason_code, "REVISION_ACTIVATED");
+        assert.equal(originalWork.rows[0]?.reason_code, "REVISION_ACTIVATED");
         if (
           configuredBackend ||
           scenario.includes("actor absent") ||

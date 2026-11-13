@@ -21,8 +21,8 @@ export async function createGitHubTokenServiceFactory(
   },
 ) {
   const [{ createGitHubDriverFactory }, { createGitHubStaticTokenOwner }] = await Promise.all([
-    appModule("drivers/repo/github/credentials/factory"),
-    appModule("drivers/repo/github/credentials/static-token"),
+    appModule("drivers/repo/github/access/factory"),
+    appModule("drivers/repo/github/access/static-token"),
   ]);
   const owner = createGitHubStaticTokenOwner({ token: Buffer.from(token) });
   resources.after(() => owner.close());
@@ -73,15 +73,14 @@ export async function startServiceListeners(
     tls,
     upstreamOrigins,
     trustedUpstreamOrigins = new Set(upstreamOrigins),
-    providerQueue,
     log,
   },
 ) {
   const [{ createCredentialService }, { startListeners }] = await Promise.all([
-    appModule("drivers/repo/credentials/service"),
-    appModule("drivers/repo/credentials/server"),
+    import("./service.ts"),
+    appModule("drivers/repo/access/server"),
   ]);
-  const service = createCredentialService({ config, factory, clock, providerQueue });
+  const service = createCredentialService({ config, factory, clock });
   let listeners;
   let closing = false;
   // Registered first, so it runs last: teardown must have closed the listeners it started.
@@ -149,9 +148,7 @@ export async function startStaticTokenService(resources, options) {
 }
 
 export async function writeSessionClientConfiguration(resources, { opened, ca }) {
-  const { writeClientConfiguration } = await appModule(
-    "drivers/repo/github/credentials/client/config",
-  );
+  const { writeClientConfiguration } = await appModule("drivers/repo/github/access/client/config");
   const parent = await temporaryDirectory(resources, "rcs-client-");
   await chmod(parent, 0o700);
   const clientDirectory = join(parent, "session");

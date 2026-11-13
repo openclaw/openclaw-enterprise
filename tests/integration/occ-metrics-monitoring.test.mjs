@@ -17,9 +17,9 @@ import {
 } from "../helpers/metrics-monitoring-readiness.mjs";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { startMetricsListener } from "../../apps/controller/src/metrics/listener.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 
-import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
+import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.ts";
 
 const run = promisify(execFile);
 const engine = process.env.OCC_METRICS_TEST_ENGINE ?? "docker";
