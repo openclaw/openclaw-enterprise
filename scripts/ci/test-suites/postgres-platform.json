@@ -13,7 +13,7 @@
     "tests/integration/postgres-platform-state.test.mjs",
     "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
     "tests/integration/postgres-production-wireup.test.ts",
-    "tests/integration/compute-singleton-worker-postgres.test.mjs",
+    "tests/integration/compute-singleton-worker-postgres.test.ts",
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
@@ -129,7 +129,16 @@
     {
       "path": "tests/integration/postgres-production-wireup.test.ts",
       "expectedTests": [
-        "production bootstrap creates a generated-password administrator that can authenticate"
+        "production bootstrap creates a generated-password administrator that can authenticate",
+        "configured read grants fence Namespace IAM mutations through COMMIT",
+        "create Role: configuration first",
+        "create Role: policy first",
+        "delete Role: configuration first",
+        "delete Role: policy first",
+        "create AccessBinding: configuration first",
+        "create AccessBinding: policy first",
+        "delete AccessBinding: configuration first",
+        "delete AccessBinding: policy first"
       ]
     },
     {
@@ -181,13 +190,20 @@
     {
       "path": "tests/integration/postgres-namespace-iam-policy.test.mjs",
       "expectedTests": [
+        "selected native IAM sees original-unit grants and revocations before rollback",
         "PostgreSQL native IAM creates exact Namespace bindings atomically with audit",
+        "PostgreSQL native IAM binds Agent ServicePrincipals only while their Agent owns them",
         "PostgreSQL native IAM serializes AccessBinding creation before target deletion",
         "PostgreSQL native IAM serializes target deletion before AccessBinding creation",
         "PostgreSQL native IAM rolls back policy mutations when transaction audit fails",
+        "PostgreSQL native IAM grants and revokes existing human access to exact Namespace and Agent targets",
+        "PostgreSQL native IAM confines Console share grants to the shared Agent and Namespace discovery",
+        "PostgreSQL native IAM grants Namespace Roles only Namespace read",
+        "PostgreSQL exact Namespace grants serialize with Namespace deletion",
         "PostgreSQL native IAM authorizes Namespace-local service identities without Agent ownership",
         "PostgreSQL native IAM creates exact AgentRevision bindings with limited app privileges",
         "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets",
+        "PostgreSQL IAM policy writes keep the actor's authority current through COMMIT",
         "native IAM reads the policy once per unit of work and never across units",
         "listing 2000 Agents reads the policy once for the whole list"
       ]
@@ -311,7 +327,7 @@
       ]
     },
     {
-      "path": "tests/integration/compute-singleton-worker-postgres.test.mjs",
+      "path": "tests/integration/compute-singleton-worker-postgres.test.ts",
       "expectedTests": [
         "production worker emits Compute preflight warnings before worker.started and continues startup",
         "a worker binds persisted Namespace, Agent, and service principal before provider effects",

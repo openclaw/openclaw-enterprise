@@ -137,6 +137,11 @@ with `unknown` for missing or unrecognized values. For a selected structured
 Gateway chat refusal, the receipt includes `gatewayChatPhase` when it can identify
 ordinary chat before private Git (`before-private-git`), a native Git turn
 (`native-git`), or ordinary chat after Git withdrawal (`after-withdrawal`).
+
+For a selected `gateway-exec` failure, the optional `gatewayExec` object contains
+the recorded process `exitCode`, allowlisted `signal`, or allowlisted error `code`.
+Missing and invalid fields are omitted. A signal alone leaves the cause of
+termination unknown.
 After a failed runner, the writer uses complete valid ledger rows before the
 first malformed or non-object row. It ignores blank rows and selects the last
 recognized checkpoint for the selected mode, excluding retirement. A missing
@@ -175,7 +180,10 @@ failure alone does not fail the workflow. Aggregation reads
 retained results only for a successful plan; abandoned uploads cannot replace
 fresh evidence. The aggregate applies the same
 case and cleanup rules to both sources; reuse is not independent execution.
-Hosted discovery, publication and final reuse accounting remain unverified.
+To confirm that reused results reached the aggregate, check that both
+`Download committed reused results` and `Combine committed reused results` succeeded.
+In [Full Integration run 43103074336](https://github.com/openclaw/openclaw-enterprise/actions/runs/43103074336/job/130836667906),
+both steps succeeded before `Aggregate full suite` failed.
 
 ## Files
 

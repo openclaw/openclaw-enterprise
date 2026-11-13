@@ -23,6 +23,7 @@ import {
 } from "../helpers/production-chart.mjs";
 import { caAndLeaf } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 
 const execute = promisify(execFile);
 const tooling = await chartTooling();
@@ -267,9 +268,11 @@ async function mountedPod(directory, api, secrets) {
     }
   }
   const resolve = (container, path) => {
-    const mount = container.volumeMounts.find(({ mountPath }) => path.startsWith(`${mountPath}/`));
+    const mount = container.volumeMounts.find(({ mountPath }) =>
+      path.startsWith(join(mountPath, "/")),
+    );
     assert.ok(mount, `No rendered mount for ${path}`);
-    return join(volumes.get(mount.name), path.slice(mount.mountPath.length + 1));
+    return join(volumes.get(mount.name), path.slice(mount.mountPath.length));
   };
   const init = api.initContainers.find(({ name }) => name === "assemble-api-ca");
   const args = init.args.map((arg) => (arg.startsWith("/") ? resolve(init, arg) : arg));
@@ -528,7 +531,13 @@ test(
     const directory = await temporaryDirectory(t, "occ-oidc-ca-");
     const database = await certificates(directory, "database", "localhost");
     const idp = await certificates(directory, "idp", "localhost");
-    const api = pod(await render({ ...oidcValues, ...caValues, ...externalGatewayCa }), "api");
+    const objects = await render({
+      ...oidcValues,
+      ...caValues,
+      ...externalGatewayCa,
+      "database.caMountPath": "/etc/openclaw/database-ca/",
+    });
+    const api = pod(objects, "api");
     const wiring = await mountedPod(directory, api, {
       "idp-ca/roots.pem": idp["ca.pem"],
       "gateway-ca/gateway.pem": idp["ca.pem"],
@@ -609,6 +618,105 @@ test(
       );
       assert.equal(accepted, before + 1, "IdP-only trust must not authenticate database TLS");
     }
+    // Exercise both actual upgrade commands with this rendered CA profile. Use
+    // the supported SSH Compute selection so configuration loading needs no
+    // cluster; this test covers database trust, not Compute transport.
+    const configuration = createInstallationDriverConfiguration();
+    configuration.drivers.compute = {
+      id: "compute-ssh",
+      configuration: {
+        ssh: { identityFile: "/unused/id", knownHostsFile: "/unused/known_hosts" },
+        hosts: { stable: { address: "192.0.2.1", user: "root" } },
+        runtime: {
+          nodePath: "/usr/bin/node",
+          openclawPath: "/opt/openclaw/index.js",
+          user: "openclaw",
+          root: "/var/lib/openclaw",
+        },
+        network: { gatewayPortRange: { start: 18800, end: 18899 } },
+      },
+    };
+    const configurationPath = join(directory, "installation.json");
+    const expectedPath = join(directory, "expected.json");
+    const renderedPath = join(directory, "rendered.jsonl");
+    await writeFile(configurationPath, JSON.stringify(configuration));
+    await writeFile(expectedPath, JSON.stringify({ id: "ins_test", name: "Example" }));
+    await writeFile(renderedPath, objects.map((object) => JSON.stringify(object)).join("\n"));
+    const installationSecret = api.volumes.find(({ name }) => name === "installation-startup")
+      .secret.secretName;
+    const generate = async (action) =>
+      JSON.parse(
+        (
+          await execute(process.execPath, [
+            "scripts/upgrade-startup-preflight.mjs",
+            action,
+            renderedPath,
+            "api",
+            "preflight",
+            "openclaw-system",
+            "oce",
+            installationSecret,
+            "candidate-installation",
+            container.image,
+            "30",
+            expectedPath,
+            "none",
+          ])
+        ).stdout,
+      ).spec.template.spec;
+    for (const action of ["job", "identity-job"]) {
+      const generated = await generate(action);
+      assert.deepEqual(generated.initContainers, api.initContainers);
+      assert.deepEqual(
+        generated.volumes.find(({ name }) => name === "oidc-ca"),
+        api.volumes.find(({ name }) => name === "oidc-ca"),
+      );
+      const command = generated.containers[0];
+      const argv = command.args.map((arg) =>
+        arg.startsWith("/etc/")
+          ? wiring.resolve(arg)
+          : arg.replaceAll("/app/", process.cwd() + "/"),
+      );
+      const environment = Object.fromEntries(
+        command.env
+          .filter(({ value }) => value !== undefined)
+          .map(({ name, value }) => [name, value]),
+      );
+      const run = (url) =>
+        execute(process.execPath, argv, {
+          env: {
+            ...environment,
+            OCC_CONFIG_PATH: configurationPath,
+            NODE_EXTRA_CA_CERTS: wiring.output,
+            OCC_DATABASE_URL: url,
+          },
+          timeout: 20000,
+        });
+      const before = accepted;
+      await assert.rejects(run(connection("sslmode=disable")), (error) => {
+        assert.match(error.stderr, /^OIDC CA trust requires OCC_DATABASE_URL/);
+        assert.doesNotMatch(error.stderr, /synthetic-secret|synthetic-user|postgresql:\/\//);
+        return true;
+      });
+      assert.equal(accepted, before, "invalid trust must be refused before connecting");
+      server.setSecureContext({ key: database["leaf.key"], cert: database["leaf.pem"] });
+      // The TLS fixture deliberately closes before authentication/SQL. The trust
+      // prerequisites pass, then the generated identity check fails safely.
+      await assert.rejects(run(connection(selected)), (error) => {
+        assert.match(
+          error.stderr,
+          /^Candidate application database Installation identity could not be verified\.\n$/,
+        );
+        return true;
+      });
+      assert.equal(accepted, before + 1, "the generated command accepts the scoped database CA");
+    }
+    // A chart-like payload is not permission to execute arbitrary preload code.
+    const originalPreload = container.args[1];
+    container.args[1] = "data:text/javascript,throw new Error('untrusted')";
+    await writeFile(renderedPath, objects.map((object) => JSON.stringify(object)).join("\n"));
+    await assert.rejects(generate("identity-job"), /connection prerequisites are unsupported/);
+    container.args[1] = originalPreload;
     const refused = async (url) => {
       await assert.rejects(consume(url), (error) => {
         assert.equal(error.code, 1);

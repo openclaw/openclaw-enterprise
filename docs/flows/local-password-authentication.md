@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-11 10:23"
-last_updated_session: "authoring-run/4ed1deac-0365-4912-90fb-946108b6abaa"
+updated: "2026-11-12 09:36"
+last_updated_session: "authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37"
 ---
 
 # Bootstrap and human authentication flow
@@ -54,7 +54,8 @@ graph TD
     N -->|No| K["Resolve current IAM identity and exact authority"]
     O -->|Trusted| K
     O -->|Rejected| M
-    K -->|Allowed| L["Run and audit OCC operation"]
+    K -->|Other allowed| L["Run and audit OCC operation"]
+    K -->|Create account| U["Hold session; recheck selected IAM; commit account"]
     K -->|Invalid session or denied authority| M["Return 401 or 403"]
   end
 ```
@@ -258,16 +259,17 @@ closed. Bearer credentials and caller-supplied identity headers are rejected.
 
 ### 5. Provision additional accounts
 
-`apps/controller/src/index.ts:createFastifyApp` lets an authorized human Installation
-administrator create accounts. After authorization, the route's `RequestRateLimiter`
-charges the administrator Principal before `prepareAccount` validates and hashes the
-password. Exhaustion returns `429` with `Retry-After`, without writes. See the
-[account-creation limit](../reference/authentication.md#account-provisioning). `provisionPasswordAccount` writes the user,
-password method, Principal, optional existing-role binding, configured
-[default Group memberships](../reference/authorization/default-users.md#group-membership),
-enrollment and audit atomically, without subsequent compensation. A lost COMMIT reply returns `503`
-with unknown outcome: retrying the same email creates an account only if the first
-attempt did not commit; otherwise it returns `409`. Creation issues no session.
+After [admission and throttling](../reference/authentication.md#account-provisioning)
+and password hashing, `apps/controller/src/auth/index.ts:createPostgresAuthAccountProvisioner` uses
+the original State `READ COMMITTED` transaction. It
+holds the original session, shared IAM configuration, and Native IAM
+account-administration policy through commit, in that order. The originally
+selected IAM Driver rechecks `administer` on the same Installation. State revalidates the requested Role and atomically writes the
+account, password method, Principal, grants, enrollment, and final success audit.
+Earlier session revocation, expiry by `COMMIT`, or a denied final IAM decision
+rolls back creation. With Native IAM, a policy withdrawal that commits first is
+visible to that decision.
+Sign-out waits behind creation's session hold. Lost `COMMIT` replies remain `503` with unknown outcome; no compensation or replay.
 
 ### 6. Enroll an OIDC identity
 
@@ -300,8 +302,8 @@ rechecks the resulting proof before issuing its cookie.
 
 ## Debugging and Verification
 
-Run `tests/integration/` files with `node --test`.
-
+- `tests/integration/postgres-auth-account-session.test.ts` covers provisioning
+  races and uncertain commits in the `postgres-auth` lane.
 - `node --test tests/integration/postgres-oidc-enrollment.test.ts` uses
   production authentication, PostgreSQL and IAM through the ordinary Agent API.
   Upstream OIDC responses and Compute are fixtures; it does not verify live
@@ -348,6 +350,9 @@ Run `tests/integration/` files with `node --test`.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 09:36: Clarify the Native IAM account-creation guarantee. (authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37 - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
+- 2026-11-12 09:25: Retain account authority through commit. (authoring-run/276118f6-2838-4088-8f68-2deba06ca89d - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
 
 - 2026-11-11 10:23: Document exact scalar group admission and creation-only email verification policy. (authoring-run/4ed1deac-0365-4912-90fb-946108b6abaa - 1fefb0644)
 

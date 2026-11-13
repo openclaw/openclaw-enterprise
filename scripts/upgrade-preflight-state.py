@@ -14,6 +14,7 @@ import tempfile
 
 FORMAT = "upgrade-preflight-v1"
 MIGRATION_ATTEMPT = re.compile(r"migration-preflight-resume\.[A-Za-z0-9]+")
+RESUME_ATTEMPT = re.compile(r"upgrade-preflight-resume\.[A-Za-z0-9]+")
 JOURNAL = "preflight-journal.json"
 PLAN = "preflight-plan.json"
 JOBS = ("api", "worker", "migration")
@@ -144,7 +145,7 @@ def journal(root):
 
 
 def attempt_directory(root, name):
-    require(name == "." or MIGRATION_ATTEMPT.fullmatch(name),
+    require(name == "." or MIGRATION_ATTEMPT.fullmatch(name) or RESUME_ATTEMPT.fullmatch(name),
             "invalid preflight attempt name")
     return directory(root if name == "." else root / name)
 
@@ -155,10 +156,10 @@ def plan_slots(parameters_value, name, suffix, network_policy):
     namespace = parameters_value["arguments"][2]
     require(is_name(release) and is_name(namespace), "invalid preflight target name")
     prefix = release[:26].rstrip(".")
-    jobs = JOBS if name == "." else ("migration",)
+    jobs = JOBS if name == "." or RESUME_ATTEMPT.fullmatch(name) else ("migration",)
     slots = {slot: {"kind": KINDS[slot], "name": prefix + "-upgrade-preflight-" + slot + "-" + suffix}
              for slot in jobs}
-    if name == ".":
+    if name == "." or RESUME_ATTEMPT.fullmatch(name):
         slots["secret"] = {"kind": KINDS["secret"], "name": release + "-upgrade-preflight-" + suffix}
         slots["networkpolicy"] = ({"kind": KINDS["networkpolicy"], "name": slots["secret"]["name"]}
                                   if network_policy else None)
@@ -189,7 +190,7 @@ def load_plan(root, name, entry):
 
 
 def check_attempt_index(root, attempts):
-    names = ["."] + [entry.name for entry in root.iterdir() if MIGRATION_ATTEMPT.fullmatch(entry.name)]
+    names = ["."] + [entry.name for entry in root.iterdir() if MIGRATION_ATTEMPT.fullmatch(entry.name) or RESUME_ATTEMPT.fullmatch(entry.name)]
     facts = ["preflight-" + slot + suffix for slot in KINDS
              for suffix in ("-started.json", "-identity.json")]
     facts += ["preflight-" + slot + "-pod-identity.json" for slot in JOBS]

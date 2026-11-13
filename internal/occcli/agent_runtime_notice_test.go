@@ -85,8 +85,8 @@ func TestAgentRuntimeReportsRevisionFallbackNoticeWriteFailure(t *testing.T) {
 						"meta": {"requestId": %q}
 					}`, agent, namespace, config, createdAt, requestID)
 				case revisionsPath:
-					if got := r.URL.RawQuery; got != "limit=100" {
-						t.Errorf("revision query = %q, want limit=100", got)
+					if got := r.URL.RawQuery; got != "limit=1" {
+						t.Errorf("revision query = %q, want limit=1", got)
 					}
 					fmt.Fprintf(w, `{
 						"data": [{

@@ -38,6 +38,13 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-openshell-progress.test.ts",
+    "tests/integration/ci-runner-case-enforcement.test.ts",
+    "tests/integration/ci-runner-file-outcomes.test.ts",
+    "tests/integration/ci-runner-deadline.test.ts",
+    "tests/integration/ci-runner-cleanup-allowance.test.ts",
+    "tests/integration/ci-runner-preparation.test.ts",
+    "tests/integration/ci-runner-failure-output.test.ts",
     "tests/integration/ci-runner-aggregate.test.ts",
     "tests/integration/ci-runner-scheduling.test.ts",
     "tests/integration/ci-runner-redaction.test.ts",
@@ -47,7 +54,7 @@
     "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
     "tests/integration/password-sign-in-admission.test.ts",
-    "tests/integration/google-login-transport.test.mjs",
+    "tests/integration/google-login-transport.test.ts",
     "tests/conformance/slack-channel-directory.test.mjs",
     "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
@@ -83,13 +90,13 @@
     "tests/integration/kubernetes-peer-status.test.mjs",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.mjs",
-    "tests/integration/oidc-login-transport.test.mjs",
+    "tests/integration/oidc-login-transport.test.ts",
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/ci-prepare-postgres.test.ts",
-    "tests/integration/runtime-image-failure-output.test.mjs",
+    "tests/integration/runtime-image-failure-output.test.ts",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
-    "tests/conformance/hosted-plugin-discovery.test.mjs",
+    "tests/conformance/hosted-plugin-discovery.test.ts",
     "tests/integration/plugin-driver-real-preflight.test.mjs",
     "tests/conformance/postgres-transaction-commit.test.mjs",
     "tests/conformance/plugin-runtime-policy.test.mjs",
@@ -245,7 +252,6 @@
     {
       "path": "tests/integration/ci-runner.test.mjs",
       "expectedTests": [
-        "focused runs retain case enforcement and cleanup but cannot complete a full lane",
         "complete lifecycle preserves phase failures and performs owned cleanup",
         "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
         "complete lifecycle retains owned state when preparation exceeds its deadline",
@@ -254,6 +260,42 @@
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
       ]
+    },
+    {
+      "path": "tests/integration/ci-runner-openshell-progress.test.ts",
+      "expectedTests": [
+        "CI streams safe OpenShell failures before cleanup and retains the original error",
+        "run reports bounded OpenShell progress before the test file finishes"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-case-enforcement.test.ts",
+      "expectedTests": [
+        "focused runs retain case enforcement and cleanup but cannot complete a full lane",
+        "run fails missing expected tests, skipped expected tests, skips, todos, and missing required env"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-file-outcomes.test.ts",
+      "expectedTests": [
+        "run preserves nonzero child Node exits and rejects zero-case files",
+        "run annotates the first failed file before the lane finishes",
+        "run finishes file accounting and cleanup after a reporter pipe read error",
+        "run records a sanitized file failure after all reported cases pass",
+        "run records failed, skipped, todo, and passed dispositions separately"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-deadline.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-cleanup-allowance.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-preparation.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-failure-output.test.ts"
     },
     {
       "path": "tests/integration/ci-runner-aggregate.test.ts"
@@ -299,7 +341,7 @@
       "path": "tests/integration/ci-prepare-postgres.test.ts"
     },
     {
-      "path": "tests/integration/runtime-image-failure-output.test.mjs"
+      "path": "tests/integration/runtime-image-failure-output.test.ts"
     },
     {
       "path": "tests/integration/ci-image-reconciliation.test.ts"
@@ -401,7 +443,7 @@
       "path": "tests/conformance/native-admin-websocket-relay.test.mjs"
     },
     {
-      "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
+      "path": "tests/conformance/hosted-plugin-discovery.test.ts"
     },
     {
       "path": "tests/conformance/plugin-runtime-templates.test.ts"
@@ -644,13 +686,13 @@
       "path": "tests/integration/google-id-token.test.mjs"
     },
     {
-      "path": "tests/integration/google-login-transport.test.mjs"
+      "path": "tests/integration/google-login-transport.test.ts"
     },
     {
       "path": "tests/integration/oidc-id-token.test.mjs"
     },
     {
-      "path": "tests/integration/oidc-login-transport.test.mjs"
+      "path": "tests/integration/oidc-login-transport.test.ts"
     },
     {
       "path": "tests/integration/password-sign-in-policy.test.ts"

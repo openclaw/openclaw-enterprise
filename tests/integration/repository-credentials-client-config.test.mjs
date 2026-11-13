@@ -953,6 +953,42 @@ test(
   },
 );
 
+test("a public CA with a leading UTF-8 BOM stays usable by Git", async (t) => {
+  const parent = await realpath(await temporaryDirectory(t));
+  const { key, cert, certPath } = await selfSigned(parent, {
+    commonName: "localhost",
+    subjectAltName: "IP:127.0.0.1",
+  });
+  const pem = await readFile(certPath);
+  const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), pem]);
+  // The sender's UTF-8 check uses the default decoder, which accepts this file.
+  new TextDecoder("utf-8", { fatal: true }).decode(withBom);
+  const files = encodeRepositoryCredentialSessionFiles(opened, withBom);
+  const caPath = join(parent, "ca.pem");
+  await writeFile(caPath, files["ca.pem"], { mode: 0o600 });
+  const requests = [];
+  const server = createServer({ key, cert }, (_request, response) => {
+    requests.push(1);
+    response.writeHead(200);
+    response.end();
+  });
+  const origin = await listen(t, server);
+  const result = await run("/usr/bin/git", ["ls-remote", `${origin}/example/project.git`], {
+    env: clean({
+      HOME: parent,
+      GIT_SSL_CAINFO: caPath,
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "maintenance.auto",
+      GIT_CONFIG_VALUE_0: "false",
+      GIT_CONFIG_KEY_1: "http.sslCAInfo",
+      GIT_CONFIG_VALUE_1: caPath,
+    }),
+    allowFailure: true,
+  });
+  assert.equal(result.stderr.includes("certificate verify locations"), false, result.stderr);
+  assert.ok(requests.length > 0, result.stderr);
+});
+
 describe("repository credential client configuration", { concurrency: 2 }, () => {
   for (const registration of cases) {
     it(...registration);

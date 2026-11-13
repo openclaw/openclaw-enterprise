@@ -26,6 +26,12 @@ test-only pull requests select affected lanes, including TypeScript test checks.
 Other changes run the ordinary lane matrix. Failed main-push CI also prevents release workflows
 that require successful CI for that source.
 
+For a main push that modifies one registered test, the `CI main test advisory v2`
+notice in `CI Impact` can list the predicted lanes and the verified before and
+after commits. A broad notice without commit IDs leaves the range unverified.
+If the notice is missing, no prediction was received. Test-only main pushes
+still run full CI.
+
 Documentation-only changes include regular, non-executable `.png` illustrations
 under `specs/rfcs/`. Images elsewhere and other image extensions still select full
 CI. Mixing an RFC image with runtime or tooling changes also selects full CI.

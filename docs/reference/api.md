@@ -5031,7 +5031,7 @@ List approved repository choices for Agent creation in one Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | max items: 1000 |
+| `data` | `array<object>` | Yes | max items: 1001 |
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16 |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -7314,7 +7314,7 @@ List approved repository choices for updating one Agent
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | max items: 1000 |
+| `data` | `array<object>` | Yes | max items: 1001 |
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16 |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |

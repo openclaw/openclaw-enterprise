@@ -457,6 +457,8 @@ if [ "$browser_compose_file_selected" -eq 0 ]; then
     compose_args+=(-f "$browser_file")
   done
 fi
+# occ dev down appends the browser overlay itself. Keep the resolved input files.
+cleanup_compose_args=("${compose_args[@]}")
 compose_args+=(-f "$repo_root/compose.native-admin.yaml")
 
 compose() {
@@ -716,7 +718,7 @@ else
   if ! compose "${compose_ps_status_args[@]}" >"$podman_status" 2>"$temporary_directory/podman-services.err"; then
     fail "key copy" "could not inspect the Podman bootstrap container" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
   fi
-  if ! bootstrap_container_id="$(python3 - "$podman_status" <<'PY'
+  if ! bootstrap_container_id="$(python3 - "$podman_status" "$temporary_directory/bootstrap-project.json" <<'PY'
 import json
 import pathlib
 import sys
@@ -745,10 +747,17 @@ for entry in payload:
         service = labels.get("com.docker.compose.service") or labels.get("io.podman.compose.service")
     container_id = entry.get("ID") or entry.get("Id")
     if service == "bootstrap" and isinstance(container_id, str) and container_id:
-        matches.append(container_id)
+        # Standalone podman-compose config can retain the file's name even when
+        # -p selected a different project. Use the container it actually started.
+        project = labels.get("io.podman.compose.project", labels.get("com.docker.compose.project"))
+        if labels.get("com.docker.compose.project", project) != project:
+            project = None
+        matches.append((container_id, project))
 if len(matches) != 1:
     raise SystemExit(f"expected one Podman bootstrap container, found {len(matches)}")
-print(matches[0])
+container_id, project = matches[0]
+pathlib.Path(sys.argv[2]).write_text(json.dumps({"name": project}), encoding="utf-8")
+print(container_id)
 PY
 )"; then
     fail "key copy" "could not identify exactly one Podman bootstrap container" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
@@ -823,11 +832,27 @@ cleanup_environment=("OCC_DEVELOPMENT_COMPUTE_DRIVER=docker" "OCC_DEVELOPMENT_CO
 if [ -n "${podman_connection_name:-}" ]; then
   cleanup_environment+=("CONTAINER_CONNECTION=$podman_connection_name")
 fi
-cleanup_command_args=(env "${cleanup_environment[@]}" "$occ_cli" dev down --)
-if [ "${#compose_args[@]}" -gt 0 ]; then
-  cleanup_command_args+=("${compose_args[@]}")
+project_config="$compose_config"
+if [ "$container_engine" = "podman" ]; then
+  project_config="$temporary_directory/bootstrap-project.json"
 fi
-cleanup_command="$(quote_command "${cleanup_command_args[@]}")"
+if cleanup_project="$(python3 - "$project_config" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    name = json.load(source).get("name")
+if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+    raise SystemExit(1)
+print(name)
+PY
+)"; then
+  cleanup_command_args=(env "${cleanup_environment[@]}" "$occ_cli" dev down -- "${cleanup_compose_args[@]}" --project-name "$cleanup_project")
+  cleanup_command="$(quote_command "${cleanup_command_args[@]}")"
+else
+  cleanup_command="Could not identify the Compose project. Verify its name before running occ dev down."
+fi
 next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" "$occ_cli" installation get)"
 
 cat <<EOF
