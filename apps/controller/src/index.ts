@@ -2319,7 +2319,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }),
           meta: {
             requestId: request.id,
-            ...(connectionOrigin ? { redirectUri: `${connectionOrigin}/oauth/callback` } : {}),
+            ...(connectionRedirectUri ? { redirectUri: connectionRedirectUri } : {}),
           },
           discover: options.discoverMcpAuthorization ?? discoverMcpAuthorization,
           controller: controller!,
