@@ -3,7 +3,11 @@ import { dirname, join, resolve } from "node:path";
 import type { RepositoryCredentialSessionFiles } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../../access/client-contracts.ts";
 import {
+  clientGitconfig,
+  clientGhConfiguration,
+  renderClientGhHosts,
   isValidGitClientConnection,
+  isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
 } from "../../../access/client-contracts.ts";
 import type { RepositoryCredentialSessionResult } from "../../../access/service-contracts.ts";
@@ -22,10 +26,6 @@ export interface ClientFiles {
 
 export function isClientBearer(bearer: string): boolean {
   return /^[A-Za-z0-9_-]{32,256}$/.test(bearer);
-}
-
-function ghHosts(client: RepositoryCredentialClientConfiguration, bearer: string): string {
-  return `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(bearer)}\n`;
 }
 
 /** Refuse a direct gh session whose private files disagree. */
@@ -48,7 +48,7 @@ export async function requireGhMaterial(
       join(directory, "gh", "hosts.yml"),
       clientSessionFileMaxBytes["gh/hosts.yml"],
     );
-    expected = Buffer.from(ghHosts(configuration.client, bearer));
+    expected = Buffer.from(renderClientGhHosts(configuration.client, bearer));
     if (!hosts.equals(expected)) {
       throw new Error("invalid-client-gh-material");
     }
@@ -69,10 +69,7 @@ function validateClient(client: RepositoryCredentialClientConfiguration): void {
     !isValidGitClientConnection(origin, remote, client) ||
     !/^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\.git$/.test(remote.pathname) ||
     remote.pathname.includes("..") ||
-    !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) ||
-    client.apiHost !== origin.hostname ||
+    !isValidGitClientUsernameAndHosts(origin, client) ||
     !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(client.repository) ||
     client.repository.length > 512 ||
     client.repository.includes("..") ||
@@ -110,13 +107,14 @@ export function encodeRepositoryCredentialSessionFiles(
   return {
     bearer: opened.bearer,
     "client.json": clientJson,
-    gitconfig:
-      "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n",
-    "gh/hosts.yml": ghHosts(opened.client, opened.bearer),
-    "gh/config.yml": "version: 1\nprompt: disabled\ngit_protocol: https\n",
+    gitconfig: clientGitconfig,
+    "gh/hosts.yml": renderClientGhHosts(opened.client, opened.bearer),
+    "gh/config.yml": clientGhConfiguration,
+    // Git loads this file as sslCAInfo. A leading UTF-8 BOM is not part of the
+    // certificate; keeping it makes Git reject the file before the handshake.
     ...(publicCa === undefined
       ? {}
-      : { "ca.pem": new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(publicCa) }),
+      : { "ca.pem": new TextDecoder("utf-8", { fatal: true }).decode(publicCa) }),
   };
 }
 

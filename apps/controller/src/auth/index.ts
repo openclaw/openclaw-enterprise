@@ -6,10 +6,11 @@ import { splitSetCookieHeader } from "better-auth/cookies";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { apiKey } from "@better-auth/api-key";
 import type { ApiKey } from "@better-auth/api-key/types";
-import type { ServicePrincipal } from "@openclaw-enterprise/contracts";
+import type { AuditEvent, ServicePrincipal } from "@openclaw-enterprise/contracts";
 import {
   NativeIAMDriver,
   createAuthPrincipalSeed,
+  validateAuthAccountPrincipalSeed,
   type AuthPrincipalSeed,
   type AuthPrincipalSeedOptions,
 } from "@openclaw-enterprise/iam";
@@ -299,6 +300,50 @@ export interface ProvisionAuthAccountInput {
   readonly email: string;
   readonly password: string;
   readonly name?: string;
+}
+
+/** The administrator account writer requires its authority on the creating State unit. */
+export type ProvisionAuthAccount = (
+  seed: AuthPrincipalSeed,
+  auditEvent: AuditEvent,
+  prepared: PreparedAuthAccount,
+  external: { readonly providerId: string; readonly subject: string } | undefined,
+  authority: {
+    readonly holdSession: (unit: PlatformUnitOfWork) => Promise<void>;
+    readonly authorize: (unit: PlatformUnitOfWork) => Promise<AuditEvent>;
+  },
+) => Promise<void>;
+
+export function createPostgresAuthAccountProvisioner({
+  state,
+  installationId,
+}: {
+  readonly state: PostgresPlatformState;
+  readonly installationId: string;
+}): ProvisionAuthAccount {
+  const persistence = new PostgresHumanAuthentication(
+    state,
+    installationId,
+    betterAuthIssuer(installationId),
+  );
+  return async (seed, auditEvent, prepared, external, authority) => {
+    if (
+      authority === undefined ||
+      typeof authority.holdSession !== "function" ||
+      typeof authority.authorize !== "function"
+    ) {
+      throw new ScopeViolationError("Account provisioning requires complete assigning authority.");
+    }
+    await persistence.provisionPasswordAccount(prepared, seed, auditEvent, external, {
+      holdSession: authority.holdSession,
+      authorize: async (unit) => {
+        const currentAuditEvent = await authority.authorize(unit);
+        const current = await state.loadNativeIAMStateInTransaction(unit, installationId);
+        validateAuthAccountPrincipalSeed(seed, current, installationId);
+        return currentAuditEvent;
+      },
+    });
+  };
 }
 
 export {

@@ -60,7 +60,7 @@ jobs:
           OCC_CI_IMAGE_CACHE: "1"
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
-        run: node scripts/ci/runtime-artifact.ts build --output "$RUNNER_TEMP/runtime-artifact"
+        run: exec node scripts/ci/runtime-artifact.ts build --output "$RUNNER_TEMP/runtime-artifact"
       - name: Upload runtime artifact
         id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

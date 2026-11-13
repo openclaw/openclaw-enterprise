@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-10
-last_updated_session: authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e
+updated: 2026-11-12
+last_updated_session: authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec
 ---
 
 # Agent provisioning flow
@@ -111,10 +111,12 @@ Admission, replay, retry and execution recheck caller authority, source readines
 ownership. Queued or running work prevents source deletion.
 
 Compute prepares runtime credentials without loopback HTTP. Kubernetes
-`kubernetesGatewayConfigurationDocument` renders trusted-proxy configuration
-and preserves explicit human identities/scopes alongside
-machine administration, defaulting to machine-only. Provisioning and deploy
-admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Configuration
+`apps/controller/src/drivers/compute/kubernetes/index.ts:provisionAgentRuntimeCredentials` confirms complete owned Secrets after
+create-only provisioning. Failure retains them and blocks configured success or
+first revision admission.
+`kubernetesGatewayConfigurationDocument` defaults to machine-only trusted-proxy
+administration and preserves human identities/scopes. Provisioning and
+deploy admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Configuration
 save also refuses both), unknown or padded operator scopes, blank or padded identity keys,
 grants for identities outside `allowUsers`, malformed `requiredHeaders`, and human
 admission with admin device scopes, including whitespace; human allowlists render
@@ -123,8 +125,8 @@ also refuses a Codex Configuration without `gateway.auth.password`, which the
 workspace node check signs in with. These refusals precede workload replacement.
 Human ingress and its network policy remain operator-managed; no OCE human
 account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
-Provisioning supplies no Gateway token or trust override. Losing its claim cancels
-Kubernetes Configuration requests, freeing the worker.
+Provisioning supplies no Gateway token or trust override; losing its claim cancels
+Kubernetes Configuration requests.
 
 ### 4. Deployment becomes the lifecycle owner
 
@@ -221,6 +223,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
 
 - 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
 

@@ -56,7 +56,7 @@ for ((i=0;i<90;i++)); do if stopped; then break; fi; sleep 2; done
 stopped
 kube -n "$TENANT_NAMESPACE" apply -f "$RUN_DIR/git-egress.json"
 upgrade_installation
-helm upgrade openshell-gateway "$OCC_DEVELOPMENT_STATE_DIRECTORY/openshell/chart/helm-chart-0.1.6.tgz" \
+helm upgrade openshell-gateway "$OCC_DEVELOPMENT_STATE_DIRECTORY/openshell/chart/helm-chart-0.1.8.tgz" \
   "${helmopts[@]}" -f "$RUN_DIR/openshell-git-values.json" --wait
 kube -n "$PLATFORM_NS" rollout status statefulset/openshell-gateway --timeout=3m
 kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \

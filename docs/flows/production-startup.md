@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-11"
-last_updated_session: "authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68"
+updated: "2026-11-13"
+last_updated_session: "authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94"
 ---
 
 # Production Startup Flow
@@ -116,34 +116,34 @@ change controller configuration.
 
 ### 3. Run Helm initialization
 
-`internal/occcli/installation_receipt.go:installationInstallCommand` privately
-snapshots kubeconfig/chart/values, checks all release states and syncs
-`intent.json` and its directory entry. On stdout notice write error, it keeps
-intent, names the receipt directory and exits before `dispatch.json` or Helm
-install. Otherwise it syncs the unknown marker and starts Helm.
-`observeInstallationJob` records the first recognized Job UID matching the
-attempt annotation (installs only). Helm's outcome is separate. A final report
-write error also fails the command without changing that saved outcome or
-replaying the install.
+`internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
+kubeconfig/chart/values, checks release states and syncs intent and its directory.
+A failed stdout notice preserves and names intent, stopping before dispatch or
+Helm. Otherwise it syncs the unknown marker and starts Helm.
+`observeInstallationJob` records the first recognized attempt-matched Job UID
+(installs only). Helm's outcome stays separate; final report write errors fail
+the command without changing that outcome or replaying install.
+
+Reported template failures add static [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff),
+including settings for the suffix refusal. Stderr stays in memory (4 MiB); excess is discarded without affecting Helm. Raw diagnostics are never
+printed or saved. Receipt and recovery decisions stay unchanged.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
 DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-`deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` stops a connected install
-if its named Job exists or cannot be read. Offline rendering cannot check this.
-The lookup neither locks the name nor verifies database or volume freshness.
+`deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` refuses existing or unreadable
+Jobs during connected installs. Offline rendering cannot check this; lookup
+neither locks names nor verifies database/volume freshness.
 
 `openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
-checks private routing inputs, port syntax and peer labels. Operators supply the
-GatewayClass, CRDs, controllers and Secrets. Disabling routing omits its resources
-and mounts and requires disabling native admin and sandbox routing. Database and
-API ports accept 1–65535 without leading zeros. The Compute Driver rejects malformed
-IPv4 hostnames and numeric or hexadecimal sandbox domain suffixes.
-See [routing prerequisites and opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
-and [values the candidate refuses](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
-The metrics and repository listeners share a worker Pod and need different ports.
+checks routing, ports and peer labels. Operators supply GatewayClass, CRDs,
+controllers and Secrets. [Disabling routing](../guides/deploy/workspace-routing.md#explicit-opt-out)
+omits its resources/mounts and requires disabling native admin and sandbox routing.
+Database/API ports accept 1–65535 without leading zeros; worker metrics/repository
+ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
+numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
 On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
 Installation without database/Kubernetes access; refusal stops migration and API
@@ -176,15 +176,16 @@ Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-After verifying SQL source, migration checks the server version before locking
-or reading catalogs. PostgreSQL
-before 17 fails with `MIGRATION_SERVER_UNSUPPORTED` and a fixed recovery message;
-the same guard covers first install, upgrade, and `--check`. See
-[server compatibility](../reference/settings/operations.md#postgresql-server-compatibility).
-Migration then verifies the dedicated role, receipts and catalog under
-one advisory lock on Drizzle's transaction connection. For a recognized history, it accepts the native catalog digest or
-the reviewed restore digest bound to it. Unsupported histories fail before
-migration DDL and bootstrap. See [migration history and recovery](../reference/settings/operations.md#migration-history).
+After source verification, all modes reject PostgreSQL before 17 with
+fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access
+([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
+Under the advisory lock, the same connection verifies roles and receipts,
+then catalogs and grants against native or reviewed restore digests. Unsupported
+history fails before DDL/bootstrap. After option guards, completed apply
+skips Drizzle only when `SHOW transaction_read_only` returns `off`.
+Otherwise Drizzle retains pending migration and read-only refusal.
+`finally` releases the lock and client
+([history](../reference/settings/operations.md#migration-history)).
 
 `scripts/lib/bootstrap-configuration.mjs:authBaseURL` checks HTTP(S) origin before
 database access. Production requires HTTPS except HTTP loopback verification
@@ -197,6 +198,9 @@ as the bootstrap Principal. Queued reconciliation commits with Installation/IAM
 state and audit. Existing Installations add no Namespace; this is not Kubernetes'
 `default`. The worker provisions Driver-owned infrastructure; operators provide
 tenant RoleBindings. The bootstrap container alone writes protected PVC password/service-key files.
+Operators can invoke the same command with [`--verify-existing`](../reference/settings/production.md#production-installation-bootstrap-environment)
+to check a populated candidate using the incumbent ID and a read-only database
+snapshot. The Helm initialization Job continues to use ordinary bootstrap.
 Existing output, unsafe permissions, or inconsistent accounts/IAM identity fail
 the Job. Helm failure does not imply database-hook rollback.
 
@@ -390,6 +394,12 @@ until tenant deployment/TUI procedures run.
 
 ## Changelog
 
+- 2026-11-13: Document the opt-in check of an existing Installation and its bootstrap administrator. (authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94 - 3c8ee8b97066d1e82a4ba9f95ad6d6f6afea5df8)
+
+- 2026-11-12 09:45: Skip completed writable DDL; preserve read-only refusal. (authoring-run/eedb034b-cdad-4526-af11-0ce3490e267a - 11e22a5dc95b54a4fd7eb05e68a06f732033e7f8)
+
+- 2026-11-12 06:35: Document static Helm template refusal guidance without changing recovery. (authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973 - 64358aae61847dea8a3834fbe06bed079b5727cc)
+
 - 2026-11-11 17:05: Coalesce database readiness. (authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
 
 - 2026-11-11 15:06: Preserve explicit PostgreSQL caller options after URL parsing. (authoring-run/8367ab20-ba98-4ec6-9700-296442c6eb96 - ee419a1969d414d4aa934c59b39b868e8777b127)
@@ -409,13 +419,5 @@ until tenant deployment/TUI procedures run.
 - 2026-11-04 23:05: Trace durable first-install receipts and read-only attempt reconciliation. (authoring-run/1b2cbf33-0aef-45e7-bac1-2b40f26eeb3e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-11-04 22:57: Trace prerequisite diagnosis. (authoring-run/9ad2db0a-6b05-4873-aeda-52d96af2405e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
-
-- 2026-11-04 07:10: Trace read-only initialization handoff and exact current chart recognition. (authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446 - 0c39ae057d294e7c1a244666fb6b98a1200b7f52)
-
-- 2026-11-04 00:26: Check chart-managed private Gateway identity and hostname before rollout. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
-
-- 2026-11-03 18:03: Separate managed MCP discovery egress from model discovery. (authoring-run/0e69d668-c39a-4a60-b4ce-5556acb848b0 - c6be564e9f8b6186c53874ea26833a36f037c3db)
-
-- 2026-11-03 11:28: Reconcile PostgreSQL compatibility checks with default Helm private routing. (authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83 - ccc8f0359924ed62b12e619b2ef9f3ef57a3dd7a)
 
 [Production startup documentation history](production-startup/history.md) preserves the older dated entries.

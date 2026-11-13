@@ -340,7 +340,7 @@ test(
       ],
       { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
     );
-    const stockChartVersion = "0.1.6";
+    const stockChartVersion = "0.1.8";
     const chartMetadataError = `Unexpected chart package or metadata for openshell-gateway. Check for helm-chart-${stockChartVersion}.`;
     let releases;
     try {

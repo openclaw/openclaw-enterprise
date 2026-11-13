@@ -1449,6 +1449,117 @@ test(
   },
 );
 
+for (const boundary of ["before commit", "after commit"]) {
+  test(
+    `PostgreSQL retirement settlement failure ${boundary} cannot replay DELETE`,
+    requiresPostgres,
+    async (t) => {
+      let fixture;
+      let claimAtDelete;
+      fixture = await preparedLifecycleFixture(t, {
+        tokenResponse: (packet) => ({ ...packet, repositories: [] }),
+        async revokeResponseGate() {
+          claimAtDelete = (
+            await fixture.f.pool.query(
+              "SELECT custody, sealed IS NOT NULL AS retained FROM occ.prepared_github_attempts WHERE source_id=$1",
+              [fixture.source.key.source.id],
+            )
+          ).rows;
+        },
+      });
+      const { lifecycle, f, gh, source } = fixture;
+      assert.equal(await lifecycle.maintain(t.signal), "quarantined");
+      assert.equal(gh.issuesOfTokens.length, 1);
+      const original = (
+        await f.pool.query(
+          "SELECT id, custody FROM occ.prepared_github_attempts WHERE source_id=$1",
+          [source.key.source.id],
+        )
+      ).rows;
+      assert.equal(original.length, 1);
+      assert.equal(original[0].custody, "retire");
+      const attemptId = original[0].id;
+      const repository = lifecycle.repository;
+      const originalOpen = repository.open.bind(repository);
+      const open = t.mock.method(repository, "open", (...args) => {
+        const bytes = originalOpen(...args);
+        assert.ok(
+          bytes.some((byte) => byte !== 0),
+          "the claim returns live detached bytes",
+        );
+        return bytes;
+      });
+      const finish = repository.finishRetirement.bind(repository);
+      let finishing = false;
+      let finishCalls = 0;
+      t.mock.method(repository, "finishRetirement", async (id, revoked) => {
+        finishCalls++;
+        assert.equal(id, attemptId);
+        assert.equal(revoked, true);
+        assert.equal(open.mock.callCount(), 1);
+        assert.ok(
+          open.mock.calls[0].result.every((byte) => byte === 0),
+          "clear detached bytes before settlement",
+        );
+        finishing = true;
+        try {
+          return await finish(id, revoked);
+        } finally {
+          finishing = false;
+        }
+      });
+      const client = await f.pool.connect();
+      const query = client.query.bind(client);
+      let faultInjected = false;
+      t.mock.method(client, "query", async (sql, ...args) => {
+        if (sql === "COMMIT" && finishing && boundary === "before commit") {
+          faultInjected = true;
+          // Abort the real UPDATE transaction before its COMMIT; no replacement result.
+          await query("SELECT 1/0");
+        }
+        const result = await query(sql, ...args);
+        if (sql === "COMMIT" && finishing && boundary === "after commit") {
+          faultInjected = true;
+          throw Object.assign(new Error("settlement acknowledgment lost"), { code: "08007" });
+        }
+        return result;
+      });
+      t.mock.method(f.pool, "connect", () => client, { times: 1 });
+      await assert.rejects(
+        lifecycle.maintain(t.signal),
+        boundary === "before commit"
+          ? /custody transaction did not complete \(22012\)/
+          : /custody transaction did not complete \(08007\)/,
+      );
+      assert.equal(faultInjected, true);
+      assert.equal(finishCalls, 1);
+      assert.deepEqual(claimAtDelete, [{ custody: "revoking", retained: true }]);
+      const readback = () =>
+        f.pool.query(
+          "SELECT custody, sealed IS NOT NULL AS retained FROM occ.prepared_github_attempts WHERE id=$1",
+          [attemptId],
+        );
+      const expected =
+        boundary === "before commit"
+          ? [{ custody: "revoking", retained: true }]
+          : [{ custody: "revoked", retained: false }];
+      assert.deepEqual((await readback()).rows, expected);
+      assert.equal(gh.tokenState()[0].revoked, true);
+      const deletes = () =>
+        gh.trace.filter(
+          (entry) => entry.method === "DELETE" && entry.target === "/installation/token",
+        ).length;
+      assert.equal(deletes(), 1);
+      await lifecycle.maintain(t.signal);
+      assert.deepEqual((await readback()).rows, expected);
+      assert.equal(deletes(), 1, "a failed settlement must not replay DELETE");
+      assert.equal(finishCalls, 1);
+      assert.equal(gh.issuesOfTokens.length, 1);
+      assert.deepEqual(gh.errors, []);
+    },
+  );
+}
+
 /**
  * A prepared GitHub metadata source registered through the real API, bound to an Agent, over
  * PostgreSQL and a synthetic HTTPS GitHub App issuer. Both keys are generated here; only the
