@@ -596,7 +596,9 @@ export function classify(mainTestAdvisory = false): Classification {
           if (!id || !oid.test(id) || (mode === "000000") !== /^0+$/.test(id)) {
             throw new InspectionError("diff has an invalid test blob", "malformed_diff");
           }
-          if (mode === "100644") testBlobs.add(id);
+          if (mode === "100644") {
+            testBlobs.add(id);
+          }
         }
         tests.push(path);
       } else {
