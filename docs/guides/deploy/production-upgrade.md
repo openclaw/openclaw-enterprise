@@ -30,9 +30,8 @@ For the experimental two-cluster profile, first
 
 Legacy repository selections block upgrades. Keep the original sender running.
 [Inspect the fleet and Git custody](credential-proxy-upgrade.md#inspect-legacy-git-custody), including deleted Agents.
-Allow Pod exec in both writers. When the projection and container start share a second,
-the helper checks creation time on the kubelet-mounted termination-message file.
-Changed projections or unverifiable ordering block shutdown.
+Allow Pod exec in both writers. Same-second checks use kubelet’s termination-message file.
+Changed or unverifiable projections block shutdown.
 
 ## Prepare the release
 
