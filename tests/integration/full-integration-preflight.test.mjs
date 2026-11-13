@@ -77,7 +77,12 @@ async function reuseFixture() {
   return { rows, sha, run, jobs, artifacts, get };
 }
 
-async function writeReuseMetadataFixture(preload, get, routes) {
+async function writeGithubMetadataFixture(
+  preload,
+  get,
+  routes,
+  origin = "https://reuse-fixture.invalid",
+) {
   const responses = Object.fromEntries(
     await Promise.all(routes.map(async (path) => [path, await get(path)])),
   );
@@ -85,12 +90,13 @@ async function writeReuseMetadataFixture(preload, get, routes) {
     preload,
     [
       "const responses = " + JSON.stringify(responses) + ";",
+      "const origin = " + JSON.stringify(origin) + ";",
       "const prefix = '/repos/openclaw/openclaw-enterprise';",
       "globalThis.fetch = async (input) => {",
       "  const url = new URL(input);",
       "  const path = url.pathname.slice(prefix.length) + url.search;",
-      "  if (url.origin !== 'https://reuse-fixture.invalid' || !url.pathname.startsWith(prefix + '/') || !Object.hasOwn(responses, path)) {",
-      "    throw new Error('Unexpected reuse fixture request');",
+      "  if (url.origin !== origin || !url.pathname.startsWith(prefix + '/') || !Object.hasOwn(responses, path)) {",
+      "    throw new Error('Unexpected GitHub fixture request');",
       "  }",
       "  return Response.json(responses[path]);",
       "};",
@@ -126,7 +132,7 @@ test("scheduled and manual Full Integration discover immutable push CI results t
   const { get, sha, artifacts } = await reuseFixture();
   const fixtureRoot = await temporaryDirectory(t, "full-ci-reuse-consumers-");
   const preload = join(fixtureRoot, "fetch-fixture.mjs");
-  await writeReuseMetadataFixture(preload, get, [
+  await writeGithubMetadataFixture(preload, get, [
     "/actions/workflows/ci.yml",
     "/actions/workflows/456/runs?head_sha=" + sha + "&event=push&branch=main&per_page=20",
     "/actions/runs/123/attempts/2/jobs?per_page=100",
@@ -739,7 +745,7 @@ test("same-SHA reuse runs the existing full-coverage validator and rejects damag
   await mkdir(join(directory, "download"), { recursive: true });
   await writeFile(join(directory, "producer.json"), JSON.stringify(producer));
   const validateCommand = async () => {
-    await writeReuseMetadataFixture(preload, get, [
+    await writeGithubMetadataFixture(preload, get, [
       "/actions/runs/123",
       `/actions/runs/123/attempts/${run.run_attempt}/jobs?per_page=100`,
       "/actions/runs/123/artifacts?per_page=100",
@@ -1663,6 +1669,38 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     };
     return { calls, github };
   };
+  await t.test("CLI annotates only classified Actions history holds", async (t) => {
+    const preload = join(await temporaryDirectory(t, "preflight-annotation-"), "fetch.mjs");
+    const { github } = fixtures([sha], () => ({ artifacts: sentinel, total_count: 1 }));
+    await writeGithubMetadataFixture(
+      preload,
+      (path) => github({ path }),
+      ["/git/ref/heads/main", "/actions/artifacts?name=full-integration-admitted-v1&per_page=100"],
+      "https://api.github.com",
+    );
+    for (const [actions, attempt, expected] of [
+      ["true", "2", ""],
+      ["false", "1", ""],
+      ["true", "1", "::error title=Full Integration schedule::admission-markers: invalid-metadata"],
+    ]) {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", preload, "scripts/ci/full-integration-preflight.mjs"],
+        {
+          env: { ...env, GITHUB_ACTIONS: actions, GITHUB_RUN_ATTEMPT: attempt },
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout.trim(), expected);
+      assert.doesNotMatch(
+        result.stderr,
+        /::error|synthetic-history-response|synthetic-workflow-token/,
+      );
+    }
+  });
   const clean = fixtures([sha, sha, sha]);
   assert.deepEqual(await validateFullIntegrationPreflight({ env, github: clean.github }), {
     selectedLane: "all",
