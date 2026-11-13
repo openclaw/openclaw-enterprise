@@ -16,6 +16,12 @@ const platforms = ["linux/amd64", "linux/arm64"];
 const shaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const integerPattern = /^[1-9][0-9]*$/;
+const releaseVersionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
+
+/** @param {string} version */
+export function isReleaseVersion(version) {
+  return releaseVersionPattern.test(version);
+}
 // CI runs the runtime startup tests in three lanes; the release smoke runs their
 // startup files one at a time, since some cases measure timing.
 // container-release.test.mjs pins this list to the lane manifests.
@@ -240,6 +246,7 @@ function publicationAlias(value) {
   const tag = value || "latest";
   assert.match(tag, /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/, "Invalid image tag.");
   assert.ok(!/^(?:sha|bootstrap)-/i.test(tag), "Source and bootstrap tags are reserved.");
+  assert.ok(!isReleaseVersion(tag), "Release version tags are reserved.");
   return tag;
 }
 
@@ -712,7 +719,8 @@ export async function verifyGhcr(image, digest, tag) {
   return existing.length > 0;
 }
 
-export async function publishPrepared(directory, env, producer, verify, aliasTag) {
+export async function publishPrepared(directory, env, producer, verify, requestedAlias) {
+  const aliasTag = requestedAlias === undefined ? undefined : publicationAlias(requestedAlias);
   await verify();
   const tag = `sha-${env.SOURCE_SHA}`;
   const prepared = [];
