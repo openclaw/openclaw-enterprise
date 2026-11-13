@@ -305,6 +305,32 @@ test("gateway installation preserves settled phases, operation outcomes and the 
   ]) {
     assert.equal(installationPhase(invalid), undefined);
   }
+  const refusal = {
+    ...raw,
+    stage: "first-revision-activation",
+    outcome: "failed",
+    refusal: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+  };
+  assert.deepEqual(installationPhase(refusal), refusal);
+  for (const change of [
+    { refusal: "untrusted" },
+    { stage: "gateway-ready" },
+    { outcome: "passed" },
+    { extra: true },
+  ]) {
+    assert.equal(installationPhase({ ...refusal, ...change }), undefined);
+  }
+  const ambiguous = collectInstallationPhases();
+  const terminal = present(installationPhase(refusal));
+  ambiguous.accept(terminal);
+  assert.deepEqual(ambiguous.result().phases, []);
+  const entered = present(installationPhase({ ...raw, stage: refusal.stage }));
+  ambiguous.accept(entered);
+  ambiguous.accept(terminal);
+  ambiguous.accept(terminal);
+  assert.deepEqual(ambiguous.result().phases, [
+    { invocation: 1, stage: refusal.stage, enteredMs: 0, outcome: "unknown" },
+  ]);
   const receipt = collectInstallationPhases();
   const writes: unknown[] = [];
   // Validate outside the best-effort writer so diagnostic failures cannot swallow assertions.
@@ -413,7 +439,7 @@ test("gateway installation preserves settled phases, operation outcomes and the 
   }
 });
 
-test("the runner retains an unknown gateway readiness outcome after the test child terminates", (t) => {
+function runInstallationChild(t: import("node:test").TestContext, source: string) {
   const directory = temporaryDirectorySync(t, "installation-progress-");
   const file = "tests/integration/installation.test.ts";
   mkdirSync(join(directory, dirname(file)), { recursive: true });
@@ -425,17 +451,7 @@ export function prepareFile({ statePath }) {
   return { cleanup: () => writeFileSync(statePath + ".cleaned", "completed") };
 }`,
   );
-  const helper = new URL("../helpers/openshell-installation.ts", import.meta.url).href;
-  writeFileSync(
-    join(directory, file),
-    `import test from "node:test";
-import { runGatewayInstallation } from ${JSON.stringify(helper)};
-test("terminated readiness", () => runGatewayInstallation(
-  async () => {}, async () => {}, async () => {},
-  async () => { process.kill(process.pid, "SIGTERM"); await new Promise(() => {}); },
-));
-`,
-  );
+  writeFileSync(join(directory, file), source);
   const suite = join(directory, "suite.json");
   const state = join(directory, "state.json");
   const results = join(directory, "results.json");
@@ -456,10 +472,25 @@ test("terminated readiness", () => runGatewayInstallation(
   const [entry] = JSON.parse(readFileSync(results, "utf8")).files;
   assert.equal(entry.status, "failed");
   assert.equal(entry.nodeExitCode, 1);
-  assert.equal(entry.fileFailure.error.signal, "SIGTERM");
   assert.deepEqual(entry.cleanup, { status: "passed" });
   assert.equal(readFileSync(state + ".cleaned", "utf8"), "completed");
   assert.equal(entry.installationPhases.truncated, false);
+  return entry;
+}
+
+const helper = new URL("../helpers/openshell-installation.ts", import.meta.url).href;
+
+test("the runner retains an unknown gateway readiness outcome after the test child terminates", (t) => {
+  const entry = runInstallationChild(
+    t,
+    `import test from "node:test";
+import { runGatewayInstallation } from ${JSON.stringify(helper)};
+test("terminated readiness", () => runGatewayInstallation(
+  async () => {}, async () => {}, async () => {},
+  async () => { process.kill(process.pid, "SIGTERM"); await new Promise(() => {}); },
+));`,
+  );
+  assert.equal(entry.fileFailure.error.signal, "SIGTERM");
   const phases: {
     invocation: number;
     stage: string;
@@ -476,4 +507,76 @@ test("terminated readiness", () => runGatewayInstallation(
     ],
   );
   assert.equal(present(phases[2]).elapsedMs, undefined);
+});
+
+test("the runner distinguishes namespace readiness and the first revision activation", (t) => {
+  const kubernetes = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url).href;
+  const entry = runInstallationChild(
+    t,
+    `import assert from "node:assert/strict";
+import test from "node:test";
+import { beginProductionInstallation } from ${JSON.stringify(helper)};
+import { OpenShellDeploymentFailedError, waitForOpenShellRevisionActivation, firstActivationRefusal } from ${JSON.stringify(kubernetes)};
+for (const mode of ["deadline", "refused", "unrelated", "active"]) {
+  test(mode, { timeout: 500 }, async (t) => {
+    const measure = beginProductionInstallation();
+    await measure("namespace-ready", async () => {
+      if (mode === "deadline") await new Promise(() => {
+        const timer = setInterval(() => {}, 1000);
+        t.after(() => clearInterval(timer));
+      });
+    });
+    await measure("gateway-ready", async () => true);
+    const raw = Object.assign(new Error("private-input-canary"), {
+      code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    });
+    try {
+      await measure("first-revision-activation", () => waitForOpenShellRevisionActivation(
+        (_description, poll) => poll(), {
+          agentPath: "/synthetic", revisionId: "synthetic",
+          request: async (_method, path) => {
+            if (mode === "unrelated") throw raw;
+            if (path === "/synthetic") return {status: 200, data: {activeRevisionId: mode === "active" ? "synthetic" : null}};
+            return {status: 200, data: {status: "failed", error: {code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"}}};
+          },
+        }), firstActivationRefusal);
+    } catch (error) {
+      if (mode === "unrelated") {
+        assert.equal(error, raw);
+        return;
+      }
+      assert.ok(error instanceof OpenShellDeploymentFailedError);
+      assert.equal(error.code, "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE");
+      throw error;
+    }
+    assert.fail("case-specific assertion after activation");
+  });
+}`,
+  );
+  type Row = { invocation: number; stage: string; outcome: string; refusal?: string };
+  const phases: Row[] = entry.installationPhases.phases;
+  const rows = (i: number) =>
+    phases
+      .filter((p) => p.invocation === i)
+      .map(({ stage, outcome, refusal }) => [stage, outcome, refusal ?? null]);
+  assert.deepEqual(rows(1), [["namespace-ready", "unknown", null]]);
+  const ready = [
+    ["namespace-ready", "passed", null],
+    ["gateway-ready", "passed", null],
+  ];
+  assert.deepEqual(rows(2), [
+    ...ready,
+    ["first-revision-activation", "failed", "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"],
+  ]);
+  assert.deepEqual(rows(3), [...ready, ["first-revision-activation", "failed", null]]);
+  assert.deepEqual(rows(4), [...ready, ["first-revision-activation", "passed", null]]);
+  assert.equal(JSON.stringify(entry).includes("private-input-canary"), false);
+  const [deadline, refused, unrelated, active] = entry.tests;
+  assert.match(deadline.error.message, /timed out|test timed out/i);
+  assert.equal(deadline.error.code, "ERR_TEST_FAILURE");
+  assert.equal(refused.error.code, "ERR_TEST_FAILURE");
+  assert.match(refused.error.message, /RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE/);
+  assert.equal(unrelated.status, "passed");
+  assert.equal(active.error.message, "case-specific assertion after activation");
+  assert.equal(active.error.cause.code, "ERR_ASSERTION");
 });

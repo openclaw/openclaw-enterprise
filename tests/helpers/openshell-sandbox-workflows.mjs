@@ -1,3 +1,4 @@
+import { beginProductionInstallation } from "./openshell-installation.ts";
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.mjs";
@@ -53,7 +54,7 @@ import {
   createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
   OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY,
-  OpenShellDeploymentFailedError,
+  firstActivationRefusal,
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
@@ -2471,12 +2472,15 @@ async function prepareProductionInstallation(
     `--clusterrole=${controller.tenantRole}`,
     `--serviceaccount=${platformNamespace}:${controller.account}`,
   );
-  await waitFor(`worker namespace readiness for ${placement}`, async () => {
-    const observed = await request("GET", `/namespaces/${namespaceId}`);
-    assert.equal(observed.status, 200, JSON.stringify(observed.error));
-    return observed.data.status === "ready" ? observed.data : undefined;
-  });
-  await waitForOpenShellGateway(placement);
+  const measureInstallation = beginProductionInstallation();
+  await measureInstallation("namespace-ready", () =>
+    waitFor(`worker namespace readiness for ${placement}`, async () => {
+      const observed = await request("GET", `/namespaces/${namespaceId}`);
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      return observed.data.status === "ready" ? observed.data : undefined;
+    }),
+  );
+  await measureInstallation("gateway-ready", () => waitForOpenShellGateway(placement));
   await assertGatewayBootstrapPolicies(placement);
   if (harnessId === "codex") {
     // Each test Namespace runs its own OpenShell gateway, so its address is known only now. An
@@ -2724,17 +2728,19 @@ async function prepareProductionInstallation(
 
   assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
   try {
-    await waitForOpenShellRevisionActivation(waitFor, {
-      request,
-      agentPath: `/namespaces/${namespaceId}/agents/${agent.data.id}`,
-      revisionId: deployed.data.id,
-      workerEvents: events,
-    });
+    await measureInstallation(
+      "first-revision-activation",
+      () =>
+        waitForOpenShellRevisionActivation(waitFor, {
+          request,
+          agentPath: `/namespaces/${namespaceId}/agents/${agent.data.id}`,
+          revisionId: deployed.data.id,
+          workerEvents: events,
+        }),
+      firstActivationRefusal,
+    );
   } catch (error) {
-    const readinessRefused =
-      error instanceof OpenShellDeploymentFailedError &&
-      (error.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
-        error.code === "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE");
+    const readinessRefused = firstActivationRefusal(error) !== undefined;
     const secrets = failureSecrets([
       process.env,
       {

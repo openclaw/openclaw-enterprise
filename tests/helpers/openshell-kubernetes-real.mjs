@@ -1,3 +1,4 @@
+import { activationRefusal } from "../../scripts/ci/openshell-installation-phase.ts";
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
@@ -229,6 +230,12 @@ export class OpenShellDeploymentFailedError extends Error {
     );
     this.code = reason;
   }
+}
+
+export function firstActivationRefusal(error) {
+  return error instanceof OpenShellDeploymentFailedError
+    ? activationRefusal(error.code)
+    : undefined;
 }
 
 export function waitForOpenShellRevisionActivation(
