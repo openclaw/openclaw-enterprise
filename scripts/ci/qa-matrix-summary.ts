@@ -1,14 +1,33 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-let evidence;
+interface SelectionCell {
+  cell: string;
+  scenarios: string[];
+  unselected: string[];
+}
+
+interface StageOutcome {
+  cell: string;
+  scenario?: string | null;
+  stage: string;
+  outcome: string;
+}
+
+interface QaReport {
+  scope: string;
+  selection: SelectionCell[];
+  outcomes: StageOutcome[];
+}
+
+let evidence: string | undefined;
 try {
   evidence = await readFile(
-    join(process.env.RUNNER_TEMP, "qa-matrix-evidence/matrix.json"),
+    join(process.env.RUNNER_TEMP!, "qa-matrix-evidence/matrix.json"),
     "utf8",
   );
 } catch (error) {
-  if (error.code !== "ENOENT") {
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
     throw error;
   }
 }
@@ -20,45 +39,60 @@ if (evidence !== undefined && report === undefined) {
   );
   process.exitCode = 1;
 } else {
-  await appendFile(process.env.GITHUB_STEP_SUMMARY, formatSummary(report));
+  await appendFile(process.env.GITHUB_STEP_SUMMARY!, formatSummary(report));
 }
 
-function isStringList(value) {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-function parseReport(evidence) {
-  let report;
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item: unknown) => typeof item === "string");
+}
+
+function isSelectionCell(value: unknown): value is SelectionCell {
+  return (
+    isRecord(value) &&
+    typeof value.cell === "string" &&
+    isStringList(value.scenarios) &&
+    isStringList(value.unselected)
+  );
+}
+
+function isStageOutcome(value: unknown): value is StageOutcome {
+  return (
+    isRecord(value) &&
+    typeof value.cell === "string" &&
+    (value.scenario === undefined ||
+      value.scenario === null ||
+      typeof value.scenario === "string") &&
+    typeof value.stage === "string" &&
+    typeof value.outcome === "string"
+  );
+}
+
+function isReport(value: unknown): value is QaReport {
+  return (
+    isRecord(value) &&
+    typeof value.scope === "string" &&
+    Array.isArray(value.selection) &&
+    value.selection.every(isSelectionCell) &&
+    Array.isArray(value.outcomes) &&
+    value.outcomes.every(isStageOutcome)
+  );
+}
+
+function parseReport(evidence: string): QaReport | undefined {
+  let report: unknown;
   try {
     report = JSON.parse(evidence);
   } catch {
     return undefined;
   }
-
-  if (
-    typeof report?.scope !== "string" ||
-    !Array.isArray(report.selection) ||
-    !report.selection.every(
-      (cell) =>
-        typeof cell?.cell === "string" &&
-        isStringList(cell.scenarios) &&
-        isStringList(cell.unselected),
-    ) ||
-    !Array.isArray(report.outcomes) ||
-    !report.outcomes.every(
-      (row) =>
-        typeof row?.cell === "string" &&
-        (row.scenario === undefined || row.scenario === null || typeof row.scenario === "string") &&
-        typeof row.stage === "string" &&
-        typeof row.outcome === "string",
-    )
-  ) {
-    return undefined;
-  }
-  return report;
+  return isReport(report) ? report : undefined;
 }
 
-function formatSummary(report) {
+function formatSummary(report: QaReport | undefined): string {
   const lines = [
     "## QA matrix advisory",
     "",
