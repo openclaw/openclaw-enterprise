@@ -1,21 +1,34 @@
 import assert from "node:assert/strict";
 
-export async function assertSpentDeviceProofRefusal({ installReader, signIn, knownDeviceOf }) {
+type HoldRead = <Result>(read: () => Result | Promise<Result>) => Promise<Result>;
+
+type RequestOutcome<Response> =
+  { kind: "response"; response: Response } | { kind: "request-error"; error: unknown };
+
+export async function assertSpentDeviceProofRefusal<
+  Response extends { statusCode: number; body: string },
+>({
+  installReader,
+  signIn,
+  knownDeviceOf,
+}: {
+  installReader: (holdRead: HoldRead) => { mock: { restore(): void } };
+  signIn: () => Promise<Response>;
+  knownDeviceOf: (response: Response) => string | undefined;
+}) {
   // Hold two admitted readers before their genuine database operation. A third
   // request must finish through refusal, not enter another reader and later return
   // 429 merely because the device's password allowance was already spent.
-  const releaseReads = Promise.withResolvers();
-  const twoReads = Promise.withResolvers();
-  const thirdRead = Promise.withResolvers();
+  const releaseReads = Promise.withResolvers<void>();
+  const twoReads = Promise.withResolvers<{ kind: "two-reads" }>();
+  const thirdRead = Promise.withResolvers<{ kind: "third-read" }>();
   let readCount = 0;
   let completedReads = 0;
-  const pending = [];
-  let settled;
-  let timer;
-  const deadline = new Promise((resolve) => {
-    timer = setTimeout(() => resolve({ kind: "deadline" }), 10_000);
-  });
-  const holdRead = async (read) => {
+  const pending: Promise<RequestOutcome<Response>>[] = [];
+  let settled: RequestOutcome<Response>[];
+  const deadline = Promise.withResolvers<{ kind: "deadline" }>();
+  const timer = setTimeout(() => deadline.resolve({ kind: "deadline" }), 10_000);
+  const holdRead: HoldRead = async (read) => {
     readCount += 1;
     if (readCount === 2) {
       twoReads.resolve({ kind: "two-reads" });
@@ -29,9 +42,9 @@ export async function assertSpentDeviceProofRefusal({ installReader, signIn, kno
   };
   const reader = installReader(holdRead);
   const launch = () => {
-    const request = Promise.resolve(signIn()).then(
+    const request: Promise<RequestOutcome<Response>> = Promise.resolve(signIn()).then(
       (response) => ({ kind: "response", response }),
-      (error) => ({ kind: "request-error", error }),
+      (error: unknown) => ({ kind: "request-error", error }),
     );
     pending.push(request);
     return request;
@@ -39,12 +52,12 @@ export async function assertSpentDeviceProofRefusal({ installReader, signIn, kno
   try {
     launch();
     launch();
-    const started = await Promise.race([twoReads.promise, ...pending, deadline]);
+    const started = await Promise.race([twoReads.promise, ...pending, deadline.promise]);
     if (started.kind === "request-error") {
       throw started.error;
     }
     assert.equal(started.kind, "two-reads", "both admitted readers must be held");
-    const refused = await Promise.race([thirdRead.promise, launch(), deadline]);
+    const refused = await Promise.race([thirdRead.promise, launch(), deadline.promise]);
     if (refused.kind === "request-error") {
       throw refused.error;
     }
