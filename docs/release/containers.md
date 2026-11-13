@@ -308,7 +308,7 @@ against its smoke receipt before including it in the final archive. Skopeo prese
 digests during publication. These are not provider, cluster, or registry
 end-to-end tests.
 
-Local gate and recovery tests: `node --test tests/integration/container-{release,resume,promote}.test.mjs`.
+Local gate and recovery tests: `node --test tests/integration/container-{release.test.mjs,resume.test.ts,promote.test.ts}`.
 Recovery tests use HTTP and transport fixtures; they prove gate ordering, original
 identity, conflict rejection, unchanged existing images, and receipt behavior.
 The [registry integration](../testing/docker.md#container-publication-registry-proof)

@@ -287,7 +287,7 @@ owns package-write access and coordination.
 
 - For rejected source arguments, [resolve the manifest values](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
   and rebuild without bypassing checksum verification.
-- Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
+- Run `node --test tests/integration/container-{release.test.mjs,resume.test.ts,promote.test.ts}`
   for platform/archive validation and release gate coverage. The archive case uses
   real OCI blobs and tar; recovery uses transport fixtures.
 - Run the [registry integration](../testing/docker.md#container-publication-registry-proof)
