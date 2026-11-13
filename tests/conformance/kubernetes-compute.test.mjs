@@ -1315,6 +1315,10 @@ function dedicatedFirstDeployFixture({
     read,
     prepare,
     markReady,
+    markWorkloadsReady() {
+      markReady(agentName);
+      markReady(gatewayName);
+    },
   };
 }
 
@@ -3456,7 +3460,7 @@ test("a first dedicated deploy pins its workload starts through activation", asy
     podPatches,
     read,
     prepare,
-    markReady,
+    markWorkloadsReady,
   } = dedicatedFirstDeployFixture({ clock });
   // Activation's ack poll waits on the same clock, so a missing ack fails instead of spinning.
   driver.delay = async (ms) => {
@@ -3482,8 +3486,7 @@ test("a first dedicated deploy pins its workload starts through activation", asy
     templates.map(({ name }) => (name === agentName ? "harness" : name)),
     [gatewayName, "harness"],
   );
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   // The setup reaches the running Harness through its volume and the node pairs
   // a moment later, without a workload start. The pass that delivered the setup
   // sees the pairing and completes: no pending pass once the workloads are ready.
@@ -3550,11 +3553,10 @@ test("a first dedicated deploy pins its workload starts through activation", asy
 // The pass that sees the node pair hands it to the Gateway. Activation still
 // waits for the Gateway's own report of that node, and does not nudge again.
 test("activation waits for the Gateway to report the node preparation handed it", async () => {
-  const { state, driver, revision, gatewayName, agentName, podPatches, prepare, markReady } =
+  const { state, driver, revision, podPatches, prepare, markWorkloadsReady } =
     dedicatedFirstDeployFixture();
   assert.equal((await prepare()).ready, false);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   state.connected = true;
   // The kubelet has not refreshed the binding volume yet.
   state.gatewayAppliesBinding = false;
@@ -3582,14 +3584,14 @@ test("activation waits for the Gateway to report the node preparation handed it"
 // attempts, then a single read per attempt, like the pairing budget (D221).
 test("an unacknowledged workspace node binding costs at most one bounded wait across activations", async () => {
   const clock = { now: 0 };
-  const { state, driver, revision, gatewayName, agentName, prepare, markReady } =
-    dedicatedFirstDeployFixture({ clock });
+  const { state, driver, revision, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
+    clock,
+  });
   driver.delay = async (ms) => {
     clock.now += ms;
   };
   assert.equal((await prepare()).ready, false);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   state.connected = true;
   state.gatewayAppliesBinding = false;
   assert.equal((await prepare()).ready, true);
@@ -3760,12 +3762,11 @@ test("activation of a version without repository credentials never consults the 
       assert.fail("the install time is read only for repository-bound versions");
     },
   };
-  const { state, driver, revision, gatewayName, agentName, objects, prepare, markReady } =
+  const { state, driver, revision, objects, prepare, markWorkloadsReady } =
     dedicatedFirstDeployFixture({ openShellGit });
   assert.equal(revision.repositoryCredentials, undefined);
   assert.equal((await prepare()).ready, false);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   state.connected = true;
   state.gatewayWorkspaceNodeId = "node-1";
   assert.equal((await prepare()).ready, true);
@@ -3838,7 +3839,7 @@ test("a first dedicated deploy pass waits a bounded time for its node to pair", 
 // and one whose workloads are ready says it waits only for its node (D222).
 test("a pending dedicated deploy reports an unschedulable Pod or an unpaired node", async () => {
   const clock = { now: 0 };
-  const { state, gatewayName, agentName, prepare, markReady } = dedicatedFirstDeployFixture({
+  const { state, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
     clock,
   });
   state.unschedulableRole = "agent";
@@ -3849,8 +3850,7 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
   const starting = await prepare();
   assert.equal(starting.ready, false);
   assert.equal(starting.pendingReason, undefined);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   const unpaired = await prepare();
   assert.equal(unpaired.ready, false);
   assert.equal(unpaired.pendingReason, "WORKSPACE_NODE_PENDING");
@@ -4070,7 +4070,7 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
     read,
     save,
     prepare,
-    markReady,
+    markWorkloadsReady,
   } = dedicatedFirstDeployFixture({ clock: { now: 0 } });
   assert.equal((await prepare()).pendingReason, undefined);
   const setConditions = (name, conditions) => {
@@ -4290,8 +4290,7 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   assert.equal(await pendingReasonWith(agentName, [failure(refusal("pods=1"))]), quota);
   assert.equal((await prepare()).pendingReason, "WORKLOAD_UNSCHEDULABLE");
   state.unschedulableRole = undefined;
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   // A known pending reason leads: ready workloads waiting for their node keep that reason
   // beside a stale quota refusal (a made-up shape).
   setConditions(agentName, [failure(refusal("pods=1"))]);
@@ -4358,13 +4357,10 @@ test("the Pod quota check reads only the revision's own workload Deployments", a
 // per setup, across all passes, then a single read per pass, as before #816 (D88).
 test("an unpaired workspace node costs at most one bounded wait across passes", async () => {
   const clock = { now: 0 };
-  const { state, driver, gatewayName, agentName, prepare, markReady } = dedicatedFirstDeployFixture(
-    { clock },
-  );
+  const { state, driver, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({ clock });
   assert.equal(driver.workspaceNodePairingWaitMs, 8_000);
   assert.equal((await prepare()).ready, false);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   const passTimes = [];
   for (let pass = 0; pass < 6; pass++) {
     const started = clock.now;
@@ -4383,12 +4379,11 @@ test("an unpaired workspace node costs at most one bounded wait across passes", 
 // first ready pass's wait, which ends at the pairing, so no pass ends pending.
 test("a node that pairs within its wait completes the pass that delivered its setup", async () => {
   const clock = { now: 0 };
-  const { state, gatewayName, agentName, prepare, markReady } = dedicatedFirstDeployFixture({
+  const { state, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
     clock,
   });
   assert.equal((await prepare()).ready, false);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   state.pairAtMs = 3_000;
   assert.equal((await prepare()).ready, true);
   assert.deepEqual(state.observeWaits, [8_000]);
@@ -4400,12 +4395,11 @@ test("a node that pairs within its wait completes the pass that delivered its se
 // mid-wait) leaves the next pass only the rest of it.
 test("a workspace node pairing budget carries over between passes", async () => {
   const clock = { now: 0 };
-  const { state, gatewayName, agentName, prepare, markReady } = dedicatedFirstDeployFixture({
+  const { state, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
     clock,
   });
   assert.equal((await prepare()).ready, false);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   state.failAtMs = 5_000;
   await assert.rejects(prepare(), /Gateway connection closed/);
   state.failAtMs = undefined;
@@ -4421,8 +4415,7 @@ test("a second Agent's deploy pass is not held up by another Agent's unpaired no
   const fresh = dedicatedFirstDeployFixture({ clock });
   for (const agent of [stuck, fresh]) {
     assert.equal((await agent.prepare()).ready, false);
-    agent.markReady(agent.agentName);
-    agent.markReady(agent.gatewayName);
+    agent.markWorkloadsReady();
   }
   // The stuck Agent's first ready pass spends its one wait.
   assert.equal((await stuck.prepare()).ready, false);
@@ -4459,8 +4452,7 @@ test("another Agent's due Work ends a first deploy's pairing wait at once", asyn
   for (const agent of [first, second]) {
     agent.state.stepObservations = true;
     assert.equal((await agent.prepare()).ready, false);
-    agent.markReady(agent.agentName);
-    agent.markReady(agent.gatewayName);
+    agent.markWorkloadsReady();
   }
   first.state.pairAtMs = 6_000;
   second.state.pairAtMs = 1_500;
@@ -4498,14 +4490,14 @@ test("another Agent's due Work ends a first deploy's pairing wait at once", asyn
 // an invalid status is still refused (D221).
 test("another Agent's due Work ends an activation's ack wait at once", async () => {
   const clock = { now: 0 };
-  const { state, driver, revision, gatewayName, agentName, prepare, markReady } =
-    dedicatedFirstDeployFixture({ clock });
+  const { state, driver, revision, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
+    clock,
+  });
   driver.delay = async (ms) => {
     clock.now += ms;
   };
   assert.equal((await prepare()).ready, false);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   state.connected = true;
   state.gatewayAppliesBinding = false;
   assert.equal((await prepare()).ready, true);
@@ -4651,12 +4643,11 @@ test("without a status proxy a dedicated Codex Gateway keeps its workspace node 
 });
 
 test("a dedicated redeploy keeps the agent Service on the serving revision until activation", async () => {
-  const { state, driver, revision, gatewayName, agentName, templates, read, prepare, markReady } =
+  const { state, driver, revision, gatewayName, templates, read, prepare, markWorkloadsReady } =
     dedicatedFirstDeployFixture();
   state.connected = true;
   assert.equal((await prepare()).ready, false);
-  markReady(agentName);
-  markReady(gatewayName);
+  markWorkloadsReady();
   assert.equal((await prepare()).ready, true);
   await driver.activateRevision(revision, authContext(revision));
   const serviceName = `agent-${digest(revision.agentId)}`;
