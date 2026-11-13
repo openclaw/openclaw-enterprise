@@ -17,6 +17,6 @@ const server = createServer((request, response) => {
 
 server.listen(8080, "0.0.0.0");
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => server.close());
 }

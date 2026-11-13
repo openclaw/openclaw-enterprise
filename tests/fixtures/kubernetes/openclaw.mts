@@ -5,16 +5,16 @@ const diffsVersion = "2026.8.2";
 const diffsIntegrity =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
 
-function writeJson(value) {
+function writeJson(value: unknown) {
   process.stdout.write(JSON.stringify(value) + "\n");
 }
 
-function fail(message) {
+function fail(message: string): never {
   process.stderr.write(message + "\n");
   process.exit(1);
 }
 
-function parsePort(args) {
+function parsePort(args: string[]) {
   const index = args.indexOf("--port");
   const value = index === -1 ? undefined : args[index + 1];
   if (value === undefined || !/^[0-9]+$/.test(value)) {
@@ -23,7 +23,7 @@ function parsePort(args) {
   return Number(value);
 }
 
-function startGateway(args) {
+function startGateway(args: string[]) {
   const port = parsePort(args);
   const server = createServer((request, response) => {
     // The Gateway runtime wrapper's readiness reads both probes.
@@ -37,12 +37,12 @@ function startGateway(args) {
   });
 
   server.listen(port, "0.0.0.0");
-  for (const signal of ["SIGINT", "SIGTERM"]) {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => server.close(() => process.exit(0)));
   }
 }
 
-function handlePlugins(args) {
+function handlePlugins(args: string[]) {
   const [command, ...rest] = args;
   if (
     command === "install" &&
@@ -79,21 +79,21 @@ function handlePlugins(args) {
   fail(`unsupported fixture plugin command: ${[command, ...rest].join(" ")}`);
 }
 
-function handleModels(args) {
+function handleModels(args: string[]) {
   const [command, ...rest] = args;
   if (command === "status" && rest.includes("--json") && rest.includes("--probe")) {
-    const model =
-      process.env.OPENCLAW_CONFIG_PATH === undefined
-        ? "openai/gpt-5"
-        : JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")).agents?.defaults
-            ?.model;
+    const configPath = process.env.OPENCLAW_CONFIG_PATH;
+    const config: { agents?: { defaults?: { model?: unknown } } } =
+      configPath === undefined
+        ? { agents: { defaults: { model: "openai/gpt-5" } } }
+        : JSON.parse(readFileSync(configPath, "utf8"));
     writeJson({
       auth: {
         probes: {
           results: [
             {
               provider: "openai",
-              model,
+              model: config.agents?.defaults?.model,
               source: "env",
               status: "ok",
             },

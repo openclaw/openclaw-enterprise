@@ -1,7 +1,20 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import WebSocket from "ws";
+import { createRequire } from "node:module";
+
+interface AppServerSocket {
+  on(event: "open" | "error", listener: () => void): void;
+  on(event: "pong", listener: (payload: Buffer) => void): void;
+  ping(payload: Buffer): void;
+  terminate(): void;
+}
+
+const require = createRequire(import.meta.url);
+const WebSocket = require("ws") as new (
+  address: string,
+  options: { headers: { Authorization: string } },
+) => AppServerSocket;
 
 // Admit only the startup validator used by the real wrapper. Native image tests
 // exercise its schema validation; this synthetic image tests transport retries.
@@ -13,18 +26,18 @@ if (
   process.exit(0);
 }
 
-function optionValue(name) {
+function optionValue(name: string) {
   const index = process.argv.indexOf(name);
   return index === -1 ? undefined : process.argv[index + 1];
 }
 
 function appServerReady(token = process.env.APP_SERVER_TOKEN) {
-  return new Promise((resolve) => {
+  return new Promise<boolean>((resolve) => {
     const challenge = Buffer.from(randomUUID());
-    const socket = new WebSocket(process.env.APP_SERVER_URL, {
+    const socket = new WebSocket(process.env.APP_SERVER_URL!, {
       headers: { Authorization: `Bearer ${token ?? ""}` },
     });
-    const finish = (ready) => {
+    const finish = (ready: boolean) => {
       clearTimeout(timeout);
       socket.terminate();
       resolve(ready);
