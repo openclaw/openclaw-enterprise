@@ -10,12 +10,12 @@ import {
   type CredentialSource,
   type CredentialSourceContext,
   type CredentialSourceInput,
-  type CredentialSourceStatus,
 } from "../../packages/contracts/src/index.ts";
 import {
   CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
 } from "../../packages/occ/src/index.ts";
+import { assertCredentialSourceReady } from "./sandbox-driver-credential-fixture.ts";
 
 type StoredProfile = OpenShellProviderProfile & { resourceVersion: string };
 type GatewayFixture = {
@@ -39,7 +39,6 @@ type GatewayFixture = {
 };
 type FixtureDependencies = {
   credentialGatewayOverProviders: (options?: { toolBinaries?: string[] }) => GatewayFixture;
-  ready: (operation: Promise<CredentialSourceStatus>) => Promise<void>;
   structuralRefusal: (
     path: string,
     keyword: string,
@@ -55,7 +54,6 @@ function requiredProfile(profiles: Map<string, StoredProfile>, id: string): Stor
 
 export function createSandboxCredentialContractChecks({
   credentialGatewayOverProviders,
-  ready,
   structuralRefusal,
 }: FixtureDependencies) {
   /** A bearer-token source of the recording store, registered under `driver`. */
@@ -80,7 +78,7 @@ export function createSandboxCredentialContractChecks({
         ({ labels }) => labels["openclaw.dev/credential-source-id"] === source.id,
       );
     const register = (driver: OpenShellCredentialGatewayDriver, source: CredentialSource) =>
-      ready(driver.registerSource(sourceContext(source), input(source)));
+      assertCredentialSourceReady(driver.registerSource(sourceContext(source), input(source)));
     return { bearer, input, providerOf, register, revisionContext, sourceContext };
   }
 
@@ -167,7 +165,9 @@ export function createSandboxCredentialContractChecks({
       // Each bearer-token source owns a profile that only the tool binaries may use, at its endpoint.
       const first = "cs_00000000-0000-4000-8000-0000000000f2";
       const second = "cs_00000000-0000-4000-8000-0000000000f3";
-      await ready(driver.registerSource(context(first), tokenInput(endpoint)));
+      await assertCredentialSourceReady(
+        driver.registerSource(context(first), tokenInput(endpoint)),
+      );
       const provider = [...providers.values()].find(
         ({ labels }) => labels["openclaw.dev/credential-source-id"] === first,
       );
@@ -289,7 +289,9 @@ export function createSandboxCredentialContractChecks({
       assert.deepEqual([...profileWrites], []);
 
       // Updating a source's token rewrites its profile to the current list.
-      await ready(narrowed.updateSource(sourceContext(updated), input(updated, "n3w")));
+      await assertCredentialSourceReady(
+        narrowed.updateSource(sourceContext(updated), input(updated, "n3w")),
+      );
       assert.deepEqual(profileOf(updated).binaries, ["/usr/bin/curl"]);
       assert.deepEqual(profileOf(deployed).binaries, ["/usr/bin/curl", "/usr/bin/python3"]);
 
