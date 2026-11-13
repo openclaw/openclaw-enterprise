@@ -433,8 +433,13 @@ async function request<Data = unknown>(
     error === undefined || Check(ErrorResponse.properties.error, error),
     "invalid API error envelope",
   );
-  assert.ok(meta === undefined || Check(Meta, meta), "invalid API metadata envelope");
-  return { status: response.status, data: envelope.data as Data, error, meta };
+  const requestId =
+    typeof meta === "object" && meta !== null && "requestId" in meta ? meta.requestId : undefined;
+  assert.ok(
+    requestId === undefined || Check(Meta.properties.requestId, requestId),
+    "invalid API request ID",
+  );
+  return { status: response.status, data: envelope.data as Data, error, requestId };
 }
 
 async function createDurableController(pool: Pool) {

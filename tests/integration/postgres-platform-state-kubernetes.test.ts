@@ -219,10 +219,10 @@ stateCase(
       authenticated: false,
     });
     assert.equal(unauthenticated.status, 401);
-    const { error, meta } = unauthenticated;
+    const { error, requestId } = unauthenticated;
     assert.equal(error?.code, "UNAUTHENTICATED");
-    assert.ok(meta);
-    assert.match(meta.requestId, /^req_/);
+    assert.ok(requestId);
+    assert.match(requestId, /^req_/);
     // A request rejected before admission records only its result. It has no verified actor.
     const audit = await pool.query(
       `SELECT kind, action, outcome, actor_id, resource_kind, resource_id,
@@ -231,7 +231,7 @@ stateCase(
               (details->>'statusCode')::integer AS status_code
        FROM occ.audit_events
        WHERE details->'__occAuditMetadata'->>'requestId' = $1`,
-      [meta.requestId],
+      [requestId],
     );
     assert.deepEqual(audit.rows, [
       {
@@ -993,8 +993,8 @@ stateCase(
     assert.equal(audit.status, 200);
 
     // Follow the original HTTP request to the work item and the worker attempt that succeeded.
-    assert.ok(firstDeployment.meta);
-    const { requestId } = firstDeployment.meta;
+    const { requestId } = firstDeployment;
+    assert.ok(requestId);
     assert.match(requestId, /^req_[0-9a-f-]{36}$/);
     const queued = audit.data.events.find(
       (entry) => entry.event === "work_queued" && entry.requestId === requestId,
