@@ -206,6 +206,10 @@ export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
 }
 
 export interface AgentReadRepository {
+  findPredecessorReplacement(
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<PredecessorReplacement> | undefined>;
   findAgentForBrowsing(
     namespaceId: string,
     agentId: string,
@@ -226,6 +230,16 @@ export interface AgentReadRepository {
 }
 
 export interface AgentRepository extends AgentReadRepository {
+  /** Caller holds the Namespace and Agent locks. Never reopens a committed stop. */
+  recordPredecessorReplacement(
+    namespaceId: string,
+    agentId: string,
+    input: {
+      readonly predecessorRevisionId: string;
+      readonly candidateRevisionId: string;
+      readonly phase: "pre-stop" | "stopping";
+    },
+  ): Promise<Readonly<PredecessorReplacement> | undefined>;
   createAgent(
     agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
   ): Promise<Readonly<Agent>>;
@@ -281,6 +295,15 @@ export interface AgentRepository extends AgentReadRepository {
     expected: AgentStatus | readonly AgentStatus[],
     next: AgentStatus,
   ): Promise<Readonly<Agent> | undefined>;
+}
+
+/** One Agent lifecycle fact, superseded when a different predecessor is replaced. */
+export interface PredecessorReplacement {
+  readonly predecessorRevisionId: string;
+  readonly candidateRevisionId: string;
+  readonly phase: "pre-stop" | "stopping";
+  readonly startedAt: string;
+  readonly stoppingAt?: string;
 }
 
 export interface AgentRevisionReadRepository {
@@ -1271,6 +1294,7 @@ interface PlatformSnapshot {
   readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
+  readonly predecessorReplacements: Map<string, Readonly<PredecessorReplacement>>;
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
   readonly revisions: Map<string, readonly Readonly<AgentRevision>[]>;
@@ -1412,6 +1436,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
       Array.from(snapshot.serviceAccounts, ([key, account]) => [key, storedCopy(account)]),
     ),
     agents: new Map(Array.from(snapshot.agents, ([key, agent]) => [key, storedCopy(agent)])),
+    predecessorReplacements: new Map(
+      Array.from(snapshot.predecessorReplacements, ([key, record]) => [key, storedCopy(record)]),
+    ),
     sandboxPolicies: new Map(
       Array.from(snapshot.sandboxPolicies, ([key, policy]) => [key, storedCopy(policy)]),
     ),
@@ -3377,6 +3404,39 @@ function repositories(
   };
 
   const agents: AgentRepository = {
+    findPredecessorReplacement: async (namespaceId, agentId) =>
+      (await agents.findAgent(namespaceId, agentId)) === undefined
+        ? undefined
+        : snapshot.predecessorReplacements.get(agentKey(namespaceId, agentId)),
+    recordPredecessorReplacement: async (namespaceId, agentId, input) => {
+      const agent = await agents.findAgent(namespaceId, agentId);
+      if (!agent || agent.activeRevisionId !== input.predecessorRevisionId) {
+        return undefined;
+      }
+      const revisions = snapshot.revisions.get(agentKey(namespaceId, agentId)) ?? [];
+      const predecessor = revisions.find((revision) => revision.id === input.predecessorRevisionId);
+      const candidate = revisions.find((revision) => revision.id === input.candidateRevisionId);
+      if (!predecessor || !candidate || candidate.revision <= predecessor.revision) {
+        return undefined;
+      }
+      const key = agentKey(namespaceId, agentId);
+      const current = snapshot.predecessorReplacements.get(key);
+      const previous =
+        current?.predecessorRevisionId === input.predecessorRevisionId ? current : undefined;
+      const now = new Date().toISOString();
+      const saved = immutableCopy({
+        ...input,
+        phase: previous?.phase === "stopping" ? "stopping" : input.phase,
+        startedAt: previous?.startedAt ?? now,
+        ...(previous?.stoppingAt
+          ? { stoppingAt: previous.stoppingAt }
+          : input.phase === "stopping"
+            ? { stoppingAt: now }
+            : {}),
+      });
+      snapshot.predecessorReplacements.set(key, saved);
+      return saved;
+    },
     findAgentForBrowsing: async (namespaceId, agentId) => agents.findAgent(namespaceId, agentId),
     listAgentsForBrowsing: async (namespaceId) => agents.listAgents(namespaceId),
     findAgent: async (namespaceId, agentId) => {
@@ -4492,6 +4552,7 @@ function finalizeAgentDeletion(
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
+  snapshot.predecessorReplacements.delete(key);
 
   snapshot.audit.push(
     immutableCopy({
@@ -4545,6 +4606,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
+    predecessorReplacements: new Map(),
     sandboxPolicies: new Map(),
     workspaceSetups: new Map(),
     revisions: new Map(),

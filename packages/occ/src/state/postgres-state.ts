@@ -8,7 +8,11 @@ import {
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
-import type { SandboxPolicyRepository, StoredCredentialWithdrawal } from "./platform-state.ts";
+import type {
+  SandboxPolicyRepository,
+  StoredCredentialWithdrawal,
+  PredecessorReplacement,
+} from "./platform-state.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
@@ -152,6 +156,34 @@ import { beginProvisioningEffectProgress } from "../provisioning-effects.ts";
 import { credentialWithdrawalOperationId, credentialWithdrawalWorkKey } from "./controller-work.ts";
 
 type PostgresRow = Record<string, unknown>;
+
+function predecessorReplacementFromJson(
+  value: unknown,
+): Readonly<PredecessorReplacement> | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (
+    !record ||
+    !isNonEmptyString(record.predecessorRevisionId) ||
+    !isNonEmptyString(record.candidateRevisionId) ||
+    (record.phase !== "pre-stop" && record.phase !== "stopping") ||
+    typeof record.startedAt !== "string" ||
+    !Number.isFinite(Date.parse(record.startedAt)) ||
+    (record.phase === "stopping" &&
+      (typeof record.stoppingAt !== "string" || !Number.isFinite(Date.parse(record.stoppingAt))))
+  ) {
+    throw new PersistedStateInvalidError("Persisted predecessor replacement is invalid.");
+  }
+  return immutableCopy({
+    predecessorRevisionId: record.predecessorRevisionId,
+    candidateRevisionId: record.candidateRevisionId,
+    phase: record.phase,
+    startedAt: record.startedAt,
+    ...(typeof record.stoppingAt === "string" ? { stoppingAt: record.stoppingAt } : {}),
+  });
+}
 
 export interface PostgresClient extends PostgresQueryClient {
   release(discard?: boolean): void;
@@ -3479,6 +3511,51 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
     const agents: AgentRepository = {
+      findPredecessorReplacement: async (namespaceId, agentId) => {
+        const row = rows(
+          (
+            await client.query(
+              `SELECT a.predecessor_replacement FROM occ.agents a
+           JOIN occ.namespaces n ON n.id = a.namespace_id AND n.deleted_at IS NULL
+           WHERE a.namespace_id = $1 AND a.id = $2`,
+              [namespaceId, agentId],
+            )
+          ).rows,
+        )[0];
+        return predecessorReplacementFromJson(row?.predecessor_replacement);
+      },
+      recordPredecessorReplacement: async (namespaceId, agentId, input) => {
+        const row = rows(
+          (
+            await client.query(
+              `UPDATE occ.agents a SET predecessor_replacement =
+             CASE WHEN a.predecessor_replacement->>'predecessorRevisionId' = $3
+               THEN a.predecessor_replacement || jsonb_build_object('candidateRevisionId', $4::text) ||
+                 CASE WHEN $5 = 'stopping' AND a.predecessor_replacement->>'phase' = 'pre-stop'
+                   THEN jsonb_build_object('phase', 'stopping', 'stoppingAt', clock_timestamp()) ELSE '{}'::jsonb END
+               ELSE jsonb_build_object('predecessorRevisionId', $3::text, 'candidateRevisionId', $4::text,
+                 'phase', $5::text, 'startedAt', clock_timestamp()) ||
+                 CASE WHEN $5 = 'stopping' THEN jsonb_build_object('stoppingAt', clock_timestamp()) ELSE '{}'::jsonb END
+             END
+           FROM occ.namespaces n, occ.agent_revisions p, occ.agent_revisions c
+           WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
+             AND n.id = a.namespace_id AND n.deleted_at IS NULL
+             AND p.namespace_id = a.namespace_id AND p.agent_id = a.id AND p.id = $3
+             AND c.namespace_id = a.namespace_id AND c.agent_id = a.id AND c.id = $4
+             AND c.revision_number > p.revision_number
+           RETURNING a.predecessor_replacement`,
+              [
+                namespaceId,
+                agentId,
+                input.predecessorRevisionId,
+                input.candidateRevisionId,
+                input.phase,
+              ],
+            )
+          ).rows,
+        )[0];
+        return predecessorReplacementFromJson(row?.predecessor_replacement);
+      },
       setSandboxPolicyEditing: async (namespaceId, agentId, enabled) => {
         await client.query(
           "UPDATE occ.agents SET sandbox_policy_editing = $3 WHERE namespace_id = $1 AND id = $2",

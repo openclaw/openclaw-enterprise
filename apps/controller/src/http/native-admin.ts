@@ -921,7 +921,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (agent.desiredRuntimeState !== "running") {
       return { status: "stopped", agent, revision, target, mode };
     }
-    if (successor !== undefined && replacesActiveWorkload(successor)) {
+    if (
+      successor !== undefined &&
+      replacesActiveWorkload(successor) &&
+      !selection.servingBeforeStop
+    ) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {

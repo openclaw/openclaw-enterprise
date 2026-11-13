@@ -6,6 +6,8 @@ import {
   SandboxRevisionUnsupportedError,
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
@@ -66,6 +68,18 @@ revisionTest(
         };
       },
       async stopRevision(revision) {
+        const active = await fixture.currentAgent(owner);
+        if (active.activeRevisionId === revision.id) {
+          const replacement = await fixture.state.read((view) =>
+            view.agents.findPredecessorReplacement(revision.namespaceId, revision.agentId),
+          );
+          assert.equal(replacement?.predecessorRevisionId, revision.id);
+          assert.equal(
+            replacement?.phase,
+            "stopping",
+            "stop intent must survive a worker restart before any external stop effect",
+          );
+        }
         if (rejectStop && running.has(revision.id)) {
           rejectStop = false;
           stopFailures += 1;
@@ -132,6 +146,122 @@ async function enqueueMaintenance(fixture, owner, revision) {
   );
   return maintenance;
 }
+
+revisionTest(
+  "a pre-stop record does not reprepare the predecessor with changed Driver configuration",
+  async (fixture) => {
+    const owner = await fixture.agent("pre-stop-maintenance", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    await fixture.start(driver.compute);
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+    // Keep the successor's Work out of the maintenance pass. Admission itself is
+    // exercised by native-admin-access; this test isolates the real worker boundary.
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    const record = (phase) =>
+      fixture.state.transact(async (unit) => {
+        await unit.namespaces.lockNamespace(fixture.namespace.id);
+        await unit.agents.lockAgent(fixture.namespace.id, owner.id);
+        return unit.agents.recordPredecessorReplacement(fixture.namespace.id, owner.id, {
+          predecessorRevisionId: first.id,
+          candidateRevisionId: candidate.id,
+          phase,
+        });
+      });
+    const pending = await record("pre-stop");
+    const before = driver.preparations(first);
+    const maintenance = await enqueueMaintenance(fixture, owner, first);
+    await fixture.start(driver.compute);
+    await fixture.work(maintenance, "succeeded");
+    assert.equal(
+      driver.preparations(first),
+      before,
+      "maintenance must not roll the old runtime forward before stop",
+    );
+    assert.equal(driver.count(first), 0);
+
+    await fixture.stop();
+    const stopping = await record("stopping");
+    assert.equal(stopping.startedAt, pending.startedAt);
+    assert.ok(stopping.stoppingAt);
+    assert.deepEqual(await record("pre-stop"), stopping, "a retry must not reopen committed stop");
+    const laterMaintenance = await enqueueMaintenance(fixture, owner, first);
+    await fixture.start(driver.compute);
+    await fixture.work(laterMaintenance, "succeeded");
+    assert.equal(driver.preparations(first), before, "maintenance must not recreate stopped work");
+  },
+);
+
+revisionTest(
+  "new admission cannot revive a legacy predecessor after its replacement stopped it",
+  async (fixture) => {
+    const owner = await fixture.agent("legacy-stop-adoption", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture, {
+      ready: (revision) => revision.revision !== 2,
+    });
+    const compute = { ...driver.compute, id: "compute-legacy-stop-adoption" };
+    fixture.controller.registerDriver(compute);
+    fixture.controller.selectDriver("compute", compute.id);
+    const admittedCompute = { id: compute.id, implementation: compute.implementation };
+    await fixture.start(compute, { convergenceTimeoutMs: 1_000 });
+    const first = await fixture.revision(owner, 1, { compute: admittedCompute });
+    await fixture.work(first, "succeeded");
+    const second = await fixture.revision(owner, 2, { compute: admittedCompute });
+    await fixture.work(second, "failed_permanent");
+    await fixture.stop();
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
+    assert.deepEqual([...driver.running], [second.id]);
+    // Migration adds NULL to the legacy state: R1 remains selected, but R2
+    // already stopped it and retained its own runtime for diagnosis.
+    await fixture.observerPool.query(
+      "UPDATE occ.agents SET predecessor_replacement = NULL WHERE namespace_id = $1 AND id = $2",
+      [fixture.namespace.id, owner.id],
+    );
+    const configuration = await fixture.controller.createConfiguration(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-4.1"),
+    });
+    await fixture.controller.updateAgent(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      configurationId: configuration.id,
+      gatewayManagedMode: false,
+    });
+    const third = await fixture.controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId: fixture.namespace.id, agentId: owner.id },
+      resolveApprovedHarness,
+    );
+    const adopted = await fixture.state.read((view) =>
+      view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
+    );
+    assert.notEqual(
+      adopted?.phase,
+      "pre-stop",
+      "unknown legacy stop history must not reopen the serving boundary",
+    );
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE revision_id = $1",
+      [third.id],
+    );
+    const before = driver.preparations(first);
+    const maintenance = await enqueueMaintenance(fixture, owner, first);
+    await fixture.start(compute);
+    await fixture.work(maintenance, "succeeded");
+    assert.equal(
+      driver.preparations(first),
+      before,
+      "the absent legacy record is not proof that R1 still serves",
+    );
+    assert.deepEqual([...driver.running], [second.id]);
+  },
+);
 
 revisionTest(
   "exclusive replacement stops each predecessor once across pending passes and maintenance",
