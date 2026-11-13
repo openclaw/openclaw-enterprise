@@ -925,6 +925,12 @@ const NAME_CONFLICTS: Readonly<Record<string, string>> = Object.freeze({
   egress_installations_namespace_id_revision_id_key: EGRESS_REVISION_INSTALLED_CONFLICT,
 });
 
+const AUDIT_ROW_CHECKS = new Set([
+  "audit_events_id_format",
+  "audit_events_outcome_valid",
+  "audit_events_details_object",
+]);
+
 function databaseError(error: unknown): Error {
   if (
     error instanceof ScopeViolationError ||
@@ -942,8 +948,11 @@ function databaseError(error: unknown): Error {
   if (constraint === "control_plane_audit_capacity") {
     return new AuditAppendUnavailableError("AUDIT_CAPACITY_EXCEEDED");
   }
+  // Preserve the existing scope error for an audit row that violates the ledger schema.
+  const invalidAuditRow =
+    code === "23502" || (constraint !== undefined && AUDIT_ROW_CHECKS.has(constraint));
   if (
-    ("table" in error && error.table === "audit_events") ||
+    ("table" in error && error.table === "audit_events" && !invalidAuditRow) ||
     constraint === "control_plane_audit_event_size"
   ) {
     return new AuditAppendUnavailableError();
@@ -5476,7 +5485,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             );
           } catch (error) {
             const mapped = databaseError(error);
-            throw mapped instanceof AuditAppendUnavailableError
+            throw mapped instanceof AuditAppendUnavailableError ||
+              mapped instanceof ScopeViolationError
               ? mapped
               : new AuditAppendUnavailableError();
           }
