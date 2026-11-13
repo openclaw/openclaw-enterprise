@@ -200,7 +200,7 @@
       "path": "tests/integration/qa-repository-installation.test.ts"
     },
     {
-      "path": "tests/integration/github-app-observer.test.mjs"
+      "path": "tests/integration/github-app-observer.test.ts"
     },
     {
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
