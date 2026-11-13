@@ -1,9 +1,21 @@
 import "./compute-matrix-browser.mjs";
 
-const menu = document.querySelector("#menu");
-const sidebar = document.querySelector("#sidebar");
+interface PagefindOptions {
+  element: string;
+  showSubResults: boolean;
+  showImages: boolean;
+}
+
+declare global {
+  interface Window {
+    PagefindUI?: new (options: PagefindOptions) => object;
+  }
+}
+
+const menu = document.querySelector<HTMLButtonElement>("#menu")!;
+const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const mobileNavigation = window.matchMedia("(max-width: 760px)");
-const activeTab = document.querySelector(".tabs [aria-current]");
+const activeTab = document.querySelector<HTMLAnchorElement>(".tabs [aria-current]")!;
 const sidebarScrollKey = "enterprise-docs-sidebar-scroll:" + activeTab.getAttribute("href");
 
 function restoreSidebarScroll() {
@@ -48,7 +60,7 @@ sidebar.addEventListener("scroll", saveSidebarScroll, { passive: true });
 sidebar.addEventListener("click", saveSidebarScroll);
 window.addEventListener("pagehide", saveSidebarScroll);
 function revealCurrentTab() {
-  const tabs = activeTab.parentElement;
+  const tabs = activeTab.parentElement!;
   const bounds = tabs.getBoundingClientRect();
   const current = (tabs.querySelector(":focus") ?? activeTab).getBoundingClientRect();
   const styles = getComputedStyle(tabs);
@@ -60,7 +72,7 @@ function revealCurrentTab() {
     tabs.scrollLeft += current.right - bounds.right + end;
   }
 }
-let currentTabFrame;
+let currentTabFrame: number | undefined;
 function scheduleCurrentTab() {
   if (currentTabFrame !== undefined) {
     return;
@@ -73,7 +85,7 @@ function scheduleCurrentTab() {
 revealCurrentTab();
 document.fonts.ready.then(scheduleCurrentTab);
 window.addEventListener("resize", scheduleCurrentTab);
-const themeButton = document.querySelector("#theme");
+const themeButton = document.querySelector<HTMLButtonElement>("#theme")!;
 let theme = document.documentElement.dataset.theme;
 themeButton.addEventListener("click", () => {
   theme = theme === "dark" ? "light" : "dark";
@@ -85,8 +97,8 @@ themeButton.addEventListener("click", () => {
   }
   renderDiagrams();
 });
-const dialog = document.querySelector("#search-dialog");
-let search;
+const dialog = document.querySelector<HTMLDialogElement>("#search-dialog")!;
+let search: object | undefined;
 function openSearch() {
   if (!dialog.open) {
     dialog.showModal();
@@ -96,9 +108,9 @@ function openSearch() {
   }
   dialog.querySelector("input")?.focus();
 }
-document.querySelector("#search-open").addEventListener("click", openSearch);
-document.querySelector("#search-close").addEventListener("click", () => dialog.close());
-document.querySelector("#search").addEventListener("click", (event) => {
+document.querySelector("#search-open")!.addEventListener("click", openSearch);
+document.querySelector("#search-close")!.addEventListener("click", () => dialog.close());
+document.querySelector<HTMLElement>("#search")!.addEventListener("click", (event) => {
   if (
     event.defaultPrevented ||
     event.button !== 0 ||
@@ -131,14 +143,14 @@ document.addEventListener("keydown", (event) => {
 });
 document.querySelectorAll("[data-code-copy]").forEach((button) =>
   button.addEventListener("click", async () => {
-    const code = [...button.closest("figure").querySelectorAll(".code-line")]
+    const code = [...button.closest("figure")!.querySelectorAll(".code-line")]
       .map((line) => line.textContent)
       .join("\n");
     await navigator.clipboard.writeText(code);
     button.setAttribute("aria-label", "Copied");
   }),
 );
-document.querySelectorAll("[data-heading-anchor]").forEach((link) =>
+document.querySelectorAll<HTMLAnchorElement>("[data-heading-anchor]").forEach((link) =>
   link.addEventListener("click", async (event) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
       return;
@@ -150,16 +162,18 @@ document.querySelectorAll("[data-heading-anchor]").forEach((link) =>
     }
   }),
 );
-const diagramDialog = document.querySelector("#diagram-dialog");
-document.querySelector("#diagram-close").addEventListener("click", () => diagramDialog.close());
+const diagramDialog = document.querySelector<HTMLDialogElement>("#diagram-dialog")!;
+document.querySelector("#diagram-close")!.addEventListener("click", () => diagramDialog.close());
 let diagramVersion = 0;
 async function renderDiagrams() {
-  const diagrams = document.querySelectorAll("[data-mermaid]");
+  const diagrams = document.querySelectorAll<HTMLElement>("[data-mermaid]");
   if (!diagrams.length) {
     return;
   }
   const version = ++diagramVersion;
-  const { default: mermaid } = await import("./mermaid/mermaid.esm.min.mjs");
+  const { default: mermaid }: typeof import("mermaid") = await import(
+    "./mermaid/mermaid.esm.min.mjs" as string
+  );
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
@@ -167,22 +181,22 @@ async function renderDiagrams() {
     maxTextSize: 100000,
   });
   for (let index = 0; index < diagrams.length; index++) {
-    const diagram = diagrams[index];
+    const diagram = diagrams[index]!;
     try {
       const { svg } = await mermaid.render(
         "diagram-" + version + "-" + index,
-        diagram.dataset.mermaid,
+        diagram.dataset.mermaid!,
       );
       if (version !== diagramVersion) {
         return;
       }
       diagram.innerHTML =
         '<button type="button" class="diagram-expand">Expand diagram</button>' + svg;
-      diagram.querySelector(".diagram-expand").addEventListener("click", () => {
-        const expanded = diagram.querySelector("svg").cloneNode(true);
-        expanded.style.width = expanded.getAttribute("viewBox").split(" ")[2] + "px";
+      diagram.querySelector(".diagram-expand")!.addEventListener("click", () => {
+        const expanded = diagram.querySelector("svg")!.cloneNode(true) as SVGSVGElement;
+        expanded.style.width = expanded.getAttribute("viewBox")!.split(" ")[2] + "px";
         expanded.style.maxWidth = "none";
-        document.querySelector("#diagram-canvas").replaceChildren(expanded);
+        document.querySelector("#diagram-canvas")!.replaceChildren(expanded);
         if (!diagramDialog.open) {
           diagramDialog.showModal();
         }
