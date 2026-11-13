@@ -295,7 +295,7 @@ import {
   MANAGED_PLUGIN_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
-  NATIVE_WORKER_ENTRYPOINT,
+  nativeWorkerEntrypoint,
   RUNTIME_READINESS_PATH,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
@@ -664,6 +664,7 @@ interface GatewayConfigurationSnapshot {
 
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
 const OPENSHELL_CODEX_LAUNCH = "openshell-codex-launch:v1:";
+const RUNTIME_ASSET_COPY = "runtime-asset-copy:v1:";
 
 interface PluginRuntimeSnapshot {
   readonly name: string;
@@ -7280,7 +7281,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (nativeRuntime === undefined) {
           this.addWorkspaceNode(agentDeployment, node.name, node.ca, revision, nodeSetupFile);
         } else {
-          this.addNativeWorker(agentDeployment, node.name, node.ca, workspaceSetup);
+          this.addNativeWorker(agentDeployment, node.name, node.ca, workspaceSetup, codexLaunch);
         }
       }
       if (
@@ -8136,7 +8137,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             if (nativeRuntime === undefined) {
               this.addWorkspaceNode(replacement, node.name, node.ca, revision, nodeSetupFile);
             } else {
-              this.addNativeWorker(replacement, node.name, node.ca, workspaceSetup);
+              this.addNativeWorker(replacement, node.name, node.ca, workspaceSetup, codexLaunch);
             }
           }
           if (nodeSetupFile) {
@@ -12419,6 +12420,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     name: string,
     ca: string | undefined,
     workspaceSetup: WorkspaceSetup | undefined,
+    launch: CodexLaunch,
   ): void {
     const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, false);
     variables.push(
@@ -12439,7 +12441,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       (workspaceSetup === undefined
         ? ""
         : workspaceSetupVerifier(workspaceSetup, { environment: "OPENCLAW_WORKSPACE_DIR" })) +
-        NATIVE_WORKER_ENTRYPOINT,
+        nativeWorkerEntrypoint(launch),
     );
   }
 
@@ -14717,7 +14719,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         !(record.runtime === null || typeof record.runtime === "string") ||
         (typeof record.runtime === "string" &&
           (record.runtime.length === 0 ||
-            !/^(?:model-provider:v1:[a-f0-9]{64}:)?(?:openshell-codex-launch:v1:)?(?:protected-codex-no-connection-retry:v1|public-github-read:v1:[a-f0-9]{64})?$/.test(
+            !/^(?:model-provider:v1:[a-f0-9]{64}:)?(?:runtime-asset-copy:v1:)?(?:openshell-codex-launch:v1:)?(?:protected-codex-no-connection-retry:v1|public-github-read:v1:[a-f0-9]{64})?$/.test(
               record.runtime,
             )))
       ) {
@@ -14801,14 +14803,26 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return saved[1] || undefined;
   }
 
-  private runtimeAdmission(revision: Readonly<AgentRevision>): string | undefined {
-    const saved = this.savedRuntimeAdmission(revision);
-    return saved?.startsWith(OPENSHELL_CODEX_LAUNCH)
-      ? saved.slice(OPENSHELL_CODEX_LAUNCH.length) || undefined
-      : saved;
+  private launchAdmission(revision: Readonly<AgentRevision>) {
+    let runtime = this.savedRuntimeAdmission(revision);
+    let completeAssetCopies = false;
+    let openShellCodex = false;
+    if (runtime?.startsWith(RUNTIME_ASSET_COPY)) {
+      completeAssetCopies = true;
+      runtime = runtime.slice(RUNTIME_ASSET_COPY.length) || undefined;
+    }
+    if (runtime?.startsWith(OPENSHELL_CODEX_LAUNCH)) {
+      openShellCodex = true;
+      runtime = runtime.slice(OPENSHELL_CODEX_LAUNCH.length) || undefined;
+    }
+    return { completeAssetCopies, openShellCodex, runtime };
   }
 
-  private usesOpenShellCodexLaunch(
+  private runtimeAdmission(revision: Readonly<AgentRevision>): string | undefined {
+    return this.launchAdmission(revision).runtime;
+  }
+
+  private usesOpenShellHarness(
     revision: Readonly<AgentRevision>,
     sandbox: SandboxDriver | undefined,
   ): boolean {
@@ -14816,21 +14830,25 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.options.runtime !== undefined &&
       sandbox?.implementation === "openshell" &&
       sandbox.provisionHarness !== undefined &&
-      revision.harness.id === "codex" &&
+      (revision.harness.id === "codex" || revision.harness.id === "openclaw") &&
       revision.harness.mode === "dedicated"
     );
   }
 
   private codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch {
-    const updated = this.savedRuntimeAdmission(revision)?.startsWith(OPENSHELL_CODEX_LAUNCH);
-    if (updated && !this.usesOpenShellCodexLaunch(revision, sandbox)) {
+    const { completeAssetCopies, openShellCodex } = this.launchAdmission(revision);
+    if (
+      ((completeAssetCopies || openShellCodex) && !this.usesOpenShellHarness(revision, sandbox)) ||
+      (openShellCodex && revision.harness.id !== "codex")
+    ) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const auth = revision.harnessAuth;
     return {
       providerOwned: sandbox?.provisionHarness !== undefined,
       protected: this.hasProtectedCodexAdmission(revision),
-      ...(updated && {
+      completeAssetCopies,
+      ...(openShellCodex && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
           auth.method === "credential_source" &&
@@ -14850,13 +14868,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       runtime = this.publicGithubReadAdmission();
     }
     // Existing provider Sandboxes compare immutable commands on every retry.
-    // Select the updated renderer only when admitting a new revision.
+    // Freeze the renderer when admitting a new revision.
     if (
       revision.sandboxDriverId !== undefined &&
       revision.sandboxDriverId === this.sandboxDriver?.id &&
-      this.usesOpenShellCodexLaunch(revision, this.sandboxDriver)
+      this.usesOpenShellHarness(revision, this.sandboxDriver)
     ) {
-      runtime = OPENSHELL_CODEX_LAUNCH + (runtime ?? "");
+      if (revision.harness.id === "codex") {
+        runtime = OPENSHELL_CODEX_LAUNCH + (runtime ?? "");
+      }
+      runtime = RUNTIME_ASSET_COPY + (runtime ?? "");
     }
     const provider = this.providerAdmission(revision);
     const admission =
@@ -17324,7 +17345,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         runtimeEntrypoint =
           nativeRuntime === undefined
             ? codexLaunchEntrypoint(codexLaunch)
-            : NATIVE_WORKER_ENTRYPOINT;
+            : nativeWorkerEntrypoint(codexLaunch);
       }
     }
     return {

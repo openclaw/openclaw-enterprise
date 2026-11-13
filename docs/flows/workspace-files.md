@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-11-11
-last_updated_session: authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19
+updated: 2026-11-12
+last_updated_session: authoring-run/74cddb31-4156-4d51-9f9b-2edb6913b3f7
 ---
 
 # Agent Workspace Files Flow
@@ -15,8 +15,7 @@ initializes it before activation.
 File operations authorize the exact active Agent through its Compute-resolved
 private Envoy endpoint.
 
-Dedicated execution initializes the Harness workspace for Codex and native
-OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
+Dedicated Codex and native OpenClaw initialize their Harness workspaces; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 
 See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
 
@@ -255,45 +254,42 @@ owns recovery. Native provisioning requires Sandbox; expired unpaired setup awai
 - At startup Gateway emits `runtime.gateway_settings_overridden` naming, never
   valuing, replaced or dropped settings. `occ agent logs` exposes names; the
   Collector exports only the [event](common-logging.md#7-collector-exports-only-operational-classes).
-  Admission rejects non-list `codexDynamicToolsExclude` and non-object Codex plugin
-  `config`, `cron`, `cron.triggers`, `models`, `models.providers`, or components of
-  `agents.defaults.compaction.memoryFlush`. It returns `400 INVALID_REQUEST`
-  naming the path without creating a revision. OCC's earlier model check returns
-  the same error for non-object provider rows or `models` that are not Agent-model
-  catalog lists.
+  Admission returns `400 INVALID_REQUEST` with the path and creates no revision
+  for non-list `codexDynamicToolsExclude` or non-object Codex plugin `config`,
+  `cron`, `cron.triggers`, `models`, `models.providers`, or segments of
+  `agents.defaults.compaction.memoryFlush`. OCC checks non-object provider rows
+  and non-list Agent-model catalogs earlier with the same error.
 - Default reads cover the enrolled Agent's Harness workspace and managed skill
-  roots for previews, browsing, bootstrap and outputs. Symlinks are not followed;
-  explicit policies remain authoritative.
+  roots for previews, browsing, bootstrap and outputs. Reads skip symlinks and
+  follow explicit policies.
 - `runtime-entrypoints.ts:configureWorkspaceNodePlugins` defaults writes to
   owner documents, memory, `skills/**`, the two ClawHub lockfiles,
-  `.openclaw/skill-installs/**`, and staged inbound files. It leaves explicit
-  node and wildcard policies unchanged. `file.create` preserves existing files.
-  Reads above 16 MiB retain caller and node limits; command admission does not replace path authorization.
+  `.openclaw/skill-installs/**`, and staged inbound files. Explicit node and
+  wildcard policies take precedence. `file.create` preserves existing files.
+  Caller and node limits apply above 16 MiB. Commands still require path access.
 
-The chart supplies worker credentials/public trust; Compute installs Envoy access.
-Memory uses node duplex and native file workers; index/embedding configuration
-stays on Gateway. Skills uses remote discovery, reads and policy-checked dependency
-installation. Hosts initialize their own image assets. Gateway Skill sources stay
-local; native turns can receive temporary resource copies. See the
-[ownership table](../../specs/plans/30-storage-split-integration.md#where-data-lives).
-Remote channel menus remain deferred to [#241](https://github.com/openclaw/openclaw-enterprise/issues/241).
+The chart supplies worker credentials and public trust. Compute installs Envoy
+access. Memory uses node duplex and native file workers. Gateway keeps memory
+index and embedding settings and local Skill sources. Skills use remote discovery,
+reads, and policy-checked dependency installs. `runtime-entrypoints.ts:publishImageTree`
+copies assets in 64 KiB chunks, preserves modes and links, and rejects symlink
+destinations before cleanup. Native turns can receive temporary resource copies. See [storage ownership](../../specs/plans/30-storage-split-integration.md#where-data-lives).
+Remote channel menus await [#241](https://github.com/openclaw/openclaw-enterprise/issues/241).
 
-Only Harness mounts the dedicated workspace, generated images and Codex rollouts.
-Rollouts retain history without guaranteeing restart recovery; see
-[restart limits](../reference/harness-execution.md#isolation-and-activation).
-The rest of `CODEX_HOME` stays Pod-local. External OAuth uses ephemeral placeholders
-and metadata; the token service owns refresh. Codex's remote-media reader retrieves
-reply artifacts before cleanup. Embedded storage is unchanged.
+Harness alone mounts the dedicated workspace, generated images, and Codex rollouts.
+Rollouts retain history within [restart limits](../reference/harness-execution.md#isolation-and-activation).
+Remaining `CODEX_HOME` stays Pod-local. External OAuth uses ephemeral placeholders
+and metadata. The token service refreshes tokens. Codex retrieves reply artifacts
+through its remote-media reader before cleanup. Embedded storage is unchanged.
 `KubernetesComputeDriver.verifyPersistentVolumeClaim` rejects RWX claims without
 mutating them. The worker stops predecessors and suppresses their maintenance
 before dedicated preparation. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 owns RWO, downtime and recovery limits. These contracts require matching runtime
 images; local checks do not prove deployed acceptance.
 
-The API reads the mounted key per operation, so new connections pick up
-Secret rotation without a restart. Missing routing or keys, invalid keys,
-expired deadlines, and unavailable targets fail closed. No URL or credential
-comes from the caller.
+The API reads the mounted key per operation. New connections use rotated Secrets
+without restart. Missing routes or keys, invalid keys, expired deadlines, and
+unavailable targets fail closed. The server supplies URLs and credentials.
 
 ### 7. Envoy authenticates and routes the native connection
 
@@ -376,6 +372,10 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 00:47: Preserve restricted-worker file modes. (authoring-run/74cddb31-4156-4d51-9f9b-2edb6913b3f7 - 9841d23f59c007aa35887d6baff2a2ea6dcd6dc4)
+
+- 2026-11-11 23:51: Copy image assets in chunks. (authoring-run/fa0b1e03-9d65-41eb-a844-7d6e49990dbd - c6aad5bf134ae15bb9abea127b978756f843769f)
 
 - 2026-11-11 23:39: Preserve safe initializer error codes and earlier setup errors. (authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19 - 707390bb16f132b70addcf3079a81bf493387712)
 

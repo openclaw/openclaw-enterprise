@@ -3229,7 +3229,7 @@ test(
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
         assert.match(
           protectedGit.computeDriver.admitRevision(rev),
-          /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
+          /^model-provider:v1:[a-f0-9]{64}:runtime-asset-copy:v1:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
         );
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
         // Preparation accepts the configured facilities independently of the release label.

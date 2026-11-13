@@ -2510,23 +2510,14 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 }
 `;
 
-const WORKSPACE_ASSET_HELPERS = String.raw`
-const { cpSync, existsSync, lstatSync, readdirSync, symlinkSync } = require("node:fs");
-const runtimeHomeDirectory = process.env.HOME || "/home/node";
+const WORKSPACE_ASSET_PATHS = String.raw`const runtimeHomeDirectory = process.env.HOME || "/home/node";
 if (!runtimeHomeDirectory.startsWith("/")) {
   throw new Error("The runtime HOME must be an absolute path.");
 }
 const runtimeAssetsDirectory = runtimeHomeDirectory + "/openclaw-runtime-assets";
-const runtimeOpenClawDirectory = runtimeHomeDirectory + "/.openclaw";
+const runtimeOpenClawDirectory = runtimeHomeDirectory + "/.openclaw";`;
 
-function clearDirectoryContents(directory) {
-  mkdirSync(directory, { recursive: true });
-  for (const entry of readdirSync(directory)) {
-    rmSync(join(directory, entry), { recursive: true, force: true });
-  }
-}
-
-function publishImageTree(source, destination, required) {
+const WORKSPACE_ASSET_VALIDATION = String.raw`function publishImageTree(source, destination, required) {
   if (!existsSync(source)) {
     if (required) {
       throw new Error("Required runtime asset tree is missing: " + source);
@@ -2541,11 +2532,9 @@ function publishImageTree(source, destination, required) {
     throw new Error("Required runtime asset tree is empty: " + source);
   }
   mkdirSync(runtimeAssetsDirectory, { recursive: true });
-  clearDirectoryContents(destination);
-  cpSync(source, destination, { recursive: true });
-}
+  clearDirectoryContents(destination);`;
 
-function initializeRuntimeAssets() {
+const WORKSPACE_ASSET_INITIALIZATION = String.raw`function initializeRuntimeAssets() {
   publishImageTree("/app/skills", runtimeAssetsDirectory + "/bundled-skills", true);
   publishImageTree("/app/custodian-skills", runtimeAssetsDirectory + "/custodian-skills", false);
   publishImageTree("/app/plugin-skills", runtimeAssetsDirectory + "/plugin-skills", false);
@@ -2556,7 +2545,129 @@ function publishAgentPluginSkillPath() {
   mkdirSync(runtimeOpenClawDirectory, { recursive: true });
   rmSync(runtimeOpenClawDirectory + "/plugin-skills", { recursive: true, force: true });
   symlinkSync(runtimeAssetsDirectory + "/plugin-skills", runtimeOpenClawDirectory + "/plugin-skills", "dir");
+}`;
+
+// Stored Sandbox commands must keep the exact asset helper bytes they were admitted with.
+const LEGACY_WORKSPACE_ASSET_HELPERS = String.raw`
+const { cpSync, existsSync, lstatSync, readdirSync, symlinkSync } = require("node:fs");
+${WORKSPACE_ASSET_PATHS}
+
+function clearDirectoryContents(directory) {
+  mkdirSync(directory, { recursive: true });
+  for (const entry of readdirSync(directory)) {
+    rmSync(join(directory, entry), { recursive: true, force: true });
+  }
 }
+
+${WORKSPACE_ASSET_VALIDATION}
+  cpSync(source, destination, { recursive: true });
+}
+
+${WORKSPACE_ASSET_INITIALIZATION}
+
+`;
+
+const WORKSPACE_ASSET_HELPERS = String.raw`
+const assetFs = require("node:fs");
+const { existsSync, lstatSync, readdirSync, symlinkSync } = assetFs;
+const assetPath = require("node:path");
+${WORKSPACE_ASSET_PATHS}
+
+function clearDirectoryContents(directory) {
+  const existing = lstatSync(directory, { throwIfNoEntry: false });
+  if (existing === undefined) {
+    mkdirSync(directory, { recursive: true });
+  } else if (!existing.isDirectory()) {
+    throw new Error("Runtime asset destination is not a directory: " + directory);
+  }
+  for (const entry of readdirSync(directory)) {
+    rmSync(join(directory, entry), { recursive: true, force: true });
+  }
+}
+
+// Always release the resource; a cleanup error must not mask the failure that caused it.
+function withAssetResource(resource, release, use) {
+  try { use(resource); }
+  catch (error) {
+    try { release(resource); } catch {}
+    throw error;
+  }
+  release(resource);
+}
+
+function copyImageFile(source, destination, mode, staged) {
+  const { openSync, closeSync, constants, readSync, writeSync } = assetFs;
+  withAssetResource(openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW), closeSync, input => {
+    withAssetResource(openSync(staged, "wx", 0o600), closeSync, output => {
+      // Match native copy: content writes may clear set-ID bits from the source mode.
+      assetFs.chmodSync(staged, mode);
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let count;
+      while ((count = readSync(input, buffer, 0, buffer.length, null)) > 0) {
+        let offset = 0;
+        while (offset < count) {
+          const written = writeSync(output, buffer, offset, count - offset, null);
+          if (!written) throw new Error("Runtime asset copy made no write progress");
+          offset += written;
+        }
+      }
+    });
+  });
+  // Link the completed inode so an intervening file or symlink is never overwritten.
+  assetFs.linkSync(staged, destination);
+  assetFs.unlinkSync(staged);
+}
+
+function imageLinkTarget(source) {
+  const link = assetFs.readlinkSync(source);
+  const directoryTarget = ["", ".", ".."].includes(link.split("/").at(-1));
+  let prefix = assetPath.isAbsolute(link) ? link : assetPath.dirname(source) + "/" + link;
+  const tail = [];
+  for (;;) {
+    try {
+      const target = assetPath.join(assetFs.realpathSync.native(prefix), ...tail);
+      // A missing suffix can require a directory even after dot segments are removed.
+      return tail.length > 0 && directoryTarget && !target.endsWith("/") ? target + "/" : target;
+    } catch (error) {
+      // Like the recursive copier, resolve existing prefixes while retaining
+      // a missing suffix so a dangling image link stays a link.
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+      const parent = assetPath.dirname(prefix);
+      if (parent === prefix) throw error;
+      tail.unshift(assetPath.basename(prefix));
+      prefix = parent;
+    }
+  }
+}
+
+function copyImageDirectory(source, destination, staged) {
+  // Match the recursive copy's treatment of special files such as FIFOs.
+  for (const name of readdirSync(source)) {
+    const from = join(source, name);
+    const to = join(destination, name);
+    const info = lstatSync(from);
+    if (info.isDirectory()) {
+      mkdirSync(to, { mode: 0o700 });
+      copyImageDirectory(from, to, staged);
+      assetFs.chmodSync(to, info.mode & 0o7777);
+    } else if (info.isSymbolicLink()) {
+      symlinkSync(imageLinkTarget(from), to);
+    } else if (info.isFile()) {
+      copyImageFile(from, to, info.mode & 0o7777, staged);
+    }
+  }
+}
+
+${WORKSPACE_ASSET_VALIDATION}
+  // Keep incomplete files private on both ordinary and restricted Node.
+  // This runtime's private volume contains the staging directory. Creating it
+  // inside the target also preserves its filesystem and inherited group.
+  withAssetResource(assetFs.mkdtempSync(join(destination, ".asset-")),
+    staging => rmSync(staging, { recursive: true, force: true }),
+    staging => copyImageDirectory(source, destination, join(staging, "file")));
+}
+
+${WORKSPACE_ASSET_INITIALIZATION}
 
 `;
 
@@ -4855,13 +4966,13 @@ function completeSetupCode(payload) {
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 
-function agentWithNodeEntrypoint(childArguments: readonly string[]): string {
+function agentWithNodeEntrypoint(childArguments: readonly string[], assetHelpers: string): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
-${WORKSPACE_ASSET_HELPERS}
+${assetHelpers}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
 // The Codex child serves this container's runtime status, and it starts only after the
@@ -5307,32 +5418,52 @@ const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
 const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(providerCodexChild),
+  LEGACY_WORKSPACE_ASSET_HELPERS,
 );
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(protectedProviderCodexChild),
+  LEGACY_WORKSPACE_ASSET_HELPERS,
 );
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, computeOwned: true })),
+  WORKSPACE_ASSET_HELPERS,
 );
 export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(
     agentRuntimeEntrypoint({ withNode: true, computeOwned: true, protected: true }),
   ),
+  WORKSPACE_ASSET_HELPERS,
 );
 
 let patEntrypoint: string | undefined;
-let compactPatLaunch: string | undefined;
-let compactProviderLaunch: string | undefined;
-let compactProtectedLaunch: string | undefined;
+const providerNodeLaunches = new Map<string, string>();
 
-function compactWorkspaceNodeLaunch(child: string): string {
-  return agentWithNodeEntrypoint(compactNodeChildArguments(child));
+function providerNodeLaunch(
+  mode: "pat" | "ordinary" | "protected",
+  completeAssetCopies: boolean,
+): string {
+  const key = `${mode}:${completeAssetCopies}`;
+  const cached = providerNodeLaunches.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  let child = mode === "protected" ? protectedProviderCodexChild : providerCodexChild;
+  if (mode === "pat") {
+    child = agentRuntimeEntrypoint({ withNode: true, patRecovery: true });
+  }
+  const rendered = agentWithNodeEntrypoint(
+    compactNodeChildArguments(child),
+    completeAssetCopies ? WORKSPACE_ASSET_HELPERS : LEGACY_WORKSPACE_ASSET_HELPERS,
+  );
+  providerNodeLaunches.set(key, rendered);
+  return rendered;
 }
 
 export interface CodexLaunch {
   readonly providerOwned: boolean;
   readonly protected: boolean;
   readonly openShellProgram?: "pat" | "ordinary";
+  readonly completeAssetCopies?: boolean;
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
 }
@@ -5342,6 +5473,7 @@ export function codexLaunchEntrypoint(
     providerOwned,
     protected: protectedLaunch,
     openShellProgram,
+    completeAssetCopies = false,
     withNode,
     workspaceSetup,
   }: CodexLaunch = { providerOwned: false, protected: false },
@@ -5354,34 +5486,42 @@ export function codexLaunchEntrypoint(
     }
     return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
   }
-  if (!protectedLaunch && openShellProgram === "pat") {
-    if (withNode) {
-      return (compactPatLaunch ??= compactWorkspaceNodeLaunch(
-        agentRuntimeEntrypoint({ withNode: true, patRecovery: true }),
-      ));
-    }
-    return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
-  }
+  const pat = !protectedLaunch && openShellProgram === "pat";
   if (!withNode) {
+    if (pat) {
+      return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
+    }
     return protectedLaunch ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
   }
-  if (workspaceSetup && openShellProgram !== undefined) {
-    if (protectedLaunch) {
-      return (compactProtectedLaunch ??= compactWorkspaceNodeLaunch(protectedProviderCodexChild));
-    }
-    return (compactProviderLaunch ??= compactWorkspaceNodeLaunch(providerCodexChild));
+  if (pat) {
+    return providerNodeLaunch("pat", completeAssetCopies);
+  }
+  // A new copier also adds to the command budget when no workspace setup is needed.
+  if (completeAssetCopies || (workspaceSetup && openShellProgram !== undefined)) {
+    const mode = protectedLaunch ? "protected" : "ordinary";
+    return providerNodeLaunch(mode, completeAssetCopies);
   }
   return protectedLaunch ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT;
 }
 
-export const NATIVE_WORKER_ENTRYPOINT = String.raw`
+export function nativeWorkerEntrypoint(launch: CodexLaunch | undefined): string {
+  return launch?.providerOwned && launch.completeAssetCopies !== true
+    ? LEGACY_NATIVE_WORKER_ENTRYPOINT
+    : NATIVE_WORKER_ENTRYPOINT;
+}
+
+const LEGACY_NATIVE_WORKER_ENTRYPOINT = renderNativeWorker(LEGACY_WORKSPACE_ASSET_HELPERS);
+export const NATIVE_WORKER_ENTRYPOINT = renderNativeWorker(WORKSPACE_ASSET_HELPERS);
+
+function renderNativeWorker(assetHelpers: string): string {
+  return String.raw`
 const { join } = require("node:path");
 const { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${MANAGED_INSTALL_HELPERS}
 ${MANAGED_PLUGIN_CREDENTIAL_HELPER}
-${WORKSPACE_ASSET_HELPERS}
+${assetHelpers}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
 
@@ -5693,6 +5833,7 @@ if (initialSetupCode !== undefined) startWorker(initialSetupCode);
 });
 }
 `;
+}
 
 // Docker Compute runs the remaining Codex readiness program as a healthcheck.
 // It emits only a fixed-vocabulary reason when the container is unready.

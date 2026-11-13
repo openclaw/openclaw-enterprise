@@ -6,12 +6,14 @@ import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
@@ -156,6 +158,48 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
     ),
     false,
   );
+});
+
+test("OpenShell native workers keep admitted commands across the asset-copy upgrade", async () => {
+  const fixture = providerEndpointFixture({
+    servicePrincipalCredentials: { mode: "disabled" },
+    revisionOverrides: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      configuration: admitLoggingConfiguration(
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        "info",
+      ),
+    },
+  });
+  const { revision, sandbox, provisions } = fixture;
+  sandbox.facets = ["networking", "filesystem", "process"];
+  sandbox.supportsHarnessExecutionMode = DEDICATED_OPENCLAW_SUPPORT;
+  const { admission } = revision.compute;
+  assert.match(admission, /(?:^|:)runtime-asset-copy:v1:$/);
+  const oldRevision = {
+    ...revision,
+    compute: {
+      ...revision.compute,
+      admission: admission.replace("runtime-asset-copy:v1:", "") || undefined,
+    },
+  };
+
+  await endpointWithGateway(fixture);
+  for (const target of [oldRevision, revision]) {
+    await fixture.prepare(target);
+    const { command } = provisions.at(-1).requirements;
+    const program = inflateRawSync(Buffer.from(command.slice(8).join(""), "base64")).toString();
+    if (target === oldRevision) {
+      // Pin the Compute argv observed before the asset-copy admission at 3b0efb21.
+      assert.equal(
+        createHash("sha256").update(JSON.stringify(command)).digest("hex"),
+        "61b6c84be857be802efc1e6908d6a5c232859316ae35eaa7c00e1bbba0b6db6d",
+      );
+      assert.match(program, /cpSync\(source, destination, \{ recursive: true \}\)/);
+    } else {
+      assert.match(program, /function copyImageFile\(/);
+    }
+  }
 });
 
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {
@@ -1480,25 +1524,39 @@ test("provider Harness protected execution is released only on current signed in
     },
   );
   await t.test(
-    "protected admission selects no connection retries and preserves pre-upgrade command bytes",
-    async () => {
+    "protected admission publishes complete asset copies and preserves historical command bytes",
+    async (t) => {
       // Pin the commands the Driver renders, not only the exported entrypoints (#3310,
       // finding 2256): the Sandbox launch carries the workspace node; activation renders
       // the same Harness without it for the endpoint and status reads.
       const admission = driver.admitRevision(protectedRevision);
       assert.match(
         admission,
-        /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
+        /^model-provider:v1:[a-f0-9]{64}:runtime-asset-copy:v1:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
       );
       const admitted = {
         ...protectedRevision,
         compute: { ...protectedRevision.compute, admission },
       };
-      const alreadyAdmitted = {
+      const beforeAssetCopy = {
         ...admitted,
         compute: {
           ...admitted.compute,
-          admission: admission.replace("openshell-codex-launch:v1:", ""),
+          admission: admission.replace("runtime-asset-copy:v1:", ""),
+        },
+      };
+      const beforeOpenShellUpgrade = {
+        ...admitted,
+        compute: {
+          ...admitted.compute,
+          admission: beforeAssetCopy.compute.admission.replace("openshell-codex-launch:v1:", ""),
+        },
+      };
+      const beforeRetryProtection = {
+        ...protectedRevision,
+        compute: {
+          ...protectedRevision.compute,
+          admission: protectedRevision.compute.admission?.replace("runtime-asset-copy:v1:", ""),
         },
       };
       const pod = fixture.pod("protected-revision");
@@ -1516,14 +1574,13 @@ test("provider Harness protected execution is released only on current signed in
       try {
         for (const [target, disabled] of [
           [admitted, true],
-          [alreadyAdmitted, true],
-          [protectedRevision, false],
+          [beforeAssetCopy, true],
+          [beforeOpenShellUpgrade, true],
+          [beforeRetryProtection, false],
         ]) {
-          const hashes = [];
+          const commands = [];
           const captureCommand = async ({ requirements }) => {
-            hashes.push(
-              createHash("sha256").update(JSON.stringify(requirements.command)).digest("hex"),
-            );
+            commands.push(requirements.command);
             throw released;
           };
           sandbox.enrollHarness = captureCommand;
@@ -1534,19 +1591,31 @@ test("provider Harness protected execution is released only on current signed in
               (error) => error === released,
             );
           }
-          // SHA-256 of prepare and activate argv at 61c73c99 with Node 24.22.1.
-          assert.deepEqual(
-            hashes,
-            disabled
-              ? [
-                  "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d",
-                  "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
-                ]
-              : [
-                  "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf",
-                  "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
-                ],
-          );
+          const [prepare, activate] = commands;
+          assert.equal(commands.length, 2);
+          const hash = (command) =>
+            createHash("sha256").update(JSON.stringify(command)).digest("hex");
+          // Historical argv matches 61c73c99 with Node 24.22.1. Activation has no
+          // workspace node, so new admission still leaves that program byte-identical.
+          const historical = disabled
+            ? [
+                "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d",
+                "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
+              ]
+            : [
+                "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf",
+                "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
+              ];
+          if (target === admitted) {
+            assert.equal(hash(activate), historical[1]);
+            const { supervisor, codex } = inspectOpenShellCodexCommand(t, prepare, {
+              compact: true,
+            });
+            assert.match(supervisor, /function copyImageFile\(/);
+            assert.equal(codex.match(/unbounded_connection_retries/g)?.length, 2);
+            continue;
+          }
+          assert.deepEqual(commands.map(hash), historical);
         }
       } finally {
         core.listNamespacedPod = originalList;
@@ -1625,6 +1694,7 @@ test("provider Harness protected execution is released only on current signed in
       });
       assert.match(loader, /\.oce-workspace-setup\.json/);
       assert.match(supervisor, new RegExp(workspaceSetup.id));
+      assert.match(supervisor, /function copyImageFile\(/);
       // Use the exact nested program delivered by CreateSandbox. The fixture
       // verifies the signature gate and both native invocations' no-retry flags.
       const answered = probe([
