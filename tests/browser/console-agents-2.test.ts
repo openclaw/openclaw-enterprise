@@ -844,40 +844,62 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   const retry = page.getByRole("button", { name: "Retry provisioning request" });
   const create = page.getByRole("button", { name: "Create Agent" });
-  for (const [index, expected] of [
-    "The provisioning job can no longer be retried.",
-    refusals[1],
-  ].entries()) {
-    // Each submit is a new job, polled once.
-    await runProvisioningPolls(page, () => create.click(), jobUrl(index + 1), 1);
-    await page
-      .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
-      .waitFor();
-    await retry.click();
-    await page
-      .getByText(
-        `${expected} Select Create Agent to resend the same request ID. Request ID: req_00000000-0000-4000-8000-000000000409`,
-        { exact: true },
-      )
-      .waitFor();
-    assert.equal(await retry.isVisible(), false);
-    // The refused retry preserves the admitted identity: the form stays locked for the
-    // resend, which recovers the finished job instead of admitting a duplicate.
-    assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
-    finished.add(index + 1);
-    await runProvisioningPolls(page, () => create.click(), jobUrl(index + 1), 1);
-    await page.waitForURL(/\/agents\/agt_00000000-0000-4000-8000-00000000c0d/);
-    if (index === 0) {
-      // A fresh form takes the second refusal's job.
-      await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-      await page.getByRole("button", { name: "Start without Preset" }).click();
-      await page.getByLabel("Agent name").fill("Refused retry again");
-      await page.getByLabel("Authentication method").selectOption("codex_pat");
-      await createModelCredentialSecret(page, "model-secret-value-2");
-      await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-    }
-  }
-  assert.equal(requestIds.length, 2);
+  // A refused retry whose job may have finished keeps the admitted identity: the form stays
+  // locked and the resend recovers that job instead of admitting a duplicate.
+  await runProvisioningPolls(page, () => create.click(), jobUrl(1), 1);
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  await retry.click();
+  await page
+    .getByText(
+      "The provisioning job can no longer be retried. Select Create Agent to resend the same request ID. Request ID: req_00000000-0000-4000-8000-000000000409",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await retry.isVisible(), false);
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  finished.add(1);
+  await runProvisioningPolls(page, () => create.click(), jobUrl(1), 1);
+  await page.waitForURL(/\/agents\/agt_00000000-0000-4000-8000-00000000c0d1/);
+
+  // A deleted Secret makes the request unrecoverable: the refusal says to submit a new one,
+  // so the form unlocks and the operator replaces the Secret and submits a fresh request.
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Refused retry again");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value-2");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  const beforeReplace = requestIds.length;
+  await runProvisioningPolls(page, () => create.click(), jobUrl(2), 1);
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  await retry.click();
+  await page
+    .getByText(
+      `${refusals[1]} Replace the deleted resource, then select Create Agent to submit a new request. Request ID: req_00000000-0000-4000-8000-000000000409`,
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await retry.isVisible(), false);
+  // The unrecoverable request unlocks the form for the replacement.
+  await waitForEnabled(page.getByLabel("Agent name"));
+  await openCreateSecretDialog(page, "Service account token Secret");
+  const replaceDialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+  await replaceDialog.getByLabel("Name", { exact: true }).fill("Replacement model key");
+  await replaceDialog.getByLabel("Value", { exact: true }).fill("model-secret-value-3");
+  await replaceDialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await replaceDialog.waitFor({ state: "hidden" });
+  // Replacing the Secret submits once, under a fresh request ID.
+  await runProvisioningPolls(page, () => create.click(), jobUrl(3), 1);
+  assert.equal(requestIds.length, beforeReplace + 2);
+  const replacement = requestIds.at(-1);
+  assert.notEqual(replacement, requestIds[beforeReplace - 1]);
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
 });
 
 // Neutral deployment guidance is not an error, so neither its text nor its block's stripe takes the

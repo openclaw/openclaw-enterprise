@@ -109,6 +109,10 @@ export function createProvisioningProgress(): ProvisioningProgressView {
     element("ol", { className: "provisioning-steps" }, ...steps),
   );
   let startedAt = 0;
+  // The most steps any poll confirmed. Phases are monotonic per job, so a poll that derives a
+  // lower step carries an unreadable phase: it must not repaint confirmed steps pending or
+  // move the heading backward — the heading goes generic and the steps stay.
+  let confirmedStep = 0;
 
   function paint(step: number, outcome?: ProvisioningProgressOutcome) {
     steps.forEach((item, index) => {
@@ -135,6 +139,7 @@ export function createProvisioningProgress(): ProvisioningProgressView {
     section,
     begin() {
       startedAt = Date.now();
+      confirmedStep = 0;
       section.removeAttribute("data-outcome");
       setHidden(section, false);
       setHidden(reason, true);
@@ -145,8 +150,15 @@ export function createProvisioningProgress(): ProvisioningProgressView {
     report(job: ProvisioningJob) {
       setHidden(section, false);
       const step = stepOf(job);
-      paint(step);
-      setText(phase, `${stepLabel(step)}…`);
+      if (step >= confirmedStep) {
+        confirmedStep = step;
+        paint(step);
+        setText(phase, `${stepLabel(step)}…`);
+      } else {
+        // An unreadable phase on a job that already confirmed progress: the steps stay and
+        // the heading goes generic, instead of naming an earlier step again.
+        setText(phase, "Provisioning Agent…");
+      }
       setText(elapsed, elapsedText(Date.now() - startedAt));
     },
     finish(job: ProvisioningJob, outcome: ProvisioningProgressOutcome) {
@@ -157,7 +169,7 @@ export function createProvisioningProgress(): ProvisioningProgressView {
         setHidden(reason, true);
         return;
       }
-      const step = stepOf(job);
+      const step = Math.max(stepOf(job), confirmedStep);
       paint(step, outcome);
       setText(phase, outcomeHeading(stepLabel(step), outcome));
       // Only a failure carries its reason in the bar; a stop is the owner's choice and a
