@@ -106,7 +106,7 @@ jobs:
         id: producer
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci/full-integration-reuse.mjs discover
+        run: node scripts/ci/full-integration-reuse.ts discover
       - name: Download immutable CI results
         id: download
         if: steps.producer.outputs.artifact_ids != ''
@@ -123,7 +123,7 @@ jobs:
         if: steps.download.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci/full-integration-reuse.mjs validate
+        run: node scripts/ci/full-integration-reuse.ts validate
       - name: Retain validated results for full aggregation
         id: upload
         if: steps.validate.outputs.lanes != '[]' && steps.validate.outcome == 'success'
@@ -140,7 +140,7 @@ jobs:
         env:
           REUSED_LANES: ${{ steps.validate.outputs.lanes }}
           REUSE_UPLOADED: ${{ steps.upload.outcome }}
-        run: node scripts/ci/full-integration-reuse.mjs plan
+        run: node scripts/ci/full-integration-reuse.ts plan
 
   pr-safe-same-sha:
     name: Same-SHA ${{ matrix.title }}
