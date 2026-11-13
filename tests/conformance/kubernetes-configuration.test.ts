@@ -1,6 +1,8 @@
 import {
   requireConfiguration,
   ConfigurationValidationError as SharedConfigurationValidationError,
+  type Configuration,
+  type OpenClawConfigurationDocument,
 } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -14,9 +16,12 @@ import {
   ConfigurationValidationError,
   KubernetesConfigurationDriver,
   kubernetesConfigurationName,
+  type KubernetesConfigurationDriverOptions,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { withMutationDeadline } from "../../apps/controller/src/admission/mutation-deadline.ts";
+import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   FakeConfigurationCoreV1Api,
   FlakyConfigurationCoreV1Api,
@@ -32,8 +37,30 @@ import {
   withRetryTimers,
 } from "../helpers/kubernetes-core-api.ts";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { within } from "../helpers/wait-for.mjs";
+
+type ConfigMap = Awaited<ReturnType<FakeConfigurationCoreV1Api["readNamespacedConfigMap"]>>;
+type ConfigurationConfigMap = ConfigMap & {
+  metadata: { labels: Record<string, string>; annotations: Record<string, string> };
+  data: Record<string, string>;
+};
+type Sdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
+type HttpApi = ReturnType<Sdk["createConfiguration"]>["httpApi"];
+type DriverInternals = {
+  manifest(configuration: Configuration, namespace: string): ConfigMap;
+  checkedConfiguration(
+    observed: ConfigMap,
+    reference: Parameters<KubernetesConfigurationDriver["read"]>[0],
+    namespace: string,
+  ): Promise<Configuration>;
+  core(): Promise<InstanceType<Sdk["CoreV1Api"]>>;
+};
+type OperationPath = [
+  method: keyof FlakyConfigurationCoreV1Api["calls"],
+  action: string,
+  operation: (driver: KubernetesConfigurationDriver) => Promise<Configuration | void>,
+];
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const configuration = {
@@ -59,10 +86,47 @@ const configuration = {
     plugins: { entries: { example: { config: { enabled: true, retries: 3, tags: [null] } } } },
   },
   createdAt: "2026-08-19T00:00:00.000Z",
-};
+} satisfies Configuration;
 
-function createDriver(authentication = { mode: "inCluster" }) {
+function createDriver(
+  authentication: KubernetesConfigurationDriverOptions["authentication"] = { mode: "inCluster" },
+) {
   return new KubernetesConfigurationDriver({ authentication });
+}
+
+function useClient(
+  driver: KubernetesConfigurationDriver,
+  client: FakeConfigurationCoreV1Api,
+): void {
+  Object.assign(driver, { client: Promise.resolve(client) });
+}
+
+// TypeScript erases private method signatures from the controller's project declarations.
+function configurationDriverInternals(driver: object): DriverInternals {
+  assert.ok("manifest" in driver && typeof driver.manifest === "function");
+  assert.ok("checkedConfiguration" in driver && typeof driver.checkedConfiguration === "function");
+  assert.ok("core" in driver && typeof driver.core === "function");
+  return driver as DriverInternals;
+}
+
+function assertConfigurationConfigMap(
+  resource: ConfigMap | undefined,
+): asserts resource is ConfigurationConfigMap {
+  assert.ok(resource?.metadata?.labels && resource.metadata.annotations && resource.data);
+}
+
+function hasErrorCode(error: unknown, code: string | number): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+function errorMessage(error: unknown): string {
+  assert.ok(
+    typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string",
+  );
+  return error.message;
 }
 
 test("Kubernetes configuration implementations expose a closed preconstruction schema", () => {
@@ -75,7 +139,7 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
   );
 
   const injected = /Injected clients and unknown Kubernetes configuration options/;
-  for (const [invalid, refusal] of [
+  const invalidOptions: [unknown, RegExp][] = [
     [undefined, /Kubernetes configuration options are required/],
     [{}, /Explicit Kubernetes authentication is required/],
     [{ authentication: { mode: "ambient" } }, /explicit Kubernetes authentication mode/],
@@ -108,12 +172,14 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
     ],
     [{ authentication: { mode: "inCluster" }, token: "not-allowed" }, injected],
     [{ authentication: { mode: "inCluster" }, clients: {} }, injected],
-  ]) {
+  ];
+  for (const [invalid, refusal] of invalidOptions) {
     assert.throws(
       () => requireConfiguration(KubernetesConfigurationDriver, invalid),
       SharedConfigurationValidationError,
     );
     assert.throws(
+      // @ts-expect-error Pass the untrusted input through the constructor's runtime validation.
       () => new KubernetesConfigurationDriver(invalid),
       SharedConfigurationValidationError,
       String(refusal),
@@ -121,9 +187,10 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
   }
 
   // Inherited client injection must not evade the closed own-property schema.
-  const inheritedClients = Object.assign(Object.create({ clients: {} }), {
-    authentication: { mode: "inCluster" },
-  });
+  const inheritedClients = {
+    __proto__: { clients: {} },
+    authentication: { mode: "inCluster" as const },
+  };
   assert.throws(
     () => new KubernetesConfigurationDriver(inheritedClients),
     SharedConfigurationValidationError,
@@ -175,21 +242,25 @@ test("Namespace configurations accept native, bounded OpenClaw documents", async
   const driver = createDriver();
   await assert.doesNotReject(driver.validate(configuration));
 
-  for (const [values, reason] of [
+  const invalidDocuments: [unknown, RegExp][] = [
     [undefined, /document|object/i],
     [null, /document|object/i],
     [[], /document|object/i],
     [{ models: { displayName: "x".repeat(1_048_576) } }, /size/i],
-  ]) {
+  ];
+  for (const [values, reason] of invalidDocuments) {
+    // @ts-expect-error Exercise runtime rejection of non-document values.
     await assert.rejects(driver.validate({ ...configuration, values }), reason);
   }
 
   await assert.rejects(driver.validate({ ...configuration, id: "agent_1" }), /cfg_/);
   await assert.rejects(driver.validate({ ...configuration, namespaceId: "" }), /namespace/i);
   for (const kind of [undefined, "gateway", "namespace", ""]) {
+    // @ts-expect-error Exercise runtime rejection of invalid Configuration kinds.
     await assert.rejects(driver.validate({ ...configuration, kind }), /kind|agent/i);
   }
   for (const generation of [undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1"]) {
+    // @ts-expect-error Exercise runtime rejection of invalid Configuration generations.
     await assert.rejects(driver.validate({ ...configuration, generation }), /generation/i);
   }
   await assert.rejects(driver.validate({ ...configuration, createdAt: "invalid" }), /time/i);
@@ -197,10 +268,12 @@ test("Namespace configurations accept native, bounded OpenClaw documents", async
 
 test("ConfigMaps contain exactly one native document and preserve real ownership boundaries", async () => {
   const driver = createDriver();
+  const internals = configurationDriverInternals(driver);
   const physicalNamespace = "customer-support-existing";
 
   // Exercise the production serializer/read boundary directly without claiming a mock is a cluster.
-  const observed = driver.manifest(configuration, physicalNamespace);
+  const observed = internals.manifest(configuration, physicalNamespace);
+  assertConfigurationConfigMap(observed);
   assert.equal(observed.metadata.namespace, physicalNamespace);
   assert.deepEqual(observed.metadata.labels, {
     "app.kubernetes.io/managed-by": "openclaw-enterprise",
@@ -211,11 +284,11 @@ test("ConfigMaps contain exactly one native document and preserve real ownership
   assert.equal(observed.metadata.annotations["openclaw.dev/configuration-kind"], "agent");
   assert.equal(observed.metadata.annotations["openclaw.dev/configuration-generation"], "1");
   assert.deepEqual(
-    await driver.checkedConfiguration(observed, configuration, physicalNamespace),
+    await internals.checkedConfiguration(observed, configuration, physicalNamespace),
     configuration,
   );
   assert.deepEqual(
-    await driver.checkedConfiguration(
+    await internals.checkedConfiguration(
       { ...observed, binaryData: {} },
       configuration,
       physicalNamespace,
@@ -223,7 +296,7 @@ test("ConfigMaps contain exactly one native document and preserve real ownership
     configuration,
   );
 
-  for (const [mutate, reason] of [
+  const invalidMaps: [(resource: ConfigurationConfigMap) => void, RegExp][] = [
     [(resource) => (resource.data = {}), /data|invalid/i],
     [(resource) => (resource.data["openclaw.json"] = "{"), /malformed|json/i],
     [(resource) => (resource.data["openclaw.json"] = "[]"), /document|object/i],
@@ -264,22 +337,23 @@ test("ConfigMaps contain exactly one native document and preserve real ownership
       (resource) => delete resource.metadata.annotations["openclaw.dev/configuration-generation"],
       /generation/i,
     ],
-  ]) {
+  ];
+  for (const [mutate, reason] of invalidMaps) {
     const invalid = structuredClone(observed);
     mutate(invalid);
     await assert.rejects(
-      driver.checkedConfiguration(invalid, configuration, physicalNamespace),
+      internals.checkedConfiguration(invalid, configuration, physicalNamespace),
       reason,
     );
   }
 });
 
-for (const layout of ["shared", "adopted", "split"]) {
+for (const layout of ["shared", "adopted", "split"] as const) {
   test(`Kubernetes Configuration inspectExact recovers only the exact Configuration (${layout})`, async () => {
     const client = new FakeConfigurationCoreV1Api();
     const namespace = client.addNamespace(namespaceId, layout);
     const driver = createDriver();
-    driver.client = Promise.resolve(client);
+    useClient(driver, client);
 
     const created = await driver.createExact(configuration);
     assert.deepEqual(await driver.inspectExact(configuration), created);
@@ -297,6 +371,7 @@ for (const layout of ["shared", "adopted", "split"]) {
     const stored = client.configMaps.get(
       `${namespace}/${kubernetesConfigurationName(configuration.id)}`,
     );
+    assertConfigurationConfigMap(stored);
     stored.data["openclaw.json"] = JSON.stringify({
       plugins: configuration.values.plugins,
       agents: configuration.values.agents,
@@ -318,6 +393,7 @@ test("configuration operations reject invalid references before reading Kubernet
 
   await assert.rejects(driver.read({ id: "agent_1", namespaceId }), /cfg_/);
   await assert.rejects(driver.delete({ id: configuration.id, namespaceId: "" }), /namespace/i);
+  // @ts-expect-error Pass a malformed document to the runtime update boundary.
   await assert.rejects(driver.update({ ...configuration, values: [] }), /document|object/i);
 });
 
@@ -333,7 +409,12 @@ test("configuration CRUD fails closed when its explicitly selected kubeconfig is
 });
 
 test("the official Kubernetes client rejects ambiguous identities and insecure API servers", async (t) => {
-  for (const scenario of await writeUnsafeKubeconfigs(t)) {
+  const scenarios: { kubeconfigPath: unknown; context: unknown; name: unknown }[] =
+    await writeUnsafeKubeconfigs(t);
+  for (const scenario of scenarios) {
+    assert.ok(typeof scenario.kubeconfigPath === "string");
+    assert.ok(typeof scenario.context === "string");
+    assert.ok(typeof scenario.name === "string");
     const driver = createDriver({
       mode: "kubeconfig",
       kubeconfigPath: scenario.kubeconfigPath,
@@ -354,9 +435,10 @@ test("the official Kubernetes client rejects ambiguous identities and insecure A
 
 test("Kubernetes Configuration rejects literal model credentials before writes and stored reads", async () => {
   const driver = createDriver();
+  const internals = configurationDriverInternals(driver);
   const sentinel = "synthetic-model-credential-not-for-configuration";
   // Slots no release ever stored a literal in: refused on writes and on stored reads.
-  const refusedWhenStored = [
+  const refusedWhenStored: OpenClawConfigurationDocument[] = [
     { models: { providers: { openai: { apiKey: sentinel } } } },
     { models: { providers: { codex: { headers: { Authorization: `Bearer ${sentinel}` } } } } },
     { models: { providers: { openai: { headers: { "x-api-key": sentinel } } } } },
@@ -368,7 +450,7 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
   // Other credential header names, model rows and OpenClaw's request transport overrides
   // (findings 1142 and 1143), refused since the 2026-10-12 notice. An older release stored
   // them, so a stored one still reads and its operator can replace it.
-  const refusedOnWrite = [
+  const refusedOnWrite: OpenClawConfigurationDocument[] = [
     { models: { providers: { google: { headers: { "x-goog-api-key": sentinel } } } } },
     { models: { providers: { openai: { headers: { "Proxy-Authorization": sentinel } } } } },
     { models: { providers: { openai: { headers: { Cookie: `session=${sentinel}` } } } } },
@@ -439,41 +521,71 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
   ];
   for (const values of [...refusedWhenStored, ...refusedOnWrite]) {
     const unsafe = { ...configuration, values };
-    for (const operation of ["create", "update"]) {
+    for (const operation of ["create", "update"] as const) {
       await assert.rejects(driver[operation](unsafe), (error) => {
-        assert.match(
-          error.message,
-          /holds a credential value inline, where a reference is required/,
-        );
-        assert.equal(error.message.includes(sentinel), false);
+        const message = errorMessage(error);
+        assert.match(message, /holds a credential value inline, where a reference is required/);
+        assert.equal(message.includes(sentinel), false);
         return true;
       });
     }
-    const stored = driver.manifest(unsafe, "existing-tenant");
+    const stored = internals.manifest(unsafe, "existing-tenant");
     if (refusedWhenStored.includes(values)) {
       await assert.rejects(
-        driver.checkedConfiguration(stored, configuration, "existing-tenant"),
+        internals.checkedConfiguration(stored, configuration, "existing-tenant"),
         (error) => {
-          assert.match(error.message, /security boundaries/);
-          assert.equal(error.message.includes(sentinel), false);
+          const message = errorMessage(error);
+          assert.match(message, /security boundaries/);
+          assert.equal(message.includes(sentinel), false);
           return true;
         },
       );
     } else {
       assert.deepEqual(
-        await driver.checkedConfiguration(stored, configuration, "existing-tenant"),
+        await internals.checkedConfiguration(stored, configuration, "existing-tenant"),
         unsafe,
       );
     }
   }
   // A proxy URL with a user name or password carries the proxy credential in the URL.
+  const credentialUrl: (options: {
+    protocol: string;
+    username: string;
+    password: string;
+    host: string;
+    port: number | string | undefined;
+  }) => string = syntheticCredentialUrl;
   for (const url of [
-    `http://user:${sentinel}@proxy.example:3128`,
-    `http://${sentinel}@proxy`,
-    `http://:${sentinel}@proxy`,
+    credentialUrl({
+      protocol: "http",
+      username: "user",
+      password: sentinel,
+      host: "proxy.example",
+      port: 3128,
+    }),
+    credentialUrl({
+      protocol: "http",
+      username: sentinel,
+      password: "",
+      host: "proxy",
+      port: undefined,
+    }).replace(":@", "@"),
+    credentialUrl({
+      protocol: "http",
+      username: "",
+      password: sentinel,
+      host: "proxy",
+      port: undefined,
+    }),
     // Finding 1250: an environment reference in the port leaves the URL unparsable as
     // written, but the user name and password are literal.
-    `http://user:${sentinel}@proxy.example:\${PROXY_PORT}`,
+    credentialUrl({
+      protocol: "http",
+      username: "user",
+      password: sentinel,
+      host: "proxy.example",
+      port: "${PROXY_PORT}",
+    }),
   ]) {
     const unsafe = {
       ...configuration,
@@ -481,10 +593,10 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
         models: { providers: { openai: { request: { proxy: { mode: "explicit-proxy", url } } } } },
       },
     };
-    for (const operation of ["create", "update"]) {
+    for (const operation of ["create", "update"] as const) {
       await assert.rejects(driver[operation](unsafe), (error) => {
         assert.equal(
-          error.message,
+          errorMessage(error),
           "Configuration field /models/providers/openai/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
         );
         return true;
@@ -539,9 +651,9 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
       },
     },
   };
-  const stored = driver.manifest(referenceOnly, "existing-tenant");
+  const stored = internals.manifest(referenceOnly, "existing-tenant");
   assert.deepEqual(
-    await driver.checkedConfiguration(stored, referenceOnly, "existing-tenant"),
+    await internals.checkedConfiguration(stored, referenceOnly, "existing-tenant"),
     referenceOnly,
   );
 });
@@ -567,30 +679,41 @@ test("Kubernetes Configuration cancels an in-flight request when its provisionin
     kubeconfigPath: path,
     context: "configuration",
   });
-  const sdk = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
-    "@kubernetes/client-node",
+  const requireSdk: (specifier: string) => unknown = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
   );
-  const client = await driver.core();
-  let dispatched;
-  const started = new Promise((resolve) => {
-    dispatched = resolve;
-  });
-  let finishTransport;
+  const sdk = requireSdk("@kubernetes/client-node");
+  assert.ok(typeof sdk === "object" && sdk !== null && "Observable" in sdk);
+  assert.equal(typeof sdk.Observable, "function");
+  const Observable = sdk.Observable as Sdk["Observable"];
+  const client: object = await configurationDriverInternals(driver).core();
+  assert.ok("api" in client);
+  const { api } = client;
+  assert.ok(typeof api === "object" && api !== null && "configuration" in api);
+  const { configuration: sdkConfiguration } = api;
+  assert.ok(
+    typeof sdkConfiguration === "object" &&
+      sdkConfiguration !== null &&
+      "httpApi" in sdkConfiguration,
+  );
+  const { httpApi } = sdkConfiguration;
+  assert.ok(typeof httpApi === "object" && httpApi !== null && "send" in httpApi);
+  assert.equal(typeof httpApi.send, "function");
+  const { promise: started, resolve: dispatched } = Promise.withResolvers<void>();
+  let finishTransport: ((reason: unknown) => void) | undefined;
   // Retain the real SDK request construction, authentication and middleware.
   // Only transport is stalled, like an API that accepts a request but never responds.
-  t.mock.method(
-    client.api.configuration.httpApi,
-    "send",
-    (request) =>
-      new sdk.Observable(
-        new Promise((resolve, reject) => {
-          finishTransport = reject;
-          const signal = request.getSignal();
-          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-          dispatched();
-        }),
-      ),
-  );
+  const send: HttpApi["send"] = (request) => {
+    const { promise: stalled, reject } = Promise.withResolvers<never>();
+    finishTransport = reject;
+    const signal:
+      (Pick<AbortSignal, "addEventListener"> & { readonly reason: unknown }) | undefined =
+      request.getSignal();
+    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    dispatched();
+    return new Observable(stalled);
+  };
+  t.mock.method(httpApi as Pick<HttpApi, "send">, "send", send);
   const owner = new AbortController();
   const lost = new Error("Configuration provisioning claim lost");
   const pending = withComputeAbortSignal(owner.signal, () => driver.read(configuration));
@@ -602,28 +725,44 @@ test("Kubernetes Configuration cancels an in-flight request when its provisionin
       (error) => error === lost,
     );
   } finally {
+    assert.ok(finishTransport);
     finishTransport(lost);
     await pending.catch(() => {});
   }
 });
 
 // A Driver over `client` with `configuration` stored, and the stored ConfigMap.
+type StoredConfiguration<T extends FlakyConfigurationCoreV1Api> = {
+  client: T;
+  driver: KubernetesConfigurationDriver;
+  stored: () => ConfigMap | undefined;
+};
+
+async function storedConfiguration(
+  client?: undefined,
+): Promise<StoredConfiguration<FlakyConfigurationCoreV1Api>>;
+async function storedConfiguration<T extends FlakyConfigurationCoreV1Api>(
+  client: T,
+): Promise<StoredConfiguration<T>>;
 async function storedConfiguration(client = new FlakyConfigurationCoreV1Api()) {
   const namespace = client.addNamespace(namespaceId);
   const driver = createDriver();
-  driver.client = Promise.resolve(client);
+  useClient(driver, client);
   await driver.create(configuration);
   const key = `${namespace}/${kubernetesConfigurationName(configuration.id)}`;
   return { client, driver, stored: () => client.configMaps.get(key) };
 }
 
-const storedGeneration = (stored) =>
-  stored().metadata.annotations["openclaw.dev/configuration-generation"];
+function storedGeneration(stored: () => ConfigMap | undefined) {
+  const resource = stored();
+  assertConfigurationConfigMap(resource);
+  return resource.metadata.annotations["openclaw.dev/configuration-generation"];
+}
 
 const nextGeneration = { ...configuration, generation: 2 };
 
 // Each read the driver sends, and an operation that sends it.
-const readPaths = [
+const readPaths: OperationPath[] = [
   ["listNamespace", "read", (driver) => driver.read(configuration)],
   ["readNamespacedConfigMap", "read", (driver) => driver.read(configuration)],
   ["readNamespacedConfigMap", "inspectExact", (driver) => driver.inspectExact(configuration)],
@@ -638,21 +777,21 @@ test("Kubernetes Configuration retries 429, 5xx and dropped reads on the pause s
       let { client, driver } = await storedConfiguration();
 
       // Five failures, then an answer: the operation succeeds after the five pauses.
-      client.failureCodes[method].push(...Array(5).fill(failure));
+      client.failureCodes[method].push(...Array.from({ length: 5 }, () => failure));
       let before = client.calls[method];
-      let pauses = [];
+      let pauses: number[] = [];
       await withRetryTimers(() => operation(driver), pauses);
       assert.equal(client.calls[method] - before, 6, label);
       assert.deepEqual(pauses, READ_RETRY_PAUSES_MS, label);
 
       // A sixth failure ends the operation with the client's error once the schedule is spent.
       ({ client, driver } = await storedConfiguration());
-      client.failureCodes[method].push(...Array(6).fill(failure));
+      client.failureCodes[method].push(...Array.from({ length: 6 }, () => failure));
       before = client.calls[method];
       pauses = [];
       await assert.rejects(
         () => withRetryTimers(() => operation(driver), pauses),
-        (error) => error.code === (failure === "dropped" ? "ECONNRESET" : failure),
+        (error) => hasErrorCode(error, failure === "dropped" ? "ECONNRESET" : failure),
         label,
       );
       assert.equal(client.calls[method] - before, 6, label);
@@ -670,13 +809,13 @@ test("Kubernetes Configuration ends a refused or missing read at once", async ()
       const { client, driver } = await storedConfiguration();
       client.failureCodes[method].push(failure);
       const before = client.calls[method];
-      const pauses = [];
+      const pauses: number[] = [];
       if (failure === 404 && name === "inspectExact") {
         assert.equal(await withRetryTimers(() => operation(driver), pauses), undefined, label);
       } else {
         await assert.rejects(
           () => withRetryTimers(() => operation(driver), pauses),
-          (error) => error.code === failure,
+          (error) => hasErrorCode(error, failure),
           label,
         );
       }
@@ -688,26 +827,27 @@ test("Kubernetes Configuration ends a refused or missing read at once", async ()
 
 test("Kubernetes Configuration sends a failed write once, even when a read would retry", async () => {
   const otherConfiguration = { ...configuration, id: "cfg_00000000-0000-4000-8000-000000000002" };
+  const writePaths: OperationPath[] = [
+    ["createNamespacedConfigMap", "create", (driver) => driver.create(otherConfiguration)],
+    [
+      "createNamespacedConfigMap",
+      "createExact",
+      (driver) => driver.createExact(otherConfiguration),
+    ],
+    ["replaceNamespacedConfigMap", "update", (driver) => driver.update(nextGeneration)],
+    ["deleteNamespacedConfigMap", "delete", (driver) => driver.delete(configuration)],
+  ];
   for (const failure of ["dropped", 429, 503]) {
-    for (const [name, method, write] of [
-      ["create", "createNamespacedConfigMap", (driver) => driver.create(otherConfiguration)],
-      [
-        "createExact",
-        "createNamespacedConfigMap",
-        (driver) => driver.createExact(otherConfiguration),
-      ],
-      ["update", "replaceNamespacedConfigMap", (driver) => driver.update(nextGeneration)],
-      ["delete", "deleteNamespacedConfigMap", (driver) => driver.delete(configuration)],
-    ]) {
+    for (const [method, name, write] of writePaths) {
       const label = `${name} ${method} ${failure}`;
       const { client, driver } = await storedConfiguration();
       const stored = structuredClone([...client.configMaps.entries()]);
       client.failureCodes[method].push(failure);
       const before = client.calls[method];
-      const pauses = [];
+      const pauses: number[] = [];
       await assert.rejects(
         () => withRetryTimers(() => write(driver), pauses),
-        (error) => error.code === (failure === "dropped" ? "ECONNRESET" : failure),
+        (error) => hasErrorCode(error, failure === "dropped" ? "ECONNRESET" : failure),
         label,
       );
       assert.equal(client.calls[method] - before, 1, label);
@@ -752,11 +892,12 @@ test("Kubernetes Configuration ends a retry pause at once when the owner cancels
 test("Kubernetes Configuration gives up on a request at its deadline and never resends it", async (t) => {
   // Each request's 10 s deadline is an AbortSignal.timeout; these deadlines fire on demand.
   const timeouts = controlledRequestTimeouts(t);
-  for (const [method, action, operation] of [
+  const operations: OperationPath[] = [
     ["readNamespacedConfigMap", "read", (driver) => driver.read(configuration)],
     ["listNamespace", "namespace verification", (driver) => driver.read(configuration)],
     ["replaceNamespacedConfigMap", "update", (driver) => driver.update(nextGeneration)],
-  ]) {
+  ];
+  for (const [method, action, operation] of operations) {
     const { client, driver } = await storedConfiguration();
     client.stalls.add(method);
     const before = client.calls[method];
@@ -789,10 +930,10 @@ test("Kubernetes Configuration sends no call past an API mutation's deadline", a
   // and nothing is sent once it has passed. Read retries under the deadline have their own test.
   const clock = frozenClock(t);
   const timeouts = controlledRequestTimeouts(t);
-  const sent = (client) => ({ ...client.calls });
-  const updateBy = (driver, deadline) =>
+  const sent = (client: FlakyConfigurationCoreV1Api) => ({ ...client.calls });
+  const updateBy = (driver: KubernetesConfigurationDriver, deadline: number) =>
     withMutationDeadline(deadline, () => driver.update(nextGeneration));
-  const notSent = (action) => (error) =>
+  const notSent = (action: string) => (error: unknown) =>
     error instanceof ConfigurationBackendUnavailableError &&
     error.message ===
       `The Kubernetes ConfigMap ${action} was not sent: the request ran out of time.`;
@@ -800,7 +941,6 @@ test("Kubernetes Configuration sends no call past an API mutation's deadline", a
   // A stalled read is cut when the deadline arrives, not after its own 10 s, and the write that
   // would follow is never sent.
   let { client, driver } = await storedConfiguration();
-  let stored;
   let before = sent(client);
   timeouts.delays.length = 0;
   client.stalls.add("readNamespacedConfigMap");
@@ -825,7 +965,8 @@ test("Kubernetes Configuration sends no call past an API mutation's deadline", a
   assert.equal(client.calls.replaceNamespacedConfigMap, before.replaceNamespacedConfigMap);
 
   // A deadline that passes while the read is answered stops the update before its write.
-  ({ client, driver, stored } = await storedConfiguration());
+  const replacement = await storedConfiguration();
+  ({ client, driver } = replacement);
   before = sent(client);
   const read = client.readNamespacedConfigMap.bind(client);
   client.readNamespacedConfigMap = async (request) => {
@@ -835,7 +976,7 @@ test("Kubernetes Configuration sends no call past an API mutation's deadline", a
   };
   await assert.rejects(updateBy(driver, clock.now + 3_000), notSent("update"));
   assert.equal(client.calls.replaceNamespacedConfigMap, before.replaceNamespacedConfigMap);
-  assert.equal(storedGeneration(stored), "1");
+  assert.equal(storedGeneration(replacement.stored), "1");
 
   // An expired deadline sends nothing at all.
   ({ client, driver } = await storedConfiguration());
@@ -852,7 +993,7 @@ test("Kubernetes Configuration sends no write with less than the minimum send bu
   for (const [leftMs, sent] of [
     [MINIMUM_SEND_BUDGET_MS - 1, false],
     [MINIMUM_SEND_BUDGET_MS, true],
-  ]) {
+  ] as const) {
     const { client, driver, stored } = await storedConfiguration();
     const before = client.calls.replaceNamespacedConfigMap;
     // The update's read is answered when exactly `leftMs` of the budget remains.
@@ -883,7 +1024,8 @@ test("Kubernetes Configuration sends no write with less than the minimum send bu
 
 test("Kubernetes Configuration retries a read only with room for the pause and an attempt", async (t) => {
   const clock = frozenClock(t);
-  const pause = READ_RETRY_PAUSES_MS[0];
+  const [pause] = READ_RETRY_PAUSES_MS;
+  assert.ok(pause !== undefined);
 
   // A dropped namespace verification is not retried when the pause would leave less than
   // MINIMUM_SEND_BUDGET_MS for the next attempt: the real failure is reported at once.
@@ -904,14 +1046,18 @@ test("Kubernetes Configuration retries a read only with room for the pause and a
   before = client.calls.listNamespace;
   client.failureCodes.listNamespace.push("dropped");
   const realSetTimeout = globalThis.setTimeout;
-  const late = t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
-    if (delay !== pause) {
-      return realSetTimeout(callback, delay, ...args);
-    }
-    // The retry pause's timer fires a moment after the whole budget.
-    clock.now += pause + MINIMUM_SEND_BUDGET_MS + 1;
-    return realSetTimeout(callback, 0, ...args);
-  });
+  const late = t.mock.method(
+    globalThis,
+    "setTimeout",
+    (callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+      if (delay !== pause) {
+        return realSetTimeout(callback, delay, ...args);
+      }
+      // The retry pause's timer fires a moment after the whole budget.
+      clock.now += pause + MINIMUM_SEND_BUDGET_MS + 1;
+      return realSetTimeout(callback, 0, ...args);
+    },
+  );
   await assert.rejects(
     withMutationDeadline(clock.now + pause + MINIMUM_SEND_BUDGET_MS, () =>
       driver.update(nextGeneration),
@@ -927,11 +1073,13 @@ test("Kubernetes Configuration retries a read only with room for the pause and a
 
 test("Kubernetes Configuration reads a ConfigMap only when every ownership mark is its own", async () => {
   const driver = createDriver();
+  const internals = configurationDriverInternals(driver);
   const physicalNamespace = "customer-support-existing";
-  const observed = driver.manifest(configuration, physicalNamespace);
+  const observed = internals.manifest(configuration, physicalNamespace);
+  assertConfigurationConfigMap(observed);
   const otherId = "cfg_00000000-0000-4000-8000-000000000002";
   const otherNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
-  for (const [mark, mutate] of [
+  const ownershipMarks: [string, (resource: ConfigurationConfigMap) => void][] = [
     ["object name", (resource) => (resource.metadata.name = kubernetesConfigurationName(otherId))],
     ["Kubernetes Namespace", (resource) => (resource.metadata.namespace = "other-tenant")],
     [
@@ -950,11 +1098,12 @@ test("Kubernetes Configuration reads a ConfigMap only when every ownership mark 
       "Configuration annotation",
       (resource) => (resource.metadata.annotations["openclaw.dev/configuration-id"] = otherId),
     ],
-  ]) {
+  ];
+  for (const [mark, mutate] of ownershipMarks) {
     const foreign = structuredClone(observed);
     mutate(foreign);
     await assert.rejects(
-      driver.checkedConfiguration(foreign, configuration, physicalNamespace),
+      internals.checkedConfiguration(foreign, configuration, physicalNamespace),
       /does not belong to the exact requested Namespace configuration/,
       mark,
     );
@@ -965,15 +1114,16 @@ test("Kubernetes Configuration reads a ConfigMap only when every ownership mark 
   recreated.metadata.annotations["openclaw.dev/configuration-created-at"] =
     "2026-08-20T00:00:00.000Z";
   await assert.rejects(
-    driver.checkedConfiguration(recreated, configuration, physicalNamespace),
+    internals.checkedConfiguration(recreated, configuration, physicalNamespace),
     /expected Configuration kind, generation, or creation time/,
   );
 });
 
 test("Kubernetes Configuration stores a document up to one byte under 1 MiB of UTF-8", async () => {
   const driver = createDriver();
+  const internals = configurationDriverInternals(driver);
   const limit = 1_048_576;
-  const document = (text) => ({ models: { displayName: text } });
+  const document = (text: string) => ({ models: { displayName: text } });
   const envelope = JSON.stringify(document("")).length;
   const largest = document("x".repeat(limit - 1 - envelope));
   const atLimit = document("x".repeat(limit - envelope));
@@ -986,7 +1136,11 @@ test("Kubernetes Configuration stores a document up to one byte under 1 MiB of U
   await assert.doesNotReject(driver.validateSize(largest));
   const stored = { ...configuration, values: largest };
   assert.deepEqual(
-    await driver.checkedConfiguration(driver.manifest(stored, "tenant"), configuration, "tenant"),
+    await internals.checkedConfiguration(
+      internals.manifest(stored, "tenant"),
+      configuration,
+      "tenant",
+    ),
     stored,
   );
   for (const values of [atLimit, wide]) {
@@ -999,8 +1153,8 @@ test("Kubernetes Configuration stores a document up to one byte under 1 MiB of U
       limitBytes: limit,
     });
     await assert.rejects(
-      driver.checkedConfiguration(
-        driver.manifest({ ...configuration, values }, "tenant"),
+      internals.checkedConfiguration(
+        internals.manifest({ ...configuration, values }, "tenant"),
         configuration,
         "tenant",
       ),
@@ -1011,8 +1165,11 @@ test("Kubernetes Configuration stores a document up to one byte under 1 MiB of U
 
 test("Kubernetes Configuration accepts only whole credential references", async () => {
   const driver = createDriver();
+  const internals = configurationDriverInternals(driver);
   const sentinel = "synthetic-model-credential-not-for-configuration";
-  const provider = (settings) => ({ models: { providers: { openai: settings } } });
+  const provider = (settings: OpenClawConfigurationDocument) => ({
+    models: { providers: { openai: settings } },
+  });
   for (const values of [
     // A reference must be the whole value, not a part of a literal.
     provider({ apiKey: `${sentinel}\${OPENAI_API_KEY}` }),
@@ -1029,12 +1186,13 @@ test("Kubernetes Configuration accepts only whole credential references", async 
   ]) {
     const unsafe = { ...configuration, values };
     await assert.rejects(driver.create(unsafe), (error) => {
-      assert.match(error.message, /holds a credential value inline, where a reference is required/);
-      assert.equal(error.message.includes(sentinel), false);
+      const message = errorMessage(error);
+      assert.match(message, /holds a credential value inline, where a reference is required/);
+      assert.equal(message.includes(sentinel), false);
       return true;
     });
     await assert.rejects(
-      driver.checkedConfiguration(driver.manifest(unsafe, "tenant"), configuration, "tenant"),
+      internals.checkedConfiguration(internals.manifest(unsafe, "tenant"), configuration, "tenant"),
       /security boundaries/,
     );
   }
@@ -1047,36 +1205,52 @@ test("Kubernetes Configuration accepts only whole credential references", async 
 // The API server's write preconditions, and another writer that changes the ConfigMap right
 // after the driver reads it.
 class RacedConfigurationCoreV1Api extends FlakyConfigurationCoreV1Api {
-  raceAfterRead;
+  raceAfterRead: ((current: ConfigurationConfigMap) => void) | undefined;
 
-  async readNamespacedConfigMap(request) {
+  override async readNamespacedConfigMap(
+    request: Parameters<FlakyConfigurationCoreV1Api["readNamespacedConfigMap"]>[0],
+  ) {
     const answer = await super.readNamespacedConfigMap(request);
     const race = this.raceAfterRead;
     this.raceAfterRead = undefined;
-    race?.(this.configMaps.get(`${request.namespace}/${request.name}`));
+    if (race !== undefined) {
+      const current = this.configMaps.get(`${request.namespace}/${request.name}`);
+      assertConfigurationConfigMap(current);
+      race(current);
+    }
     return answer;
   }
 
-  async replaceNamespacedConfigMap(request) {
+  override async replaceNamespacedConfigMap(
+    request: Parameters<FlakyConfigurationCoreV1Api["replaceNamespacedConfigMap"]>[0],
+  ) {
     const stored = this.configMaps.get(`${request.namespace}/${request.name}`);
     const expected = request.body.metadata?.resourceVersion;
     if (stored === undefined) {
       throw Object.assign(new Error("missing ConfigMap"), { code: 404 });
     }
-    if (expected !== undefined && expected !== stored.metadata.resourceVersion) {
-      throw Object.assign(new Error("the object has been modified"), { code: 409 });
+    if (expected !== undefined) {
+      assert.ok(stored.metadata);
+      if (expected !== stored.metadata.resourceVersion) {
+        throw Object.assign(new Error("the object has been modified"), { code: 409 });
+      }
     }
     return super.replaceNamespacedConfigMap(request);
   }
 
-  async deleteNamespacedConfigMap(request) {
+  override async deleteNamespacedConfigMap(
+    request: Parameters<FlakyConfigurationCoreV1Api["deleteNamespacedConfigMap"]>[0],
+  ) {
     const stored = this.configMaps.get(`${request.namespace}/${request.name}`);
     const uid = request.body?.preconditions?.uid;
     if (stored === undefined) {
       throw Object.assign(new Error("missing ConfigMap"), { code: 404 });
     }
-    if (uid !== undefined && uid !== stored.metadata.uid) {
-      throw Object.assign(new Error("precondition failed: UID"), { code: 409 });
+    if (uid !== undefined) {
+      assert.ok(stored.metadata);
+      if (uid !== stored.metadata.uid) {
+        throw Object.assign(new Error("precondition failed: UID"), { code: 409 });
+      }
     }
     return super.deleteNamespacedConfigMap(request);
   }
@@ -1105,14 +1279,18 @@ test("Kubernetes Configuration changes only the exact ConfigMap it read", async 
       current.metadata.resourceVersion = "5";
       current.data["openclaw.json"] = JSON.stringify({ written: "elsewhere" });
     };
-    await assert.rejects(driver.update(nextGeneration), (error) => error.code === 409);
-    assert.equal(stored().data["openclaw.json"], JSON.stringify({ written: "elsewhere" }));
+    await assert.rejects(driver.update(nextGeneration), (error) => hasErrorCode(error, 409));
+    const current = stored();
+    assertConfigurationConfigMap(current);
+    assert.equal(current.data["openclaw.json"], JSON.stringify({ written: "elsewhere" }));
   }
 
   // A stored document that breaks the value rules is never written over.
   {
     const { client, driver, stored } = await setup();
-    stored().data["openclaw.json"] = JSON.stringify({ env: { OPENAI_API_KEY: "literal-key" } });
+    const current = stored();
+    assertConfigurationConfigMap(current);
+    current.data["openclaw.json"] = JSON.stringify({ env: { OPENAI_API_KEY: "literal-key" } });
     await assert.rejects(driver.update(nextGeneration), /security boundaries/);
     assert.equal(client.calls.replaceNamespacedConfigMap, 0);
   }
@@ -1121,14 +1299,16 @@ test("Kubernetes Configuration changes only the exact ConfigMap it read", async 
   {
     const { client, driver, stored } = await setup();
     client.raceAfterRead = (current) => (current.metadata.uid = "uid-recreated");
-    await assert.rejects(driver.delete(configuration), (error) => error.code === 409);
-    assert.equal(stored().metadata.uid, "uid-recreated");
+    await assert.rejects(driver.delete(configuration), (error) => hasErrorCode(error, 409));
+    assert.equal(stored()?.metadata?.uid, "uid-recreated");
   }
 
   // A same-named ConfigMap with another manager is never deleted.
   {
     const { client, driver, stored } = await setup();
-    stored().metadata.labels["app.kubernetes.io/managed-by"] = "helm";
+    const current = stored();
+    assertConfigurationConfigMap(current);
+    current.metadata.labels["app.kubernetes.io/managed-by"] = "helm";
     await assert.rejects(driver.delete(configuration), /exact requested Namespace configuration/);
     assert.equal(client.calls.deleteNamespacedConfigMap, 0);
     assert.notEqual(stored(), undefined);
@@ -1137,7 +1317,9 @@ test("Kubernetes Configuration changes only the exact ConfigMap it read", async 
   // An exact inspection of one recreated at another time reports a conflict.
   {
     const { driver, stored } = await setup();
-    stored().metadata.annotations["openclaw.dev/configuration-created-at"] =
+    const current = stored();
+    assertConfigurationConfigMap(current);
+    current.metadata.annotations["openclaw.dev/configuration-created-at"] =
       "2026-08-20T00:00:00.000Z";
     await assert.rejects(driver.inspectExact(configuration), ConfigurationConflictError);
   }
@@ -1163,16 +1345,18 @@ test("Kubernetes Configuration reads and replaces a stored document with credent
       },
     },
   };
-  const [key, stored] = [...client.configMaps.entries()][0];
+  const entry = [...client.configMaps.entries()][0];
+  assert.ok(entry);
+  const [key, stored] = entry;
   client.configMaps.set(key, {
     ...stored,
     data: { "openclaw.json": JSON.stringify(stale.values) },
   });
 
   assert.deepEqual(await driver.read(configuration), stale);
-  const refusal = (error) => {
+  const refusal = (error: unknown) => {
     assert.equal(
-      error.message,
+      errorMessage(error),
       "Configuration field /models/providers/openai/request/auth/token holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
     );
     return true;
@@ -1183,6 +1367,10 @@ test("Kubernetes Configuration reads and replaces a stored document with credent
   assert.equal(client.calls.replaceNamespacedConfigMap, 0);
 
   assert.deepEqual(await driver.update(nextGeneration), nextGeneration);
-  assert.equal(client.configMaps.get(key).data["openclaw.json"].includes(sentinel), false);
+  const updated = client.configMaps.get(key);
+  assertConfigurationConfigMap(updated);
+  const document = updated.data["openclaw.json"];
+  assert.ok(document !== undefined);
+  assert.equal(document.includes(sentinel), false);
   assert.deepEqual(await driver.read({ id: configuration.id, namespaceId }), nextGeneration);
 });
