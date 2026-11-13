@@ -38,6 +38,12 @@ The separate [worker-restart preflight proposal](../0033-repository-worker-resta
 asks the selected repository owner to report restart risk before maintenance.
 It does not replace the existing post-replacement terminal-result amendment.
 
+The [protected workspace endpoint amendment](protected-workspace-endpoint.md)
+proposes pinning the original transport and obtaining a genuine Gateway binding
+acknowledgment before signed startup release. Its
+[implementation plan](../../plans/0051-protected-workspace-endpoint.md) records the
+required changes and verification. The amendment remains proposed.
+
 ## Two deployment modes
 
 The deployment selects an egress implementation; it does not separately select an authentication mechanism. Protection is an explicit admission decision, independent of how many credentials are configured.
