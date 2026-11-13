@@ -12134,6 +12134,10 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     },
     secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
   };
+  const nativeRuntime = {
+    configuration: JSON.stringify(nativeInference),
+    entrypoint: NATIVE_WORKER_ENTRYPOINT,
+  };
   const deviceId = "a".repeat(64);
   const gatewayDeployment = driver.deployment(
     "gateway-native-worker",
@@ -12172,9 +12176,15 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     [],
     undefined,
     undefined,
-    { configuration: JSON.stringify(nativeInference) },
+    nativeRuntime,
   );
-  driver.addNativeWorker(workerDeployment, "workspace-node-native-worker", undefined, undefined);
+  driver.addNativeWorker(
+    workerDeployment,
+    "workspace-node-native-worker",
+    undefined,
+    undefined,
+    nativeRuntime.entrypoint,
+  );
   assertExecStringsWithinBudget([gatewayDeployment, workerDeployment]);
   const gateway = gatewayDeployment.spec.template.spec.containers[0];
   const worker = workerDeployment.spec.template.spec.containers[0];

@@ -23,6 +23,7 @@ on:
       - apps/controller/**
       - deploy/presets/**
       - deploy/runtime/**
+      - go.mod
       - migrations/**
       - package.json
       - packages/**
