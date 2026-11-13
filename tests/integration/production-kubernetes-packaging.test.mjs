@@ -2442,10 +2442,10 @@ case "$*" in
 esac
 `,
       occ: `#!/usr/bin/env bash
-[[ $# == 4 && "$1" == --output && "$2" == json && "$3" == installation ]] || exit 94
-case "$4" in
-  get) printf '{"id":"ins_test"}' ;;
-  deployment-inventory) printf '{"installationId":"ins_test","namespaces":[]}' ;;
+case "$*" in
+  '--output json installation get') printf '{"id":"ins_test"}' ;;
+  '--output json --timeout-seconds 900 installation deployment-inventory')
+    printf '{"installationId":"ins_test","namespaces":[]}' ;;
   *) exit 94 ;;
 esac
 `,
