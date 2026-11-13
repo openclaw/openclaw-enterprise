@@ -151,8 +151,8 @@
     "tests/integration/workspace-gateway-host-route.test.ts"
   ],
   "serialFiles": {
-    "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
-    "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
+    "tests/conformance/postgres-auth-binding.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
+    "tests/conformance/schema-auth-boundary-v1.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
     {
@@ -713,13 +713,13 @@
       "path": "tests/integration/known-device-cookie.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-auth-binding.test.mjs"
+      "path": "tests/conformance/postgres-auth-binding.test.ts"
     },
     {
       "path": "tests/conformance/postgres-controller-auth-binding.test.mjs"
     },
     {
-      "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
+      "path": "tests/conformance/schema-auth-boundary-v1.test.ts"
     },
     {
       "path": "tests/conformance/controller-stop-yields.test.ts"
