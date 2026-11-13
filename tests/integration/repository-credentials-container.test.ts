@@ -14,7 +14,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 test("emitted native service and client enforce development token routing without issuance", async (t) => {
-  await runInFixtureContainer(t, "tests/integration/repository-credentials-github-token.test.mjs", {
+  await runInFixtureContainer(t, "tests/integration/repository-credentials-github-token.test.ts", {
     packaged: true,
   });
 });

@@ -110,7 +110,7 @@
     "tests/integration/google-id-token.test.mjs",
     "tests/integration/first-agent-startup.test.mjs",
     "tests/conformance/repository-sessions-memory.test.ts",
-    "tests/conformance/repository-credentials-github-token.test.mjs",
+    "tests/conformance/repository-credentials-github-token.test.ts",
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
     "tests/conformance/repository-credentials-sessions.test.ts",
@@ -507,7 +507,7 @@
       "path": "tests/conformance/repository-credentials-github.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-github-token.test.mjs"
+      "path": "tests/conformance/repository-credentials-github-token.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
