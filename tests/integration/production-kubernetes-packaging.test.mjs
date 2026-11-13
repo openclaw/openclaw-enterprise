@@ -187,6 +187,10 @@ const render = (overrides = {}, options = {}) =>
     options,
   );
 
+async function renderObjects(overrides = {}, options = {}) {
+  return resources((await render(overrides, options)).stdout);
+}
+
 let tooling;
 try {
   await execute(helm, ["version", "--short"], { cwd: repository, env: goToolEnvironment() });
@@ -232,7 +236,7 @@ test(
       "quoted.yaml",
       'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
     );
-    const objects = await resources((await render({}, { valuesFiles: [quoted] })).stdout);
+    const objects = await renderObjects({}, { valuesFiles: [quoted] });
     const api = findResource(objects, "Deployment", "openclaw-enterprise-api");
     assert.equal(
       api.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap.name,
@@ -250,13 +254,9 @@ test(
       render({ "api.consoleTheme.configMapName": "Not_Valid" }),
       /api\.consoleTheme\.configMapName must be a Kubernetes resource name/,
     );
-    const named = await resources(
-      (
-        await render(
-          { "api.consoleTheme.checksum": "revision-two" },
-          { strings: { "api.consoleTheme.configMapName": "false" } },
-        )
-      ).stdout,
+    const named = await renderObjects(
+      { "api.consoleTheme.checksum": "revision-two" },
+      { strings: { "api.consoleTheme.configMapName": "false" } },
     );
     const deployment = findResource(named, "Deployment", "openclaw-enterprise-api");
     assert.equal(
@@ -454,16 +454,12 @@ test(
     // Render each shipped chart with a nondefault DNS peer; these checks do not prove CNI enforcement.
     const charts = [
       {
-        objects: await resources(
-          (
-            await render({
-              ...dnsValues,
-              ...productionCollectorValues,
-              ...slackProxyValues,
-              ...gatewayRoutingValues,
-            })
-          ).stdout,
-        ),
+        objects: await renderObjects({
+          ...dnsValues,
+          ...productionCollectorValues,
+          ...slackProxyValues,
+          ...gatewayRoutingValues,
+        }),
         policies: [
           "openclaw-enterprise-dependency-egress",
           "oce-bootstrap-isolation",
@@ -534,7 +530,7 @@ test(
 );
 
 test("sandbox ingress uses a separate listener outside OCE cookie scope", tooling, async () => {
-  const rendered = await resources((await render(sandboxValues)).stdout);
+  const rendered = await renderObjects(sandboxValues);
   const gateway = rendered.find((item) => item.kind === "Gateway");
   const listener = gateway.spec.listeners.find((item) => item.name === "sandbox");
   assert.equal(listener.hostname, "*.previews.example.test");
@@ -583,9 +579,10 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "1023" }),
     /gatewayRouting\.sandbox\.listenerPort must be an integer unprivileged port/,
   );
-  const lowestListener = await resources(
-    (await render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "1024" })).stdout,
-  );
+  const lowestListener = await renderObjects({
+    ...sandboxValues,
+    "gatewayRouting.sandbox.listenerPort": "1024",
+  });
   assert.equal(
     lowestListener
       .find((item) => item.kind === "Gateway")
@@ -608,9 +605,10 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
   assert.equal(overlongDomain.length, 215);
   assert.equal(hostnameLimitDomain.length, 253);
   assert.equal(`agent-${"0".repeat(32)}.${longestDomain}`.length, 253);
-  const longest = await resources(
-    (await render({ ...sandboxValues, "gatewayRouting.sandbox.domain": longestDomain })).stdout,
-  );
+  const longest = await renderObjects({
+    ...sandboxValues,
+    "gatewayRouting.sandbox.domain": longestDomain,
+  });
   assert.equal(
     longest
       .find((item) => item.kind === "Gateway")
@@ -711,7 +709,7 @@ test(
     }
     for (const port of [1, 5433, 65535, "5433"]) {
       await writeFile(valuesFile, `database:\n  port: ${JSON.stringify(port)}\n`);
-      const objects = await resources((await render({}, { valuesFiles: [valuesFile] })).stdout);
+      const objects = await renderObjects({}, { valuesFiles: [valuesFile] });
       const databaseRules = objects
         .filter((object) => object.kind === "NetworkPolicy")
         .flatMap((object) => object.spec.egress ?? [])
@@ -750,9 +748,7 @@ test(
       valuesFile,
       "gatewayRouting:\n  tenantGatewayPort: 8081\n  envoyHttpsTargetPort: 10444\n  sandbox:\n    listenerPort: 8444\n",
     );
-    const rendered = await resources(
-      (await render(gatewaySandboxValues, { valuesFiles: [valuesFile] })).stdout,
-    );
+    const rendered = await renderObjects(gatewaySandboxValues, { valuesFiles: [valuesFile] });
     assert.equal(
       rendered
         .find((item) => item.kind === "Gateway")
@@ -1103,7 +1099,7 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
     render({}, { strings: { "api.port": "99999999999999999999" } }),
     /api\.port must be an integer TCP port/,
   );
-  const objects = await resources((await render({ "api.port": "8081" })).stdout);
+  const objects = await renderObjects({ "api.port": "8081" });
   const container = findResource(objects, "Deployment", "openclaw-enterprise-api").spec.template
     .spec.containers[0];
   assert.equal(container.env.find((item) => item.name === "OCC_PORT").value, "8081");
@@ -1152,9 +1148,7 @@ test(
       ),
       /executionCluster\.apiPort must be an integer TCP port/,
     );
-    const objects = await resources(
-      (await render({ ...executionValues, "executionCluster.apiPort": "6443" })).stdout,
-    );
+    const objects = await renderObjects({ ...executionValues, "executionCluster.apiPort": "6443" });
     const policy = findResource(
       objects,
       "NetworkPolicy",
@@ -1742,8 +1736,7 @@ test(
 );
 
 test("control-plane node selectors are optional unless configured", tooling, async () => {
-  const { stdout } = await render();
-  const objects = await resources(stdout);
+  const objects = await renderObjects();
   const selected = (kind, component) =>
     objects.find(
       (object) =>
@@ -1759,10 +1752,11 @@ test("control-plane node selectors are optional unless configured", tooling, asy
 
 test("Installation checksum rolls only its consumers", tooling, async () => {
   const checksum = "c".repeat(64);
-  const before = await resources((await render(slackProxyValues)).stdout);
-  const after = await resources(
-    (await render({ ...slackProxyValues, "controlPlane.installationChecksum": checksum })).stdout,
-  );
+  const before = await renderObjects(slackProxyValues);
+  const after = await renderObjects({
+    ...slackProxyValues,
+    "controlPlane.installationChecksum": checksum,
+  });
   for (const component of ["api", "worker"]) {
     const deployment = findResource(after, "Deployment", `openclaw-enterprise-${component}`);
     assert.equal(
@@ -1788,8 +1782,7 @@ test(
   "Agent native admin pilot renders public host settings with private gateway routing",
   tooling,
   async () => {
-    const { stdout } = await render(agentNativeAdminValues);
-    const objects = await resources(stdout);
+    const objects = await renderObjects(agentNativeAdminValues);
 
     const apiEnvironment = deploymentPodSpec(objects, "api").containers[0].env;
     const workerEnvironment = deploymentPodSpec(objects, "worker").containers[0].env;
@@ -1828,7 +1821,7 @@ test(
       );
     }
 
-    const disabledObjects = await resources((await render()).stdout);
+    const disabledObjects = await renderObjects();
     const disabledApiEnvironment = deploymentPodSpec(disabledObjects, "api").containers[0].env;
     assert.deepEqual(
       disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
@@ -1854,7 +1847,7 @@ test(
       rules.some(({ resources = [] }) => resources.includes("pods/log")) ||
       rules.some(({ resources = [] }) => resources.includes("events"));
 
-    const enabled = await resources((await render()).stdout);
+    const enabled = await renderObjects();
     assert.deepEqual(
       apiEnvironment(enabled).filter(({ name }) => name === "OCC_AGENT_RUNTIME_LOGS_ENABLED"),
       [{ name: "OCC_AGENT_RUNTIME_LOGS_ENABLED", value: "true" }],
@@ -1878,9 +1871,7 @@ test(
       assert.equal(hasLogRules(object.rules ?? []), false, object.metadata.name);
     }
 
-    const disabled = await resources(
-      (await render({ "agentRuntimeLogs.enabled": "false" })).stdout,
-    );
+    const disabled = await renderObjects({ "agentRuntimeLogs.enabled": "false" });
     assert.deepEqual(
       apiEnvironment(disabled).filter(({ name }) => name === "OCC_AGENT_RUNTIME_LOGS_ENABLED"),
       [{ name: "OCC_AGENT_RUNTIME_LOGS_ENABLED", value: "false" }],
@@ -2870,7 +2861,7 @@ test("the chart refuses installation names the bootstrap Job refuses", tooling, 
     "名".repeat(200),
     "a\uFEFFb",
   ]) {
-    const objects = await resources((await render({ "installation.name": name })).stdout);
+    const objects = await renderObjects({ "installation.name": name });
     const bootstrap = objects.find(
       ({ kind, metadata }) => kind === "Job" && metadata.name.endsWith("-initialization"),
     );
@@ -3218,17 +3209,13 @@ test(
   "the chart leaves API egress to the operator and isolates other components",
   tooling,
   async () => {
-    const objects = await resources(
-      (
-        await render({
-          ...gatewayRoutingValues,
-          ...chatgptValues,
-          ...googleUpgradeValues(googleLoginValues["auth.recoveryUserId"]),
-          ...oidcUpgradeValues(googleLoginValues["auth.recoveryUserId"]),
-          ...slackProxyValues,
-        })
-      ).stdout,
-    );
+    const objects = await renderObjects({
+      ...gatewayRoutingValues,
+      ...chatgptValues,
+      ...googleUpgradeValues(googleLoginValues["auth.recoveryUserId"]),
+      ...oidcUpgradeValues(googleLoginValues["auth.recoveryUserId"]),
+      ...slackProxyValues,
+    });
     const api = objects.find(
       ({ kind, metadata }) =>
         kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
@@ -3265,10 +3252,10 @@ test(
 );
 
 test("the API can use a configured Slack directory proxy", tooling, async () => {
-  const defaults = await resources((await render()).stdout);
-  const objects = await resources(
-    (await render({ "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" })).stdout,
-  );
+  const defaults = await renderObjects();
+  const objects = await renderObjects({
+    "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
+  });
   const proxyEnvironment = (objects, component) =>
     objects
       .find(
@@ -3886,8 +3873,7 @@ test(
   "optional database CA Secret mounts into every production database client",
   tooling,
   async () => {
-    const { stdout } = await render(databaseCaValues);
-    const objects = await resources(stdout);
+    const objects = await renderObjects(databaseCaValues);
     const selected = (kind, component) =>
       objects.find(
         (object) =>
@@ -4362,8 +4348,7 @@ test("the chart refuses administrator emails the bootstrap Job refuses", tooling
     "\uFEFFadmin@example.com",
     "\u0085a@b.com",
   ]) {
-    const { stdout } = await render({}, { strings: { "bootstrap.adminEmail": email } });
-    const objects = await resources(stdout);
+    const objects = await renderObjects({}, { strings: { "bootstrap.adminEmail": email } });
     const job = objects.find(
       (object) =>
         object.kind === "Job" &&
@@ -4388,8 +4373,7 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
       JSON.stringify(claimName),
     );
   }
-  const { stdout } = await render({}, { strings: { "bootstrap.password.claimName": longest } });
-  const objects = await resources(stdout);
+  const objects = await renderObjects({}, { strings: { "bootstrap.password.claimName": longest } });
   const job = objects.find(
     (object) =>
       object.kind === "Job" &&
@@ -4830,8 +4814,9 @@ test(
     const namespace = "tenant-407";
     const label = routeNamespaceLabel(namespace, "oce-agent-gateways");
     assert.match(label, /^[0-9]+e[0-9]+$/);
-    const objects = await resources(
-      (await render({ ...gatewayRoutingValues, ...slackProxyValues }, { namespace })).stdout,
+    const objects = await renderObjects(
+      { ...gatewayRoutingValues, ...slackProxyValues },
+      { namespace },
     );
     const values = [];
     const collect = (value) => {
@@ -5015,18 +5000,14 @@ test(
     const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
     const hostname = defaultGatewayHostname(gatewayNamespace, gatewayName, envoyNamespace);
     const rootSecret = rootSecretName(gatewayNamespace, gatewayName);
-    const configured = await resources(
-      (
-        await render(
-          { ...gatewayRoutingValues, ...controlPlaneSelectorValues },
-          { omit: ["gatewayRouting.enabled"] },
-        )
-      ).stdout,
+    const configured = await renderObjects(
+      { ...gatewayRoutingValues, ...controlPlaneSelectorValues },
+      { omit: ["gatewayRouting.enabled"] },
     );
     const alternateNamespace = "openclaw-alt";
-    const alternateObjects = await resources(
-      (await render(gatewayRoutingValues, { namespace: alternateNamespace })).stdout,
-    );
+    const alternateObjects = await renderObjects(gatewayRoutingValues, {
+      namespace: alternateNamespace,
+    });
     const envoyPolicyName = envoyNetworkPolicyName("oce", gatewayNamespace, gatewayName);
     const alternateEnvoyPolicyName = envoyNetworkPolicyName("oce", alternateNamespace, gatewayName);
     assert.notEqual(envoyPolicyName, alternateEnvoyPolicyName);
@@ -5034,7 +5015,7 @@ test(
     assert.ok(envoyPolicyName.length <= 63);
     // Truncating a dotted release name can leave a trailing "." (finding 2338).
     for (const release of [`${"a".repeat(33)}.b`, `${"a".repeat(33)}-b`]) {
-      const names = (await resources((await render(gatewayRoutingValues, { release })).stdout))
+      const names = (await renderObjects(gatewayRoutingValues, { release }))
         .filter(({ kind }) => kind === "NetworkPolicy")
         .map(({ metadata }) => metadata.name)
         .filter((name) => name.endsWith("-envoy-dataplane"));
@@ -5287,15 +5268,11 @@ test(
   "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
   tooling,
   async () => {
-    const configured = await resources(
-      (
-        await render({
-          ...externalGatewayRoutingValues,
-          "gatewayRouting.caSecretName": "occ-private-ca",
-          "gatewayRouting.caSecretKey": "ca.crt",
-        })
-      ).stdout,
-    );
+    const configured = await renderObjects({
+      ...externalGatewayRoutingValues,
+      "gatewayRouting.caSecretName": "occ-private-ca",
+      "gatewayRouting.caSecretKey": "ca.crt",
+    });
     const gatewayName = "oce-agent-gateways";
     const gatewayNamespace = "openclaw-system";
     const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
@@ -5484,13 +5461,9 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
     [`${"a".repeat(253)}/Name`, "x"],
     ["a".repeat(63), "b".repeat(63)],
   ]) {
-    const objects = await resources(
-      (
-        await render(
-          {},
-          { strings: { [`api.clients[0].podLabels.${key.replaceAll(".", "\\.")}`]: value } },
-        )
-      ).stdout,
+    const objects = await renderObjects(
+      {},
+      { strings: { [`api.clients[0].podLabels.${key.replaceAll(".", "\\.")}`]: value } },
     );
     const policy = objects.find(
       ({ metadata }) => metadata.name === "openclaw-enterprise-api-ingress",
@@ -5531,15 +5504,11 @@ test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", too
     );
   }
   for (const value of ["1", "3100", "65535"]) {
-    const objects = await resources(
-      (await render(productionCollectorValues, { strings: { [field]: value } })).stdout,
-    );
+    const objects = await renderObjects(productionCollectorValues, { strings: { [field]: value } });
     const policy = findResource(objects, "NetworkPolicy", "openclaw-enterprise-collector-egress");
     assert.deepEqual(policy.spec.egress.at(-1).ports, [{ protocol: "TCP", port: Number(value) }]);
   }
-  const numeric = await resources(
-    (await render({ ...productionCollectorValues, [field]: 3100 })).stdout,
-  );
+  const numeric = await renderObjects({ ...productionCollectorValues, [field]: 3100 });
   assert.deepEqual(
     numeric
       .find(({ metadata }) => metadata.name === "openclaw-enterprise-collector-egress")
@@ -6417,10 +6386,10 @@ test(
       );
     }
     for (const serviceType of ["LoadBalancer", "NodePort"]) {
-      const objects = await resources(
-        (await render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }))
-          .stdout,
-      );
+      const objects = await renderObjects({
+        ...gatewayRoutingValues,
+        "gatewayRouting.serviceType": serviceType,
+      });
       const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
       assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
     }

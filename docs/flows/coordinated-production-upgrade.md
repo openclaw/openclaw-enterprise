@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-12"
-last_updated_session: "authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b"
+updated: "2026-11-13"
+last_updated_session: "authoring-run/01a117f8-113d-7610-83db-37431b054e44"
 ---
 
 # Production image upgrade flow
@@ -328,8 +328,8 @@ Missing/incomparable counts or Pod identities report unknown; only a comparable
 increase with last termination `OOMKilled` establishes OOM. A memory timeout
 starts no further Doctor. Then, also after a failed Doctor, `revision_pod_change_since_ready`
 fails the upgrade for any revision Pod the wait required (gateway or dedicated agent)
-missing, replaced, restarted, or unready; the readiness wait ignores ended Pods, so
-resume checks the replacement.
+missing, deleting, replaced, restarted, or unready. Resume selects the Ready
+replacement even while the terminating Pod still appears in the Kubernetes API.
 
 ### 6. Hand off application verification
 
@@ -389,6 +389,7 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-13 05:08: Exclude terminating Pods when selecting Doctor targets. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - ca6bfc2f0376ee3fd9c5a9a255f7e5f37a454131)
 - 2026-11-12 20:49: Preserve status after polling errors. (authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b - a627e44694987459dbbf9aa59a3d76b9a97f48a7)
 - 2026-11-12 07:07: Check candidate writer database identity, connection prerequisites and rollback recovery. (authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057 - c7da19f78a8125fe0a7dec649b5417a23ded1d8e)
 - 2026-11-12 03:35: Preserve JSON values. (authoring-run/9680374b-51c1-4f5e-a3d5-a7c0c1006b92 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
@@ -396,7 +397,5 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 - 2026-11-12 00:11: Precheck worker patch access. (authoring-run/db7ef311-7726-453b-b06c-e048bc6054ac - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
 
 - 2026-11-11 12:30: Record preflight creation plans and link the separate cleanup-only recovery path. (authoring-run/9239da57-dcad-427a-82aa-c7d64376fdc5 - e961361d56537b17f361347b097d075f5e608fb1)
-
-- 2026-11-11 12:02: Confirm preflight dependency deletion and accept verified absence after failed DELETE. (authoring-run/ecf34abe-0b63-4cb7-bcf5-8333a11c89b2 - ae6cdc2dbe4aed966567ecb642129f3fb96e593b)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.

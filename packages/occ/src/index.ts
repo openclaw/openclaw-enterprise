@@ -328,6 +328,7 @@ import {
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   RuntimeDiagnosticsTransportError,
+  DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -500,6 +501,7 @@ export {
   DependencyUnavailableError,
   RuntimeDiagnosticsTransportError,
   PersistedStateInvalidError,
+  DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -10311,7 +10313,7 @@ export class OpenClawController {
       session.namespaceId !== namespaceId ||
       session.agentId !== agentId
     ) {
-      throw new ScopeViolationError("The login belongs to another actor or Agent scope.");
+      throw new DeviceAuthorizationScopeMismatchError();
     }
     if (
       session.phase !== "cancelled" &&
@@ -12072,6 +12074,7 @@ export class OpenClawController {
     facet: SandboxFacet,
     expectedVersion: number,
     revisionId: string,
+    additions?: readonly SandboxNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
@@ -12124,27 +12127,38 @@ export class OpenClawController {
           "Live policy application is unavailable for this revision. Deploy explicitly to apply the saved policy.",
         );
       }
+      const desired =
+        additions === undefined
+          ? policy
+          : await this.updateAgentSandboxPolicy(
+              principalId,
+              namespaceId,
+              agentId,
+              facet,
+              expectedVersion,
+              additions,
+            );
       const snapshot = this.admitAgentNetworkPolicy(
-        policy.additions,
-        policy.version,
+        desired.additions,
+        desired.version,
         revision.sandboxPolicy.defaults,
         { repositoryCredentials: revision.repositoryCredentials !== undefined },
       );
       const id = crypto.randomUUID();
       const updated = await state.sandboxPolicies.save(
         {
-          ...policy,
+          ...desired,
           application: {
             id,
             revisionId,
-            policyVersion: policy.version,
+            policyVersion: desired.version,
             snapshot,
             state: "pending",
             requestedBy: principalId,
             requestedAt: this.timestamp(),
           },
         },
-        policy.version,
+        desired.version,
       );
       if (updated === undefined) {
         throw new ResourceStateConflictError("The policy changed.");
@@ -12317,7 +12331,6 @@ export class OpenClawController {
       input.gatewayManagedMode,
       this.gatewayManagedModeSupported(),
     );
-    const backendId = this.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
@@ -12335,6 +12348,7 @@ export class OpenClawController {
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this write waited stops it before it leaves a durable Owner binding or grant.
       await this.authorize(principalId, "create", target);
+      const backendId = this.backendId(input.backendId);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new Agents.");

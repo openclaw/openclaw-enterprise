@@ -28,6 +28,10 @@ export function isClientBearer(bearer: string): boolean {
   return /^[A-Za-z0-9_-]{32,256}$/.test(bearer);
 }
 
+function isClientSessionId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
 /** Refuse a direct gh session whose private files disagree. */
 export async function requireGhMaterial(
   configuration: ClientFiles,
@@ -85,16 +89,19 @@ export function encodeRepositoryCredentialSessionFiles(
   publicCa?: Uint8Array,
 ): RepositoryCredentialSessionFiles {
   validateClient(opened.client);
+  if (!isClientBearer(opened.bearer)) {
+    throw new Error("invalid-client-configuration");
+  }
+  const sessionId = opened.session.sessionId;
   if (
-    !isClientBearer(opened.bearer) ||
-    !/^[A-Za-z0-9_-]{1,128}$/.test(opened.session.sessionId) ||
+    !isClientSessionId(sessionId) ||
     !Number.isFinite(opened.session.deadlineWallMs) ||
     (publicCa && publicCa.byteLength > clientSessionFileMaxBytes["ca.pem"])
   ) {
     throw new Error("invalid-client-configuration");
   }
   const files: ClientFiles = {
-    sessionId: opened.session.sessionId,
+    sessionId,
     deadlineWallMs: opened.session.deadlineWallMs,
     client: opened.client,
     hasPublicCa: publicCa !== undefined,
@@ -189,7 +196,7 @@ export async function readClientConfiguration(directory: string): Promise<Client
   ) as ClientFiles;
   validateClient(value.client);
   if (
-    !/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId) ||
+    !isClientSessionId(value.sessionId) ||
     !Number.isFinite(value.deadlineWallMs) ||
     typeof value.hasPublicCa !== "boolean"
   ) {

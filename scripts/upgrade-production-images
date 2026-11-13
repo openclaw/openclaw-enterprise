@@ -2497,10 +2497,9 @@ while IFS= read -r deployment; do
     "${kube[@]}" --request-timeout="${remaining_seconds}s" get pods --all-namespaces \
       --selector "openclaw.dev/revision=$deployment_id" \
       --output json >"$pods"
-    # A Pod that ended (phase Succeeded or Failed, such as an evicted gateway) no
-    # longer serves, and its controller starts a replacement. Kubernetes keeps ended
-    # Pods until garbage collection, so this wait, also on --resume, ignores them.
-    jq '.items |= map(select(.status.phase != "Succeeded" and .status.phase != "Failed"))' \
+    # During replacement, a deleting Pod can still report Running and Ready.
+    # Select Doctor targets from current Pods and keep the full list in the evidence.
+    jq '.items |= map(select(.metadata.deletionTimestamp == null and .status.phase != "Succeeded" and .status.phase != "Failed"))' \
       "$pods" >"$live_pods"
     runtime_count=$(jq '[.items[].spec.containers[] | select(.name == "gateway" or .name == "agent")] | length' "$live_pods")
     if ((runtime_count == expected_runtime_count)); then

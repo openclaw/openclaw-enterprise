@@ -62,9 +62,9 @@ import {
 } from "../helpers/production-upgrade-preflight-cleanup.ts";
 import { registerRetainedFleetPreflightTests } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
 
-// Every case owns its command server, state, and evidence directory. Two sibling
+// Every case owns its command server, state, and evidence directory. Three sibling
 // cases can overlap while the existing nested groups keep their own limits.
-await describe("production image upgrade recovery", { concurrency: 2 }, async () => {
+await describe("production image upgrade recovery", { concurrency: 3 }, async () => {
   const executeFile = promisify(execFile);
   const execute = (command, args, options = {}) =>
     executeFile(command, args, {
@@ -5156,12 +5156,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         );
       }
       await Promise.all(runs);
-      // Resume after the eviction: the ended Pod stays in the API, but the readiness wait
-      // ignores it, runs Doctor in the replacement and checks that Pod instead. No new deploy.
+      // A gateway can still report Ready while its deletion is in progress.
+      // Resume must run Doctor in its replacement without waiting for garbage collection.
+      const retiring = pod();
+      retiring.metadata.deletionTimestamp = "2026-01-01T00:00:00Z";
       const f = await fixture(t, { agent: true });
-      await updateDoctorFixtureState(f, { afterDoctor: afterEviction });
-      await assert.rejects(f.run(), /did not stay on the same Ready Pod without restarts/);
-      const resumed = await f.run("--resume");
+      await updateDoctorFixtureState(f, { afterDoctor: { revisionPods: [retiring, replacement] } });
+      await assert.rejects(f.run(), /is being deleted/);
+      const resumed = await f.run("--resume", "--timeout-seconds", "10");
       assert.match(resumed.stdout, /Upgraded runtime image/);
       assert.equal((await f.state()).dispatches, 1);
       assert.deepEqual(

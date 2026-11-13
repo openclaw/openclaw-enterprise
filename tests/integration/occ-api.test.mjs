@@ -4221,6 +4221,111 @@ test("Agent Backend API preserves nullable drafts and immutable revision associa
   const configuration = await createConfiguration(controller, namespace.id);
   const collection = `/namespaces/${namespace.id}/agents`;
 
+  const { principal: member } = await fixture.createAuthPrincipal("backend-selector");
+  fixture.state.identities.push(member);
+  const memberApp = fixture.createApp(member);
+  assertApiError(await injectedRequest(memberApp, "GET", "/backends"), 403, "FORBIDDEN");
+  const beforeDeniedCreates = await controller.request("GET", collection);
+  assert.equal(beforeDeniedCreates.status, 200);
+  const readCreateState = () =>
+    fixture.platformState.read(async (unit) => ({
+      agents: await unit.agents.listAgents(namespace.id),
+      configuration: await unit.configurations.findConfiguration(namespace.id, configuration.id),
+      roles: await unit.iamPolicy.listRoles(namespace.id),
+      accessBindings: await unit.iamPolicy.listAccessBindings(namespace.id),
+      servicePrincipals: await unit.iamPolicy.listServicePrincipals(namespace.id),
+      operations: await unit.operations.list(),
+    }));
+  const beforeDeniedState = await readCreateState();
+  assert.equal(beforeDeniedState.configuration?.id, configuration.id);
+  assert.equal(beforeDeniedState.configuration.namespaceId, namespace.id);
+
+  // Backend existence must not be observable before the caller's exact Agent-create check.
+  let firstDenial;
+  const denialRequestIds = new Set();
+  for (const backendId of ["openai", "unknown"]) {
+    const denied = await injectedRequest(memberApp, "POST", collection, {
+      body: { name: "denied-backend", configurationId: configuration.id, backendId },
+    });
+    assertApiError(denied, 403, "FORBIDDEN", backendId);
+    assert.deepEqual(Object.keys(denied.body).sort(), ["error", "meta"]);
+    assert.equal(denied.data, undefined);
+    if (firstDenial === undefined) {
+      firstDenial = denied.body.error;
+    } else {
+      assert.deepEqual(denied.body.error, firstDenial);
+    }
+    const requestId = denied.body.meta.requestId;
+    assert.equal(denialRequestIds.has(requestId), false);
+    denialRequestIds.add(requestId);
+    const events = fixture.auditSink.events.filter((event) => event.requestId === requestId);
+    assert.equal(events.length, 1, "the denied request emits no success mutation");
+    const denial = events[0];
+    const target = { kind: "agent", id: namespace.id, namespaceId: namespace.id };
+    assert.equal(denial.kind, "authorization_denial");
+    assert.equal(denial.action, "openclaw.agents.create");
+    assert.equal(denial.actorId, member.id);
+    assert.equal(denial.actor.principalId, member.id);
+    assert.equal(denial.outcome, "denied");
+    assert.equal(denial.reasonCode, "AUTHORIZATION_DENIED");
+    assert.equal(denial.iamDriverId, "iam-integration");
+    assert.deepEqual(denial.resource, target);
+    assert.deepEqual(denial.authorization, {
+      principalId: member.id,
+      action: "create",
+      resource: target,
+    });
+    assert.equal(denial.details.iamEvidence.identityId, member.id);
+    // A refusal may append its audit event, but cannot change application or IAM State.
+    assert.deepEqual(await readCreateState(), beforeDeniedState, backendId);
+  }
+  const afterDeniedCreates = await controller.request("GET", collection);
+  assert.equal(afterDeniedCreates.status, 200);
+  assert.deepEqual(afterDeniedCreates.data, beforeDeniedCreates.data);
+
+  // Agent creation can select a Backend without permission to list the Installation catalog.
+  fixture.state.roles.push({
+    id: "role-backend-agent-creator",
+    namespaceId: namespace.id,
+    permissions: [
+      { action: "create", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
+    ],
+  });
+  fixture.state.bindings.push({
+    id: "binding-backend-agent-creator",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: member.id,
+    roleId: "role-backend-agent-creator",
+  });
+  assertApiError(await injectedRequest(memberApp, "GET", "/backends"), 403, "FORBIDDEN");
+  const memberCreated = await injectedRequest(memberApp, "POST", collection, {
+    body: {
+      name: "member-selected",
+      configurationId: configuration.id,
+      backendId: "openai",
+    },
+  });
+  assert.equal(memberCreated.status, 201, JSON.stringify(memberCreated.body));
+  assert.equal(memberCreated.data.backendId, "openai");
+  const memberRead = await controller.request("GET", `${collection}/${memberCreated.data.id}`);
+  assert.equal(memberRead.status, 200);
+  assert.equal(memberRead.data.backendId, "openai");
+  const beforeUnknownCreate = await controller.request("GET", collection);
+  assert.equal(beforeUnknownCreate.status, 200);
+  const memberUnknown = await injectedRequest(memberApp, "POST", collection, {
+    body: {
+      name: "member-unknown",
+      configurationId: configuration.id,
+      backendId: "unknown",
+    },
+  });
+  assertApiError(memberUnknown, 404, "NOT_FOUND");
+  const afterUnknownCreate = await controller.request("GET", collection);
+  assert.equal(afterUnknownCreate.status, 200);
+  assert.deepEqual(afterUnknownCreate.data, beforeUnknownCreate.data);
+
   // Exercise wire defaults and persistence through the real authenticated Fastify routes.
   for (const [name, association] of [
     ["omitted", {}],

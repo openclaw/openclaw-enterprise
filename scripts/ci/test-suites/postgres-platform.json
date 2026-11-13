@@ -701,6 +701,7 @@
     {
       "path": "tests/integration/postgres-credential-source-revision-owner.test.ts",
       "expectedTests": [
+        "PostgreSQL accepts 64 credential sources per draft and revision and rejects a 65th",
         "revision insertion owns its snapshot before a source lock wait",
         "reversed source lists commit in their original order",
         "direct insertion respects OCC Namespace Agent source lock order",

@@ -1,11 +1,13 @@
 import { spawnSync } from "node:child_process";
 import type { RuntimeRepositoryBinding, RuntimeRepositoryManifest } from "./manifest.ts";
 
+function isRepositoryName(value: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.includes("..");
+}
+
 function gitRepositoryPath(value: string): string | undefined {
   const path = value.replace(/\/+$/, "");
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(path) && !path.includes("..")
-    ? path.toLowerCase()
-    : undefined;
+  return isRepositoryName(path) ? path.toLowerCase() : undefined;
 }
 
 function matchesGitRepositoryPath(repository: string, path: string): boolean {
@@ -69,7 +71,7 @@ export function selectGhRepository(
   pinned?: RuntimeRepositoryBinding,
 ): RuntimeRepositoryBinding {
   const repository = value.replace(/^github\.com\//, "");
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || repository.includes("..")) {
+  if (!isRepositoryName(repository)) {
     throw new Error("unsupported-repository-target");
   }
   return selectBinding(
