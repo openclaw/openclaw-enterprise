@@ -1295,7 +1295,10 @@ test("production embedded replacements preserve their active Service across fail
     name,
     ownership,
     { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
+    {
+      runtime: "openclaw-enterprise/gateway-fixture:local",
+      workspaceSetup: computeDriver.options.images.gateway,
+    },
     `agent-${shortHash(agentId, 12)}`,
     "gateway",
     {},

@@ -246,6 +246,8 @@ export interface ComputeDriver extends Driver {
   readonly maintenanceIntervalMs?: number;
   /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
   admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
+  /** Optional immutable launch inputs, separate from execution authority. No side effects. */
+  snapshotRuntimeInputs?(revision: Readonly<AgentRevision>): string | undefined;
   /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive

@@ -103,6 +103,7 @@ export function admitRevisionHarness(driver, revision) {
     revision.configuration,
   );
   revision.compute.admission = driver.admitRevision(revision);
+  revision.compute.runtimeInputs = driver.snapshotRuntimeInputs?.(revision);
   return revision;
 }
 
@@ -160,8 +161,12 @@ export function routedRevision(driver, overrides = {}) {
       ) ??
       {},
   };
-  if (!Object.hasOwn(revision.compute, "admission")) {
+  if (
+    !Object.hasOwn(revision.compute, "admission") &&
+    !Object.hasOwn(revision.compute, "runtimeInputs")
+  ) {
     revision.compute.admission = driver.admitRevision?.(revision);
+    revision.compute.runtimeInputs = driver.snapshotRuntimeInputs?.(revision);
   }
   return revision;
 }

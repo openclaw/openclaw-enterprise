@@ -843,7 +843,10 @@ test("embedded Gateway uses the separate canonical password source", () => {
       `gateway-${suffix}`,
       { namespaceId: namespace.id, agentId },
       { name: namespaceName, plane: "execution" },
-      "openclaw-enterprise/gateway-fixture:local",
+      {
+        runtime: "openclaw-enterprise/gateway-fixture:local",
+        workspaceSetup: driver.options.images.gateway,
+      },
       `agent-${suffix}`,
       "gateway",
       {},

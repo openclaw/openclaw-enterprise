@@ -98,7 +98,7 @@ export function providerReadinessFixture({
       servicePrincipalId: revision.servicePrincipalId,
     },
     { name: namespace, plane: "execution" },
-    "agent:local",
+    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
     agentName,
     "agent",
     {},

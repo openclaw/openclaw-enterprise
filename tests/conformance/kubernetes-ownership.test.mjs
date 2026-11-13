@@ -141,7 +141,7 @@ test("gateway readiness rejects a foreign Service before accepting endpoint read
     "gateway",
     ownership,
     { name: namespace, plane: "execution" },
-    "gateway:local",
+    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
     "gateway",
     "gateway",
     {},

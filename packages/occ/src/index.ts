@@ -13779,16 +13779,24 @@ export class OpenClawController {
         throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
       }
       const computeAdmission = compute.admitRevision?.(freezeAgentRevision(revisionDraft));
+      const admittedDraft = freezeAgentRevision({
+        ...revisionDraft,
+        compute: {
+          ...revisionDraft.compute,
+          ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
+        },
+      });
+      const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
-          ...revisionDraft,
+          ...admittedDraft,
           compute: {
-            ...revisionDraft.compute,
-            ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
+            ...admittedDraft.compute,
+            ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
           },
         }),
         first?.digest,
