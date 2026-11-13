@@ -29,7 +29,7 @@
     "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
     "tests/integration/container-registry-real.test.mjs",
-    "tests/integration/logging-packaging.test.mjs",
+    "tests/integration/logging-packaging.test.ts",
     "tests/integration/repository-runtime-volume.test.ts",
     "tests/integration/production-image-qualification.test.ts",
     "tests/integration/development-packaging.test.mjs",
@@ -122,7 +122,7 @@
       ]
     },
     {
-      "path": "tests/integration/logging-packaging.test.mjs",
+      "path": "tests/integration/logging-packaging.test.ts",
       "expectedTests": [
         "development logging override routes only OCC-owned services through the private Collector",
         "production Helm logging Collector is opt-in and isolated from application credentials",

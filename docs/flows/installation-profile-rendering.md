@@ -279,7 +279,7 @@ activation, and repository registry creation need separate evidence.
 
 - Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
   CLI and inspect generated profile output.
-- `tests/integration/profile-preflight-chart-parity.test.mjs` runs trusted proxy
+- `tests/integration/profile-preflight-chart-parity.test.ts` runs trusted proxy
   CIDRs and client address headers, namespaces, node selectors, sign-in Secret
   names and keys, controller images, claim names, Backend IDs and free-text
   values through the renderer and `helm template`, plus the API parser or

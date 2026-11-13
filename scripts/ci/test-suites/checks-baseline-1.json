@@ -51,7 +51,7 @@
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
     "tests/integration/profile-public-github-read.test.mjs",
-    "tests/integration/profile-preflight-chart-parity.test.mjs",
+    "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.mjs",
     "tests/conformance/runtime-logs-container-wire.test.ts",
     "tests/conformance/node-enrollment-client.test.mjs",
@@ -402,7 +402,7 @@
       ]
     },
     {
-      "path": "tests/integration/profile-preflight-chart-parity.test.mjs",
+      "path": "tests/integration/profile-preflight-chart-parity.test.ts",
       "expectedTests": [
         "trusted proxy CIDRs get the same verdict from the preflight and the chart",
         "trusted proxy client address headers get the same verdict from the preflight and the chart"
