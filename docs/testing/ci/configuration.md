@@ -127,3 +127,43 @@ These process environment variables are optional. First Agent Smoke has its own
 Cleanup timeout/grace overrides that are not positive numbers use defaults.
 Deadlines include pipe drain; a wait timeout does not prove deletion. Preparation
 verifies imported image references on every node and fails on import timeout.
+
+## Rehearse a controller and broker upgrade with a running Agent
+
+Use a dedicated amd64 runner with the installed lane's Kubernetes, Docker and
+synthetic model prerequisites. The baseline is commit
+`54bfa7fc1b99e362450beb5f9211e164991fa7b4`. Set
+`OCC_SKIPPER_PREVIOUS_CHECKOUT` to its clean checkout. Stage these image inputs:
+
+| Variable                                                                           | Required input                                                                                                                                             |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_DEVELOPMENT_CONTROLLER_IMAGE`                                                 | Published baseline controller at `ghcr.io/openclaw/openclaw-enterprise-controller@sha256:968ef69a70c0f2ac927e0e7515ba8c07c9887e7b23211351f58bbf706662ffed` |
+| `OCC_KUBERNETES_RUNTIME_IMAGE`                                                     | Baseline runtime with the test model's CA. Use its matching `OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY`.                                                       |
+| `OCC_DEVELOPMENT_REPOSITORY_IMAGE`                                                 | Digest-pinned broker built from the baseline                                                                                                               |
+| `OCC_SKIPPER_CANDIDATE_CONTROLLER_IMAGE`, `OCC_SKIPPER_CANDIDATE_REPOSITORY_IMAGE` | Digest-pinned candidate pair available to Docker and pullable by the k3d node                                                                              |
+
+Keep the upgrade checkout clean. Set `GITHUB_SHA` to its commit and use a fresh
+numeric `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`. Use the dedicated runner's
+loopback ports 3000, 6443 and 8443, with its development Console hostname
+resolving to loopback. From the candidate checkout, run:
+
+```sh
+host=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+TMPDIR=/tmp OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP="$host" \
+  node scripts/qualification/skipper-private-git-fixture.mjs -- \
+  node scripts/ci/skipper-prepared-git-installed.mjs --upgrade
+```
+
+The baseline CLI installs the old release. The test deploys two Agents, stops
+one, and records a conversation turn, workspace marker and private commit on
+the other. The candidate runs `scripts/upgrade-production-images` in preflight
+and apply modes. Success requires the same conversation history, retained
+workspace, a fresh Git fetch with the renewed standing session, a refused push
+to another ref, and an unchanged stopped Agent.
+
+A legacy-policy preflight refusal fails this test. The test also checks that
+the old writers and Agent still serve. The run directory retains private logs
+and upgrade evidence. Reconcile an interrupted apply before removing retained
+cluster resources. The controlled model and native sender cover the selected
+runtime with its fixture trust layer. Protected senders require their own
+installed proof.

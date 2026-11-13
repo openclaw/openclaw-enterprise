@@ -175,6 +175,8 @@ Its authorized run proves the packaged sender in a real cluster; it is separate 
 The PostgreSQL tests cover receipt recovery and no-replay behavior, while the runtime image tests
 cover stock Codex and generated client material. These checks do not replace the installed lane.
 
+For the two-release test, see [upgrade rehearsal inputs](ci/configuration.md#rehearse-a-controller-and-broker-upgrade-with-a-running-agent).
+
 On a native-command chat completion mismatch, the lane attempts to report matching
 synthetic model request/result counts and whether any result contained the completion
 marker, or state that model observations are unavailable. A separate message confirms
