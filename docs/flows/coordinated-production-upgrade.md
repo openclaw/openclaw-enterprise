@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-13"
-last_updated_session: "authoring-run/01a117f8-113d-7610-83db-37431b054e44"
+last_updated_session: "authoring-run/01a1d49f-de14-7d82-8f0d-03d217352800"
 ---
 
 # Production image upgrade flow
@@ -93,7 +93,9 @@ and array-wrapping one registration.
 Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
 live comparison stays exact. Immutable reference switches require string keys.
 Startup validates controllers; broker checks only references.
-Both serving containers must mount baseline bytes from a generation older than container startup.
+Each serving writer must mount the baseline bytes. If the projection changed in the reported
+container start second, the helper verifies that it predates creation of kubelet’s
+termination-message file for that Pod and container. Uncertain ordering blocks shutdown.
 Matching legacy GitHub Backends record [fleet and custody evidence](../guides/deploy/credential-proxy-upgrade.md#inspect-legacy-git-custody) before refusal. Other legacy selections block shutdown.
 
 `read_restart_inventory` validates authorized fleet IDs, states and running revisions’
@@ -388,6 +390,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 11:32: Verify same-second startup projection order. (authoring-run/01a1d49f-de14-7d82-8f0d-03d217352800 - 27fdfb56ed6f716186ed44ec50229b4aeca7b040)
 
 - 2026-11-13 05:08: Exclude terminating Pods when selecting Doctor targets. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - ca6bfc2f0376ee3fd9c5a9a255f7e5f37a454131)
 - 2026-11-12 20:49: Preserve status after polling errors. (authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b - a627e44694987459dbbf9aa59a3d76b9a97f48a7)

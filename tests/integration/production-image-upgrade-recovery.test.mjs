@@ -7,6 +7,7 @@ import {
   constants,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -1694,7 +1695,15 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         args.at(-1).includes("readlink installation.yaml")
       ) {
         const mounted = join(root, "startup-projection");
-        const probe = args.at(-1).replaceAll("/etc/openclaw/installation", mounted);
+        const component = fileArg("-c");
+        const marker = join(mounted, component + "-termination-log");
+        // Supply the kubelet mount table and its per-container inode. stat, readlink
+        // and the projection hash still execute against the filesystem.
+        const probe = args
+          .at(-1)
+          .replaceAll("/etc/openclaw/installation", mounted)
+          .replaceAll("/proc/self/mountinfo", marker + "-mountinfo")
+          .replaceAll("/dev/termination-log", marker);
         try {
           const result = await execute("sh", ["-ec", probe], {
             env: { ...process.env, OCC_CONFIG_PATH: join(mounted, "installation.yaml") },
@@ -5680,6 +5689,53 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     assert.deepEqual(await f.events(), []);
   });
 
+  // Place the marker and the atomic publication in one clock second. If setup
+  // straddles the boundary or both timestamps tie, use a fresh inode and retry.
+  async function stageSameSecondProjection(directory, generation, component, beforeStart) {
+    const projection = join(directory, "startup-projection");
+    const marker = join(projection, component + "-termination-log");
+    const uid = component + "-pod-uid-0";
+    const link = join(projection, "..data");
+    await writeFile(
+      marker + "-mountinfo",
+      `1 2 0:3 /pods/${uid}/containers/${component}/1234abcd ${marker} rw - ext4 /dev/root rw\n`,
+    );
+    for (let i = 0; i < 20; i++) {
+      const publish = async () => {
+        symlinkSync(generation, join(projection, "..data_tmp"));
+        await rename(join(projection, "..data_tmp"), link);
+      };
+      if (beforeStart) {
+        await publish();
+      }
+      await writeFile(marker + ".new", "");
+      await rename(marker + ".new", marker);
+      if (!beforeStart) {
+        await publish();
+      }
+      const created = statSync(marker, { bigint: true }).birthtimeNs;
+      const published = lstatSync(link, { bigint: true }).ctimeNs;
+      if (
+        created / 1_000_000_000n === published / 1_000_000_000n &&
+        (beforeStart ? published < created : created < published)
+      ) {
+        return Number(created / 1_000_000_000n) * 1000;
+      }
+    }
+    assert.fail("could not stage ordered filesystem timestamps in one second");
+  }
+
+  test("a fast writer accepts its initial startup projection in the container start second", async (t) => {
+    const f = await fixture(t, { controllerOnly: true });
+    const state = await f.state();
+    state.startupContainerStart = {
+      worker: await stageSameSecondProjection(f.directory, "generation", "worker", true),
+    };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
+    assert.deepEqual(await f.events(), []);
+  });
+
   test("a refreshed Secret cannot stand in for a serving Worker's earlier repository policy", async (t) => {
     const f = await fixture(t, {
       controllerOnly: true,
@@ -5696,13 +5752,13 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     const bytes = JSON.stringify(edited);
     await writeFile(file, bytes);
     state.secret.data["installation.yaml"] = Buffer.from(bytes).toString("base64");
-    state.startupContainerStart = { worker: Date.now() - 60_000 };
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     const projection = join(f.directory, "startup-projection");
     await mkdir(join(projection, "normalized"));
     await writeFile(join(projection, "normalized", "installation.yaml"), bytes);
-    symlinkSync("normalized", join(projection, "..data_tmp"));
-    await rename(join(projection, "..data_tmp"), join(projection, "..data"));
+    state.startupContainerStart = {
+      worker: await stageSameSecondProjection(f.directory, "normalized", "worker", false),
+    };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
 
     await assert.rejects(
       f.run(),

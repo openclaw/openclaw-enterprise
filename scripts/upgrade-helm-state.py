@@ -2,9 +2,11 @@
 """Keep Helm submissions distinct and verify a same-candidate recovery."""
 
 from datetime import datetime
+from decimal import Decimal
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -620,26 +622,42 @@ def check_startup_projection(directory, release, kubeconfig, context, namespace,
     # Kubelet atomically replaces ..data when the projected contents change. Its symlink ctime
     # includes that rename. Check it on both sides of the hash, not the payload file's mtime.
     probe = """set -eu
+export LC_ALL=C
 cd /etc/openclaw/installation
 test "$OCC_CONFIG_PATH" = /etc/openclaw/installation/installation.yaml
 test "$(readlink installation.yaml)" = ..data/installation.yaml
 test -L ..data
-before=$(stat -c '%d:%i:%Z' ..data)
+before=$(stat -c '%d:%i:%.9Z' ..data)
 sha256sum < installation.yaml
-after=$(stat -c '%d:%i:%Z' ..data)
+after=$(stat -c '%d:%i:%.9Z' ..data)
 test "$before" = "$after"
 printf '%s\n' "${after##*:}"
+# Kubelet creates and bind-mounts this per-container file before starting the process.
+# Its birth time remains fixed even if the process later writes its termination message.
+awk '$5 == "/dev/termination-log" {print $4}' /proc/self/mountinfo 2>/dev/null || true
+stat -c '%.9W' /dev/termination-log 2>/dev/null || true
 """
     expected = sha(read(directory / "before-live-installation.yaml"))
-    for pod_name, _uid, _container, start_time in observed:
+    for pod_name, uid, _container, start_time in observed:
         result = command([*kube, "exec", pod_name, "-c", component, "--",
                           "sh", "-ec", probe]).decode().splitlines()
-        require(len(result) == 2 and result[0].split() == [expected, "-"],
+        require(len(result) >= 2 and result[0].split() == [expected, "-"],
                 "mounted startup bytes differ from the baseline")
-        # Both times come from this node. Timestamps in the same second cannot prove order.
+        require(re.fullmatch(r"[0-9]+\.[0-9]{9}", result[1]), "startup projection time is unavailable")
+        generation = Decimal(result[1])
         started = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-        require(started.utcoffset() is not None and 0 < int(result[1]) < int(started.timestamp()),
-                "the mounted startup generation does not predate the serving container")
+        require(started.utcoffset() is not None, "serving container start time is unavailable")
+        start_second = int(started.timestamp())
+        predates_start = 0 < generation < start_second
+        # PodStatus can truncate startedAt to seconds. Within that second, require
+        # the actual kubelet mount for this Pod UID and container name. A newer
+        # projection, a tie or an unavailable filesystem birth time proves no order.
+        if (int(generation) == start_second and len(result) == 4
+                and re.fullmatch(r".*/pods/" + re.escape(uid) + "/containers/" + re.escape(component)
+                                 + r"/[0-9a-f]{8}", result[2])
+                and re.fullmatch(r"[0-9]+\.[0-9]{9}", result[3])):
+            predates_start = generation < Decimal(result[3]) < start_second + 1
+        require(predates_start, "the mounted startup generation does not predate the serving container")
     require(identities() == observed, "serving container changed during the startup check")
 
 
