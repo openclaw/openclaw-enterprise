@@ -408,6 +408,8 @@ test(
     controller.registerDriver(iam);
     controller.selectDriver("iam", iam.id);
     await controller.createNamespace(seed.principal.id, { name: "Default" });
+    // Direct bootstrap must initialize the ceiling with its administrator before API startup.
+    await controller.initializeSandboxNetworkPolicyCeiling(seed.principal.id);
     const driver = new KubernetesSecretDriver(
       { authentication },
       { id: "private-real-kubernetes", installationSecretNamespace: namespace },
