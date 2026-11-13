@@ -356,6 +356,8 @@ egressAuthority:
     port: 9445 # decimal, without leading zeros
     # Projects the public SPIFFE JWT bundle key bundle.json into the API only.
     bundleConfigMapName: ""
+    # Public ca.crt for the HTTPS token endpoint. Must match the Installation's tokenGrant.issuerCaPath.
+    issuerCaConfigMapName: ""
 
 # Optional request-phase Git middleware listener in the worker.
 # Requires repositoryCredentials.authority: prepared-git and matching Installation

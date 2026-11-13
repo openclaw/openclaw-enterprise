@@ -203,6 +203,7 @@ export interface OpenShellProviderProfile {
     readonly refresh?: OpenShellProfileCredentialRefresh;
     readonly tokenGrant?: {
       readonly token_endpoint: string;
+      readonly token_endpoint_ca_pem?: string;
       readonly jwt_svid_audience: string;
       readonly audience: string;
       readonly client_assertion_type: string;

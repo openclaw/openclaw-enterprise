@@ -16,6 +16,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { before } from "node:test";
+import { rootCertificates } from "node:tls";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
@@ -40,6 +41,7 @@ import { spawnSync } from "node:child_process";
 import { reservedPortArgs, reservePort } from "../helpers/available-port.mjs";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
@@ -143,6 +145,81 @@ async function fixture(t, configuration = installation()) {
   await writeFile(path, JSON.stringify(configuration), "utf8");
   return path;
 }
+
+test("token grant issuer CA rotation changes installed identity and invalid trust fails startup", async (t) => {
+  const configuration = credentialProxyInstallation();
+  const directory = await temporaryDirectory(t, "occ-token-grant-ca-");
+  const issuerCaPath = join(directory, "ca.pem");
+  const tls = await harnessTlsFixture(t);
+  const tokenGrant = {
+    endpoint: "https://authority.example.test:9445/token",
+    port: 9445,
+    trustDomain: "example.test",
+    bundlePath: join(directory, "jwt-svid.json"),
+  };
+  configuration.drivers.credential_proxy.configuration.tokenGrant = tokenGrant;
+  const load = async () =>
+    loadInstallationConfiguration({
+      mode: "development",
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+  const request = (loaded) =>
+    loaded.installation.drivers.credential_proxy.configuration.requestCredentials;
+  const legacy = await load();
+  assert.equal(Object.hasOwn(request(legacy), "tokenEndpointCaPem"), false);
+  tokenGrant.issuerCaPath = issuerCaPath;
+  await writeFile(issuerCaPath, tls.caBundle.replaceAll("\n", "\r\n"));
+  const selected = await load();
+  assert.equal(request(selected).tokenEndpointCaPem, tls.caBundle);
+  await writeFile(issuerCaPath, rootCertificates[0]);
+  const rotated = await load();
+  assert.notEqual(
+    rotated.protectedDriver.ref.configurationId,
+    selected.protectedDriver.ref.configurationId,
+  );
+  for (const invalid of [tls.cert, tls.caBundle + tls.key, Buffer.alloc(65537, 32)]) {
+    await writeFile(issuerCaPath, invalid);
+    await assert.rejects(load(), (error) => {
+      assert.equal(
+        formatStartupConfigurationFailure(error),
+        "DRIVER_CONFIGURATION_INVALID: " +
+          JSON.stringify([
+            {
+              path: "/drivers/credential_proxy/configuration/tokenGrant/issuerCaPath",
+              code: "INVALID_VALUE",
+              message:
+                "tokenGrant.issuerCaPath must identify a readable PEM CA bundle of at most 64 KiB.",
+            },
+          ]),
+      );
+      return true;
+    });
+  }
+  // The combined model and Git selection keeps the model issuer independent of Git's authority.
+  await writeFile(issuerCaPath, tls.caBundle);
+  const { configuration: repository } = await repositoryInstallation(t);
+  const combined = structuredClone(configuration);
+  combined.backend.push(...repository.backend);
+  const proxy = combined.drivers.credential_proxy;
+  proxy.id = combined.drivers.sandbox.id;
+  combined.backend[0].drivers.credential_proxy = proxy.id;
+  delete proxy.configuration.authorityScope;
+  const { nativeSender: _nativeSender, ...preparedRepository } = repository.repository;
+  combined.repository = {
+    ...preparedRepository,
+    openShell: {
+      registrationName: "oce-prepared-git",
+      authority: { ...proxy.configuration.authority, port: 9446, audience: "oce-prepared-git" },
+    },
+  };
+  const git = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: await fixture(t, combined) },
+  });
+  assert.equal(request(git).tokenEndpointCaPem, tls.caBundle);
+  delete tokenGrant.issuerCaPath;
+  assert.deepEqual((await load()).protectedDriver.ref, legacy.protectedDriver.ref);
+});
 
 test("Credential Proxy startup preserves the selection and refuses retired keys", async (t) => {
   const configuration = credentialProxyInstallation();

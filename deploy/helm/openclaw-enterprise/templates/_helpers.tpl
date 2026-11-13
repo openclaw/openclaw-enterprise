@@ -457,6 +457,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/egress/tls" "/etc/openclaw/egress/issuer") -}}
 {{- if .Values.egressAuthority.tokenGrant.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/egress/token-grant" -}}
+{{- if .Values.egressAuthority.tokenGrant.issuerCaConfigMapName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/egress/token-issuer-ca" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.preparedGitHub.custodySecretName -}}
@@ -900,6 +903,20 @@ capabilities:
 {{- $raw -}}
 {{- end -}}
 
+{{- define "openclaw.tokenIssuerCaVolume" -}}
+- name: token-issuer-ca
+  configMap:
+    name: {{ .Values.egressAuthority.tokenGrant.issuerCaConfigMapName | quote }}
+    items:
+      - {key: ca.crt, path: ca.crt}
+{{- end -}}
+
+{{- define "openclaw.tokenIssuerCaMount" -}}
+- name: token-issuer-ca
+  mountPath: /etc/openclaw/egress/token-issuer-ca
+  readOnly: true
+{{- end -}}
+
 {{/* Each listener the chart routes through a Service: its port, or disabled. API and worker
      startup and the upgrade check refuse an Installation listener on another port, not on
      all addresses, without the chart listener (finding 2213), or naming TLS or issuer files
@@ -909,6 +926,10 @@ capabilities:
 {{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) (dict "name" "OCC_TOKEN_GRANT_PORT" "label" "egressAuthority.tokenGrant.port" "values" .Values.egressAuthority.tokenGrant) }}
 - name: {{ $listener.name }}
   value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
+{{- end }}
+{{- if .Values.egressAuthority.tokenGrant.issuerCaConfigMapName }}
+- name: OCC_TOKEN_GRANT_ISSUER_CA_PATH
+  value: /etc/openclaw/egress/token-issuer-ca/ca.crt
 {{- end }}
 {{- if .Values.gatewayRouting.enabled }}
 - name: OCC_CHART_GATEWAY_ROUTING

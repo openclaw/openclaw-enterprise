@@ -293,7 +293,9 @@ export function requireChartListener<Field extends string>(
 
 /** The token grant listener shares the authority host and TLS identity. */
 export function requireChartTokenGrant(
-  tokenGrant: { readonly port: number; readonly bundlePath: string } | undefined,
+  tokenGrant:
+    | { readonly port: number; readonly bundlePath: string; readonly issuerCaPath?: string }
+    | undefined,
   authority: Pick<EgressAuthorityConfiguration, "host"> | undefined,
   environment: Readonly<Record<string, string | undefined>>,
 ): void {
@@ -302,6 +304,17 @@ export function requireChartTokenGrant(
     environment,
     chartListeners.tokenGrant,
   );
+  const mounted = environment.OCC_TOKEN_GRANT_ISSUER_CA_PATH;
+  if (environment.OCC_TOKEN_GRANT_PORT === undefined && mounted === undefined) {
+    return;
+  }
+  if (tokenGrant?.issuerCaPath !== mounted) {
+    const setting = `${chartListeners.tokenGrant.path}.issuerCaPath`;
+    throw new ChartListenerMismatchError(
+      `${setting} must match the public CA mount selected by Helm egressAuthority.tokenGrant.issuerCaConfigMapName.`,
+      setting,
+    );
+  }
 }
 
 /** Compare selected Kubernetes routing with the private Gateway this chart renders. */

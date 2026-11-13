@@ -60,6 +60,9 @@ spec:
             items:
               - key: {{ .Values.installation.key | quote }}
                 path: installation.yaml
+        {{- if .Values.egressAuthority.tokenGrant.issuerCaConfigMapName }}
+        {{- include "openclaw.tokenIssuerCaVolume" . | nindent 8 }}
+        {{- end }}
         {{- if .Values.api.consoleTheme.configMapName }}
         - name: console-theme
           configMap:
@@ -130,6 +133,9 @@ spec:
             - name: installation-startup
               mountPath: /etc/openclaw/installation
               readOnly: true
+            {{- if .Values.egressAuthority.tokenGrant.issuerCaConfigMapName }}
+            {{- include "openclaw.tokenIssuerCaMount" . | nindent 12 }}
+            {{- end }}
             {{- if .Values.api.consoleTheme.configMapName }}
             - name: console-theme
               mountPath: /etc/openclaw/console-theme

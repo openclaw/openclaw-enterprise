@@ -3,7 +3,10 @@ import {
   verifyModelRequestProfile,
   verifyModelRequestPolicy,
 } from "../sandbox/openshell-model-request-policy.ts";
-import type { OpenShellTokenGrantConfiguration } from "./openshell-token-grant.ts";
+import {
+  maxTokenEndpointCaBytes,
+  type OpenShellTokenGrantConfiguration,
+} from "./openshell-token-grant.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
@@ -37,7 +40,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
   RetryLaterError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, publicCaBundle, sha256Hex } from "@openclaw-enterprise/utils";
 import { type OpenShellGateway, openShellWorkspaceName } from "../../backends/openshell.ts";
 import {
   confirmSandboxAbsent,
@@ -79,6 +82,7 @@ export interface OpenShellProxyOptions {
   readonly requestCredentials?: {
     readonly audience: string;
     readonly tokenEndpoint: string;
+    readonly tokenEndpointCaPem?: string;
   };
 }
 
@@ -86,13 +90,28 @@ function validRequestCredentials(input: unknown): boolean {
   const value = asRecord(input);
   if (
     !value ||
-    Object.keys(value).length !== 2 ||
+    Object.keys(value).some(
+      (key) => !["audience", "tokenEndpoint", "tokenEndpointCaPem"].includes(key),
+    ) ||
+    (Object.hasOwn(value, "tokenEndpointCaPem") &&
+      (typeof value.tokenEndpointCaPem !== "string" ||
+        !value.tokenEndpointCaPem.length ||
+        Buffer.byteLength(value.tokenEndpointCaPem) > maxTokenEndpointCaBytes)) ||
     typeof value.audience !== "string" ||
     !value.audience.trim() ||
     typeof value.tokenEndpoint !== "string" ||
     !URL.canParse(value.tokenEndpoint)
   ) {
     return false;
+  }
+  if (typeof value.tokenEndpointCaPem === "string") {
+    try {
+      if (publicCaBundle(value.tokenEndpointCaPem) !== value.tokenEndpointCaPem) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
   }
   const endpoint = new URL(value.tokenEndpoint);
   return (
@@ -344,6 +363,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         properties: {
           audience: { type: "string", minLength: 1 },
           tokenEndpoint: { type: "string", minLength: 1 },
+          tokenEndpointCaPem: {
+            type: "string",
+            minLength: 1,
+            maxLength: maxTokenEndpointCaBytes,
+            writeOnly: true,
+          },
         },
       },
     },
@@ -409,6 +434,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       (options.requestCredentials &&
         (!exchange ||
           options.requestCredentials.audience !== exchange.audience ||
+          Boolean(options.requestCredentials.tokenEndpointCaPem) !==
+            Boolean(selection.tokenGrant?.issuerCaPath) ||
           options.requestCredentials.tokenEndpoint !== selection.tokenGrant?.endpoint))
     ) {
       throw new Error("Request credentials require their selected authority and token grant.");

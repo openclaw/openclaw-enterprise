@@ -39,21 +39,55 @@ tokenGrant:
 ```
 
 The token endpoint uses the authority's TLS certificate on a separate port.
-Its certificate must cover the endpoint hostname and chain to a root in the
-dedicated supervisor's native trust store. In stock OpenShell 0.1.6 and 0.1.8,
-the token client connects directly and ignores proxy environment settings.
+Its certificate must cover the endpoint hostname. Stock OpenShell 0.1.6 and
+0.1.8 require a chain trusted by the dedicated supervisor's native trust store.
+Their token client connects directly and ignores proxy environment settings.
 The 0.1.8 chart's `supervisor.network.additionalCaConfigMapName` supplies roots
 for inspected HTTPS destinations. The middleware's `tls_ca_cert_path` supplies
 roots for its own connection. The token client uses neither setting.
 
 Before upgrading, exercise a fresh model request through the selected supervisor
-and verify that the token service received and accepted the exchange. With the
-unmodified supervisor image, use an endpoint whose chain is already trusted.
+and verify that the token service received and accepted the exchange. With stock OpenShell 0.1.8, use an endpoint whose chain is already trusted.
 Keep access restricted to the intended supervisor callers. A successful
 Gateway health check or artifact download exercises a different connection.
 If you change the endpoint URL, the generated profile requests that URL as its
 JWT-SVID audience, and the token service validates the same value. The OAuth
 resource audience remains the credential binding ID.
+
+### Optional issuer-specific CA
+
+Use this option only with a Gateway and supervisor that support the optional
+`token_endpoint_ca_pem` profile field. Stock OpenShell 0.1.8 lacks it. For an
+internal issuer, set `egressAuthority.tokenGrant.issuerCaConfigMapName` to a ConfigMap
+containing the public PEM CA certificates in `ca.crt` (at most 64 KiB). Set
+`drivers.credential_proxy.configuration.tokenGrant.issuerCaPath` to
+`/etc/openclaw/egress/token-issuer-ca/ca.crt`. Omit both settings to preserve native trust.
+OCE checks that the Gateway retained the intended bundle before using the model provider
+and again when verifying the installed credential route.
+
+The API and Worker read the CA bundle at startup. Each bundle selects a different
+Driver identity. Once the API uses the new identity, it refuses credential redemption
+for executions admitted under the previous one. Plan an interruption for affected
+model requests, including model-only revisions.
+
+1. While the issuer still serves the old chain, drain the affected executions.
+   For revisions with protected Git, follow the original Worker's stop and withdrawal
+   procedure before replacing it.
+2. Create a versioned ConfigMap containing both roots. Apply the Installation
+   configuration change and wait for both the API and Worker to finish rolling.
+   Admit replacement revisions and verify a fresh token exchange and model response.
+3. Prepare the middleware clients to trust both chains. The gRPC and token listeners
+   share a serving certificate, but their clients configure trust separately.
+   Install the new serving certificate and key, then roll every API replica serving
+   those listeners. Keep both roots in admitted profiles. Check each replica with
+   the configured hostname and the new root alone, then verify a fresh exchange and
+   model response through the ordinary route.
+4. To retire the old root, drain affected executions again, select a new versioned
+   ConfigMap containing only the new root, and repeat the rollout, admission and
+   verification. Retire the middleware clients' old root after verifying their
+   connections to the new chain.
+
+### Configure the listener
 
 With Helm, enable
 `egressAuthority.tokenGrant`, match its `port`, and set `bundleConfigMapName` to

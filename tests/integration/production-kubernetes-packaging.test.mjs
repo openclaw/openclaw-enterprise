@@ -5514,7 +5514,80 @@ test(
         }
       }
     }
+    const issuerCaSetting = "egressAuthority.tokenGrant.issuerCaConfigMapName";
+    const issuerCaDir = "/etc/openclaw/egress/token-issuer-ca";
+    for (const flag of ["egressAuthority.enabled", "egressAuthority.tokenGrant.enabled"]) {
+      await assert.rejects(
+        render(
+          { ...tokenValues, [issuerCaSetting]: "token-endpoint-ca" },
+          { strings: { [flag]: "false" } },
+        ),
+        /issuerCaConfigMapName requires .*enabled: true/,
+      );
+    }
+    const privateCaObjects = await resources(
+      (
+        await render(
+          { ...tokenValues, [issuerCaSetting]: "token-endpoint-ca" },
+          { isUpgrade: true },
+        )
+      ).stdout,
+    );
+    for (const [objects, configured] of [
+      [tokenObjects, false],
+      [privateCaObjects, true],
+    ]) {
+      const readers = [];
+      for (const object of objects.filter(({ kind }) => kind === "Deployment" || kind === "Job")) {
+        const pod = object.spec.template.spec;
+        let used = false;
+        for (const container of [...(pod.initContainers ?? []), ...pod.containers]) {
+          const mount = container.volumeMounts?.find(({ name }) => name === "token-issuer-ca");
+          const expectation = container.env?.find(
+            ({ name }) => name === "OCC_TOKEN_GRANT_ISSUER_CA_PATH",
+          );
+          if (configured && ["api", "worker", "installation-check"].includes(container.name)) {
+            readers.push(container.name);
+            used = true;
+            assert.deepEqual(mount, {
+              name: "token-issuer-ca",
+              mountPath: issuerCaDir,
+              readOnly: true,
+            });
+            assert.equal(expectation?.value, `${issuerCaDir}/ca.crt`);
+          } else {
+            assert.equal(mount, undefined);
+            assert.equal(expectation, undefined);
+          }
+        }
+        const volume = pod.volumes?.find(({ name }) => name === "token-issuer-ca");
+        assert.deepEqual(
+          volume?.configMap,
+          used
+            ? { name: "token-endpoint-ca", items: [{ key: "ca.crt", path: "ca.crt" }] }
+            : undefined,
+        );
+      }
+      assert.deepEqual(readers.sort(), configured ? ["api", "installation-check", "worker"] : []);
+    }
     for (const [override, diagnostic] of [
+      [
+        { [issuerCaSetting]: "invalid/name" },
+        /issuerCaConfigMapName must be a Kubernetes resource name/,
+      ],
+      [{ [issuerCaSetting]: "false" }, /issuerCaConfigMapName must be a string/],
+      [
+        { [issuerCaSetting]: "token-endpoint-ca", "egressAuthority.tokenGrant.enabled": "false" },
+        /issuerCaConfigMapName requires egressAuthority.tokenGrant.enabled/,
+      ],
+      [
+        {
+          [issuerCaSetting]: "token-endpoint-ca",
+          "database.caSecretName": "database-ca",
+          "database.caMountPath": issuerCaDir,
+        },
+        /database.caMountPath must be distinct/,
+      ],
       [{ "egressAuthority.enabled": "false" }, /tokenGrant requires egressAuthority.enabled/],
       [{ "egressAuthority.tokenGrant.bundleConfigMapName": "" }, /bundleConfigMapName is required/],
       [{ "egressAuthority.tokenGrant.port": "9444" }, /distinct TCP port/],

@@ -475,7 +475,9 @@ test(
   "model request installation survives a material epoch change but fences policy and recipient drift",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
+    const issuer = await harnessTlsFixture(t);
     const f = await staticEgressFixture(t, {
+      modelIssuerCa: { caPath: issuer.rootCertificatePath, caBundle: issuer.caBundle },
       admitRevision: false,
       requestCredentials: true,
       appFactory: postgresApp,
@@ -498,6 +500,10 @@ test(
     const egressOptions = { ...f.egressOptions, authorityScope: "execution" as const };
     const expected = openShellModelRequestPolicy(context.plan, egressOptions, revision);
     assert.ok(expected);
+    assert.equal(
+      expected.provider.profile.credentials[0]?.tokenGrant.token_endpoint_ca_pem,
+      issuer.caBundle,
+    );
     const numericOrigin = {
       ...context.plan,
       routes: context.plan.routes.map((route, index) =>
@@ -674,7 +680,16 @@ test(
     assert.equal(await verify(), false, "effective policy content remains fenced");
     delete config.policy.filesystem;
     const profile = f.profiles.get(expected.provider.profile.id);
-    profile.credentials[0].token_grant.audience = "different-binding";
+    const grant = profile.credentials[0].token_grant;
+    // Recheck actual Gateway readback after admission: dropping or changing the
+    // selected root must fence a subsequent request even with the same audience.
+    delete grant.token_endpoint_ca_pem;
+    await assert.rejects(verify, /zero-cache model token grant/);
+    grant.token_endpoint_ca_pem = issuer.cert;
+    await assert.rejects(verify, /zero-cache model token grant/);
+    grant.token_endpoint_ca_pem = issuer.caBundle;
+    assert.equal(await verify(), true);
+    grant.audience = "different-binding";
     await assert.rejects(verify, /zero-cache model token grant/);
   },
 );

@@ -105,6 +105,7 @@ async function buildStaticEgressFixture(
     serviceTransport,
     admitRevision = true,
     requestCredentials = false,
+    modelIssuerCa = /** @type {{ caPath: string, caBundle: string } | undefined} */ (undefined),
     resolutionFinished,
     preparedGitHub,
     createPreparedGitHub,
@@ -511,6 +512,7 @@ async function buildStaticEgressFixture(
       requestCredentials: {
         audience: "oce-authority",
         tokenEndpoint: "https://127.0.0.1:9445/token",
+        ...(modelIssuerCa && { tokenEndpointCaPem: modelIssuerCa.caBundle }),
       },
     }),
   };
@@ -532,6 +534,7 @@ async function buildStaticEgressFixture(
           port: 9445,
           trustDomain: "fixture.test",
           bundlePath: join(directory, "unstarted-trust-bundle.json"),
+          ...(modelIssuerCa && { issuerCaPath: modelIssuerCa.caPath }),
         },
       });
     }
