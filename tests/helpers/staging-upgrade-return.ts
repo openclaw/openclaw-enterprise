@@ -358,6 +358,9 @@ export async function measureUpgradeAvailability<T>(
   directory: string,
   upgrade: () => Promise<T>,
   record: (details: object) => Promise<void>,
+  receiptName:
+    | "forward-api-availability.json"
+    | "runtime-api-availability.json" = "forward-api-availability.json",
 ) {
   const samples: {
     phase: "before" | "during" | "after";
@@ -479,7 +482,7 @@ export async function measureUpgradeAvailability<T>(
     try {
       // A killed runner leaves the last complete snapshot, never a truncated one.
       // Null means the action has not been recorded as settled.
-      const path = join(directory, "forward-api-availability.json");
+      const path = join(directory, receiptName);
       await writeFile(`${path}.tmp`, JSON.stringify(evidence(upgradeSucceeded)) + "\n", {
         mode: 0o600,
       });

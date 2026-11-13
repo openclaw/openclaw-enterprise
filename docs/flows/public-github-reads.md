@@ -1,16 +1,15 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-12"
-last_updated_session: authoring-run/c586863f-bae0-4185-b426-025eb94d78e6
+last_updated_session: authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb
 ---
 
 # Public GitHub read flow
 
 ## Overview
 
-A dedicated Codex Agent clones/fetches public GitHub HTTPS repositories alongside
-protected bindings. Compute freezes the Installation/Agent scope intersection
-and authorizes a private, anonymous reader. Installed qualification is separate.
+Dedicated Codex Agents clone/fetch public repositories alongside protected bindings.
+Compute freezes Installation/Agent scope and authorizes the reader. Installed qualification requires separate proof.
 
 ## Entry Points
 
@@ -230,20 +229,18 @@ per-Agent fairness when Agents share a supervisor address.
 
 ### 4. Maintain or withdraw the revision's access
 
-Kubernetes Compute renews only the frozen policy. Active maintenance in
+Kubernetes Compute renews only the frozen policy. Under the claim heartbeat,
 `apps/controller/src/worker.ts:processRevision` checks independent IAM, model, Secret/admission,
-Backend and exact Plugin Driver authority before `ComputeDriver.maintainServiceAccess`
-under the claim heartbeat. Git recipient or disposal uncertainty cannot defer
-this renewal. `withdrawExpiredRepositoryAccess` retains that independent path
-after Git expiry. Neither path prepares a runtime or issues another Git session.
-Loss of independent authority prevents renewal.
+Backend and exact Plugin Driver authority before `ComputeDriver.maintainServiceAccess`.
+Git recipient/disposal uncertainty cannot defer renewal;
+`withdrawExpiredRepositoryAccess` retains this path after Git expiry. Neither path
+prepares a runtime or issues another Git session. Lost authority prevents renewal.
 
 `beginPublicGithubReadWithdrawal` expires authorization before runtime shutdown,
 then observes the reader's revision digest. A registry write or reader failure
-cannot prevent the shutdown attempt; cleanup reports failure and retries rather
-than claiming withdrawal complete. User stop can suspend and later resume the
-same immutable capability. Retirement and an observed peer change permanently
-withdraw the saved authorization; it cannot be restored by preparing that revision.
+cannot prevent shutdown; cleanup reports failure and retries. User stop preserves
+the immutable capability for resume. Retirement and an observed peer change
+permanently withdraw authorization; preparing that revision cannot restore it.
 After runtime shutdown and reader acknowledgement, permanent retirement removes
 the exact owned capability Secret; temporary stop retains it.
 An expired or unreadable row denies future reads even if maintenance is unavailable.
@@ -256,10 +253,13 @@ checks protect foreign policies; failed shutdown prevents withdrawal completion.
 For legacy `v1` reader revisions, `revokeUnavailablePublicGithubRead` removes the
 revision policy, foreground-deletes the owned Compute Deployment and waits for
 its Pods before reporting withdrawal. Policy deletion alone does not close
-existing connections. The owning active claim's `rejectedExecutionWithdrawal`
-also fences those revisions when an Installation switches to protected execution.
-Current Sandbox failure can leave ancillary cleanup pending; it is not evidence
-that the owning runtime has stopped.
+existing connections. The active claim uses `rejectedExecutionWithdrawal`
+to fence a rejected saved execution admission. Current Sandbox failure can leave
+ancillary cleanup pending; it does not prove runtime shutdown.
+
+Selecting a Credential Proxy alone preserves an unprotected revision and reader
+grant. `validateExecutionAdmission` checks its saved decision. Paired protected
+revisions retain their admitted public service.
 
 ## Debugging and Verification
 
@@ -278,6 +278,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 10:58: Preserve unprotected admission when a Credential Proxy is selected. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 
 - 2026-11-12 10:47: Preserve launch, service preview and provider material limits. (authoring-run/c586863f-bae0-4185-b426-025eb94d78e6 - 1de1eb4ad23a6fdf3c5b51310e7b64dc3b262fb4)
 

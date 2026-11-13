@@ -22,7 +22,7 @@ import {
   selectFreshLanes,
   validateResults,
   waitMilliseconds,
-} from "../../scripts/ci/full-integration-reuse.mjs";
+} from "../../scripts/ci/full-integration-reuse.ts";
 import { projectSkipperRunnerReceipt } from "../../scripts/ci/skipper-release.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 
@@ -77,19 +77,10 @@ async function reuseFixture() {
   return { rows, sha, run, jobs, artifacts, get };
 }
 
-test("scheduled and manual Full Integration discover immutable push CI results through the CLI", async (t) => {
-  const { get, sha, artifacts } = await reuseFixture();
-  const fixtureRoot = await temporaryDirectory(t, "full-ci-reuse-consumers-");
-  const routes = [
-    "/actions/workflows/ci.yml",
-    "/actions/workflows/456/runs?head_sha=" + sha + "&event=push&branch=main&per_page=20",
-    "/actions/runs/123/attempts/2/jobs?per_page=100",
-    "/actions/runs/123/artifacts?per_page=100",
-  ];
+async function writeReuseMetadataFixture(preload, get, routes) {
   const responses = Object.fromEntries(
     await Promise.all(routes.map(async (path) => [path, await get(path)])),
   );
-  const preload = join(fixtureRoot, "fetch-fixture.mjs");
   await writeFile(
     preload,
     [
@@ -105,31 +96,47 @@ test("scheduled and manual Full Integration discover immutable push CI results t
       "};",
     ].join("\n"),
   );
+}
+
+function runReuseCommand(command, { preload, directory, sha, event }) {
+  const result = spawnSync(
+    process.execPath,
+    ["--import", preload, "scripts/ci/full-integration-reuse.ts", command],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        PATH: process.env.PATH,
+        RUNNER_TEMP: directory,
+        GITHUB_OUTPUT: join(directory, "step-output"),
+        GITHUB_API_URL: "https://reuse-fixture.invalid",
+        GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_EVENT_NAME: event,
+        GITHUB_SHA: sha,
+        GH_TOKEN: "synthetic",
+      },
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+}
+
+test("scheduled and manual Full Integration discover immutable push CI results through the CLI", async (t) => {
+  const { get, sha, artifacts } = await reuseFixture();
+  const fixtureRoot = await temporaryDirectory(t, "full-ci-reuse-consumers-");
+  const preload = join(fixtureRoot, "fetch-fixture.mjs");
+  await writeReuseMetadataFixture(preload, get, [
+    "/actions/workflows/ci.yml",
+    "/actions/workflows/456/runs?head_sha=" + sha + "&event=push&branch=main&per_page=20",
+    "/actions/runs/123/attempts/2/jobs?per_page=100",
+    "/actions/runs/123/artifacts?per_page=100",
+  ]);
   for (const event of ["schedule", "workflow_dispatch", "push", "pull_request"]) {
     const directory = join(fixtureRoot, event);
     await mkdir(directory);
     const output = join(directory, "step-output");
-    const result = spawnSync(
-      process.execPath,
-      ["--import", preload, "scripts/ci/full-integration-reuse.mjs", "discover"],
-      {
-        encoding: "utf8",
-        timeout: 5_000,
-        env: {
-          PATH: process.env.PATH,
-          RUNNER_TEMP: directory,
-          GITHUB_OUTPUT: output,
-          GITHUB_API_URL: "https://reuse-fixture.invalid",
-          GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
-          GITHUB_REF: "refs/heads/main",
-          GITHUB_EVENT_NAME: event,
-          GITHUB_SHA: sha,
-          GH_TOKEN: "synthetic",
-        },
-      },
-    );
-    assert.equal(result.error, undefined);
-    assert.equal(result.status, 0, result.stderr);
+    runReuseCommand("discover", { preload, directory, sha, event });
     if (event === "pull_request") {
       assert.equal(await readFile(output, "utf8"), "artifact_ids=\n");
       await assert.rejects(readFile(join(directory, "ci-reuse", "producer.json")), {
@@ -723,10 +730,24 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
 });
 
 test("same-SHA reuse runs the existing full-coverage validator and rejects damaged or rerun evidence", async (t) => {
-  const { get, run, sha, rows } = await reuseFixture();
+  const { get, run, sha, rows, artifacts } = await reuseFixture();
   const producer = await admitProducer(get, run, sha, 456, rows);
-  const directory = await temporaryDirectory(t, "ci-reuse-");
-  await mkdir(join(directory, "download"));
+  const runnerTemp = await temporaryDirectory(t, "ci-reuse-");
+  const directory = join(runnerTemp, "ci-reuse");
+  const preload = join(runnerTemp, "fetch-fixture.mjs");
+  const output = join(runnerTemp, "step-output");
+  await mkdir(join(directory, "download"), { recursive: true });
+  await writeFile(join(directory, "producer.json"), JSON.stringify(producer));
+  const validateCommand = async () => {
+    await writeReuseMetadataFixture(preload, get, [
+      "/actions/runs/123",
+      `/actions/runs/123/attempts/${run.run_attempt}/jobs?per_page=100`,
+      "/actions/runs/123/artifacts?per_page=100",
+    ]);
+    await writeFile(output, "");
+    runReuseCommand("validate", { preload, directory: runnerTemp, sha, event: "schedule" });
+    return readFile(output, "utf8");
+  };
   const manifest = loadTestSuites(
     fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
   );
@@ -761,12 +782,12 @@ test("same-SHA reuse runs the existing full-coverage validator and rejects damag
     const total = summary.files.reduce((count, file) => count + file.tests.length, 0);
     summary.counts = { total, passed: total, failed: 0, skipped: 0, todo: 0 };
     const path = join(directory, "download", `${lane}.json`);
-    await writeFile(path, JSON.stringify(summary));
-    assert.deepEqual(await validateResults({ directory, producer, sha, get }), [lane]);
-    assert.deepEqual(
-      JSON.parse(await readFile(join(directory, "accepted", `${lane}.json`))),
-      summary,
-    );
+    const receipt = JSON.stringify(summary);
+    const acceptedPath = join(directory, "accepted", `${lane}.json`);
+    await writeFile(path, receipt);
+    assert.equal(await validateCommand(), `lanes=["${lane}"]\n`);
+    assert.equal(await readFile(acceptedPath, "utf8"), receipt);
+    await rm(acceptedPath);
     for (const patch of [
       { scope: "focused" },
       { scope: undefined },
@@ -798,10 +819,26 @@ test("same-SHA reuse runs the existing full-coverage validator and rejects damag
         (await selectFreshLanes(accepted, "success")).matrix.some((row) => row.lane === lane),
       );
     }
-    await writeFile(path, JSON.stringify(summary));
+    await writeFile(path, JSON.stringify({ ...summary, cleanup: { status: "failed" } }));
+    assert.equal(await validateCommand(), "lanes=[]\n");
+    await assert.rejects(readFile(acceptedPath), { code: "ENOENT" });
+    await writeFile(path, receipt);
+
+    // The new attempt can qualify by itself. It cannot vouch for a receipt
+    // downloaded for the earlier producer.
     run.run_attempt = 3;
-    assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
+    for (const artifact of artifacts) {
+      artifact.name = artifact.name.replace("attempt-2-", "attempt-3-");
+      artifact.id += artifacts.length;
+    }
+    assert.equal((await admitProducer(get, run, sha, 456, rows)).attempt, 3);
+    assert.equal(await validateCommand(), "lanes=[]\n");
+    await assert.rejects(readFile(acceptedPath), { code: "ENOENT" });
     run.run_attempt = 2;
+    for (const artifact of artifacts) {
+      artifact.name = artifact.name.replace("attempt-3-", "attempt-2-");
+      artifact.id -= artifacts.length;
+    }
     await rm(path);
   }
 });
@@ -904,7 +941,7 @@ test("full integration workflow carries QA and installation outcomes into select
 test("full integration plans fresh fallback and attributes only published reuse to successful needs", async (t) => {
   const directory = await temporaryDirectory(t, "reuse-plan-");
   const output = join(directory, "output");
-  const plan = spawnSync(process.execPath, ["scripts/ci/full-integration-reuse.mjs", "plan"], {
+  const plan = spawnSync(process.execPath, ["scripts/ci/full-integration-reuse.ts", "plan"], {
     encoding: "utf8",
     env: {
       ...process.env,

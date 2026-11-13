@@ -11,7 +11,7 @@ import { setEnvironment } from "../helpers/environment.ts";
 import {
   createGitHubAppRepositoryObserver,
   loadGitHubAppObserverInput,
-} from "../helpers/github-app-observer.mjs";
+} from "../helpers/github-app-observer.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -250,8 +250,8 @@ test("GitHub App observer deleteBranch uses a credential helper and leased Git p
   assert.ok(push.args.includes(`https://github.com/${repository}.git`));
   assert.ok(push.args.includes(":refs/heads/qa/test-branch"));
   assert.ok(push.args.includes("credential.useHttpPath=true"));
-  const helper = push.args.find((arg) => arg.includes("github-app-observer-credential-helper.mjs"));
-  assert.match(helper, /credential\.helper=.*github-app-observer-credential-helper\.mjs/);
+  const helper = push.args.find((arg) => arg.includes("github-app-observer-credential-helper.ts"));
+  assert.match(helper, /credential\.helper=.*github-app-observer-credential-helper\.ts/);
   assert.match(helper, new RegExp(process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(push.args.join("\n"), /ghs_observer_secret_token|private-key|Bearer/);
   assert.deepEqual(push.options.env, { GIT_TERMINAL_PROMPT: "0" });
@@ -260,7 +260,7 @@ test("GitHub App observer deleteBranch uses a credential helper and leased Git p
 
 async function runCredentialHelper(f, operation, request, env = {}) {
   const helper = fileURLToPath(
-    new URL("../../scripts/ci/github-app-observer-credential-helper.mjs", import.meta.url),
+    new URL("../../scripts/ci/github-app-observer-credential-helper.ts", import.meta.url),
   );
   const { status, stdout, stderr } = await captureChild(
     process.execPath,
@@ -281,7 +281,7 @@ function childEnv(overrides = {}) {
 }
 
 function runLoadObserverInput(inputDirectory) {
-  const helper = new URL("../helpers/github-app-observer.mjs", import.meta.url).href;
+  const helper = new URL("../helpers/github-app-observer.ts", import.meta.url).href;
   return spawnSync(
     process.execPath,
     [

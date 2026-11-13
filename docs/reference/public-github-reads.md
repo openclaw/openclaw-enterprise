@@ -118,7 +118,9 @@ ordinary Sandbox network grants, including the development launcher's direct Git
 rule. Effective reader scope is the intersection of the current
 Installation ceiling and the selection saved for that revision. Native network
 denies remain narrowing constraints. Enabling the reader grants no Agent access
-by itself, and an existing revision does not inherit a later selection.
+by itself, and an existing revision does not inherit a later selection. Selecting
+a Credential Proxy alone does not withdraw an unprotected revision's reader access;
+execution checks use the durable admission decision saved for that revision.
 
 The supported packaging is single-cluster Kubernetes and dedicated Codex. The
 paired OpenShell Sandbox and Credential Proxy can admit this additional service

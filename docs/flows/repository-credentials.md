@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
 updated: 2026-11-12
-last_updated_session: authoring-run/e06f9930-fe36-477f-baea-a6dccbf81438
+last_updated_session: authoring-run/559c3e53-17e7-4d44-ab91-0be2a2695608
 ---
 
 # Repository credential service flow
@@ -120,12 +120,14 @@ disposal; clock rollback cannot restore use. If a disposal acknowledgement is lo
 status, close and shutdown resend the same status; the journal records it once and
 refuses a different one.
 
-The receipt and operator control clients reject private-socket replies over
-16,384 bytes and destroy the response without waiting for its end.
-[`RepositoryReceiptClient.call`](../../apps/controller/src/drivers/repo/access/receipt-client.ts)
-reports `RECEIPT_UNAVAILABLE`;
+[Control](../../apps/controller/src/backends/repository-credentials/control-client.ts)
+and [receipt](../../apps/controller/src/drivers/repo/access/receipt-client.ts) use
+[`readPrivateJsonResponse`](../../apps/controller/src/drivers/repo/access/private-json-response.ts):
+complete `application/json`, 16,384-byte cap, buffer wiping.
+Synchronous overflow refusal precedes teardown: receipt reports `RECEIPT_UNAVAILABLE`;
+backend control reports retryable `RepositoryCredentialControlError`.
 [`callControl`](../../apps/controller/src/drivers/repo/github/access/client/operator.ts)
-retains the admission ID in `control-request-failed` and also closes the request.
+retains `control-request-failed`, the admission ID, and request teardown.
 
 Development factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/access/custody.ts:disposeAllRenewal`.
@@ -353,6 +355,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 15:23: Share bounded response reading. (authoring-run/559c3e53-17e7-4d44-ab91-0be2a2695608 - c67db827363d8457e10e28a77992e804663c47fe)
 
 - 2026-11-12 09:21: Condense shutdown ownership. (authoring-run/e06f9930-fe36-477f-baea-a6dccbf81438 - 2f241650ec0e6bd0eb0a5b2b3be98fd84a9fee87)
 

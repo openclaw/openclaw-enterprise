@@ -267,10 +267,6 @@ function rows(value: unknown[]): PostgresRow[] {
   });
 }
 
-function existsFromRows(value: unknown[]): boolean {
-  return rows(value)[0]?.present === true;
-}
-
 function text(row: PostgresRow, key: string): string {
   const value = row[key];
   if (typeof value !== "string" || value.length === 0) {
@@ -446,7 +442,7 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
   if (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped") {
     throw new PersistedStateInvalidError("Persisted Agent desired runtime state is invalid.");
   }
-  return immutableCopy({
+  return Object.freeze({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     name: text(row, "name"),
@@ -461,7 +457,7 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
     desiredRuntimeState,
     status: text(row, "status") as Agent["status"],
     createdAt: timestamp(row, "created_at"),
-  });
+  } satisfies AgentMetadata & Record<string, string | number | boolean | null | undefined>);
 }
 
 function agentFromRow(row: PostgresRow, metadata = agentMetadataFromRow(row)): Readonly<Agent> {
@@ -666,14 +662,14 @@ function revisionMetadataFromRow(row: PostgresRow): Readonly<AgentRevisionMetada
   if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision <= 0) {
     throw new PersistedStateInvalidError("Persisted AgentRevision numbering is invalid.");
   }
-  return immutableCopy({
+  return Object.freeze({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     agentId: text(row, "agent_id"),
     revision,
     backendId: row.backend_id === null ? null : text(row, "backend_id"),
     createdAt: timestamp(row, "admitted_at"),
-  });
+  } satisfies Record<string, string | number | boolean | null | undefined>);
 }
 
 function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary> {
@@ -2106,6 +2102,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
+    async function namespaceResourceExists(
+      statement: string,
+      namespaceId: string,
+    ): Promise<boolean> {
+      const result = await client.query(statement, [namespaceId]);
+      return rows(result.rows)[0]?.present === true;
+    }
+
     const namespaces: NamespaceRepository = {
       findNamespace: async (namespaceId) => {
         const found = rows(
@@ -2171,23 +2175,15 @@ export class PostgresPlatformState implements PlatformStateStore {
         )[0];
         return found === undefined ? undefined : namespaceFromRow(found);
       },
-      hasAgents: async (namespaceId) =>
-        existsFromRows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
+      hasAgents: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1) AS present",
+          namespaceId,
         ),
-      hasConfigurations: async (namespaceId) =>
-        existsFromRows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.configurations WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
+      hasConfigurations: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.configurations WHERE namespace_id = $1) AS present",
+          namespaceId,
         ),
       listConfigurationIds: async (namespaceId) =>
         Object.freeze(
@@ -2200,41 +2196,25 @@ export class PostgresPlatformState implements PlatformStateStore {
             ).rows,
           ).map((row) => String(row.id)),
         ),
-      hasPresets: async (namespaceId) =>
-        existsFromRows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.presets WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
+      hasPresets: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.presets WHERE namespace_id = $1) AS present",
+          namespaceId,
         ),
-      hasServiceAccounts: async (namespaceId) =>
-        existsFromRows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
+      hasServiceAccounts: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1) AS present",
+          namespaceId,
         ),
-      hasSecrets: async (namespaceId) =>
-        existsFromRows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
+      hasSecrets: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1) AS present",
+          namespaceId,
         ),
-      hasCredentialSources: async (namespaceId) =>
-        existsFromRows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
+      hasCredentialSources: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1) AS present",
+          namespaceId,
         ),
       transitionNamespaceStatus: async (namespaceId, expected, next) => {
         await this.requireInitialized(context);

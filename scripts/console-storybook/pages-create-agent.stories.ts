@@ -129,6 +129,7 @@ export const CreatePresetMultiline = story("createPresetMultiline");
 export const CreatePresetMultilineApplied = story("createPresetMultilineApplied");
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
+export const CreateCredentialRegistrationRefused = story("createCredentialRegistrationRefused");
 export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
 export const CreateCredentialRegistrationMismatch = story("createCredentialRegistrationMismatch");
 export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");

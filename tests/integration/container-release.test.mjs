@@ -1091,6 +1091,7 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     "tests/integration/qa-compose-reload-real.test.ts",
     // Its OpenShell initializer case executes the pinned native workspace initializer.
     "tests/integration/sandbox-driver-startup.test.mjs",
+    "tests/integration/sandbox-driver-workspace-admission.test.ts",
     "tests/integration/sandbox-driver-startup-validation.test.ts",
     "tests/integration/sandbox-driver-installation-configuration.test.ts",
     "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",

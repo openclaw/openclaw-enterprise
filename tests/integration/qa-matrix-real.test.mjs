@@ -65,6 +65,16 @@ test(
         verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
       );
     }
+    if (selection.gitModel) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "fresh Gateway model delivery with and without Git access",
+        () => verifyQaSandboxPolicy(artifacts, "openshell-git-model"),
+        "openshell-git-model",
+      );
+    }
     if (selection.oidcAgentChat) {
       const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
       await stage(

@@ -83,13 +83,13 @@ For Harness authentication from a credential source, OCC reads the catalog entry
 from the recorded Gateway. Compute validates that same entry and its login mode
 for this admission. A later provisioning request reads the catalog again.
 
-OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority, then refuses a taken Agent name with Agent create's `409`. Reserved Secret destinations, cross-Namespace Secret references, and missing or `runtime` Harness authentication give `400 INVALID_REQUEST` naming the rule; a Secret absent from the Namespace stays `404`. Before the Compute plan check, a Secret binding gets Agent save's Harness authentication check and its named `400`.
+OCC first authorizes Agent `create`, Configuration `create`, and Installation `administer` for the Namespace. Status and retry use the same grants; absence gives `403` regardless of the body. It validates Configuration, references, workspace inputs, execution mode, and current authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
 
 A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
 After an Installation selects another Secret Driver, request, status and retry answer `503` for a Secret owned by the previous Driver, after authorization and lookup. The message asks the caller to save replacement Secrets and submit a new request. The worker fails that attempt with `PROVISIONING_REJECTED`; an unavailable Secret Driver still retries.
 
-Before admission, OCC applies Configuration rules, then the ChannelDriver checks credentials through authorized Secret callbacks. Slack reads a token that is one whole `${NAME}` as the env reference to NAME, and checks token roles and bot authentication without pinning Secret versions or adding worker revalidation. OCC validates repository selections against the Namespace before queueing. Undeliverable repository bindings, including Sandbox repositories, keep Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup` capability; Compute delegates validation or refuses unsupported placement before staging files. Deployment checks the exact Harness topology.
+OCC applies Configuration rules before Channel credential validation. Its Secret callbacks recheck provisioning grants before storage and after I/O, then confirm current same-Namespace backend and selected-Driver ownership before provider use. Slack accepts whole `${NAME}` environment references and checks token roles and bot authentication. This does not pin Secret versions or revalidate queued work. OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
 OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
 
@@ -223,6 +223,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
 
 - 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
 

@@ -9,10 +9,9 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Scheduled QA runs Console Secret management on Compose/Kubernetes, OpenShell
-security and lifecycle files, local installation, public Git OpenShell, and OIDC Agent chat. Jobs use
-disposable installations. Results are advisory, not merge
-or publication gates.
+QA uses disposable installations for Console Secrets on Compose/Kubernetes,
+OpenShell security and lifecycle, local installation, public Git, and OIDC Agent
+chat. Results do not gate merge or publication.
 
 <a id="when-it-runs"></a>
 
@@ -30,8 +29,7 @@ or publication gates.
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
 are ineligible. Narrow labels select their union. `full-qa` overrides them and
-runs the default Codex/`console-secrets` cells. The focused Compose job checks
-native redeployment and required-worker execution on Kubernetes workloads.
+runs the default Codex/`console-secrets` cells. Compose checks native redeployment and required-worker execution on Kubernetes.
 
 PR runs test the merge commit. New commits replace opted-in runs; unrelated
 labels cannot restart or cancel them. Remove labels before pushing unreviewed
@@ -53,9 +51,9 @@ manual advisory run.
 
 ## Scenarios
 
-The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) uses disposable
-control planes and Kubernetes compute. It preserves existing clusters/kubeconfig
-and checks Google Workspace (OpenClaw) and Linear (Codex) catalogs.
+The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) preserves existing
+clusters and kubeconfig. Setup checks Google Workspace for OpenClaw and Linear
+for Codex.
 
 | Scenario                | In advisory                  | Presets         | Checks                                                                                                                                                                           |
 | ----------------------- | ---------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -70,7 +68,8 @@ and checks Google Workspace (OpenClaw) and Linear (Codex) catalogs.
 | `slack`                 | No                           | Codex           | Threaded reply and new root message.                                                                                                                                             |
 | `openshell-linear-read` | No                           | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
 | `codex-search-config`   | No                           | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
-| `public-github-git`     | Yes (separate OpenShell job) | Codex           | Ordinary OpenShell Git clone/fetch, reader scope, denial, real model turn, replacement, controller recovery and scoped withdrawal.                                               |
+| `openshell-git-model`   | No                           | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                   |
+| `public-github-git`     | Yes (separate OpenShell job) | Codex           | OpenShell clone/fetch, scope denial, real model turn, replacement, controller recovery and scoped withdrawal.                                                                    |
 
 [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
 [scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
@@ -82,9 +81,12 @@ To run OpenShell scenarios locally, prepare the matching fixture for
 [scratch storage](../openshell.md#openshell-sandbox), or
 [plugin installation](../openshell.md#codex-plugin-installation).
 
-The OpenClaw `model-ui` case checks the example Console theme through sign-in
-and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
-Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
+`model-ui` checks Console sign-in and Agent use, then redeploys with a provider
+alias, the existing Secret, and `OCE_MODEL_API_KEY` for a real model turn.
+
+`openshell-git-model` requires Kubernetes, Codex, `OCC_TEST_QA_SANDBOX_ENV`,
+`OCC_TEST_QA_OPENAI_KEY_FILE`, and `OCC_TEST_QA_OPENAI_MODEL`. Its disposable stack
+uses a controlled Git origin and real model provider.
 
 ### Harness destination overrides
 
@@ -178,7 +180,8 @@ Local instructions run the **QA matrix only**. For other suites, follow
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 `all` excludes `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
-`openshell-linear-read`, `public-github-git`, `codex-search-config`, `harness-overrides` and
+`openshell-linear-read`, `openshell-git-model`, `public-github-git`,
+`codex-search-config`, `harness-overrides` and
 `oidc-agent-chat` selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
@@ -373,14 +376,12 @@ Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
 because it runs one file; complete advisory OpenShell coverage requires every
 manifest file to pass.
 
-The separate `QA advisory (public Git OpenShell)` job runs the
-`qa-matrix` lane with an exclusive selector.
+The `QA advisory (public Git OpenShell)` job runs only `public-github-git`. See
+[public-reader diagnostics](../public-github-reads.md#failure-diagnostics) for failure receipts.
 
-For public-Git failure receipts, see [public-reader diagnostics](../public-github-reads.md#failure-diagnostics).
-
-In `matrix.json`, `scope: full` means both installations and presets with the
-`all` scenarios; advisory QA has narrower coverage. See
-[Select scenarios](#select-scenarios) for the exclusions from `all`.
+In `matrix.json`, `scope: full` covers both installations and presets with
+`all` scenarios. Advisory QA covers less; [scenario selection](#select-scenarios)
+lists the exclusions from `all`.
 
 [First-Agent timing results](openshell-execution.md#interpret-timing-and-proof)
 include overlapping stages; do not sum them as elapsed time. A Codex timeout

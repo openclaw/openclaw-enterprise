@@ -80,9 +80,9 @@ configured credential plugin when applicable. It does not request Kubernetes Sec
 ## Run and interpret the checks
 
 ```bash
-node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
 # Save machine-readable evidence privately when needed.
-node scripts/diagnose-kubernetes-prerequisites.mjs \
+node scripts/diagnose-kubernetes-prerequisites.ts \
   --config "$RUN_DIR/prerequisites.json" --json > "$RUN_DIR/prerequisite-result.json"
 ```
 

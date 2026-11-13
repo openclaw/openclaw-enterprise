@@ -23,7 +23,7 @@ import {
   eachSettled as all,
   settled,
 } from "../helpers/child-processes.mjs";
-import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.ts";
 import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { checkArguments, classify, respond } from "../../scripts/ci/impact.ts";
 
@@ -35,7 +35,7 @@ function present<T>(value: T | null | undefined): T {
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.ts");
 const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
-const gate = join(repositoryRoot, "scripts/ci/impact-gate.mjs");
+const gate = join(repositoryRoot, "scripts/ci/impact-gate.ts");
 const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const read = (path: string) => readFileSync(join(repositoryRoot, path), "utf8");
 const policy = readFileSync(selector, "utf8");
@@ -1460,6 +1460,7 @@ function workflowBootstrap(step: string) {
 
 const bootstrapSteps = {
   select: "      - id: select\n",
+  advisory: "      - name: Report main test advisory\n",
   verify: "      - name: Verify selected mode\n",
 };
 
@@ -2091,9 +2092,13 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     "bash scripts/ci/setup-tools.sh workflows",
     "actionlint .github/workflows/*.yml",
     "node scripts/ci/run-tests.mjs audit",
-    ...skipped.map(({ run }) => (run === "pnpm lint" ? "pnpm lint --concurrency 2" : run)),
+    ...skipped.flatMap(({ run }) =>
+      run === "pnpm lint" ? ["pnpm lint --concurrency 2"] : present(run).split(" && "),
+    ),
   ];
-  const checks = staticChecks.steps.filter((step) => commands.includes(step.run));
+  const checks = staticChecks.steps.filter(
+    (step) => step.run !== undefined && commands.includes(step.run),
+  );
   assert.deepEqual(
     checks.map((step) => step.run),
     commands,
@@ -2441,7 +2446,7 @@ test("every lane job stops its test files before its own timeout", (t) => {
   }
 });
 
-// Runs impact-gate.mjs on a needs object, writing needs.json in `root`.
+// Runs impact-gate.ts on a needs object, writing needs.json in `root`.
 function runGate(root: string, needs: object, mode: string, lanes?: string) {
   const raw = join(root, "raw-needs.json");
   writeFileSync(raw, JSON.stringify(needs));
@@ -2534,7 +2539,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     ].sort(),
     [...expectedFullLanes, "k3d-observability-demo"].sort(),
   );
-  await each(["docs", "full"], async (expected) => {
+  await each(["docs", "full"] as const, async (expected) => {
     const [f, bootstrap] = await policyFixture(t, ({ put }) => {
       put("docs/change.md");
       if (expected === "full") {
@@ -2549,7 +2554,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     assert.equal((await bootstrap.run("verify", mode)).status, 0);
 
     const root = bootstrap.checkout;
-    const needs = passingGateNeeds(mode);
+    const needs = passingGateNeeds(expected);
     const gateResult = await runGate(root, needs, mode);
     assert.equal(gateResult.status, 0, gateResult.stderr);
     const selectedNeeds = needsData(readFileSync(join(root, "needs.json"), "utf8"));
@@ -3080,6 +3085,95 @@ async function suiteFixture(
   return [f, await shallowBootstrap(f)] as const;
 }
 
+test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
+  const path = "tests/integration/postgres-a.test.mjs";
+  const broad: string[] = [];
+  const narrow = ["postgres"];
+  const extraLane = present(suiteFiles()["scripts/ci/test-suites.json"]).replaceAll(
+    "postgres",
+    "unknown-lane",
+  );
+  const cases: [Change, Files, string[], boolean?][] = [
+    [editTest(path), {}, narrow],
+    [postgresEdit(({ put }) => put("docs/change.md")), {}, broad],
+    [postgresEdit(editTest("tests/integration/postgres-b.test.mjs")), {}, broad],
+    [({ repo }) => chmodSync(join(repo, path), 0o755), {}, broad],
+    [
+      editTest(path),
+      {
+        "scripts/reader.mjs": 'import "../tests/integration/postgres-a.test.mjs";',
+      },
+      broad,
+    ],
+    [editTest(path), { "scripts/ci/test-suites/postgres.json": laneManifest([]) }, broad],
+    [
+      editTest(path),
+      {
+        "scripts/ci/test-suites.json": extraLane,
+        "scripts/ci/test-suites/unknown-lane.json": laneManifest([path]),
+      },
+      broad,
+      false,
+    ],
+    [
+      postgresEdit(({ put }) => put("scripts/ci/test-suites/postgres.json", laneManifest([path]))),
+      {},
+      broad,
+    ],
+    [({ git }) => git("rm", path), {}, broad],
+  ];
+  const matrix = await buildMatrix(t, "full", "");
+  assert.equal(matrix.status, 0, matrix.stderr);
+  assert.ok(matrix.matrix?.some((row) => row.lane === "postgres-application"));
+  await each(cases, async ([change, extra, expected, bound = true], i) => {
+    const [f, checkout] = await suiteFixture(t, change, extra);
+    const check = async (
+      lanes: string[],
+      event: Record<string, string | boolean | null> = {},
+      environment: NodeJS.ProcessEnv = {},
+    ) => {
+      mainPushEvent(f, event);
+      const env = { ...mainPushEnvironment, ...environment };
+      const selected = await checkout.select(env);
+      assert.match(selected, /^mode=full\nreason=[a-z_]+\n$/);
+      const result = await checkout.run("advisory", "", {
+        ...env,
+        SELECTION: "success-full-" + present(selected.split("reason=")[1]).trim(),
+        MATRIX_OUTCOME: "success",
+        MATRIX: JSON.stringify(matrix.matrix),
+        IMAGES: JSON.stringify(matrix.images),
+      });
+      const prediction = {
+        prediction: lanes.length ? "one_modified_test" : "broad",
+        lanes,
+        ...(bound && selected === "mode=full\nreason=ineligible_change\n"
+          ? { before: f.base, after: f.tested }
+          : {}),
+      };
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        result.stdout,
+        `::notice title=CI main test advisory v2::${JSON.stringify(prediction)}\n`,
+      );
+      assert.equal(result.output, "");
+    };
+    await check(expected);
+    if (i === 0) {
+      await checkout.expect("full", mainPushEnvironment, "ineligible_change");
+      for (const event of [
+        { forced: true },
+        { deleted: true },
+        { created: true },
+        { after: f.base },
+        { before: "1".repeat(40) },
+      ]) {
+        await check(broad, event);
+      }
+      await check(broad, {}, { GITHUB_REPOSITORY: "another/repository" });
+    }
+  });
+});
+
 test("a test-only change selects the lanes that list its files", async (t) => {
   await each(
     [
@@ -3231,7 +3325,7 @@ test("mixed test and code, tooling, workflow or package changes select full", as
       "src/app.ts",
       "scripts/ci/prepare.mjs",
       "scripts/ci/run-tests.mjs",
-      "scripts/ci/impact-gate.mjs",
+      "scripts/ci/impact-gate.ts",
       ".github/workflows/ci.yml",
       "package.json",
       "pnpm-lock.yaml",
@@ -3560,7 +3654,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   }
   const required = job("ci-required");
   assert.match(required, /EXPECTED_LANES: \$\{\{ needs\.impact\.outputs\.lanes \}\}/);
-  assert.match(required, /impact-gate\.mjs [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
+  assert.match(required, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
   assert.match(required, /run-tests\.mjs aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
   const impact = job("impact");
   for (const [output, step] of [

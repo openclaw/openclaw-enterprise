@@ -10,7 +10,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
-import { kubectlGetJson, plainGet } from "../helpers/kubernetes-api-read.mjs";
+import { kubectlGetJson, plainGet } from "../helpers/kubernetes-api-read.ts";
 import { isTransientKubectlFailure } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";

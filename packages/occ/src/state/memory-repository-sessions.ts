@@ -146,33 +146,28 @@ export function memoryRepositorySessions(
       ) {
         return old;
       }
-      if (
-        old ||
-        [...approvals.values()].some(
-          (a) =>
-            !a.revokedAt &&
-            a.namespaceId === input.namespaceId &&
-            a.agentId === input.agentId &&
-            a.binding.repositoryRef === input.binding.repositoryRef,
-        )
-      ) {
+      if (old) {
         throw new ResourceConflictError(
           "Standing approval identity already used or binding already approved.",
         );
       }
-      const generation =
-        Math.max(
-          0,
-          ...[...approvals.values()]
-            .filter(
-              (a) =>
-                a.namespaceId === input.namespaceId &&
-                a.agentId === input.agentId &&
-                a.binding.repositoryRef === input.binding.repositoryRef,
-            )
-            .map((a) => a.generation),
-        ) + 1;
-      const approved = immutableCopy({ ...input, generation });
+      let generation = 0;
+      for (const approval of approvals.values()) {
+        if (
+          approval.namespaceId !== input.namespaceId ||
+          approval.agentId !== input.agentId ||
+          approval.binding.repositoryRef !== input.binding.repositoryRef
+        ) {
+          continue;
+        }
+        if (!approval.revokedAt) {
+          throw new ResourceConflictError(
+            "Standing approval identity already used or binding already approved.",
+          );
+        }
+        generation = Math.max(generation, approval.generation);
+      }
+      const approved = immutableCopy({ ...input, generation: generation + 1 });
       approvals.set(input.id, approved);
       return approved;
     },
