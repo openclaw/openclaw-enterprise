@@ -30,16 +30,19 @@ Kubernetes namespace.
 For a fresh local k3d installation, use the authenticated
 [Gateway setup](#prepare-an-authenticated-local-gateway).
 
-A fresh installation needs a ready, Gateway-owned model source before enabling
-the repository Credential Proxy. If that source already exists, start at step 2.
+Select the OpenShell Gateway and Sandbox, then
+[register one static model source using the OpenAI API-key example](../deploy/openshell-credential-sources.md#register-the-key).
+You can register it before or after enabling the validated bundled `repository.openShell`
+Git-only transport. Keep a separately selected OCE Credential Gateway for model
+delivery; the OpenShell gateway service alone does not select that capability. Verify that
+its state and Gateway status are ready and that it has no `egress`. Reuse an existing
+Gateway-owned source only if it meets these same static-source requirements.
+The selected Gateway catalog must declare Harness authentication without refresh,
+device authorization or ChatGPT OAuth. Bind only this one model source to the Agent.
 
-1. Select the OpenShell Gateway and Sandbox. Leave `drivers.credential_proxy`
-   and the Backend’s `drivers.credential_proxy` unset. [Register the model source](../deploy/openshell-credential-sources.md)
-   and verify that its state and Gateway status are ready and that it has no `egress`.
-2. Keep the Gateway selected and use that same source with
-   `harnessAuth.method: credential_source`. Enable the repository Credential Proxy
-   as described below. This procedure is for a fresh installation; changing an
-   existing installation can affect running Agents.
+Keep the Gateway selected and use the source with
+`harnessAuth.method: credential_source`. Configure the repository Credential Proxy
+as described below. Changing an existing installation can affect running Agents.
 
 ### Prepare an authenticated local Gateway
 

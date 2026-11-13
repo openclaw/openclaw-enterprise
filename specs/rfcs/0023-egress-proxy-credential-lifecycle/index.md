@@ -8,11 +8,15 @@ status: Proposed
 
 **RFC-0023** · [Proposal #1530](https://github.com/openclaw/openclaw-enterprise/pull/1530) · [Interfaces and records](contracts.md) · [Protocol](protocol.md) · [Security and migration](security.md)
 
+This proposal requires human review and merge.
+
 ## Decision
 
 Let an Agent use a provider without giving it the provider credential. If `build-agent` may read GitHub repository `123`, it makes an ordinary request; a trusted sender verifies which execution sent it, checks whether the read is still allowed, and authenticates to GitHub. A child process has the same access as its parent. A different execution needs its own admitted authority.
 
 Retire `CredentialGatewayDriver` and `CredentialRefreshDriver` as Installation capabilities. The selected `CredentialProxyDriver` configures and withdraws protected egress. Its paired `SandboxDriver` installs the policy and prevents bypass. OCE’s built-in Token Service registers dynamic credentials and resolves access tokens through provider-specific issuers. `SecretDriver` supplies authorized static material. See [credential access and lifecycle](contracts.md#credential-access-and-lifecycle).
+
+The validated bundled `repository.openShell` Git-only installation retains a scoped compatibility exception: fresh static model sources use the separately selected Credential Gateway, with or without authorized Git repositories. New plugin, refresh and OAuth enrollments do not qualify. This does not extend to execution-authority configurations or general installed packages. Prepared and credential-free sources still require protection. Existing sources and refreshes keep their recorded owners until supported drain; selection does not transfer ownership. The OpenShell gateway service is distinct from the deprecated OCE `CredentialGatewayDriver` capability.
 
 ![Proposed protected egress: Sandbox prevents bypass; a trusted sender checks current authority, resolves a credential if needed, and sends the request](assets/overview.svg)
 
@@ -40,12 +44,14 @@ It does not replace the existing post-replacement terminal-result amendment.
 
 ## Two deployment modes
 
-The deployment selects an egress implementation; it does not separately select an authentication mechanism. Protection is an explicit admission decision, independent of how many credentials are configured.
+The deployment selects protection independently of credential count. Full and unknown profiles retain protected admission or refusal, including empty deny-all plans. Only the validated Git-only compatibility installation can omit a Proxy plan for exactly one ready static model source matching the Harness snapshot and configured Gateway, with no other sources or Git bindings. Source-free runtime authentication retains protected admission or refusal; existing no-Proxy deployments retain their behavior.
 
-| Mode                                                     | What it means                                                                                                                                                                                                                                                                               |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Unprotected** · minimal CI or simple local development | OCE knows the Agent exists but does not authenticate or govern its direct requests. No managed route, clone, or provider credential. Asking for one fails admission, rather than silently using ambient credentials.                                                                        |
-| **Protected** · OpenShell, in production or locally      | Authenticate the whole Agent execution, prevent direct egress, and authorize each operation at the admitted level of protection. A route may explicitly require no provider credential; zero allowed routes means deny all. Failure to establish protection never selects unprotected mode. |
+Enabling Git integration must not prevent successful model credential registration and delivery for Agents with or without repository access, while preserving the protection required by each credential source.
+
+| Mode                                                | What it means                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Unprotected by Credential Proxy**                 | Existing no-Proxy delivery and the scoped Git-only compatibility exception retain their authorization and attachment checks. No protected source or Git binding can bypass required Proxy enforcement.                                                                                      |
+| **Protected** · OpenShell, in production or locally | Authenticate the whole Agent execution, prevent direct egress, and authorize each operation at the admitted level of protection. A route may explicitly require no provider credential; zero allowed routes means deny all. Failure to establish protection never selects unprotected mode. |
 
 ## Two levels of protection
 
