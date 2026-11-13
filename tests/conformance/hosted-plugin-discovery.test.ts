@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { createServer } from "node:http";
+import test, { type TestContext } from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { PluginDiscoveryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -22,7 +23,54 @@ function oauthCredential(isFedramp = false) {
 }
 
 // Plugin Service's PluginDirectoryDetailItem and AppBatchRecord wire contracts.
-function plugin(release = {}) {
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type Presentation = { [key: string]: JsonValue | undefined };
+type Component = { key: string; metadata: Record<string, string> } | { name: string };
+type Release = {
+  id: string;
+  version: string;
+  display_name: string;
+  description: string;
+  interface: Presentation;
+  requires_local_executor?: boolean | string | null;
+  app_ids: string[];
+  app_manifest: { apps: Record<string, { id: string }> } | null;
+  skills: { name: string }[];
+  mcp_servers: Component[];
+  scheduled_tasks?: Component[];
+  bundle_download_url?: string;
+};
+type Plugin = {
+  id: string;
+  name: string;
+  scope: string;
+  discoverability: string;
+  status: string;
+  disabled_reason: string | null;
+  installation_policy: string;
+  authentication_policy: string;
+  release: Release;
+};
+type App = {
+  id: string;
+  name: string;
+  description: string;
+  icon_url: null;
+  supported_auth_types: string[];
+  requires_link_params: boolean;
+  developer: null;
+  status: string;
+  tools?: {
+    name: string;
+    title: string;
+    description: string;
+    is_enabled?: boolean;
+    disabled_reason: string | null;
+    is_read_only?: boolean;
+  }[];
+};
+
+function plugin(release: Partial<Release> = {}): Plugin {
   return {
     id: pluginId,
     name: "discovery-fixture",
@@ -48,7 +96,7 @@ function plugin(release = {}) {
   };
 }
 
-function app(id, status = "ENABLED", enabled = true) {
+function app(id: string, status = "ENABLED", enabled = true): App {
   return {
     id,
     name: id,
@@ -71,38 +119,55 @@ function app(id, status = "ENABLED", enabled = true) {
   };
 }
 
-function useService(t, detail, apps, onAppsRequest = () => {}) {
-  t.mock.method(globalThis, "fetch", async (url, init) => {
-    if (url === whoamiUrl) {
-      return Response.json({
-        email: null,
-        chatgpt_user_id: "user_fixture",
-        chatgpt_account_id: "account_fixture",
-        chatgpt_plan_type: "team",
-        chatgpt_account_is_fedramp: false,
-      });
-    }
-    if (url === `${catalogUrl}plugins/${pluginId}?includeDownloadUrls=true`) {
-      return Response.json(detail);
-    }
-    assert.equal(url, `${catalogUrl}apps/batch`);
-    onAppsRequest(JSON.parse(init.body));
-    return Response.json({ apps });
-  });
+function parseJsonRecord(value: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(value);
+  assert.ok(typeof parsed === "object" && parsed !== null && !Array.isArray(parsed));
+  return parsed as Record<string, unknown>;
+}
+
+function useService(
+  t: TestContext,
+  detail: Plugin,
+  apps: App[],
+  onAppsRequest: (body: Record<string, unknown>) => void = () => {},
+) {
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      if (url === whoamiUrl) {
+        return Response.json({
+          email: null,
+          chatgpt_user_id: "user_fixture",
+          chatgpt_account_id: "account_fixture",
+          chatgpt_plan_type: "team",
+          chatgpt_account_is_fedramp: false,
+        });
+      }
+      if (url === `${catalogUrl}plugins/${pluginId}?includeDownloadUrls=true`) {
+        return Response.json(detail);
+      }
+      assert.equal(url, `${catalogUrl}apps/batch`);
+      assert.ok(typeof init?.body === "string");
+      onAppsRequest(parseJsonRecord(init.body));
+      return Response.json({ apps });
+    },
+  );
   return new CodexPluginDriver();
 }
 
 for (const q of [undefined, "  ", " linear & docs? "]) {
   test(`hosted plugin discovery preserves pages and opaque cursors for query ${JSON.stringify(q)}`, async (t) => {
     const cursor = "opaque/+cursor?offset=20&rank=a b";
-    const requests = [];
-    t.mock.method(globalThis, "fetch", async (url) => {
+    const requests: URL[] = [];
+    t.mock.method(globalThis, "fetch", async (url: Parameters<typeof fetch>[0]) => {
       if (url === whoamiUrl) {
         return Response.json({
           chatgpt_account_id: "account_fixture",
           chatgpt_account_is_fedramp: false,
         });
       }
+      assert.ok(typeof url === "string");
       const request = new URL(url);
       requests.push(request);
       return Response.json({
@@ -116,20 +181,25 @@ for (const q of [undefined, "  ", " linear & docs? "]) {
       });
     });
     const driver = new CodexPluginDriver();
-    const first = await driver.discoverCatalog({ accessToken, q });
+    const query = q === undefined ? {} : { q };
+    const first = await driver.discoverCatalog({ accessToken, ...query });
     assert.equal(requests.length, 1);
-    assert.equal(first.plugins[0].id, "codex-plugin:discovery-fixture@openai-curated-remote");
-    assert.equal(first.plugins[0].logoUrl, "https://public.example/logo.png");
+    assert.equal(first.plugins[0]!.id, "codex-plugin:discovery-fixture@openai-curated-remote");
+    assert.equal(first.plugins[0]!.logoUrl, "https://public.example/logo.png");
     assert.equal(first.nextCursor, cursor);
-    assert.match(first.setup.message, /App connection status is not verified/);
-    assert.match(first.setup.message, /Catalog availability does not confirm linked credentials/);
-    assert.match(first.setup.message, /Service accounts/);
-    assert.deepEqual(first.setup.links, [
+    assert.match(first.setup!.message, /App connection status is not verified/);
+    assert.match(first.setup!.message, /Catalog availability does not confirm linked credentials/);
+    assert.match(first.setup!.message, /Service accounts/);
+    assert.deepEqual(first.setup!.links, [
       workspaceHelp,
       { label: "Service account credentials", url: "https://admin.openai.com/" },
       runtimeHelp,
     ]);
-    const second = await driver.discoverCatalog({ accessToken, q, cursor: first.nextCursor });
+    const second = await driver.discoverCatalog({
+      accessToken,
+      ...query,
+      cursor: first.nextCursor!,
+    });
     assert.deepEqual(second, { plugins: [], nextCursor: null, setup: first.setup });
     assert.deepEqual(
       requests.map((url) => ({
@@ -157,39 +227,49 @@ for (const q of [undefined, "  ", " linear & docs? "]) {
 
 for (const isFedramp of [false, true]) {
   test(`hosted OAuth discovery uses its server-owned account for list, search and details (FedRAMP ${isFedramp})`, async (t) => {
-    const requests = [];
-    t.mock.method(globalThis, "fetch", async (url, init) => {
-      // OAuth identity comes from native login state; the PAT whoami route is never called.
-      assert.ok(url.startsWith(catalogUrl));
-      assert.equal(init.headers.Authorization, "Bearer oauth-access-fixture");
-      assert.equal(init.headers["ChatGPT-Account-ID"], "account_oauth_fixture");
-      assert.equal(init.headers["OAI-Product-Sku"], "codex");
-      assert.equal(init.headers["X-OpenAI-Fedramp"], isFedramp ? "true" : undefined);
-      assert.doesNotMatch(JSON.stringify({ url, init }), /oauth-refresh-fixture/);
-      const path = url.slice(catalogUrl.length);
-      requests.push(path);
-      if (path.startsWith("plugins/list?") || path.startsWith("plugins/search?")) {
-        return Response.json({ plugins: [plugin()], pagination: { next_page_token: null } });
-      }
-      if (path === `plugins/${pluginId}?includeDownloadUrls=true`) {
-        return Response.json(plugin());
-      }
-      assert.equal(path, "apps/batch");
-      assert.equal(init.method, "POST");
-      assert.deepEqual(JSON.parse(init.body), {
-        app_ids: ["connector_fixture"],
-        include_tools: true,
-      });
-      return Response.json({ apps: [app("connector_fixture")] });
-    });
+    const requests: string[] = [];
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        // OAuth identity comes from native login state; the PAT whoami route is never called.
+        assert.ok(typeof url === "string");
+        assert.ok(url.startsWith(catalogUrl));
+        assert.ok(init);
+        assert.ok(
+          init.headers && !Array.isArray(init.headers) && !(init.headers instanceof Headers),
+        );
+        assert.equal(init.headers.Authorization, "Bearer oauth-access-fixture");
+        assert.equal(init.headers["ChatGPT-Account-ID"], "account_oauth_fixture");
+        assert.equal(init.headers["OAI-Product-Sku"], "codex");
+        assert.equal(init.headers["X-OpenAI-Fedramp"], isFedramp ? "true" : undefined);
+        assert.doesNotMatch(JSON.stringify({ url, init }), /oauth-refresh-fixture/);
+        const path = url.slice(catalogUrl.length);
+        requests.push(path);
+        if (path.startsWith("plugins/list?") || path.startsWith("plugins/search?")) {
+          return Response.json({ plugins: [plugin()], pagination: { next_page_token: null } });
+        }
+        if (path === `plugins/${pluginId}?includeDownloadUrls=true`) {
+          return Response.json(plugin());
+        }
+        assert.equal(path, "apps/batch");
+        assert.equal(init.method, "POST");
+        assert.ok(typeof init.body === "string");
+        assert.deepEqual(parseJsonRecord(init.body), {
+          app_ids: ["connector_fixture"],
+          include_tools: true,
+        });
+        return Response.json({ apps: [app("connector_fixture")] });
+      },
+    );
     const driver = new CodexPluginDriver();
     const credential = oauthCredential(isFedramp);
     const page = await driver.discoverCatalog(credential);
-    assert.equal(page.plugins[0].remoteId, pluginId);
+    assert.equal(page.plugins[0]!.remoteId, pluginId);
     const search = await driver.discoverCatalog({ ...credential, q: "hosted tools" });
-    assert.equal(search.plugins[0].remoteId, pluginId);
+    assert.equal(search.plugins[0]!.remoteId, pluginId);
     const detail = await driver.getCatalogPlugin({ ...credential, pluginId });
-    assert.equal(detail.tools[0].id, "connector_fixture/search");
+    assert.equal(detail.tools![0]!.id, "connector_fixture/search");
     assert.equal(detail.available, true);
     assert.deepEqual(requests, [
       "plugins/list?scope=GLOBAL&limit=20",
@@ -205,22 +285,29 @@ test("hosted OAuth discovery rejects incomplete or unsafe warm identity before p
   const request = t.mock.method(globalThis, "fetch", async () => {
     assert.fail("Rejected credentials must not reach the provider");
   });
-  for (const credential of [
+  const credentials: Parameters<CodexPluginDriver["discoverCatalog"]>[0][] = [
     { accessToken: "oauth-access-fixture" },
     { ...oauthCredential(), accountId: "" },
     { ...oauthCredential(), accountId: "account\nforged-header" },
     { ...oauthCredential(), accessToken: "token\nforged-header" },
-    { ...oauthCredential(), isFedramp: "true" },
-  ]) {
+  ];
+  const rejection = { name: "PluginDiscoveryError", reason: "credentials_rejected" };
+  for (const credential of credentials) {
     const driver = new CodexPluginDriver();
-    await assert.rejects(driver.discoverCatalog(credential), {
-      name: "PluginDiscoveryError",
-      reason: "credentials_rejected",
-    });
-    await assert.rejects(driver.getCatalogPlugin({ ...credential, pluginId }), {
-      name: "PluginDiscoveryError",
-      reason: "credentials_rejected",
-    });
+    await assert.rejects(driver.discoverCatalog(credential), rejection);
+    await assert.rejects(driver.getCatalogPlugin({ ...credential, pluginId }), rejection);
+  }
+
+  // A JavaScript caller can supply a string where the Driver expects a boolean.
+  const malformed = { ...oauthCredential(), isFedramp: "true" };
+  const driver = new CodexPluginDriver();
+  for (const [operation, input] of [
+    [driver.discoverCatalog, malformed],
+    [driver.getCatalogPlugin, { ...malformed, pluginId }],
+  ] as const) {
+    const response: unknown = Reflect.apply(operation, driver, [input]);
+    assert.ok(response instanceof Promise);
+    await assert.rejects(response, rejection);
   }
   assert.equal(request.mock.callCount(), 0);
 });
@@ -243,7 +330,7 @@ test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid co
   const fallback = "https://images.example/composer.png";
   const detail = plugin();
   const driver = useService(t, detail, [app("connector_fixture")]);
-  const cases = [
+  const cases: [Presentation, string | undefined][] = [
     [{ logo_url: primary, composer_icon_url: fallback }, primary],
     [{ composer_icon_url: fallback }, fallback],
     [{ logo_url: "http://images.example/logo.png", composer_icon_url: fallback }, fallback],
@@ -259,13 +346,14 @@ test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid co
         username: "user",
         password: "password",
         host: "images.example",
+        port: undefined,
         pathname: "/logo.png",
       }),
       "https://user@images.example/logo.png",
       "https://images.example/logo\n.png",
       "https://images.example/logo\u0000.png",
       `https://images.example/${"a".repeat(8192)}`,
-    ].map((logo_url) => [{ logo_url }, undefined]),
+    ].map((logo_url): [Presentation, undefined] => [{ logo_url }, undefined]),
   ];
   for (const [presentation, expected] of cases) {
     detail.release.interface = presentation;
@@ -274,7 +362,7 @@ test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid co
     assert.equal(Object.hasOwn(result, "logoUrl"), expected !== undefined);
     // Bad decorative metadata must not make an otherwise available plugin unusable.
     assert.equal(result.available, true);
-    assert.equal(result.tools.length, 1);
+    assert.equal(result.tools!.length, 1);
   }
 });
 
@@ -291,6 +379,7 @@ test("hosted plugin website and legal links preserve safe URLs and omit unsafe m
       username: "user",
       password: "password",
       host: "publisher.example",
+      port: undefined,
       pathname: "/",
     }),
     "https://publisher.example/\npolicy",
@@ -301,7 +390,7 @@ test("hosted plugin website and legal links preserve safe URLs and omit unsafe m
       privacy_policy_url: value,
       terms_of_service_url: value,
     };
-    const serialized = JSON.parse(
+    const serialized = parseJsonRecord(
       JSON.stringify(await driver.getCatalogPlugin({ accessToken, pluginId })),
     );
     for (const field of ["websiteUrl", "privacyPolicyUrl", "termsOfServiceUrl"]) {
@@ -325,11 +414,11 @@ test("hosted plugin unavailability explains known workspace reasons without expo
     ["required_app_unavailable", /required app is unavailable/],
     [null, /did not provide a recognized reason/],
     [`private upstream ${accessToken}`, /did not provide a recognized reason/],
-  ]) {
+  ] as const) {
     detail.disabled_reason = reason;
     const result = await driver.getCatalogPlugin({ accessToken, pluginId });
     assert.equal(result.available, false);
-    assert.match(result.unavailableReason, expected);
+    assert.match(result.unavailableReason!, expected);
     assert.deepEqual(result.unavailableHelp, workspaceHelp);
     assert.doesNotMatch(JSON.stringify(result), /private upstream|at-discovery-fixture/);
   }
@@ -347,15 +436,15 @@ test("hosted plugin tools respect parent app access independently of action poli
   );
   const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
   assert.deepEqual(
-    detail.tools.map(({ ownerId, available }) => ({ ownerId, available })),
+    detail.tools!.map(({ ownerId, available }) => ({ ownerId, available })),
     [
       { ownerId: "connector_action_denied", available: false },
       { ownerId: "connector_denied", available: false },
       { ownerId: "connector_owned", available: true },
     ],
   );
-  assert.match(detail.tools[0].unavailableReason, /tool is disabled/i);
-  assert.match(detail.tools[1].unavailableReason, /app providing this tool/i);
+  assert.match(detail.tools![0]!.unavailableReason!, /tool is disabled/i);
+  assert.match(detail.tools![1]!.unavailableReason!, /app providing this tool/i);
 });
 
 test("hosted plugin detail follows native authored app IDs and removes their MCP alternatives", async (t) => {
@@ -372,8 +461,8 @@ test("hosted plugin detail follows native authored app IDs and removes their MCP
   );
   const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
   assert.equal(detail.available, true);
-  assert.equal(detail.tools[0].ownerId, "connector_authored");
-  assert.equal(detail.tools[0].id, "connector_authored/search");
+  assert.equal(detail.tools![0]!.ownerId, "connector_authored");
+  assert.equal(detail.tools![0]!.id, "connector_authored/search");
   assert.doesNotMatch(JSON.stringify(detail), /private-artifact|local-alternative/);
 });
 
@@ -383,11 +472,11 @@ test("hosted plugin skills do not admit unmatched MCP servers or scheduled tasks
   for (const [field, component] of [
     ["mcp_servers", { key: "local-only", metadata: { command: "local-tool" } }],
     ["scheduled_tasks", { name: "daily" }],
-  ]) {
+  ] as const) {
     release.release[field] = [component];
     const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
     assert.equal(detail.available, false);
-    assert.match(detail.unavailableReason, /components not supported/i);
+    assert.match(detail.unavailableReason!, /components not supported/i);
     assert.deepEqual(detail.unavailableHelp, runtimeHelp);
     release.release[field] = [];
   }
@@ -405,7 +494,7 @@ test("hosted plugin detail admits skills and an MCP route replaced by its hosted
   );
   const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
   assert.equal(detail.available, true);
-  assert.equal(detail.tools[0].id, "connector_fixture/search");
+  assert.equal(detail.tools![0]!.id, "connector_fixture/search");
 });
 
 test("hosted plugin detail keeps MCPs whose duplicate app declaration Codex discards", async (t) => {
@@ -449,12 +538,12 @@ test("hosted plugin detail preserves an unknown tool list when an app is omitted
 test("hosted plugin detail accepts native optional tool metadata", async (t) => {
   const metadata = app("connector_fixture");
   // Codex's batch metadata contract defaults these omitted flags and permits absent tools.
-  delete metadata.tools[0].is_enabled;
-  delete metadata.tools[0].is_read_only;
+  delete metadata.tools![0]!.is_enabled;
+  delete metadata.tools![0]!.is_read_only;
   const driver = useService(t, plugin(), [metadata]);
   const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
-  assert.equal(detail.tools[0].available, true);
-  assert.equal(detail.tools[0].writes, true);
+  assert.equal(detail.tools![0]!.available, true);
+  assert.equal(detail.tools![0]!.writes, true);
   delete metadata.tools;
   assert.equal((await driver.getCatalogPlugin({ accessToken, pluginId })).tools, null);
 });
@@ -472,7 +561,7 @@ for (const [name, upstream, reason] of [
     },
     "unavailable",
   ],
-]) {
+] as const) {
   test(`hosted plugin discovery sanitizes ${name}`, async (t) => {
     t.mock.method(globalThis, "fetch", upstream);
     await assert.rejects(new CodexPluginDriver().discoverCatalog({ accessToken }), (error) => {
@@ -508,4 +597,57 @@ test("hosted plugin discovery bounds and cancels an oversized streamed response"
     reason: "invalid_response",
   });
   assert.equal(cancelled, true);
+});
+
+test("hosted app-only plugins remain available without legacy executor metadata", async (t) => {
+  // Codex 0.164.0's RemotePluginReleaseResponse does not require or read
+  // requires_local_executor. Exercise that wire response through the public Driver.
+  const detail = plugin();
+  delete detail.release.requires_local_executor;
+  const server = createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end(
+      JSON.stringify(
+        request.url!.startsWith("/backend-api/ps/plugins/list?")
+          ? { plugins: [detail], pagination: { next_page_token: null } }
+          : request.url === "/backend-api/ps/apps/batch"
+            ? { apps: [app("connector_fixture")] }
+            : detail,
+      ),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const fetch = globalThis.fetch;
+  // Change only transport routing; response parsing and availability stay in the Driver.
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  t.mock.method(globalThis, "fetch", (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    assert.ok(typeof url === "string");
+    const target = new URL(url);
+    return fetch(`http://127.0.0.1:${address.port}${target.pathname}${target.search}`, init);
+  });
+  const driver = new CodexPluginDriver();
+  const credential = oauthCredential();
+  const page = await driver.discoverCatalog(credential);
+  assert.equal(page.plugins[0]!.available, true);
+  const result = await driver.getCatalogPlugin({ ...credential, pluginId });
+  assert.equal(result.available, true);
+  assert.equal(result.tools![0]!.id, "connector_fixture/search");
+  assert.equal(result.tools![0]!.available, true);
+
+  // A missing flag permits an app-only release. A supplied flag must be false to do so.
+  for (const [executor, available] of [
+    [false, true],
+    [true, false],
+    [null, false],
+    ["false", false],
+  ] as const) {
+    await t.test(`requires_local_executor = ${JSON.stringify(executor)}`, async () => {
+      detail.release.requires_local_executor = executor;
+      const page = await driver.discoverCatalog(credential);
+      const result = await driver.getCatalogPlugin({ ...credential, pluginId });
+      assert.deepEqual([page.plugins[0]!.available, result.available], [available, available]);
+    });
+  }
 });

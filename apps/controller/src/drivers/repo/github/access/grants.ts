@@ -6,7 +6,12 @@ import {
   staticTokenCapabilityPolicy,
   staticTokenGraphqlPolicy,
 } from "./profiles.ts";
-import type { GitHubTokenConfiguration, GitHubTokenProfile } from "./types.ts";
+import {
+  GITHUB_SESSION_PROFILES,
+  isGitHubProfile,
+  type GitHubTokenConfiguration,
+  type GitHubTokenProfile,
+} from "./types.ts";
 import { sameAuthority } from "./driver/state.ts";
 
 type GrantDependencies = Readonly<{
@@ -31,7 +36,7 @@ function grantIdentity(config: GitHubTokenConfiguration, profile: GitHubTokenPro
 export function createGrantResolver({ config, gatewayOrigin }: GrantDependencies) {
   const { pushRefAllowlist } = config;
   function resolve(profile: string): ResolvedGrant {
-    if (profile !== "git-read" && profile !== "git-write" && profile !== "git-full") {
+    if (!isGitHubProfile(profile)) {
       throw new Error("unsupported-profile");
     }
     return Object.freeze({
@@ -50,7 +55,7 @@ export function createGrantResolver({ config, gatewayOrigin }: GrantDependencies
     });
   }
   function forAuthority(authority: AuthorityIdentity) {
-    for (const profile of ["git-read", "git-write", "git-full"] as const) {
+    for (const profile of GITHUB_SESSION_PROFILES) {
       const grant = resolve(profile);
       if (!sameAuthority({ ...grant.binding, sessionId: authority.sessionId }, authority)) {
         continue;

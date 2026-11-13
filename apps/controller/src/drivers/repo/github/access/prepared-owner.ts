@@ -65,7 +65,6 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
     minimumValidityMs,
     observe: ({ attemptId, ...observation }) => observe(attemptId, observation),
     async issue({ attemptId, bounds, assertIssuing, capture, refused }) {
-      let verified: { providerExpiresAt: number; usableUntil: number } | undefined;
       const key = await getKey(structuredClone(admission));
       const assertAdmitted = () => {
         if (bounds.signal.aborted || clock.monotonicNow() >= bounds.deadlineMonoMs) {
@@ -77,9 +76,10 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
         assertAdmitted,
         observeDispatch: assertAdmitted,
       };
-      await key.withJwt(async (jwt, assertCurrent) => {
+      return key.withJwt(async (jwt, assertCurrent) => {
         await assertIssuing();
-        const response = await exchange.issue(
+        let verified: { providerExpiresAt: number; usableUntil: number } | undefined;
+        await exchange.issue(
           jwt,
           attempt,
           assertCurrent,
@@ -106,7 +106,10 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
               ...(result.kind !== "validated" ? { error: "validation-failed" } : {}),
             });
             if (result.kind === "validated") {
-              verified = result;
+              verified = {
+                providerExpiresAt: result.providerExpiresAt,
+                usableUntil: result.usableUntil,
+              };
             } else if (
               result.kind === "reauthorization-required" &&
               packet !== undefined &&
@@ -119,11 +122,10 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
           },
           (observation) => observe(attemptId, observation),
         );
-        response.body.fill(0);
         assertCurrent();
         assertAdmitted();
+        return verified;
       });
-      return verified;
     },
   });
   return Object.freeze({

@@ -231,6 +231,103 @@ isolatedTest("gh rechecks expiry after reading private session files", async (t)
   assert.deepEqual(spawned, []);
 });
 
+const malformedSessionIds = [
+  undefined,
+  null,
+  123,
+  true,
+  ["session-test"],
+  "",
+  "a".repeat(129),
+  "a.b",
+  " a",
+  "a\n",
+];
+
+test("session ID encoder rejects nonstring and out-of-grammar material", () => {
+  for (const sessionId of malformedSessionIds) {
+    const session = { ...opened.session, sessionId };
+    if (sessionId === undefined) {
+      delete session.sessionId;
+    }
+    assert.throws(
+      () => encodeRepositoryCredentialSessionFiles({ ...opened, session }),
+      { message: "invalid-client-configuration" },
+      `sessionId=${JSON.stringify(sessionId)}`,
+    );
+  }
+});
+
+test("session ID reader rejects nonstring and out-of-grammar material", async (t) => {
+  const parent = await temporaryDirectory(t);
+  const fields = {
+    deadlineWallMs: opened.session.deadlineWallMs,
+    client: opened.client,
+    hasPublicCa: false,
+  };
+  for (const sessionId of malformedSessionIds) {
+    await writeFile(join(parent, "client.json"), JSON.stringify({ ...fields, sessionId }), {
+      mode: 0o600,
+    });
+    await assert.rejects(
+      readClientConfiguration(parent),
+      { message: "invalid-client-configuration" },
+      `sessionId=${JSON.stringify(sessionId)}`,
+    );
+  }
+});
+
+test("session ID strings retain their value through encoding and private-file reading", async (t) => {
+  const parent = await temporaryDirectory(t);
+  for (const sessionId of [
+    "a",
+    "a".repeat(128),
+    "null",
+    "123",
+    "undefined",
+    "_session",
+    "-session",
+    "AZaz09_-",
+  ]) {
+    const files = encodeRepositoryCredentialSessionFiles({
+      ...opened,
+      session: { ...opened.session, sessionId },
+    });
+    const expected = {
+      sessionId,
+      deadlineWallMs: opened.session.deadlineWallMs,
+      client: opened.client,
+      hasPublicCa: false,
+    };
+    assert.equal(files["client.json"], JSON.stringify(expected) + "\n");
+    await writeFile(join(parent, "client.json"), files["client.json"], { mode: 0o600 });
+    assert.deepEqual(await readClientConfiguration(parent), expected);
+  }
+});
+
+test("session ID encoder serializes the validated value and refuses invalid bearer first", () => {
+  let reads = 0;
+  const input = {
+    ...opened,
+    session: {
+      ...opened.session,
+      get sessionId() {
+        reads += 1;
+        return reads === 1 ? "session-test" : null;
+      },
+    },
+  };
+  assert.throws(() => encodeRepositoryCredentialSessionFiles({ ...input, bearer: "invalid" }), {
+    message: "invalid-client-configuration",
+  });
+  assert.equal(reads, 0);
+  assert.equal(
+    JSON.parse(encodeRepositoryCredentialSessionFiles(input)["client.json"]).sessionId,
+    "session-test",
+  );
+  assert.equal(reads, 1);
+});
+
 test("push-ref policies use the existing complete client metadata size limit", () => {
   const encode = (rules) =>
     encodeRepositoryCredentialSessionFiles({

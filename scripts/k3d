@@ -758,6 +758,7 @@ if [ ! -f "$state_file" ]; then
   done
   prepare_resources \
     --lane "$prepared_lane" \
+    --selected-file "$integration_file" \
     --state "$state_file" \
     --github-env "$env_file"
   info "Creating and migrating the isolated Kubernetes test database."

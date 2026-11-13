@@ -44,6 +44,7 @@ import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
+import { registryImage } from "./fixture-support-images.mjs";
 import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
@@ -106,7 +107,7 @@ const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server
 // checks they match).
 const defaultK3sImage =
   "docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc";
-const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.mjs";
+const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.ts";
 const productionUpgradeImages = {
   OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
   OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
@@ -196,6 +197,27 @@ async function timedPreparation(lane, phase, operation) {
     const elapsedMs = Math.round(performance.now() - started);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
+    if (lane === "k3d-model" && process.env.GITHUB_ACTIONS === "true") {
+      const outcome = succeeded ? "success" : "failure";
+      if (phase === "controller" || phase === "runtime") {
+        // Each role measures its own build or reuse. Their wall times can overlap.
+        process.stderr.write(
+          `::notice title=k3d Model Runtime image::role=${phase} elapsed_ms=${elapsedMs} outcome=${outcome}\n`,
+        );
+      } else if (
+        [
+          "postgres-start",
+          "k3d-cluster-preparation",
+          "image-build-or-reuse",
+          "runtime-image-preparation",
+          "gateway-routing",
+        ].includes(phase)
+      ) {
+        process.stderr.write(
+          `::notice title=k3d Model Runtime preparation::stage=${phase} elapsed_ms=${elapsedMs} outcome=${outcome}\n`,
+        );
+      }
+    }
     if (lane === "logging-collector" && phase === "image-pulls") {
       await recordLoggingSetupTiming("image-pulls", succeeded ? "success" : "failure", elapsedMs);
     }
@@ -217,6 +239,10 @@ async function timedPreparation(lane, phase, operation) {
       }
     }
   }
+}
+
+export function timedK3dModelPreparation(lane, phase, operation) {
+  return lane === "k3d-model" ? timedPreparation(lane, phase, operation) : operation();
 }
 
 function filePath(file) {
@@ -1061,7 +1087,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
     }
   }
   const requiredInputs =
-    name === "openshell-installers" && file === undefined
+    isOpenShellLane(name) && file === undefined
       ? [
           ...new Set(
             laneDefinition(name).files.flatMap((entry) =>
@@ -1674,14 +1700,16 @@ async function buildRuntimeImages(
         entry.env = Object.fromEntries(Object.keys(entry.env).map((name) => [name, reference]));
         await rm(entry.metadataFile, { force: true });
       } else {
-        // The warm job builds every step so its export has them all.
-        if (
-          cacheWarm ||
-          !reuseEngineImages ||
-          !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
-        ) {
-          await build(entry.role, entry.args);
-        }
+        await timedK3dModelPreparation(state.lane, entry.role, async () => {
+          // The warm job builds every step so its export has them all.
+          if (
+            cacheWarm ||
+            !reuseEngineImages ||
+            !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
+          ) {
+            await build(entry.role, entry.args);
+          }
+        });
         await markResourceReady(statePath, state, entry.resource);
       }
     }),
@@ -1709,8 +1737,6 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
   const nodeBaseImage = effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE;
   assertNodeBaseImage(nodeBaseImage);
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  const registryImage =
-    "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
   const port = await reserveLoopbackPort();
   const registry = addResource(state, "first-agent-image-registry", {
     name: ownedName("openclaw-ci-first-images", state.prefix, { maxLength: 63 }),
@@ -3334,13 +3360,15 @@ async function prepareK3dRuntimeImages(
         `Building the current ${images} image${needsController && needsRuntime ? "s" : ""}.`,
       );
     }
-    const built = await buildRuntimeImages(statePath, state, {
-      controller: needsController,
-      runtime: needsRuntime,
-      nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
-      reuseEngineImages,
-      runtimeArtifact,
-    });
+    const built = await timedK3dModelPreparation(state.lane, "image-build-or-reuse", () =>
+      buildRuntimeImages(statePath, state, {
+        controller: needsController,
+        runtime: needsRuntime,
+        nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
+        reuseEngineImages,
+        runtimeArtifact,
+      }),
+    );
     Object.assign(env, built.env);
     if (needsRuntime) {
       env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE = built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE;
@@ -4009,7 +4037,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
         buildRuntime: true,
         runtimeArtifact,
       });
-      const routing = await prepareGatewayRouting({ cluster, execFile });
+      const routing = await timedK3dModelPreparation(name, "gateway-routing", () =>
+        prepareGatewayRouting({ cluster, execFile }),
+      );
       Object.assign(env, routing.env);
       if (name === "k3d-otel") {
         await prepareLaneLogging(resolvedStatePath, state, env, cluster);
@@ -4247,10 +4277,14 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
 }
 
 async function prepareK3dModelLane(statePath, state, env, options) {
-  const cluster = await ensureK3dCluster(statePath, state);
+  const cluster = await timedK3dModelPreparation(state.lane, "k3d-cluster-preparation", () =>
+    ensureK3dCluster(statePath, state),
+  );
   // Register PostgreSQL after the cluster so cleanup removes its attached
   // container before k3d removes the network. Test files preserve this attachment.
-  await ensurePostgresServer(statePath, state);
+  await timedK3dModelPreparation(state.lane, "postgres-start", () =>
+    ensurePostgresServer(statePath, state),
+  );
   env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
   env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
   if (cluster.pluginStatusProxyCidrs !== undefined) {
@@ -4265,7 +4299,9 @@ async function prepareK3dModelLane(statePath, state, env, options) {
   if (cluster.runtimeHandler) {
     env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER = cluster.runtimeHandler;
   }
-  await prepareK3dRuntimeImages(statePath, state, cluster, env, options);
+  await timedK3dModelPreparation(state.lane, "runtime-image-preparation", () =>
+    prepareK3dRuntimeImages(statePath, state, cluster, env, options),
+  );
   return cluster;
 }
 
@@ -4411,7 +4447,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (relativeFile.endsWith("occ-metrics.test.mjs")) {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
-    if (relativeFile.endsWith("auth-maintain.test.mjs")) {
+    if (
+      relativeFile === "tests/integration/auth-maintain.test.ts" ||
+      relativeFile === "tests/integration/postgres-break-glass-auth-maintain.test.ts"
+    ) {
       env.OCC_AUTH_MAINTAIN_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
   }

@@ -31,6 +31,7 @@
     "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.ts",
     "tests/integration/secret-api.test.mjs",
+    "tests/integration/model-discovery-shipped-api.test.ts",
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.ts",
@@ -40,8 +41,10 @@
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.ts",
+    "tests/conformance/runtime-logs-admission.test.ts",
     "tests/conformance/runtime-logs-sandbox.test.ts",
-    "tests/integration/device-authorization-api.test.mjs",
+    "tests/integration/device-authorization-api.test.ts",
+    "tests/integration/device-authorization-denial-audit.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
@@ -100,6 +103,7 @@
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
+    "tests/conformance/model-discovery.test.mjs",
     "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
@@ -149,6 +153,9 @@
     },
     {
       "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
+    },
+    {
+      "path": "tests/conformance/model-discovery.test.mjs"
     },
     {
       "path": "tests/conformance/codex-seccomp-profile.test.mjs"
@@ -258,6 +265,9 @@
     },
     {
       "path": "tests/conformance/occ-api-security.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-logs-admission.test.ts"
     },
     {
       "path": "tests/conformance/runtime-logs-content.test.mjs"
@@ -440,6 +450,9 @@
       "path": "tests/integration/secret-api.test.mjs"
     },
     {
+      "path": "tests/integration/model-discovery-shipped-api.test.ts"
+    },
+    {
       "path": "tests/integration/credential-source-api.test.mjs",
       "expectedTests": [
         "Installation discovery serializes OpenShell model authentication and refresh source metadata"
@@ -455,7 +468,10 @@
       ]
     },
     {
-      "path": "tests/integration/device-authorization-api.test.mjs"
+      "path": "tests/integration/device-authorization-api.test.ts"
+    },
+    {
+      "path": "tests/integration/device-authorization-denial-audit.test.ts"
     },
     {
       "path": "tests/integration/openshell-device-authorization-api.test.mjs"

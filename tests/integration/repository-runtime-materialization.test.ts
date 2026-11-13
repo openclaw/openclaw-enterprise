@@ -16,6 +16,8 @@ import {
 import { basename, dirname, join } from "node:path";
 import test, { before, type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { repositorySessionFiles } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
+import type { SessionStatus } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.ts";
@@ -403,4 +405,78 @@ test("native preparation refuses altered private client material", async (t) => 
   await chmod(join(directory, "client.json"), 0o640);
   assert.equal((await fixture.runNative()).status, 1);
   await assert.rejects(lstat(join(fixture.targetRoot, "gitconfig")), { code: "ENOENT" });
+});
+
+test("session file bytes remain exact across the encoder and Compute admission", () => {
+  const session: SessionStatus = {
+    sessionId: "session-format",
+    state: "OPEN",
+    deadlineWallMs,
+    binding: { providerInstanceId: "github-main", repositoryId: "project", grantId: "read" },
+    activeUses: 0,
+    cleanup: {
+      active: 0,
+      pending: 0,
+      revoked: 0,
+      expired: 0,
+      uncertain: 0,
+      auxiliaryPending: false,
+    },
+  };
+  const opened = {
+    session,
+    bearer: "x".repeat(256),
+    client: {
+      ...client,
+      canonicalApiHost: "canonical.example.test",
+      apiHost: "gateway.example.test",
+      gatewayOrigin: "https://gateway.example.test",
+      gitRemote: "https://gateway.example.test/example/project.git",
+    },
+  };
+  const files = encodeRepositoryCredentialSessionFiles(opened);
+  // These wire bytes are deliberately independent of the shared format definitions.
+  const expected = {
+    gitconfig:
+      "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n",
+    "gh/config.yml": "version: 1\nprompt: disabled\ngit_protocol: https\n",
+    "gh/hosts.yml":
+      '"canonical.example.test":\n  api_host: "gateway.example.test"\n  git_protocol: https\n  oauth_token: "' +
+      "x".repeat(256) +
+      '"\n',
+  };
+  assert.doesNotThrow(() => repositorySessionFiles(session, files));
+  for (const [name, text] of Object.entries(expected)) {
+    assert.equal(files[name as keyof typeof files] === text, true, name);
+    assert.throws(
+      () => repositorySessionFiles(session, { ...files, [name]: text.slice(0, -1) + " " }),
+      /Repository credential material is invalid/,
+      name,
+    );
+  }
+  assert.throws(
+    () => encodeRepositoryCredentialSessionFiles({ ...opened, bearer: opened.bearer + "x" }),
+    /invalid-client-configuration/,
+  );
+
+  // UTF-8 bytes, rather than character count, bound the public CA at both callers.
+  const publicCa = Buffer.from("é".repeat(32 * 1024));
+  const withCa = encodeRepositoryCredentialSessionFiles(opened, publicCa);
+  assert.doesNotThrow(() => repositorySessionFiles(session, withCa));
+  assert.throws(
+    () =>
+      encodeRepositoryCredentialSessionFiles(opened, Buffer.concat([publicCa, Buffer.from("x")])),
+    /invalid-client-configuration/,
+  );
+  assert.throws(
+    () => repositorySessionFiles(session, { ...withCa, "ca.pem": withCa["ca.pem"] + "x" }),
+    /Repository credential material is invalid/,
+  );
+  const padded = { ...files, "client.json": files["client.json"].padEnd(16 * 1024, " ") };
+  assert.doesNotThrow(() => repositorySessionFiles(session, padded));
+  assert.throws(
+    () =>
+      repositorySessionFiles(session, { ...padded, "client.json": padded["client.json"] + " " }),
+    /Repository credential material is invalid/,
+  );
 });
