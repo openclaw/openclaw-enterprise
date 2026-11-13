@@ -19,11 +19,12 @@ import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
+import type { WorkResultRow } from "../helpers/postgres-worker-revision-scenarios.ts";
 import {
   assertWorkEnds,
-  denyDeploy as denyFixtureDeploy,
+  denyDeploy,
   proxiedIAM,
-} from "../helpers/postgres-worker-refused-candidate.mjs";
+} from "../helpers/postgres-worker-refused-candidate.ts";
 
 // Exclusive redeploys whose predecessor stop yields during its Gateway drain: the replacement
 // waits for the drain, newer, refused and held embedded deployments supersede it, an Agent stop
@@ -64,7 +65,7 @@ type Fixture = Omit<
   work: (candidate: WorkIdentity, expected: string, timeoutMs?: number) => Promise<WorkRow>;
   workResult: (
     candidate: Pick<WorkIdentity, "idempotencyKey">,
-  ) => Promise<QueryResult<{ reason_code: string | null; result_data: unknown }>>;
+  ) => Promise<QueryResult<WorkResultRow>>;
   requestStop: (owner: Pick<Agent, "id">) => Promise<WorkIdentity>;
   activePointer: (
     owner: Pick<Agent, "id">,
@@ -95,11 +96,6 @@ const revisionTest = fixtures.revisionTest as (
   options?: TestOptions,
 ) => void;
 after(fixtures.cleanup);
-
-const denyDeploy: (
-  fixture: Pick<Fixture, "observerPool" | "namespace">,
-  owner: Pick<Agent, "id">,
-) => Promise<unknown> = denyFixtureDeploy;
 
 function required<T>(value: T | null | undefined): T {
   assert.ok(value !== null && value !== undefined);

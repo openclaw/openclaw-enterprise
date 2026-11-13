@@ -1,28 +1,74 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
+import type {
+  Agent,
+  AgentRevision,
+  ComputeDriver,
+  IAMDriver,
+  RuntimeFailureEvidence,
+} from "../../packages/contracts/src/index.ts";
 import {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxRevisionUnsupportedError,
+  type ControllerWorkState,
 } from "../../packages/occ/src/index.ts";
+import type { createWorkerRevisionFixtures } from "./postgres-worker-revision-fixture.mjs";
 import { waitForWorkStateDue } from "./postgres-worker-revision-support.mjs";
 import { waitFor } from "./wait-for.mjs";
 
-// Refused-candidate fakes shared by the worker revision -replacement, -refused-stop,
-// -refused-wait and -yielded-redeploy test files: an exclusive counting Compute, a refused
-// replacement candidate, a failing stop, and waits on the stop's logged refusals. Test file names stay out of comments
-// here: CI Impact sends a test-only change to full CI when another file names that test.
+export type RevisionFixture = Awaited<
+  ReturnType<ReturnType<typeof createWorkerRevisionFixtures>["setup"]>
+>;
+export type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
+
+type OwnerIdentity = { id: string };
+export type WorkIdentity = OwnerIdentity & { idempotencyKey: string };
+type WorkerDrivers = NonNullable<ControllerWorkerOptions["drivers"]>;
+type TransformDrivers = (drivers: WorkerDrivers) => WorkerDrivers | undefined;
+type ReadinessCheck = (revision: AgentRevision) => boolean;
+
+interface RefusedCandidate {
+  owner: Readonly<Agent>;
+  first: WorkIdentity;
+  replacement: WorkIdentity;
+  driver: ReturnType<typeof countingExclusiveCompute>;
+  compute: ComputeDriver;
+  admittedAt: number;
+}
+
+interface ExclusiveComputeOptions {
+  ready?: ReadinessCheck;
+  onPrepare?: (revision: AgentRevision, overlap: string[]) => void | Promise<void>;
+  runtimeFailure?: (revision: AgentRevision) => RuntimeFailureEvidence | undefined;
+}
+
+interface RefusedOptions {
+  refuse?: string;
+  stopRevision?: (revision: AgentRevision) => Promise<void> | undefined;
+  emit?: ControllerWorkerOptions["emit"];
+  ready?: ReadinessCheck;
+  refusing?: () => boolean;
+  candidateReady?: () => boolean;
+  startOptions?: Pick<ControllerWorkerOptions, "convergenceTimeoutMs"> & {
+    transformDrivers?: TransformDrivers;
+  };
+}
 
 /**
  * An exclusive Compute that counts stops and preparations; a candidate is ready only once no
  * predecessor of its Agent still runs.
  */
-export function countingExclusiveCompute(fixture, { ready, onPrepare, runtimeFailure } = {}) {
-  const running = new Set();
-  const agents = new Map();
-  const prepared = [];
-  const stops = new Map();
-  const compute = {
+export function countingExclusiveCompute(
+  fixture: Pick<RevisionFixture, "compute">,
+  { ready, onPrepare, runtimeFailure }: ExclusiveComputeOptions = {},
+) {
+  const running = new Set<string>();
+  const agents = new Map<string, string>();
+  const prepared: string[] = [];
+  const stops = new Map<string, number>();
+  const compute: ComputeDriver = {
     ...fixture.compute,
     requiresStoppedPredecessors: () => true,
     async prepareRevision(revision) {
@@ -50,14 +96,18 @@ export function countingExclusiveCompute(fixture, { ready, onPrepare, runtimeFai
       running.delete(revision.id);
     },
   };
-  const count = (revision) => stops.get(revision.id) ?? 0;
-  const preparations = (revision) => prepared.filter((id) => id === revision.id).length;
+  const count = (revision: OwnerIdentity) => stops.get(revision.id) ?? 0;
+  const preparations = (revision: OwnerIdentity) =>
+    prepared.filter((id) => id === revision.id).length;
   return { compute, running, count, preparations };
 }
 
-/** The actor loses `deploy` on the Agent, as removing its grants did on oce-dogfood-b. */
-export function denyDeploy(fixture, owner) {
-  return fixture.observerPool.query(
+/** The restriction revokes the actor's `deploy` access on this Agent. */
+export function denyDeploy(
+  fixture: Pick<RevisionFixture, "observerPool" | "namespace">,
+  owner: OwnerIdentity,
+) {
+  return fixture.observerPool.query<Record<string, unknown>>(
     `INSERT INTO occ.iam_restrictions
        (id, namespace_id, action, resource_kind, resource_id, effect)
      VALUES ($1, $2, 'deploy', 'agent', $3, 'deny')`,
@@ -80,8 +130,8 @@ export function denyDeploy(fixture, owner) {
  * just before the replacement was admitted.
  */
 export async function startRefusedCandidate(
-  fixture,
-  label,
+  fixture: RevisionFixture,
+  label: string,
   {
     refuse = "revoked",
     stopRevision = () => undefined,
@@ -90,16 +140,16 @@ export async function startRefusedCandidate(
     refusing = () => true,
     candidateReady = () => false,
     startOptions = {},
-  } = {},
-) {
+  }: RefusedOptions = {},
+): Promise<RefusedCandidate> {
   const owner = await fixture.agent(label, { executionMode: "dedicated" });
-  let candidateId;
+  const candidate: { id?: string } = {};
   let candidatePasses = 0;
   const driver = countingExclusiveCompute(fixture, {
     ready: (revision) =>
-      revision.id === candidateId ? candidateReady() : (ready?.(revision) ?? true),
+      revision.id === candidate.id ? candidateReady() : (ready?.(revision) ?? true),
     runtimeFailure: (revision) =>
-      refuse === "held" && revision.id === candidateId && candidatePasses > 1
+      refuse === "held" && revision.id === candidate.id && candidatePasses > 1
         ? {
             component: "agent",
             check: "model-probe",
@@ -109,7 +159,7 @@ export async function startRefusedCandidate(
           }
         : undefined,
     async onPrepare(revision) {
-      if (revision.id !== candidateId) {
+      if (revision.id !== candidate.id) {
         return;
       }
       candidatePasses += 1;
@@ -132,22 +182,33 @@ export async function startRefusedCandidate(
       }
     },
   });
-  const compute = {
+  const compute: ComputeDriver = {
     ...driver.compute,
     async stopRevision(revision) {
       return (
-        (revision.id === candidateId ? stopRevision(revision) : undefined) ??
+        (revision.id === candidate.id ? stopRevision(revision) : undefined) ??
         driver.compute.stopRevision(revision)
       );
     },
   };
   await fixture.start(compute, { emit, ...startOptions });
-  const first = await fixture.revision(owner, 1);
+  const first: WorkIdentity = await fixture.revision(owner, 1);
   await fixture.work(first, "succeeded");
   const admittedAt = Date.now();
-  const replacement = await fixture.revision(owner, 2);
-  candidateId = replacement.id;
+  const replacement: WorkIdentity = await fixture.revision(owner, 2);
+  candidate.id = replacement.id;
+  assert.ok(owner !== null && typeof owner === "object" && !Array.isArray(owner));
+  assert.equal(typeof owner.id, "string");
+  assertWorkIdentity(first);
+  assertWorkIdentity(replacement);
+  assert.ok([...driver.running].every((id) => typeof id === "string"));
   return { owner, first, replacement, driver, compute, admittedAt };
+}
+
+function assertWorkIdentity(work: WorkIdentity) {
+  assert.ok(work !== null && typeof work === "object" && !Array.isArray(work));
+  assert.equal(typeof work.id, "string");
+  assert.equal(typeof work.idempotencyKey, "string");
 }
 
 /**
@@ -158,7 +219,7 @@ export function failingStop({
   limit = Infinity,
   message = "Kubernetes API temporarily unavailable",
 } = {}) {
-  const failed = [];
+  const failed: number[] = [];
   let succeeding = false;
   return {
     failed,
@@ -166,7 +227,7 @@ export function failingStop({
       succeeding = true;
     },
     /** Waits until the stop has failed `count` times. */
-    waitForFailures(count, timeoutMs) {
+    waitForFailures(count: number, timeoutMs?: Parameters<typeof waitFor>[2]) {
       return waitFor(
         `${count} failed refused stops`,
         async () => (failed.length >= count ? true : undefined),
@@ -184,7 +245,7 @@ export function failingStop({
 }
 
 /** Passes that could not stop the refused candidate: their log names the refusal. */
-export function refusedStopWaits(events, candidate) {
+export function refusedStopWaits(events: readonly WorkerEvent[], candidate: WorkIdentity) {
   return events.filter(
     ({ event, workId, outcome, refusal }) =>
       event === "worker.completed" &&
@@ -195,7 +256,12 @@ export function refusedStopWaits(events, candidate) {
 }
 
 /** Waits until `count` passes could not stop the refused candidate. */
-export function waitForRefusedStopWaits(events, candidate, count, timeoutMs) {
+export function waitForRefusedStopWaits(
+  events: readonly WorkerEvent[],
+  candidate: WorkIdentity,
+  count: number,
+  timeoutMs?: Parameters<typeof waitFor>[2],
+) {
   return waitFor(
     `${count} logged refused-stop waits`,
     async () => (refusedStopWaits(events, candidate).length >= count ? true : undefined),
@@ -208,14 +274,30 @@ export function waitForRefusedStopWaits(events, candidate, count, timeoutMs) {
  * miss makes the work's queued retry due, for a test that waits on its refused stop's retries
  * but not on their backoff.
  */
-export async function assertWorkEnds(fixture, work, state, code, { due = false } = {}) {
+export async function assertWorkEnds(
+  fixture: Pick<RevisionFixture, "observerPool"> & {
+    work(candidate: WorkIdentity, state: ControllerWorkState, timeoutMs: number): Promise<unknown>;
+    workResult(candidate: WorkIdentity): Promise<{ rows: { reason_code: string | null }[] }>;
+  },
+  work: WorkIdentity,
+  state: ControllerWorkState,
+  code: string,
+  { due = false } = {},
+) {
   await (due ? waitForWorkStateDue(fixture, work, state) : fixture.work(work, state, 30_000));
   const result = await fixture.workResult(work);
-  assert.equal(result.rows[0].reason_code, code);
+  const [outcome] = result.rows;
+  assert.ok(outcome, "missing persisted work outcome");
+  assert.equal(outcome.reason_code, code);
 }
 
 /** Worker drivers whose IAM Driver answers through `authorize(iam, request)`. */
-export function proxiedIAM(authorize) {
+export function proxiedIAM(
+  authorize: (
+    iam: IAMDriver,
+    request: Parameters<IAMDriver["authorize"]>[0],
+  ) => ReturnType<IAMDriver["authorize"]>,
+): TransformDrivers {
   return (drivers) => ({
     ...drivers,
     createIAMDriver(platformState) {
@@ -223,9 +305,9 @@ export function proxiedIAM(authorize) {
       return new Proxy(iam, {
         get(target, key) {
           if (key === "authorize") {
-            return (request) => authorize(target, request);
+            return (request: Parameters<IAMDriver["authorize"]>[0]) => authorize(target, request);
           }
-          const value = Reflect.get(target, key, target);
+          const value: unknown = Reflect.get(target, key, target);
           return typeof value === "function" ? value.bind(target) : value;
         },
       });
@@ -239,4 +321,4 @@ export const refusals = {
   unsupported: "SANDBOX_HARNESS_UNSUPPORTED",
   unqualified: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
   undeliverable: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
-};
+} as const;

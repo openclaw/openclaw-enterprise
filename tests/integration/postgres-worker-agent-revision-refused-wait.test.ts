@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test, { after, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ComputeDriver, IAMDriver } from "../../packages/contracts/src/index.ts";
-import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import {
   PersistedStateInvalidError,
   PostgresPlatformState,
@@ -24,16 +23,16 @@ import {
 } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
+  denyDeploy,
   failingStop,
   proxiedIAM,
   refusals,
-  waitForRefusedStopWaits,
-} from "../helpers/postgres-worker-refused-candidate.mjs";
-import {
-  denyDeploy,
   refusedStopWaits,
   startRefusedCandidate,
-} from "../helpers/postgres-worker-refused-fixture.ts";
+  waitForRefusedStopWaits,
+  type RevisionFixture,
+  type WorkerEvent,
+} from "../helpers/postgres-worker-refused-candidate.ts";
 
 // A stored refusal's wait on its candidate's stop: it retries only the stop, is published while a
 // yielding stop competes with due work, survives failures before the stop past the deadline,
@@ -47,10 +46,6 @@ import {
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
 
-type RevisionFixture = Awaited<
-  ReturnType<ReturnType<typeof createWorkerRevisionFixtures>["setup"]>
->;
-type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
 type Revision = Parameters<ComputeDriver["stopRevision"]>[0];
 
 // For assertWorkEnds: make the work's queued retries due while waiting for it to end.
