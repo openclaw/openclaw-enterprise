@@ -336,41 +336,60 @@ test(
           timeoutMs: cpuScaledImageTimeoutMs(75_000),
         });
         await mkdir(join(directory, "client-home"), { recursive: true });
-        // A fresh Node process loads only this test CA before the production WSS client starts.
-        const child = execute(
-          process.execPath,
-          ["tests/fixtures/gateway-routing/workspace-native-probe.mjs"],
-          {
-            env: {
-              PATH: process.env.PATH,
-              HOME: join(directory, "client-home"),
-              NODE_EXTRA_CA_CERTS: join(directory, "cert.pem"),
-              OCC_WORKSPACE_PROOF_KEY_PATH: join(directory, "api-key"),
-              OCC_WORKSPACE_PROOF_ENDPOINT: `wss://127.0.0.1:${port}`,
-            },
-            timeout: 60_000,
-          },
-        );
         const content = `Owned native workspace ${index}: exact text.\n`;
-        assert.ok(child.child.stdin);
-        child.child.stdin.end(
-          JSON.stringify({ agents: configuration.agents, explicitAgentId, content }),
-        );
-        const result = await child;
-        assert.deepEqual(JSON.parse(result.stdout), {
-          apiWrite: 200,
-          apiRead: 200,
-          scopeControls: true,
-        });
-        // Independently inspect the actual native disk; no fixture returns file RPC answers.
-        const stored = await runDocker([
-          "exec",
-          native,
-          "node",
-          "-e",
-          `process.stdout.write(require("node:fs").readFileSync("/home/node/workspace/USER.md","utf8"));`,
-        ]);
-        assert.equal(stored.stdout, content);
+        const deniedWrites = [
+          {
+            identity: "proof-read",
+            content: `Rejected read-only replacement ${index}.\n`,
+          },
+          {
+            identity: "proof-write",
+            content: `Rejected write-only replacement ${index}.\n`,
+          },
+        ];
+        for (const deniedWrite of deniedWrites) {
+          await writeFile(join(directory, "api-key"), "proof-admin");
+          // A fresh Node process loads only this test CA before the production WSS client starts.
+          const child = execute(
+            process.execPath,
+            ["tests/fixtures/gateway-routing/workspace-native-probe.mjs"],
+            {
+              env: {
+                PATH: process.env.PATH,
+                HOME: join(directory, "client-home"),
+                NODE_EXTRA_CA_CERTS: join(directory, "cert.pem"),
+                OCC_WORKSPACE_PROOF_KEY_PATH: join(directory, "api-key"),
+                OCC_WORKSPACE_PROOF_ENDPOINT: `wss://127.0.0.1:${port}`,
+              },
+              timeout: 60_000,
+            },
+          );
+          assert.ok(child.child.stdin);
+          child.child.stdin.end(
+            JSON.stringify({ agents: configuration.agents, explicitAgentId, content, deniedWrite }),
+          );
+          const result = await child;
+          assert.deepEqual(JSON.parse(result.stdout), {
+            apiWrite: 200,
+            apiRead: 200,
+            scopeControls: true,
+            deniedIdentity: deniedWrite.identity,
+          });
+          // Inspect actual native disk after each denial, before another admin PUT
+          // can reset it. No fixture returns file RPC answers.
+          const stored = await runDocker([
+            "exec",
+            native,
+            "node",
+            "-e",
+            `process.stdout.write(require("node:fs").readFileSync("/home/node/workspace/USER.md","utf8"));`,
+          ]);
+          assert.equal(
+            stored.stdout,
+            content,
+            `Native file changed after ${deniedWrite.identity} PUT`,
+          );
+        }
         const counter = await runDocker([
           "exec",
           native,
