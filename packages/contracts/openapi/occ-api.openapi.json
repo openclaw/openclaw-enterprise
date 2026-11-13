@@ -1109,6 +1109,7 @@
                   { "const": "NAMESPACE_NOT_EMPTY", "type": "string" },
                   { "const": "PAYLOAD_TOO_LARGE", "type": "string" },
                   { "const": "UNSUPPORTED_MEDIA_TYPE", "type": "string" },
+                  { "const": "RATE_LIMITED", "type": "string" },
                   { "const": "UNKNOWN_OUTCOME", "type": "string" },
                   { "const": "NOT_IMPLEMENTED", "type": "string" },
                   { "const": "INTERNAL_ERROR", "type": "string" },
@@ -39398,6 +39399,15 @@
             },
             "description": "The uploaded plugin package cannot be inspected."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39645,6 +39655,15 @@
               }
             },
             "description": "The uploaded plugin package cannot be inspected."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
           },
           "500": {
             "content": {

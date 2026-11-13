@@ -1447,6 +1447,7 @@ export const occApiRoutes = [
         413: ErrorResponseRef,
         415: ErrorResponseRef,
         422: ErrorResponseRef,
+        429: ErrorResponseRef,
         501: ErrorResponseRef,
         ...readErrors,
       },
@@ -1469,6 +1470,7 @@ export const occApiRoutes = [
       response: {
         200: PluginPackagePreviewResponse,
         422: ErrorResponseRef,
+        429: ErrorResponseRef,
         501: ErrorResponseRef,
         ...createErrors,
       },

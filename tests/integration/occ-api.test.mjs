@@ -5850,6 +5850,32 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   });
 });
 
+test("plugin preview and publication share an upload budget per authenticated principal", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const ns = await createNamespace(controller, "plugin-upload-budget");
+  const path = `/namespaces/${ns.id}/plugin-releases`;
+  // A tiny, incomplete request reaches schema validation without inspecting an archive.
+  const upload = { body: {} };
+  const previews = await Promise.all(
+    Array.from({ length: 21 }, () => controller.request("POST", path + "/preview", upload)),
+  );
+  assert.ok(previews.some((response) => response.status === 400));
+  assert.ok(previews.some((response) => response.status === 429));
+  const publish = await controller.request("POST", path, upload);
+  assertApiError(publish, 429, "RATE_LIMITED");
+  assert.ok(Number(publish.headers.get("retry-after")) >= 1);
+
+  // The second caller has its own budget, and reaches its own Namespace permission check.
+  const reader = await controller.fixture.createAuthPrincipal("plugin-upload-budget-reader");
+  controller.fixture.state.identities.push(reader.principal);
+  const other = await controller.request("POST", path + "/preview", {
+    ...upload,
+    session: reader.session,
+  });
+  assertApiError(other, 403, "FORBIDDEN");
+});
+
 test("a Namespace publisher admits an immutable plugin release only for Agents in that Namespace", async (t) => {
   const sandbox = {
     id: "sandbox-imported-skills",

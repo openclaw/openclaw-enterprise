@@ -17,6 +17,8 @@ const rateLimitCodes: Record<string, string | undefined> = {
   createAuthAccount: "RATE_LIMITED",
   signInEmail: "RATE_LIMITED",
   completeNamespaceConnection: "RATE_LIMITED",
+  previewPluginRelease: "RATE_LIMITED",
+  publishPluginRelease: "RATE_LIMITED",
   getAgentSandboxRecommendations: "RUNTIME_LOGS_RATE_LIMITED",
   getAgentDeploymentRuntime: "RUNTIME_LOGS_RATE_LIMITED",
   getAgentDeploymentRuntimeLogs: "RUNTIME_LOGS_RATE_LIMITED",

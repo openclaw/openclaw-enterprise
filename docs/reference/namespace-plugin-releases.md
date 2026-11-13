@@ -4,6 +4,8 @@ A Namespace or Installation administrator with `namespace:publish_plugins` can i
 
 ## Package contents
 
+Each API replica allows a principal to make 20 preview or publication requests in a burst. The two operations share a budget that replenishes by one request every three seconds. If a request returns HTTP 429, wait for the interval in `Retry-After` before retrying.
+
 | Declaration                                                             | Dedicated OpenClaw behavior                                                                                                                                                                                 |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent Plugins package or Claude plugin directory                        | Reads the manifest and previews the effective skills, hosted servers and excluded components.                                                                                                               |

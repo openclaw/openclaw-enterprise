@@ -468,15 +468,13 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   }
 }
 
-/** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
+/** Preset and Configuration routes that share the pre-body grant check. */
 function authorizesBeforeBody(operation: OccApiRoute): boolean {
   return (
     operation.operationId === "createPreset" ||
     operation.operationId === "updatePreset" ||
     operation.operationId === "createConfiguration" ||
-    operation.operationId === "updateConfiguration" ||
-    operation.operationId === "previewPluginRelease" ||
-    operation.operationId === "publishPluginRelease"
+    operation.operationId === "updateConfiguration"
   );
 }
 
@@ -2170,7 +2168,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /**
-   * Plugin imports and Preset and Configuration writes allow large bodies. Their grant
+   * Preset and Configuration writes allow large bodies. Their grant
    * checks need only the caller and path, so onRequest can refuse an unauthorized upload
    * before buffering it. Mutations recheck authority in their transaction.
    */
@@ -2183,13 +2181,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
-    if (
-      operation.operationId === "previewPluginRelease" ||
-      operation.operationId === "publishPluginRelease"
-    ) {
-      await controller.authorizePluginPublication(context.actorId, params.namespaceId as string);
-      return;
-    }
     if (
       operation.operationId === "createConfiguration" ||
       operation.operationId === "updateConfiguration"
@@ -4803,6 +4794,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         handler,
       });
     }
+    // Charge both inspections to the same principal across Namespaces and sessions.
+    // The burst permits ten consecutive preview and publication pairs.
+    const pluginUploadRateLimit = new RequestRateLimiter(20, 1 / 3);
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
@@ -4816,33 +4810,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route({
-        method: operation.method as HTTPMethods,
-        url: operation.path,
-        ...(operation.operationId === "previewPluginRelease" ||
-        operation.operationId === "publishPluginRelease"
-          ? { bodyLimit: options.maxBodyBytes ?? 4 * Math.ceil((16 * 1024 * 1024) / 3) + 1024 }
-          : operation.operationId === "putAgentWorkspaceFile"
-            ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-            : operation.operationId === "createAgent" ||
-                operation.operationId === "validateAgentCreate" ||
-                operation.operationId === "provisionAgent"
-              ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-              : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
-                ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
-                : operation.operationId === "createConfiguration" ||
-                    operation.operationId === "updateConfiguration"
-                  ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
-                  : {}),
+      const routeOptions = {
         schema,
-        onRequest: async (request) => {
-          await admit(request, operation);
-          if (authorizesBeforeBody(operation)) {
-            await resolveIdentity(request, operation);
-            await authorizeBeforeBody(request, operation);
-          }
-        },
-        preValidation: async (request) => {
+        preValidation: async (request: FastifyRequest) => {
           const hasRequestBody =
             request.body !== undefined ||
             Number(request.headers["content-length"] ?? 0) > 0 ||
@@ -4864,10 +4834,73 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw unstorable;
           }
         },
+      };
+      const handler = (request: FastifyRequest, reply: FastifyReply) =>
+        performFenced(request, reply, operation);
+      if (
+        operation.operationId === "previewPluginRelease" ||
+        operation.operationId === "publishPluginRelease"
+      ) {
+        routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+          operation.path,
+          {
+            ...routeOptions,
+            bodyLimit: options.maxBodyBytes ?? 4 * Math.ceil((16 * 1024 * 1024) / 3) + 1024,
+            config: { rateLimit: pluginUploadRateLimit },
+            onRequest: async (request, reply) => {
+              await admit(request, operation);
+              await resolveIdentity(request, operation);
+              const context = contexts.get(request);
+              if (!context) {
+                throw dependencyUnavailable();
+              }
+              if (!controller) {
+                throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+              }
+              const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+              if (retryAfter !== undefined) {
+                reply.header("retry-after", String(retryAfter));
+                throw failure(
+                  429,
+                  "RATE_LIMITED",
+                  "Too many plugin uploads. Wait before retrying.",
+                );
+              }
+              const { namespaceId } = request.params as { namespaceId: string };
+              await controller.authorizePluginPublication(context.actorId, namespaceId);
+            },
+          },
+          handler,
+        );
+        continue;
+      }
+      routes.route({
+        ...routeOptions,
+        method: operation.method as HTTPMethods,
+        url: operation.path,
+        ...(operation.operationId === "putAgentWorkspaceFile"
+          ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
+          : operation.operationId === "createAgent" ||
+              operation.operationId === "validateAgentCreate" ||
+              operation.operationId === "provisionAgent"
+            ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
+            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+              : operation.operationId === "createConfiguration" ||
+                  operation.operationId === "updateConfiguration"
+                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                : {}),
+        onRequest: async (request) => {
+          await admit(request, operation);
+          if (authorizesBeforeBody(operation)) {
+            await resolveIdentity(request, operation);
+            await authorizeBeforeBody(request, operation);
+          }
+        },
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => performFenced(request, reply, operation),
+        handler,
       });
     }
   });

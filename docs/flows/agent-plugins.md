@@ -8,7 +8,7 @@ last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 
 ## Overview
 
-OCC checks Namespace publication authority before reading an upload. The [Plugin Driver](../../apps/controller/src/drivers/plugin/import-package.ts) reports omitted components. Revisions pin the release digest, Driver and policy. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
+OCC rate-limits callers and checks Namespace authority before reading uploads. The [Plugin Driver](../../apps/controller/src/drivers/plugin/import-package.ts) reports omitted components. Revisions pin the release digest, Driver and policy. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
 
 ## Entry Points
 
