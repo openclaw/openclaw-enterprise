@@ -7,7 +7,7 @@
   "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.ts",
-    "tests/integration/postgres-bootstrap-failures.test.mjs",
+    "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.mjs",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.mjs",
@@ -21,7 +21,7 @@
     "tests/integration/postgres-default-users.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.ts",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
-    "tests/integration/postgres-worker-stale-claim.test.mjs",
+    "tests/integration/postgres-worker-stale-claim.test.ts",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
@@ -99,7 +99,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-bootstrap-failures.test.mjs",
+      "path": "tests/integration/postgres-bootstrap-failures.test.ts",
       "expectedTests": [
         "concurrent development bootstraps reject the loser and reload the committed winner",
         "production bootstrap preserves committed credentials when COMMIT acknowledgement is lost",
@@ -320,7 +320,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-stale-claim.test.mjs",
+      "path": "tests/integration/postgres-worker-stale-claim.test.ts",
       "expectedTests": [
         "a worker that loses its claim during Compute cannot publish Namespace status, lifecycle audit, or completion",
         "a worker whose lease renewal answers after the lease drops the claim before its Compute effect",

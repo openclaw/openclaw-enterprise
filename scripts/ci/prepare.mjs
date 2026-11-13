@@ -3961,7 +3961,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     }
   }
 
-  if (relativeFile.endsWith("postgres-bootstrap-failures.test.mjs")) {
+  if (relativeFile.endsWith("postgres-bootstrap-failures.test.ts")) {
     const failures = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: "failures",
       label: fileStem(relativeFile),

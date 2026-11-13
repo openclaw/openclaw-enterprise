@@ -15,7 +15,7 @@ import { listen } from "../helpers/listen.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
-} from "../helpers/production-observability-k3d.mjs";
+} from "../helpers/production-observability-k3d.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -64,8 +64,7 @@ test(
     const f = await installObservabilityControlPlane(t);
     const installation = record(await f.api("GET", "/installation"));
     const installationId = string(installation.id);
-    const kubeconfigPath = string(f.selection.kubeconfigPath);
-    const kubernetesContext = string(f.selection.kubernetesContext);
+    const { kubeconfigPath, kubernetesContext } = f.selection;
     const sql = (statement: string) =>
       f.kubectl(
         "-n",
@@ -173,17 +172,18 @@ test(
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     t.after(() => relay.kill("SIGTERM"));
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject: (error: unknown) => void) => {
       relay.once("error", reject);
       relay.once("exit", (code) => reject(new Error(`operator relay exited (${code})`)));
-      relay.stdout.once("data", resolve);
+      relay.stdout.once("data", () => resolve());
     });
-    const connection = await createRealKubernetesFixture({
-      ...f.selection,
-      gatewayImage: undefined,
-      codexImage: undefined,
-      databaseUrl: undefined,
-    }).startPortForwardTarget(f.system, "pod/operator", "0:3101");
+    const connection: { url: unknown; stop: () => Promise<void> } =
+      await createRealKubernetesFixture({
+        ...f.selection,
+        gatewayImage: undefined,
+        codexImage: undefined,
+        databaseUrl: undefined,
+      }).startPortForwardTarget(f.system, "pod/operator", "0:3101");
     t.after(() => connection.stop());
     // Terminate verified test-owned TLS on loopback and relay bytes to the real
     // installed API; no HTTP operation or response is replaced by this transport.
@@ -228,7 +228,7 @@ test(
           "--installation",
           installationPath,
           "--runtime-image",
-          string(f.images.node),
+          f.images.node,
           "--source-revision",
           source,
           "--evidence-dir",
@@ -399,8 +399,7 @@ test(
     );
     await f.waitFor(
       "both writers stopped",
-      async () =>
-        array(await f.pods("api")).length === 0 && array(await f.pods("worker")).length === 0,
+      async () => (await f.pods("api")).length === 0 && (await f.pods("worker")).length === 0,
     );
     const stopped: Record<string, ReturnType<typeof deployment>> = {};
     for (const component of ["api", "worker"]) {
@@ -414,7 +413,7 @@ test(
     await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
     await assert.rejects(
       f.upgrade({
-        database: { ...record(record(f.values).database), upgradeMigration: "separate" },
+        database: { ...record(f.values.database), upgradeMigration: "separate" },
       }),
       /failed pre-upgrade|BackoffLimitExceeded/,
     );
@@ -432,7 +431,7 @@ test(
       assert.equal(currentDeployment.metadata.uid, previous.metadata.uid);
       assert.equal(currentDeployment.metadata.generation, previous.metadata.generation);
       assert.equal(currentDeployment.spec.replicas, 0);
-      assert.equal(array(await f.pods(component)).length, 0);
+      assert.equal((await f.pods(component)).length, 0);
     }
 
     // Reconcile the known fault, then use the documented independent migration Job
