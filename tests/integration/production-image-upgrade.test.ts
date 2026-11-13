@@ -617,7 +617,7 @@ fi
       }),
       // The comparison accepts the ordered mappings, then the policy check
       // refuses a multi-document Installation before the serving writers are touched.
-      /unreadable repository ownership/,
+      /cannot identify the installed repository policy; keep the original owners running/,
     );
 
     // Two valid maps in a different order remain a genuine baseline difference.
