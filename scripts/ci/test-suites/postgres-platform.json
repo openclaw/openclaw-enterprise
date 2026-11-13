@@ -16,10 +16,10 @@
     "tests/integration/compute-singleton-worker-postgres.test.ts",
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
-    "tests/integration/postgres-agent-deletion-audit.test.mjs",
+    "tests/integration/postgres-agent-deletion-audit.test.ts",
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-default-users.test.ts",
-    "tests/integration/postgres-agent-runtime-logs.test.mjs",
+    "tests/integration/postgres-agent-runtime-logs.test.ts",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
@@ -291,7 +291,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-agent-deletion-audit.test.mjs",
+      "path": "tests/integration/postgres-agent-deletion-audit.test.ts",
       "expectedTests": [
         "Agent delete audit lists every AccessBinding and Restriction the deletion finalizer removes"
       ]
@@ -313,7 +313,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-agent-runtime-logs.test.mjs",
+      "path": "tests/integration/postgres-agent-runtime-logs.test.ts",
       "expectedTests": [
         "runtime log views and downloads persist audit rows before the read and fail closed without them"
       ]
