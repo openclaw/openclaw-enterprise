@@ -522,6 +522,22 @@ test(
       return renewed;
     };
     const { warnings, stop: stopObservingWarnings } = observeWarnings();
+    let stopWorker = () => workerPool.end();
+    context.after(async () => {
+      try {
+        await stopWorker();
+      } finally {
+        PostgresWorkQueue.prototype.heartbeat = heartbeat;
+        if (ownNow === undefined) {
+          Reflect.deleteProperty(performance, "now");
+        } else {
+          Object.defineProperty(performance, "now", ownNow);
+        }
+        stopObservingWarnings();
+        await observerPool.end();
+      }
+    });
+
     const calls: string[] = [];
     const events: WorkerEvent[] = [];
     const developmentCompute = createDevelopmentComputeDriver();
@@ -542,20 +558,7 @@ test(
       },
     });
 
-    context.after(async () => {
-      try {
-        await worker.stop();
-      } finally {
-        PostgresWorkQueue.prototype.heartbeat = heartbeat;
-        if (ownNow === undefined) {
-          Reflect.deleteProperty(performance, "now");
-        } else {
-          Object.defineProperty(performance, "now", ownNow);
-        }
-        stopObservingWarnings();
-        await observerPool.end();
-      }
-    });
+    stopWorker = () => worker.stop();
 
     await enqueueNamespace(state, work, actorId);
     await worker.start();
