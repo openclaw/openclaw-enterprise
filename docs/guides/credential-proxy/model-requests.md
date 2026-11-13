@@ -26,9 +26,14 @@ The model key is resolved through Credential Proxy; this path creates no Gateway
 key copy or attachment. Follow the existing [authority setup](../credential-proxy.md#prepare-enforcement-trust-and-custody)
 for the TLS certificate, Gateway issuer public key and trusted client selectors.
 
-Configure a separate model middleware name and token-grant listener under
-`drivers.credential_proxy.configuration`. Alongside `middlewareName` and
-`authority`, add this fragment, replacing the endpoint and trust domain:
+Under `drivers.credential_proxy.configuration`, configure the model
+`middlewareName`, `authority` and `tokenGrant`. For model access alone, set
+`authorityScope: execution`. If the Installation also selects
+[`repository.openShell`](../repository-credentials/openshell-enrollment.md), omit
+`authorityScope`. The Driver sets it to `execution` for the combined profile.
+Keep the Git registration name distinct from the model middleware name.
+
+Add the token-grant listener below, replacing the endpoint and trust domain:
 
 ```yaml
 tokenGrant:
