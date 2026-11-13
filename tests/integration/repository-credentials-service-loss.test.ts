@@ -34,12 +34,10 @@ test("the broker process logs one line per refused credentialed request", async 
   assert.ok(typeof publicOrigin === "string");
   const send = (authorization: string | undefined, host = new URL(publicOrigin).host) =>
     new Promise((resolve, reject) => {
-      const port: unknown = fixture.generation().port;
-      assert.ok(typeof port === "number");
       const outgoing = request(
         {
           hostname: "127.0.0.1",
-          port,
+          port: fixture.generation().port,
           path: `/${fixtureRepository}.git/info/refs?service=git-upload-pack`,
           ca: fixture.tls.ca,
           agent: false,
