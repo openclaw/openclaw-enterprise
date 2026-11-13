@@ -44,6 +44,10 @@ acknowledgment before signed startup release. Its
 [implementation plan](../../plans/0051-protected-workspace-endpoint.md) records the
 required changes and verification. The amendment remains proposed.
 
+The proposed [native Service route extension](protected-workspace-endpoint.md#native-service-route-extension)
+adds independently observed in-cluster routing before that release. Its
+implementation and installed qualification remain pending.
+
 ## Two deployment modes
 
 The deployment selects an egress implementation; it does not separately select an authentication mechanism. Protection is an explicit admission decision, independent of how many credentials are configured.

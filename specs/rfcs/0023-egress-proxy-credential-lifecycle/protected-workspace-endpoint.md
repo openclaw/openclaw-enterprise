@@ -86,6 +86,35 @@ Compute checks the fingerprint and generation together with the existing revisio
 
 Sandbox retains the first acknowledged startup identity; a restarted provider cannot manufacture continuity. Compute re-reads the durable pin after its own restart. Equal endpoint text cannot authorize adoption of a replacement owner.
 
+## Native Service route extension
+
+This route extension is proposed; implementation and installed qualification
+remain pending.
+
+Let Kubernetes Compute observe a provider's native, in-cluster Harness Service instead of requiring the static `network.providerHarness` bridge. Current preparation requires that bridge before `provisionHarness`, although a native provider creates its Service during provisioning. Skipping that check alone is insufficient: endpoint validation and Gateway rendering also require the static route.
+
+The first profile covers a fresh protected dedicated Codex revision, one cluster, one IPv4 ClusterIP Service and one Harness Pod. Select it explicitly with `network.providerHarness: { mode: "owned-service-v1" }`. This closed variant accepts no other fields and is incompatible with the existing static namespace/labels/address/port object. Omission retains the original missing-route refusal. Existing ordinary routes and the local OpenShell bridge keep their behavior. External endpoints, cross-cluster placement and ambiguous routes cannot fall back to another profile.
+
+Use the existing selected endpoint, Namespace-scoped Kubernetes client, `SandboxResourceRef` and Compute-generated workload labels; add no Sandbox method or return field. The existing Installation configuration identity and saved route pin bind the profile. Older schemas require the four static fields and reject the new variant; qualify that refusal through the actual loader and constructor before material delivery or provisioning. No additional implementation identity is needed for this configuration rejection.
+
+### Observe before granting reach
+
+During model-disabled bootstrap, preserve the existing DNS and authenticated node-setup paths but grant no Gateway-to-Harness egress. An unavailable route produces an empty egress rule list, never an empty destination selector. Do not change a serving predecessor's grants to prepare this fresh-deployment profile.
+
+After the selected Sandbox provisions, Compute checks its returned resource against the Namespace, Agent and revision. It then observes the endpoint's canonical, namespace-qualified Service hostname through the selected cluster's Kubernetes API. Before installing the route, require:
+
+- A nondeleting ClusterIP Service in that Namespace, with an assigned IPv4 address and no external name, external addresses, load balancer or NodePort exposure. Its sole TCP port matches the WSS URL and resolves to the declared port on the Harness Pod.
+- A nondeleting Pod matching the returned resource name and every Compute-required workload label. The Service's nonempty selector includes the Namespace, Agent, revision and workload-profile labels and selects only that Pod. Its controller owner reference identifies that Pod's UID. Provider-added labels are permitted; labels alone do not establish ownership.
+- One complete EndpointSlice observation owned by that Service UID, with one endpoint targeting the same Namespace, Pod name, UID and observed Pod IP. Its address family and TCP port agree with the Service and Pod. Reject pagination, extra targets and terminating endpoints. A provider may publish its held transport before Pod readiness; this observation grants no serving or release claim.
+
+Read the Service and Pod around the EndpointSlice observation and reject inconsistent relevant fields. Preserve the existing canonical WSS, public CA, workspace-root and hook-directory guards. Use cluster DNS, without a synthetic host alias. Grant Gateway egress only to the verified Namespace and Pod selector on the observed TCP port; retain the provider's existing egress fence. A workspace-node peer declaration alone cannot authorize this reverse connection.
+
+### Pin and revalidate the route
+
+Extend Compute's durable first-choice binding with the route profile, Service name/UID/address/port/selector, Pod name/UID/IP and EndpointSlice UID/target/port. Resource versions establish a consistent read, not permission to replace that binding. Bind it to the same selected Driver, Agent revision, original generation and existing anchor; reuse the current atomic first-choice transition and uncertain-write rules.
+
+Revalidate the route before installing its policy and bound Gateway, accepting the consumer acknowledgment, signing release, and activation/readiness. A missing route before first choice stays pending. Malformed data, ownership mismatch, replacement or loss after first choice retains its typed failure and cannot select another route. On observed invalidation, remove the affected revision's grant without expanding another policy; uncertain revocation remains a cleanup failure. Preserve the first cause and the original owner's termination and pin-cleanup obligations. Route validation neither emits the consumer acknowledgment nor replaces authenticated transport checks.
+
 ## Acceptance Criteria
 
 All outcomes remain unverified until the stated caller runs.
@@ -99,6 +128,12 @@ All outcomes remain unverified until the stated caller runs.
 | AC-5 | Real existing node identity and volume survive the transition. Missing/expired setup, replacement node or wrong Gateway Pod/node acknowledgment fail without inventing identity. After readiness the same Agent reads a workspace marker and completes an authenticated controlled model turn. Report repository operations separately.                                                                      |
 
 Extend existing real Compute/Kubernetes and installed QA workflows. Controlled providers can replace external services, not the binding consumer, pin persistence or release behavior under test. Pure validators and recording callbacks cannot establish AC-1–5. Cover capability absence and unchanged ordinary revisions too.
+
+The native Service extension additionally requires:
+
+- **AC-6:** The real preparation caller grants no Harness route during bootstrap, then observes the provisioned Service and installs only its exact peer/port before binding and release. Test wrong Namespace, labels, owner UID, address, port and EndpointSlice target; retain ordinary and static-bridge regressions.
+- **AC-7:** Real Kubernetes persistence and reconciliation reject replacement, partial observations, lost-write ambiguity and stale pins across Compute restart. Route invalidation closes the grant; cleanup failure stays visible. An older Worker rejects the explicit configuration variant before effects.
+- **AC-8:** A connected installed Agent uses the real Gateway consumer and enforced NetworkPolicy to reach its selected Harness while an unrelated Pod is denied. Confirm the same revision, node and mounted workspace through release and a controlled model turn. A native renderer or controlled API check establishes only its exercised boundary; installed qualification remains open until this caller passes.
 
 ## Alternatives and delivery
 

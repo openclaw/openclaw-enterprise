@@ -62,6 +62,34 @@ implementation or installed qualification.
 | Old-reader refusal before material                                  | Exact older Worker dispatch and installed image with incompatible revision identity; reject before Secret or material calls                 | Pending |
 | Same Agent, real node and volume, model and withdrawal              | Genuine connected installer, exact API/Worker entries and controlled providers; verify the same Agent and workspace                         | Pending |
 
+## Native Service route follow-up
+
+The [proposed route extension](../rfcs/0023-egress-proxy-credential-lifecycle/protected-workspace-endpoint.md#native-service-route-extension)
+owns AC-6–8. Implement the endpoint binding above before enabling this profile.
+The first scope is a fresh protected dedicated Codex revision in one cluster;
+ordinary routes and the existing static bridge retain their behavior.
+
+1. Add the closed `network.providerHarness: { mode: "owned-service-v1" }`
+   variant to the existing configuration identity. Qualify older loader and
+   constructor rejection before material delivery or provisioning. Preserve
+   existing absent, static and ordinary selections.
+2. Keep bootstrap Harness egress closed. After the selected Sandbox provisions,
+   observe its Service, Pod and EndpointSlice through the current cluster client.
+   Use the validated route for policy and Gateway rendering without writing
+   observed addresses into Installation configuration.
+3. Extend the durable endpoint pin with the first route. Revalidate it before
+   policy installation, consumer acknowledgment, release and activation. Preserve
+   that choice across restart and uncertain writes. On invalidation, revoke the
+   affected grant and retain the first failure and original cleanup obligation.
+4. Extend the existing Compute workflow and real Kubernetes integration checks
+   for AC-6–7, including absent and static profiles, harmless Pod status changes,
+   ownership replacement and incomplete observations. Register AC-8 in the
+   installed Agent workflow, with actual allowed and denied traffic and the same
+   node, revision and mounted workspace through a controlled model turn.
+
+These checks remain required and unrun by this proposal. A renderer, validator
+or controlled API result alone does not establish installed route qualification.
+
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
@@ -69,3 +97,4 @@ implementation or installed qualification.
 ## Changelog
 
 - 2026-11-13: Propose the endpoint protocol, implementation owners and required runtime verification.
+- 2026-11-13: Propose the owned-Service route profile, its implementation order and required verification.
