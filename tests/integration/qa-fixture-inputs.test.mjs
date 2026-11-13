@@ -483,7 +483,8 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   // An equally sized selection still omits default coverage if it substitutes a manual scenario.
   assert.equal(
     selectQaMatrix({
-      OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets,git-write,slack,namespace-lifecycle",
+      OCC_TEST_QA_SCENARIOS:
+        "model-ui,console-secrets,agent-audit,git-write,slack,namespace-lifecycle",
     }).scope,
     "partial:selected",
   );
