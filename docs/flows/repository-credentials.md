@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-11-05
-last_updated_session: authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e
+updated: 2026-11-12
+last_updated_session: authoring-run/559c3e53-17e7-4d44-ab91-0be2a2695608
 ---
 
 # Repository credential service flow
@@ -120,12 +120,14 @@ disposal; clock rollback cannot restore use. If a disposal acknowledgement is lo
 status, close and shutdown resend the same status; the journal records it once and
 refuses a different one.
 
-The receipt and operator control clients reject private-socket replies over
-16,384 bytes and destroy the response without waiting for its end.
-[`RepositoryReceiptClient.call`](../../apps/controller/src/drivers/repo/access/receipt-client.ts)
-reports `RECEIPT_UNAVAILABLE`;
+[Control](../../apps/controller/src/backends/repository-credentials/control-client.ts)
+and [receipt](../../apps/controller/src/drivers/repo/access/receipt-client.ts) use
+[`readPrivateJsonResponse`](../../apps/controller/src/drivers/repo/access/private-json-response.ts):
+complete `application/json`, 16,384-byte cap, buffer wiping.
+Synchronous overflow refusal precedes teardown: receipt reports `RECEIPT_UNAVAILABLE`;
+backend control reports retryable `RepositoryCredentialControlError`.
 [`callControl`](../../apps/controller/src/drivers/repo/github/access/client/operator.ts)
-retains the admission ID in `control-request-failed` and also closes the request.
+retains `control-request-failed`, the admission ID, and request teardown.
 
 Development factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/access/custody.ts:disposeAllRenewal`.
@@ -285,28 +287,26 @@ exchange. Original provider settlement and cleanup outlive requests.
 
 ### 6. Close locally and finish cleanup
 
-`apps/controller/src/drivers/repo/access/service.ts:createCredentialService` closes the
-session before cancelling its exchanges and advancing lifecycle cleanup. A
-session becomes disposed only after exchanges, original actions, captures,
-renewal state and auxiliary finalization are resolved. If the provider queue is
-full before cleanup dispatch, `apps/controller/src/drivers/repo/access/lifecycle.ts`
-keeps retirement/finalization unattempted and registers one capacity waiter per
-session through `apps/controller/src/drivers/repo/access/provider-queue.ts`. Available
-capacity wakes cleanup; queue rejection alone does not mark an action uncertain.
+`apps/controller/src/drivers/repo/access/service.ts:createCredentialService` closes
+sessions before exchange cancellation and cleanup. Disposal awaits exchanges, original
+actions, captures, renewal state and auxiliary finalization. A full provider queue before
+dispatch means `apps/controller/src/drivers/repo/access/lifecycle.ts` defers retirement
+and finalization and registers one waiter per session via
+`apps/controller/src/drivers/repo/access/provider-queue.ts`. Available capacity wakes
+cleanup. Queue rejection alone never marks an action uncertain.
 
-`apps/controller/src/composition/repository-credentials/service.ts:runService`
-stops admission, closes sessions and bounds cleanup with an independent timer.
-Grace expiry reports unresolved obligations without proving disposal. The original
-broker writes `DISPOSED` to the worker's receipt journal before reporting it,
-and gives pending terminal writes a separate ten-second window before graceful exit. The Helm worker is a
-restartable init container so its receipt listener outlives broker shutdown.
-Only a committed observation survives restart. Uncommitted or uncertain
-provider inventory remains unknown. The original issuer retains token cleanup;
-the sender closes its TLS and session material after shutdown disposition.
+`apps/controller/src/composition/repository-credentials/service.ts:runService` stops
+admission, closes sessions and independently bounds cleanup. Grace expiry reports
+unresolved obligations. The original broker writes `DISPOSED` to the worker's receipt
+journal before reporting it. Graceful exit allows pending terminal writes ten extra
+seconds. The Helm worker’s restartable init container keeps receipts available through
+broker shutdown. On shutdown, both private listeners (receipt and prepared Git) disconnect
+clients and join admitted handlers before Worker pool teardown.
 
-Failed construction custody joins shutdown drainage: its pending obligation
-counts in `pendingAuxiliary` without a published or disposed session; disposal
-wakes shutdown waiters.
+Only committed observations survive restart. Uncertain provider inventory stays unknown.
+The original issuer retains token cleanup. The sender closes TLS and session material
+after shutdown disposition. Failed construction counts in `pendingAuxiliary` without a
+published or disposed session. Disposal wakes shutdown waiters.
 
 ## Emitted packaging
 
@@ -355,6 +355,12 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 15:23: Share bounded response reading. (authoring-run/559c3e53-17e7-4d44-ab91-0be2a2695608 - c67db827363d8457e10e28a77992e804663c47fe)
+
+- 2026-11-12 09:21: Condense shutdown ownership. (authoring-run/e06f9930-fe36-477f-baea-a6dccbf81438 - 2f241650ec0e6bd0eb0a5b2b3be98fd84a9fee87)
+
+- 2026-11-12 09:05: Describe how Worker shutdown drains private repository handlers. (authoring-run/1dda383f-486f-4161-bcd4-fdb427a1adb7 - 8d3352ca6e3be12cbc6729aa95ccd44f02137b94)
 
 - 2026-11-05 13:04: Refresh session construction while preserving current admission and shutdown behavior. (authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e - ec30be0251ac912467c78856edb3a9c989c1ec00)
 

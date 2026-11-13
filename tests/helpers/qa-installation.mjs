@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { prepareNativeAdminConfiguration } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
-import { availablePort } from "./available-port.mjs";
+import { availablePort } from "./available-port.ts";
+import { selectComposeSubnet } from "./compose-network.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
 import { grantQaRepositoryBranch } from "./qa-repository.mjs";
@@ -85,6 +86,7 @@ export function launcherEnvironment() {
   );
   for (const name of [
     "OCC_DEVELOPMENT_K3S_IMAGE",
+    "OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR",
     "OCC_DEVELOPMENT_K3D_DNS_RESOLVER",
     "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT",
     "NODE_BASE_IMAGE",
@@ -799,40 +801,10 @@ export async function createQaInstallation(
     base: process.env.OCC_TEST_QA_SOURCE_SHA ?? "working-tree",
   });
   if (controlPlane === "compose") {
-    const ids = (await f.run("docker", ["network", "ls", "-q"]))
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    const networks = ids.length
-      ? JSON.parse(await f.run("docker", ["network", "inspect", ...ids]))
-      : [];
-    const occupied = networks
-      .flatMap((network) => network.IPAM?.Config ?? [])
-      .map((config) => config.Subnet)
-      .filter((cidr) => cidr?.includes("."));
-    const range = (cidr) => {
-      const [address, bits] = cidr.split("/");
-      const number = address.split(".").reduce((value, octet) => (value << 8n) + BigInt(octet), 0n);
-      const size = 1n << (32n - BigInt(bits));
-      return [(number / size) * size, (number / size) * size + size - 1n];
-    };
-    const free = (cidr) => {
-      const [start, end] = range(cidr);
-      return occupied.every((value) => {
-        const [a, b] = range(value);
-        return end < a || start > b;
-      });
-    };
-    let subnet;
-    for (let second = 20; second <= 31 && !subnet; second += 1) {
-      for (let third = 1; third < 255 && !subnet; third += 1) {
-        const candidate = `172.${second}.${third}.0/24`;
-        if (free(candidate)) {
-          subnet = candidate;
-        }
-      }
-    }
-    assert.ok(subnet, "no unused private Compose subnet available");
+    const subnet = await selectComposeSubnet({
+      runDocker: (args) => f.run("docker", args),
+      subnet: env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR,
+    });
     env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = subnet;
     await f.record("compose-network", { subnet });
   }

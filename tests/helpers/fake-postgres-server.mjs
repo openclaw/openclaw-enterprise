@@ -9,7 +9,8 @@ import { createServer } from "node:net";
 //
 // `onQuery(query, session)` decides an answer: undefined (success), `{ error: "message" }`
 // (an ErrorResponse; the session stays usable, as on a real server), `{ hang: true }` (no
-// answer until the client goes away), or a promise of one of these (a slow statement).
+// answer until the client goes away), `{ rows: [{ column: "text" }] }` (text results),
+// or a promise of one of these (a slow statement).
 // The server must be running on the event loop: drive the code under test with an
 // asynchronous child process, never spawnSync.
 //
@@ -67,6 +68,46 @@ function int32(...values) {
 
 const cstring = (value) => Buffer.from(`${value}\0`, "utf8");
 const readyForQuery = () => message("Z", Buffer.from("I", "latin1"));
+
+function textRows(rows) {
+  const columns = Object.keys(rows[0] ?? {});
+  const count = (value) => {
+    const bytes = Buffer.alloc(2);
+    bytes.writeInt16BE(value);
+    return bytes;
+  };
+  return [
+    message(
+      "T",
+      Buffer.concat([
+        count(columns.length),
+        ...columns.map((column) =>
+          Buffer.concat([
+            cstring(column),
+            int32(0),
+            count(0),
+            int32(25),
+            count(-1),
+            int32(-1),
+            count(0),
+          ]),
+        ),
+      ]),
+    ),
+    ...rows.map((row) =>
+      message(
+        "D",
+        Buffer.concat([
+          count(columns.length),
+          ...columns.map((column) => {
+            const value = Buffer.from(row[column], "utf8");
+            return Buffer.concat([int32(value.length), value]);
+          }),
+        ]),
+      ),
+    ),
+  ];
+}
 
 function errorResponse(text) {
   return message(
@@ -152,6 +193,7 @@ function serveSession(socket, sessions, onQuery) {
           }
           socket.write(
             Buffer.concat([
+              ...(answer?.rows ? textRows(answer.rows) : []),
               answer?.error ? errorResponse(answer.error) : message("C", cstring("OK")),
               readyForQuery(),
             ]),

@@ -1,5 +1,9 @@
 import type { PostgresClient } from "./postgres-state.ts";
 
+function decodeFence(rows: readonly unknown[]): number | undefined {
+  return rows.length === 1 ? Number((rows[0] as { fence: string }).fence) : undefined;
+}
+
 export interface CredentialDeliveryKey {
   readonly revisionId: string;
   readonly bindingId: string;
@@ -62,7 +66,7 @@ export class CredentialDeliveries {
        AND settlement='witness' AND write_pending IS NULL AND blocked IS NULL AND live_revision_id IS NOT NULL`,
       values.slice(0, 5),
     );
-    return rows.length === 1 ? Number((rows[0] as { fence: string }).fence) : undefined;
+    return decodeFence(rows);
   }
 
   /** Reserve exactly one installation. A pending operation is never adopted as a new send. */
@@ -89,7 +93,7 @@ export class CredentialDeliveries {
         material.materialVersion,
       ],
     );
-    return rows.length === 1 ? Number((rows[0] as { fence: string }).fence) : undefined;
+    return decodeFence(rows);
   }
 
   /** An authenticated readback settles the original operation, even after withdrawal,
@@ -116,7 +120,7 @@ export class CredentialDeliveries {
         material.materialVersion,
       ],
     );
-    return rows.length === 1 ? Number((rows[0] as { fence: string }).fence) : undefined;
+    return decodeFence(rows);
   }
 
   async adopt(key: CredentialDeliveryKey, worker: string, closeReason?: string): Promise<void> {
@@ -153,7 +157,7 @@ export class CredentialDeliveries {
         material?.preparationAttemptId ?? null,
       ],
     );
-    return rows.length === 1 ? Number((rows[0] as { fence: string }).fence) : undefined;
+    return decodeFence(rows);
   }
 
   /** The reserving worker proved that no external write was sent. Never use after

@@ -716,6 +716,16 @@ describe("repository credential router", { concurrency: true }, () => {
       () => selectGhRepository(manifest, gh.target.value, manifest.bindings[0]),
       /conflicting-repository-selection/,
     );
+    for (const args of [
+      ["repo", "view", "github.com/project"],
+      ["api", "repos/github.com/project"],
+    ]) {
+      const invocation = parseGhInvocation(args);
+      assert.equal(invocation.target.value, "github.com/project");
+      assert.throws(() => selectGhRepository(manifest, invocation.target.value), {
+        message: "unsupported-repository-target",
+      });
+    }
     for (const endpoint of [
       "https://api.github.com/repos/example/project",
       // The gateway refuses any escape in a path, so the client refuses it first.

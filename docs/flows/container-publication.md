@@ -21,7 +21,7 @@ OCE version and publishes a Helm chart. Image-only publication is the default.
   optional mutable image tag, and opt-in chart flag.
 - `scripts/ci/container-release.mjs:main`: validation, smoke, seal, and publication
   commands called by the workflow.
-- `scripts/ci/chart-release.mjs:publish`: version-tag and chart publication after
+- `scripts/ci/chart-release.ts:publish`: version-tag and chart publication after
   the image receipt exists.
 - Publication requires pre-existing public packages. The manual dispatch
   authorizes publication without a separate environment approval. GitHub grants
@@ -257,7 +257,7 @@ same retained multi-platform archives and original producer identity; it does
 not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 
 The optional `jobs.publish-chart` downloads this run/attempt's image receipt only
-after `jobs.publish` succeeds. `scripts/ci/chart-release.mjs` requires
+after `jobs.publish` succeeds. `scripts/ci/chart-release.ts` requires
 both entries to match the current source, producer run, CI run, package names,
 and immutable digests. Root `package.json`, the chart version, and appVersion
 must agree before a version tag is written. The staged chart carries the source

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-11-10
-last_updated_session: authoring-run/8719abbf-9776-4ebb-970d-9575222fe52b
+updated: 2026-11-12
+last_updated_session: authoring-run/424005d3-ef73-4fd2-82c5-0237e640ba5a
 ---
 
 # Agent runtime logs flow
@@ -71,13 +71,15 @@ requests; default: `text`.
 `newerRevisionWithRuntime` reuses status, excludes Pod candidates proven older by
 `Client.GetAgentRevision`, and requires Harness-only candidates to be proven newer.
 
-`packages/contracts/src/api/routes.ts:occApiRoutes` declares both GET routes with
-a closed query schema. `apps/controller/src/index.ts:perform` answers `501` when
-`agentRuntimeLogs` is disabled. `OpenClawController.runtimeLogTarget` authorizes
-the tier action and Agent `read` (plus Agent revision `read` for status only), resolves
-the version within the exact Agent, then rejects a Driver without
-`describeAgentRuntime` or with `runtimeLogging: "driver"`. `apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` admits reads;
-audited denials spend no token; time buckets ignore clock changes.
+`packages/contracts/src/api/routes.ts:occApiRoutes` declares closed GET query schemas.
+`apps/controller/src/index.ts:perform` returns `501` for disabled `agentRuntimeLogs`.
+`OpenClawController.runtimeLogTarget` authorizes the tier action, Agent `read`,
+and Agent revision `read` for status, resolves that exact Agent's version,
+and rejects Drivers without `describeAgentRuntime` or with `runtimeLogging: "driver"`.
+`apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` admits reads;
+audited denials spend no token; buckets ignore clock changes.
+Before Driver I/O, the handler aborts its signal if identity lookup outlives
+the connection; later disconnects abort it.
 
 ### 2. Describe the runtime
 
@@ -246,6 +248,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 23:26: Honor disconnects. (authoring-run/424005d3-ef73-4fd2-82c5-0237e640ba5a - 0dc9387e2521098fa1648d47f6350f1fd52fb46f)
 
 - 2026-11-10: CLI cursor polls keep the initial tailLines; timing stays cursor-owned.
 

@@ -195,9 +195,16 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
   await assert.rejects(checkConfiguration(selectedFile), { message: "invalid-configuration" });
   await chmod(shared, 0o700);
   assert.deepEqual((await checkConfiguration(selectedFile)).profiles, ["git-full"]);
-  // Removed and unknown profiles must fail at trusted startup, before serving
-  // any sessions, even when they are explicitly named in the operator policy.
-  for (const profile of ["read-write", "app-full"]) {
+  // Removed, internal, and registry-only profiles cannot be selected by a service session,
+  // even when they are explicitly named in the operator policy.
+  for (const profile of [
+    "read-write",
+    "app-full",
+    "metadata-read",
+    "git-ref-write",
+    "git-ref-draft-pr",
+    "github-repository",
+  ]) {
     await save({
       ...prepared,
       sessionPolicy: {
@@ -206,7 +213,7 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
         allowedProfiles: [profile],
       },
     });
-    await assert.rejects(checkConfiguration(file), { message: "invalid-configuration" });
+    await assert.rejects(checkConfiguration(file), { message: "invalid-configuration" }, profile);
   }
   await save(prepared);
   await chmod(tlsKey, 0o644);

@@ -38,6 +38,16 @@ before removing that installation's `occ-install-*` temporary directory. A force
 directory with the reader's private kubeconfig.
 Share only the receipt and this source identity record with the authorized reader.
 
+If install reports a template validation failure, run offline `helm template`
+with the same local chart, values, release, namespace and recorded
+`installation.attemptId`. Use the same Helm version. Keep rendered manifests and
+stderr in owner-only local outputs outside the receipt; they may contain secrets.
+For the shared DNS suffix refusal, the host in `auth.baseUrl` and
+`agentNativeAdmin.domain` must share a non-public DNS suffix. Correct a copy of
+the inputs and render again. Neither a render result nor a missing Job establishes
+cluster effects or authorizes retry; preserve the receipt and reconcile the
+original attempt below.
+
 ## Resume an installation in progress
 
 Use the matching CLI, `kubectl`, your own trusted kubeconfig, and permission to

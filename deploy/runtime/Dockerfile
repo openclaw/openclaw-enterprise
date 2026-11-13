@@ -18,7 +18,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     sh /node-repair/fetch.sh
 
 FROM node-source AS node-compiled
-ARG NODE_BUILD_JOBS=4
+ARG NODE_BUILD_JOBS=auto
 RUN --network=none sh /node-repair/build.sh
 
 FROM node-build-base AS node-repaired-build-base

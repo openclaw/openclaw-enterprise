@@ -1,18 +1,29 @@
-import { repositoryRemovalWorkKey, repositoryRetirementWorkKey } from "../repository-withdrawal.ts";
-import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
-import { createHash, randomUUID } from "node:crypto";
-import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
+import {
+  REPOSITORY_CLEANUP_FORMATS,
+  REPOSITORY_CLEANUP_KEY_PATTERN,
+  REPOSITORY_CLEANUP_KEY_PREFIX,
+  REPOSITORY_CLEANUP_KEY_SEPARATOR,
+  REPOSITORY_CLEANUP_KEY_TAIL_PATTERN,
+  REVISION_ID_PATTERN,
+  repositoryCleanupWorkKey,
+  repositoryRemovalWorkKey,
+} from "../repository-withdrawal.ts";
+import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
+import { randomUUID } from "node:crypto";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
+  type ClaimedWork,
+  type ControllerWork,
+  type ControllerWorkKind,
+  type ControllerWorkState,
+} from "../controller-work.ts";
+import { ResourceConflictError, ScopeViolationError, WorkClaimLostError } from "../errors.ts";
+import {
   nonempty,
   safeFailureCode,
   validateFailureData,
   validateSuccessResultData,
-  type ClaimedWork,
-  type ControllerWork,
   type ControllerWorkAttempt,
-  type ControllerWorkKind,
-  type ControllerWorkState,
   type DeferredWork,
   type EnqueueWork,
   type PermanentFailure,
@@ -21,10 +32,15 @@ import {
   type WorkResult,
 } from "./controller-work.ts";
 
+export {
+  isRepositoryCleanupWork,
+  isRepositoryExpiryCleanupWork,
+  isRepositoryRuntimeRetirementWork,
+  repositoryCleanupRevisionId,
+} from "../repository-withdrawal.ts";
+export { WorkClaimLostError } from "../errors.ts";
+export type { ClaimedWork, ControllerWork, ControllerWorkState } from "../controller-work.ts";
 export type {
-  ClaimedWork,
-  ControllerWork,
-  ControllerWorkState,
   EnqueueWork,
   PermanentFailure,
   RetryableFailure,
@@ -111,11 +127,6 @@ const DEFAULT_RECOVERY_LIMIT = 100;
 const MAX_RECOVERY_LIMIT = 1_000;
 const CLAIM_RACE_CODES = new Set(["23505", "40001", "40P01"]);
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const REVISION_ID_PATTERN =
-  "rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const REPOSITORY_CLEANUP_KEY = new RegExp(
-  `^agent_revision:(${REVISION_ID_PATTERN}):repository_cleanup:(retire:)?[0-9a-f]{64}$`,
-);
 const MAINTENANCE_KEY = new RegExp(
   `^agent_revision:(${REVISION_ID_PATTERN}):maintenance:(0|[1-9][0-9]*)$`,
 );
@@ -136,68 +147,17 @@ function backoffDelayMsSql(
       LEAST(GREATEST(${attemptCount} - 1, 0), 30))) * ${jitter}::double precision`;
 }
 
-/** Cleanup dispatch and retry exemption require an exact immutable revision target. */
-export function repositoryCleanupRevisionId(
-  work: Pick<ControllerWork, "idempotencyKey" | "namespaceTarget" | "agentTarget">,
-): string | undefined {
-  if (work.namespaceTarget !== undefined || work.agentTarget !== undefined) {
-    return undefined;
-  }
-  const key = REPOSITORY_CLEANUP_KEY.exec(work.idempotencyKey);
-  return key?.[0] === work.idempotencyKey ? key[1] : undefined;
-}
-
-export function isRepositoryCleanupWork(
-  work: Pick<
-    ControllerWork,
-    "idempotencyKey" | "agentId" | "revisionId" | "namespaceTarget" | "agentTarget"
-  >,
-): boolean {
-  const revisionId = repositoryCleanupRevisionId(work);
-  return (
-    revisionId !== undefined &&
-    ((work.revisionId === revisionId && isNonEmptyString(work.agentId)) ||
-      (work.revisionId === undefined && work.agentId === undefined))
-  );
-}
-
-/** Runtime retirement is distinct from session-only repair and rotation cleanup. */
-export function isRepositoryRuntimeRetirementWork(
-  work: Parameters<typeof isRepositoryCleanupWork>[0],
-): boolean {
-  return (
-    isRepositoryCleanupWork(work) &&
-    REPOSITORY_CLEANUP_KEY.exec(work.idempotencyKey)?.[2] === "retire:"
-  );
-}
-
-/** Expiry can withdraw Git alone. Terminal retirement can never become expiry cleanup. */
-export function isRepositoryExpiryCleanupWork(
-  work: Parameters<typeof isRepositoryCleanupWork>[0],
-): boolean {
-  const revisionId = repositoryCleanupRevisionId(work);
-  return (
-    revisionId !== undefined &&
-    isRepositoryCleanupWork(work) &&
-    (work.idempotencyKey === repositoryCleanupWorkKey(revisionId, "expiry") ||
-      work.idempotencyKey === repositoryRemovalWorkKey(revisionId))
-  );
-}
-
-// Agent deletion retains this key after detaching its revision. Keep the cleanup key grammar
-// the database recognizes, with a separate digest domain for the immutable expiry obligation.
-const REPOSITORY_EXPIRY_KEY_DOMAIN = "expiry:";
-
-function repositoryCleanupWorkKey(
-  revisionId: string,
-  purpose: "sessions" | "terminal-runtime" | "expiry",
+// Only the trusted revision alias varies; key fragments come from the fixed formats.
+function repositoryWithdrawalKeySql(
+  revision: string,
+  purpose: "expiry" | "removal" | "terminal-runtime",
 ): string {
-  if (purpose === "terminal-runtime") {
-    return repositoryRetirementWorkKey(revisionId);
-  }
-  return `agent_revision:${revisionId}:repository_cleanup:${createHash("sha256")
-    .update(purpose === "expiry" ? REPOSITORY_EXPIRY_KEY_DOMAIN + revisionId : revisionId, "utf8")
-    .digest("hex")}`;
+  const id = `${revision}.revision_id`;
+  const format = REPOSITORY_CLEANUP_FORMATS[purpose];
+  const prefix = `'${REPOSITORY_CLEANUP_KEY_PREFIX}' || ${id} || '${REPOSITORY_CLEANUP_KEY_SEPARATOR}'`;
+  const suffix = format.suffix ? `'${format.suffix}' || ` : "";
+  const input = format.hashPrefix ? `'${format.hashPrefix}' || ${id}` : id;
+  return `${prefix} || ${suffix}encode(sha256(convert_to(${input}, 'UTF8')), 'hex')`;
 }
 
 /**
@@ -207,19 +167,21 @@ function repositoryCleanupWorkKey(
  */
 export function repositoryWithdrawalStateSql(revision: string): string {
   const id = `${revision}.revision_id`;
-  const prefix = `'agent_revision:' || ${id} || ':repository_cleanup:'`;
-  const digest = (input: string) => `encode(sha256(convert_to(${input}, 'UTF8')), 'hex')`;
-  return `(SELECT CASE WHEN cleanup.idempotency_key LIKE '%:retire:%' THEN 'retiring'
-      WHEN cleanup.idempotency_key = ${prefix} || ${digest(`'removal:' || ${id}`)} THEN 'removal'
+  const expiry = repositoryWithdrawalKeySql(revision, "expiry");
+  const removal = repositoryWithdrawalKeySql(revision, "removal");
+  const retirement = repositoryWithdrawalKeySql(revision, "terminal-runtime");
+  const retirementSuffix = REPOSITORY_CLEANUP_FORMATS["terminal-runtime"].suffix;
+  return `(SELECT CASE WHEN cleanup.idempotency_key LIKE '%:${retirementSuffix}%' THEN 'retiring'
+      WHEN cleanup.idempotency_key = ${removal} THEN 'removal'
       ELSE 'expiry' END AS withdrawal
     FROM occ.controller_work cleanup
     WHERE (cleanup.namespace_id, cleanup.agent_id, cleanup.revision_id) =
           (${revision}.namespace_id, ${revision}.agent_id, ${id})
       AND cleanup.agent_target IS NULL AND cleanup.namespace_target IS NULL
       AND cleanup.idempotency_key IN (
-        ${prefix} || ${digest(`'${REPOSITORY_EXPIRY_KEY_DOMAIN}' || ${id}`)},
-        ${prefix} || ${digest(`'removal:' || ${id}`)},
-        ${prefix} || 'retire:' || ${digest(id)})
+        ${expiry},
+        ${removal},
+        ${retirement})
     ORDER BY withdrawal DESC LIMIT 1)`;
 }
 
@@ -237,11 +199,11 @@ export function repositoryCleanupSql(alias: string): string {
         AND ${alias}.revision_id IS NOT NULL
         AND ${alias}.revision_id ~ '^${REVISION_ID_PATTERN}$'
         AND ${alias}.idempotency_key ~
-          ('^agent_revision:' || ${alias}.revision_id || ':repository_cleanup:(retire:)?[0-9a-f]{64}$'))
+          ('^${REPOSITORY_CLEANUP_KEY_PREFIX}' || ${alias}.revision_id || '${REPOSITORY_CLEANUP_KEY_TAIL_PATTERN}'))
       OR (${alias}.agent_id IS NULL
         AND ${alias}.revision_id IS NULL
         AND ${alias}.idempotency_key ~
-          '^agent_revision:${REVISION_ID_PATTERN}:repository_cleanup:(retire:)?[0-9a-f]{64}$')
+          '^${REPOSITORY_CLEANUP_KEY_PREFIX}${REVISION_ID_PATTERN}${REPOSITORY_CLEANUP_KEY_TAIL_PATTERN}')
     ))`;
 }
 
@@ -269,6 +231,15 @@ const CLEANUP_CONFLICT_SQL = `
       available_at = CASE WHEN controller_work.state = 'succeeded' THEN clock_timestamp()
         ELSE controller_work.available_at END,
       updated_at = clock_timestamp()`;
+
+const TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL = `OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
+          AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
+        OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
+          AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
+          AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
+        OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
+          AND source.revision_id IS NULL AND namespace.status = 'deleting'
+          AND revision.admitted_at <= source.created_at)`;
 
 function transferRepositoryCleanupSql(
   continuingRevision = "false",
@@ -335,14 +306,7 @@ function transferRepositoryCleanupSql(
       -- admitted_at and created_at are both on this database's clock (finding 1195).
       WHERE (source.revision_id = revision.id AND source.agent_id = revision.agent_id
           AND source.agent_target IS NULL)
-        OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
-          AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
-        OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
-          AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
-          AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
-        OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
-          AND source.revision_id IS NULL AND namespace.status = 'deleting'
-          AND revision.admitted_at <= source.created_at)
+        ${TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL}
     ), locked_attempts AS MATERIALIZED (
       SELECT attempt.admission_id
       FROM occ.repository_session_attempts AS attempt
@@ -379,11 +343,11 @@ function transferRepositoryCleanupSql(
       )
       SELECT DISTINCT ON (revision.namespace_id, revision.agent_id, revision.revision_id,
         revision.cleanup_purpose)
-        'agent_revision:' || revision.revision_id || ':repository_cleanup:' ||
-          CASE WHEN revision.cleanup_purpose = 'retire' THEN 'retire:' ELSE '' END ||
+        '${REPOSITORY_CLEANUP_KEY_PREFIX}' || revision.revision_id || '${REPOSITORY_CLEANUP_KEY_SEPARATOR}' ||
+          CASE WHEN revision.cleanup_purpose = 'retire' THEN '${REPOSITORY_CLEANUP_FORMATS["terminal-runtime"].suffix}' ELSE '' END ||
           encode(sha256(convert_to(
-            CASE WHEN revision.cleanup_purpose = 'expiry' THEN '${REPOSITORY_EXPIRY_KEY_DOMAIN}'
-              WHEN revision.cleanup_purpose = 'removal' THEN 'removal:' ELSE '' END ||
+            CASE WHEN revision.cleanup_purpose = 'expiry' THEN '${REPOSITORY_CLEANUP_FORMATS.expiry.hashPrefix}'
+              WHEN revision.cleanup_purpose = 'removal' THEN '${REPOSITORY_CLEANUP_FORMATS.removal.hashPrefix}' ELSE '' END ||
             revision.revision_id, 'UTF8')), 'hex'),
         revision.namespace_id, revision.agent_id, revision.revision_id, revision.actor_id,
         NULL, NULL, 'queued', statement_timestamp(), 0, statement_timestamp(), statement_timestamp()
@@ -586,13 +550,6 @@ function recoveringPredecessorStopsSql(candidates: string, excluded: string): st
     ),`;
 }
 
-export class WorkClaimLostError extends Error {
-  constructor() {
-    super("The controller work claim is missing, expired, or owned by another worker.");
-    this.name = "WorkClaimLostError";
-  }
-}
-
 function positiveInteger(value: number, name: string): number {
   if (!isPositiveSafeInteger(value)) {
     throw new ScopeViolationError(`${name} must be a positive safe integer.`);
@@ -706,7 +663,7 @@ const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text", details = "'
       CASE WHEN ${repositoryCleanupSql("transitioned")} THEN
         substring(
           transitioned.idempotency_key
-          from '^agent_revision:(${REVISION_ID_PATTERN}):repository_cleanup:(retire:)?[0-9a-f]{64}$'
+          from '${REPOSITORY_CLEANUP_KEY_PATTERN}'
         )
       END AS repository_cleanup_revision_id
     FROM transitioned
@@ -1022,14 +979,7 @@ export class PostgresWorkQueue {
                AND source.agent_target IS NULL
                AND revision.revision_number <= source_revision.revision_number)
              -- admitted_at and created_at are both on this database's clock (finding 1195).
-             OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
-               AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
-             OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
-               AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
-               AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
-             OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
-               AND source.revision_id IS NULL AND namespace.status = 'deleting'
-               AND revision.admitted_at <= source.created_at)
+             ${TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL}
            )
        ), registered AS (
          INSERT INTO occ.controller_work (

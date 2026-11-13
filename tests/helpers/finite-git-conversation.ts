@@ -19,7 +19,8 @@ const conversationStages = [
 type ConversationStage = (typeof conversationStages)[number];
 type GatewayFailureObservation =
   | "workspace_skill_discovery_failure_observed"
-  | "unclassified"
+  | "no_matching_warning"
+  | "unrecognized_warning"
   | "observation_unavailable"
   | "ambiguous";
 const logByteLimit = 65_536;
@@ -64,13 +65,16 @@ function classifyGatewayFailure(
       failures.push(value.message);
     }
   }
+  if (failures.length === 0) {
+    return "no_matching_warning";
+  }
   if (failures.length > 1) {
     return "ambiguous";
   }
   return failures[0] ===
     "chat completion failed: WorkspaceAccessUnavailableError: Remote workspace skill discovery failed"
     ? "workspace_skill_discovery_failure_observed"
-    : "unclassified";
+    : "unrecognized_warning";
 }
 
 class FiniteGitConversationError extends Error {
