@@ -52,9 +52,16 @@
         "staged sign-in refuses a replacement cluster",
         "staged sign-in refuses a newly shared volume"
       ]
+    },
+    {
+      "path": "tests/integration/kubernetes-private-secret-create-real.test.ts",
+      "expectedTests": [
+        "real Kubernetes API enforces Installation-private create compensation and authorization"
+      ]
     }
   ],
   "serialFiles": {
-    "tests/integration/staged-signin-cleanup-real.test.ts": "creates and deletes owned cleanup-authority clusters; preserve exclusive fixture resource and process environment ownership"
+    "tests/integration/staged-signin-cleanup-real.test.ts": "creates and deletes owned cleanup-authority clusters; preserve exclusive fixture resource and process environment ownership",
+    "tests/integration/kubernetes-private-secret-create-real.test.ts": "Owns a fresh PostgreSQL Installation and an isolated namespace while interposing on the real Kubernetes SDK in its test process."
   }
 }

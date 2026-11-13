@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
-import { kubectlGetJson } from "./kubernetes-api-read.mjs";
+import { kubectlGetJson } from "./kubernetes-api-read.ts";
 import { waitFor as pollFor } from "./wait-for.mjs";
 import { followContainerLog } from "./container-log-capture.ts";
 

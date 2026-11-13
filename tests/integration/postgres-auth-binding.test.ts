@@ -28,7 +28,8 @@ test(
       updatedAt: now,
       expiresAt: new Date(now.getTime() + 60_000),
     };
-    const insertVerification = (transaction) =>
+    type Transaction = Parameters<Parameters<typeof database.transaction>[0]>[0];
+    const insertVerification = (transaction: Transaction) =>
       transaction.insert(schema.verification).values(verification);
     const rowsVisibleOutside = async () =>
       (await pool.query("SELECT id FROM occ.verification WHERE id = $1", [id])).rowCount;

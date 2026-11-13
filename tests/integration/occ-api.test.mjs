@@ -3642,30 +3642,25 @@ test("Namespace IAM Roles cannot grant Namespace lifecycle actions to a Namespac
   assert.equal(after.data.status, read.data.status, "the Namespace must not enter deletion");
 });
 
-test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or State write", async () => {
-  const controller = await configuredController();
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "occ-role-permission-check");
-  const driverCalls = [];
-  // This Driver admits every request and accepts every Role without validation or State
-  // writes, so only OCC's own Permission check can reject a Namespace lifecycle action.
-  const permissiveDriver = {
-    id: "iam-permissive-role-sink",
+function createPermissiveIAMDriver(fixture, { id, implementation, reason }) {
+  return {
+    id,
     capability: "iam",
-    namespacePolicyTransaction: "platform-unit-of-work",
-    implementation: "occ-permission-isolation-test",
+    implementation,
     async lookupIdentity(input) {
-      return input.issuer === fixture.principal.issuer &&
+      if (
+        input.issuer === fixture.principal.issuer &&
         input.subject === fixture.principal.subject
-        ? fixture.principal
-        : undefined;
+      ) {
+        return fixture.principal;
+      }
+      return undefined;
     },
     async authorize(request) {
       return {
         allowed: true,
-        reason: "admitted for OCC Permission isolation test",
-        driverId: "iam-permissive-role-sink",
+        reason,
+        driverId: id,
         evidence: {
           identityId: request.principalId,
           groupIds: [],
@@ -3675,6 +3670,24 @@ test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or 
         },
       };
     },
+  };
+}
+
+test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or State write", async () => {
+  const controller = await configuredController();
+  const { fixture } = controller;
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "occ-role-permission-check");
+  const driverCalls = [];
+  // This Driver admits every request and accepts every Role without validation or State
+  // writes, so only OCC's own Permission check can reject a Namespace lifecycle action.
+  const permissiveDriver = {
+    ...createPermissiveIAMDriver(fixture, {
+      id: "iam-permissive-role-sink",
+      implementation: "occ-permission-isolation-test",
+      reason: "admitted for OCC Permission isolation test",
+    }),
+    namespacePolicyTransaction: "platform-unit-of-work",
     async createNamespaceRole(_context, role) {
       driverCalls.push(role);
       return role;
@@ -3821,32 +3834,11 @@ test("Namespace IAM read routes serialize broad native policy without widening m
     roleId: role.id,
   };
   const readPolicyDriver = {
-    id: "iam-native-read-policy",
-    capability: "iam",
-    implementation: "native-read-policy-test",
-    async lookupIdentity(input) {
-      if (
-        input.issuer === fixture.principal.issuer &&
-        input.subject === fixture.principal.subject
-      ) {
-        return fixture.principal;
-      }
-      return undefined;
-    },
-    async authorize(request) {
-      return {
-        allowed: true,
-        reason: "admitted for native read policy serialization",
-        driverId: "iam-native-read-policy",
-        evidence: {
-          identityId: request.principalId,
-          groupIds: [],
-          bindingIds: [],
-          roleIds: [],
-          restrictionIds: [],
-        },
-      };
-    },
+    ...createPermissiveIAMDriver(fixture, {
+      id: "iam-native-read-policy",
+      implementation: "native-read-policy-test",
+      reason: "admitted for native read policy serialization",
+    }),
     async listNamespaceRoles(_context, namespaceId) {
       return namespaceId === namespace.id ? [role] : [];
     },
@@ -3934,34 +3926,11 @@ test("Namespace IAM routes fail closed without policy management and roll back a
   const { fixture: unsupportedFixture } = unsupported;
   await bootstrap(unsupported);
   const unsupportedNamespace = await createNamespace(unsupported, "unsupported-iam");
-  const unsupportedDriver = {
+  const unsupportedDriver = createPermissiveIAMDriver(unsupportedFixture, {
     id: "iam-without-policy-management",
-    capability: "iam",
     implementation: "admission-only-test",
-    async lookupIdentity(input) {
-      if (
-        input.issuer === unsupportedFixture.principal.issuer &&
-        input.subject === unsupportedFixture.principal.subject
-      ) {
-        return unsupportedFixture.principal;
-      }
-      return undefined;
-    },
-    async authorize(request) {
-      return {
-        allowed: true,
-        reason: "admitted for unsupported management test",
-        driverId: "iam-without-policy-management",
-        evidence: {
-          identityId: request.principalId,
-          groupIds: [],
-          bindingIds: [],
-          roleIds: [],
-          restrictionIds: [],
-        },
-      };
-    },
-  };
+    reason: "admitted for unsupported management test",
+  });
   unsupportedFixture.controller.registerDriver(unsupportedDriver);
   unsupportedFixture.controller.selectDriver("iam", unsupportedDriver.id);
   const dependencyFailure = await unsupported.request(

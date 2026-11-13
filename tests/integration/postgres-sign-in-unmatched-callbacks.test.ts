@@ -1,18 +1,29 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
+import type { ExternalProviderName } from "../../apps/controller/src/auth/human-login.ts";
+import type { ProviderDenial } from "../../apps/controller/src/auth/provider-transport.ts";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
+import type { AuditEvent } from "../../packages/contracts/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
   consoleOrigin as origin,
   googleUpgradeSettings,
   oidcUpgradeSettings,
-  postgresSignInState,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import {
+  injectLocalhost,
+  parseAuthResponse,
+  postgresState,
+  recordData,
+  text,
+  type App,
+  type InjectedResponse,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 
 const adminEmail = "unmatched-recovery@example.test";
 const authSecret = "unmatched-callback-auth-test-secret-at-least-32-bytes";
@@ -23,7 +34,15 @@ const secrets = {
   "occ-oidc-login/client-id": "unmatched-oidc-client",
   "occ-oidc-login/client-secret": "unmatched-oidc-client-secret",
 };
-const providers = ["google", "oidc"];
+const providers = ["google", "oidc"] as const satisfies readonly ExternalProviderName[];
+const refusals = [
+  ["access_denied", "EXTERNAL_IDENTITY_REJECTED", undefined],
+  ["temporarily_unavailable", "PROVIDER_UNAVAILABLE", "provider-unavailable"],
+] as const satisfies readonly (readonly [
+  error: string,
+  reasonCode: ProviderDenial,
+  consoleReason: "provider-unavailable" | undefined,
+])[];
 // Values with the shape of a real attempt state and browser cookie, as a client can mint them.
 const minted = () => randomBytes(32).toString("base64url");
 
@@ -36,35 +55,47 @@ test(
   "unmatched external sign-in callbacks are counted, not audited",
   requiresPostgres,
   async (t) => {
-    let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
+    const apps: { app?: App } = {};
+    const { pool } = postgresState(t, () => [apps.app]);
+    const state = new PostgresPlatformState(pool);
     await bootstrapProductionInstallation(t, { databaseUrl, email: adminEmail, authSecret });
-    const adminId = (await pool.query('SELECT id FROM occ."user" WHERE email = $1', [adminEmail]))
-      .rows[0].id;
+    const { rows } = await pool.query<{ id: string }>(
+      'SELECT id FROM occ."user" WHERE email = $1',
+      [adminEmail],
+    );
+    const [admin] = rows;
+    assert.ok(admin, "Bootstrap must create the administrator");
     const metrics = createOccMetrics("api");
-    app = await composeProductionSignIn(t, {
+    const app = (apps.app = await composeProductionSignIn(t, {
       databaseUrl,
+      passwordHasher: undefined,
       settings: {
-        ...googleUpgradeSettings(adminId),
-        ...oidcUpgradeSettings(adminId),
+        ...googleUpgradeSettings(admin.id),
+        ...oidcUpgradeSettings(admin.id),
       },
       secrets,
       metrics,
-    });
-    const auditEvents = () => state.transact((unit) => unit.audit.list());
-    const unmatched = async (provider) => {
-      const match = new RegExp(
+    }));
+    const auditEvents = (): Promise<readonly AuditEvent[]> =>
+      state.transact((unit) => unit.audit.list());
+    const unmatched = async (provider: ExternalProviderName) => {
+      const count = new RegExp(
         `^occ_sign_in_unmatched_callbacks_total\\{[^}]*provider="${provider}"[^}]*\\} (\\d+)$`,
         "m",
-      ).exec(await metrics.exposition());
-      return match === null ? undefined : Number(match[1]);
+      ).exec(await metrics.exposition())?.[1];
+      assert.ok(count !== undefined, `${provider}: unmatched callback counter is present`);
+      return Number(count);
     };
-    const callback = (provider, query, cookie) =>
+    const callback = (provider: ExternalProviderName, query: string, cookie?: string) =>
       injectLocalhost(app, "GET", `/api/auth/providers/${provider}/callback?${query}`, {
         remoteAddress: "192.0.2.80",
         headers: cookie === undefined ? {} : { cookie },
       });
-    const assertRefused = (response, provider, consoleReason) => {
+    const assertRefused = (
+      response: InjectedResponse,
+      provider: ExternalProviderName,
+      consoleReason?: (typeof refusals)[number][2],
+    ) => {
       assert.equal(response.statusCode, 302, response.body);
       assert.equal(
         response.headers.location,
@@ -73,16 +104,21 @@ test(
           : `/console/?authError=${provider}&authReason=${consoleReason}`,
       );
     };
-    const start = async (provider) => {
+    const start = async (provider: ExternalProviderName) => {
       const started = await injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
         remoteAddress: "192.0.2.80",
         headers: { origin },
       });
-      assert.equal(started.statusCode, 200, started.body);
-      const { url, attemptId } = started.json().data;
+      assert.equal(started.statusCode, 200, `${provider}: sign-in start must succeed`);
+      const data = recordData(parseAuthResponse("Provider sign-in start", started));
+      const attemptId = text(data.attemptId);
+      const redirect = URL.parse(text(data.url));
+      assert.ok(redirect, "Provider redirect must be a valid URL");
+      const state = redirect.searchParams.get("state");
+      assert.ok(state, "Provider redirect must include a state");
       return {
         attemptId,
-        state: new URL(url).searchParams.get("state"),
+        state,
         cookie: cookieHeaderFromSetCookie(started.headers["set-cookie"]),
       };
     };
@@ -117,10 +153,7 @@ test(
     // of that spent state matches nothing and is counted like junk.
     for (const provider of providers) {
       // The outage says so in the Console; a refused consent stays generic.
-      for (const [error, reasonCode, consoleReason] of [
-        ["access_denied", "EXTERNAL_IDENTITY_REJECTED", undefined],
-        ["temporarily_unavailable", "PROVIDER_UNAVAILABLE", "provider-unavailable"],
-      ]) {
+      for (const [error, reasonCode, consoleReason] of refusals) {
         const countedBefore = await unmatched(provider);
         const auditsBefore = (await auditEvents()).length;
         const attempt = await start(provider);

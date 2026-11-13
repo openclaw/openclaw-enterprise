@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { chmod, readFile } from "node:fs/promises";
+import type { TestContext } from "node:test";
 import { promisify } from "node:util";
 
 import {
@@ -7,27 +8,39 @@ import {
   cleanupLogging,
   prepareLogging,
 } from "../../scripts/ci/logging.ts";
-import { temporaryDirectory } from "./temporary-directory.mjs";
+import { temporaryDirectory } from "./temporary-directory.ts";
+
+type PrepareOptions = NonNullable<Parameters<typeof prepareLogging>[0]>;
+type CommandExecutor = NonNullable<PrepareOptions["execFile"]>;
+type LoggingResource = Parameters<NonNullable<PrepareOptions["registerResource"]>>[1];
 
 const digest = "a".repeat(64);
 const collectorImage = `registry.example/otelcol@sha256:${digest}`;
 const execFileAsync = promisify(execFile);
 // The CI scripts bound commands with `timeoutMs` and read a timeout as `timedOut`, as
 // scripts/ci/prepare.mjs's executor does; Node's execFile names the option `timeout`.
-async function execute(command, args, { timeoutMs, ...options } = {}) {
-  const bounded = Number.isFinite(timeoutMs) && timeoutMs > 0;
+const execute: CommandExecutor = async (command, args, { timeoutMs, ...options } = {}) => {
+  const bounded = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0;
   try {
     return await execFileAsync(command, args, {
       ...options,
       ...(bounded ? { timeout: timeoutMs, killSignal: "SIGKILL" } : {}),
     });
   } catch (error) {
-    if (bounded && error.killed && error.signal === "SIGKILL" && error.code == null) {
-      error.timedOut = true;
+    if (
+      bounded &&
+      error instanceof Error &&
+      "killed" in error &&
+      error.killed &&
+      "signal" in error &&
+      error.signal === "SIGKILL" &&
+      (!("code" in error) || error.code == null)
+    ) {
+      Object.assign(error, { timedOut: true });
     }
     throw error;
   }
-}
+};
 const selectedCollectorSmoke = process.env.OCC_TEST_LOGGING_COLLECTOR === "1";
 
 // The Collector's file exporter appends one JSON line per export through a
@@ -35,30 +48,30 @@ const selectedCollectorSmoke = process.env.OCC_TEST_LOGGING_COLLECTOR === "1";
 // (or a whole object whose newline is not flushed yet). Only newline-terminated
 // lines are records; the rest waits for the next poll instead of failing the
 // parse ("Unterminated string in JSON" under load).
-function completeJsonLines(text) {
+function completeJsonLines(text: string): unknown[] {
   return text
     .slice(0, text.lastIndexOf("\n") + 1)
     .split("\n")
     .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line));
+    .map((line): unknown => JSON.parse(line));
 }
 
-async function readJsonlPayloads(path) {
+async function readJsonlPayloads(path: string) {
   try {
     return completeJsonLines(await readFile(path, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return [];
     }
     throw error;
   }
 }
 
-function payloadContains(value, payloads) {
+function payloadContains(value: string, payloads: unknown[]) {
   return JSON.stringify(payloads).includes(value);
 }
 
-async function fixture(t) {
+async function fixture(t: TestContext) {
   const root = await temporaryDirectory(t, "ci-logging-test-");
   await chmod(root, 0o700);
   return root;
@@ -76,3 +89,4 @@ export {
   readJsonlPayloads,
   selectedCollectorSmoke,
 };
+export type { LoggingResource };

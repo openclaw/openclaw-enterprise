@@ -1,9 +1,50 @@
+type RolloutReason =
+  | "ok"
+  | "invalid-input"
+  | "size-limit"
+  | "record-limit"
+  | "malformed-jsonl"
+  | "missing-session"
+  | "thread-mismatch"
+  | "ambiguous-session"
+  | "invalid-turn-context"
+  | "ambiguous-turn"
+  | "turn-missing"
+  | "cwd-mismatch";
+
+type BuiltinProfileKind = "builtin-workspace" | "builtin-read-only" | "builtin-danger-full-access";
+
+type NativeRolloutProvenance = {
+  evidenceKind: "diagnostic-only";
+  status: "unavailable" | "available";
+  reason: RolloutReason;
+  exactThreadMatched: boolean;
+  exactTurnContextMatched: boolean;
+  cwdMatchesExpectedWorkspace: boolean | "unknown";
+  approvalPolicy: "never" | "on-request" | "on-failure" | "untrusted" | "granular" | "unknown";
+  sandboxPolicy:
+    "read-only" | "workspace-write" | "danger-full-access" | "external-sandbox" | "unknown";
+  permissionProfileType: "managed" | "disabled" | "external" | "unknown";
+  activeProfileKind: BuiltinProfileKind | "named-network-proxy" | "other-named" | "unknown";
+  profileIdMatchesExpected: boolean | "unknown";
+  requestedEscalation: true | "unknown";
+};
+
+type SelectedTurn = {
+  cwd: string;
+  sandboxPolicy: string;
+  approvalPolicy: unknown;
+  permissionProfile: unknown;
+  activePermissionProfile: unknown;
+  signature: string;
+};
+
 // This function is also serialized into a trusted runtime reader. Keep it
 // self-contained and return only the fixed diagnostic schema below.
 // TODO: Remove this investigation diagnostic when runtime-owned policy signals
 // provide the same real-turn evidence. It is not an authorization receipt.
-export function parseNativeRolloutProvenance(input) {
-  const result = {
+export function parseNativeRolloutProvenance(input: unknown): NativeRolloutProvenance {
+  const result: NativeRolloutProvenance = {
     evidenceKind: "diagnostic-only",
     status: "unavailable",
     reason: "invalid-input",
@@ -17,13 +58,16 @@ export function parseNativeRolloutProvenance(input) {
     profileIdMatchesExpected: "unknown",
     requestedEscalation: "unknown",
   };
-  const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-  const controlCharacters = (value) =>
+  const record = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const oneOf = <Label extends string>(labels: readonly Label[], value: unknown): value is Label =>
+    labels.some((label) => label === value);
+  const controlCharacters = (value: string) =>
     Array.from(value).some((character) => {
       const code = character.codePointAt(0);
-      return code < 32 || code === 127;
+      return code !== undefined && (code < 32 || code === 127);
     });
-  const identifier = (value) =>
+  const identifier = (value: unknown): value is string =>
     typeof value === "string" &&
     value.length > 0 &&
     value.length <= 256 &&
@@ -52,15 +96,14 @@ export function parseNativeRolloutProvenance(input) {
     return { ...result, reason: "record-limit" };
   }
   let sessionSeen = false;
-  let currentTurn;
-  let selected;
-  let selectedSignature;
+  let currentTurn: string | undefined;
+  let selected: SelectedTurn | undefined;
   let requested = false;
   for (const line of lines) {
     if (Buffer.byteLength(line, "utf8") > 1024 * 1024) {
       return { ...result, reason: "size-limit" };
     }
-    let item;
+    let item: unknown;
     try {
       item = JSON.parse(line);
     } catch {
@@ -89,7 +132,8 @@ export function parseNativeRolloutProvenance(input) {
     if (
       item.type === "event_msg" &&
       record(payload) &&
-      ["task_started", "turn_started", "task_complete", "turn_complete", "turn_aborted"].includes(
+      oneOf(
+        ["task_started", "turn_started", "task_complete", "turn_complete", "turn_aborted"],
         payload.type,
       )
     ) {
@@ -124,11 +168,17 @@ export function parseNativeRolloutProvenance(input) {
         payload.active_permission_profile,
         payload.file_system_sandbox_policy,
       ]);
-      if (selectedSignature !== undefined && selectedSignature !== signature) {
+      if (selected !== undefined && selected.signature !== signature) {
         return { ...result, reason: "ambiguous-turn" };
       }
-      selectedSignature = signature;
-      selected = payload;
+      selected = {
+        cwd: payload.cwd,
+        sandboxPolicy: payload.sandbox_policy.type,
+        approvalPolicy: payload.approval_policy,
+        permissionProfile: payload.permission_profile,
+        activePermissionProfile: payload.active_permission_profile,
+        signature,
+      };
       continue;
     }
     if (currentTurn !== expectedTurnId || !record(payload)) {
@@ -151,18 +201,18 @@ export function parseNativeRolloutProvenance(input) {
     if (payload.type !== "function_call") {
       continue;
     }
-    if (["request_permissions", "functions.request_permissions"].includes(payload.name)) {
+    if (oneOf(["request_permissions", "functions.request_permissions"], payload.name)) {
       requested = true;
       continue;
     }
     if (
-      !["exec_command", "shell", "shell_command", "functions.exec_command"].includes(payload.name)
+      !oneOf(["exec_command", "shell", "shell_command", "functions.exec_command"], payload.name)
     ) {
       continue;
     }
-    let argumentsValue;
+    let argumentsValue: unknown;
     try {
-      argumentsValue = JSON.parse(payload.arguments);
+      argumentsValue = JSON.parse(String(payload.arguments));
     } catch {
       continue;
     }
@@ -170,7 +220,8 @@ export function parseNativeRolloutProvenance(input) {
       continue;
     }
     if (
-      ["require_escalated", "with_additional_permissions"].includes(
+      oneOf(
+        ["require_escalated", "with_additional_permissions"],
         argumentsValue.sandbox_permissions,
       )
     ) {
@@ -188,25 +239,30 @@ export function parseNativeRolloutProvenance(input) {
       cwdMatchesExpectedWorkspace: false,
     };
   }
-  const approval = selected.approval_policy;
-  const sandbox = selected.sandbox_policy.type;
-  const profile = selected.permission_profile?.type;
-  const profileId = selected.active_permission_profile?.id;
-  const builtinProfiles = {
-    ":workspace": "builtin-workspace",
-    ":read-only": "builtin-read-only",
-    ":danger-full-access": "builtin-danger-full-access",
-  };
-  let approvalPolicy = "unknown";
-  if (["never", "on-request", "on-failure", "untrusted"].includes(approval)) {
+  const {
+    approvalPolicy: approval,
+    sandboxPolicy: sandbox,
+    permissionProfile,
+    activePermissionProfile,
+  } = selected;
+  const profile = record(permissionProfile) ? permissionProfile.type : undefined;
+  const profileId = record(activePermissionProfile) ? activePermissionProfile.id : undefined;
+  const builtinProfiles = new Map<string, BuiltinProfileKind>([
+    [":workspace", "builtin-workspace"],
+    [":read-only", "builtin-read-only"],
+    [":danger-full-access", "builtin-danger-full-access"],
+  ]);
+  let approvalPolicy: NativeRolloutProvenance["approvalPolicy"] = "unknown";
+  if (oneOf(["never", "on-request", "on-failure", "untrusted"], approval)) {
     approvalPolicy = approval;
   } else if (record(approval) && record(approval.granular)) {
     approvalPolicy = "granular";
   }
-  let activeProfileKind = "unknown";
+  let activeProfileKind: NativeRolloutProvenance["activeProfileKind"] = "unknown";
   if (identifier(profileId)) {
-    if (Object.hasOwn(builtinProfiles, profileId)) {
-      activeProfileKind = builtinProfiles[profileId];
+    const builtinProfile = builtinProfiles.get(profileId);
+    if (builtinProfile !== undefined) {
+      activeProfileKind = builtinProfile;
     } else if (/^openclaw-network-[a-f0-9]{16}$/u.test(profileId)) {
       activeProfileKind = "named-network-proxy";
     } else {
@@ -220,15 +276,13 @@ export function parseNativeRolloutProvenance(input) {
     exactTurnContextMatched: true,
     cwdMatchesExpectedWorkspace: selected.cwd === expectedCwd,
     approvalPolicy,
-    sandboxPolicy: [
-      "read-only",
-      "workspace-write",
-      "danger-full-access",
-      "external-sandbox",
-    ].includes(sandbox)
+    sandboxPolicy: oneOf(
+      ["read-only", "workspace-write", "danger-full-access", "external-sandbox"],
+      sandbox,
+    )
       ? sandbox
       : "unknown",
-    permissionProfileType: ["managed", "disabled", "external"].includes(profile)
+    permissionProfileType: oneOf(["managed", "disabled", "external"], profile)
       ? profile
       : "unknown",
     activeProfileKind,

@@ -21,7 +21,7 @@ import type {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.mjs";
+import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.ts";
 import { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
 import {
   buildSandboxInstallation,

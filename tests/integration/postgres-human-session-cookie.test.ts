@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { createServer } from "node:https";
 import test from "node:test";
 import pg from "pg";
-import { chromium } from "playwright";
+import { chromium, type Browser } from "playwright";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -11,7 +11,12 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
+import {
+  injectLocalhost,
+  record,
+  recordData,
+  text,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -19,16 +24,20 @@ test(
   "guarded production sessions share the browser cookie with trusted Agent hosts",
   requiresPostgres,
   async (t) => {
+    assert.ok(databaseUrl);
     const pool = new pg.Pool({ connectionString: databaseUrl });
-    let app;
-    let browser;
-    let proxy;
-    let upstreamPort;
+    const resources: {
+      app?: ReturnType<typeof createFastifyApp>;
+      browser?: Browser;
+      proxy?: ReturnType<typeof createServer>;
+      upstreamPort?: number;
+    } = {};
     t.after(async () => {
+      const { app, browser, proxy } = resources;
       await browser?.close();
       await app?.close();
       if (proxy) {
-        await new Promise((resolve) => proxy.close(resolve));
+        await new Promise<void>((resolve) => proxy.close(() => resolve()));
       }
       await pool.end();
     });
@@ -38,16 +47,17 @@ test(
       commonName: "console.example.test",
       subjectAltName: "DNS:console.example.test,DNS:sibling.example.test",
     });
-    proxy = createServer({ cert, key }, (incoming, outgoing) => {
+    const proxy = createServer({ cert, key }, (incoming, outgoing) => {
       const upstream = httpRequest(
         {
           hostname: "127.0.0.1",
-          port: upstreamPort,
+          port: resources.upstreamPort,
           method: incoming.method,
           path: incoming.url,
           headers: incoming.headers,
         },
         (response) => {
+          assert.ok(response.statusCode !== undefined);
           outgoing.writeHead(response.statusCode, response.headers);
           response.pipe(outgoing);
         },
@@ -58,8 +68,11 @@ test(
       });
       incoming.pipe(upstream);
     });
-    await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-    const port = proxy.address().port;
+    resources.proxy = proxy;
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const proxyAddress = proxy.address();
+    assert.ok(proxyAddress && typeof proxyAddress !== "string");
+    const { port } = proxyAddress;
     const origin = `https://console.example.test:${port}`;
     const email = "cookie-owner@example.test";
     const password = "cookie-owner-test-password";
@@ -72,10 +85,14 @@ test(
       authBaseURL: "https://console.oce.localhost",
       installationName: "Cookie boundary proof",
     });
-    const recoveryUserId = (await pool.query('SELECT id FROM occ."user" WHERE email=$1', [email]))
-      .rows[0].id;
+    const {
+      rows: [recoveryUser],
+    } = await pool.query<{ id: string }>('SELECT id FROM occ."user" WHERE email=$1', [email]);
+    assert.ok(recoveryUser);
+    const { id: recoveryUserId } = recoveryUser;
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();
+    assert.ok(installation);
     const iamDriver = new NativeIAMDriver(state);
     const controller = new OpenClawController(installation, { state, recordOperations: true });
     controller.registerDriver(iamDriver);
@@ -97,7 +114,7 @@ test(
     });
     // Exercise real production auth, State, IAM and Fastify over HTTPS. Compute
     // is not invoked; this component fixture does not qualify a deployment.
-    app = createFastifyApp({
+    const app = createFastifyApp({
       controller,
       iamDriver,
       auth,
@@ -106,8 +123,11 @@ test(
       publicOrigin: origin,
       development: { enabled: false, installationId: installation.id },
     });
+    resources.app = app;
     await app.listen({ host: "127.0.0.1", port: 0 });
-    upstreamPort = app.server.address().port;
+    const upstreamAddress = app.server.address();
+    assert.ok(upstreamAddress && typeof upstreamAddress !== "string");
+    resources.upstreamPort = upstreamAddress.port;
     const signIn = () =>
       injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         headers: { origin },
@@ -116,7 +136,9 @@ test(
     const signedIn = await signIn();
     assert.equal(signedIn.statusCode, 200);
     assert.equal(auth.sessionCookieName, "__Secure-openclaw_occ_shared.session_token");
-    const cookies = [signedIn.headers["set-cookie"]].flat();
+    const setCookie = signedIn.headers["set-cookie"];
+    assert.ok(setCookie);
+    const cookies = [setCookie].flat();
     const sessionCookie = cookies.find(
       (value) => value.startsWith(`${auth.sessionCookieName}=`) && !/Max-Age=0(?:;|$)/i.test(value),
     );
@@ -127,25 +149,30 @@ test(
     assert.match(sessionCookie, /; Domain=example\.test(?:;|$)/i);
     // x-occ-session-key can only narrow which cookie session a request may use:
     // absent keeps the cookie contract, and a key never selects a session.
-    const ownKey = signedIn.json().data.sessionKey;
+    const ownKey = text(recordData(signedIn.json()).sessionKey);
     assert.match(ownKey, /^[A-Za-z0-9_-]{43}$/);
-    const ownCookie = sessionCookie.split(";")[0];
+    const [ownCookie] = sessionCookie.split(";");
+    assert.ok(ownCookie);
     const otherLogin = await signIn();
-    const foreignKey = otherLogin.json().data.sessionKey;
+    const foreignKey = text(recordData(otherLogin.json()).sessionKey);
     assert.notEqual(foreignKey, ownKey);
-    const inspect = (url, headers) => app.inject({ url, headers: { origin, ...headers } });
+    const inspect = (url: string, headers: IncomingHttpHeaders) =>
+      app.inject({ url, headers: { origin, ...headers } });
     assert.equal(
-      (await inspect("/api/auth/session", { cookie: ownCookie })).json().data.sessionKey,
+      recordData((await inspect("/api/auth/session", { cookie: ownCookie })).json<unknown>())
+        .sessionKey,
       ownKey,
     );
     // Protected API narrowing is proved with the full composition in
     // postgres-google-sign-in.test.ts; this fixture owns the HTTPS session route.
     const plain = await inspect("/api/auth/session", { cookie: ownCookie });
-    assert.equal(plain.json().data.user.id, recoveryUserId);
+    assert.equal(record(recordData(plain.json<unknown>()).user).id, recoveryUserId);
     assert.equal(
-      (
-        await inspect("/api/auth/session", { cookie: ownCookie, "x-occ-session-key": ownKey })
-      ).json().data.sessionKey,
+      recordData(
+        (
+          await inspect("/api/auth/session", { cookie: ownCookie, "x-occ-session-key": ownKey })
+        ).json<unknown>(),
+      ).sessionKey,
       ownKey,
     );
     for (const key of [foreignKey, "malformed", [ownKey, ownKey]]) {
@@ -158,10 +185,12 @@ test(
     }
     // Without a cookie the key selects nothing: no session and no protected access.
     assert.equal(
-      (await inspect("/api/auth/session", { "x-occ-session-key": ownKey })).json().data,
+      record((await inspect("/api/auth/session", { "x-occ-session-key": ownKey })).json<unknown>())
+        .data,
       null,
     );
-    browser = await chromium.launch({
+    const browser = await chromium.launch({
+      headless: true,
       chromiumSandbox: true,
       ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
         ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
@@ -171,6 +200,7 @@ test(
         "--host-resolver-rules=MAP console.example.test 127.0.0.1, MAP sibling.example.test 127.0.0.1",
       ],
     });
+    resources.browser = browser;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();
     await page.goto(`${origin}/api/auth/session`);
@@ -187,10 +217,12 @@ test(
     );
     assert.equal(legitimateStatus, 200);
     const current = await page.goto(`${origin}/api/auth/session`);
-    assert.equal((await current.json()).data.user.id, recoveryUserId);
+    assert.ok(current);
+    assert.equal(record(recordData(await current.json()).user).id, recoveryUserId);
     const saved = (await context.cookies(origin)).find(
       (cookie) => cookie.name === auth.sessionCookieName,
     );
+    assert.ok(saved);
     assert.equal(saved.domain, ".example.test");
     assert.equal(saved.secure, true);
     assert.equal(saved.httpOnly, true);
@@ -203,7 +235,8 @@ test(
     );
     assert.equal(knownDevice?.domain, "console.example.test");
     const shared = await page.goto(`https://sibling.example.test:${port}/api/auth/session`);
-    assert.equal((await shared.json()).data.user.id, recoveryUserId);
+    assert.ok(shared);
+    assert.equal(record(recordData(await shared.json()).user).id, recoveryUserId);
     const originDenied = await app.inject({
       method: "POST",
       url: "/api/auth/sign-out",

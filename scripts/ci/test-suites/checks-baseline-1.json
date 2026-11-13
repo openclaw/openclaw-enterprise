@@ -52,6 +52,7 @@
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.mjs",
     "tests/conformance/runtime-logs-content.test.mjs",
+    "tests/conformance/runtime-logs-container-wire.test.ts",
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
     "tests/docs/generated-api-reference.test.mjs",
@@ -224,6 +225,9 @@
       "path": "tests/conformance/openshell-static-credential-attachment.test.ts"
     },
     {
+      "path": "tests/conformance/kubernetes-runtime-logs.test.ts"
+    },
+    {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
     },
     {
@@ -271,6 +275,9 @@
     },
     {
       "path": "tests/conformance/runtime-logs-content.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-logs-container-wire.test.ts"
     },
     {
       "path": "tests/conformance/runtime-logs-sandbox.test.ts"

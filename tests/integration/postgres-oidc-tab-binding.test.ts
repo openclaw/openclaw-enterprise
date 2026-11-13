@@ -1,4 +1,5 @@
-import test from "node:test";
+import assert from "node:assert/strict";
+import test, { type TestContext } from "node:test";
 import {
   fakeOidc,
   fixtureOidcIssuer,
@@ -19,14 +20,15 @@ test(
   "an OIDC tab keeps its own session: another tab's password sign-in signs it out",
   requiresPostgres,
   async (t) => {
-    let idp;
+    assert.ok(databaseUrl);
+    let idp: ReturnType<typeof fakeOidc> | undefined;
     await proveTabBinding(t, databaseUrl, {
       name: "oidc",
       title: label,
-      start: (context) => {
+      start: (context: TestContext) => {
         idp = fakeOidc(context, { clientId, clientSecret });
       },
-      settings: (recoveryUserId) =>
+      settings: (recoveryUserId: string) =>
         oidcUpgradeSettings(recoveryUserId, fixtureOidcIssuer, { displayName: label }),
       secrets: {
         "occ-auth/secret": "tabs-oidc-binding-auth-test-secret-at-least-32-bytes",
@@ -35,7 +37,10 @@ test(
       },
       subject: aliceSubject,
       authorizationUrl: fixtureOidcIssuer.authorizationUrl,
-      code: (url) => idp.authorize(url, { subject: aliceSubject }),
+      code: (url: string) => {
+        assert.ok(idp, "the provider starts before the browser authorization");
+        return idp.authorize(url, { subject: aliceSubject });
+      },
     });
   },
 );

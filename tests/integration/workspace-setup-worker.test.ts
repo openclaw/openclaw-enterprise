@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import pg from "pg";
+import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { createControllerWorker, type ControllerWorker } from "../../apps/controller/src/worker.ts";
+import type {
+  Agent,
+  AgentRevision,
+  ComputeDriver,
+  InitialWorkspaceFiles,
+  Installation,
+  Principal,
+  WorkspaceSetup,
+} from "../../packages/contracts/src/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
-import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import {
+  OpenClawController,
+  PostgresPlatformState,
+  type ControllerWorkState,
+} from "../../packages/occ/src/index.ts";
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
@@ -20,14 +34,20 @@ import {
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 
+type WorkRow = {
+  state: ControllerWorkState;
+  attempt_count: number;
+  reason_code: string | null;
+};
+
 // Real OCC admission, PostgreSQL persistence/queue, IAM, and production worker.
 // Compute is the established deterministic fixture; native file application is
 // proved by the runtime suites, not by these boundary observations.
-async function setup(t) {
+async function setup(t: TestContext) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const workerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const state = new PostgresPlatformState(pool);
-  let worker;
+  let worker: ControllerWorker | undefined;
   t.after(async () => {
     if (worker === undefined) {
       await workerPool.end();
@@ -36,8 +56,11 @@ async function setup(t) {
     }
     await pool.end();
   });
-  const installation = await ensureInstallation(state, "workspace-setup-worker");
-  const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
+  const installation: Readonly<Installation> = await ensureInstallation(
+    state,
+    "workspace-setup-worker",
+  );
+  const actor: Principal | undefined = authorizedPrincipal(await state.loadNativeIAMState(), [
     ["create", "configuration"],
     ["create", "agent"],
     ["deploy", "agent"],
@@ -52,7 +75,7 @@ async function setup(t) {
     }),
   );
   const compute = createDevelopmentComputeDriver();
-  const drivers = createBackendWorkerDrivers(compute, []);
+  const drivers: InstallationRuntimeDrivers = createBackendWorkerDrivers(compute, []);
   const controller = new OpenClawController(installation, { state });
   registerAndSelectDrivers(controller, [
     compute,
@@ -70,7 +93,7 @@ async function setup(t) {
     state,
     namespace,
     compute,
-    async agent(files) {
+    async agent(files: InitialWorkspaceFiles) {
       return controller.createAgent(actor.id, {
         namespaceId: namespace.id,
         name: `workspace-agent-${randomUUID()}`,
@@ -81,30 +104,30 @@ async function setup(t) {
         workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
       });
     },
-    async deploy(agent) {
+    async deploy(agent: Readonly<Agent>) {
       return controller.deployAgent(
         actor.id,
         { namespaceId: namespace.id, agentId: agent.id },
         resolveApprovedHarness,
       );
     },
-    readSetup(agent) {
+    readSetup(agent: Readonly<Agent>) {
       return state.read((view) => view.workspaceSetups.find(namespace.id, agent.id));
     },
-    async work(revision, expected = "succeeded") {
+    async work(revision: Readonly<AgentRevision>, expected: ControllerWorkState = "succeeded") {
       return waitFor(`workspace revision ${revision.id} to become ${expected}`, async () => {
-        const { rows } = await pool.query(
+        const { rows } = await pool.query<WorkRow>(
           "SELECT state, attempt_count, reason_code FROM occ.controller_work WHERE revision_id = $1",
           [revision.id],
         );
         return rows[0]?.state === expected ? rows[0] : undefined;
       });
     },
-    async activeRevision(agent) {
+    async activeRevision(agent: Readonly<Agent>) {
       return (await state.read((view) => view.agents.findAgent(namespace.id, agent.id)))
         ?.activeRevisionId;
     },
-    start(computeDriver) {
+    start(computeDriver: ComputeDriver) {
       worker = createControllerWorker({
         pool: workerPool,
         mode: "production",
@@ -128,10 +151,12 @@ test(
     const sibling = await fixture.agent({ "AGENTS.md": "# Sibling instructions\n" });
     const initial = await fixture.readSetup(agent);
     const siblingSetup = await fixture.readSetup(sibling);
+    assert.ok(initial);
+    assert.ok(siblingSetup);
     assert.deepEqual(initial.files, files);
     assert.equal(initial.completed, false);
     const first = await fixture.deploy(agent);
-    const deliveries = [];
+    const deliveries: { revisionId: string; setup: Readonly<WorkspaceSetup> }[] = [];
     let failed = false;
     let activations = 0;
     await fixture.start({
@@ -140,12 +165,14 @@ test(
       activationOrder: "beforeCommit",
       async preflight() {},
       async prepareRevision(revision, context) {
+        const workspaceSetup = context?.workspaceSetup;
+        assert.ok(workspaceSetup);
         deliveries.push({
           revisionId: revision.id,
-          setup: structuredClone(context.workspaceSetup),
+          setup: structuredClone(workspaceSetup),
         });
-        assert.equal(context.workspaceSetup.namespaceId, fixture.namespace.id);
-        assert.equal(context.workspaceSetup.agentId, agent.id);
+        assert.equal(workspaceSetup.namespaceId, fixture.namespace.id);
+        assert.equal(workspaceSetup.agentId, agent.id);
         assert.equal(Object.hasOwn(revision, "workspaceSetup"), false);
         assert.equal(Object.hasOwn(revision, "initialWorkspaceFiles"), false);
         return fixture.compute.prepareRevision(revision);
@@ -192,6 +219,7 @@ test(
     const fixture = await setup(t);
     const agent = await fixture.agent({ "SOUL.md": "# Pending setup\n" });
     const initial = await fixture.readSetup(agent);
+    assert.ok(initial);
     const revision = await fixture.deploy(agent);
     let preparations = 0;
     await fixture.start({

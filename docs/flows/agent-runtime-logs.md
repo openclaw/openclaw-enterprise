@@ -232,10 +232,9 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 - `503 RUNTIME_LOGS_CLUSTER_RBAC`: API ServiceAccount lacks namespace
   `pods/log`, `events` or execution-cluster `pods` reads.
-- `runtime-logs-content.test.mjs` verifies handlers with synthetic Driver pages;
-  `occ-api-security.test.mjs` verifies authorization and cursor failures.
-  Kubernetes conformance substitutes API observations; Sandbox conformance/wire tests prove
-  protocol boundaries, not runtime execution.
+- Verify content and cursors with `runtime-logs-content.test.mjs`, HTTP pages and downloads with
+  `runtime-logs-container-wire.test.ts`, and authorization with `occ-api-security.test.mjs`.
+  `kubernetes-runtime-logs.test.ts` uses Kubernetes API fixtures. Sandbox tests use protocol fixtures.
 
 ## Related docs
 

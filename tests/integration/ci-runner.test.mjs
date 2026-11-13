@@ -29,6 +29,7 @@ import {
   unkilled,
   waitFor,
   writeJson,
+  writeRunnerLaneFiles,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
@@ -3295,16 +3296,6 @@ test("each job attempt uploads its own diagnostics report", async () => {
   );
 });
 
-const passingLaneFixture = 'import test from "node:test";\ntest("runs", () => {});\n';
-
-async function writeFixtureLane(root, lane, names, source) {
-  const files = names.map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
-  for (const { path } of files) {
-    await writeFile(join(root, path), source);
-  }
-  await writeSingleLaneManifest(root, lane, files, { ci: [lane] });
-}
-
 test(
   "run keeps bounded Agent namespace activity from passing k3d files, alone and side by side",
   checkBoundedAgentNamespaceActivity,
@@ -3394,7 +3385,12 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
 }
 `,
   );
-  await writeFixtureLane(root, "cancel", ["plain", "cancelled"], passingLaneFixture);
+  await writeRunnerLaneFiles(
+    root,
+    "cancel",
+    ["plain", "cancelled"],
+    'import test from "node:test";\ntest("runs", () => {});\n',
+  );
 
   // A parent process stands in for the step's shell: it waits for the runner until the second
   // file's cleanup kills it. No shell parses any of these arguments. The timeout only stops a

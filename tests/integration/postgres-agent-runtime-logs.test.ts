@@ -2,9 +2,24 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import type {
+  AgentRevision,
+  AgentRuntimeLogsResponse,
+  AgentWire,
+  AuditEvent,
+  NamespaceWire,
+} from "../../packages/contracts/src/index.ts";
+import type { PlatformAuditSink, RuntimeLogViewAdmission } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+
+interface RuntimeLogAuditRow {
+  kind: AuditEvent["kind"];
+  actor_id: AuditEvent["actorId"];
+  outcome: AuditEvent["outcome"];
+  details: { runtimeLogs?: RuntimeLogViewAdmission } | null;
+}
 
 const authSecret = "runtime-logs-postgres-auth-secret-minimum-32-bytes";
 
@@ -18,7 +33,7 @@ test(
         label: "runtime-logs",
         authSecret,
         // The real PostgreSQL audit sink; access must be durable before any output is read.
-        createAuditSink: (persisted) => ({
+        createAuditSink: (persisted: PlatformAuditSink): PlatformAuditSink => ({
           async append(event) {
             if (event.action === failAuditAction) {
               throw new Error("audit store unavailable");
@@ -28,11 +43,19 @@ test(
         }),
         appOptions: { agentRuntimeLogs: { enabled: true, cursorSecret: authSecret } },
       });
-    const { namespace, agent, revision } = await deployAgent("Runtime logs");
+    const {
+      namespace,
+      agent,
+      revision,
+    }: {
+      namespace: Pick<NamespaceWire, "id">;
+      agent: Pick<AgentWire, "id">;
+      revision: Pick<AgentRevision, "id">;
+    } = await deployAgent("Runtime logs");
     computeDriver.state.lines = [{ time: "2026-09-30T12:00:01.000000001Z", raw: "first line" }];
     const logs = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}/runtime/logs?source=gateway`;
     const viewRows = () =>
-      pool.query(
+      pool.query<RuntimeLogAuditRow & { action: AuditEvent["action"] }>(
         `SELECT kind, actor_id, action, outcome, details
          FROM occ.audit_events
          WHERE action = 'openclaw.agents.runtime_logs.view' AND resource_id = $1
@@ -53,24 +76,28 @@ test(
     assert.equal(first.statusCode, 200, first.body);
     const rows = await viewRows();
     assert.equal(rows.rowCount, 1);
-    assert.equal(rows.rows[0].kind, "access");
-    assert.equal(rows.rows[0].actor_id, principal.id);
-    assert.equal(rows.rows[0].outcome, "success");
-    const details = rows.rows[0].details.runtimeLogs;
+    const [view] = rows.rows;
+    assert.ok(view);
+    assert.equal(view.kind, "access");
+    assert.equal(view.actor_id, principal.id);
+    assert.equal(view.outcome, "success");
+    const details = view.details?.runtimeLogs;
+    assert.ok(details);
     assert.equal(details.revisionId, revision.id);
     assert.equal(details.source, "gateway");
     assert.equal(details.container, "gateway");
-    assert.equal(JSON.stringify(rows.rows[0].details).includes("first line"), false);
+    assert.equal(JSON.stringify(view.details).includes("first line"), false);
 
     // Cursor polls within the view add no rows.
     computeDriver.state.lines.push({ time: "2026-09-30T12:00:02.000000001Z", raw: "second" });
-    const poll = await inject(
-      "GET",
-      `${logs}&cursor=${encodeURIComponent(first.json().data.cursor)}`,
-    );
+    const { cursor } = first.json<AgentRuntimeLogsResponse>().data;
+    assert.ok(cursor);
+    const poll = await inject("GET", `${logs}&cursor=${encodeURIComponent(cursor)}`);
     assert.equal(poll.statusCode, 200, poll.body);
     assert.deepEqual(
-      poll.json().data.records.map(({ message }) => message),
+      poll
+        .json<AgentRuntimeLogsResponse>()
+        .data.records.map((record) => (record.type === "line" ? record.message : undefined)),
       ["second"],
     );
     assert.equal((await viewRows()).rowCount, 1);
@@ -85,7 +112,7 @@ test(
 
     // Every download is its own durable row with the forced tail, never the text.
     const downloadRows = () =>
-      pool.query(
+      pool.query<RuntimeLogAuditRow>(
         `SELECT kind, actor_id, outcome, details
          FROM occ.audit_events
          WHERE action = 'openclaw.agents.runtime_logs.download' AND resource_id = $1
@@ -114,12 +141,14 @@ test(
       const callsBeforeDownload = computeDriver.calls.length;
       const download = await inject("GET", `${logs}&tailLines=10&download=true`);
       assert.equal(download.statusCode, 200, download.body);
-      assert.match(download.headers["content-type"], /^text\/plain/);
+      const contentType = download.headers["content-type"];
+      assert.ok(typeof contentType === "string");
+      assert.match(contentType, /^text\/plain/);
       assert.match(download.body, /first line/);
       assert.deepEqual(
         computeDriver.calls
           .slice(callsBeforeDownload)
-          .filter(({ operation }) => operation === "read")
+          .filter((call) => call.operation === "read")
           .map(({ tailLines }) => tailLines),
         [1000],
       );
@@ -133,11 +162,10 @@ test(
         { kind: "access", actorId: principal.id, outcome: "success" },
       ],
     );
-    assert.equal(downloaded[0].details.runtimeLogs.tailLines, 1000);
-    assert.notEqual(
-      downloaded[0].details.runtimeLogs.viewId,
-      downloaded[1].details.runtimeLogs.viewId,
-    );
+    const [firstDownload, secondDownload] = downloaded.map(({ details }) => details?.runtimeLogs);
+    assert.ok(firstDownload && secondDownload);
+    assert.equal(firstDownload.tailLines, 1000);
+    assert.notEqual(firstDownload.viewId, secondDownload.viewId);
     assert.equal(JSON.stringify(downloaded).includes("first line"), false);
     assert.equal((await viewRows()).rowCount, 1, "downloads are not views");
 
