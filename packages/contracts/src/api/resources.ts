@@ -19,6 +19,8 @@ import {
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
   RevisionHarnessSchema,
+  ModelProviderId,
+  InferencePrivatePeerSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -295,6 +297,7 @@ const CredentialSourceCatalogSchema = Type.Object(
     type: CredentialSourceType,
     config: Type.Array(CredentialSourceFieldSchema),
     secrets: Type.Array(CredentialSourceFieldSchema),
+    staticKeyBaseUrlConfig: Type.Optional(Type.String()),
     rotation: Type.Union([Type.Literal("none"), Type.Literal("external"), Type.Literal("refresh")]),
     deviceAuthorization: Type.Optional(
       Type.Object({ harnessId: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
@@ -419,6 +422,7 @@ export const NamespaceSchema = Type.Object(
 
 export const AgentSchema = Type.Object(
   {
+    modelProviderId: Type.Optional(ModelProviderId),
     sandboxPolicyEditing: Type.Optional(Type.Boolean()),
     id: AgentId,
     namespaceId: NamespaceId,
@@ -679,6 +683,9 @@ export const CredentialSourceStatusSchema = Type.Object(
   },
 );
 
+import { ConnectionTemplateId } from "./common.ts";
+import { InferenceProtocolSchema } from "./model-providers.ts";
+
 export const CredentialSourceSchema = Type.Object(
   {
     id: CredentialSourceId,
@@ -695,6 +702,18 @@ export const CredentialSourceSchema = Type.Object(
         description:
           "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them.",
       },
+    ),
+    staticKeyGrant: Type.Optional(
+      Type.Object(
+        {
+          connectionTemplateId: ConnectionTemplateId,
+          connectionTemplateVersion: Type.Integer({ minimum: 1 }),
+          baseUrl: Type.String(),
+          protocol: InferenceProtocolSchema,
+          privatePeer: Type.Optional(InferencePrivatePeerSchema),
+        },
+        { additionalProperties: false },
+      ),
     ),
     config: CredentialSourceConfig,
     egress: Type.Optional(
