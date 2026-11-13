@@ -188,9 +188,8 @@ without replacing the original action error. A crash can leave a lock that needs
 The helper closes the temporary record before renaming and removes a failed
 temporary output without replacing the previous record.
 
-The tool provisions runtime credentials and requests deployment through OCC.
-Reruns follow newer revisions after drift checks. A stopped Agent fails immediately
-with the `occ agent deploy` command. Local OpenShell requires the Driver-owned
+The tool provisions credentials and deploys through OCC. Reruns follow newer
+revisions after drift checks; stopped Agents fail with `occ agent deploy` advice. Local OpenShell requires the Driver-owned
 `/sandbox/enterprise` workspace and frozen Codex policy: `sandbox: "danger-full-access"`
 and `approvalsReviewer: "user"` for API-key and PAT sources. Prior PAT revisions
 with `workspace-write` are recognized; new deployments use current policy.
@@ -204,6 +203,10 @@ dedicated Codex keeps it in its Pod or Sandbox. Experimental two-cluster placeme
 belongs to Kubernetes Compute; this helper never infers placement from execution mode.
 `scripts/first-agent.ts:main` distinguishes credential rejection from policy refusal
 when reporting failed deployment, before model verification. See [deployment recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-deployment-fails).
+`scripts/first-agent-model.mjs:verifyFirstAgentModel` requires unauthenticated
+rejection and an assistant-only nonce, allowing whitespace, quotes/backticks,
+fences, or a period. Echoes/explanation/other roles fail; custom
+prompts require another assistant answer.
 After a model failure, the CLI prints the original error, then a
 [diagnostic snapshot](../../scripts/first-agent-diagnostics.ts) from revision-scoped
 runtime status and logs. The API resolves Kubernetes and OpenShell Harness
@@ -214,7 +217,7 @@ Collection permits ten seconds, 64 KiB per response, and two container streams p
 role. Same-stream gaps retain valid observations but mark evidence incomplete.
 Missing or incomplete evidence preserves the original failure; startup observations
 do not establish the failed request's cause.
-The tool retains installation resources on exit.
+Resources remain.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
 <span id="4.-render-only-the-exact-gateway's-projection"></span>
@@ -335,6 +338,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 22:10: Document assistant-only nonces. (PR #3467 - e03647a7c8e6099b17689ab3b713d1ec37985b94)
 
 - 2026-11-10 17:23: Require inspected recovery for existing first-Agent locks; preserve creator-only cleanup. (authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b - 6e4cf8ff54412aa15773039ffc471e029a8dbfa8)
 

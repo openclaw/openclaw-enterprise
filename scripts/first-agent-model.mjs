@@ -60,6 +60,32 @@ export function firstAgentPriorPatPolicy(values, record, revisionId, priorRevisi
   );
 }
 
+/**
+ * Accept a nonce-only assistant answer with simple model formatting. Extra
+ * explanation, echoed prompts, and other roles do not verify a model answer.
+ */
+export function firstAgentAssistantNonce(message, nonce) {
+  if (
+    message?.role !== "assistant" ||
+    typeof message.content !== "string" ||
+    typeof nonce !== "string" ||
+    nonce === ""
+  ) {
+    return false;
+  }
+  let answer = message.content.trim();
+  if (answer.endsWith(".")) {
+    answer = answer.slice(0, -1).trimEnd();
+  }
+  const fence = /^```[a-z\d_-]{0,32}\r?\n([\s\S]*?)\r?\n```$/i.exec(answer);
+  if (fence !== null) {
+    answer = fence[1].trim();
+  } else if (["'", '"', "`"].includes(answer[0]) && answer.endsWith(answer[0])) {
+    answer = answer.slice(1, -1).trim();
+  }
+  return answer === nonce;
+}
+
 export function firstAgentPriorPatPolicyWarning(revisionId) {
   return (
     `Warning: revision ${revisionId} predates OpenShell full access and keeps the Codex ` +
@@ -422,7 +448,8 @@ async function probeInGateway() {
       } catch {
         return failure("response_format");
       }
-      const result = body.choices?.[0]?.message?.content;
+      const message = body.choices?.[0]?.message;
+      const result = message?.content;
       const text =
         typeof result === "string"
           ? result
@@ -441,7 +468,7 @@ async function probeInGateway() {
       if (text.length > 20_000) {
         return failure("response_size");
       }
-      return { text, runId: body.id };
+      return { text, role: message.role, runId: body.id };
     }
 
     const denied = await request(noncePrompt, false);
@@ -460,7 +487,7 @@ async function probeInGateway() {
       emit(proof);
       return;
     }
-    if (!proof.text.includes(nonce)) {
+    if (!firstAgentAssistantNonce({ role: proof.role, content: proof.text }, nonce)) {
       emit(failure("nonce"));
       return;
     }
@@ -479,6 +506,10 @@ async function probeInGateway() {
         emit(result);
         return;
       }
+      if (result.role !== "assistant") {
+        emit(failure("response_format"));
+        return;
+      }
       emit({ ...receipt, response: result.text });
       return;
     }
@@ -493,7 +524,7 @@ export const gatewayProbeCommand = Object.freeze([
   "node",
   "--input-type=module",
   "--eval",
-  `${isGatewayCompletionId.toString()}\n(${probeInGateway.toString()})();`,
+  `${firstAgentAssistantNonce.toString()}\n${isGatewayCompletionId.toString()}\n(${probeInGateway.toString()})();`,
 ]);
 
 /**
