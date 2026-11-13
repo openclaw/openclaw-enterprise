@@ -315,7 +315,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreatePresetBody,
-      response: { 201: PresetResponse, ...createErrors },
+      response: { 201: PresetResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {
@@ -364,7 +364,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: PresetParams,
       body: UpdatePresetBody,
-      response: { 200: PresetResponse, ...createErrors },
+      response: { 200: PresetResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {
@@ -938,7 +938,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateConfigurationBody,
-      response: { 201: ConfigurationResponse, ...createErrors },
+      response: { 201: ConfigurationResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {
@@ -971,7 +971,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ConfigurationParams,
       body: UpdateConfigurationBody,
-      response: { 200: ConfigurationResponse, ...createErrors },
+      response: { 200: ConfigurationResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {
@@ -1803,7 +1803,7 @@ export const occApiRoutes = [
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
       body: SandboxPolicyValidateBody,
-      response: { 200: ConfigurationValidationResponse, ...createErrors },
+      response: { 200: ConfigurationValidationResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {
@@ -1836,7 +1836,7 @@ export const occApiRoutes = [
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
       body: SandboxPolicyUpdateBody,
-      response: { 200: SandboxPolicyResponse, ...createErrors },
+      response: { 200: SandboxPolicyResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {
@@ -1854,7 +1854,7 @@ export const occApiRoutes = [
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
       body: SandboxPolicyApplyBody,
-      response: { 202: SandboxPolicyResponse, ...createErrors },
+      response: { 202: SandboxPolicyResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {

@@ -38,7 +38,7 @@ export const SandboxNetworkGrantSchema = Type.Object(
 
 export const SandboxNetworkGrantsSchema = Type.Array(SandboxNetworkGrantSchema, {
   title: "Network rules",
-  maxItems: 32,
+  maxItems: 16_384,
 });
 export type SandboxNetworkGrant = Type.Static<typeof SandboxNetworkGrantSchema>;
 
@@ -208,7 +208,7 @@ function hostCovered(host: string, ceiling: string): boolean {
   );
 }
 
-export function sandboxNetworkGrantsWithinCeiling(
+function grantsWithinCeilingCandidates(
   grants: readonly SandboxNetworkGrant[],
   ceiling: readonly SandboxNetworkGrant[],
 ): boolean {
@@ -235,6 +235,60 @@ export function sandboxNetworkGrantsWithinCeiling(
       return false;
     });
   });
+}
+
+/** Snapshot a validated ceiling once; each lookup visits only its exact and single-label hosts. */
+export function createSandboxNetworkGrantChecker(
+  ceiling: readonly SandboxNetworkGrant[],
+): (grant: SandboxNetworkGrant) => boolean {
+  const binaries = new Map<string, Map<string, SandboxNetworkGrant>>();
+  for (const grant of ceiling) {
+    let hosts = binaries.get(grant.binary);
+    if (hosts === undefined) {
+      hosts = new Map();
+      binaries.set(grant.binary, hosts);
+    }
+    let entry = hosts.get(grant.host);
+    if (entry === undefined) {
+      entry = { id: grant.id, binary: grant.binary, host: grant.host, ports: [] };
+      hosts.set(grant.host, entry);
+    }
+    entry.ports.push(...grant.ports.map(({ from, to }) => ({ from, to })));
+  }
+  // Combine duplicate and adjacent ranges once, including grants with different rule IDs.
+  for (const hosts of binaries.values()) {
+    for (const entry of hosts.values()) {
+      const merged: SandboxNetworkGrant["ports"] = [];
+      for (const range of entry.ports.sort((a, b) => a.from - b.from)) {
+        const previous = merged.at(-1);
+        if (previous !== undefined && range.from <= previous.to + 1) {
+          previous.to = Math.max(previous.to, range.to);
+        } else {
+          merged.push(range);
+        }
+      }
+      entry.ports = merged;
+    }
+  }
+  return (grant) => {
+    const hosts = binaries.get(grant.binary);
+    const exact = hosts?.get(grant.host);
+    const dot = grant.host.indexOf(".");
+    const wildcard =
+      !grant.host.startsWith("*.") && dot > 0 ? hosts?.get(`*${grant.host.slice(dot)}`) : undefined;
+    const candidates = [
+      ...(exact === undefined ? [] : [exact]),
+      ...(wildcard === undefined ? [] : [wildcard]),
+    ];
+    return grantsWithinCeilingCandidates([grant], candidates);
+  };
+}
+
+export function sandboxNetworkGrantsWithinCeiling(
+  grants: readonly SandboxNetworkGrant[],
+  ceiling: readonly SandboxNetworkGrant[],
+): boolean {
+  return grants.every(createSandboxNetworkGrantChecker(ceiling));
 }
 
 export const SandboxPolicyDecisionSchema = Type.Object(

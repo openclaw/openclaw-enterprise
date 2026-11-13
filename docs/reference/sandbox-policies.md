@@ -75,8 +75,16 @@ exactly; a symlink or alternate interpreter path is a different executable.
 `*.example.com` covers one DNS label, not the apex or deeper subdomains. A
 wildcard addition requires that exact wildcard in the ceiling. Port coverage may
 combine adjacent ceiling ranges; gaps remain unauthorized. Drivers reject
-unsupported constraints. Policy documents allow at most 32 grants and 16 ranges
-per grant. OpenShell additionally limits each grant to 1024 distinct ports.
+unsupported constraints. An Installation delegation ceiling and an Agent's additions
+can each contain at most 16,384 grants, with at most 16 ranges per grant. Policy
+preview, update, and apply requests have a separate 32 MiB body limit; an explicit
+`maxBodyBytes` override still applies. JSON escaping and whitespace count toward
+that byte limit. Preview, update, and apply share a replica-local budget per principal:
+2 requests per second with a burst of 10 across Agents. A depleted budget returns
+`429 SANDBOX_POLICY_RATE_LIMITED` with `Retry-After` before reading the body. OpenShell additionally
+limits each grant to 1024 distinct ports. These writes also share the
+[early authorization budget](api-explorer.md#write-request-limits) with Preset and
+Configuration writes.
 
 Default rules, generated workspace access, model credential delivery, and Compute
 isolation remain controlled by their existing owners. Users cannot submit

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-13"
-last_updated_session: "01a117f8-113d-7610-83db-37431b054e44"
+last_updated_session: "01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd"
 ---
 
 # Agent sandbox policy flow
@@ -60,6 +60,22 @@ Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
+The policy write hook in `apps/controller/src/index.ts` charges a replica-local
+budget keyed by verified admission method, issuer, and subject before IAM lookup.
+Preset and Configuration writes share this early budget. Policy writes then
+resolve the principal, charge their stricter shared principal budget, and call
+`authorizeBeforeBody`. It delegates Agent `manage_policy` and SandboxPolicy
+`update` checks to `OpenClawController.authorizeAgentSandboxPolicyWrite`; apply
+also checks SandboxPolicy `read`. Preview, save, and apply share the body budget;
+admission repeats authorization. Either budget returns 429 and `Retry-After` before body
+reads. [API limits](../reference/api-explorer.md#write-request-limits) and
+[policy limits](../reference/sandbox-policies.md) define their scopes and values.
+
+The shared `SandboxNetworkGrantsSchema` bounds policies at 16,384 entries.
+`createSandboxNetworkGrantChecker` indexes executables and hostnames, merges port
+ranges, and checks exact and single-label wildcard hosts. Controller admission and
+worker application use this index.
+
 `validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
 current editing flag, expected version, and pending application, then runs shared
 schema/semantic validation, the Driver contribution (which can only narrow it), and
@@ -77,7 +93,9 @@ CLI callers retain the same field and cause without terminal controls.
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
 and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. While the active or next revision runs under protected
+admitted snapshot. PostgreSQL's [grant validator](../../migrations/0077_sandbox_policy_capacity.sql) enforces the
+same finite 16,384-entry bound and individual grant checks before commit.
+While the active or next revision runs under protected
 execution (the Installation selects the Credential Proxy), additions are refused
 with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
 protected revision and a protected deploy carrying them; protected
@@ -260,6 +278,12 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Changelog
 
 - 2026-11-13: Trace the Console’s single save-and-apply request and its atomic admission for a running Agent.
+
+- 2026-11-11 11:50: Bound identity lookup and classify early write refusals. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - b9a678f1b)
+
+- 2026-11-11 11:21: Record shared preview/save rate limits before body reads and policy authorization. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - 5445a0281)
+
+- 2026-11-11 10:55: Trace 16,384-entry policy admission and authorization before large body reads. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - 9afd6412e)
 
 - 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 

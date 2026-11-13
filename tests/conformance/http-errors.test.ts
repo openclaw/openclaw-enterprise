@@ -135,6 +135,20 @@ type ErrorCase = readonly [
 // AuthorizationDeniedError, so each row also guards the order of the checks in
 // requestFailure: a subclass must keep its own status and text, not its parent's.
 const cases = [
+  [
+    "a policy write budget refusal retains its retryable HTTP status",
+    new RequestFailure(429, "SANDBOX_POLICY_RATE_LIMITED", "Too many network policy requests."),
+    {
+      status: 429,
+      code: "SANDBOX_POLICY_RATE_LIMITED",
+      message: "Too many network policy requests.",
+    },
+  ],
+  [
+    "an early write authorization budget refusal retains its retryable HTTP status",
+    new RequestFailure(429, "RATE_LIMITED", "Too many write requests."),
+    { status: 429, code: "RATE_LIMITED", message: "Too many write requests." },
+  ],
   // 409: conflicts the user can act on.
   [
     "a state conflict names what blocks the operation",

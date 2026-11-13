@@ -136,7 +136,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   validateSandboxNetworkGrants,
-  sandboxNetworkGrantsWithinCeiling,
+  createSandboxNetworkGrantChecker,
 } from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
@@ -2297,6 +2297,7 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly sandboxNetworkPolicyAllowsGrant: (grant: SandboxNetworkGrant) => boolean;
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
@@ -2349,6 +2350,9 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    this.sandboxNetworkPolicyAllowsGrant = createSandboxNetworkGrantChecker(
+      this.sandboxNetworkPolicyCeiling,
+    );
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
     }
@@ -11403,6 +11407,30 @@ export class OpenClawController {
     };
   }
 
+  /** Authorize large policy requests before HTTP reads their body; admission repeats this check. */
+  async authorizeAgentSandboxPolicyWrite(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    facet: SandboxFacet,
+    operation: "save" | "apply" = "save",
+  ): Promise<void> {
+    this.requireNetworkPolicyFacet(facet);
+    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "update", {
+      kind: "sandbox_policy",
+      id: `sbp_${agentId.slice(4)}`,
+      namespaceId,
+    });
+    if (operation === "apply") {
+      await this.authorize(principalId, "read", {
+        kind: "sandbox_policy",
+        id: `sbp_${agentId.slice(4)}`,
+        namespaceId,
+      });
+    }
+  }
+
   async validateAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,
@@ -11628,7 +11656,7 @@ export class OpenClawController {
       requireConfiguration(contribution, { additions });
       const details: ErrorDetail[] = [];
       additions.forEach((grant, index) => {
-        if (!sandboxNetworkGrantsWithinCeiling([grant], this.sandboxNetworkPolicyCeiling)) {
+        if (!this.sandboxNetworkPolicyAllowsGrant(grant)) {
           details.push({
             path: `/additions/${index}`,
             code: "OUTSIDE_CEILING",

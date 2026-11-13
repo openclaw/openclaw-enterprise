@@ -52,6 +52,7 @@ import {
   normalizeLoggingLevel,
   ConfigurationValidationError,
   sandboxNetworkGrantsWithinCeiling,
+  createSandboxNetworkGrantChecker,
   validateSandboxNetworkGrants,
 } from "../../packages/contracts/src/index.ts";
 
@@ -91,6 +92,16 @@ test("network delegation covers every requested host label and port without broa
     ),
     false,
   );
+  // Exact-host and wildcard grants can jointly cover a range; indexing must retain that union.
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling([grant], [{ ...ceiling[0], host: grant.host }, ceiling[1]]),
+    true,
+  );
+  const mutableCeiling = structuredClone(ceiling);
+  const admits = createSandboxNetworkGrantChecker(mutableCeiling);
+  mutableCeiling[0].ports[0].to = 443;
+  assert.equal(admits(grant), true, "compiled admission retains its ceiling snapshot");
+  assert.equal(sandboxNetworkGrantsWithinCeiling([grant], mutableCeiling), false);
   assert.equal(sandboxNetworkGrantsWithinCeiling([grant], []), false);
   // Coverage needs a port: an empty or reversed range never proves containment.
   for (const ports of [[], [{ from: 445, to: 443 }], [{ from: 65535, to: 1 }]]) {

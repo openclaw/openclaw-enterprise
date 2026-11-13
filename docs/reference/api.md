@@ -62,7 +62,7 @@ the paths.
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `error` | `object` | Yes | — |
-| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
+| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "SANDBOX_POLICY_RATE_LIMITED" or "RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
 | `error.details` | `array<object>` | No | max items: 32 |
 | `error.details[].code` | `"REQUIRED" or "UNKNOWN_FIELD" or "INVALID_TYPE" or "INVALID_FORMAT" or "INVALID_VALUE" or "TOO_LONG" or "TOO_DEEP" or "INVALID_RANGE" or "OUTSIDE_CEILING"` | Yes | — |
 | `error.details[].message` | `string` | No | max length: 512 |
@@ -7649,7 +7649,7 @@ Read one Agent sandbox policy and delegation ceiling
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.capability` | `null or object` | Yes | — |
-| `data.ceiling` | `array<object>` | Yes | max items: 32 |
+| `data.ceiling` | `array<object>` | Yes | max items: 16384 |
 | `data.ceiling[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.ceiling[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `data.ceiling[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7687,7 +7687,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.deployedPolicyVersion` | `integer` | No | minimum: 1; maximum: 2147483647; The saved policy version the active revision (defaultsRevisionId) was deployed with. Its Sandbox enforces that version without a live application. |
 | `data.editingEnabled` | `boolean` | Yes | — |
 | `data.policy` | `object` | Yes | — |
-| `data.policy.additions` | `array<object>` | Yes | max items: 32 |
+| `data.policy.additions` | `array<object>` | Yes | max items: 16384 |
 | `data.policy.additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.policy.additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `data.policy.additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7771,7 +7771,7 @@ Replace one Agent network policy additions
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `additions` | `array<object>` | Yes | max items: 32 |
+| `additions` | `array<object>` | Yes | max items: 16384 |
 | `additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7800,6 +7800,7 @@ Example request
 | `409` | The requested operation conflicts with the current resource state. |
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -7808,7 +7809,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.additions` | `array<object>` | Yes | max items: 32 |
+| `data.additions` | `array<object>` | Yes | max items: 16384 |
 | `data.additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `data.additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7884,7 +7885,7 @@ Queue policy application to the running Agent revision, optionally replacing sav
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `additions` | `array<object>` | No | max items: 32 |
+| `additions` | `array<object>` | No | max items: 16384 |
 | `additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7914,6 +7915,7 @@ Example request
 | `409` | The requested operation conflicts with the current resource state. |
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -7922,7 +7924,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.additions` | `array<object>` | Yes | max items: 32 |
+| `data.additions` | `array<object>` | Yes | max items: 16384 |
 | `data.additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `data.additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -8152,6 +8154,7 @@ Example request
 | `409` | The requested operation conflicts with the current resource state. |
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -9335,6 +9338,7 @@ Example request
 | `409` | The requested operation conflicts with the current resource state. |
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -9727,6 +9731,7 @@ Example request
 | `409` | The requested operation conflicts with the current resource state. |
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -11414,6 +11419,7 @@ Example request
 | `409` | The requested operation conflicts with the current resource state. |
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -11873,6 +11879,7 @@ Example request
 | `409` | The requested operation conflicts with the current resource state. |
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
