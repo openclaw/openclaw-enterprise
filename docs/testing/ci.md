@@ -76,6 +76,9 @@ It does not establish CI test coverage or staging installation readiness.
 
 - [Manual tests](manual-tests.md): select lanes without GitHub workflows and
   complete their setup requirements.
+- [Native API continuity](native-agent-browser.md#check-an-acknowledged-chat-turn-across-api-replacement):
+  explicitly select the controlled-provider browser case; it is excluded from the
+  default QA matrix and has no hosted job.
 
 <a id="guides"></a>
 <a id="run-a-protected-integration-lane"></a>

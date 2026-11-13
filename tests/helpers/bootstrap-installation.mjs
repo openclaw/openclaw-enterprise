@@ -68,6 +68,7 @@ export function productionBootstrapEnvironment({
 }
 
 export async function runBootstrapInstallation(environment, options = {}) {
+  options.signal?.throwIfAborted();
   try {
     const result = await run(
       process.execPath,
@@ -110,10 +111,15 @@ export function outputSink() {
  * runBootstrapInstallation: stdout carries the result line, stderr the diagnostics and log events,
  * in the order the Job writes them to its streams.
  */
-export async function bootstrapInstallationInProcess(environment) {
+export async function bootstrapInstallationInProcess(
+  environment,
+  { signal = /** @type {AbortSignal | undefined} */ (undefined) } = {},
+) {
+  signal?.throwIfAborted();
   const { bootstrapInstallation } = await import("../../scripts/bootstrap-installation.mjs");
   const stdout = outputSink();
   const stderr = outputSink();
+  signal?.throwIfAborted();
   const status = await bootstrapInstallation({
     environment,
     args: [],
@@ -136,12 +142,14 @@ export async function bootstrapInstallationInProcess(environment) {
  * (bootstrapInstallationInProcess), saving a Node start; otherwise it runs the real script.
  */
 export async function ensureDevelopmentBootstrap(context, options) {
+  options.signal?.throwIfAborted();
   const directory =
     options.directory ??
     (await privateBootstrapDirectory(context, "openclaw-development-bootstrap-"));
   const environment = developmentBootstrapEnvironment({ ...options, directory });
+  options.signal?.throwIfAborted();
   const result = options.inProcess
-    ? await bootstrapInstallationInProcess(environment)
+    ? await bootstrapInstallationInProcess(environment, options)
     : await runBootstrapInstallation(environment, options);
   if (!result.ok) {
     throw new Error(`Development bootstrap failed:\n${result.stderr || result.stdout}`);

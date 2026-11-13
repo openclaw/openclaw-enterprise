@@ -12,19 +12,27 @@ import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { request as httpRequest } from "node:http";
-import { connect as connectTcp } from "node:net";
+import { connect as connectTcp, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { chromium } from "playwright";
+import pg from "pg";
+import { prepareNativeModelBarrier } from "./native-model-barrier.mjs";
+import { assertAcknowledgedTurnAcrossApiRestart } from "./native-ui-api-continuity.mjs";
+import { createNativeContinuityObserver } from "./native-ui-continuity-observer.mjs";
+import { withBoundedTeardown } from "./bounded-teardown.ts";
 
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
+  gatewayCall,
+  readGatewayTranscript,
   kubectl,
   resource,
+  resources,
   waitFor,
   waitForReadyGatewayPod,
 } from "../helpers/harness-topology-k3d-real.mjs";
@@ -77,6 +85,7 @@ async function createNativeIngress(context, { artifacts, nativeDomain }) {
     }
     proxyUpgrade(upstream, request, socket, head, trackSocket);
   });
+  context.signal?.throwIfAborted();
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -84,7 +93,7 @@ async function createNativeIngress(context, { artifacts, nativeDomain }) {
       resolve();
     });
   });
-  context.after(async () => {
+  (context.afterLocal ?? context.after).call(context, async () => {
     for (const socket of sockets) {
       socket.destroy();
     }
@@ -198,12 +207,13 @@ async function launchBrowser(context, ingress) {
     process.env.OCC_TEST_BROWSER_EXECUTABLE.length === 0
       ? undefined
       : process.env.OCC_TEST_BROWSER_EXECUTABLE;
+  context.signal?.throwIfAborted();
   const browser = await chromium.launch({
     ...(browserExecutable === undefined ? {} : { executablePath: browserExecutable }),
     args: ingress.browserArgs,
     headless: true,
   });
-  context.after(() => browser.close());
+  (context.afterLocal ?? context.after).call(context, () => browser.close());
   return browser;
 }
 
@@ -245,6 +255,7 @@ async function readOceControlState(topology) {
   assert.equal(agent.status, 200, JSON.stringify(agent.error));
   assert.equal(configuration.status, 200, JSON.stringify(configuration.error));
   return {
+    configurationId: agent.data.configurationId,
     activeRevisionId: agent.data.activeRevisionId,
     revisionId: topology.revision.id,
     configuration: configuration.data,
@@ -1074,6 +1085,467 @@ async function assertSharedNativeSessions(
   }
   context.diagnostic(
     "Read-only and revoked callers were refused before upstream I/O; an operate-only caller completed a real chat turn while HTTP and WebSocket administration were denied. Both administrator devices remained enrolled with unchanged approved scopes.",
+  );
+}
+
+export async function runAcknowledgedChatApiReplacementScenario(testContext) {
+  const context = withBoundedTeardown(testContext, { label: "acknowledged chat teardown" });
+  const assertActive = () => context.signal?.throwIfAborted();
+  assertActive();
+  const artifacts = await mkdtemp(join(tmpdir(), "oce-native-api-continuity-"));
+  context.diagnostic(`acknowledged chat API replacement artifacts: ${artifacts}`);
+  const nativeDomain = process.env.OCC_TEST_NATIVE_ADMIN_DOMAIN ?? "native.example.test";
+  const ingress = await createNativeIngress(context, { artifacts, nativeDomain });
+  assertActive();
+  const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
+  assert.match(kubernetesContext ?? "", /^k3d-.+/);
+  const provider = await prepareNativeModelBarrier(context, {
+    directory: join(artifacts, "provider"),
+    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
+    kubernetesContext,
+    cluster: kubernetesContext.slice(4),
+    codexImage:
+      process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE ??
+      process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
+      process.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
+    providerImage:
+      process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ??
+      process.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
+  });
+  assertActive();
+  const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+    publicOrigin: ingress.origin,
+    gatewayPassword: true,
+    nativeAdmin: { enabled: true, domain: nativeDomain },
+    provisionNativeAdmin: true,
+    nativeOptions: { controlUi: { enabled: true } },
+    workspaceGateway: true,
+    controlledModelProvider: provider,
+  });
+  assertActive();
+  ingress.setUpstream(topology.controllerUrl);
+  const status = await nativeAdminStatus(topology);
+  assert.equal(status.status, "available");
+  assert.equal(status.activeRevisionId, topology.revision.id);
+  const identity = (pod) => {
+    assert.equal(pod.metadata.deletionTimestamp, undefined);
+    assert.ok(
+      pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+    );
+    const containers = pod.status.containerStatuses;
+    assert.deepEqual(
+      containers.map(({ name }) => name).sort(),
+      pod.spec.containers.map(({ name }) => name).sort(),
+    );
+    assert.ok(containers.length > 0);
+    for (const container of containers) {
+      assert.equal(container.ready, true);
+      assert.ok(container.state.running?.startedAt);
+      assert.ok(typeof container.containerID === "string" && container.containerID.length > 0);
+      assert.ok(Number.isSafeInteger(container.restartCount) && container.restartCount >= 0);
+    }
+    const owners = pod.metadata.ownerReferences.filter(({ controller }) => controller === true);
+    assert.equal(owners.length, 1);
+    assert.equal(owners[0].kind, "ReplicaSet");
+    return {
+      uid: pod.metadata.uid,
+      replicaSetUid: owners[0].uid,
+      containers: containers
+        .map(({ name, containerID, restartCount, state }) => ({
+          name,
+          containerID,
+          restartCount,
+          startedAt: state.running.startedAt,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  };
+  const onePod = async (namespace, labels) => {
+    const pods = await resources(
+      "pods",
+      namespace,
+      "-l",
+      Object.entries(labels)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(","),
+    );
+    assert.equal(pods.length, 1, "The selected workload must have exactly one serving Pod");
+    return pods[0];
+  };
+  const agentLabels = {
+    "app.kubernetes.io/managed-by": "openclaw-enterprise",
+    "openclaw.dev/namespace": topology.agent.namespaceId,
+    "openclaw.dev/agent": topology.agent.id,
+  };
+  const readIdentities = async () => {
+    const [worker, gateway, harness, control] = await Promise.all([
+      onePod(topology.platformNamespace, { "app.kubernetes.io/component": "worker" }),
+      onePod(topology.gatewayPlacement, {
+        ...agentLabels,
+        "openclaw.dev/workload-role": "gateway",
+      }),
+      onePod(topology.placement, { ...agentLabels, "openclaw.dev/workload-role": "agent" }),
+      readOceControlState(topology),
+    ]);
+    assert.equal(control.configurationId, topology.agent.configurationId);
+    assert.equal(control.activeRevisionId, topology.revision.id);
+    for (const pod of [gateway, harness]) {
+      assert.equal(pod.metadata.labels["openclaw.dev/revision"], topology.revision.id);
+      assert.equal(pod.metadata.annotations["openclaw.dev/agent-id"], topology.agent.id);
+    }
+    assert.equal(
+      gateway.metadata.annotations["openclaw.dev/agent-revision-id"],
+      topology.revision.id,
+    );
+    assert.equal(harness.metadata.annotations["openclaw.dev/revision-id"], topology.revision.id);
+    return {
+      configurationId: control.configurationId,
+      configurationGeneration: control.configuration.generation,
+      activeRevisionId: control.activeRevisionId,
+      worker: identity(worker),
+      gateway: identity(gateway),
+      harness: identity(harness),
+    };
+  };
+  const before = await readIdentities();
+  assert.equal(before.gateway.uid, topology.gatewayPod.metadata.uid);
+  assert.equal(before.harness.uid, topology.harnessPod.metadata.uid);
+  const readApi = () => onePod(topology.platformNamespace, topology.workspaceGateway.apiPodLabels);
+  const beforeApi = { uid: topology.controllerApiPod.metadata.uid, url: topology.controllerUrl };
+  const initialApi = identity(await readApi());
+  assert.equal(initialApi.uid, beforeApi.uid);
+  assertActive();
+  const browser = await launchBrowser(context, ingress);
+  assertActive();
+  const browserContext = await browser.newContext();
+  (context.afterLocal ?? context.after).call(context, () => browserContext.close());
+  const observer = createNativeContinuityObserver();
+  const seedMarker = `OCC-API-SEED-${randomUUID()}`;
+  observer.expect({
+    name: "seed",
+    prompt: `Reply with exactly the token on its own line and no other text: ${seedMarker}`,
+    reply: seedMarker,
+  });
+  let nextSocket = 0;
+  browserContext.on("page", (page) => {
+    page.on("websocket", (webSocket) => {
+      if (new URL(webSocket.url()).origin !== status.origin.replace(/^http/, "ws")) {
+        return;
+      }
+      const socket = ++nextSocket;
+      observer.open({ socket, page, at: performance.now() });
+      webSocket.on("close", () => observer.close({ socket, page, at: performance.now() }));
+      webSocket.on("framereceived", (frame) =>
+        observer.frame({ ...frame, socket, page, at: performance.now(), direction: "received" }),
+      );
+      webSocket.on("framesent", (frame) =>
+        observer.frame({ ...frame, socket, page, at: performance.now(), direction: "sent" }),
+      );
+    });
+  });
+  assertActive();
+  const page = await browserContext.newPage();
+  await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
+  await login(page, topology.credentials);
+  assertActive();
+  await page.getByRole("heading", { name: topology.agent.name }).waitFor();
+  const nativePage = await openNativeAdminConsole(page, status.origin);
+  assertActive();
+  // A real seed turn proves native readiness before we arm the one-request barrier.
+  const initialReply = await submitChatTurnWithAssistantProof(
+    nativePage,
+    seedMarker,
+    observer.seedFrames,
+    (label, observe) =>
+      waitFor(label, () => {
+        assertActive();
+        observer.assertHealthy();
+        return observe();
+      }),
+  );
+  // The seed navigation can leave closed startup admissions. Select its sole
+  // open admission, then count every new admission across the API replacement.
+  const admissionAction = "openclaw.agents.native_admin.websocket.connect";
+  const closeAction = "openclaw.agents.native_admin.websocket.close";
+  const readAuditQuery = async (text, values) => {
+    const deadline = performance.now() + 10_000;
+    const stream = new Socket();
+    let client;
+    let result;
+    let interrupted = false;
+    const stop = () => {
+      interrupted = true;
+      stream.destroy();
+    };
+    const timer = setTimeout(stop, 10_000);
+    context.signal?.addEventListener("abort", stop, { once: true });
+    try {
+      // Bound server execution even if it does not notice a disconnected client.
+      const connectionUrl = new URL(process.env.OCC_TEST_DATABASE_URL);
+      connectionUrl.searchParams.set("statement_timeout", "10000");
+      // Own this read's transport: a shared pool checkout cannot be cancelled.
+      client = new pg.Client({
+        connectionString: connectionUrl.href,
+        stream,
+      });
+      client.on("error", stop);
+      if (context.signal?.aborted || performance.now() >= deadline) {
+        stop();
+      } else {
+        await client.connect();
+        if (interrupted || context.signal?.aborted || performance.now() >= deadline) {
+          stop();
+        } else {
+          result = await client.query(text, values);
+        }
+      }
+    } catch {
+      interrupted = true;
+    } finally {
+      clearTimeout(timer);
+      context.signal?.removeEventListener("abort", stop);
+      // Stop waiting locally on cancellation. Server execution has the separate
+      // startup statement timeout; closing this socket is not a query-cancel ACK.
+      stream.destroy();
+      await client?.end().catch(() => {
+        interrupted = true;
+      });
+      client?.removeListener("error", stop);
+    }
+    if (interrupted || context.signal?.aborted || performance.now() >= deadline) {
+      throw new Error("Native admission audit read failed or exceeded its deadline");
+    }
+    return result;
+  };
+  const readAdmissions = async () => {
+    assertActive();
+    const result = await readAuditQuery(
+      `SELECT admitted.actor_id,
+              admitted.details->'__occAuditMetadata'->'actor' AS actor,
+              admitted.details->'nativeAdmin'->>'connectionId' AS connection_id,
+              admitted.details->'nativeAdmin'->>'parentSessionId' AS parent_session_id,
+              EXISTS (
+                SELECT 1 FROM occ.audit_events AS closed
+                WHERE closed.namespace_id = admitted.namespace_id
+                  AND closed.resource_kind = admitted.resource_kind
+                  AND closed.resource_id = admitted.resource_id
+                  AND closed.action = $6 AND closed.outcome = 'success'
+                  AND closed.details->'nativeAdmin'->>'host' = $4
+                  AND closed.details->'nativeAdmin'->>'connectionId' =
+                      admitted.details->'nativeAdmin'->>'connectionId'
+              ) AS closed
+       FROM occ.audit_events AS admitted
+       WHERE admitted.namespace_id = $1
+         AND admitted.resource_kind = 'agent' AND admitted.resource_id = $2
+         AND admitted.action = $3 AND admitted.outcome = 'success'
+         AND admitted.details->'nativeAdmin'->>'host' = $4
+         AND admitted.details->'nativeAdmin'->>'revisionId' = $5
+         AND admitted.details->'nativeAdmin'->>'mode' = 'admin'
+       ORDER BY admitted.occurred_at, admitted.id
+       LIMIT 129`,
+      [
+        topology.agent.namespaceId,
+        topology.agent.id,
+        admissionAction,
+        status.host,
+        topology.revision.id,
+        closeAction,
+      ],
+    );
+    assertActive();
+    assert.ok(result.rows.length <= 128, "Native admission audit exceeded its observation bound");
+    for (const row of result.rows) {
+      const identityFields = [
+        row.actor_id,
+        row.actor?.principalId,
+        row.actor?.issuer,
+        row.actor?.subject,
+        row.parent_session_id,
+      ];
+      assert.ok(
+        identityFields.every(
+          (value) => typeof value === "string" && value.length > 0 && value.length <= 4_096,
+        ) &&
+          typeof row.connection_id === "string" &&
+          /^naws_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+            row.connection_id,
+          ) &&
+          row.actor.principalId === row.actor_id,
+        "Native admission audit must retain a valid human and parent session",
+      );
+    }
+    assert.ok(
+      new Set(result.rows.map((row) => row.connection_id)).size === result.rows.length,
+      "Native admission audit contains duplicate connection admissions",
+    );
+    return result.rows;
+  };
+  const activeBrowserSocket = () => {
+    observer.assertHealthy();
+    const open = new Set();
+    for (const event of observer.socketEvents) {
+      if (event.page !== nativePage) {
+        continue;
+      }
+      if (event.type === "open") {
+        open.add(event.socket);
+      } else if (event.type === "close") {
+        open.delete(event.socket);
+      }
+    }
+    assert.ok(open.size === 1, "Native admission must match one open browser connection");
+    return [...open][0];
+  };
+  let initialAdmissions;
+  let initialAdmission;
+  let replacementAdmission;
+  let replacementSocket;
+  const assertConnectionAdmission = async (phase) => {
+    if (phase === "initial") {
+      assert.ok(initialAdmission === undefined, "Initial admission must be observed once");
+      assert.ok(
+        activeBrowserSocket() === initialReply.socket,
+        "Initial admission must serve the seed socket",
+      );
+      initialAdmissions = await waitFor(
+        "the seed connection's unique native admission",
+        async () => {
+          const rows = await readAdmissions();
+          return rows.filter((row) => !row.closed).length === 1 ? rows : undefined;
+        },
+      );
+      initialAdmission = initialAdmissions.find((row) => !row.closed);
+      return;
+    }
+    assert.ok(
+      phase === "reconnected" &&
+        initialAdmission !== undefined &&
+        replacementAdmission === undefined,
+      "Replacement admission must follow the initial admission once",
+    );
+    replacementSocket = activeBrowserSocket();
+    assert.ok(
+      replacementSocket !== initialReply.socket,
+      "Replacement admission must serve a new browser connection",
+    );
+    replacementAdmission = await waitFor(
+      "the replacement connection's unique native admission",
+      async () => {
+        const rows = await readAdmissions();
+        const added = rows.filter(
+          (row) =>
+            !initialAdmissions.some((initial) => initial.connection_id === row.connection_id),
+        );
+        assert.ok(
+          added.length <= 1,
+          "API replacement must admit exactly one new native connection",
+        );
+        return added[0];
+      },
+    );
+    assert.ok(!replacementAdmission.closed, "Replacement admission must remain open");
+    assert.ok(
+      replacementAdmission.actor_id === initialAdmission.actor_id &&
+        replacementAdmission.actor.principalId === initialAdmission.actor.principalId &&
+        replacementAdmission.actor.issuer === initialAdmission.actor.issuer &&
+        replacementAdmission.actor.subject === initialAdmission.actor.subject,
+      "API replacement must preserve the admitted human identity",
+    );
+    assert.ok(
+      replacementAdmission.parent_session_id === initialAdmission.parent_session_id,
+      "API replacement must preserve the parent login session",
+    );
+  };
+  const readConnectionAdmissionProof = async () => {
+    assert.ok(
+      replacementAdmission !== undefined,
+      "Replacement admission must be verified before closeout",
+    );
+    const rows = await readAdmissions();
+    assert.ok(
+      rows.length === initialAdmissions.length + 1 &&
+        initialAdmissions.every((initial) =>
+          rows.some((row) => row.connection_id === initial.connection_id),
+        ) &&
+        rows.some((row) => row.connection_id === replacementAdmission.connection_id && !row.closed),
+      "Native connection admissions must remain unchanged through closeout",
+    );
+    assert.ok(
+      activeBrowserSocket() === replacementSocket,
+      "The verified replacement connection must still serve",
+    );
+    return {
+      distinctConnectionAdmissions: true,
+      sameHumanPrincipal: true,
+      sameParentLoginSession: true,
+    };
+  };
+  let successor;
+  const receipt = await assertAcknowledgedTurnAcrossApiRestart({
+    page: nativePage,
+    initialReply,
+    marker: `OCC-API-HELD-${randomUUID()}`,
+    observer,
+    signal: context.signal,
+    provider,
+    assertConnectionAdmission,
+    async restartControllerApi() {
+      assertActive();
+      successor = await topology.restartControllerApi();
+      assert.notEqual(successor.pod.metadata.uid, beforeApi.uid);
+      assert.equal(successor.url, beforeApi.url, "API replacement must preserve the local port");
+      ingress.setUpstream(successor.url);
+      return successor;
+    },
+    readHistory: (sessionKey, options) =>
+      gatewayCall(topology, "chat.history", { sessionKey, limit: 100 }, 10_000, options),
+    readStoredHistory: (sessionKey, sessionId, options) =>
+      readGatewayTranscript(topology, sessionKey, sessionId, options),
+    async closeout() {
+      const after = await readIdentities();
+      assert.deepEqual(after, before, "only the serving API may be replaced");
+      const finalApi = identity(await readApi());
+      assert.equal(finalApi.uid, successor.pod.metadata.uid);
+      assert.notEqual(finalApi.uid, initialApi.uid);
+      assert.deepEqual(
+        finalApi.containers.map(({ name }) => name),
+        initialApi.containers.map(({ name }) => name),
+      );
+      assert.deepEqual(
+        finalApi,
+        identity(successor.pod),
+        "The observed successor API must still serve",
+      );
+      assert.equal(
+        (await resources("pods", topology.platformNamespace)).some(
+          ({ metadata }) => metadata.uid === beforeApi.uid,
+        ),
+        false,
+        "The predecessor API Pod must be gone",
+      );
+      assert.equal((await nativeAdminStatus(topology)).origin, status.origin);
+      return {
+        workloadIdentities: { before, after, initialApi, finalApi },
+        connectionAdmission: await readConnectionAdmissionProof(),
+      };
+    },
+  });
+  await writeFile(
+    join(artifacts, "continuity.json"),
+    JSON.stringify(
+      {
+        ...receipt,
+        predecessorApiUid: beforeApi.uid,
+        successorApiUid: successor.pod.metadata.uid,
+        sameLocalPort: true,
+        unchangedAgentGatewayAndRevision: true,
+        processScope: "Kubernetes containers; no native child-process continuity assertion",
+        provider: "controlled fixture; no external inference",
+      },
+      null,
+      2,
+    ) + "\n",
+    { mode: 0o600 },
   );
 }
 

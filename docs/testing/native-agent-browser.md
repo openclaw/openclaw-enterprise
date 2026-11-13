@@ -58,6 +58,79 @@ When Keycloak belongs to a separate prepared state, also set
 owners finish using the resources. The shared-lane setup needs no separate
 Keycloak state variable.
 
+## Check an acknowledged chat turn across API replacement
+
+Select `native-api-continuity` explicitly through the QA matrix. It invokes the
+native-admin browser helper with dedicated Codex and Kubernetes; it is excluded
+from `all` and cannot be combined with other scenarios. There is no new hosted
+job, and the existing `gateway-routing` selection is unchanged.
+
+On a Linux host, prepare an exclusive disposable loopback k3d cluster with enforcing NetworkPolicies,
+Envoy Gateway and cert-manager, plus the [dedicated PostgreSQL database](postgresql.md#other-postgresql-suites).
+Use the preparation's per-file limited application URL in `OCC_TEST_DATABASE_URL`.
+It must name a ready, owned, non-template `openclaw_k8s_*` database recorded in
+`OPENCLAW_ENTERPRISE_CI_STATE`, on the prepared PostgreSQL service's published
+`127.0.0.1` port. A separately created database or a `localhost` alias does not
+meet this fixture's ownership check. Select the matching prepared cluster with
+`OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`. The selected
+cluster and local Docker daemon must match that state and remain exclusively
+reserved for this run.
+Use the model/routing preparation path so PostgreSQL is already attached to the
+selected cluster's network. This case verifies that prepared attachment by its
+container and network IDs; its preparation owner retains it through teardown.
+Set these immutable image references and test CA paths using the
+[Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets):
+
+- `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`
+- `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`
+- `OCC_TEST_KUBERNETES_AGENT_IMAGE`
+- `OCC_TEST_GATEWAY_CA_CERT_PATH` and `OCC_TEST_GATEWAY_CA_KEY_PATH`
+
+The stock images must already be available in host Docker; import the controller
+and Gateway images into the selected cluster as required by that setup. The
+fixture uses the local `/var/run/docker.sock`, creates a CA-only derivative of
+the Agent image, and owns an internal provider network and temporary cluster DNS
+entry. Do not share the cluster while it runs. It generates a synthetic model key
+and provisions it through the ordinary Secret API; no live model key or PAT is
+required. This fixture does not exercise an external model provider or OpenShell.
+
+Install Playwright Chromium and OpenSSL. `OCC_TEST_BROWSER_EXECUTABLE` may select
+an existing Chromium binary; `OCC_TEST_NATIVE_ADMIN_DOMAIN` and
+`OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE` retain the native-browser and dedicated
+Codex fixture settings. From the repository root, with the prepared inputs:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_SCENARIOS=native-api-continuity \
+  OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_INSTALLATION=kubernetes \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+After a seed reply, the test waits for a successful `chat.send` acknowledgement
+and an independently held provider response before replacing only the API Pod.
+The original tab must reconnect without navigation or resending the accepted
+turn, show one reply after the provider releases it, and complete a second turn.
+Native admission audit records must confirm the same human and parent login
+session on both connections; the receipt records equality without parent login
+session identifiers. It retains the chat transcript session ID for correlation.
+The held reply contains a nonce supplied only to the provider. A fresh process
+checks stored transcript entries separately from live Gateway history; final
+browser counts and worker, Agent, Gateway and revision identities must agree.
+The close-to-authenticated-reconnect interval includes API and local port-forward
+replacement. This is a continuity assertion across a socket interruption,
+not an uninterrupted connection or successful worker-transfer guarantee.
+
+The helper prints its private artifact directory and writes `continuity.json`
+after the assertions pass. The QA stage records assertions and cleanup separately;
+overall success requires both to finish successfully. Fixture cleanup owns its temporary resources; retain
+the result and cleanup outcome, and use the prepared environment's cleanup owner
+for the database and cluster even after failure. Unsettled cancelled work,
+unresolved mutations, or remaining consumers retain dependencies and the private
+journal for reconciliation; independently safe local handles still close. The
+state lock covers the stage and its teardown, not an indefinite reservation after
+failure: keep the cluster exclusive until retained resources are reconciled.
+Registration or a skipped case
+is not installed acceptance; this new case still needs an actual qualified run.
+
 ## What the test exercises
 
 The browser signs in at the real Keycloak server, returns through the OCC

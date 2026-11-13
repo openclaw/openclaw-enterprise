@@ -75,6 +75,22 @@ test(
         "oidc-agent-chat",
       );
     }
+    if (selection.nativeApiContinuity) {
+      const { runAcknowledgedChatApiReplacementScenario } =
+        await import("../helpers/native-admin-browser.mjs");
+      const { withStateLock } = await import("../../scripts/ci/state-lock.ts");
+      // Keep the prepared owner's reservation through the timed stage and its cleanup.
+      await withStateLock(resolve(process.env.OPENCLAW_ENTERPRISE_CI_STATE), () =>
+        stage(
+          context,
+          "kubernetes/Codex",
+          "acknowledged native chat across API replacement",
+          runAcknowledgedChatApiReplacementScenario,
+          "native-api-continuity",
+          { reportCleanup: true },
+        ),
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

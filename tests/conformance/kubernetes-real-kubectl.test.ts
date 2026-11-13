@@ -1274,7 +1274,6 @@ const attemptedTopologyCleanups = [
   "attempted postgresNetwork",
   "attempted gatewayRuntimeNamespace",
   "attempted placementNamespace",
-  "attempted temporaryDirectory",
 ];
 
 test(
@@ -2040,6 +2039,49 @@ test(
     });
     // Outside a diagnostic nothing has passed a deadline.
     assert.equal(diagnosticDeadlinePassed(), false);
+  },
+);
+
+test("an already cancelled caller starts no diagnostic", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let started = false;
+  await assert.rejects(
+    withinDiagnosticDeadline(
+      async () => {
+        started = true;
+      },
+      { signal: controller.signal },
+    ),
+    { name: "AbortError" },
+  );
+  assert.equal(started, false);
+});
+
+test(
+  "caller cancellation stops an active diagnostic process and rejects late success",
+  { timeout: 10_000 },
+  async () => {
+    const controller = new AbortController();
+    let exit: Promise<unknown> | undefined;
+    const observation = withinDiagnosticDeadline(
+      async (signal: AbortSignal) => {
+        // Use a genuine local process: the caller cancels only after its readiness byte.
+        const running = execute(
+          process.execPath,
+          ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000)"],
+          { signal },
+        );
+        exit = new Promise((resolve) => running.child.once("close", resolve));
+        running.child.stdout!.once("data", () => controller.abort());
+        await running.catch(() => undefined);
+        return "late success";
+      },
+      { signal: controller.signal, timeoutMs: 8_000 },
+    );
+    await assert.rejects(observation, { name: "AbortError" });
+    assert.ok(exit);
+    await exit;
   },
 );
 

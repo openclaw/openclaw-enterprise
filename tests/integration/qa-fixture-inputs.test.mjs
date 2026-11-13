@@ -141,21 +141,34 @@ test(
   async (t) => {
     const directory = await temporaryDirectory(t, "qa-report-");
     const output = join(directory, "matrix.json");
+    const lifecycle = join(directory, "lifecycle.json");
     const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
+    const teardownModule = new URL("../helpers/bounded-teardown.ts", import.meta.url).href;
     // Exercise the real reporter under node:test, including failed subtests.
     // A shared writeFile without a serialized snapshot can lose concurrent rows
     // or leave a trailing fragment of the previous JSON document.
     const source = `
     import test from 'node:test';
+    import assert from 'node:assert/strict';
+    import { writeFile } from 'node:fs/promises';
+    import { withBoundedTeardown } from ${JSON.stringify(teardownModule)};
     import { createQaReport } from ${JSON.stringify(reportModule)};
     import { registerQaSecret } from ${JSON.stringify(secretsModule)};
     // Real runs register fixture secrets, so redaction always has work to do.
     registerQaSecret('synthetic-stage-secret-value');
     const report = createQaReport(${JSON.stringify(output)}, { scope: 'full', concurrency: 4 });
     test('parallel report', { concurrency: 4 }, async (t) => {
+      let cleanups = 0;
+      let parentFinished = false;
+      t.after(() => { parentFinished = true; });
       await Promise.all(Array.from({length: 20}, (_, i) =>
-        report.stage(t, 'compose/Codex', 'stage-' + i, async () => {
+        report.stage(t, 'compose/Codex', 'stage-' + i, async (context) => {
+          // Fixture cleanup must belong to the timed stage, not its outer matrix.
+          assert.equal(context?.name, 'stage-' + i, 'the reporter must supply its stage context');
+          assert.notEqual(context, t);
+          assert.notEqual(context.signal, t.signal);
+          withBoundedTeardown(context).after(() => { cleanups += 1; });
           if (i === 2) throw new Error('blocked by unavailable test prerequisite');
           if (i === 7) throw new Error('expected assertion failure');
           // A DOMException's message is getter-only; redaction must keep it.
@@ -163,6 +176,9 @@ test(
           if (i === 13) throw undefined;
         }, 'scenario-' + i)
       ));
+      assert.equal(cleanups, 20, 'stage cleanup must finish before the parent continues');
+      assert.equal(parentFinished, false);
+      await writeFile(${JSON.stringify(lifecycle)}, JSON.stringify({ cleanups, parentFinished }));
       await report.save();
     });
   `;
@@ -200,7 +216,7 @@ test(
       } else if (i === 7 || i === 11 || i === 13) {
         expectedOutcome = "failed";
       }
-      assert.equal(row.outcome, expectedOutcome);
+      assert.equal(row.outcome, expectedOutcome, row.reason);
       assert.ok(Number.isFinite(Date.parse(row.startedAt)));
       assert.ok(Number.isInteger(row.durationMs) && row.durationMs >= 0);
     }
@@ -214,8 +230,181 @@ test(
       "The operation was aborted due to timeout",
     );
     assert.equal(report.outcomes.find((row) => row.stage === "stage-13").reason, "undefined");
+    assert.deepEqual(JSON.parse(await readFile(lifecycle, "utf8")), {
+      cleanups: 20,
+      parentFinished: false,
+    });
     assert.equal((await stat(output)).mode & 0o777, 0o600);
-    assert.deepEqual(await readdir(directory), ["matrix.json"]);
+    assert.deepEqual(await readdir(directory), ["lifecycle.json", "matrix.json"]);
+  },
+);
+
+test("QA cleanup-aware stages publish only settled assertion and cleanup outcomes", async (t) => {
+  const directory = await temporaryDirectory(t, "qa-stage-lifecycle-");
+  const output = join(directory, "matrix.json");
+  const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
+  const teardownModule = new URL("../helpers/bounded-teardown.ts", import.meta.url).href;
+  const source = `
+    import assert from 'node:assert/strict';
+    import test from 'node:test';
+    import { readFile } from 'node:fs/promises';
+    import { setTimeout as delay } from 'node:timers/promises';
+    import { createQaReport } from ${JSON.stringify(reportModule)};
+    import { withBoundedTeardown } from ${JSON.stringify(teardownModule)};
+    const report = createQaReport(${JSON.stringify(output)}, { scope: 'partial:selected' });
+    await report.save();
+    for (const scenario of ['success', 'cleanup-failure', 'both-fail', 'cancelled']) {
+      const cancellation = new AbortController();
+      test(scenario, { signal: cancellation.signal }, async (parent) => {
+        await report.stage(parent, 'kubernetes/Codex', scenario, async (child) => {
+          const context = withBoundedTeardown(child);
+          let stopped = scenario !== 'cancelled';
+          let settled = scenario !== 'cancelled';
+          context.after(async () => {
+            // The real hook is still executing, so success must not be published yet.
+            await delay(5);
+            const rows = JSON.parse(await readFile(${JSON.stringify(output)}, 'utf8')).outcomes;
+            assert.ok(!rows.some((row) => row.stage === scenario && row.outcome === 'passed'));
+            assert.equal(stopped, true, 'cancelled work must observe its stage signal');
+            assert.equal(settled, true, 'cleanup must wait for the in-flight operation');
+            if (scenario === 'cleanup-failure' || scenario === 'both-fail') {
+              throw new Error('controlled cleanup failure');
+            }
+          });
+          if (scenario === 'both-fail') throw new Error('controlled assertion failure');
+          if (scenario === 'cancelled') {
+            // Abort only this real node:test parent; its actual child signal must follow.
+            await new Promise((resolve) => {
+              context.signal.addEventListener('abort', () => {
+                stopped = true;
+                setTimeout(() => { settled = true; resolve(); }, 20);
+              }, { once: true });
+              cancellation.abort(new Error('controlled stage cancellation'));
+            });
+            context.signal.throwIfAborted();
+          }
+        }, scenario, { reportCleanup: true });
+      });
+    }
+  `;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", source], {
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  assert.ifError(child.error);
+  assert.equal(child.status, 1, child.stdout + child.stderr);
+  const { outcomes } = JSON.parse(await readFile(output, "utf8"));
+  assert.equal(outcomes.length, 4);
+  const row = (name) => outcomes.find((outcome) => outcome.stage === name);
+  assert.equal(
+    row("cleanup-failure").outcome,
+    "failed",
+    "cleanup failure must never publish passed",
+  );
+  assert.equal(row("success").outcome, "passed");
+  assert.equal(row("success").assertions.outcome, "passed");
+  assert.equal(row("success").cleanup.outcome, "passed");
+  assert.equal(row("cleanup-failure").outcome, "failed");
+  assert.equal(row("cleanup-failure").assertions.outcome, "passed");
+  assert.equal(row("cleanup-failure").cleanup.outcome, "failed");
+  assert.match(row("cleanup-failure").cleanup.reason, /controlled cleanup failure/);
+  assert.equal(row("both-fail").outcome, "failed");
+  assert.match(row("both-fail").assertions.reason, /controlled assertion failure/);
+  assert.match(row("both-fail").cleanup.reason, /controlled cleanup failure/);
+  assert.equal(row("cancelled").outcome, "failed");
+  assert.notEqual(row("cancelled").assertions.outcome, "passed");
+  assert.equal(row("cancelled").cleanup.outcome, "incomplete", row("cancelled").cleanup.reason);
+});
+
+test(
+  "QA expired joins retain dependencies and stop resumed setup",
+  { timeout: 15_000 },
+  async (t) => {
+    const directory = await temporaryDirectory(t, "qa-expired-join-");
+    const output = join(directory, "matrix.json");
+    const observation = join(directory, "observation.json");
+    const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
+    const teardownModule = new URL("../helpers/bounded-teardown.ts", import.meta.url).href;
+    const source = `
+    import assert from 'node:assert/strict';
+    import test, { mock } from 'node:test';
+    import { writeFile, rm } from 'node:fs/promises';
+    import { setImmediate as immediate, setTimeout as delay } from 'node:timers/promises';
+    import { join } from 'node:path';
+    import { createQaReport } from ${JSON.stringify(reportModule)};
+    import { withBoundedTeardown, teardownStepLimitMs } from ${JSON.stringify(teardownModule)};
+    const root = ${JSON.stringify(directory)};
+    const report = createQaReport(${JSON.stringify(output)}, { scope: 'partial:selected' });
+    await report.save();
+    const cancellation = new AbortController();
+    let ready;
+    const started = new Promise((resolve) => { ready = resolve; });
+    let resume;
+    const paused = new Promise((resolve) => { resume = resolve; });
+    let localClosed = false;
+    let advanced = false;
+    let bodyEnded = false;
+    // A real handle deliberately outlives the test: bounded teardown must end
+    // the process after late setup is stopped, rather than silently hanging.
+    setInterval(() => {}, 1_000);
+    const running = test('paused setup', { signal: cancellation.signal }, async (parent) => {
+      await report.stage(parent, 'kubernetes/Codex', 'expired join', async (context) => {
+        assert.equal(withBoundedTeardown(context), context);
+        await writeFile(join(root, 'dependency'), 'owned dependency');
+        await writeFile(join(root, 'ownership.json'), '{}');
+        context.after(async () => {
+          await rm(join(root, 'dependency'));
+          await rm(join(root, 'ownership.json'));
+        });
+        const localHandle = setInterval(() => {}, 1_000);
+        const closeLocal = () => { clearInterval(localHandle); localClosed = true; };
+        // The old reporter lacks this opt-in; use its ordinary registrar only
+        // for the regression comparison, without replacing the real teardown.
+        (context.afterLocal ?? context.after)(closeLocal);
+        ready();
+        try {
+          await paused;
+          await writeFile(join(root, 'late-dependency'), 'late owned dependency');
+          context.after(() => rm(join(root, 'late-dependency')));
+          advanced = true;
+        } finally {
+          bodyEnded = true;
+        }
+      }, 'native-api-continuity', { reportCleanup: true });
+    });
+    await started;
+    // Advance only the join's wall timer. The real node:test cancellation,
+    // teardown callbacks, resumed body and process-exit policy still execute.
+    mock.timers.enable({ apis: ['setTimeout'] });
+    cancellation.abort(new Error('controlled cancellation during paused setup'));
+    await immediate();
+    mock.timers.tick(teardownStepLimitMs);
+    mock.timers.reset();
+    await running;
+    resume();
+    for (let i = 0; i < 100 && !bodyEnded; i += 1) await delay(1);
+    await writeFile(${JSON.stringify(observation)}, JSON.stringify({ localClosed, advanced, bodyEnded }));
+  `;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", source], {
+      encoding: "utf8",
+      timeout: 8_000,
+    });
+    const observed = JSON.parse(await readFile(observation, "utf8"));
+    assert.deepEqual(observed, { localClosed: true, advanced: false, bodyEnded: true });
+    assert.ifError(child.error);
+    assert.equal(child.status, 1, child.stdout + child.stderr);
+    assert.equal(await readFile(join(directory, "dependency"), "utf8"), "owned dependency");
+    assert.equal(await readFile(join(directory, "ownership.json"), "utf8"), "{}");
+    assert.equal(
+      await readFile(join(directory, "late-dependency"), "utf8"),
+      "late owned dependency",
+    );
+    const { outcomes } = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].outcome, "failed");
+    assert.equal(outcomes[0].cleanup.outcome, "incomplete");
+    assert.match(child.stderr, /setup outlived its test|came after the teardown ran/);
+    assert.match(child.stderr, /retained because its owner has unsettled work/);
   },
 );
 
@@ -422,6 +611,45 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     sandbox.cells.every((cell) => cell.scenarios.length === 0),
     "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
   );
+  // This manual fixture owns its synthetic provider; selecting it must neither
+  // demand a live key nor start the ordinary installation matrix alongside it.
+  const continuityInput = {
+    OCC_TEST_QA_SCENARIOS: "native-api-continuity",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  };
+  const continuity = selectQaMatrix(continuityInput);
+  assert.equal(continuity.nativeApiContinuity, true);
+  assert.ok(continuity.cells.every((cell) => cell.scenarios.length === 0));
+  assert.equal(continuity.scope, "partial:selected");
+  assert.deepEqual(continuity.requiredEnv, [
+    "OPENCLAW_ENTERPRISE_CI_STATE",
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_DATABASE_URL",
+    "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+    "OCC_TEST_GATEWAY_CA_CERT_PATH",
+    "OCC_TEST_GATEWAY_CA_KEY_PATH",
+  ]);
+  const continuityEnv = Object.fromEntries(
+    continuity.requiredEnv.map((name) => [name, "selected"]),
+  );
+  assert.doesNotThrow(() => validateQaInputs(continuity, continuityEnv));
+  for (const name of continuity.requiredEnv) {
+    assert.throws(
+      () => validateQaInputs(continuity, { ...continuityEnv, [name]: " " }),
+      new RegExp(`${name} is required`),
+    );
+  }
+  for (const [override, message] of [
+    [{ OCC_TEST_QA_INSTALLATION: "compose" }, /requires Kubernetes/],
+    [{ OCC_TEST_QA_PRESET: "OpenClaw" }, /requires the Codex preset/],
+    [{ OCC_TEST_QA_SCENARIOS: "native-api-continuity,model-ui" }, /exclusive QA selection/],
+  ]) {
+    assert.throws(() => selectQaMatrix({ ...continuityInput, ...override }), message);
+  }
   const searchConfig = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "codex-search-config",
     OCC_TEST_QA_PRESET: "Codex",
@@ -464,6 +692,8 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
+  assert.equal(full.nativeApiContinuity, false);
+  assert.ok(!full.scenarios.includes("native-api-continuity"));
   // An equally sized selection still omits default coverage if it substitutes a manual scenario.
   assert.equal(
     selectQaMatrix({
