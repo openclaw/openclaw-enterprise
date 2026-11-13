@@ -121,6 +121,7 @@
     "integration/first-agent-startup-lifecycle-cases.ts",
     "integration/ci-openshell-bootstrap-cases.ts",
     "helpers/fixture-command-server.ts",
+    "helpers/keycloak-enrollment-wait.ts",
     "helpers/node-test-summary.ts",
     "helpers/reuse-port-preload.ts",
     "helpers/image-smoke-timeout.ts",

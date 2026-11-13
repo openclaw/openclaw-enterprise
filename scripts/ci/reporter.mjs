@@ -139,6 +139,28 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === "keycloak-enrollment-interrupted") {
+    const { kind, row, operation } = value;
+    return Number.isSafeInteger(row) &&
+      row >= 0 &&
+      row <= 33 &&
+      [
+        "close-console",
+        "close-ingress",
+        "close-context",
+        "prepare-installation",
+        "delete-realm-resource",
+        "configure-realm",
+        "query-users",
+        "serve-console",
+        "open-page",
+        "sign-in",
+        "wait-for-callback",
+        "wait-for-console",
+      ].includes(operation)
+      ? { kind, row, operation }
+      : undefined;
+  }
   if (isRecord(value) && value.kind === openShellGitRetentionKind) {
     return projectOpenShellGitRetention(value);
   }

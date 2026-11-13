@@ -283,7 +283,8 @@
         "run annotates the first failed file before the lane finishes",
         "run finishes file accounting and cleanup after a reporter pipe read error",
         "run records a sanitized file failure after all reported cases pass",
-        "run records failed, skipped, todo, and passed dispositions separately"
+        "run records failed, skipped, todo, and passed dispositions separately",
+        "run keeps the enrollment operation pending when the parent is interrupted"
       ]
     },
     {
