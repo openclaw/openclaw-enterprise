@@ -19,7 +19,6 @@ import {
   kubernetesNotFound,
   persistedKubernetesObject,
   startKubernetesSdkApi,
-  type KubernetesSdkRequest,
   type KubernetesSdkResponse,
 } from "../helpers/kubernetes-sdk-api.ts";
 import {
@@ -29,6 +28,13 @@ import {
 
 import { registerSealedNamespacePolicyCase } from "./kubernetes-namespace-policy-case.ts";
 import { registerKubernetesOwnershipRoutingCases } from "./kubernetes-ownership-routing-cases.ts";
+
+type LifecyclePhase = "ensure" | "prepare" | "stop";
+type ResourceMethod = "GET" | "PATCH" | "DELETE";
+type FixtureResource = {
+  kind: string;
+  methods: Partial<Record<LifecyclePhase, readonly ResourceMethod[]>>;
+};
 
 type WireRecord = Record<string, unknown>;
 type StoredResource = WireRecord & {
@@ -54,9 +60,11 @@ const endpointsPath = `/apis/discovery.k8s.io/v1/namespaces/${namespace}/endpoin
 const deploymentPath = `${appPaths}/deployments/${gatewayName}`;
 const servicePath = `${namespacePath}/services/${gatewayName}`;
 const configMapPath = `${namespacePath}/configmaps/${gatewayName}-rev-${revisionDigest}`;
-const harnessSecretPath = `${namespacePath}/secrets/harness-secrets-${agentDigest}-${revisionDigest}`;
+const secretsPath = `${namespacePath}/secrets`;
+const harnessSecretName = `harness-secrets-${agentDigest}-${revisionDigest}`;
+const harnessSecretPath = `${secretsPath}/${harnessSecretName}`;
 const sourceSecretName = "occ-model-key";
-const sourceSecretPath = `${namespacePath}/secrets/${sourceSecretName}`;
+const sourceSecretPath = `${secretsPath}/${sourceSecretName}`;
 const gatewayImage = "openclaw-enterprise/gateway-fixture:local";
 
 function asRecord(value: unknown): WireRecord {
@@ -64,12 +72,7 @@ function asRecord(value: unknown): WireRecord {
   return value as WireRecord;
 }
 
-function wireWrite(
-  request: KubernetesSdkRequest,
-  path: string,
-  previous?: StoredResource,
-): StoredResource {
-  const value = asRecord(request.body);
+function wireWrite(value: WireRecord, path: string, previous?: StoredResource): StoredResource {
   const metadata = asRecord(value.metadata);
   const name = path.split("/").at(-1);
   assert.ok(name);
@@ -178,29 +181,69 @@ async function ownershipLifecycleFixture(t: TestContext, name: string) {
   const objects = new Map<string, StoredResource>();
   let serviceReadinessLabel: "owned" | "foreign" = "owned";
   let serviceApplied = false;
-  let phase: "ensure" | "prepare" | "stop" = "ensure";
-  const resources = new Map([
-    [namespacePath, "Namespace"],
-    [`${namespacePath}/resourcequotas/openclaw-quota`, "ResourceQuota"],
-    [`${namespacePath}/limitranges/openclaw-limits`, "LimitRange"],
-    [`${policyPaths}/default-deny`, "NetworkPolicy"],
-    [`${policyPaths}/allow-dns`, "NetworkPolicy"],
-    [`${policyPaths}/allow-gateway-ingress`, "NetworkPolicy"],
-    [`${policyPaths}/allow-gateway-channels-${agentDigest}`, "NetworkPolicy"],
-    [`${policyPaths}/${gatewayName}-sandbox`, "NetworkPolicy"],
-    [`${namespacePath}/serviceaccounts/agent-${agentDigest}`, "ServiceAccount"],
-    [`${namespacePath}/serviceaccounts/${gatewayName}`, "ServiceAccount"],
-    [`${namespacePath}/configmaps/harness-trust-${agentDigest}-rev-${revisionDigest}`, "ConfigMap"],
+  let phase: LifecyclePhase = "ensure";
+  const namespacePolicy = {
+    kind: "NetworkPolicy",
+    methods: { ensure: ["GET", "PATCH"], prepare: ["GET"] },
+  } satisfies FixtureResource;
+  const resources = new Map<string, FixtureResource>([
+    [
+      namespacePath,
+      {
+        kind: "Namespace",
+        methods: { ensure: ["GET", "PATCH"], prepare: ["GET"], stop: ["GET"] },
+      },
+    ],
+    [
+      `${namespacePath}/resourcequotas/openclaw-quota`,
+      { kind: "ResourceQuota", methods: { ensure: ["GET", "PATCH"] } },
+    ],
+    [
+      `${namespacePath}/limitranges/openclaw-limits`,
+      { kind: "LimitRange", methods: { ensure: ["GET", "PATCH"] } },
+    ],
+    [`${policyPaths}/default-deny`, namespacePolicy],
+    [`${policyPaths}/allow-dns`, namespacePolicy],
+    [`${policyPaths}/allow-gateway-ingress`, namespacePolicy],
+    [
+      `${policyPaths}/allow-gateway-channels-${agentDigest}`,
+      { kind: "NetworkPolicy", methods: { prepare: ["GET"] } },
+    ],
+    [
+      `${namespacePath}/serviceaccounts/agent-${agentDigest}`,
+      { kind: "ServiceAccount", methods: { prepare: ["GET", "PATCH"] } },
+    ],
+    [
+      `${namespacePath}/serviceaccounts/${gatewayName}`,
+      { kind: "ServiceAccount", methods: { stop: ["GET"] } },
+    ],
+    [
+      `${namespacePath}/configmaps/harness-trust-${agentDigest}-rev-${revisionDigest}`,
+      { kind: "ConfigMap", methods: { stop: ["GET"] } },
+    ],
     [
       `${namespacePath}/configmaps/plugin-runtime-${agentDigest}-rev-${revisionDigest}`,
-      "ConfigMap",
+      { kind: "ConfigMap", methods: { stop: ["GET"] } },
     ],
-    [configMapPath, "ConfigMap"],
-    [deploymentPath, "Deployment"],
-    [servicePath, "Service"],
-    [sourceSecretPath, "Secret"],
-    [harnessSecretPath, "Secret"],
-    [`${namespacePath}/secrets/gateway-secrets-${agentDigest}-${revisionDigest}`, "Secret"],
+    [
+      configMapPath,
+      { kind: "ConfigMap", methods: { prepare: ["GET", "PATCH"], stop: ["GET", "DELETE"] } },
+    ],
+    [
+      deploymentPath,
+      { kind: "Deployment", methods: { prepare: ["GET", "PATCH"], stop: ["GET", "DELETE"] } },
+    ],
+    [
+      servicePath,
+      { kind: "Service", methods: { prepare: ["GET", "PATCH"], stop: ["GET", "DELETE"] } },
+    ],
+    // The canonical credential is read during preparation. Only the projection is created.
+    [sourceSecretPath, { kind: "Secret", methods: { prepare: ["GET"] } }],
+    [harnessSecretPath, { kind: "Secret", methods: { prepare: ["GET"], stop: ["GET", "DELETE"] } }],
+    [
+      `${secretsPath}/gateway-secrets-${agentDigest}-${revisionDigest}`,
+      { kind: "Secret", methods: { stop: ["GET"] } },
+    ],
   ]);
   const observed = (path: string) => {
     const resource = objects.get(path);
@@ -275,19 +318,46 @@ async function ownershipLifecycleFixture(t: TestContext, name: string) {
           ),
         };
       }
-      if (method === "POST" && phase === "prepare" && pathname === `${namespacePath}/secrets`) {
-        const stored = wireWrite(request, harnessSecretPath);
+      if (method === "POST" && phase === "prepare" && pathname === secretsPath) {
+        const body = asRecord(request.body);
+        const metadata = asRecord(body.metadata);
+        if (
+          body.apiVersion !== "v1" ||
+          body.kind !== "Secret" ||
+          metadata.namespace !== namespace ||
+          metadata.name !== harnessSecretName
+        ) {
+          return undefined;
+        }
+        if (objects.has(harnessSecretPath)) {
+          return {
+            status: 409,
+            body: {
+              apiVersion: "v1",
+              kind: "Status",
+              status: "Failure",
+              reason: "AlreadyExists",
+              code: 409,
+              message: `secrets "${harnessSecretName}" already exists`,
+              details: { name: harnessSecretName, kind: "secrets" },
+            },
+          };
+        }
+        const stored = wireWrite(body, harnessSecretPath);
         objects.set(harnessSecretPath, stored);
         return { status: 201, body: stored };
       }
-      const kind = resources.get(pathname);
-      if (kind === undefined) {
+      if (method !== "GET" && method !== "PATCH" && method !== "DELETE") {
+        return undefined;
+      }
+      const target = resources.get(pathname);
+      if (!target?.methods[phase]?.includes(method)) {
         return undefined;
       }
       if (method === "GET") {
         const resource = objects.get(pathname);
         if (resource === undefined) {
-          return kubernetesNotFound(kind, pathname.split("/").at(-1) ?? pathname);
+          return kubernetesNotFound(target.kind, pathname.split("/").at(-1) ?? pathname);
         }
         if (pathname === servicePath && serviceApplied && serviceReadinessLabel === "foreign") {
           const foreign = withForeignAgent(resource, "labels", "openclaw.dev/agent");
@@ -306,10 +376,10 @@ async function ownershipLifecycleFixture(t: TestContext, name: string) {
         }
         return { body: resource };
       }
-      if (method === "PATCH" && phase !== "stop") {
+      if (method === "PATCH") {
         const previous = objects.get(pathname);
-        const stored = wireWrite(request, pathname, previous);
-        assert.equal(stored.kind, kind);
+        const stored = wireWrite(asRecord(request.body), pathname, previous);
+        assert.equal(stored.kind, target.kind);
         if (pathname === namespacePath) {
           stored.status = { phase: "Active" };
         }
@@ -322,17 +392,10 @@ async function ownershipLifecycleFixture(t: TestContext, name: string) {
         objects.set(pathname, stored);
         return { body: stored };
       }
-      if (
-        method === "DELETE" &&
-        phase === "stop" &&
-        [deploymentPath, servicePath, configMapPath, harnessSecretPath].includes(pathname)
-      ) {
-        // Record any delete the Driver sends. Assertions below inspect the exact
-        // UID and resourceVersion transmitted in the SDK's HTTP body.
-        objects.delete(pathname);
-        return { body: { apiVersion: "v1", kind: "Status", status: "Success", code: 200 } };
-      }
-      return undefined;
+      // Record any delete the Driver sends. Assertions below inspect the exact
+      // UID and resourceVersion transmitted in the SDK's HTTP body.
+      objects.delete(pathname);
+      return { body: { apiVersion: "v1", kind: "Status", status: "Success", code: 200 } };
     },
   });
   const resourcesForContainer = {
