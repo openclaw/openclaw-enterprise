@@ -162,7 +162,8 @@
     "../scripts/observe-worker-terminations.ts",
     "helpers/native-admin-postgres.ts",
     "helpers/postgres-worker-revision-queue.ts",
-    "conformance/topology-launch-cases.ts"
+    "conformance/topology-launch-cases.ts",
+    "conformance/workspace-node-supervisor-cases.ts"
   ],
   "references": [
     {
