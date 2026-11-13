@@ -44,7 +44,7 @@ function fixture(directory, probeStatus, probeGate) {
   mkdirSync(skills);
   writeFileSync(join(skills, "fixture"), "");
   // Use the real compressed launcher and HTTP enrollment. Only substitute the
-  // image executables and skill mount, each with a disposable process or file.
+  // image dependencies and the selected local failure or timing conditions.
   const preload = join(directory, "image.cjs");
   writeFileSync(
     preload,
@@ -112,7 +112,16 @@ for (const name of ["spawn", "spawnSync", "execFile"]) {
       return sender;
     }
     if (args.includes("/app/openclaw.mjs")) {
-      return run(process.execPath, args.map((arg) => arg === "/app/openclaw.mjs" ? join(fixture, "openclaw.cjs") : arg), options, ...rest);
+      const child = run(process.execPath, args.map((arg) => arg === "/app/openclaw.mjs" ? join(fixture, "openclaw.cjs") : arg), options, ...rest);
+      const groupError = ${JSON.stringify(["EPERM", "ESRCH"].includes(probeStatus) ? probeStatus : null)};
+      if (groupError && args.includes("--probe")) {
+        const kill = process.kill;
+        process.kill = (pid, signal) => {
+          if (pid === -child.pid) throw Object.assign(new Error("fixture-private-signal-detail"), { code: groupError });
+          return kill(pid, signal);
+        };
+      }
+      return child;
     }
     return run(executable, args, options, ...rest);
   };
@@ -166,7 +175,7 @@ if (process.argv[2] === "models") {
       return;
     }
     console.log(JSON.stringify({ auth: { probes: { results: [
-      { provider: "openai", model: "openai/fixture-model", source: "env", status: ${JSON.stringify(probeStatus === "sender-exit" ? "ok" : probeStatus)} },
+      { provider: "openai", model: "openai/fixture-model", source: "env", status: ${JSON.stringify(["sender-exit", "EPERM", "ESRCH"].includes(probeStatus) ? "ok" : probeStatus)} },
     ] } } }));
   }).catch((error) => { console.error(error); process.exitCode = 1; });
 } else {
@@ -197,6 +206,8 @@ export async function exerciseProtectedNativeWorkerStartup(t) {
     ["held before the observation boundary", "auth", false],
     ["held after the observation boundary", "auth", true],
     ["connected after the observation boundary", "ok", true],
+    ["connects when the probe group is already gone", "ESRCH", false],
+    ["holds when permission to retire the probe group is denied", "EPERM", false],
     ["probe exceeds its stdout limit", "stdout", false],
     ["probe exceeds its stderr limit", "stderr", false],
     ["sender exits after connection and config cleanup fails", "sender-exit", true],
@@ -392,7 +403,7 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
     probeResponse.end();
   }
   let connected;
-  if (probeStatus === "ok" || connection) {
+  if (probeStatus === "ok" || probeStatus === "ESRCH" || connection) {
     await waitFor(
       () => output.includes("\n"),
       worker,
@@ -405,7 +416,12 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
   } else {
     const failure = await waitFor(readFailure, worker, () => diagnostics);
     assert.equal(failure.check, "model-probe");
-    if (probeStatus === "stdout" || probeStatus === "stderr") {
+    if (probeStatus === "EPERM") {
+      assert.equal(failure.code, "MODEL_PROBE_FAILED");
+      assert.deepEqual(failure.cause, { kind: "PROCESS_EXIT", detail: "error-EPERM" });
+      assert.match(diagnostics, /Native model probe cleanup failed\./);
+      assert.doesNotMatch(diagnostics, /fixture-private-signal-detail|"code":"READY"/);
+    } else if (probeStatus === "stdout" || probeStatus === "stderr") {
       assert.equal(failure.code, "MODEL_PROBE_FAILED");
       assert.deepEqual(failure.cause, { kind: "PROCESS_EXIT", detail: "error-ENOBUFS" });
     } else {
@@ -433,8 +449,14 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
     assert.match(diagnostics, /model configuration cleanup failed/);
     assert.doesNotMatch(diagnostics, /fixture-private-directory-detail/);
   } else {
+    const closed = once(worker, "close");
     worker.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null]);
+    await closed;
+  }
+  if (probeStatus === "EPERM") {
+    // Shutdown retries the retained group after the initial cleanup denial.
+    assert.equal(diagnostics.split("Native model probe cleanup failed.").length - 1, 2);
   }
   const refused = (error) => error.cause?.code === "ECONNREFUSED";
   await assert.rejects(fetch(url, { headers }), refused);

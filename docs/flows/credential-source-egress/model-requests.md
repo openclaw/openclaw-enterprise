@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-13
-last_updated_session: authoring-run/cae0a6e8-decf-48fc-9929-a42b8a422ce5
+last_updated_session: authoring-run/f8aa4876-3732-417e-8cd0-2ad6f7be515e
 ---
 
 # Authorize model credentials per request
@@ -104,7 +104,10 @@ signed receipt against the current Sandbox, process, configuration and key.
 The launcher can serve the receipt while the model probe runs. It rejects
 repeat releases and serves the accepted receipt and any held startup failure
 until the process exits. The signature expiry applies to the original POST.
-The launcher stops the probe and its subprocesses at the deadline or on exit.
+When the probe finishes or reaches its deadline, the launcher signals its process
+group. If the group is already gone, startup can continue on a successful probe.
+If signaling fails for any other reason, the node stays disconnected and the
+launcher retries cleanup at exit.
 Compute verifies the current installation before it reports a held failure.
 It withdraws the temporary bootstrap service after node enrollment and
 verifies the installed recipient again before activation.
@@ -249,6 +252,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-13 23:54: Explain how probe group cleanup affects native node readiness. (authoring-run/f8aa4876-3732-417e-8cd0-2ad6f7be515e - bf0aa6c75570ea9be83f46612ce50e59914a63f9)
 
 - 2026-11-13 23:24: Describe probe subprocess retirement and the installation check for held failures. (authoring-run/cae0a6e8-decf-48fc-9929-a42b8a422ce5 - b27b10cdbf98b422a90f620266c9cc8ba9de71b6)
 

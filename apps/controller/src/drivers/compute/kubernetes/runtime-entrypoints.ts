@@ -5428,13 +5428,15 @@ ${KILL_WORKER_GROUP}
 
 function stopNativeProbe(signal) {
   try {
-    killWorkerGroup(nativeProbe, signal);
-    nativeProbe = undefined;
+    if (nativeProbe?.pid) process.kill(-nativeProbe.pid, signal);
   } catch (error) {
-    // Keep the handle for wrapper shutdown and withhold readiness if retirement failed.
-    console.error("Native model probe cleanup failed.");
-    return error;
+    // Signaling the leader alone could leave a probe subprocess running.
+    if (error.code !== "ESRCH") {
+      console.error("Native model probe cleanup failed.");
+      return error;
+    }
   }
+  nativeProbe = undefined;
 }
 
 // The CLI may delegate the probe to a subprocess that inherits its output pipes.
