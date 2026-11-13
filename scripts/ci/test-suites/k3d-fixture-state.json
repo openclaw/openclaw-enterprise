@@ -15,13 +15,13 @@
   },
   "fileConcurrency": 2,
   "parallelFiles": [
-    "tests/integration/postgres-platform-state-kubernetes.test.mjs",
+    "tests/integration/postgres-platform-state-kubernetes.test.ts",
     "tests/integration/kubernetes-compute-provisioning-real.test.mjs",
     "tests/integration/production-install-retained-job-k3d.test.mjs"
   ],
   "files": [
     {
-      "path": "tests/integration/postgres-platform-state-kubernetes.test.mjs",
+      "path": "tests/integration/postgres-platform-state-kubernetes.test.ts",
       "expectedTests": [
         "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
         "real OCC creates concurrent Namespace Agents and durably associates revisions with their owner",
