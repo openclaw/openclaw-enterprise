@@ -696,7 +696,7 @@ test(
       await render({ ...execution, "executionCluster.apiKubeconfigSecretName": secret });
       await render({ ...execution, ...values });
     }
-    const objects = await resources((await render(execution)).stdout);
+    const objects = await renderObjects(execution);
     for (const component of ["api", "worker"]) {
       const pod = findResource(objects, "Deployment", `openclaw-enterprise-${component}`).spec
         .template.spec;
@@ -1190,7 +1190,7 @@ test(
       await t.test(`release ${release.length} characters, ending ${release.at(-1)}`, async () => {
         let installedName;
         for (const isUpgrade of [false, true]) {
-          const objects = await resources((await render({}, { release, isUpgrade })).stdout);
+          const objects = await renderObjects({}, { release, isUpgrade });
           const job = objects.find(({ kind }) => kind === "Job");
           // The real Helm hook must survive admission before migration/bootstrap can run.
           assert.ok(
@@ -1233,8 +1233,9 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
     const controllerImage = isUpgrade
       ? `registry.example.invalid/controller@sha256:${"c".repeat(64)}`
       : values["images.controller"];
-    const objects = await resources(
-      (await render({ ...settings, "images.controller": controllerImage }, { isUpgrade })).stdout,
+    const objects = await renderObjects(
+      { ...settings, "images.controller": controllerImage },
+      { isUpgrade },
     );
     // Recovery joins the submitted attempt to all live hooks and its owned Pod;
     // install-only attribution remains separate when both values are retained.
@@ -1844,9 +1845,10 @@ test(
           ? {}
           : { "repositoryCredentials.clusterDomain": clusterDomain }),
       };
-      const objects = await resources(
-        (await render(overrides, { namespace, isUpgrade: serviceName !== undefined })).stdout,
-      );
+      const objects = await renderObjects(overrides, {
+        namespace,
+        isUpgrade: serviceName !== undefined,
+      });
       const endpointName = serviceName ?? "git";
       assert.ok(
         objects.some(
@@ -2238,7 +2240,7 @@ test(
   "repository credential ingress stays closed until Compute admits a prepared Harness revision",
   tooling,
   async () => {
-    const objects = await resources((await render(repositoryCredentialValues)).stdout);
+    const objects = await renderObjects(repositoryCredentialValues);
     const worker = findResource(objects, "Deployment", "openclaw-enterprise-worker");
     const destination = {
       namespace: "openclaw-system",
@@ -2297,7 +2299,7 @@ test(
       const labels = { ...source.labels, "openclaw.dev/workload-role": role };
       assert.equal(allowed({ ...source, labels }), false, `unintended workload role ${role}`);
     }
-    const disabled = await resources((await render()).stdout);
+    const disabled = await renderObjects();
     assert.equal(
       allowed(source, 8443, "TCP", disabled),
       false,
@@ -2419,15 +2421,11 @@ test("the chart validates scalar and literal repository backend IDs", tooling, a
     ["github-$$(BACKEND)", "github-$$$$(BACKEND)"],
   ]) {
     // Scalars use normal --set typing; strings retain the explicit string override.
-    const objects = await resources(
-      (
-        await render(
-          { ...repositoryCredentialValues, "repositoryCredentials.backendId": backendId },
-          typeof backendId === "string"
-            ? { strings: { "repositoryCredentials.backendId": backendId } }
-            : {},
-        )
-      ).stdout,
+    const objects = await renderObjects(
+      { ...repositoryCredentialValues, "repositoryCredentials.backendId": backendId },
+      typeof backendId === "string"
+        ? { strings: { "repositoryCredentials.backendId": backendId } }
+        : {},
     );
     const broker = deploymentPodSpec(objects, "worker").containers.find(
       ({ name }) => name === "repository-credentials",
@@ -2912,11 +2910,11 @@ test("MCP plugin discovery has independent API HTTPS egress", tooling, async () 
 
 test("Slack directory proxy grants only API egress to its exact endpoint", tooling, async () => {
   const name = "openclaw-enterprise-api-channel-directory-egress";
-  const defaults = await resources((await render()).stdout);
+  const defaults = await renderObjects();
   assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
-  const objects = await resources(
-    (await render({ "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" })).stdout,
-  );
+  const objects = await renderObjects({
+    "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
+  });
   assertApiEgressPolicy(
     objects,
     name,
@@ -2968,7 +2966,7 @@ test(
   "managed Slack proxy renders private Service DNS and restricted proxy policies",
   tooling,
   async () => {
-    const objects = await resources((await render(slackProxyValues)).stdout);
+    const objects = await renderObjects(slackProxyValues);
     const named = (kind, name) => findResource(objects, kind, name);
     const deployment = named("Deployment", "openclaw-enterprise-slack-proxy");
     const service = named("Service", "openclaw-enterprise-slack-proxy");
@@ -3047,9 +3045,7 @@ test(
         ports: [{ protocol: "TCP", port: 3128 }],
       },
     ]);
-    const gatewayObjects = await resources(
-      (await render({ ...slackProxyValues, ...gatewayRoutingValues })).stdout,
-    );
+    const gatewayObjects = await renderObjects({ ...slackProxyValues, ...gatewayRoutingValues });
     const gatewayProxyPolicy = findResource(
       gatewayObjects,
       "NetworkPolicy",
@@ -3193,7 +3189,7 @@ test("database CA mounts stay distinct from active production volume mounts", to
     { ...issuerCaValues, "backend.openshell.clientSecretName": "dedicated-openshell-admin" },
     { "bootstrap.password.mountPath": "/custom/bootstrap" },
   ]) {
-    const objects = await resources((await render(features)).stdout);
+    const objects = await renderObjects(features);
     // Derive the existing mounts from shipped workloads, independently of the validation list.
     const paths = new Set(
       objects
@@ -3329,7 +3325,7 @@ test(
   tooling,
   async () => {
     const releaseNamespace = "oauth-control-plane";
-    const objects = await resources((await render({}, { namespace: releaseNamespace })).stdout);
+    const objects = await renderObjects({}, { namespace: releaseNamespace });
     const privateNamespaces = new Set();
     for (const [component, verbs] of [
       ["api", ["get", "create", "update", "delete"]],
@@ -3436,7 +3432,7 @@ test(
 const signInEnv = /^OCC_AUTH_(GOOGLE_|OIDC_|TRUSTED_PROXY_CIDRS|CLIENT_IP_HEADER)/;
 
 async function signInObjects(overrides) {
-  const objects = await resources((await render(overrides)).stdout);
+  const objects = await renderObjects(overrides);
   const selected = (kind, component) => findResourceByComponent(objects, kind, component);
   const apiEnv = Object.fromEntries(
     selected("Deployment", "api").spec.template.spec.containers[0].env.map(({ name, ...value }) => [
@@ -4122,7 +4118,7 @@ test("the chart lets the public CA settings share one trust bundle Secret", tool
     }
   }
   const shared = Object.fromEntries(settings.map((setting) => [setting, "occ-trust-bundle"]));
-  const objects = await resources((await render({ ...base, ...shared })).stdout);
+  const objects = await renderObjects({ ...base, ...shared });
   const api = findResource(objects, "Deployment", "openclaw-enterprise-api").spec.template.spec;
   assert.deepEqual(
     api.volumes
@@ -4186,9 +4182,7 @@ test(
       );
     }
     for (const namespace of ["1system", "0", "a".repeat(63)]) {
-      const objects = await resources(
-        (await render(externalGatewayRoutingValues, { namespace })).stdout,
-      );
+      const objects = await renderObjects(externalGatewayRoutingValues, { namespace });
       const gateway = objects.find((object) => object.kind === "Gateway");
       assert.equal(gateway.metadata.namespace, namespace);
     }
@@ -4391,9 +4385,7 @@ test(
       ["407", "1e3"],
       ["true", "null"],
     ]) {
-      const objects = await resources(
-        (await render(features, { release, namespace, strings })).stdout,
-      );
+      const objects = await renderObjects(features, { release, namespace, strings });
       assert.ok(objects.length > 40);
       assert.deepEqual(nonStringIdentifiers(objects), [], `${release}/${namespace}`);
     }
@@ -5202,7 +5194,7 @@ test(
         "openshell-system",
       "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
     };
-    const defaults = await resources((await render()).stdout);
+    const defaults = await renderObjects();
     assert.ok(!defaults.some(({ metadata }) => metadata?.name?.includes("openshell-git")));
     const { stdout } = await render(selected);
     // Check the entire installation, including Services, probes, ingress and broker-specific RBAC.
@@ -5339,16 +5331,12 @@ test(
       render({ ...oldTrial, "openshellGit.mode": "broker-trial" }, { isUpgrade: true }),
       /drain the earlier broker trial on its original owner/,
     );
-    const sealed = await resources(
-      (
-        await render({
-          ...selected,
-          ...gatewayRoutingValues,
-          "preprovisionedNamespace.namespaceId": "ns_fixture",
-          "preprovisionedNamespace.uid": "11111111-2222-3333-4444-555555555555",
-        })
-      ).stdout,
-    );
+    const sealed = await renderObjects({
+      ...selected,
+      ...gatewayRoutingValues,
+      "preprovisionedNamespace.namespaceId": "ns_fixture",
+      "preprovisionedNamespace.uid": "11111111-2222-3333-4444-555555555555",
+    });
     const namespaceRules = sealed.flatMap(({ kind, rules }) =>
       kind === "ClusterRole" ? rules.filter((rule) => rule.resources?.includes("namespaces")) : [],
     );
