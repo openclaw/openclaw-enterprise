@@ -523,7 +523,7 @@ test("deleting a template and client targets the selected availability and prese
   await draftRow.getByRole("cell", { name: "No OAuth client assigned", exact: true }).waitFor();
 
   // A registration created after the list loaded must appear when deletion refreshes the catalog.
-  await register(draft.data.id, "Draft app", "draft-app");
+  await register(draft.data.id, "Google app", "draft-app");
   await removeTemplate.click();
   assert.match(await templateDialog.innerText(), /Google OAuth/);
   assert.match(await templateDialog.innerText(), /Installation-wide/);
@@ -537,7 +537,7 @@ test("deleting a template and client targets the selected availability and prese
     .click();
   assert.equal((await deletedTemplate).status(), 204);
   await page.getByText("Deleted Google OAuth.", { exact: true }).waitFor();
-  await draftRow.getByRole("cell", { name: "Draft app", exact: true }).waitFor();
+  await draftRow.getByRole("cell", { name: "Google app", exact: true }).waitFor();
   await templateRow(localTemplate)
     .getByRole("cell", { name: "Support app", exact: true })
     .waitFor();
@@ -551,7 +551,7 @@ test("deleting a template and client targets the selected availability and prese
   await clientDialog.getByRole("button", { name: "Delete OAuth client", exact: true }).click();
   assert.equal((await deletedClient).status(), 204);
   await page.getByText("Deleted Google app.", { exact: true }).waitFor();
-  await button("Delete Support app (Namespace · Customer support)").waitFor();
+  await button("Delete Google app (Namespace · Customer support)").waitFor();
   assert.equal(await removeClient.count(), 0);
 });
 
