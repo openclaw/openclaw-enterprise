@@ -816,14 +816,73 @@ stateCase(
     });
     assert.equal(Object.hasOwn(firstRevision, "servicePrincipalId"), false);
 
+    const agentPath = `/namespaces/${namespaceA}/agents/${primary.id}`;
     await pollUntil(
-      `first revision ${firstRevision.id} to become active`,
+      `first deployment ${firstRevision.id} to succeed`,
       async () => {
-        const current = await request(api, "GET", `/namespaces/${namespaceA}/agents/${primary.id}`);
+        const current = await request(api, "GET", `${agentPath}/deployments/${firstRevision.id}`);
         assert.equal(current.status, 200);
-        return current.data.activeRevisionId === firstRevision.id ? current.data : undefined;
+        assert.notEqual(current.data.status, "failed");
+        return current.data.status === "succeeded" ? current.data : undefined;
       },
       { worker, timeoutMs: 60_000 },
+    );
+    const active = await request(api, "GET", agentPath);
+    assert.equal(active.status, 200);
+    assert.equal(active.data.activeRevisionId, firstRevision.id);
+
+    // The same signed-in administrator can read this audit page only after an exact Agent grant.
+    const auditPath = `${agentPath}/audit-events?limit=100`;
+    const deniedAudit = await request(api, "GET", auditPath);
+    assert.equal(deniedAudit.status, 403);
+    assert.equal(deniedAudit.data, undefined);
+    const session = await request(api, "GET", "/api/auth/session");
+    assert.equal(session.status, 200);
+    const actor = await pool.query("SELECT id FROM occ.iam_identities WHERE subject = $1", [
+      session.data.user.id,
+    ]);
+    assert.equal(actor.rowCount, 1);
+    const role = await request(api, "POST", `/namespaces/${namespaceA}/iam/roles`, {
+      name: "Agent audit reader",
+      permissions: [{ action: "read_audit", resourceKind: "agent" }],
+    });
+    assert.equal(role.status, 201);
+    const grant = await request(api, "POST", `/namespaces/${namespaceA}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: actor.rows[0].id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: primary.id,
+    });
+    assert.equal(grant.status, 201);
+    const audit = await request(api, "GET", auditPath);
+    assert.equal(audit.status, 200);
+
+    // Follow the original HTTP request to the work item and the worker attempt that succeeded.
+    const { requestId } = firstDeployment.meta;
+    assert.match(requestId, /^req_[0-9a-f-]{36}$/);
+    const queued = audit.data.events.find(
+      (entry) => entry.event === "work_queued" && entry.requestId === requestId,
+    );
+    assert.ok(queued, "the audit page must include the queue record for the deploy request");
+    assert.match(queued.workId, /^work_[0-9a-f]{64}$/);
+    const result = audit.data.events.find(
+      (entry) =>
+        entry.event === "work_result" &&
+        entry.workId === queued.workId &&
+        entry.workState === "succeeded",
+    );
+    assert.equal(result?.outcome, "success");
+    assert.match(result.attemptId, /^aud_[0-9a-f-]{36}$/);
+    const claim = audit.data.events.find(
+      (entry) =>
+        entry.event === "work_claimed" &&
+        entry.workId === queued.workId &&
+        entry.attemptId === result.attemptId,
+    );
+    assert.equal(claim?.id, result.attemptId);
+    context.diagnostic(
+      `Agent audit HTTP ${deniedAudit.status} before grant, ${audit.status} after grant. ${requestId} -> ${queued.workId} -> ${claim.id} -> ${result.id} succeeded`,
     );
 
     const replacementConfigValues = {

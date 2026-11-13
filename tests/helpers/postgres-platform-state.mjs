@@ -572,7 +572,7 @@ async function request(controller, method, path, body, options = {}) {
     signal: AbortSignal.timeout(5_000),
   });
   const payload = await response.json();
-  return { status: response.status, data: payload.data, error: payload.error };
+  return { status: response.status, data: payload.data, error: payload.error, meta: payload.meta };
 }
 
 async function createDurableController(pool) {
