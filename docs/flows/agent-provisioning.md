@@ -69,7 +69,7 @@ Secret before source-backed provisioning. [Console recovery](../reference/consol
 reuses confirmed sources and safely retries uncertain registration.
 Installation discovery preserves catalog metadata.
 
-Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate. A failed job, a different-plan refusal, or a refusal naming a deleted Secret, Credential source or ServiceAccount takes a fresh ID and unlocks the form for a replacement.
+Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate. A failed job, a different-plan refusal, or one naming a deleted Secret, Credential source or ServiceAccount takes a fresh ID and unlocks the form for a replacement.
 
 For a draft, Console creates the Configuration and Agent, then grants access to selected Slack Secrets. Retry credential access keeps that Agent.
 
@@ -230,7 +230,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
-- 2026-11-13 15:30: Unlock recovery for deleted resources; keep the meter's confirmed steps on an unreadable phase. (feat/create-agent-progress - 3c59aee2e)
+- 2026-11-13 15:30: Unlock recovery for deleted resources; monotonic meter steps. (feat/create-agent-progress - 3c59aee2e)
 - 2026-11-11 13:40: Follow the maintainer review: checkpoint status line, refused-read explanation, identity-preserving recovery. (feat/create-agent-progress - f4d6588b9)
 - 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
 
@@ -243,7 +243,6 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - 2026-10-20 14:57: Preserve human Gateway identities and reject malformed or automatic administrator grants; consolidate PR #2596 history. (PR #3049 - fd73e091f)
 
 - 2026-10-25: Refuse a taken Agent name at admission. (finding 2420)
-- 2026-10-25 03:30: Check a Secret binding's placement before the Compute plan check; Console runs the preflight first. (fix-postland-1025b - 2b1f510594)
 
 - 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 
