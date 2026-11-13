@@ -58,6 +58,7 @@ import {
   PluginDiscoveryError,
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
+  ProtectedDownloadUnchangedError,
   ProtectedExecutionNetworkPolicyError,
   ProvisioningSecretDriverError,
   RepositoryBindingSelectionError,
@@ -136,6 +137,15 @@ type ErrorCase = readonly [
 // requestFailure: a subclass must keep its own status and text, not its parent's.
 const cases = [
   // 409: conflicts the user can act on.
+  [
+    "reapplying an unchanged protected download reports a conflict",
+    new ProtectedDownloadUnchangedError(),
+    {
+      status: 409,
+      code: "SANDBOX_POLICY_DOWNLOAD_UNCHANGED",
+      message: "The requested download and approval state is already saved.",
+    },
+  ],
   [
     "a state conflict names what blocks the operation",
     new ResourceStateConflictError(AGENT_NAME_CONFLICT),

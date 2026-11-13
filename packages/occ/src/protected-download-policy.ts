@@ -2,7 +2,7 @@ import { asRecord } from "@openclaw-enterprise/utils";
 import { createHash } from "node:crypto";
 import { canonicalProvisioningJson } from "./agent-provisioning.ts";
 import { isDeepStrictEqual } from "node:util";
-import type { CredentialSourceReadRepository } from "./state/platform-state.ts";
+import type { CredentialPolicyReductionUnitOfWork } from "./ports/credential-policy-reduction.ts";
 import type { InstalledDriver } from "./installed-driver.ts";
 import {
   assertExecutionAdmission,
@@ -19,6 +19,7 @@ import type {
   Agent,
   AgentRevision,
   ComputeDriver,
+  CredentialSource,
   CredentialProxyDriver,
   EgressInstallation,
   Namespace,
@@ -261,7 +262,15 @@ export function protectedDownloadTargetMatches(
 }
 
 export async function protectedDownloadSourcesCurrent(
-  sources: CredentialSourceReadRepository,
+  sources: Pick<
+    CredentialPolicyReductionUnitOfWork["credentialSources"],
+    "listCredentialPolicyReductions" | "listCredentialWithdrawals"
+  > & {
+    findCredentialSource(
+      namespaceId: string,
+      credentialSourceId: string,
+    ): Promise<Readonly<CredentialSource> | undefined>;
+  },
   revision: AgentRevision,
 ): Promise<boolean> {
   const plan = revision.egressPlan;

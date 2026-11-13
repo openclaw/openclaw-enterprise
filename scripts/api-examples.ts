@@ -630,7 +630,7 @@ export const responseExamples = {
   listAgentStandingApprovalScopes: [],
   listAgentStandingApprovals: [],
   getAgentSandboxPolicy: {
-    policy,
+    policy: { ...policy, approvedDownloadDestinations: [], downloadDestinations: [] },
     editingEnabled: true,
     protectedExecution: false,
     ceiling: [],

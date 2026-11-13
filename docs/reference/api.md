@@ -7719,6 +7719,8 @@ Example response
     "policy": {
       "additions": [],
       "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+      "approvedDownloadDestinations": [],
+      "downloadDestinations": [],
       "id": "sbp_123e4567-e89b-42d3-a456-426614174000",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
       "version": 1
