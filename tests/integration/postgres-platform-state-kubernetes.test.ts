@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { describe, test, type TestContext, type TestOptions } from "node:test";
-import type { Pool } from "pg";
 
 import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import type {
@@ -15,7 +13,6 @@ import type {
   AgentResponse,
   AuditEvent,
   ConfigurationResponse,
-  ErrorResponse,
   InstallationResponse,
   NamespaceResponse,
 } from "../../packages/contracts/src/index.ts";
@@ -26,33 +23,24 @@ import {
   admitted,
   caseDatabasesAvailable,
   cleanupKubernetesNamespaces,
-  createConfiguration as createConfigurationRaw,
-  createKubernetesConfiguredAgent as createConfiguredAgentRaw,
-  createKubernetesHarnessAuth as createKubernetesHarnessAuthRaw,
+  createConfiguration,
+  createKubernetesConfiguredAgent,
+  createKubernetesHarnessAuth,
   defaultAgentConfigurationValues,
   grantTenantAccess,
-  pollUntil as pollUntilRaw,
-  prepareCaseDatabase as prepareCaseDatabaseRaw,
-  request as requestRaw,
+  pollUntil,
+  prepareCaseDatabase,
+  request,
   requiresPostgresAndKubernetesConfiguration,
-  startKubernetesController as startKubernetesControllerRaw,
-  startKubernetesWorker as startKubernetesWorkerRaw,
-  updateConfiguration as updateConfigurationRaw,
-  waitForNamespaceReady as waitForNamespaceReadyRaw,
-} from "../helpers/postgres-platform-state.mjs";
+  startKubernetesController,
+  startKubernetesWorker,
+  updateConfiguration,
+  waitForNamespaceReady,
+  type KubernetesFixtureAgent,
+} from "../helpers/postgres-platform-state.ts";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
-
-interface Worker {
-  child: ChildProcess;
-  output: () => string;
-}
-
-interface Controller extends Worker {
-  origin: string;
-  session: { cookie: string; origin: string };
-}
 
 type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
 type NamespaceCompletion = WorkerEvent & {
@@ -65,71 +53,6 @@ type Revision = AgentRevisionResponse["data"];
 type Configuration = ConfigurationResponse["data"];
 type Namespace = NamespaceResponse["data"];
 type Installation = InstallationResponse["data"];
-type Agent = AgentResponse["data"];
-type FixtureAgent = Agent & {
-  harnessAuth: Extract<Agent["harnessAuth"], { method: "api_key" }>;
-};
-
-interface HttpResult<Data> {
-  status: number;
-  data: Data;
-  error: ErrorResponse["error"] | undefined;
-}
-
-const startKubernetesController: (context: TestContext) => Promise<Controller> =
-  startKubernetesControllerRaw;
-const startKubernetesWorker: (context: TestContext) => Promise<Worker> = startKubernetesWorkerRaw;
-const prepareCaseDatabase: (
-  context: TestContext,
-  selection: { lane: string; testFile: string },
-) => Promise<string | undefined> = prepareCaseDatabaseRaw;
-
-const request: <Data = unknown>(
-  controller: Controller,
-  method: "GET" | "POST" | "PATCH" | "DELETE",
-  path: string,
-  body?: unknown,
-  options?: { authenticated?: boolean },
-) => Promise<HttpResult<Data>> = requestRaw;
-
-const pollUntil: <Value>(
-  description: string,
-  operation: () => Value | undefined | Promise<Value | undefined>,
-  options: { worker: Worker; timeoutMs?: number },
-) => Promise<Value> = pollUntilRaw;
-
-const createConfiguration: (
-  api: Controller,
-  namespaceId: string,
-  values: typeof defaultAgentConfigurationValues & Record<string, unknown>,
-) => Promise<Configuration> = createConfigurationRaw;
-
-const updateConfiguration: (
-  api: Controller,
-  namespaceId: string,
-  configurationId: string,
-  values: Configuration["values"],
-) => Promise<Configuration> = updateConfigurationRaw;
-
-const createConfiguredAgent: (
-  pool: Pool,
-  api: Controller,
-  namespaceId: string,
-  name: string,
-  values?: Configuration["values"],
-) => Promise<{ configuration: Configuration; agent: FixtureAgent }> = createConfiguredAgentRaw;
-
-const createKubernetesHarnessAuth: (
-  api: Controller,
-  namespaceId: string,
-) => Promise<{ method: string; source: unknown }> = createKubernetesHarnessAuthRaw;
-
-const waitForNamespaceReady: (
-  api: Controller,
-  namespaceId: string,
-  worker: Worker,
-) => Promise<Namespace> = waitForNamespaceReadyRaw;
-
 interface PersistedRevisionSpec {
   compute: { admission: string };
 }
@@ -253,7 +176,7 @@ stateCase(
     assert.equal(ready.code, "NAMESPACE_RECONCILED");
     assert.equal(ready.hintCode, undefined);
 
-    const { agent } = await createConfiguredAgent(
+    const { agent } = await createKubernetesConfiguredAgent(
       pool,
       first,
       namespace.data.id,
@@ -379,13 +302,13 @@ stateCase(
       createConfiguration(process, namespace.data.id, secondValues),
     ]);
     const [first, second] = await Promise.all([
-      request<FixtureAgent>(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
+      request<KubernetesFixtureAgent>(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
         name: `first-${randomUUID()}`,
         configurationId: firstConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
         gatewayManagedMode: false,
       }),
-      request<FixtureAgent>(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
+      request<KubernetesFixtureAgent>(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
         name: `second-${randomUUID()}`,
         configurationId: secondConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
@@ -424,7 +347,7 @@ stateCase(
     const persistedAgents = await pool.query<{
       id: string;
       namespace_id: string;
-      execution_mode: Agent["executionMode"];
+      execution_mode: AgentResponse["data"]["executionMode"];
       service_principal_id: string;
       kind: string;
       agent_id: string;
@@ -663,7 +586,7 @@ stateCase(
       await waitForNamespaceReady(api, namespace.data.id, worker);
     }
 
-    const { agent } = await createConfiguredAgent(
+    const { agent } = await createKubernetesConfiguredAgent(
       pool,
       api,
       retained.data.id,
@@ -841,22 +764,22 @@ stateCase(
       { agent: foreign },
       { agent: restricted },
     ] = await Promise.all([
-      createConfiguredAgent(
+      createKubernetesConfiguredAgent(
         pool,
         api,
         namespaceA,
         `revision-primary-${randomUUID()}`,
         originalConfigValues,
       ),
-      createConfiguredAgent(pool, api, namespaceA, `revision-sibling-${randomUUID()}`, {
+      createKubernetesConfiguredAgent(pool, api, namespaceA, `revision-sibling-${randomUUID()}`, {
         ...defaultAgentConfigurationValues,
         model: { id: "tenant-a-sibling" },
       }),
-      createConfiguredAgent(pool, api, namespaceB, `revision-foreign-${randomUUID()}`, {
+      createKubernetesConfiguredAgent(pool, api, namespaceB, `revision-foreign-${randomUUID()}`, {
         ...defaultAgentConfigurationValues,
         model: { id: "tenant-b" },
       }),
-      createConfiguredAgent(pool, api, namespaceA, `revision-restricted-${randomUUID()}`),
+      createKubernetesConfiguredAgent(pool, api, namespaceA, `revision-restricted-${randomUUID()}`),
     ]);
     for (const created of [primary, sibling, foreign, restricted]) {
       assert.equal(typeof created.servicePrincipalId, "string");
