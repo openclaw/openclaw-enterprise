@@ -2,20 +2,24 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
+import type { Namespace } from "@openclaw-enterprise/contracts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
-const url = process.env.OCC_TEST_DATABASE_URL;
+const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 test(
   "a lost real COMMIT response preserves the unknown outcome and committed resource",
   {
-    skip: url ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL transaction verification.",
+    skip: databaseUrl
+      ? false
+      : "Set OCC_TEST_DATABASE_URL for real PostgreSQL transaction verification.",
     timeout: 30000,
   },
   async (t) => {
-    await t.test("URL authority destination", () => verifyCommit(url));
-    const effective = new pg.Client({ connectionString: url });
-    const overridden = new URL(url);
+    assert.ok(databaseUrl, "PostgreSQL test database URL is required");
+    await t.test("URL authority destination", () => verifyCommit(databaseUrl));
+    const effective = new pg.Client({ connectionString: databaseUrl });
+    const overridden = new URL(databaseUrl);
     overridden.searchParams.set("host", effective.host);
     overridden.searchParams.set("port", String(effective.port));
     // The authority deliberately cannot reach the fixture. Both the direct pool
@@ -26,11 +30,11 @@ test(
   },
 );
 
-async function verifyCommit(databaseUrl) {
+async function verifyCommit(databaseUrl: string): Promise<void> {
   const pool = new pg.Pool({ connectionString: databaseUrl });
   const state = new PostgresPlatformState(pool);
-  let proxy;
-  let faultPool;
+  let proxy: Awaited<ReturnType<typeof commitAckProxy>> | undefined;
+  let faultPool: pg.Pool | undefined;
   try {
     // Validate the effective target and transport before any database mutation.
     proxy = await commitAckProxy(databaseUrl);
@@ -43,7 +47,7 @@ async function verifyCommit(databaseUrl) {
         }),
       );
     }
-    const namespace = {
+    const namespace: Namespace = {
       id: `ns_${randomUUID()}`,
       name: `Commit ${randomUUID()}`,
       status: "ready",
@@ -64,12 +68,12 @@ async function verifyCommit(databaseUrl) {
     );
     assert.equal(proxy.observedCommit, true);
     assert.equal(
-      (await state.read((s) => s.namespaces.findNamespace(namespace.id))).id,
+      (await state.read((s) => s.namespaces.findNamespace(namespace.id)))?.id,
       namespace.id,
     );
     // Reusing the pool obtains a working client after the dead connection was discarded.
     assert.equal(
-      (await faultState.read((s) => s.namespaces.findNamespace(namespace.id))).id,
+      (await faultState.read((s) => s.namespaces.findNamespace(namespace.id)))?.id,
       namespace.id,
     );
   } finally {
