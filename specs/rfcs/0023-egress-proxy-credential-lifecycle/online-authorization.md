@@ -74,12 +74,16 @@ import or a matching annotation alone cannot establish what the Gateway stored. 
 release drops the field, changes the roots or reports unsolicited roots, OCE must refuse
 the affected execution before creating its model provider or releasing a credential.
 
-Changing the root set changes the admitted configuration. Admit replacement revisions
-that trust both roots and drain old-root-only executions before switching the shared
-issuer to a chain signed only by the new root. Verify a fresh exchange at the model
-origin, then admit new-root-only revisions and retire revisions that trust both roots.
-Existing approval expiry and the zero cache lifetime apply throughout. A file replacement
-alone does not establish that these steps succeeded.
+Changing the root set changes the selected Driver identity. The API can redeem only
+plans admitted under its current identity. Drain affected executions before changing
+the API and Worker to a versioned bundle containing both roots. Keep the issuer on its
+old chain until replacement revisions complete a fresh token exchange and model request.
+Prepare clients of any listener sharing the issuer certificate to trust the new chain.
+With both roots still admitted, verify every serving replica against the expected
+hostname and the new root alone, then repeat the exchange and model request through
+the ordinary route. Removing the old root requires another drain, API and Worker
+rollout, and fresh admission. Existing approval expiry and the zero cache lifetime
+apply throughout.
 
 Qualification needs a released supplier and a controlled issuer whose chain is outside
 native trust. The model origin must receive the ordinary authorized request with the right
