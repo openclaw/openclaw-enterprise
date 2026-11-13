@@ -14,10 +14,14 @@ For a fresh local k3d installation, use the authenticated
 [Gateway setup](#prepare-an-authenticated-local-gateway).
 
 Select the OpenShell Gateway and Sandbox, then
-[register the model source](../deploy/openshell-credential-sources.md). You can
-register it before or after enabling the repository Credential Proxy. Verify that
-its state and Gateway status are ready and that it has no `egress`. If a ready
-Gateway-owned model source already exists, use it.
+[register one static model source using the OpenAI API-key example](../deploy/openshell-credential-sources.md#register-the-key).
+You can register it before or after enabling the validated bundled `repository.openShell`
+Git-only transport. Keep a separately selected OCE Credential Gateway for model
+delivery; the OpenShell gateway service alone does not select that capability. Verify that
+its state and Gateway status are ready and that it has no `egress`. Reuse an existing
+Gateway-owned source only if it meets these same static-source requirements.
+The selected Gateway catalog must declare Harness authentication without refresh,
+device authorization or ChatGPT OAuth. Bind only this one model source to the Agent.
 
 Keep the Gateway selected and use the source with
 `harnessAuth.method: credential_source`. Configure the repository Credential Proxy

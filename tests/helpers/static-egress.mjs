@@ -736,14 +736,6 @@ async function buildStaticEgressFixture(
         config: { authorized_base_url: `https://provider.example.test:${providerPort}/v1` },
         secrets: { api_key: secret.ref },
       });
-  if (source) {
-    // Selecting a Proxy does not adopt a Gateway source. Consent is explicit while unbound.
-    const adopted = await app.request("PATCH", `${path}/${source.id}`, {
-      body: { adoption: "live", authorityScope: "execution" },
-    });
-    assert.equal(adopted.status, 200, JSON.stringify(adopted));
-    source = adopted.data;
-  }
   const config = await app.createConfiguration(namespace.id, {
     agents: {
       defaults: {

@@ -612,7 +612,15 @@
         "credential exchange cuts a cached stream lease after provider replacement",
         "an unbound source update keeps its admitted provider when same-type providers reorder",
         "a source update withholds resolved material after its provider or injector changes",
-        "explicit live adoption does not require Compute placement"
+        "explicit live adoption does not require Compute placement",
+        "fresh static source refuses duplicate provider identity in either catalog order",
+        "fresh static source keeps catalog order for distinct provider identities",
+        "fresh static source refuses a provider duplicate added during material resolution",
+        "live static registration does not require Compute placement",
+        "live static source validation does not consult backend Gateway placement",
+        "live static registration losing to DELETE preserves its deleting row without Gateway cleanup",
+        "capability discovery omits only conflicting static provider types",
+        "fresh protected enrollment rejects Gateway lifecycle mismatch before material or refresh setup"
       ]
     },
     {
