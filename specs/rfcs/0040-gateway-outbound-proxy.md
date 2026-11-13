@@ -6,7 +6,7 @@ author: miguelbranco80
 
 # Proposal: one Gateway outbound proxy
 
-- **ID:** RFC-0039
+- **ID:** RFC-0040
 - **Status:** Proposed
 - **Author:** miguelbranco80
 - **Created:** 2026-11-05

@@ -18,6 +18,14 @@ import {
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
 
+import { createRequire } from "node:module";
+import {
+  observeWorkspaceNodeRead,
+  recordWorkspaceNodeObservation,
+} from "../../apps/controller/src/gateway/workspace-node-observation.ts";
+import { ActivationPendingError } from "../../packages/occ/src/errors.ts";
+import { createReplacementNodeObservation } from "../helpers/openshell-workspace-node-observation.mjs";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -539,4 +547,153 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     "unexpected diagnostic output lines",
   );
   assert.equal(record.output.omittedLines, 0);
+});
+
+test("replacement readiness goes only to the failed attempt diagnostic output", async (t) => {
+  const root = await createRunnerFixture(t);
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "replacement");
+  const file = "tests/integration/replacement.test.mjs";
+  const moduleUrl = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
+  await writeFile(
+    join(root, file),
+    `
+import test from "node:test";
+import assert from "node:assert/strict";
+import { setImmediate as turn } from "node:timers/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { createKubernetesClient } from ${moduleUrl("../helpers/kubernetes-real.mjs")};
+import { waitForReplacementActivation } from ${moduleUrl("../helpers/openshell-sandbox-workflows.mjs")};
+import { createReplacementNodeObservation } from ${moduleUrl("../helpers/openshell-workspace-node-observation.mjs")};
+import { observeWorkspaceNodeRead, recordWorkspaceNodeObservation } from ${moduleUrl("../../apps/controller/src/gateway/workspace-node-observation.ts")};
+
+test("long failure", async (t) => {
+  const receipt = createReplacementNodeObservation();
+  let reads = 0;
+  const driver = receipt.wrap({
+    async prepareRevision(revision, observation) {
+      const ready = await observeWorkspaceNodeRead(revision.id, async () => {
+        reads++;
+        recordWorkspaceNodeObservation(observation);
+        return observation === "accepted";
+      });
+      return { ready, pendingReason: ready ? undefined : "WORKSPACE_NODE_PENDING" };
+    },
+  });
+  const replacement = { id: "replacement" };
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  syncBuiltinESMExports();
+  const client = createKubernetesClient({ selection: {}, kubectl: () => assert.fail("unexpected cluster call") });
+  let agentReads = 0, deploymentReads = 0, timeout;
+
+  const topology = {
+    namespaceId: "ns",
+    agent: { id: "agent" },
+    replacementNode: receipt,
+    request: async (method, path) => {
+      assert.equal(method, "GET");
+      if (path.endsWith("/deployments/replacement")) {
+        deploymentReads++;
+        return { status: 200, data: { status: "pending" } };
+      }
+      agentReads++;
+      return { status: 200, data: { activeRevisionId: "previous" } };
+    },
+    diagnoseRevision: async () => {
+      await driver.prepareRevision(replacement, "no confirmed device");
+      return {};
+    },
+  };
+  const completion = waitForReplacementActivation(topology, { data: replacement }, t, async (...args) => {
+      await driver.prepareRevision(replacement, "no confirmed device");
+      await driver.prepareRevision(replacement, "disconnected");
+      await driver.prepareRevision({ id: "other" }, "no confirmed device");
+      await driver.prepareRevision(replacement, "accepted");
+      try {
+        return await client.waitFor(...args);
+      } catch (error) {
+        timeout = error;
+        throw error;
+      }
+    }, async () => "").catch(error => error);
+  await turn();
+  for (let interval = 0; interval < 320; interval++) {
+    t.mock.timers.tick(750);
+    await turn();
+  }
+  const failure = await completion;
+  assert.equal(failure, timeout);
+  assert.deepEqual([Date.now(), agentReads, deploymentReads, reads], [240000, 321, 321, 5]);
+  throw failure;
+});
+`,
+  );
+  await writeRunnerManifest(root, { lanes: { replacement: { files: [{ path: file }] } } });
+  const run = runRunnerSync(laneArgs(root, "replacement", statePath, resultsPath));
+  assert.equal(run.status, 1);
+  const results = await readFile(resultsPath, "utf8");
+  const details = failureDiagnostics(
+    JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")),
+  );
+  assert.equal(
+    details.detail.message,
+    "Timed out waiting for replacement OpenShell revision replacement activation.",
+  );
+  assert.deepEqual(
+    details.output.lines.filter((line) => line.includes("pending replacement")),
+    ["diagnostic: Last completed pending replacement Compute decision: disconnected."],
+  );
+  for (const stream of [results, run.stdout, run.stderr, details.detail.stack]) {
+    assert.doesNotMatch(stream, /Last completed pending replacement Compute decision|disconnected/);
+  }
+});
+
+test("replacement observation accepts only a single bound read and the real pending outcome", async () => {
+  // The Compute driver imports through its workspace package, the observer through source.
+  const requireFromController = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  );
+  const occ = await import(requireFromController.resolve("@openclaw-enterprise/occ"));
+  assert.equal(occ.ActivationPendingError, ActivationPendingError);
+  const pending = new ActivationPendingError("WORKSPACE_NODE_PENDING", "waiting");
+  const revision = { id: "replacement" };
+  const receipt = createReplacementNodeObservation();
+  let reads = 0;
+  const driver = receipt.wrap({
+    async activateRevision(target: typeof revision, observations: string[], reason: Error) {
+      for (const observation of observations) {
+        await observeWorkspaceNodeRead(target.id, async () => {
+          reads++;
+          // Exercise the runtime boundary where an older or unknown producer has no typed observation.
+          Reflect.apply(recordWorkspaceNodeObservation, undefined, [observation]);
+          return observation === "accepted";
+        });
+      }
+      throw reason;
+    },
+  });
+  for (const [values, expected] of [
+    [[], "unavailable"],
+    [["unknown value"], "unavailable"],
+    [["disconnected", "disconnected"], "unavailable"],
+    [
+      ["connected without device-token authentication"],
+      "connected without device-token authentication",
+    ],
+  ] as const) {
+    receipt.begin(revision.id);
+    const before = reads;
+    await assert.rejects(
+      driver.activateRevision(revision, values, pending),
+      (error) => error === pending,
+    );
+    assert.equal(reads - before, values.length);
+    assert.equal(receipt.finish(), expected);
+  }
+  receipt.begin(revision.id);
+  const unrelated = Object.assign(new Error("waiting"), { code: pending.code });
+  await assert.rejects(
+    driver.activateRevision(revision, ["disconnected"], unrelated),
+    (error) => error === unrelated,
+  );
+  assert.equal(receipt.finish(), "unavailable");
 });

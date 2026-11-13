@@ -50,13 +50,13 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORA
 | Input                                    | Value                                                                          |
 | ---------------------------------------- | ------------------------------------------------------------------------------ |
 | `OCE_CHART`                              | Matching absolute chart directory/archive.                                     |
-| `OPENSHELL_CHART`                        | Stock 0.1.6.                                                                   |
+| `OPENSHELL_CHART`                        | Stock 0.1.8.                                                                   |
 | `SANDBOX_REGISTRY`, `SANDBOX_REPOSITORY` | Registry/repository for stock AMD64 Gateway, supervisor and runtime manifests. |
 | `ENVOY_IMAGE`                            | Qualified immutable proxy image.                                               |
 | `ADMIN_EMAIL`                            | Owner’s email.                                                                 |
 | `DATABASE_CIDRS`, `API_CIDRS`            | Approved IPv4 JSON arrays, including API Service VIP and endpoint /32s.        |
 
-Match templates: OpenShell 0.1.6, Codex 0.164.0.
+Match templates: OpenShell 0.1.8, Codex 0.164.0.
 
 Create `oce-system`; allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify GatewayClass:
 

@@ -5,7 +5,9 @@ import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Pool, PoolClient, QueryResult } from "pg";
 import type { ProductionConfig } from "../../apps/controller/src/composition/production.ts";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import type { Permission } from "../../packages/contracts/src/index.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composeProduction } from "../helpers/password-hasher.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
@@ -197,7 +199,10 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
   // Observe completed production admission without replacing it or pausing a
   // handler. A real HTTP request can still be uploading its body at this point.
   fixture.app.addHook("preParsing", async (request, _reply, payload) => {
-    if (request.method === "POST" && request.url === `${policyPath}/access-bindings`) {
+    if (
+      (request.method === "POST" || request.method === "DELETE") &&
+      request.url.startsWith(`${policyPath}/`)
+    ) {
       policyRequestId = request.id;
     }
     if (
@@ -651,6 +656,329 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
       }
       blocker.release();
       await pending?.catch(() => {});
+    }
+  });
+
+  await t.test("configured read grants fence Namespace IAM mutations through COMMIT", async (t) => {
+    const state = new PostgresPlatformState(pool);
+    const installation = await state.loadInstallation();
+    assert.ok(installation);
+    assert.deepEqual(await state.read((unit) => unit.iamPolicy.listConfiguredPolicy()), {
+      roles: [],
+      groups: [],
+      bindings: [],
+    });
+    const namespaceName = text(
+      row(
+        await pool.query<Record<string, unknown>>("SELECT name FROM occ.namespaces WHERE id=$1", [
+          namespaceId,
+        ]),
+      ).name,
+    );
+    const configuredName = `policy_reader_${randomUUID().replaceAll("-", "")}`;
+    const groupName = `policy-reader-${randomUUID()}`;
+    const granted: readonly Permission[] = [
+      { action: "read", resourceKind: "namespace" },
+      { action: "read", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
+    ];
+    // Use the same configuration application that production startup calls, on
+    // another controller and transaction. Its Group binding stays unchanged;
+    // only the configured Role's supported read permissions change.
+    const configurationController = (permissions: readonly Permission[]) => {
+      const configurationState = new PostgresPlatformState(pool);
+      const iam = new NativeIAMDriver(configurationState, { id: `configuration-${randomUUID()}` });
+      const controller = new OpenClawController(installation, {
+        state: configurationState,
+        iamConfiguration: {
+          roles: [{ id: configuredName, permissions }],
+          defaultUserGroups: [],
+          roleBindings: [
+            { group: groupName, role: configuredName, scope: { namespace: namespaceName } },
+          ],
+        },
+        recordOperations: false,
+      });
+      controller.registerDriver(iam);
+      controller.selectDriver("iam", iam.id);
+      return { controller, state: configurationState };
+    };
+    const grantConfiguration = configurationController(granted);
+    await grantConfiguration.controller.applyIAMConfiguration();
+    const configuredBindings = await pool.query<Record<string, unknown>>(
+      "SELECT id FROM occ.iam_access_bindings WHERE role_id=$1 ORDER BY id",
+      [`role_config_${configuredName}`],
+    );
+    assert.equal(configuredBindings.rowCount, 1);
+
+    // This appointed administrator's Installation authority is independent of
+    // configured Roles, which cannot contain Installation permissions.
+    const administratorRoleId = `role-${randomUUID()}`;
+    await pool.query("INSERT INTO occ.iam_roles (id, name, permissions) VALUES ($1, $2, $3)", [
+      administratorRoleId,
+      "Policy configuration administrator",
+      JSON.stringify([
+        { action: "read", resourceKind: "installation" },
+        { action: "administer", resourceKind: "installation" },
+      ]),
+    ]);
+    const email = `policy-administrator-${randomUUID()}@example.test`;
+    const personPassword = `policy-${randomUUID()}`;
+    const created = await request("POST", "/api/auth/accounts", {
+      email,
+      password: personPassword,
+      name: "Policy configuration administrator",
+      roleId: administratorRoleId,
+    });
+    assert.equal(created.status, 201);
+    const assigning = await signInWithEmailPassword({
+      origin: fixture.endpoint,
+      email,
+      password: personPassword,
+    });
+    await pool.query(
+      "INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id) VALUES (NULL, $1, $2)",
+      [`group_config_${groupName}`, text(record(created.data).principalId)],
+    );
+    assert.equal((await request("GET", `${policyPath}/roles`, undefined, assigning)).status, 200);
+    assert.equal(
+      (await request("GET", `${agentsPath}/${agentId}`, undefined, assigning)).status,
+      200,
+    );
+
+    const policyRows = async () => ({
+      roles: (
+        await pool.query(
+          "SELECT id, name, permissions FROM occ.iam_roles WHERE namespace_id=$1 ORDER BY id",
+          [namespaceId],
+        )
+      ).rows,
+      bindings: (
+        await pool.query(
+          "SELECT id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id FROM occ.iam_access_bindings WHERE namespace_id=$1 ORDER BY id",
+          [namespaceId],
+        )
+      ).rows,
+    });
+    const assertUnrelatedGrant = async () => {
+      assert.equal(
+        (await request("GET", `${agentsPath}/${agentId}`, undefined, unaffected.session)).status,
+        200,
+      );
+      assert.equal(
+        (
+          await pool.query("SELECT id FROM occ.iam_access_bindings WHERE id=$1", [
+            recordId(unaffectedBinding),
+          ])
+        ).rowCount,
+        1,
+      );
+      assert.deepEqual(
+        (
+          await pool.query("SELECT id FROM occ.iam_access_bindings WHERE role_id=$1 ORDER BY id", [
+            `role_config_${configuredName}`,
+          ])
+        ).rows,
+        configuredBindings.rows,
+      );
+    };
+    type MutationKind =
+      "create Role" | "delete Role" | "create AccessBinding" | "delete AccessBinding";
+    const prepareMutation = async (kind: MutationKind) => {
+      const roleName = `configuration-fence-${randomUUID()}`;
+      const roleBody = { name: roleName, permissions: [{ action: "read", resourceKind: "agent" }] };
+      let roleId: string | undefined;
+      let bindingId: string | undefined;
+      if (kind !== "create Role") {
+        const role = await request("POST", `${policyPath}/roles`, roleBody);
+        assert.equal(role.status, 201);
+        roleId = recordId(role.data);
+      }
+      const bindingBody = { ...grant, roleId };
+      if (kind === "delete AccessBinding") {
+        const binding = await request("POST", `${policyPath}/access-bindings`, bindingBody);
+        assert.equal(binding.status, 201);
+        bindingId = recordId(binding.data);
+      }
+      const isRole = kind.endsWith("Role");
+      const isCreate = kind.startsWith("create");
+      const path = `${policyPath}/${isRole ? "roles" : "access-bindings"}${isCreate ? "" : `/${isRole ? roleId : bindingId}`}`;
+      const observe = () =>
+        isRole
+          ? pool.query<Record<string, unknown>>(
+              "SELECT id FROM occ.iam_roles WHERE namespace_id=$1 AND name=$2",
+              [namespaceId, roleName],
+            )
+          : pool.query<Record<string, unknown>>(
+              "SELECT id FROM occ.iam_access_bindings WHERE namespace_id=$1 AND role_id=$2",
+              [namespaceId, roleId],
+            );
+      return {
+        run: () =>
+          request(
+            isCreate ? "POST" : "DELETE",
+            path,
+            isCreate ? (isRole ? roleBody : bindingBody) : undefined,
+            assigning,
+          ),
+        expectedStatus: isCreate ? 201 : 204,
+        expectedRows: isCreate ? 1 : 0,
+        observe,
+        cleanup: async () => {
+          for (const entry of (await observe()).rows) {
+            assert.equal(
+              (
+                await request(
+                  "DELETE",
+                  `${policyPath}/${isRole ? "roles" : "access-bindings"}/${recordId(entry)}`,
+                )
+              ).status,
+              204,
+            );
+          }
+          if (!isRole) {
+            assert.equal((await request("DELETE", `${policyPath}/roles/${roleId}`)).status, 204);
+          }
+        },
+      };
+    };
+
+    for (const kind of [
+      "create Role",
+      "delete Role",
+      "create AccessBinding",
+      "delete AccessBinding",
+    ] as const) {
+      // Binding creation additionally needs read on the exact target. The other
+      // three cases withdraw Namespace read without removing their Group binding.
+      const revokedKind = kind === "create AccessBinding" ? "agent" : "namespace";
+      const revoked = configurationController(
+        granted.filter(({ resourceKind }) => resourceKind !== revokedKind),
+      );
+      for (const order of ["configuration first", "policy first"] as const) {
+        await t.test(`${kind}: ${order}`, async () => {
+          await grantConfiguration.controller.applyIAMConfiguration();
+          const mutation = await prepareMutation(kind);
+          const before = await policyRows();
+          let pendingMutation: ReturnType<Request> | undefined;
+          let pendingConfiguration: Promise<void> | undefined;
+          const releaseConfiguration = Promise.withResolvers<void>();
+          let blocker: PoolClient | undefined;
+          let released = false;
+          try {
+            if (order === "configuration first") {
+              const written = Promise.withResolvers<number>();
+              pendingConfiguration = revoked.controller.transact(async (unit) => {
+                await revoked.controller.applyIAMConfiguration();
+                written.resolve(
+                  integer(
+                    record(
+                      (
+                        await revoked.state.queryInTransaction(
+                          unit,
+                          "SELECT pg_backend_pid() AS pid",
+                        )
+                      ).rows[0],
+                    ).pid,
+                  ),
+                );
+                await releaseConfiguration.promise;
+              });
+              pendingConfiguration.catch(written.reject);
+              const configurationPid = await written.promise;
+              pendingMutation = mutation.run();
+              await Promise.race([
+                waitForLockWaiter(
+                  pool,
+                  configurationPid,
+                  "the IAM mutation waiting for configured read revocation",
+                  { queryLike: "SELECT pg_advisory_xact_lock_shared(%" },
+                ),
+                pendingMutation.then(({ status }) =>
+                  assert.fail(`IAM mutation returned ${status} before configuration COMMIT`),
+                ),
+              ]);
+              releaseConfiguration.resolve();
+              await pendingConfiguration;
+              const denied = await pendingMutation;
+              const requestId = policyRequestId;
+              assert.equal(denied.status, 403);
+              assert.deepEqual(
+                await policyRows(),
+                before,
+                "revocation-first denial leaves policy unchanged",
+              );
+              const events = (await state.transact((unit) => unit.audit.list())).filter(
+                (event) => event.requestId === requestId,
+              );
+              assert.ok(events.some(({ kind }) => kind === "authorization_denial"));
+              assert.equal(
+                events.some(({ kind }) => kind === "mutation"),
+                false,
+              );
+            } else {
+              blocker = await pool.connect();
+              await blocker.query("BEGIN");
+              const blockerPid = integer(
+                row(await blocker.query<Record<string, unknown>>("SELECT pg_backend_pid() AS pid"))
+                  .pid,
+              );
+              await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
+                namespaceId,
+              ]);
+              pendingMutation = mutation.run();
+              const mutationPid = integer(
+                await waitForLockWaiter(
+                  pool,
+                  blockerPid,
+                  "the IAM mutation waiting for its Namespace",
+                ),
+              );
+              pendingConfiguration = revoked.controller.applyIAMConfiguration();
+              await Promise.race([
+                waitForLockWaiter(
+                  pool,
+                  mutationPid,
+                  "configuration revocation waiting for the IAM mutation",
+                  { queryLike: "SELECT pg_advisory_xact_lock(%" },
+                ),
+                pendingConfiguration.then(() =>
+                  assert.fail("configuration committed before the IAM mutation released its fence"),
+                ),
+              ]);
+              await blocker.query("COMMIT");
+              released = true;
+              const committed = await pendingMutation;
+              const requestId = policyRequestId;
+              assert.equal(committed.status, mutation.expectedStatus);
+              await pendingConfiguration;
+              assert.equal((await mutation.observe()).rowCount, mutation.expectedRows);
+              const events = (await state.transact((unit) => unit.audit.list())).filter(
+                (event) => event.requestId === requestId,
+              );
+              assert.equal(events.filter(({ kind }) => kind === "mutation").length, 1);
+              assert.equal(
+                events.some(({ kind }) => kind === "authorization_denial"),
+                false,
+              );
+            }
+            const deniedPath =
+              revokedKind === "agent" ? `${agentsPath}/${agentId}` : `/namespaces/${namespaceId}`;
+            assert.equal((await request("GET", deniedPath, undefined, assigning)).status, 403);
+            await assertUnrelatedGrant();
+          } finally {
+            releaseConfiguration.resolve();
+            if (blocker !== undefined) {
+              if (!released) {
+                await blocker.query("ROLLBACK");
+              }
+              blocker.release();
+            }
+            await Promise.allSettled([pendingMutation, pendingConfiguration]);
+            await mutation.cleanup();
+          }
+        });
+      }
     }
   });
 }

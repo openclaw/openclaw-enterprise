@@ -3,86 +3,29 @@
 // as a Doctor stall: the wrapper's stderr and the real failure came after the
 // cut. These cases drive the helper against a stand-in docker binary.
 import assert from "node:assert/strict";
-import { chmod, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { inspect } from "node:util";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setEnvironment } from "../helpers/environment.ts";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const reporterMessageLimit = 16_384;
 
 const root = fileTemporaryDirectory("oce-runtime-image-failure-output-");
-const fakeDocker = join(root, "docker");
-await writeFile(
-  fakeDocker,
-  `#!${process.execPath}
-const [command, , program, entry] = process.argv.slice(2);
-const mode = process.env.FAKE_DOCKER_MODE ?? "exited";
-// Long multi-line output whose first and last lines name where it came from.
-const long = (label) => {
-  let text = \`\${label} first line\\n\`;
-  for (let index = 0; index < 100; index += 1) {
-    text += \`\${label} line \${index}: \${"y".repeat(40)}\\n\`;
-  }
-  return \`\${text}\${label} final line\\n\`;
-};
-if (mode === "exit-silent") {
-  process.exit(3);
-} else if (mode === "leak-long") {
-  // One long line, so the stderr tail starts inside the planted value.
-  process.stderr.write(\`\${"z".repeat(9000)}\${process.env.FAKE_DOCKER_PLAIN}\${"w".repeat(8180)}\\n\`);
-  process.exit(1);
-} else if (mode === "cat") {
-  process.stdin.pipe(process.stdout);
-} else if (mode === "hang") {
-  setInterval(() => {}, 1_000);
-} else if (mode === "leak-key") {
-  process.stdout.write(\`stdout key \${process.env.FAKE_DOCKER_KEY}\n\`);
-  process.stderr.write(\`stderr key \${process.env.FAKE_DOCKER_KEY}\nplanted \${process.env.FAKE_DOCKER_PLAIN}\n\`);
-  process.exit(1);
-} else if (command === "inspect" && mode === "inspect-fails") {
-  process.stderr.write(long("inspect stderr"));
-  process.exit(1);
-} else if (command === "inspect" && mode.startsWith("wait-")) {
-  // Running, exit code, StartedAt and FinishedAt, as the follower's --format asks.
-  const finishedAt = {
-    "wait-hangs": "2026-10-21T08:52:18.75Z",
-    "wait-hangs-no-finish": "0001-01-01T00:00:00Z",
-    // A restarted container's last exit is older than its current start.
-    "wait-fails-restarted": "2026-10-21T08:51:40Z",
-  }[mode];
-  process.stdout.write(\`false|0|2026-10-21T08:51:50.1Z|\${finishedAt}\\n\`);
-} else if (command === "wait" && mode === "wait-fails-restarted") {
-  process.stderr.write("Error response from daemon: context deadline exceeded\\n");
-  process.exit(1);
-} else if (command === "inspect") {
-  process.stdout.write(mode === "exited" ? "false 1\\n" : "true 0\\n");
-} else if (command === "wait" && mode.startsWith("wait-hangs")) {
-  setInterval(() => {}, 1_000);
-} else if (command === "exec" && entry === "/app/openclaw.mjs") {
-  process.stdout.write(long("plugin list"));
-} else if (command === "exec" && program === "node") {
-  process.stderr.write(long("readiness stderr"));
-  process.exit(1);
-} else if (command === "logs") {
-  process.stdout.write("first doctor line\\n");
-  for (let index = 0; index < 400; index += 1) {
-    process.stdout.write(\`doctor check \${index}: \${"x".repeat(60)}\\n\`);
-  }
-  process.stderr.write("Migrating agent databases\\nwrapper failed: final stderr line\\n");
-} else if (command === "run") {
-  process.stdout.write("fake-container-id\\n");
-}
-`,
+const fakeDocker = await writeCommand(
+  root,
+  "docker",
+  `import(${JSON.stringify(new URL("../fixtures/runtime-image-failure-docker.ts", import.meta.url).href)});`,
+  { interpreter: process.execPath },
 );
-await chmod(fakeDocker, 0o700);
 
 // The helper reads both at import.
 process.env.OCC_DOCKER_BIN = fakeDocker;
 process.env.OCC_TEST_RUNTIME_IMAGE = "localhost/oce/runtime:failure-output-test";
 const {
+  containerLogTail,
   failureTail,
+  gatewayReadinessReport,
   listGatewayPlugins,
   runDocker,
   runGatewaySmoke,
@@ -90,6 +33,16 @@ const {
   waitForGatewayReady,
 } = await import("../helpers/runtime-image-startup.mjs");
 const { followContainer } = await import("../helpers/docker-follow.ts");
+
+async function expectFailure<T>(operation: Promise<T>, message: string): Promise<Error> {
+  try {
+    await operation;
+  } catch (failure) {
+    assert.ok(failure instanceof Error);
+    return failure;
+  }
+  assert.fail(message);
+}
 
 test("failureTail keeps short output and the end of long output from a line start", () => {
   assert.equal(failureTail("short output", 64), "short output");
@@ -116,7 +69,7 @@ test("failureTail keeps short output and the end of long output from a line star
 });
 
 // Each of these failures would otherwise put about 5 KiB of command output in its message.
-function assertKeptTail(message, label, limit) {
+function assertKeptTail(message: string, label: string, limit: number) {
   assert.match(message, new RegExp(`${label} final line`));
   assert.doesNotMatch(message, new RegExp(`${label} first line`));
   assert.match(message, /\[\.\.\. \d+ earlier chars omitted \.\.\.\]/);
@@ -125,24 +78,38 @@ function assertKeptTail(message, label, limit) {
 
 test("readiness and plugin list failures keep the end of their command output", async (t) => {
   setEnvironment(t, { FAKE_DOCKER_MODE: "running" });
-  const readiness = await waitForGatewayReady("fake-container", 1).then(
-    () => assert.fail("readiness should time out when every probe fails"),
-    (failure) => failure,
+  const readiness = await expectFailure(
+    waitForGatewayReady("fake-container", 1),
+    "readiness should time out when every probe fails",
   );
   assert.match(readiness.message, /^Gateway readiness timed out\.\n/);
   assertKeptTail(readiness.message, "readiness stderr", 2048 + 128);
-  const plugins = await listGatewayPlugins("fake-container").then(
-    () => assert.fail("plugin list output that is not JSON should be refused"),
-    (failure) => failure,
+  const plugins = await expectFailure(
+    listGatewayPlugins("fake-container"),
+    "plugin list output that is not JSON should be refused",
   );
   assert.match(plugins.message, /^OpenClaw plugin list output was not valid JSON\.\n/);
   assertKeptTail(plugins.message, "plugin list", 2048 + 128);
+
+  setEnvironment(t, { FAKE_DOCKER_MODE: "malformed-inspect-status" });
+  const invalidStatus = await expectFailure(
+    waitForGatewayReady("fake-container", 1),
+    "readiness should fail when neither the probe nor inspect can establish readiness",
+  );
+  // A successful Docker command can still fail to establish that the container exited.
+  assert.match(
+    invalidStatus.message,
+    /^Gateway readiness probe failed; docker inspect returned invalid state\.\n/,
+  );
+  assertKeptTail(invalidStatus.message, "readiness stderr", 2048 + 256);
+  assert.ok(invalidStatus.cause instanceof Error);
+  assert.match(invalidStatus.cause.message, /^docker exec fake-container .* failed \(exit code 1,/);
 });
 
 test("a Gateway smoke failure with over 16 KiB of logs keeps their final lines within the CI cut", async (t) => {
-  const error = await runGatewaySmoke(t, "openclaw").then(
-    () => assert.fail("the Gateway smoke should fail when the container exits"),
-    (failure) => failure,
+  const error = await expectFailure(
+    runGatewaySmoke(t, "openclaw"),
+    "the Gateway smoke should fail when the container exits",
   );
   // What the CI reporter keeps of the message.
   const reported = error.message.slice(0, reporterMessageLimit);
@@ -159,9 +126,9 @@ test("a Gateway smoke failure with over 16 KiB of logs keeps their final lines w
 
 test("a Gateway smoke failure from a docker command keeps the end of its stderr and of the logs", async (t) => {
   setEnvironment(t, { FAKE_DOCKER_MODE: "inspect-fails" });
-  const error = await runGatewaySmoke(t, "openclaw").then(
-    () => assert.fail("the Gateway smoke should fail when docker inspect fails"),
-    (failure) => failure,
+  const error = await expectFailure(
+    runGatewaySmoke(t, "openclaw"),
+    "the Gateway smoke should fail when docker inspect fails",
   );
   const reported = error.message.slice(0, reporterMessageLimit);
   // The headline names the command and its exit; its stderr follows, cut to its end, then
@@ -180,9 +147,9 @@ test("a Gateway smoke failure from a docker command keeps the end of its stderr 
 test("a log wait fails at once when the container stops first, keeping the end of its logs", async () => {
   // The stand-in's `docker logs --follow` prints the logs and exits, as for a stopped container.
   const startedAt = Date.now();
-  const error = await waitForDockerLog("fake-container", /never logged/).then(
-    () => assert.fail("the log wait should fail when the logs end without the pattern"),
-    (failure) => failure,
+  const error = await expectFailure(
+    waitForDockerLog("fake-container", /never logged/),
+    "the log wait should fail when the logs end without the pattern",
   );
   assert.ok(Date.now() - startedAt < 10_000, "the wait does not run out its 20 s deadline");
   assert.match(
@@ -219,8 +186,11 @@ test("an inspect without a real exit time counts the exit from when it was seen"
   setEnvironment(t, { FAKE_DOCKER_MODE: "wait-hangs-no-finish" });
   const follower = followContainer(t, "fake-container");
   const before = Date.now();
-  assert.equal((await follower.inspect()).finishedAt, undefined);
-  assert.ok(follower.read().exitedAt >= before, "not Docker's zero time");
+  const inspection = await follower.inspect();
+  assert.ok(inspection);
+  assert.equal(inspection.finishedAt, undefined);
+  const exitedAt = follower.read().exitedAt;
+  assert.ok(exitedAt !== undefined && exitedAt >= before, "not Docker's zero time");
 });
 
 test("a failed docker wait asks inspect, and an exit older than the start counts from now", async (t) => {
@@ -233,17 +203,22 @@ test("a failed docker wait asks inspect, and an exit older than the start counts
   // No "docker wait ... failed": inspect found the exit.
   const state = follower.read();
   assert.equal(state.exitCode, 0);
-  assert.ok(state.exitedAt >= before, "not the restarted container's earlier exit");
+  assert.ok(
+    state.exitedAt !== undefined && state.exitedAt >= before,
+    "not the restarted container's earlier exit",
+  );
 });
 
 // Finding 2184: a docker run whose output was empty failed with an empty message, so neither
 // the exit code nor a timeout could be told from the CI diagnostics.
-async function dockerFailure(t, mode, args, options) {
+async function dockerFailure(
+  t: TestContext,
+  mode: string,
+  args: string[],
+  options?: Parameters<typeof runDocker>[1],
+) {
   setEnvironment(t, { FAKE_DOCKER_MODE: mode });
-  return runDocker(args, options).then(
-    () => assert.fail(`docker ${mode} should fail`),
-    (failure) => failure,
-  );
+  return expectFailure(runDocker(args, options ?? {}), `docker ${mode} should fail`);
 }
 
 test("a docker failure with no output names its exit code", async (t) => {
@@ -253,6 +228,13 @@ test("a docker failure with no output names its exit code", async (t) => {
     error.message.replace(/ran \d+ ms/, "ran N ms"),
     "docker run --rm probe -c <29-char argument> failed " +
       "(exit code 3, signal none, not timed out, ran N ms).\n(no stdout or stderr)",
+  );
+  assert.ok(
+    "code" in error &&
+      "signal" in error &&
+      "timedOut" in error &&
+      "stdout" in error &&
+      "stderr" in error,
   );
   assert.equal(error.code, 3);
   assert.equal(error.signal, null);
@@ -267,6 +249,7 @@ test("a docker command stopped by its timeout says so", async (t) => {
     error.message,
     /^docker wait fake-container failed \(no exit code, signal SIGTERM, timed out after 200 ms, ran \d+ ms\)\.\n\(no stdout or stderr\)$/,
   );
+  assert.ok("killed" in error && "timedOut" in error && "signal" in error);
   assert.equal(error.killed, true);
   assert.equal(error.timedOut, true);
   assert.equal(error.signal, "SIGTERM");
@@ -300,6 +283,7 @@ test("a docker failure never shows a planted synthetic key", async (t) => {
   const long = await dockerFailure(t, "leak-long", ["run", "probe"], { redact: [plain] });
   assert.equal(long.message.includes(plain.slice(-10)), false, long.message.slice(0, 400));
   // Callers that read the output themselves still get it whole.
+  assert.ok("stderr" in error && typeof error.stderr === "string");
   assert.match(error.stderr, /planted planted-plain-value-2184/);
 });
 
@@ -309,14 +293,94 @@ test("a docker command's stdin reaches it, and an early exit reports the exit, n
   assert.equal(stdout, "stdin text\n");
   // The stand-in exits 3 without reading 4 MiB of input.
   process.env.FAKE_DOCKER_MODE = "exit-silent";
-  const error = await runDocker(
-    ["exec", "-i", "fake-container", "cat"],
-    {},
-    "x".repeat(4 << 20),
-  ).then(
-    () => assert.fail("the command should fail"),
-    (failure) => failure,
+  const error = await expectFailure(
+    runDocker(["exec", "-i", "fake-container", "cat"], {}, "x".repeat(4 << 20)),
+    "the command should fail",
   );
+  assert.ok("code" in error);
   assert.equal(error.code, 3);
   assert.match(error.message, /^docker exec -i fake-container cat failed \(exit code 3,/);
+});
+
+test("a readiness report keeps independent diagnostics when Docker returns malformed JSON output", async (t) => {
+  const probe = {
+    wrapperReady: { status: 503, ms: 4, body: "not ready" },
+    plugin: { status: 200, fields: { phase: "failed", failures: [{ code: "PLUGIN_FAILED" }] } },
+    runtime: {
+      status: 200,
+      fields: { runtimeFailure: { check: "workspace", code: "WORKSPACE_SETUP_FAILED" } },
+    },
+    nativeStartup: { error: "ECONNREFUSED", ms: 2 },
+    nativeReady: { status: 503, ms: 3 },
+  };
+  const inspectOutput = JSON.stringify([
+    {
+      State: {
+        StartedAt: "2026-10-21T08:51:50.1Z",
+        Status: "running",
+        ExitCode: 0,
+        OOMKilled: false,
+      },
+    },
+  ]);
+  const phaseDetail =
+    "wrapper phases since start (duration/since start): model-probe:failed AUTHENTICATION_FAILED 5/12 ms";
+  setEnvironment(t, {
+    FAKE_DOCKER_MODE: "readiness-report",
+    FAKE_DOCKER_INSPECT_OUTPUT: inspectOutput,
+    FAKE_DOCKER_PROBE_OUTPUT: JSON.stringify(probe),
+  });
+  const valid = await gatewayReadinessReport("fake-container");
+  assert.match(
+    valid.headline,
+    /^wrapper \/readyz 503; plugin phase failed \(failures PLUGIN_FAILED\); runtime failure workspace\/WORKSPACE_SETUP_FAILED; native \/startupz error ECONNREFUSED, \/readyz 503;/,
+  );
+  assert.equal(valid.detail, "status probe: " + JSON.stringify(probe) + "\n" + phaseDetail);
+
+  // A failed status probe must leave the restart caller with the container and its phase history.
+  const malformedProbe = {
+    ...probe,
+    plugin: { status: 200, fields: { failures: { code: "PLUGIN_FAILED" } } },
+  };
+  for (const [output, diagnosis] of [
+    [JSON.stringify(malformedProbe), "Gateway status probe output had an unexpected shape."],
+    ["{".repeat(5000), "Gateway status probe output was not valid JSON."],
+  ]) {
+    setEnvironment(t, { FAKE_DOCKER_PROBE_OUTPUT: output });
+    const report = await gatewayReadinessReport("fake-container");
+    assert.ok(report.headline.startsWith("status probe failed: " + diagnosis));
+    assert.match(
+      report.headline,
+      /last phase model-probe:failed AUTHENTICATION_FAILED 5\/12 ms; container running, started -?\d+ s ago, exit 0, OOMKilled false;/,
+    );
+    assert.equal(
+      report.detail,
+      "status probe: " + JSON.stringify({ error: diagnosis }) + "\n" + phaseDetail,
+    );
+  }
+
+  // Inspect can lose its state while the status probe can still explain why readiness failed.
+  setEnvironment(t, {
+    FAKE_DOCKER_INSPECT_OUTPUT: "[{}]",
+    FAKE_DOCKER_PROBE_OUTPUT: JSON.stringify(probe),
+  });
+  const report = await gatewayReadinessReport("fake-container");
+  assert.match(report.headline, /runtime failure workspace\/WORKSPACE_SETUP_FAILED;/);
+  assert.match(report.headline, /container Docker inspect output had an unexpected shape\.;/);
+  assert.equal(
+    report.detail,
+    "status probe: " +
+      JSON.stringify(probe) +
+      "\nwrapper phases since start (duration/since start): none",
+  );
+});
+
+test("the newest timestamped container log survives a tail cut across CRLF and LF streams", async (t) => {
+  setEnvironment(t, { FAKE_DOCKER_MODE: "mixed-line-endings" });
+  const tail = await containerLogTail("fake-container", { limit: 55 });
+  assert.match(
+    tail,
+    /\[\.\.\. \d+ earlier chars omitted \.\.\.\]\n2026-10-21T08:52:18\.75Z stdout: newer wrapper failure$/,
+  );
+  assert.doesNotMatch(tail, /older wrapper warning/);
 });

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: "2026-11-06 10:19"
-last_updated_session: authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf
+updated: 2026-11-13
+last_updated_session: authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9
 ---
 
 # Installation Profile Rendering Flow
@@ -275,7 +275,10 @@ Input-loading failures exit without a preflight report.
 The preflight report lists warnings, external prerequisites, and the next
 operator steps. It tells the operator to update the Installation startup Secret
 before the Helm upgrade, so API and worker pod-template annotations roll when
-startup-only configuration changes. The report does not claim live readiness:
+startup-only configuration changes. The Gateway proxy reads its configuration from its
+Pod template. Removing the checksum annotation from a previously annotated proxy
+triggers one rollout. Later Installation checksum changes preserve its Pod template.
+The report does not claim live readiness:
 Helm rendering, Secret creation, runtime proof, hosted discovery, Slack consumer
 activation, and repository registry creation need separate evidence.
 
@@ -316,6 +319,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13: Document how Installation checksum changes affect the Slack proxy during chart upgrades. (authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9, accompanying change)
 
 - 2026-11-06 10:19: Retain the directory-only proxy override with shared-default routing and exact API egress (authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf - f4d2e15fc73f6ef43016e0ce959df010bd2be98c)
 - 2026-11-05 19:30: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)

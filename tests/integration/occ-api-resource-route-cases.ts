@@ -363,6 +363,10 @@ export async function runNamespaceIsolation({
     body: { name: "IAM-scoped installation" },
   });
   assert.equal(bootstrapped.status, 201);
+  const initialNamespaces = await injectedRequest(fixture.app, "GET", "/namespaces");
+  assert.equal(initialNamespaces.status, 200);
+  assert(Array.isArray(initialNamespaces.data));
+  assert.equal(initialNamespaces.data.length, 1);
 
   const tenantA = await injectedRequest(fixture.app, "POST", "/namespaces", {
     body: { name: "tenant-a" },
@@ -374,6 +378,64 @@ export async function runNamespaceIsolation({
   assert.equal(tenantB.status, 201);
   const tenantAId = resourceId(tenantA.data);
   const tenantBId = resourceId(tenantB.data);
+
+  const completeNamespaces = await injectedRequest(fixture.app, "GET", "/namespaces");
+  assert.equal(completeNamespaces.status, 200);
+  assert.deepEqual(completeNamespaces.data, [
+    ...initialNamespaces.data,
+    tenantA.data,
+    tenantB.data,
+  ]);
+
+  // A failed later IAM decision must discard the already-authorized part of the list.
+  // Delegate to Native IAM first so a refusal before the list cannot satisfy this control.
+  const originalAuthorize = fixture.iamDriver.authorize;
+  for (const failureMode of ["exception", "invalid-decision"] as const) {
+    const authorizedNamespaceIds: string[] = [];
+    const failedNamespaceIds: string[] = [];
+    fixture.iamDriver.authorize = async (request) => {
+      const decision = await originalAuthorize.call(fixture.iamDriver, request);
+      if (
+        request.principalId === fixture.principal.id &&
+        request.action === "read" &&
+        request.resource.kind === "namespace"
+      ) {
+        if (
+          authorizedNamespaceIds.length > 0 &&
+          !authorizedNamespaceIds.includes(request.resource.id)
+        ) {
+          failedNamespaceIds.push(request.resource.id);
+          if (failureMode === "exception") {
+            throw new Error("Injected Namespace-read failure");
+          }
+          return { ...decision, driverId: "" };
+        }
+        if (decision.allowed) {
+          authorizedNamespaceIds.push(request.resource.id);
+        }
+      }
+      return decision;
+    };
+    try {
+      const unavailable = await injectedRequest(fixture.app, "GET", "/namespaces");
+      assert.equal(authorizedNamespaceIds.length, 1, failureMode);
+      assert.equal(failedNamespaceIds.length, 1, failureMode);
+      assert.notEqual(failedNamespaceIds[0], authorizedNamespaceIds[0], failureMode);
+      assertApiError(unavailable, 503, "DEPENDENCY_UNAVAILABLE", failureMode);
+      assert.deepEqual(unavailable.body, {
+        error: {
+          code: "DEPENDENCY_UNAVAILABLE",
+          message: "A required platform dependency is unavailable.",
+        },
+        meta: { requestId: unavailable.body?.meta?.requestId },
+      });
+    } finally {
+      fixture.iamDriver.authorize = originalAuthorize;
+    }
+    const restoredNamespaces = await injectedRequest(fixture.app, "GET", "/namespaces");
+    assert.equal(restoredNamespaces.status, 200, failureMode);
+    assert.deepEqual(restoredNamespaces.data, completeNamespaces.data, failureMode);
+  }
 
   const tenantBConfiguration = await createInjectedConfiguration(fixture, tenantBId);
   const ownAgent = await injectedRequest(fixture.app, "POST", `/namespaces/${tenantBId}/agents`, {
@@ -475,8 +537,11 @@ export async function runNamespaceIsolation({
   });
 
   const refreshedReaderApp = fixture.createApp(reader);
+  const absentNamespaceId = `ns_${randomUUID()}`;
+  // An unreadable Namespace must not reveal whether its exact ID exists.
   for (const [method, pathname, options] of [
     ["GET", `/namespaces/${tenantAId}`],
+    ["GET", `/namespaces/${absentNamespaceId}`],
     ["GET", `/namespaces/${tenantAId}/agents`],
     [
       "POST",
@@ -487,4 +552,11 @@ export async function runNamespaceIsolation({
     const denied = await injectedRequest(refreshedReaderApp, method, pathname, options);
     assertApiError(denied, 403, "FORBIDDEN", `${method} ${pathname}`);
   }
+  // The administrator can authorize that same absent ID and reach the real lookup.
+  const authorizedAbsent = await injectedRequest(
+    fixture.app,
+    "GET",
+    `/namespaces/${absentNamespaceId}`,
+  );
+  assertApiError(authorizedAbsent, 404, "NOT_FOUND");
 }

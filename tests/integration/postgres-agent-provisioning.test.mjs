@@ -197,10 +197,17 @@ function provisioningBody(namespaceId, secrets, overrides = {}) {
 }
 
 async function requestAcceptedProvisioning(fixture, namespaceId, secrets, overrides = {}) {
+  const body = provisioningBody(namespaceId, secrets, overrides);
   const admitted = await fixture.request("POST", `/namespaces/${namespaceId}/agents/provision`, {
-    body: provisioningBody(namespaceId, secrets, overrides),
+    body,
   });
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  assert.ok(admitted.data?.provisioning, JSON.stringify(admitted.body));
+  assert.equal(
+    admitted.data.provisioning.requestId,
+    body.requestId,
+    "provisioning must echo the submitted request ID",
+  );
   return admitted;
 }
 
@@ -3248,8 +3255,7 @@ test(
 registerProvisioningRefusalCases({
   createFixture,
   createProvisioningConfigurationDriver,
-  createProvisioningSecrets,
-  provisioningBody,
+  admitProvisioning,
   provisioningRow,
   refuseProvisioningWithoutGatewayRouting,
 });
@@ -4501,11 +4507,7 @@ async function admitProvisioning(fixture) {
   const namespace = await fixture.bootstrapNamespace();
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
   const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
-  return {
-    namespace,
-    workId: admitted.data.provisioning.workId,
-    url: admitted.data.provisioning.url,
-  };
+  return { namespace, provisioning: admitted.data.provisioning };
 }
 
 async function provisioningJob(pool, workId) {
@@ -4574,7 +4576,8 @@ test(
       },
     });
     target = await admitProvisioning(fixture);
-    const { namespace, workId, url } = target;
+    const { namespace, provisioning } = target;
+    const { workId, url } = provisioning;
     let stopping;
     await fixture.startWorker();
     try {
@@ -4666,14 +4669,15 @@ test(
           values?.[0] !== target.namespace.id ||
           !namespaceLockStatement.test(statement) ||
           events.some(
-            (event) => event.event === "worker.completed" && event.workId === target.workId,
+            (event) =>
+              event.event === "worker.completed" && event.workId === target.provisioning.workId,
           )
         ) {
           return;
         }
         const job = await fixture.pool.query(
           "SELECT completed_phase FROM occ.agent_provisioning_work WHERE work_id = $1",
-          [target.workId],
+          [target.provisioning.workId],
         );
         if (job.rows[0]?.completed_phase !== "transport") {
           return;
@@ -4683,7 +4687,8 @@ test(
       },
     });
     target = await admitProvisioning(fixture);
-    const { namespace, workId, url } = target;
+    const { namespace, provisioning } = target;
+    const { workId, url } = provisioning;
     let stopping;
     await fixture.startWorker();
     try {
