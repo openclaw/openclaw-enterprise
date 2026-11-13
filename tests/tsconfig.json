@@ -99,6 +99,7 @@
     "helpers/temporary-directory.ts",
     "helpers/production-chart-quantity-cases.ts",
     "helpers/production-chart-renderer-refusal-cases.ts",
+    "helpers/production-chart-resource.ts",
     "helpers/bounded-teardown.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
