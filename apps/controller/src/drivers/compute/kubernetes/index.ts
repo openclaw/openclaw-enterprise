@@ -14800,6 +14800,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned: sandbox?.provisionHarness !== undefined,
       protected: this.hasProtectedCodexAdmission(revision),
+      modelRequestEnrollment: revision.egressPlan?.authorization === "online-request",
       ...(updated && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&

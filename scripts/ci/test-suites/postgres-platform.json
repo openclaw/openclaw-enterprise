@@ -73,6 +73,7 @@
     "tests/integration/postgres-harness-overrides.test.ts",
     "tests/integration/postgres-preset-template-validation.test.ts",
     "tests/integration/postgres-readiness-capacity.test.ts",
+    "tests/integration/credential-proxy-request-transport.test.ts",
     "tests/integration/postgres-private-secret-create.test.ts"
   ],
   "files": [
@@ -604,7 +605,12 @@
       "path": "tests/integration/credential-proxy-withdrawal.test.ts",
       "expectedTests": [
         "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
-        "Git reduction v7 preserves earlier admission meanings and rejects widening"
+        "Git reduction v7 preserves earlier admission meanings and rejects widening",
+        "online model requests redeem current material once after durable policy authorization (PostgreSQL)",
+        "online request replay horizons and shared quotas survive API restart (PostgreSQL)",
+        "online approval expiry is bounded by database time despite issuer clock skew (PostgreSQL)",
+        "online release expires on database time while a slow replica reads Secrets (PostgreSQL)",
+        "online release serializes configured role revocation with its final Secret read (PostgreSQL)"
       ]
     },
     {
@@ -732,6 +738,14 @@
     {
       "path": "tests/integration/postgres-readiness-capacity.test.ts",
       "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
+    },
+    {
+      "path": "tests/integration/credential-proxy-request-transport.test.ts",
+      "expectedTests": [
+        "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
+        "model-only request admission uses the registered request profile without strict capabilities",
+        "model request installation survives a material epoch change but fences policy and recipient drift"
+      ]
     },
     {
       "path": "tests/integration/postgres-private-secret-create.test.ts",

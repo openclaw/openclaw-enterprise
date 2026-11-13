@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-13"
-last_updated_session: "authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94"
+last_updated_session: "authoring-run/33abde1a-eb90-429b-8b94-af7f0b901c3f"
 ---
 
 # Production Startup Flow
@@ -344,32 +344,30 @@ until tenant deployment/TUI procedures run.
 
 ## Debugging and Verification
 
-- `scripts/prepare-bootstrap-volume` should exit `0` only for a fresh claim with
-  no bootstrap output files and UID/GID `1000`, mode `0700` root state.
+- `scripts/prepare-bootstrap-volume` exits `0` for a fresh claim with no bootstrap
+  outputs and root state owned by UID/GID `1000` with mode `0700`.
 - `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
   should succeed before API and worker rollout checks.
-- `pnpm db:migrate:production --check` reports the accepted database history
-  without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
-  inspected; initialization never repairs its ledger.
-- The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
-  `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
+- `pnpm db:migrate:production --check` reports migration history without applying
+  SQL. If it reports `MIGRATION_HISTORY_UNSUPPORTED`, inspect the database ledger.
+  Initialization leaves the ledger intact.
+- API `listening` reports `startupMs` and `phasesMs`. The worker emits
+  `worker.started`, then `worker.health`.
 - `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
   Kubernetes to 1.35 or later for support.
-- `startup-error` or `worker.startup-error` with code
-  `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
-  `host` and `port`. Check `cluster.cidrs` and `cluster.port`; restarted
-  clusters can move it.
+- For `KUBERNETES_API_UNAVAILABLE`, compare the logged `host` and `port` with
+  `cluster.cidrs` and `cluster.port`. A cluster restart can change its address.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
-- `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
-  `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
-  `apps/controller/src/api-startup.mjs:startupFailureFields` passes these diagnostics
-  to `server.mjs`.
+- For `DRIVER_CONFIGURATION_INVALID`, check `details` in `startup-error` or
+  `worker.startup-error`. Use a DNS-subdomain name for `/runtime/gatewayStorageClassName`.
+  For `/drivers/credential_proxy/configuration/authorityScope`, remove the field
+  when `repository.openShell` and `tokenGrant` are configured.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
   administrator/IAM mismatch.
-- Changing an external startup Secret alone does not restart the API or worker;
-  run an explicit rollout and repeat readiness plus authenticated proof.
+- After changing an external startup Secret, roll out the API and worker. Repeat
+  readiness and authenticated checks.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
   chart; it does not prove deployment or model execution.
 - `tests/integration/installation-handoff-k3d-real.test.ts` exercises the CLI with
@@ -393,6 +391,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 16:21: Document the combined OpenShell authority scope startup diagnostic. (authoring-run/33abde1a-eb90-429b-8b94-af7f0b901c3f - 5ff90623c3f24ba9c0efc1b3ca511a12121109f1)
 
 - 2026-11-13: Document the opt-in check of an existing Installation and its bootstrap administrator. (authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94 - 3c8ee8b97066d1e82a4ba9f95ad6d6f6afea5df8)
 

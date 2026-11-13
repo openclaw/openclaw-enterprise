@@ -8,6 +8,7 @@ import {
   type InstallationFieldDetail,
 } from "../../composition/installation-fields.ts";
 import { preparedGitHubConfiguration } from "../repo/github/access/prepared-configuration.ts";
+import { validTokenGrantConfiguration } from "./openshell-token-grant.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
 /** Existing Helm listener and mounted files for the OpenShell Git adapter. */
@@ -51,8 +52,54 @@ export function openShellProxyConfiguration(
   repository: OpenShellGitRuntimeConfiguration | undefined,
 ) {
   const egress = object(input, "drivers.credential_proxy.configuration");
+  const requestCredentials =
+    egress.tokenGrant === undefined
+      ? undefined
+      : (() => {
+          if (!validTokenGrantConfiguration(egress.tokenGrant)) {
+            throw new Error("Invalid OpenShell request-credential token grant configuration.");
+          }
+          const authority = egressAuthorityConfiguration(
+            egress.authority,
+            mode,
+            "drivers.credential_proxy.configuration.authority",
+          );
+          const middlewareName = nonempty(
+            egress.middlewareName,
+            "drivers.credential_proxy.configuration.middlewareName",
+          );
+          if (!authority || authority.port === egress.tokenGrant.port) {
+            throw new Error(
+              "OpenShell request credentials require distinct authority and token-grant listeners.",
+            );
+          }
+          return { authority, middlewareName, tokenGrant: egress.tokenGrant };
+        })();
   if (repository) {
-    closed(egress, ["observedHookPreviewWorkspace"], "drivers.credential_proxy.configuration");
+    if (requestCredentials && Object.hasOwn(egress, "authorityScope")) {
+      throw new InstallationFieldError([
+        {
+          path: "/drivers/credential_proxy/configuration/authorityScope",
+          code: "UNKNOWN_FIELD",
+          message:
+            "Remove authorityScope when repository.openShell and tokenGrant are configured. OpenShell selects execution scope.",
+        },
+      ]);
+    }
+    closed(
+      egress,
+      ["observedHookPreviewWorkspace", "middlewareName", "authority", "tokenGrant"],
+      "drivers.credential_proxy.configuration",
+    );
+    if (
+      !requestCredentials &&
+      (egress.middlewareName !== undefined || egress.authority !== undefined)
+    ) {
+      throw new Error("Repository model authority requires explicit tokenGrant configuration.");
+    }
+    if (requestCredentials?.middlewareName === repository.registrationName) {
+      throw new Error("Model and repository requests require distinct middleware registrations.");
+    }
     const preview =
       egress.observedHookPreviewWorkspace === undefined
         ? {}
@@ -63,9 +110,20 @@ export function openShellProxyConfiguration(
             ),
           };
     return {
+      prepared: undefined,
       repository: { ...repository, ...preview },
+      ...(requestCredentials && {
+        authority: requestCredentials.authority,
+        tokenGrant: requestCredentials.tokenGrant,
+      }),
       policy: {
-        middlewareName: repository.registrationName,
+        middlewareName: requestCredentials?.middlewareName ?? repository.registrationName,
+        ...(requestCredentials && {
+          requestCredentials: {
+            audience: requestCredentials.authority.audience,
+            tokenEndpoint: requestCredentials.tokenGrant.endpoint,
+          },
+        }),
         repositoryMiddlewareName: repository.registrationName,
         authorityScope: "execution",
         ...preview,
@@ -74,12 +132,22 @@ export function openShellProxyConfiguration(
   }
   closed(
     egress,
-    ["middlewareName", "authorityScope", "authority", "preparedGitHub"],
+    ["middlewareName", "authorityScope", "authority", "preparedGitHub", "tokenGrant"],
     "drivers.credential_proxy.configuration",
   );
-  const { authority, preparedGitHub, ...policy } = egress;
+  const { authority, preparedGitHub, tokenGrant: _tokenGrant, ...policy } = egress;
   return {
-    policy,
+    repository: undefined,
+    policy: {
+      ...policy,
+      ...(requestCredentials && {
+        requestCredentials: {
+          audience: requestCredentials.authority.audience,
+          tokenEndpoint: requestCredentials.tokenGrant.endpoint,
+        },
+      }),
+    },
+    ...(requestCredentials && { tokenGrant: requestCredentials.tokenGrant }),
     authority: egressAuthorityConfiguration(
       authority,
       mode,

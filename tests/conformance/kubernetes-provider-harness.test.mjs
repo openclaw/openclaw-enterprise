@@ -15,7 +15,10 @@ import { listen } from "../helpers/listen.mjs";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
-import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
+import {
+  createOpenAiRequestProvider,
+  createOpenAiStaticProvider,
+} from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
@@ -32,7 +35,10 @@ import {
   InstalledDriver,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
+import {
+  inspectComputeCodexCommand,
+  inspectOpenShellCodexCommand,
+} from "../fixtures/openshell-codex-command.ts";
 import { createCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
 import {
   captureOpenShellHarness,
@@ -83,6 +89,7 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
 }
 
 const openAiStaticProvider = createOpenAiStaticProvider();
+const onlineModelProvider = createOpenAiRequestProvider();
 
 test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
   const fixture = providerEndpointFixture({
@@ -955,7 +962,7 @@ test("provider Harness protected execution is released only on current signed in
     sourceControl: {
       sender: source.egress.sender,
       resolver: source.egress.resolver,
-      providers: [openAiStaticProvider],
+      providers: [openAiStaticProvider, onlineModelProvider],
       assertAvailable: assert.fail,
     },
     async configureRevision({ plan }) {
@@ -1152,6 +1159,20 @@ test("provider Harness protected execution is released only on current signed in
     Object.fromEntries(
       environment.filter((entry) => "value" in entry).map(({ name, value }) => [name, value]),
     );
+  async function projectWorkload(workload, directory) {
+    const env = {
+      ...projectedEnv(workload),
+      HOME: directory,
+      CODEX_HOME: directory,
+      OPENCLAW_WORKSPACE_DIR: directory,
+    };
+    for (const file of workload.files) {
+      const path = join(directory, file.name);
+      await writeFile(path, file.content);
+      env[file.environmentVariable] = path;
+    }
+    return env;
+  }
   for (const name of [
     "OPENCLAW_AGENT_REVISION_ID",
     "OPENCLAW_RUNTIME_STATUS_PORT",
@@ -1297,6 +1318,92 @@ test("provider Harness protected execution is released only on current signed in
       assert.match(result.stderr, /Protected Harness enrollment configuration is invalid/);
     });
   }
+  await t.test("the prepared model and Git launcher serves its online enrollment", async (t) => {
+    const id = "rev_aaffb032-bf33-4f45-a0d6-01906abd05dc";
+    const execution = {
+      ...plan.execution,
+      revisionId: id,
+      executionId: "baa1374b-fcfb-4989-a134-1ba76320a38d",
+    };
+    const repositoryCredentials = {
+      driver: { id: "repository", implementation: "github" },
+      bindings: [
+        {
+          repositoryRef: "source",
+          profile: "git-write",
+          backendId: "github",
+          grant: { providerInstanceId: "github", repositoryId: "42", grantId: "write-source" },
+        },
+      ],
+      deadlineWallMs: Date.now() + 600_000,
+    };
+    const onlineKey = { ...sourceKey, provider: onlineModelProvider.ref };
+    const onlineSource = { ...source, egress: { ...source.egress, key: onlineKey } };
+    const target = {
+      ...protectedRevision,
+      id,
+      revision: protectedRevision.revision + 2,
+      executionAdmission: { version: 9, mode: "protected" },
+      compute: { ...protectedRevision.compute },
+      repositoryCredentials,
+      egressPlan: {
+        ...plan,
+        id: "1264c57c-fb19-4930-a9a3-9aa285d19384",
+        execution,
+        routes: onlineModelProvider.routes(
+          onlineSource,
+          { ...plan.routes[0].binding, source: onlineKey, execution },
+          protectedRevision.harness.configuration,
+        ),
+        authorization: "online-request",
+        repositoryGitAuthorization: "online-request",
+        repositoryGit: repositoryCredentials,
+      },
+    };
+    sandbox.repositoryAccess = {
+      verifyExecution: assert.fail,
+      retireExpired: assert.fail,
+      routeReadiness: assert.fail,
+      materialSettledAt: assert.fail,
+      isRouteBlockedError: () => false,
+    };
+    t.after(() => {
+      delete sandbox.repositoryAccess;
+    });
+    t.mock.method(proxy.sourceControl, "assertAvailable", async (_signal, profile) => ({
+      profile,
+      authorization: "online-request",
+    }));
+    let workload;
+    t.mock.method(sandbox, "provisionHarness", async ({ requirements }) => {
+      workload = requirements;
+      throw released;
+    });
+    target.compute.admission = driver.admitRevision(target);
+    seedNode(target);
+    await assert.rejects(
+      driver.prepareRevision(target, {
+        ...protectedContext,
+        harnessAuth: { ...protectedAuth, source: onlineSource },
+        credentialSources: [onlineSource],
+      }),
+      (error) => error === released,
+    );
+    const { childArgs } = inspectComputeCodexCommand(workload.command);
+    const directory = await temporaryDirectory(t, "oce-online-enrollment-");
+    const { challenge, url } = await launch(
+      t,
+      childArgs,
+      await projectWorkload(workload, directory),
+    );
+    assert.equal((await fetch(url)).status, 401);
+    assert.deepEqual(challenge.execution, execution);
+    assert.deepEqual(challenge.plan, { id: target.egressPlan.id, generation: plan.generation });
+    assert.equal(challenge.authorization, "online-request");
+    assert.equal(challenge.repositoryGitAuthorization, "online-request");
+    assert.equal(challenge.inference, true);
+    assert.equal(challenge.routeCount, 2);
+  });
   await t.test(
     "a zero-binding execution releases only its local app server, after the exact committed deny-all",
     async (t) => {
@@ -1343,18 +1450,10 @@ test("provider Harness protected execution is released only on current signed in
         { mode: 0o700 },
       );
       const env = {
-        ...projectedEnv(zeroRequirements),
+        ...(await projectWorkload(zeroRequirements, directory)),
         PATH: directory + ":" + process.env.PATH,
-        HOME: directory,
-        CODEX_HOME: directory,
-        OPENCLAW_WORKSPACE_DIR: directory,
         OCE_TEST_CODEX_CALLS: calls,
       };
-      for (const file of zeroRequirements.files) {
-        const path = join(directory, file.name);
-        await writeFile(path, file.content);
-        env[file.environmentVariable] = path;
-      }
       const script = join(directory, "harness.cjs");
       await writeFile(script, AGENT_RUNTIME_ENTRYPOINT);
       const { challenge, exited, release } = await launch(t, [script], env);

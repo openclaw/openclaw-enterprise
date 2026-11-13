@@ -16,7 +16,10 @@ import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translato
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
-import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
+import {
+  HARNESS_EGRESS_ENROLLMENT_HELPER,
+  LEGACY_HARNESS_EGRESS_ENROLLMENT_HELPER,
+} from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
   DELIBERATE_RESTART_MESSAGE,
@@ -4062,6 +4065,7 @@ function agentRuntimeEntrypoint({
   computeOwned = false,
   withNode = false,
   patRecovery = false,
+  modelRequestEnrollment = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4075,7 +4079,7 @@ ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_PLUGIN_STDIO_HELPER}
-${HARNESS_EGRESS_ENROLLMENT_HELPER}
+${modelRequestEnrollment ? HARNESS_EGRESS_ENROLLMENT_HELPER : LEGACY_HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 ${computeOwned ? CODEX_READINESS_HELPER + "\n" : ""}
 // codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
@@ -4765,16 +4769,6 @@ if (!protectedStartup) {
 `;
 }
 
-export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint();
-export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ protected: true });
-// Compute owns these mutable Pod/process launches. Provider-owned immutable
-// Sandbox commands keep their existing bytes and provider readiness contract.
-export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ computeOwned: true });
-export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({
-  computeOwned: true,
-  protected: true,
-});
-
 const WORKSPACE_NODE_SETUP_CODE_HELPER = String.raw`
 // Match OpenShell's provider-file limit and the native connect target-file limit.
 // Bound both delivered bytes and the resulting base64url code before retirement.
@@ -5303,76 +5297,97 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
-const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
-export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  nodeProgramArguments(providerCodexChild),
-);
-export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  nodeProgramArguments(protectedProviderCodexChild),
-);
-export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, computeOwned: true })),
-);
-export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  nodeProgramArguments(
-    agentRuntimeEntrypoint({ withNode: true, computeOwned: true, protected: true }),
-  ),
-);
-
-let patEntrypoint: string | undefined;
-let compactPatLaunch: string | undefined;
-let compactProviderLaunch: string | undefined;
-let compactProtectedLaunch: string | undefined;
-
-function compactWorkspaceNodeLaunch(child: string): string {
-  return agentWithNodeEntrypoint(compactNodeChildArguments(child));
-}
-
 export interface CodexLaunch {
   readonly providerOwned: boolean;
   readonly protected: boolean;
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
+  readonly modelRequestEnrollment?: boolean;
 }
+
+// Only the finite set of launch choices belongs in the cache. A revision ID or
+// enrollment payload must never become part of a shared program.
+const codexEntrypoints = new Map<string, string>();
 
 export function codexLaunchEntrypoint(
   {
     providerOwned,
     protected: protectedLaunch,
     openShellProgram,
-    withNode,
-    workspaceSetup,
+    withNode = false,
+    workspaceSetup = false,
+    modelRequestEnrollment = false,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
-  if (!providerOwned) {
-    if (protectedLaunch) {
-      return withNode
-        ? COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
-        : COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
-    }
-    return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
+  const computeOwned = !providerOwned;
+  const patRecovery = providerOwned && !protectedLaunch && openShellProgram === "pat";
+  const compact =
+    withNode &&
+    providerOwned &&
+    (patRecovery || (workspaceSetup && openShellProgram !== undefined));
+  const key = JSON.stringify([
+    computeOwned,
+    protectedLaunch,
+    patRecovery,
+    withNode,
+    compact,
+    modelRequestEnrollment,
+  ]);
+  const cached = codexEntrypoints.get(key);
+  if (cached !== undefined) {
+    return cached;
   }
-  if (!protectedLaunch && openShellProgram === "pat") {
-    if (withNode) {
-      return (compactPatLaunch ??= compactWorkspaceNodeLaunch(
-        agentRuntimeEntrypoint({ withNode: true, patRecovery: true }),
-      ));
-    }
-    return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
+
+  const child = agentRuntimeEntrypoint({
+    protected: protectedLaunch,
+    computeOwned,
+    withNode,
+    patRecovery,
+    modelRequestEnrollment,
+  });
+  let program = child;
+  if (withNode) {
+    const args = compact ? compactNodeChildArguments(child) : nodeProgramArguments(child);
+    program = agentWithNodeEntrypoint(args);
   }
-  if (!withNode) {
-    return protectedLaunch ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
-  }
-  if (workspaceSetup && openShellProgram !== undefined) {
-    if (protectedLaunch) {
-      return (compactProtectedLaunch ??= compactWorkspaceNodeLaunch(protectedProviderCodexChild));
-    }
-    return (compactProviderLaunch ??= compactWorkspaceNodeLaunch(providerCodexChild));
-  }
-  return protectedLaunch ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT;
+  codexEntrypoints.set(key, program);
+  return program;
 }
+
+export const AGENT_RUNTIME_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: false,
+});
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: true,
+});
+export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = codexLaunchEntrypoint();
+export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: true,
+});
+export const AGENT_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: false,
+  withNode: true,
+});
+export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: true,
+  withNode: true,
+});
+export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: false,
+  withNode: true,
+});
+export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: true,
+  withNode: true,
+});
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");

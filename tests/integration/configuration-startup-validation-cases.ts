@@ -4,10 +4,15 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/installation-fields.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import {
+  createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
+  createInstallationDriverConfiguration as installation,
+} from "../helpers/installation-driver-configuration.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type ValidationConfiguration = ReturnType<typeof installation> & {
   observability?: { url: string };
@@ -27,7 +32,7 @@ type StartupCaseContext = {
     script: string,
     environment: NodeJS.ProcessEnv,
     timeout?: number,
-  ) => Promise<{ status: number | null; stderr: string }>;
+  ) => Promise<{ status: number | null; stdout: string; stderr: string }>;
   fixture: (context: TestContext, configuration?: ValidationConfiguration) => Promise<string>;
   settled: <const T extends readonly unknown[]>(promises: {
     [K in keyof T]: Promise<T[K]>;
@@ -80,9 +85,13 @@ function rejectionMatches(expected: RegExp, context: string): (error: unknown) =
 export function registerStartupDiagnosticsCases({
   boot: runBoot,
   fixture,
+  productionServer,
   readFile,
   settled,
-}: StartupCaseContext & { readFile: typeof import("node:fs/promises").readFile }): void {
+}: StartupCaseContext & {
+  productionServer: NodeJS.ProcessEnv;
+  readFile: typeof import("node:fs/promises").readFile;
+}): void {
   const boot = safeBoot(runBoot);
 
   test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
@@ -274,6 +283,151 @@ export function registerStartupDiagnosticsCases({
               result.stderr,
             ),
             "startup diagnostic must omit input values, Agent paths, and persistence errors",
+          );
+        }),
+      );
+    }
+  });
+
+  test("API and worker name the disallowed authorityScope for combined OpenShell credentials", async (t) => {
+    const directory = await temporaryDirectory(t, "occ-combined-authority-");
+    const registryPath = join(directory, "registry.json");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        backendId: "github-fixture",
+        providerInstanceId: "github-com",
+        appId: "12345",
+        githubInstallationId: "67890",
+        maximumDurationSeconds: 3600,
+        repositories: [
+          {
+            repositoryRef: "application",
+            repositoryId: "34567",
+            repository: "example/application",
+            namespaces: [{ namespaceId: "ns_repository", profiles: ["git-read"] }],
+          },
+        ],
+      }),
+      { mode: 0o644 },
+    );
+    const base = credentialProxyInstallation() as ReturnType<typeof installation> & {
+      backend: [{ drivers: { credential_proxy: string } }];
+      drivers: {
+        sandbox: { id: string };
+        credential_proxy: {
+          configuration: { authority: EgressAuthorityConfiguration; middlewareName: string };
+        };
+      };
+    };
+    const { sandbox, credential_proxy: proxy } = base.drivers;
+    const { authority, middlewareName } = proxy.configuration;
+    const bundlePath = join(directory, "bundle.json");
+    const tokenEndpoint = "https://token-grant.example.test:9445/token";
+    const gitRegistration = "fixture-git-registration";
+    const egress = {
+      authority,
+      middlewareName,
+      tokenGrant: { endpoint: tokenEndpoint, port: 9445, trustDomain: "fixture.test", bundlePath },
+    };
+    base.backend[0].drivers.credential_proxy = sandbox.id;
+    const configuration = {
+      ...base,
+      backend: [
+        ...base.backend,
+        {
+          id: "github-fixture",
+          type: "github",
+          configuration: { registryPath },
+          drivers: { repo: "repository-credentials" },
+        },
+      ],
+      repository: {
+        id: "repository-credentials",
+        configuration: { sessionDurationSeconds: 600 },
+        openShell: {
+          registrationName: gitRegistration,
+          authority: { ...authority, port: 9446, audience: gitRegistration },
+        },
+        preparedGitHub: {
+          custodyKeyPath: join(directory, "custody.key"),
+          privateKeyPath: join(directory, "app.pem"),
+        },
+      },
+    };
+    const withEgress = (selection: typeof egress & Record<string, unknown>) => ({
+      ...configuration,
+      drivers: {
+        ...configuration.drivers,
+        credential_proxy: { id: sandbox.id, configuration: selection },
+      },
+    });
+    // The same Installation without the explicit field derives the scope while keeping both registrations.
+    const loaded = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, withEgress(egress)) },
+    });
+    assert.deepEqual(loaded?.installation.drivers.credential_proxy?.configuration, {
+      middlewareName,
+      repositoryMiddlewareName: gitRegistration,
+      requestCredentials: { audience: authority.audience, tokenEndpoint },
+      authorityScope: "execution",
+    });
+
+    const value = "fixture-authority-scope-value";
+    const unrelatedKey = "fixture-unrelated-key";
+    const details = [
+      {
+        path: "/drivers/credential_proxy/configuration/authorityScope",
+        code: "UNKNOWN_FIELD",
+        message:
+          "Remove authorityScope when repository.openShell and tokenGrant are configured. OpenShell selects execution scope.",
+      },
+    ];
+    // Both normal entrypoints must name the fixed field without copying input text.
+    // A different unsupported key must still use the generic diagnostic.
+    for (const [selection, expectedDetails] of [
+      [{ ...egress, authorityScope: value }, details],
+      [{ ...egress, [unrelatedKey]: value }, undefined],
+    ] as const) {
+      const path = await fixture(t, withEgress(selection));
+      const environment = {
+        ...productionServer,
+        NODE_ENV: "production",
+        OCC_CONFIG_PATH: path,
+        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      };
+      await settled(
+        (
+          [
+            ["apps/controller/src/server.mjs", "startup-error", "STARTUP_FAILED"],
+            ["apps/controller/src/worker.mjs", "worker.startup-error", "WORKER_STARTUP_FAILED"],
+          ] as const
+        ).map(async ([script, event, genericCode]) => {
+          const result = await boot(script, environment);
+          assert.equal(result.status, 1);
+          assert.equal(result.stdout, "");
+          const diagnostic = startupDiagnostic(result.stderr, event);
+          assert.equal(
+            diagnostic.code,
+            expectedDetails ? "DRIVER_CONFIGURATION_INVALID" : genericCode,
+          );
+          assert.deepEqual(diagnostic.details, expectedDetails);
+          assert.equal(diagnostic.message, undefined);
+          assert.ok(
+            [
+              path,
+              bundlePath,
+              value,
+              unrelatedKey,
+              middlewareName,
+              gitRegistration,
+              tokenEndpoint,
+              "contains unsupported option",
+              "InstallationFieldError",
+            ].every((text) => !result.stderr.includes(text)),
+            "startup logs must omit input values, file paths, and raw errors",
           );
         }),
       );

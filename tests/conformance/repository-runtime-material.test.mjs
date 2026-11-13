@@ -1826,6 +1826,7 @@ test("API-admitted protected credential-free metadata projects no inference tool
   assert.deepEqual(driver.codexLaunch(tagged, f.sandboxDriver), {
     providerOwned: true,
     protected: false,
+    modelRequestEnrollment: false,
     openShellProgram: "ordinary",
   });
   assert.throws(() => driver.codexLaunch(tagged, undefined), /Compute admission is invalid/);

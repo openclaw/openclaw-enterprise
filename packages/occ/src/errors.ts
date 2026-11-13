@@ -711,7 +711,7 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
  */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git, not Proxy-owned credential sources or Agents without repository access. Installation administrators can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+    "The selected OpenShell registration serves repository requests, not strict credential exchanges. To add model access, ask an Installation administrator to enable online-request delivery and select it explicitly when creating the source.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);
@@ -728,7 +728,7 @@ export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictErr
  */
 export class CredentialSourceUnprotectedError extends ResourceStateConflictError {
   static readonly description =
-    "With drivers.credential_proxy selected, a revision can use only credential sources created or adopted under the Proxy, and beside repository Git its ready Gateway Harness source. Replace the other bindings, then deploy again.";
+    "With drivers.credential_proxy selected, every credential binding must belong to a supported admitted delivery profile. Replace unsupported bindings, then deploy again.";
 
   constructor() {
     super(CredentialSourceUnprotectedError.description);

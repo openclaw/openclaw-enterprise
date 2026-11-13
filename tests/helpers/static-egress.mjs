@@ -104,6 +104,7 @@ async function buildStaticEgressFixture(
     inertProviderRule = false,
     serviceTransport,
     admitRevision = true,
+    requestCredentials = false,
     resolutionFinished,
     preparedGitHub,
     createPreparedGitHub,
@@ -143,6 +144,7 @@ async function buildStaticEgressFixture(
   let runtimeNamespace;
   let secretReads = 0;
   let secretReadBarrier;
+  let nextSecretRead;
   let beforeNamespaceResponse;
   const kube = createHttpsServer({ key, cert }, async (request, response) => {
     response.setHeader("content-type", "application/json");
@@ -211,6 +213,10 @@ async function buildStaticEgressFixture(
       response.writeHead(request.method === "POST" ? 201 : 200).end(JSON.stringify(stored));
     } else if (request.method === "GET" && previous) {
       secretReads += 1;
+      const paused = nextSecretRead;
+      nextSecretRead = undefined;
+      paused?.reached.resolve();
+      await paused?.release.promise;
       await secretReadBarrier;
       response.end(JSON.stringify(previous));
     } else {
@@ -267,7 +273,10 @@ async function buildStaticEgressFixture(
     policyStatusUnavailable: false,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
-  const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
+  const gatewayCapabilities = [
+    "openshell.supervisor-middleware.contract",
+    ...(requestCredentials ? [] : capabilities),
+  ].sort();
   const profiles = new Map();
   const providers = new Map();
   const gatewayRequests = [];
@@ -281,14 +290,23 @@ async function buildStaticEgressFixture(
     },
     ImportProviderProfiles(call, callback) {
       for (const item of call.request.profiles) {
-        profiles.set(item.profile.id, { ...item.profile, resource_version: "1" });
+        profiles.set(item.profile.id, {
+          ...item.profile,
+          scope: "workspace",
+          resource_version: "1",
+        });
       }
       callback(null, { imported: true });
     },
     CreateProvider(call, callback) {
       const provider = {
         ...call.request.provider,
-        metadata: { ...call.request.provider.metadata, id: randomUUID(), resource_version: "1" },
+        metadata: {
+          ...call.request.provider.metadata,
+          workspace: call.request.workspace_scope.workspace,
+          id: randomUUID(),
+          resource_version: "1",
+        },
       };
       providers.set(provider.metadata.name, provider);
       callback(null, { provider });
@@ -384,8 +402,17 @@ async function buildStaticEgressFixture(
       }
       assert.equal(call.request.name, observed.sandbox.name);
       callback(null, {
-        sandbox: { metadata: observed.sandbox, status: { phase: "SANDBOX_PHASE_READY" } },
+        sandbox: {
+          metadata: observed.sandbox,
+          spec: observed.sandboxSpec,
+          status: { phase: "SANDBOX_PHASE_READY", ...observed.sandboxStatus },
+        },
       });
+    },
+    GetSandboxConfig(call, callback) {
+      assert.equal(call.request.name, observed.sandbox?.name);
+      assert.equal(call.request.workspace_scope.workspace, runtimeNamespace.name);
+      callback(null, observed.config);
     },
     GetService(call, callback) {
       if (
@@ -477,11 +504,37 @@ async function buildStaticEgressFixture(
     { gatewayClient },
   );
   t.after(() => backend.client.close());
-  const egressOptions = { middlewareName: "oce-authority", authorityScope: "execution" };
+  const egressOptions = {
+    middlewareName: "oce-authority",
+    authorityScope: "execution",
+    ...(requestCredentials && {
+      requestCredentials: {
+        audience: "oce-authority",
+        tokenEndpoint: "https://127.0.0.1:9445/token",
+      },
+    }),
+  };
   let admissionDrivers;
-  if (admissionOnly) {
+  if (admissionOnly || requestCredentials) {
     // Exercise startup's retirement selection, not a policy recreated by the fixture.
     const base = createCredentialProxyInstallationConfiguration();
+    if (requestCredentials) {
+      const proxy = base.drivers.credential_proxy.configuration;
+      Object.assign(proxy.authority, {
+        certificatePath: certPath,
+        privateKeyPath: generated.keyPath,
+        issuerPublicKeyPath: join(directory, "unstarted-authority-issuer.pem"),
+        audience: egressOptions.requestCredentials.audience,
+      });
+      Object.assign(proxy, {
+        tokenGrant: {
+          endpoint: egressOptions.requestCredentials.tokenEndpoint,
+          port: 9445,
+          trustDomain: "fixture.test",
+          bundlePath: join(directory, "unstarted-trust-bundle.json"),
+        },
+      });
+    }
     const configuration = {
       ...base,
       backend: [
@@ -733,6 +786,7 @@ async function buildStaticEgressFixture(
     : await post("credential-sources", {
         name: "inference",
         type: "openai",
+        ...(requestCredentials && { authorization: "online-request" }),
         config: { authorized_base_url: `https://provider.example.test:${providerPort}/v1` },
         secrets: { api_key: secret.ref },
       });
@@ -794,6 +848,20 @@ async function buildStaticEgressFixture(
       source,
       grant,
       countSecretReads: () => secretReads,
+      credentialProxy: egress,
+      egressOptions,
+      sandboxDriver: sandbox,
+      gatewayClient,
+      runtimeNamespace,
+      get secretReads() {
+        return secretReads;
+      },
+      pauseNextSecretRead() {
+        const reached = Promise.withResolvers();
+        const release = Promise.withResolvers();
+        nextSecretRead = { reached, release };
+        return { reached: reached.promise, release: () => release.resolve() };
+      },
     };
   }
   const revisionMetadata = await app.deployAgent(namespace.id, agent.id);

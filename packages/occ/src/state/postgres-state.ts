@@ -6,6 +6,7 @@ import {
   isConfiguredRoleId,
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
+import { postgresRequestCredentialApprovals } from "./request-credential-approvals.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicyRepository, StoredCredentialWithdrawal } from "./platform-state.ts";
@@ -4570,6 +4571,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       iamPolicy,
       repositorySessions: postgresRepositorySessions(client),
       preparedTokenProof: this.preparedTokenProof(client),
+      requestCredentialApprovals: postgresRequestCredentialApprovals(client),
       egressSendReceipts: postgresEgressSendReceipts(client),
       provisioning: {
         findByWorkId: async (workId) => {

@@ -1,4 +1,8 @@
 import type {
+  ConsumedRequestCredentialApproval,
+  RequestCredentialApproval,
+} from "./ports/request-credential-approvals.ts";
+import type {
   EgressSendReceipts,
   SendAttempt,
   StoredSendReceipt,
@@ -9,6 +13,10 @@ import type {
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
+  RequestCredentialInput,
+  RequestCredentialGrant,
+  RequestCredentialMaterial,
+  EgressRef,
   CapturedEgressUse,
   CredentialProxyExchange,
   EgressExchangeOwner,
@@ -63,6 +71,12 @@ export interface ExchangeProvider {
   readonly isCurrent: () => boolean;
 }
 
+/** Final material observation runs inside the current Namespace policy fence. */
+export type RequestCredentialRelease = (
+  source: StaticEgressSource,
+  read: () => Promise<VersionedSecretValue & { readonly materialId: string }>,
+) => Promise<boolean>;
+
 export interface EgressAuthorityPorts {
   readonly exchangeOwner: EgressExchangeOwner;
   readonly now: () => number;
@@ -90,6 +104,17 @@ export interface EgressAuthorityPorts {
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
   readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
+  readonly requestCredentials?: {
+    readonly sender: EgressRef;
+    check(
+      request: RequestCredentialInput | RequestCredentialApproval,
+      signal: AbortSignal,
+      release?: RequestCredentialRelease,
+    ): Promise<StaticEgressSource | undefined>;
+    consume(grant: RequestCredentialGrant): Promise<ConsumedRequestCredentialApproval | undefined>;
+    validate(source: StaticEgressSource, value: string): boolean;
+    deny(approval: RequestCredentialApproval, code: string): Promise<void>;
+  };
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,
@@ -309,6 +334,9 @@ function captureProvider(
   if (!receiver || receiver === "ambiguous") {
     return receiver;
   }
+  if (receiver.authorization !== undefined) {
+    return undefined;
+  }
   const ref = immutableCopy(receiver.ref);
   const methods = Object.freeze({
     routes: receiver.routes,
@@ -330,6 +358,7 @@ function captureProvider(
       try {
         current =
           ports.provider(route) === receiver &&
+          receiver.authorization === undefined &&
           isDeepStrictEqual(receiver.ref, ref) &&
           receiver.routes === methods.routes &&
           receiver.normalizeConfig === methods.normalizeConfig &&
@@ -419,6 +448,214 @@ export class CredentialProxy implements CredentialProxyExchange {
     }
     this.ports = ports;
     this.capacity = resolved.capacity;
+  }
+
+  private async withRequestCredential<T>(
+    recipientId: string,
+    deadlineAt: string,
+    signal: AbortSignal,
+    operation: (
+      ports: NonNullable<EgressAuthorityPorts["requestCredentials"]>,
+      signal: AbortSignal,
+      retain: <U>(pending: Promise<U>) => Promise<U>,
+    ) => Promise<T | undefined>,
+  ): Promise<T | undefined> {
+    const ports = this.ports.requestCredentials;
+    const deadline = Date.parse(deadlineAt);
+    const budget = Math.ceil(deadline - this.ports.now());
+    if (
+      !ports ||
+      signal.aborted ||
+      !recipientId ||
+      recipientId.length > 512 ||
+      !(budget > 0 && budget <= 30_000) ||
+      this.activeOperations >= this.capacity.operations ||
+      this.authenticating >= this.capacity.authenticatingOperations
+    ) {
+      return undefined;
+    }
+    this.activeOperations += 1;
+    this.authenticating += 1;
+    const charge: OperationCharge = { holds: 1 };
+    try {
+      if (!this.chargeShare(charge, JSON.stringify([ports.sender, recipientId]))) {
+        return undefined;
+      }
+      const lifetime = AbortSignal.any([signal, AbortSignal.timeout(budget)]);
+      const result = await operation(ports, lifetime, (pending) => {
+        charge.holds += 1;
+        return pending.finally(() => this.releaseCharge(charge));
+      });
+      return lifetime.aborted || this.ports.now() >= deadline ? undefined : result;
+    } catch {
+      // Ambiguous authority/read outcomes never grant a credential or retry a consumed approval.
+      return undefined;
+    } finally {
+      this.releaseCharge(charge);
+    }
+  }
+
+  authorizeRequestCredential(input: RequestCredentialInput, signal: AbortSignal) {
+    if (
+      !Number.isFinite(Date.parse(input.replayUntilAt)) ||
+      Date.parse(input.replayUntilAt) < Date.parse(input.deadlineAt) ||
+      Date.parse(input.replayUntilAt) > this.ports.now() + 3_600_000 ||
+      input.http.body.byteLength > 1024 * 1024 ||
+      !input.requestId ||
+      input.requestId.length > 256 ||
+      !input.bindingId ||
+      input.bindingId.length > 256
+    ) {
+      return Promise.resolve(undefined);
+    }
+    const request = {
+      ...immutableCopy({ ...input, http: { ...input.http, body: undefined } }),
+      http: {
+        ...immutableCopy({ ...input.http, body: undefined }),
+        body: new Uint8Array(input.http.body),
+      },
+    };
+    return this.withRequestCredential<"credential">(
+      request.recipient.id,
+      request.deadlineAt,
+      signal,
+      async (ports, lifetime) =>
+        (await ports.check(request, lifetime)) ? "credential" : undefined,
+    );
+  }
+
+  acquireRequestAuthentication(): (() => void) | undefined {
+    if (
+      !this.ports.requestCredentials ||
+      this.activeOperations >= this.capacity.operations ||
+      this.authenticating >= this.capacity.authenticatingOperations
+    ) {
+      return undefined;
+    }
+    this.activeOperations += 1;
+    this.authenticating += 1;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        this.activeOperations -= 1;
+        this.authenticating -= 1;
+      }
+    };
+  }
+
+  resolveRequestCredential(input: RequestCredentialGrant, signal: AbortSignal) {
+    const startedAt = performance.now();
+    const grant = immutableCopy(input);
+    return this.withRequestCredential<RequestCredentialMaterial>(
+      grant.recipientId,
+      grant.deadlineAt,
+      signal,
+      async (ports, lifetime, retain) => {
+        const approval = await ports.consume(grant);
+        if (!approval || lifetime.aborted) {
+          return undefined;
+        }
+        const deadline = Math.min(Date.parse(approval.deadlineAt), Date.parse(grant.deadlineAt));
+        // The database owns the lease clock. Anchor its remaining budget before consumption
+        // so query transit and every subsequent policy/material read only shorten the lease.
+        const releaseLifetimeMs = approval.remainingLifetimeMs;
+        const remaining = Math.floor(releaseLifetimeMs - (performance.now() - startedAt));
+        if (!Number.isFinite(releaseLifetimeMs) || releaseLifetimeMs > 30_000 || !(remaining > 0)) {
+          return undefined;
+        }
+        const approvedLifetime = AbortSignal.any([lifetime, AbortSignal.timeout(remaining)]);
+        const admitted = await ports.check(approval, approvedLifetime);
+        if (!admitted || approvedLifetime.aborted) {
+          return undefined;
+        }
+        const source = immutableCopy(admitted);
+        const readLifetime = {
+          signal: approvedLifetime,
+          deadlineAt: new Date(deadline).toISOString(),
+        };
+        // Both authoritative reads are outside policy transactions. A rotation during a held
+        // read invalidates this approval; a later request may select the replacement version.
+        const first = immutableCopy(
+          await this.ports.read(source, readLifetime, () => !approvedLifetime.aborted),
+        );
+        if (approvedLifetime.aborted) {
+          return undefined;
+        }
+        const current = immutableCopy(
+          await this.ports.read(source, readLifetime, () => !approvedLifetime.aborted),
+        );
+        const fresh = (value: VersionedSecretValue) =>
+          value.version &&
+          value.value &&
+          Number.isFinite(Date.parse(value.authoritativeObservedAt)) &&
+          Date.parse(value.authoritativeObservedAt) <= this.ports.now() &&
+          (value.expiresAt === undefined || Date.parse(value.expiresAt) > deadline);
+        if (
+          !fresh(first) ||
+          !fresh(current) ||
+          first.version !== current.version ||
+          first.materialId !== current.materialId ||
+          !sameSecret(first.value, current.value) ||
+          approvedLifetime.aborted
+        ) {
+          await ports.deny(approval, "stale_material");
+          return undefined;
+        }
+        let validMaterial = false;
+        try {
+          validMaterial = ports.validate(source, current.value);
+        } catch {
+          // Provider validation can reject a newly rotated value without exposing it.
+        }
+        if (!validMaterial) {
+          await ports.deny(approval, "invalid_material");
+          return undefined;
+        }
+        const selected = await ports.check(approval, approvedLifetime, async (selected, read) => {
+          if (!isDeepStrictEqual(selected, source) || approvedLifetime.aborted) {
+            return false;
+          }
+          // OCC rotations use this same Namespace fence. The last read is the material
+          // observation for release; direct external writes have no shared OCC lock.
+          let onAbort!: () => void;
+          const aborted = new Promise<undefined>((resolve) => {
+            onAbort = () => resolve(undefined);
+          });
+          approvedLifetime.addEventListener("abort", onAbort, { once: true });
+          try {
+            // A Driver ignoring cancellation must neither retain policy locks nor escape
+            // capacity accounting while its abandoned read is still pending.
+            const final = await Promise.race([retain(read()), aborted]);
+            return (
+              final !== undefined &&
+              !approvedLifetime.aborted &&
+              Boolean(fresh(final)) &&
+              final.version === current.version &&
+              final.materialId === current.materialId &&
+              sameSecret(final.value, current.value)
+            );
+          } finally {
+            approvedLifetime.removeEventListener("abort", onAbort);
+          }
+        });
+        if (
+          !isDeepStrictEqual(selected, source) ||
+          approvedLifetime.aborted ||
+          this.ports.now() >= deadline ||
+          performance.now() - startedAt >= releaseLifetimeMs
+        ) {
+          return undefined;
+        }
+        // This is a bounded release permission, not a claim about the API key's provider lifetime.
+        return {
+          value: current.value,
+          version: current.version,
+          usableUntil: new Date(deadline).toISOString(),
+          releaseLifetimeMs,
+        };
+      },
+    );
   }
 
   private async verifyPeer(authorization: string): Promise<EgressPeer | undefined> {
@@ -592,6 +829,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     const installation = await this.ports.installation(peer);
     if (
       !installation ||
+      installation.plan.authorization !== undefined ||
       !isDeepStrictEqual(installation.sender, peer.sender) ||
       installation.enforcement?.instanceId !== peer.instanceId ||
       installation.enforcement.peerKeyId !== peer.peerKeyId

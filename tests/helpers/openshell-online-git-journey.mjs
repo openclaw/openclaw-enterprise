@@ -69,6 +69,7 @@ export async function gitExpiryGateway(
     onGitInstall = (_value) => {},
     modelSourceId = "",
     gatewayVersion = "",
+    registrations = () => ["oce-prepared-git"],
     supervisor = /** @type {Record<string, any> | undefined} */ (undefined),
     configure = (_methods, _world) => {},
     gatewayTls = /** @type {{ key: string, cert: string, rootCertificatePath: string, tokenPath: string } | undefined} */ (
@@ -277,13 +278,11 @@ export async function gitExpiryGateway(
     GetWorkspace: () => ({ workspace: { metadata: { name: workspace, id: "workspace-id" } } }),
     GetGatewayInfo: () => ({
       gateway_version: gatewayVersion,
-      extensions: [
-        {
-          configured_name: "oce-prepared-git",
-          kind: 4,
-          protocol_major: 1,
-        },
-      ],
+      extensions: registrations().map((name) => ({
+        configured_name: name,
+        kind: 4,
+        protocol_major: 1,
+      })),
     }),
     GetSandbox: () =>
       world.id && {

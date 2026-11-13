@@ -35868,6 +35868,11 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "authorization": {
+                    "const": "online-request",
+                    "description": "Explicitly select an offered request-authorization profile. With a Credential Proxy selected, omission retains exact-dispatch admission for eligible static sources. Existing sources retain their original profile.",
+                    "type": "string"
+                  },
                   "config": {
                     "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
                     "description": "Non-secret source configuration keyed by catalog field name.",

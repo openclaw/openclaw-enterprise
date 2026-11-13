@@ -25,6 +25,7 @@ import type {
   ComputeRevisionContext,
   GitHubRepositoryCredentialBackendDefinition,
   ProxyRevisionContext,
+  ProxyWiring,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
@@ -105,13 +106,15 @@ type NarrowJourney = {
 type NarrowPreparation = Pick<
   NarrowJourney,
   "runtime" | "revision" | "client" | "workspace" | "sandbox" | "pool" | "peer" | "writes"
->;
+> & { wiring: ProxyWiring };
 
 export async function beforeNarrowGitPreparation(
   t: TestContext,
+  testUrl: string,
   exercise: (journey: NarrowPreparation) => Promise<void>,
+  options: AdmissionOptions = {},
 ) {
-  await repositoryGitJourney(t, import.meta.url, undefined, {}, exercise);
+  await repositoryGitJourney(t, testUrl, undefined, options, exercise, false, undefined, options);
 }
 
 type NarrowPolicy = {
@@ -131,6 +134,10 @@ type NarrowStartupOptions = NarrowPolicy & {
     >;
   }) => Promise<void>;
   configure?: Parameters<typeof gitExpiryGateway>[1]["configure"];
+};
+
+type AdmissionOptions = NarrowStartupOptions & {
+  requestModel?: { baseUrl: string; registrations(): string[] };
 };
 
 export async function createNarrowOnlineGitStartup(
@@ -196,7 +203,7 @@ async function repositoryGitJourney(
     | "cold-worker"
     | "expired-original-pods"
     | "expired-replaced-supervisor",
-  startupOptions?: NarrowStartupOptions,
+  startupOptions?: AdmissionOptions,
 ) {
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
@@ -205,8 +212,9 @@ async function repositoryGitJourney(
   const selectedRepositories = repositorySet.slice(0, standing ? 1 : 2);
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
-  const modelProvider = conversation
-    ? { protocol: "openai-responses" as const, baseUrl: conversation.baseUrl }
+  const modelBaseUrl = conversation?.baseUrl ?? startupOptions?.requestModel?.baseUrl;
+  const modelProvider = modelBaseUrl
+    ? { protocol: "openai-responses" as const, baseUrl: modelBaseUrl }
     : undefined;
   const workspace = "selected-journey";
   const tls = await harnessTlsFixture(t);
@@ -251,8 +259,35 @@ async function repositoryGitJourney(
     drivers: { sandbox: id, credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
     client: { placement: () => undefined, clientForNamespace: () => client },
   };
+  // These model endpoints describe the admission fixture. Only the Git authority starts a listener.
+  const modelAuthority = startupOptions?.requestModel?.baseUrl
+    ? {
+        exchangeAuthority: {
+          host: "127.0.0.1",
+          port: 9444,
+          issuer: "https://gateway.example.test",
+          audience: "model-requests",
+          keyId: "model-key",
+          certificatePath: tls.certPath,
+          privateKeyPath: tls.keyPath,
+          issuerPublicKeyPath,
+        },
+        tokenGrant: {
+          endpoint: "https://model-authority.example.test:9445/token",
+          port: 9445,
+          trustDomain: "fixture.test",
+          bundlePath: join(tls.directory, "unused-model-bundle.json"),
+        },
+      }
+    : undefined;
   const opts = {
-    middlewareName: "oce-prepared-git",
+    middlewareName: modelAuthority ? "oce-model" : "oce-prepared-git",
+    ...(modelAuthority && {
+      requestCredentials: {
+        audience: modelAuthority.exchangeAuthority.audience,
+        tokenEndpoint: modelAuthority.tokenGrant.endpoint,
+      },
+    }),
     repositoryMiddlewareName: "oce-prepared-git",
     authorityScope: "execution" as const,
   };
@@ -334,6 +369,7 @@ async function repositoryGitJourney(
       id,
       sandbox,
       backend: backend as never,
+      ...modelAuthority,
       bindRepositoryGit: (authority) => runtime.bindRepositoryGit(authority),
       ...{
         mandatoryEnforcement: (ctx: ProxyRevisionContext, box: string) => {
@@ -471,7 +507,7 @@ async function repositoryGitJourney(
   const agent = await f.agent("repository-set", {
     executionMode: "dedicated",
     auth: "credential_source",
-    ...(conversation && { modelConfig: { authorized_base_url: conversation.baseUrl } }),
+    ...(modelBaseUrl && { modelConfig: { authorized_base_url: modelBaseUrl } }),
   });
   const configuration = await f.controller.createConfiguration(f.actor.id, {
     namespaceId: f.namespace.id,
@@ -525,6 +561,7 @@ async function repositoryGitJourney(
     gatewayTls: { ...tls, tokenPath },
     ...{ supervisor: state },
     configure: startupOptions?.configure,
+    registrations: startupOptions?.requestModel?.registrations,
     onGitInstall(value: string) {
       state.installed = value;
     },
@@ -570,7 +607,7 @@ async function repositoryGitJourney(
   assert.equal(queued.rows.length, 1);
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
   assert.equal(revision.repositoryCredentials!.bindings.length, narrowProfile || standing ? 1 : 2);
-  assert.equal(revision.executionAdmission.version, 5);
+  assert.equal(revision.executionAdmission.version, modelAuthority ? 9 : 5);
   assert.equal(revision.executionAdmission.mode, "protected");
   assert.deepEqual(revision.egressPlan!.repositoryGit, revision.repositoryCredentials);
   assert.equal(revision.egressPlan!.repositoryGitAuthorization, "online-request");
@@ -591,6 +628,7 @@ async function repositoryGitJourney(
   state.policy = wiring.configuration;
   if (beforePrepare) {
     await beforePrepare({
+      wiring,
       runtime,
       revision,
       client,

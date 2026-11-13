@@ -9,6 +9,10 @@ export function bindPlatformUnitOfWork(
 ): PlatformUnitOfWork {
   return Object.freeze({
     preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),
+    requestCredentialApprovals: bindRepository(repositories.requestCredentialApprovals, lifetime, [
+      "insert",
+      "consume",
+    ]),
     egressSendReceipts: bindRepository(repositories.egressSendReceipts, lifetime, [
       "find",
       "insert",

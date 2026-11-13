@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { jsonEvent } from "../helpers/json-lines.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
 
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -438,6 +440,140 @@ test("production image includes the OpenShell gRPC proto asset", imageTestOption
   assert.match(stdout, /"event":"openshell-proto-loaded"/);
   assertNoPackagingFailure(`${stdout}\n${stderr}`);
 });
+
+test(
+  "production image binds and closes the configured model token grant",
+  imageTestOptions,
+  async (t) => {
+    const fixture = await productionFixture(t);
+    const mounted = "/tmp/oce-production-image";
+    const tls = await selfSigned(fixture);
+    // Only disposable synthetic keys are mounted into this network-isolated image.
+    await chmod(tls.keyPath, 0o644);
+    const issuer = generateKeyPairSync("ed25519");
+    const svid = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    await writeFile(
+      join(fixture, "issuer.pem"),
+      issuer.publicKey.export({ type: "spki", format: "pem" }),
+    );
+    await writeFile(
+      join(fixture, "jwt-bundle.json"),
+      JSON.stringify({
+        keys: [{ ...svid.publicKey.export({ format: "jwk" }), kid: "smoke-svid", use: "jwt-svid" }],
+      }),
+    );
+    const installation = productionInstallation(`${mounted}/admin-key`);
+    Object.assign(installation.backend[1].drivers, { credential_proxy: "proxy-openshell" });
+    Object.assign(installation.backend[1], {
+      configuration: {
+        endpoint: "https://127.0.0.1:9",
+        rootCertificatePath: `${mounted}/tls.crt`,
+        auth: {
+          mode: "mtls",
+          certificatePath: `${mounted}/tls.crt`,
+          privateKeyPath: `${mounted}/tls.key`,
+        },
+      },
+    });
+    Object.assign(installation.drivers, {
+      credential_proxy: {
+        id: "proxy-openshell",
+        configuration: {
+          middlewareName: "model-authority",
+          authorityScope: "execution",
+          authority: {
+            host: "127.0.0.1",
+            port: 9444,
+            issuer: "https://gateway.example.invalid",
+            audience: "model-authority",
+            keyId: "smoke-issuer",
+            certificatePath: `${mounted}/tls.crt`,
+            privateKeyPath: `${mounted}/tls.key`,
+            issuerPublicKeyPath: `${mounted}/issuer.pem`,
+          },
+          tokenGrant: {
+            endpoint: "https://127.0.0.1:9445/token",
+            port: 9445,
+            trustDomain: "smoke.test",
+            bundlePath: `${mounted}/jwt-bundle.json`,
+          },
+        },
+      },
+    });
+    await writeFile(join(fixture, "installation.json"), JSON.stringify(installation));
+    // This probes the shipped composition and real listeners with in-memory OCC state;
+    // PostgreSQL bootstrap and authorized credential release have separate integration proof.
+    const probe = String.raw`
+    import assert from "node:assert/strict";
+    import { readFile } from "node:fs/promises";
+    import { request } from "node:https";
+    import { OpenClawController } from "./packages/occ/src/index.ts";
+    import { installationControllerOptions, loadInstallationConfiguration } from "./apps/controller/src/composition/installation-config.ts";
+    import { installEgressAuthority } from "./apps/controller/src/composition/egress-authority.ts";
+
+    const loaded = await loadInstallationConfiguration({ mode: "production", environment: process.env });
+    const owner = loaded.protectedDriver;
+    assert.ok(owner);
+    const controller = new OpenClawController(
+      { id: "image-smoke", name: "image-smoke", createdAt: new Date().toISOString() },
+      {
+        ...installationControllerOptions(loaded.installation),
+        namespaceLifecycleBindings: loaded.namespaceLifecycleBindings,
+      },
+    );
+    controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+    const ca = await readFile("/tmp/oce-production-image/tls.crt");
+    const post = () => new Promise((resolve, reject) => {
+      const req = request("https://127.0.0.1:9445/token", {
+        method: "POST", ca, agent: false, headers: { "content-type": "application/x-www-form-urlencoded" },
+      }, (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => { body += chunk; });
+        response.on("end", () => resolve({ status: response.statusCode, cache: response.headers["cache-control"], body: JSON.parse(body) }));
+      });
+      req.on("error", reject);
+      req.setTimeout(5000, () => req.destroy(new Error("token grant request timed out")));
+      req.end("grant_type=client_credentials");
+    });
+    let binding;
+    try {
+      binding = await installEgressAuthority(controller, owner);
+      assert.ok(binding);
+      // A malformed request consumes and releases the real authentication capacity slot.
+      assert.deepEqual(await post(), { status: 400, cache: "no-store", body: { error: "invalid_request" } });
+      await binding.close();
+      binding = undefined;
+      await assert.rejects(post(), { code: "ECONNREFUSED" });
+      process.stdout.write('{"event":"model-token-grant-lifecycle-ready"}\n');
+    } finally {
+      await binding?.close();
+      await owner.close();
+    }
+  `;
+    const { stdout, stderr } = await runDocker(
+      [
+        "run",
+        "--rm",
+        "--init",
+        "--network",
+        "none",
+        "--read-only",
+        "--mount",
+        `type=bind,src=${fixture},dst=${mounted},readonly`,
+        "-e",
+        `OCC_CONFIG_PATH=${mounted}/installation.json`,
+        image,
+        "--input-type=module",
+        "--eval",
+        probe,
+      ],
+      { timeout: 60_000 * imageSmokeTimeoutMultiplier },
+    );
+    assert.match(stdout, /"event":"model-token-grant-lifecycle-ready"/);
+    assertNoPackagingFailure(`${stdout}\n${stderr}`);
+  },
+);
 
 test("production image includes console shell and public assets", imageTestOptions, async () => {
   const { stdout: labels } = await runDocker([

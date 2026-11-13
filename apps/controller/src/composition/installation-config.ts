@@ -1,3 +1,4 @@
+import type { OpenShellTokenGrantConfiguration } from "../drivers/egress-proxy/openshell-token-grant.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -26,6 +27,7 @@ import {
   type InstallationFieldDetail,
   requireChartGatewayRouting,
   requireChartListener,
+  requireChartTokenGrant,
 } from "./installation-fields.ts";
 import {
   requireConfiguration,
@@ -986,6 +988,7 @@ export async function loadInstallationConfiguration(options: {
   let proxySelection: SelectedDriverConfiguration | undefined;
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
+  let requestTokenGrant: OpenShellTokenGrantConfiguration | undefined;
   let credentialProxyCapacity: CredentialProxyCapacity | undefined;
   let preparedGitHubKeyPath: string | undefined;
   let preparedGitHubOrigin: string | undefined;
@@ -1020,6 +1023,7 @@ export async function loadInstallationConfiguration(options: {
       }
       repositoryTransportConfiguration = configuredProxy.repository;
       egressAuthority = configuredProxy.authority;
+      requestTokenGrant = configuredProxy.tokenGrant;
       preparedGitHubKeyPath = configuredProxy.prepared?.custodyKeyPath;
       preparedGitHubOrigin = configuredProxy.prepared?.apiOrigin;
       if (configuredProxy.prepared?.issuerCaPath) {
@@ -1037,6 +1041,7 @@ export async function loadInstallationConfiguration(options: {
   }
 
   requireChartListener(egressAuthority, environment, chartListeners.egressAuthority);
+  requireChartTokenGrant(requestTokenGrant, egressAuthority, environment);
   requireChartListener(
     repositoryTransportConfiguration?.authority,
     environment,
@@ -1489,6 +1494,7 @@ export async function loadInstallationConfiguration(options: {
               configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
               preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
               ...(egressAuthority && { exchangeAuthority: egressAuthority }),
+              ...(requestTokenGrant && { tokenGrant: requestTokenGrant }),
             },
           }),
     });

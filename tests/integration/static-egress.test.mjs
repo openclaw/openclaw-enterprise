@@ -782,6 +782,22 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   });
   assert.equal((await f.request("PATCH", path, { body: { adoption: "live" } })).status, 409);
   assert.equal((await f.request("PATCH", path, { body: consent })).status, 200);
+  // A missing online provider is a different authorization profile, not an older
+  // generation of this strict provider. Re-adoption consent must not switch it.
+  await f.controller.transact(async ({ credentialSources: sources }) => {
+    const { egress } = await sources.findCredentialSource(namespaceId, id);
+    await sources.admitEgressSource(namespaceId, id, egress.key.source.generation, {
+      ...egress,
+      key: {
+        ...egress.key,
+        source: { id, generation: egress.key.source.generation + 1 },
+        provider: { id: "openai-online-request", generation: 1 },
+      },
+    });
+  });
+  const reads = f.secretReads;
+  assert.equal((await f.request("PATCH", path, { body: consent })).status, 409);
+  assert.equal(f.secretReads, reads, "profile changes must refuse before reading material");
   const bound = await f.request("PATCH", `${f.path}/${f.source.id}`, {
     body: { adoption: "live" },
   });

@@ -32,7 +32,7 @@ these operations:
 | Member                                      | Caller, inputs and result                                                                                                                                               | Requirement                                                                                              |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `sourceControl`                             | Admission and preparation use its Backend, sender, resolver and provider identities. `assertAvailable(signal, profile?)` checks the configured counterpart.             | Required property, not a method. Discovery alone is not installed enforcement evidence.                  |
-| `bindExchange(createCredentialProxy)`       | API composition supplies a factory. Call it once with the transport's `EgressExchangeOwner`; receive only the five exchange methods. Return a binding with `close()`.   | Optional on the base interface; required to connect a request-time exchange transport.                   |
+| `bindExchange(createCredentialProxy)`       | API supplies a factory for `EgressExchangeOwner`; receive exchange and optional request-credential methods. Return a binding with `close()`.                            | Optional on the base interface; required to connect a request-time exchange transport.                   |
 | `bindRepositoryGit(authority)`              | Worker composition supplies `ProtectedRepositoryGitAuthority`; return a binding with `close()`.                                                                         | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
 | `configureRevision(context)`                | Compute preparation supplies Namespace, revision, admitted plan and cancellation signal. Return `ProxyWiring` with that exact plan and nonsecret Sandbox configuration. | Required. Cannot broaden the admitted plan.                                                              |
 | `wiringStatus(context, prepared)`           | Compute observes the prepared installation. Return authenticated `EgressInstallation` evidence or `undefined`.                                                          | Required. An accepted configuration request is not sufficient evidence.                                  |
@@ -80,6 +80,45 @@ observed hooks to exact dispatch. Existing v3–v6 admissions keep their semanti
 The [admission source](../../../packages/occ/src/index.ts) and
 [version checks](../../../packages/contracts/src/drivers/credential-proxy/index.ts) implement
 this support; they do not qualify stock OpenShell or any installed deployment.
+
+### Online model requests
+
+Eligible static sources default to strict admission. Explicit `authorization: "online-request"`
+selects an offered provider; updates retain its ID and generation. Bundled
+`openai-online-request` generation 1 requires same-state native IAM and one dedicated
+Codex HTTPS Responses route, an explicit model and no provider-hosted tools.
+
+`ProxyPlan.authorization` records the profile. Version 8 admits the model route;
+version 9 adds independently authorized mandatory Git delivery. Strict admissions
+retain their guarantees. The optional `requestTimeCredentials` capability provides
+`assertAvailable` and `verifyRequestInstallation(context, installation, recipient)`.
+The API checks the recipient against the persisted opaque `requestConfigurationId`.
+OpenShell binds the full policy, model provider/profile and Sandbox/process identities.
+Only `provider_env_revision` is excluded from stored admission/configuration hashes;
+every read still requires current observations to agree, including that epoch.
+The worker verifies Git custody at installation. The API refuses model releases
+when retained evidence changes or disappears.
+
+Git uses its own binding, approval, session and registry. Version 9 refuses
+`policyReduction`. Removing [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
+denies fresh Git requests and can retire the runtime. Removing either binding can
+stop or redeploy execution. Installed proof that model-source IAM denial preserves
+authorized Git remains pending.
+
+`authorizeRequestCredential` checks the captured request and records a nonsecret
+single-use approval. `resolveRequestCredential` authenticates redemption, consumes
+approval and rechecks authority under explicit `READ COMMITTED`. Two outside-lock
+Secret observations must match the final read under the Namespace rotation lock;
+external writers are uncoordinated. See the [release boundary](../../flows/credential-source-egress/model-requests.md#3-redeem-once-against-current-authority).
+
+Approvals last at most 30 seconds from database admission. Callers deduct
+monotonic time elapsed since resolver invocation from `releaseLifetimeMs` and
+enforce `usableUntil`; these deadlines apply to approval, not key expiry.
+Required middleware and `cache_ttl: 0` prevent reuse. The supervisor injects the
+key; the guest gets a placeholder and the Gateway retains only metadata.
+Withdrawal blocks pending redemption; already released requests may finish.
+This profile gives neither exact dispatch nor response custody.
+See [setup and installed qualification](../../guides/credential-proxy/model-requests.md).
 
 ## IAM
 
@@ -212,10 +251,10 @@ response transport. See [qualification requirements](../../testing/protected-rep
 
 ### Request-time capacity
 
-The OCC [request registry](../../../packages/occ/src/credential-proxy.ts) keeps
-its bounds in memory, per API process. Set them with the optional
-`requestCapacity` block beside the selection's `id` and `configuration`. It
-applies to any selected Driver, bundled or packaged:
+Set the OCC [request registry](../../../packages/occ/src/credential-proxy.ts)
+limits with `requestCapacity`, beside any selected Driver's `id` and
+`configuration`. Operations are per API process. Online-model approval ID quotas
+are durable across replicas; strict exchange ID maps remain per process:
 
 ```yaml
 drivers:
@@ -235,7 +274,7 @@ drivers:
 | `operations`               | Operations in progress, all Sandboxes | 1024                      | 8192    | When the handle closes or expires and no authentication, installation, policy, Secret or receipt work is pending |
 | `authenticatingOperations` | Operations still authenticating       | A quarter of `operations` | 8192    | When peer verification settles; a verified request moves to its Sandbox's share                                  |
 | `sandboxOperations`        | Operations in progress, per Sandbox   | A quarter of `operations` | 8192    | When the handle closes or expires and no installation, policy, Secret or receipt work is pending                 |
-| `requestIds`               | Request IDs, all Sandboxes            | 8192                      | 131072  | 30 s after each ID's UUIDv7 creation time                                                                        |
+| `requestIds`               | Request IDs, all Sandboxes            | 8192                      | 131072  | Strict: UUIDv7 creation + 30 s; online model: authenticated replay horizon                                       |
 | `sandboxRequestIds`        | Request IDs, per Sandbox              | A quarter of `requestIds` | 131072  | Same                                                                                                             |
 
 Each value is a count from 1 to its maximum. An omitted share is a quarter of
@@ -246,22 +285,27 @@ naming the field. Each operation in progress can hold its request body (up to 1
 MiB), about 8 GiB at the `operations` maximum, so size the API Pod's memory
 before raising it. Restart API Pods to apply a change.
 
-A ready handle holds its operation slot until it closes or its deadline (at most
-30 s) passes. Per-Sandbox shares are keyed on the verified sender and Sandbox, so
-one Sandbox's traffic cannot spend another's. Before verification only an unverified
-Sandbox ID is known, so that budget is global. The bundled OpenShell verification is
-in memory, so the budget only bounds bursts; a Driver whose verification does I/O lets
-one Sandbox hold the budget for that latency. The default ID bounds allow about 270
-protected requests per second per API process, and about 68 per Sandbox
-(`requestIds / 30` and `sandboxRequestIds / 30`). With default shares, one Sandbox
-cannot use the whole operation cap or ID table, but four busy Sandboxes can. A request refused
-by the installation or route checks reserves no ID. From exchange capture on, its ID
-stays reserved for the whole window, even if the request is refused.
-Past any bound, `resolve` refuses with `unavailable`/`resolver`. The bundled
-OpenShell authority also admits at most 1024 pending exchange openings (256 for
-one Sandbox) and 1024 accepted exchanges. Its online request authorization holds
-at most 1024 decisions in flight (256 for one Sandbox) and denies the rest with
-`online_authorization_denied`.
+A ready handle holds its operation slot until closure or deadline (at most 30 s),
+and pending work must settle. Per-Sandbox operation shares use verified sender
+and Sandbox identities; authentication is globally budgeted before verification.
+For online models, both gRPC identity checks and HTTPS body/bundle/JWT processing
+hold an authentication lease, released before resolver admission. A canceled
+final Secret read releases policy locks but retains capacity until it settles.
+
+Online approvals retain recipient/request IDs after consumption or redemption
+expiry until the verified adapter's replay horizon, at most one hour from
+admission. Database time governs retention, admission and redemption. Quota
+contention refuses; strict ID maps and operation caps remain per process.
+
+Strict ID defaults allow about 270 requests/s per process and 68 per Sandbox
+(`requestIds / 30` and `sandboxRequestIds / 30`). A refusal before exchange capture
+reserves no ID; captured IDs stay reserved even after refusal. Default shares
+prevent one Sandbox exhausting a pool; four busy Sandboxes can.
+Past a bound, strict `resolve` refuses with `unavailable`/`resolver`. The bundled
+OpenShell authority separately permits 1024 pending exchange openings (256 per
+Sandbox), 1024 accepted exchanges and 1024 online Git decisions (256 per Sandbox).
+Excess Git decisions receive `online_authorization_denied`. Online model
+middleware denies; a saturated token authentication budget returns HTTP 503.
 
 ## Troubleshooting
 
