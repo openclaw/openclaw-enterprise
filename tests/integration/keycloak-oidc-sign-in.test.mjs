@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
 import { enrollmentWait } from "../helpers/keycloak-enrollment-wait.ts";
-import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.mjs";
+import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.ts";
 import pg from "pg";
 import { chromium } from "playwright";
 import { oidcLoginConfiguration } from "../../apps/controller/src/auth/oidc.ts";
