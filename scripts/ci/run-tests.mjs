@@ -1081,10 +1081,11 @@ function parseReporter(stdout, timedOut = false) {
   return events;
 }
 
-// The upstream case is serial. Keep only a complete prefix ending in one
-// unmatched activation-stage start. A start identifies an observation, not an outcome.
-function upstreamUnfinishedStage(events) {
+// An unfinished start is useful only if the earlier operations finished in order
+// and the independent terminal diagnostics agree with that sequence.
+function upstreamUnfinishedStage(events, measurements) {
   const stages = ["installation", "exposure-auth", "initial-model", "replacement"];
+  const phases = ["installation", "exposure-auth", "gateway-turns", "pod-replacement"];
   let index = 0;
   let started = false;
   for (const event of events) {
@@ -1107,7 +1108,23 @@ function upstreamUnfinishedStage(events) {
     started = !started;
   }
   const stage = stages[index];
-  return started && (stage === "installation" || stage === "replacement") ? stage : undefined;
+  if (!started || (stage !== "installation" && stage !== "replacement")) {
+    return undefined;
+  }
+  for (const [kind, names] of [
+    ["openshell-stage", stages],
+    ["openshell-sandbox-phase", phases],
+  ]) {
+    let last = -1;
+    for (const row of measurements.filter((row) => row.kind === kind)) {
+      const position = names.indexOf(row.stage);
+      if (row.outcome !== "passed" || position <= last || position >= index) {
+        return undefined;
+      }
+      last = position;
+    }
+  }
+  return stage;
 }
 
 function isRealTestEvent(event, absolutePath) {
@@ -1720,10 +1737,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
         relativePath === "tests/integration/openshell-upstream-real.test.ts" &&
         ["openshell", "openshell-installers"].includes(lane.name)
       ) {
-        const observed = upstreamUnfinishedStage(events);
-        if (!measurements.some((row) => row.kind === "openshell-stage" && row.stage === observed)) {
-          unfinishedStage = observed;
-        }
+        unfinishedStage = upstreamUnfinishedStage(events, measurements);
       }
       const terminalEvents = events.filter(
         (event) =>

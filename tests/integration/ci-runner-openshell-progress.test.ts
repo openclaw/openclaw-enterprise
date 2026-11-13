@@ -224,10 +224,19 @@ test("CI retains the unfinished upstream stage without changing the failed case"
   const file = "tests/integration/openshell-upstream-real.test.ts";
   const title = "OpenShell model and tool upstream outages fail closed";
   const stageModule = new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href;
-  for (const [stage, interruption] of [
-    ["installation", "deadline"],
-    ["replacement", "deadline"],
-    ["replacement", "throw"],
+  for (const [stage, interruption, terminal, expected] of [
+    ["installation", "deadline", null, "installation"],
+    ["replacement", "deadline", null, "replacement"],
+    ["replacement", "throw", null, undefined],
+    ["installation", "deadline", ["openshell-sandbox-phase", "installation", "passed"], undefined],
+    ["installation", "deadline", ["openshell-stage", "replacement", "passed"], undefined],
+    [
+      "replacement",
+      "deadline",
+      ["openshell-sandbox-phase", "pod-replacement", "failed"],
+      undefined,
+    ],
+    ["replacement", "deadline", ["openshell-sandbox-phase", "gateway-turns", "failed"], undefined],
   ] as const) {
     const root = await createRunnerFixture(t);
     const results = join(root, "results/upstream.json");
@@ -247,6 +256,11 @@ test("CI retains the unfinished upstream stage without changing the failed case"
            await runOpenShellStage(t, step, async () => {
              if (step !== ${JSON.stringify(stage)}) return;
              if (${JSON.stringify(interruption)} === "throw") throw new Error("fixture failure");
+             const terminal = ${JSON.stringify(terminal)};
+             if (terminal) {
+               const [kind, stage, outcome] = terminal;
+               t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ kind, stage, outcome, elapsedMs: 1 }));
+             }
              await new Promise(() => {
                const timer = setInterval(() => {}, 1000);
                t.after(() => clearInterval(timer));
@@ -278,9 +292,6 @@ test("CI retains the unfinished upstream stage without changing the failed case"
       [[title, "failed"]],
     );
     assert.equal(upstream.cleanup.status, "passed");
-    assert.equal(
-      upstream.openShellUnfinishedStage,
-      interruption === "deadline" ? stage : undefined,
-    );
+    assert.equal(upstream.openShellUnfinishedStage, expected);
   }
 });
