@@ -10,7 +10,7 @@
 export const postgresSuperuser = "postgres";
 export const postgresSuperuserPassword = "openclaw-local-admin";
 
-// The fixture tests' fake servers (tests/helpers/ci-prepare-fixture-command.mjs) listen on a
+// The fixture tests' fake servers (tests/helpers/ci-prepare-fixture-command.ts) listen on a
 // Unix socket in this directory (".s.PGSQL.<port>") instead: their fake `compose up` cannot
 // claim the TCP port preparation reserved once another process's connection holds it.
 function adminHost() {

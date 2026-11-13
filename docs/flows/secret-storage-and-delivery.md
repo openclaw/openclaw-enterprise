@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-10"
-last_updated_session: "authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b"
+updated: "2026-11-11"
+last_updated_session: "authoring-run/ed486d39-4be4-45b1-a9ac-46e7f93d38bc"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -94,18 +94,23 @@ a Namespace-derived name, exact Namespace ownership metadata, and a fixed
 persists immutable Namespace, driver, and backend metadata while public metadata
 omits the backend locator and returns `{ kind: "secret", namespaceId, id }`.
 
-Known OCC transaction failure can compensate the exact created object. An
-unknown commit outcome must not trigger destructive compensation. A failed create
-deletes the owned object it may have stored under its name. A create refused because
-its stored object was rewritten deletes it, pinned to the answered UID and
-resourceVersion. There is no value journal or automatic replay; a create still in
-flight can require operator recovery.
+A definite OCC transaction failure can compensate the created object; an unknown
+commit cannot. A failed create deletes the owned object under its requested name.
+A successful but refused create uses the returned UID and resourceVersion.
+There is no value journal or automatic replay; a pending create can require
+operator recovery.
 
-Secret create, update and delete share the 12-second Kubernetes budget of
-[Configuration writes](configuration-driver/persistence-and-revisions.md). A Kubernetes
-write is sent only with at least 2 seconds of it left; otherwise the request fails with
-`503` and the write is not sent. A create that was sent and failed is cleaned up after
-the budget; a create that was not sent stored nothing and gets no cleanup read.
+`privateSecretStore` applies the same conditional removal to confirmed but
+refused OAuth-client creates. OCC keeps the hidden registration and selected
+Driver until `cleanupOAuthClients` confirms deletion or absence. Ordinary private
+ownership checks and unknown SQL outcomes remain unchanged. See
+[private registration behavior](../reference/drivers/kubernetes-secret.md#installation-private-oauth-client-secrets).
+
+Secret mutations share the 12-second Kubernetes budget of
+[Configuration writes](configuration-driver/persistence-and-revisions.md).
+A write needs at least 2 seconds remaining; otherwise it returns `503` without
+being sent. Cleanup for a sent create runs outside that budget. A create refused
+before sending needs no cleanup read.
 
 ### 3. Bind a source, then admit references
 
@@ -335,6 +340,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 08:41: Compensate confirmed but refused Installation-private Secret creation without changing ordinary ownership or cleanup custody. (authoring-run/ed486d39-4be4-45b1-a9ac-46e7f93d38bc - 228632a152f96c22a4d7c9aa7554c6ba22911bd4)
 
 - 2026-11-10 17:23: Require inspected recovery for existing first-Agent locks; preserve creator-only cleanup. (authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b - 6e4cf8ff54412aa15773039ffc471e029a8dbfa8)
 

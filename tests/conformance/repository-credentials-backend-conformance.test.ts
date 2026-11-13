@@ -1,4 +1,4 @@
-import { registerCredentialFixtureRegressions } from "../fixtures/repository-credentials/regressions.mjs";
+import { registerCredentialFixtureRegressions } from "../fixtures/repository-credentials/regressions.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { request } from "node:https";

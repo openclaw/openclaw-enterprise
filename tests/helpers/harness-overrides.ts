@@ -8,6 +8,48 @@ import type {
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { staticEgressFixture } from "./static-egress.mjs";
 
+interface HarnessInferenceExpectation {
+  readonly namespaceId: string;
+  readonly sourceId: string;
+  readonly baseUrl: string;
+}
+
+export function assertHarnessInferenceRoutes(
+  revision: Readonly<AgentRevision>,
+  expected: HarnessInferenceExpectation,
+): void {
+  assert.deepEqual(revision.harness.configuration.modelProvider, {
+    protocol: "openai-responses",
+    baseUrl: expected.baseUrl,
+    supportsStandaloneWebSearch: false,
+  });
+  assert.ok(revision.egressPlan);
+  const routes = revision.egressPlan.routes.map((route: EgressRoute) => ({
+    endpoint: route.origin + route.path,
+    method: route.method,
+    grant: route.binding.grant.kind,
+    namespaceId: route.binding.source.namespaceId,
+    sourceId: route.binding.source.source.id,
+  }));
+  // The static OpenAI fixture admits both operations for this exact source. Require
+  // its Responses route independently so an empty persisted plan cannot pass.
+  const expectedRoutes = ["responses", "chat/completions"].map((operation) => ({
+    endpoint: `${expected.baseUrl}/${operation}`,
+    method: "POST",
+    grant: "inference",
+    namespaceId: expected.namespaceId,
+    sourceId: expected.sourceId,
+  }));
+  assert.deepEqual(
+    routes.find((route) => route.endpoint === `${expected.baseUrl}/responses`),
+    expectedRoutes[0],
+    "the admitted Responses route must retain its credential source",
+  );
+  const byEndpoint = (a: { endpoint: string }, b: { endpoint: string }) =>
+    a.endpoint.localeCompare(b.endpoint);
+  assert.deepEqual([...routes].sort(byEndpoint), [...expectedRoutes].sort(byEndpoint));
+}
+
 // Exercise HTTP, IAM, Compute resolution and Proxy admission with the supplied State implementation.
 // External runtime observations remain the existing wire fixture, not live-cluster evidence.
 export async function exerciseHarnessOverrides(
@@ -65,21 +107,29 @@ export async function exerciseHarnessOverrides(
   assert.equal(evaluation.harness.overrides.modelProvider.supportsStandaloneWebSearch, false);
   assert.deepEqual(defaults.harness.overrides, {});
   assert.equal(defaults.harness.configuration.modelProvider.baseUrl, f.modelProvider.baseUrl);
-  for (const expected of [standard, evaluation, defaults]) {
+  const expectedInference = new Map<string, HarnessInferenceExpectation>([
+    [
+      standard.id,
+      { namespaceId: f.namespace.id, sourceId: f.source.id, baseUrl: f.modelProvider.baseUrl },
+    ],
+    [evaluation.id, { namespaceId: f.namespace.id, sourceId: source.id, baseUrl: destination }],
+    [
+      defaults.id,
+      { namespaceId: f.namespace.id, sourceId: f.source.id, baseUrl: f.modelProvider.baseUrl },
+    ],
+  ]);
+  const assertStoredInference = async (expected: { agentId: string; id: string }) => {
     const revision: Readonly<AgentRevision> | undefined = await f.controller.transact(
       (unit: PlatformUnitOfWork) =>
         unit.revisions.findRevision(f.namespace.id, expected.agentId, expected.id),
     );
-    assert.ok(revision?.egressPlan);
-    assert.ok(
-      revision.egressPlan.routes.every(
-        (route: EgressRoute) =>
-          route.origin + route.path ===
-            expected.harness.configuration.modelProvider.baseUrl + "/responses" ||
-          route.origin + route.path ===
-            expected.harness.configuration.modelProvider.baseUrl + "/chat/completions",
-      ),
-    );
+    const inference = expectedInference.get(expected.id);
+    assert.ok(revision);
+    assert.ok(inference);
+    assertHarnessInferenceRoutes(revision, inference);
+  };
+  for (const expected of [standard, evaluation, defaults]) {
+    await assertStoredInference(expected);
   }
   const mismatch = await f.request("POST", `${root}/agents/${alternate.id}/deploy`, { body: {} });
   assert.equal(
@@ -148,6 +198,12 @@ export async function exerciseHarnessOverrides(
     assert.equal(bindings[0].resourceId, source.id);
     assert.equal(admitted.harness.configuration.modelProvider.baseUrl, destination);
     revisions.push(admitted);
+    expectedInference.set(admitted.id, {
+      namespaceId: f.namespace.id,
+      sourceId: source.id,
+      baseUrl: destination,
+    });
+    await assertStoredInference(admitted);
   } else {
     // An IAM policy outside this State cannot receive an automatic deployment grant.
     const denied = await f.request("POST", `${root}/agents/${ungranted.id}/deploy`, {
@@ -200,5 +256,5 @@ export async function exerciseHarnessOverrides(
   );
   assert.equal(recovery.status, 200, JSON.stringify(recovery.body));
   assert.equal(recovery.data.revisionId, receipt.revisionId);
-  return { fixture: f, revisions };
+  return { fixture: f, revisions, expectedInference };
 }

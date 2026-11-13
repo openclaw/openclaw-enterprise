@@ -325,9 +325,12 @@ test(
     assert.equal(bobDeployed.status, 202);
     const crossed = await alice.request("GET", `${agentPath}/revisions/${bobDeployed.data.id}`);
     const unknown = await alice.request("GET", `${agentPath}/revisions/rev_${randomUUID()}`);
-    assert.notEqual(crossed.status, 200);
-    assert.equal(crossed.status, unknown.status);
-    assert.equal(crossed.error?.code, unknown.error?.code);
+    assert.equal(crossed.status, 404);
+    assert.equal(crossed.error?.code, "NOT_FOUND");
+    assert.equal(crossed.data, undefined);
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.error?.code, "NOT_FOUND");
+    assert.equal(unknown.data, undefined);
     assert.equal(
       (
         await alice.request(

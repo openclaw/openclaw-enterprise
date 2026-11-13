@@ -13,6 +13,7 @@
     "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/plugin-compute-codex-install.test.ts",
     "tests/conformance/protected-codex-artifact-policy.test.ts",
     "tests/integration/openshell-quickstart-policy.test.ts",
     "tests/conformance/codex-native-startup.test.mjs",
@@ -44,6 +45,7 @@
     "tests/conformance/runtime-logs-admission.test.ts",
     "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.ts",
+    "tests/integration/device-authorization-denial-audit.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
@@ -51,6 +53,7 @@
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.mjs",
     "tests/conformance/runtime-logs-content.test.mjs",
+    "tests/conformance/runtime-logs-container-wire.test.ts",
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
     "tests/docs/generated-api-reference.test.mjs",
@@ -79,15 +82,17 @@
     "tests/conformance/occ-read.test.mjs",
     "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.mjs",
+    "tests/conformance/configuration-model-policy.test.ts",
     "tests/conformance/credential-source-occ.test.mjs",
     "tests/conformance/kubernetes-real-kubectl.test.ts",
     "tests/conformance/k3d-failure-diagnostics.test.ts",
     "tests/conformance/secret-occ.test.ts",
     "tests/conformance/http-errors.test.mjs",
+    "tests/conformance/http-error-details.test.ts",
     "tests/conformance/docker-compute.test.mjs",
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
-    "tests/conformance/codex-seccomp-profile.test.mjs",
+    "tests/conformance/codex-seccomp-profile.test.ts",
     "tests/conformance/kubernetes-ownership.test.mjs",
     "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
@@ -130,7 +135,7 @@
     "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
-    "tests/conformance/openshell-git-denial.test.mjs",
+    "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
@@ -157,7 +162,7 @@
       "path": "tests/conformance/model-discovery.test.mjs"
     },
     {
-      "path": "tests/conformance/codex-seccomp-profile.test.mjs"
+      "path": "tests/conformance/codex-seccomp-profile.test.ts"
     },
     {
       "path": "tests/conformance/configuration-occ.test.mjs"
@@ -205,6 +210,30 @@
       "path": "tests/conformance/http-errors.test.mjs"
     },
     {
+      "path": "tests/conformance/configuration-model-policy.test.ts",
+      "expectedTests": [
+        "model policy refusals offer only what the next deployment accepts",
+        "Agent roster refusals name the setting and the fix",
+        "model policy refusals name the Configuration setting"
+      ]
+    },
+    {
+      "path": "tests/conformance/http-error-details.test.ts",
+      "expectedTests": [
+        "a nullable union of a referenced schema attributes the reference's problems to its branch",
+        "a reference that two union branches make is attributed to neither",
+        "a capped detail path is unchanged by cutting a long first segment",
+        "a multi-megabyte first segment is capped in bounded time and heap",
+        "a contract refusal lists at most the 32 details the error contract allows",
+        "a contract message shows fewer problems rather than cut a path below 32 characters",
+        "unstorable text keeps document order, key precedence, and capped pointers",
+        "a caller denial names each checked grant without disclosing a Restriction or an unsent ID",
+        "an Agent principal denial names a bound resource only when the caller sent or may read it",
+        "only path parameters and reference fields count as IDs a request sent",
+        "denial ID discovery charges primitive and reference-list entries to its budget"
+      ]
+    },
+    {
       "path": "tests/conformance/credential-source-occ.test.mjs"
     },
     {
@@ -221,6 +250,9 @@
     },
     {
       "path": "tests/conformance/openshell-static-credential-attachment.test.ts"
+    },
+    {
+      "path": "tests/conformance/kubernetes-runtime-logs.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
@@ -270,6 +302,9 @@
     },
     {
       "path": "tests/conformance/runtime-logs-content.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-logs-container-wire.test.ts"
     },
     {
       "path": "tests/conformance/runtime-logs-sandbox.test.ts"
@@ -470,6 +505,9 @@
       "path": "tests/integration/device-authorization-api.test.ts"
     },
     {
+      "path": "tests/integration/device-authorization-denial-audit.test.ts"
+    },
+    {
       "path": "tests/integration/openshell-device-authorization-api.test.mjs"
     },
     {
@@ -544,6 +582,33 @@
     },
     {
       "path": "tests/conformance/plugin-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-compute-codex-install.test.ts",
+      "expectedTests": [
+        "Codex runtime skips the plugin API when no plugins are selected",
+        "Codex runtime helper installs a plugin with skills and applies write action approval without tool inventory",
+        "Codex startup explicitly denies inherited apps and replaces inherited approval exceptions",
+        "Codex runtime helper verifies explicit reviewers before readiness without constraining omission",
+        "Codex runtime helper discovers tool policy after installation and before readiness",
+        "Codex runtime helper rejects incomplete or unbounded tool discovery before writing app policy",
+        "Codex runtime helper reports plugin install warnings without retrying",
+        "Codex runtime helper reports connector-auth warnings with the admitted key",
+        "Codex runtime helper disables curated plugins at once under API-key login",
+        "Codex runtime helper waits for a late app-server before disabling API-key plugin selections",
+        "Codex runtime helper keeps malformed matching install responses generic",
+        "Codex runtime refuses request timeouts and install deadlines outside 1 to 2147483647 ms",
+        "Codex runtime cannot report installation success when its deadline expires before the first attempt",
+        "Codex selected-plugin search stops before writes or continuation when its budget expires",
+        "Codex runtime helper keeps pre-install native uncertainty generic",
+        "Codex runtime keeps disabled selected plugins default-denied while preserving install identity",
+        "Codex runtime installs and reports only enabled selections in mixed plugin sets",
+        "Codex runtime helper fails before readiness when catalog identity is absent",
+        "Codex runtime helper rejects catalog drift before app grants and readiness",
+        "Codex runtime helper verifies defaults and rejects inherited unselected app or plugin enablement",
+        "Codex runtime helper checks effective app, tool, and account policy before readiness",
+        "Codex runtime helper fails before readiness when selected plugin lacks app mapping"
+      ]
     },
     {
       "path": "tests/conformance/protected-codex-artifact-policy.test.ts"
@@ -760,7 +825,7 @@
       ]
     },
     {
-      "path": "tests/conformance/openshell-git-denial.test.mjs",
+      "path": "tests/conformance/openshell-git-denial.test.ts",
       "expectedTests": [
         "Git denial receipt requires fresh evidence and retains the final millisecond bucket",
         "Git denial receipt requires the adjacent endpoint-not-admitted warning",

@@ -22,12 +22,15 @@ export function createDeviceCredentialDrivers({
 } = {}) {
   /** @type {DeviceCredentialCall[]} */
   const calls = [];
+  /** @type {string[]} */
+  const operations = [];
   /** @type {DeviceCredentialSources} */
   const sources = new Map();
   /** @type {Map<string, string>} */
   const handles = new Map();
   /** @param {string} operation @param {CredentialSourceContext} context */
   const record = (operation, context) => {
+    operations.push(operation);
     calls.push({ operation, sourceId: context.source.id });
   };
   /** @satisfies {CredentialGatewayDriver & Record<string, unknown>} */
@@ -36,6 +39,7 @@ export function createDeviceCredentialDrivers({
     capability: "credential_gateway",
     implementation: "test-external-device-service",
     calls,
+    operations,
     sources,
     validateSourceConfig({ type, config }) {
       assert.equal(type, "codex-device");
@@ -76,15 +80,19 @@ export function createDeviceCredentialDrivers({
       handles.delete(context.source.id);
     },
     async updateSource() {
+      operations.push("updateSource");
       assert.fail("device-login scenarios do not update source inputs");
     },
     async attachForRevision() {
+      operations.push("attachForRevision");
       assert.fail("this fixture proves API admission, not runtime attachment");
     },
     async attachmentStatus() {
+      operations.push("attachmentStatus");
       assert.fail("this fixture proves API admission, not runtime attachment");
     },
     async withdraw() {
+      operations.push("withdraw");
       assert.fail("closing a login must not withdraw runtime credentials");
     },
   };
@@ -122,11 +130,13 @@ export function createDeviceCredentialDrivers({
       return { status: "ready" };
     },
     async configureRefresh() {
+      operations.push("configureRefresh");
       assert.fail(
         "device registration must defer refresh setup until the external login completes",
       );
     },
     async rotate() {
+      operations.push("rotate");
       assert.fail("device login and discovery must not force refresh through OCC");
     },
     async refreshStatus(context) {

@@ -385,6 +385,14 @@ export class ScopeViolationError extends Error {
   }
 }
 
+/** A device login's private binding does not match the admitted request scope. */
+export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {
+  constructor() {
+    super("The login belongs to another actor or Agent scope.");
+    this.name = "DeviceAuthorizationScopeMismatchError";
+  }
+}
+
 /** A committed revision withdrawal permanently closes its repository session admission. */
 export class RepositorySessionWithdrawnError extends ScopeViolationError {
   constructor() {

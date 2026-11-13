@@ -28,9 +28,10 @@ interface RunSummary {
   files: {
     status: string;
     nodeExitCode: number;
+    measurements?: unknown[];
     cleanup: { status: string };
     fileFailure?: unknown;
-    tests: { name: string; status: string }[];
+    tests: { name: string; status: string; error?: { message?: string } }[];
   }[];
 }
 
@@ -306,4 +307,90 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
       ["todo case", "todo"],
     ],
   );
+});
+
+test("run keeps the enrollment operation pending when the parent is interrupted", async (t) => {
+  const root = await createRunnerFixture(t);
+  const helper = new URL("../helpers/keycloak-enrollment-wait.ts", import.meta.url);
+  const modes = ["body", "cleanup", "untracked", "passed", "rejected", "unavailable"] as const;
+  const files = modes.map((mode) => ({ path: `tests/integration/${mode}.test.mjs` }));
+  for (const [index, mode] of modes.entries()) {
+    const file = files[index];
+    assert.ok(file);
+    await writeFile(
+      join(root, file.path),
+      `
+        import assert from "node:assert/strict";
+        import test from "node:test";
+        import { setTimeout as delay } from "node:timers/promises";
+        import { writeFileSync } from "node:fs";
+        import { enrollmentWait } from ${JSON.stringify(helper.href)};
+        test("parent", { timeout: 100 }, async (parent) => {
+          const mode = ${JSON.stringify(mode)};
+          const wait = enrollmentWait(mode === "unavailable" ? {
+            signal: parent.signal, diagnostic() { throw new Error("fixture diagnostic unavailable"); },
+          } : parent)(2);
+          // Keep Node alive until the real parent timer fires. Settle after cancellation.
+          const untilAbort = () => new Promise(resolve => {
+            const timer = setTimeout(resolve, 2000);
+            parent.signal.addEventListener("abort", () => {
+              clearTimeout(timer);
+              resolve();
+            }, { once: true });
+          });
+          await parent.test("row", async (row) => {
+            row.after(() => wait("close-context", mode === "cleanup" ? untilAbort() : delay(1)));
+            await wait("open-page", (mode === "body" || mode === "unavailable") ? untilAbort() : Promise.resolve());
+            if (mode === "untracked") await untilAbort();
+            if (mode === "rejected") {
+              parent.diagnostic('openclaw-ci-measurement {"kind":"keycloak-enrollment-interrupted","row":2,"operation":"unlisted-input"}');
+              parent.diagnostic('openclaw-ci-measurement {"kind":"keycloak-enrollment-interrupted","row":-1,"operation":"open-page"}');
+              const original = new Error("synthetic fixture error");
+              await assert.rejects(wait("query-users", Promise.reject(original)), e => e === original);
+              throw original;
+            }
+            await wait("wait-for-callback", Promise.resolve());
+            if (mode === "body") writeFileSync("late-body-finished", "yes");
+          });
+        });
+      `,
+    );
+  }
+  await writeRunnerManifest(root, { lanes: { enrollment: { files } } });
+  const results = "results/enrollment.json";
+  const run = runRunnerSync(laneArgs(root, "enrollment", "state/enrollment.jsonl", results));
+  assert.ifError(run.error);
+  assert.equal(run.status, 1);
+  const summary = await readSummary(join(root, results));
+  assert.equal(summary.files.length, modes.length);
+  assert.equal(await readFile(join(root, "late-body-finished"), "utf8"), "yes");
+  for (const [index, mode] of modes.entries()) {
+    const file = summary.files[index];
+    assert.ok(file);
+    assert.equal(file.nodeExitCode, mode === "passed" ? 0 : 1);
+    assert.equal(file.tests.length, 2);
+    if (mode === "rejected") {
+      assert.equal(
+        file.tests.find(({ name }) => name === "row")?.error?.message,
+        "synthetic fixture error",
+      );
+    } else if (mode !== "passed") {
+      assert.match(
+        file.tests.find(({ name }) => name === "parent")?.error?.message ?? "",
+        /test timed out after 100ms/,
+      );
+    }
+    assert.deepEqual(
+      file.measurements ?? [],
+      mode === "body" || mode === "cleanup"
+        ? [
+            {
+              kind: "keycloak-enrollment-interrupted",
+              row: 2,
+              operation: mode === "body" ? "open-page" : "close-context",
+            },
+          ]
+        : [],
+    );
+  }
 });
