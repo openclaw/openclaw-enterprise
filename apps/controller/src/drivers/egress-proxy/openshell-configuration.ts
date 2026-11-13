@@ -76,6 +76,16 @@ export function openShellProxyConfiguration(
           return { authority, middlewareName, tokenGrant: egress.tokenGrant };
         })();
   if (repository) {
+    if (requestCredentials && Object.hasOwn(egress, "authorityScope")) {
+      throw new InstallationFieldError([
+        {
+          path: "/drivers/credential_proxy/configuration/authorityScope",
+          code: "UNKNOWN_FIELD",
+          message:
+            "Remove authorityScope when repository.openShell and tokenGrant are configured. OpenShell selects execution scope.",
+        },
+      ]);
+    }
     closed(
       egress,
       ["observedHookPreviewWorkspace", "middlewareName", "authority", "tokenGrant"],
