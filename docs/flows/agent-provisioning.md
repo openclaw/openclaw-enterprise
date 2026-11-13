@@ -69,7 +69,7 @@ Secret before source-backed provisioning. [Console recovery](../reference/consol
 reuses confirmed sources and safely retries uncertain registration.
 Installation discovery preserves catalog metadata.
 
-Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate; only a failed job, or a resend the API refuses as a different plan, takes a fresh ID.
+Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate. A failed job, a different-plan refusal, or a refusal naming a deleted Secret, Credential source or ServiceAccount takes a fresh ID and unlocks the form for a replacement.
 
 For a draft, Console creates the Configuration and Agent, then grants access to selected Slack Secrets. Retry credential access keeps that Agent.
 

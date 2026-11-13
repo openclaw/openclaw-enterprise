@@ -393,6 +393,36 @@ test("a superseded first deployment keeps its own meter outcome", async (t) => {
   assert.deepEqual(state.steps, stepStates(["done", "done", "done", "superseded", "pending"]));
 });
 
+test("an unreadable phase keeps the meter's confirmed steps", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
+  await fixture.bootstrap();
+  const namespace = await readyNamespace(fixture, "Progress unreadable phase");
+  const page = await openCreateForm(t, fixture, namespace);
+  const work = provisioningJob(namespace.id, "work_progress_unreadable");
+  // The first poll confirms runtime credentials; the second reports the same running job with
+  // no readable phase and no revision. The meter must keep the confirmed steps and switch to
+  // the generic running heading instead of naming an earlier step again.
+  const reads = [
+    work.job("running", { phase: "transport" }),
+    work.job("running", { phase: undefined }),
+  ];
+  await routeProvisioningJob(page, fixture, work, reads);
+  await trackSettledFetches(page);
+  await recordMeterPaints(page);
+  await runProvisioningPolls(
+    page,
+    () => page.getByRole("button", { name: "Create Agent", exact: true }).click(),
+    work.url,
+    reads.length,
+  );
+  const state = await meterState(page);
+  assert.equal(state.phase, "Provisioning Agent…");
+  assert.deepEqual(state.steps, stepStates(["done", "done", "done", "current", "pending"]));
+  const paints = await page.evaluate(() => globalThis.meterPaints);
+  const layouts = paints.map((paint) => paint.states.join());
+  assert.equal(layouts.at(-1), "done,done,done,current,pending");
+});
+
 test("a refused provisioning request shows no step meter", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();

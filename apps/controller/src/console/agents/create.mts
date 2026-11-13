@@ -3670,6 +3670,13 @@ function renderAgentForm(
         error.serverMessage !== undefined && error.serverMessage !== GENERIC_CONFLICT
           ? error.serverMessage
           : "The provisioning job can no longer be retried.";
+      // A deleted Secret, Credential source or ServiceAccount makes the request unrecoverable:
+      // the API's refusal says to submit a new one, so the form unlocks for a fresh request
+      // with a replacement. Every other refused retry keeps the admitted identity, because
+      // the job may have finished.
+      const unrecoverableRequest =
+        error.status === 409 &&
+        error.serverMessage?.endsWith("Submit a new Agent provisioning request.") === true;
       let detail;
       if (outcomeUnknown && attempt.statusUrl) {
         detail =
@@ -3692,8 +3699,12 @@ function renderAgentForm(
         detail = `${error.message} Open this Agent to see the failed version and its recovery actions.`;
       } else if (terminal?.failed) {
         detail = `${error.message} Select Create Agent to submit a new request.`;
+      } else if (unrecoverableRequest) {
+        // The API's refusal names the deleted resource and says to submit a new request; the
+        // unlocked form lets the operator replace it and submit a fresh one.
+        detail = `${retryRefusal} Replace the deleted resource, then select Create Agent to submit a new request.`;
       } else if (retryRefused) {
-        // The refused retry keeps the admitted identity (the job may have finished), so the
+        // A refused retry keeps the admitted identity (the job may have finished), so the
         // resend recovers it instead of admitting a duplicate.
         detail = `${retryRefusal} Select Create Agent to resend the same request ID.`;
       } else if (error.status === undefined && error.message) {
@@ -3772,7 +3783,7 @@ function renderAgentForm(
         // API refuses as a different plan under the kept identity.
         const differentPlan =
           error.status === 409 && error.serverMessage === PROVISIONING_DIFFERENT_PLAN;
-        if (terminal?.failed || differentPlan) {
+        if (terminal?.failed || differentPlan || unrecoverableRequest) {
           provisioningRequestId = createClientRequestId();
           requestAdmitted = false;
         }
