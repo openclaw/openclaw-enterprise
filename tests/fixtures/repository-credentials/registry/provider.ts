@@ -1,5 +1,5 @@
 import { createServer, request as httpsRequest } from "node:https";
-import type { ClientRequest, IncomingMessage } from "node:http";
+import type { ClientRequest } from "node:http";
 import type { RepositoryCredentialSessionResult } from "../../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { createControlledClock } from "../clock.mjs";
 import { startGitHubFixture } from "../github.mjs";
@@ -11,7 +11,7 @@ type TlsMaterial = Awaited<ReturnType<typeof createTlsMaterial>>;
 type ProviderTransportOptions = {
   tls: TlsMaterial;
   select(
-    request: IncomingMessage,
+    pathname: string,
   ): { origin: string } | undefined | Promise<{ origin: string } | undefined>;
 };
 type GitHubRequestTrace = {
@@ -87,18 +87,32 @@ async function startProviderTransport(
   const outgoing = new Set<ClientRequest>();
   const server = createServer(tls, (request, response) => {
     void (async () => {
-      const selected = await select(request);
+      const target = request.url ?? "";
+      const [pathname = ""] = target.split("?", 1);
+      // Match only a path that the provider will interpret the same way.
+      if (
+        !/^\/[\x21-\x7e]*$/.test(target) ||
+        target.startsWith("//") ||
+        /[\\#]/.test(target) ||
+        URL.parse(pathname, "https://fixture.invalid")?.pathname !== pathname
+      ) {
+        response.writeHead(400).end();
+        return;
+      }
+      const selected = await select(pathname);
       if (!selected) {
         response.writeHead(404).end();
         return;
       }
       // This is only a controlled provider's fixed dispatch table. Session
       // admission and repository authority remain in the real gateway factory.
+      const origin = new URL(selected.origin);
       const upstream = httpsRequest(
-        new URL(request.url!, selected.origin),
+        origin,
         {
+          path: target,
           method: request.method,
-          headers: { ...request.headers, host: new URL(selected.origin).host },
+          headers: { ...request.headers, host: origin.host },
           ca: tls.ca,
           agent: false,
         },
@@ -151,8 +165,7 @@ export async function startRegistryProviderFixtures(
   }
   const apiOrigin = await startProviderTransport(resources, {
     tls,
-    async select(request) {
-      const pathname = new URL(request.url!, "https://api.github.com").pathname;
+    async select(pathname) {
       const repository = repositories.find((entry) => {
         const prefix = `/repos/${entry.repository}`;
         return pathname === prefix || pathname.startsWith(`${prefix}/`);
@@ -165,8 +178,7 @@ export async function startRegistryProviderFixtures(
   });
   const gitOrigin = await startProviderTransport(resources, {
     tls,
-    select(request) {
-      const pathname = new URL(request.url!, "https://github.com").pathname;
+    select(pathname) {
       const entry = repositories.find((item) => {
         const prefix = `/${item.repository}.git`;
         return pathname === prefix || pathname.startsWith(`${prefix}/`);
