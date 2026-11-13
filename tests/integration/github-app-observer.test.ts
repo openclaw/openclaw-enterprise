@@ -271,7 +271,11 @@ test("GitHub App observer deleteBranch uses a credential helper and leased Git p
 
   assert.equal(calls.length, 2);
   const [refCheck, push] = calls;
-  assert.deepEqual(refCheck, ["git", ["check-ref-format", "refs/heads/qa/test-branch"]]);
+  assert.ok(refCheck, "expected a Git ref check");
+  const [refCommand, refArgs, refOptions = {}] = refCheck;
+  assert.equal(refCommand, "git");
+  assert.deepEqual(refArgs, ["check-ref-format", "refs/heads/qa/test-branch"]);
+  assert.deepEqual(refOptions, {});
   assert.ok(push, "expected a Git push");
   const [command, args, options] = push;
   assert.equal(command, "git");
