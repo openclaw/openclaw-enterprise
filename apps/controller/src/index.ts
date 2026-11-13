@@ -3307,6 +3307,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
       };
       reply.raw.once("close", onClose);
+      if (request.raw.aborted || reply.raw.destroyed) {
+        onClose();
+      }
       try {
         if (operation.operationId === "getAgentDeploymentRuntime") {
           const description = await controller!.describeAgentRuntime(
