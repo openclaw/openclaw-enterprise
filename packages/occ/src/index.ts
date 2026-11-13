@@ -3797,6 +3797,8 @@ export class OpenClawController {
         input.namespaceId,
         configurationInput,
         () => new ProvisioningSecretDriverError(),
+        undefined,
+        () => this.authorizeProvisioningRequest(principalId, input.namespaceId),
       );
     }
     return this.mutate(async (state) => {
@@ -13109,6 +13111,17 @@ export class OpenClawController {
           try {
             await authorizeUse?.();
             await this.authorize(principalId, "operate", source);
+            const current = await this.read(async (state) => {
+              await this.exactNamespace(state, namespaceId);
+              return state.secrets.findSecret(namespaceId, source.id);
+            });
+            if (
+              current === undefined ||
+              !sameSecretBackend(secret, current) ||
+              this.ownedSecretDriver(current.driverId, driverFailure) !== storage
+            ) {
+              throw new ChannelCredentialError("unavailable", path);
+            }
             await validate(value);
             return undefined;
           } catch (error) {
@@ -13146,7 +13159,7 @@ export class OpenClawController {
   private async validateDeploymentChannels(
     principalId: string,
     input: DeployAgentInput,
-  ): Promise<void> {
+  ): Promise<PreparedDeploymentChannels | undefined> {
     if (this.selections.get("channel") === undefined) {
       return undefined;
     }
@@ -13167,7 +13180,7 @@ export class OpenClawController {
       });
       return state.configurations.findConfiguration(input.namespaceId, agent.configurationId);
     });
-    await this.prepareDeploymentChannels(principalId, input, metadata);
+    return this.prepareDeploymentChannels(principalId, input, metadata);
   }
 
   private async prepareDeploymentChannels(
@@ -13260,9 +13273,8 @@ export class OpenClawController {
     if (!isNonEmptyString(input.agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
-    if (first === undefined) {
-      await this.validateDeploymentChannels(principalId, input);
-    }
+    const ordinaryPreparation =
+      first === undefined ? await this.validateDeploymentChannels(principalId, input) : undefined;
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
       await this.holdAuthority(state);
@@ -13289,7 +13301,15 @@ export class OpenClawController {
       if (!lockedAgent) {
         throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
       }
-      let prepared: PreparedDeploymentChannels | undefined;
+      let prepared = ordinaryPreparation;
+      if (prepared !== undefined) {
+        this.assertPreparedDeploymentDrivers(prepared);
+        if (lockedAgent.configurationId !== prepared.configuration.id) {
+          throw new ResourceStateConflictError(
+            "The Agent Configuration changed after credential validation. Review the current binding before deploying.",
+          );
+        }
+      }
       if (first !== undefined) {
         authorization = await this.authorizeFirstDeploymentReceipt(
           principalId,
@@ -13383,7 +13403,9 @@ export class OpenClawController {
       }
       if (prepared !== undefined && metadata.generation !== prepared.configuration.generation) {
         throw new ResourceStateConflictError(
-          "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
+          first === undefined
+            ? "The Configuration changed after credential validation. Review the current Configuration before deploying."
+            : "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
         );
       }
       const configurationDriver = this.configurationDriver();
@@ -13395,7 +13417,9 @@ export class OpenClawController {
       );
       if (prepared !== undefined && !isDeepStrictEqual(configuration, prepared.configuration)) {
         throw new ResourceStateConflictError(
-          "The Configuration changed after credential validation. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
+          first === undefined
+            ? "The Configuration changed after credential validation. Review the current Configuration before deploying."
+            : "The Configuration changed after credential validation. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
         );
       }
       if (first !== undefined) {

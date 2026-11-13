@@ -173,18 +173,21 @@ or alter OCC's metadata transaction and compensation boundary.
 
 [Configuration persistence and version snapshots](configuration-driver/persistence-and-revisions.md) traces metadata locking, Driver effects, Agent reference resolution, and snapshot validation after request authorization.
 
+Ordinary deployment retains validated Configuration and Driver identities.
+Admission rejects changed Agent bindings, Configuration content or generation,
+or selected Drivers before recording revisions and work. Provider calls remain
+outside the transaction.
+
 ## Debugging and Verification
 
-The in-process HTTP control in `tests/integration/occ-api.test.mjs` listens on loopback
-and uses the real Slack validator with a synthetic sender. Enabled Slack admits one
-revision, work item, and audit event; GET and matching POST recover the same minimal
-receipt without extra calls. Ordinary and disabled-Slack controls remain. Additional
-cases cover exact Secret checks, draft/Driver drift, late dependency failure,
-revocation, and the canonical generation boundary.
+`tests/integration/occ-api.test.mjs` listens on loopback and uses Slack validation
+with a synthetic sender. It covers one revision/work/success audit,
+receipt recovery without extra calls, ordinary and disabled-Slack deployment,
+Secret authority, Configuration/Driver drift, and late dependency failures.
 
-The separate `tests/integration/postgres-platform-state.test.mjs` control checks
-persisted recovery through a reopened adapter, reconcile counts, and one distinct
-successful deploy audit row. Its sender is synthetic. The HTTP fixture does not test PostgreSQL persistence.
+`tests/integration/postgres-platform-state.test.mjs` separately proves persisted
+recovery through a reopened adapter, reconcile counts, and one successful deploy
+audit. Its sender is synthetic.
 
 Run focused Configuration conformance and integration checks:
 
@@ -230,6 +233,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 12:50: Retain validated Configuration and Driver identities. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
 
 - 2026-11-11 21:03: Trace text validation and denial ID lookup. (authoring-run/f2efc59c-e63d-4f5b-a392-e38ad865f04d - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
 
