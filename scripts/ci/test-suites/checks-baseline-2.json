@@ -73,7 +73,7 @@
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
-    "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+    "tests/conformance/repository-credentials-fixture-ownership.test.ts",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
@@ -531,7 +531,7 @@
       "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+      "path": "tests/conformance/repository-credentials-fixture-ownership.test.ts",
       "expectedTests": [
         "runner timeout cancels and joins commands before teardown admits cleanup",
         "accepted network creation with a lost response stays owned until verified absent",

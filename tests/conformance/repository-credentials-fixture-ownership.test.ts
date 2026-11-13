@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { run } from "../fixtures/repository-credentials/process.mjs";
+import type { TimeoutMarkerPaths } from "../fixtures/repository-credentials-isolation/runner-timeout-child.ts";
+import type { ClientCommand } from "../fixtures/repository-credentials/clients.ts";
+import { run as runCommand } from "../fixtures/repository-credentials/process.mjs";
 import { ownedNetwork } from "../fixtures/repository-credentials-isolation/ownership.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+
+const run = runCommand as ClientCommand;
 
 // These checks qualify fixture ownership only; they do not run the service,
 // Docker daemon, delivered images, or provider integration.
@@ -13,39 +18,18 @@ test("runner timeout cancels and joins commands before teardown admits cleanup",
   const directory = await temporaryDirectory(t, "isolation-owner-check-");
   const late = join(directory, "late");
   const cleaned = join(directory, "cleaned");
-  const ownership = new URL(
-    "../fixtures/repository-credentials-isolation/ownership.ts",
-    import.meta.url,
-  ).href;
-  const processModule = new URL("../fixtures/repository-credentials/process.mjs", import.meta.url)
-    .href;
-  const source = `
-    import test from 'node:test';
-    import { forwardWork } from ${JSON.stringify(ownership)};
-    import { run } from ${JSON.stringify(processModule)};
-    let body;
-    test('expected timeout', { timeout: 200 }, async t => {
-      const work = forwardWork(t.signal);
-      t.after(async () => {
-        await work.stop();
-        await Promise.allSettled([body]);
-        await run(process.execPath, ['-e', ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(cleaned)}, 'done')`)}], { signal: AbortSignal.timeout(2000) });
-      });
-      body = (async () => {
-        try {
-          await work.command(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late command'), 600)`)}]);
-        } catch {}
-        // A caller swallowing the cancelled command still cannot start forward work.
-        await work.command(process.execPath, ['-e', ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late start')`)}]);
-      })();
-      await body;
-    });
-  `;
-  const result = await run(process.execPath, ["--input-type=module", "-e", source], {
+  const child = fileURLToPath(
+    new URL(
+      "../fixtures/repository-credentials-isolation/runner-timeout-child.ts",
+      import.meta.url,
+    ),
+  );
+  const args: TimeoutMarkerPaths = [late, cleaned];
+  const result = await run(process.execPath, [child, ...args], {
     allowFailure: true,
     timeout: 5000,
   });
-  assert.notEqual(result.code, 0, "the nested Node test must actually time out");
+  assert.equal(result.code, 1, "the nested Node test must actually time out");
   assert.match(result.stdout + result.stderr, /test timed out after 200ms/);
   assert.equal(await readFile(cleaned, "utf8"), "done");
   await assert.rejects(readFile(late), { code: "ENOENT" });
@@ -57,11 +41,11 @@ test("accepted network creation with a lost response stays owned until verified 
       const name = "credential-isolation-controlled-network";
       const owner = "controlled-owner";
       const id = "a".repeat(64);
-      let network;
+      let network: { Name: string; Id: string; Labels: Record<string, string> } | undefined;
       let removed = 0;
       let readbacks = 0;
-      let creation;
-      const docker = async (args) => {
+      let creation: Promise<void> | undefined;
+      const docker: Parameters<typeof ownedNetwork>[2] = async (args) => {
         if (args[1] === "create") {
           creation = delay(completionDelay).then(() => {
             network = {
