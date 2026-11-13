@@ -285,7 +285,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if $oidcProviders -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
-{{- $buttonLabels := dict -}}
+{{- $buttonLabels := list -}}
 {{- range $key, $provider := $oidcProviders -}}
 {{- $label := "auth.oidc" -}}
 {{- if $key -}}{{- $label = printf "auth.oidc.providers.%s" $key -}}{{- end -}}
@@ -319,10 +319,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail (printf "%s.displayName must be 1 to 40 printable characters" $label) -}}{{- end -}}
 {{- if $key -}}
 {{- $buttonLabel := default $key $displayName -}}
-{{- /* JavaScript and Go apply different Unicode lowercase rules. The API checks all case variants; Helm can safely fold ASCII and compare other labels exactly. */ -}}
-{{- if regexMatch "^[[:ascii:]]+$" $buttonLabel -}}{{- $buttonLabel = lower $buttonLabel -}}{{- end -}}
-{{- if hasKey $buttonLabels $buttonLabel -}}{{- fail "auth.oidc.providers must have distinct button labels" -}}{{- end -}}
-{{- $_ := set $buttonLabels $buttonLabel true -}}
+{{- /* Match literal labels with Unicode simple case folding, as the API does. */ -}}
+{{- $labelPattern := printf "^(?i:%s)$" (regexQuoteMeta $buttonLabel) -}}
+{{- range $existingLabel := $buttonLabels -}}
+{{- if regexMatch $labelPattern $existingLabel -}}{{- fail "auth.oidc.providers must have distinct button labels" -}}{{- end -}}
+{{- end -}}
+{{- $buttonLabels = append $buttonLabels $buttonLabel -}}
 {{- end -}}
 {{- if not (or (kindIs "invalid" $provider.egressCidrs) (kindIs "slice" $provider.egressCidrs)) -}}{{- fail (printf "%s.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" $label) -}}{{- end -}}
 {{- range $cidr := $provider.egressCidrs -}}

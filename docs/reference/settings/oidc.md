@@ -8,8 +8,10 @@ for setup.
 To configure named providers, put the settings below under
 `auth.oidc.providers.<key>`. Start each key with a lowercase letter. Use a maximum
 of 32 lowercase letters, digits, and hyphens. Give each provider its own `secretName`
-and a distinct button label. The default label is the provider key. The default
-Secret keys are `client-id` and `client-secret`.
+and a distinct button label. Label comparison ignores case and surrounding
+spaces. For example, `Équipe` and `équipe` count as the same label. The default
+label is the provider key. The default Secret keys are `client-id` and
+`client-secret`.
 
 Helm sets `OCC_AUTH_OIDC_PROVIDERS` to the comma-separated list of provider keys.
 For each named provider it inserts the uppercase key after `OCC_AUTH_OIDC_` and

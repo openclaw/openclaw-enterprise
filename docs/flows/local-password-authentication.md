@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-12 09:44"
-last_updated_session: "authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6"
+updated: "2026-11-13 14:55"
+last_updated_session: "authoring-run/f3e6e2ec-49cf-4fd3-960e-935718683930"
 ---
 
 # Bootstrap and human authentication flow
@@ -240,8 +240,9 @@ Attachment, disablement and account-wide revocation advance the version and inva
 target sessions and proofs without changing IAM.
 Guarded reads return current account and method state, not operation receipts.
 Unknown completion returns a dependency failure without replay or compensation. Resolve uncertainty before proceeding.
-Without an external sign-in provider, composition omits account operations; routes
-still authorize the caller, then return `409 RESOURCE_CONFLICT`.
+`createPostgresControllerAuth` resolves attachment keys from named OIDC settings.
+After authorization, an unconfigured provider returns `409 RESOURCE_CONFLICT`.
+Without an external provider, composition omits account operations.
 Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#external-sign-in-profile)
 owns configuration, recovery limits, and operator-visible behavior.
 
@@ -353,6 +354,8 @@ rechecks the resulting proof before issuing its cookie.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 14:55: Trace named OIDC attachment. (authoring-run/f3e6e2ec-49cf-4fd3-960e-935718683930 - 11ea9c2e7578ccb6fa91e1af955797dc0f149276)
 
 - 2026-11-12 09:44: Reconcile named-provider admission and enrollment with main. (authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6 - d3da453e6b84907f013c52c0391b3eb32e177d63)
 

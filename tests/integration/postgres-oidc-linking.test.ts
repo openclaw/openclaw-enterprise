@@ -404,33 +404,49 @@ test(
     });
 
     await t.test(
-      "a slow provider leaves the other provider and password recovery available",
+      "a slow provider cannot use the callback slots reserved for other sign-ins",
       async () => {
         keycloak.mode = "hang";
         const priorRequests = keycloak.requests;
-        let callbackFinished = false;
-        const pending = signIn("keycloak", "attached-keycloak", keycloakClaims).finally(() => {
-          callbackFinished = true;
-        });
-        void pending.catch(() => {});
+        let callbacksFinished = 0;
+        // Four distinct browsers fill Keycloak's limit while the shared limit of eight
+        // still has room. All four requests must reach the provider.
+        const pending = Array.from({ length: 4 }, () =>
+          signIn("keycloak", "attached-keycloak", keycloakClaims).finally(() => {
+            callbacksFinished += 1;
+          }),
+        );
+        const held = Promise.all(pending);
+        void held.catch(() => {});
         try {
-          // Confirm the slow provider is already processing its token request when the other
-          // two sign-ins start. Both must work before that request reaches its deadline.
-          await waitForResult("Keycloak token request", () => keycloak.requests > priorRequests);
+          const heldRequests = priorRequests + pending.length;
+          await waitForResult(
+            "four Keycloak token requests",
+            () => keycloak.requests === heldRequests,
+          );
+
+          // A fresh Keycloak attempt must fail before token exchange. Okta and password
+          // recovery must finish before any of the four admitted exchanges returns.
+          const refused = await signIn("keycloak", "attached-keycloak", keycloakClaims);
+          assert.equal(refused.callback.statusCode, 302, refused.callback.body);
+          assert.equal(refused.callback.headers.location, "/console/?authError=oidc/keycloak");
+          assert.equal(refused.callback.headers["set-cookie"], undefined);
+          assert.equal(keycloak.requests, heldRequests);
           const oktaLogin = await signIn("okta", "attached-okta", oktaClaims);
           await assertConsoleSignIn(app, oktaLogin.callback, accounts.existing.id);
           const recovery = await signedInHeaders(app, origin, admin, address());
           assert.equal((await currentSession(app, recovery.cookie))?.user.id, admin.id);
-          assert.equal(callbackFinished, false);
-          const { callback } = await pending;
-          assert.equal(
-            callback.headers.location,
-            "/console/?authError=oidc/keycloak&authReason=provider-unavailable",
-          );
-          assert.equal(callback.headers["set-cookie"], undefined);
+          assert.equal(callbacksFinished, 0);
+          for (const { callback } of await held) {
+            assert.equal(
+              callback.headers.location,
+              "/console/?authError=oidc/keycloak&authReason=provider-unavailable",
+            );
+            assert.equal(callback.headers["set-cookie"], undefined);
+          }
         } finally {
           keycloak.mode = "up";
-          await pending;
+          await Promise.allSettled(pending);
         }
       },
     );

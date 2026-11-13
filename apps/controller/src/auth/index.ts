@@ -2154,9 +2154,10 @@ export async function createPostgresControllerAuth(
                   expectedVersion: number,
                   providerKey?: string,
                 ) => {
-                  const provider = oidcProviders.find(({ key, route }) =>
-                    providerKey === undefined ? route === "oidc" : key === providerKey,
-                  );
+                  const provider =
+                    providerKey === undefined
+                      ? oidcProviders.find(({ route }) => route === "oidc")
+                      : configuredOidcProviders.find(({ key }) => key === providerKey);
                   if (provider === undefined) {
                     throw new ResourceConflictError("OIDC sign-in is not configured.");
                   }

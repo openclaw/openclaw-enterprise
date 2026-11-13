@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
 import { realpathSync, statSync } from "node:fs";
@@ -8,6 +7,12 @@ import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, isAbsolute, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  oidcDisplayNameMatcher,
+  oidcDisplayNamePattern,
+} from "../apps/controller/src/auth/oidc-display-name.ts";
+import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
 import {
   isKubernetesNamespaceName,
   isKubernetesResourceName,
@@ -968,7 +973,7 @@ function renderOidcProvider(source, path, diagnostics) {
     rendered.tokenAuth = tokenAuth;
   }
   const displayName = optionalString(source, [...path, "displayName"], diagnostics, {
-    validate: (value) => /^[^\p{C}\p{Zl}\p{Zp}]{1,40}$/u.test(value.trim()),
+    validate: (value) => oidcDisplayNamePattern.test(value.trim()),
     description: "1 to 40 printable characters",
   });
   if (displayName !== undefined) {
@@ -1003,7 +1008,7 @@ function renderOidc(source, diagnostics) {
     diagnostics.errors.push("controlPlane.oidc.providers must contain at least one provider.");
   }
   const providers = {};
-  const displayNames = new Set();
+  const displayNames = [];
   let hasLegacyCallback = false;
   for (const [key, value] of entries) {
     const entryPath = [...providerPath, key];
@@ -1020,11 +1025,12 @@ function renderOidc(source, diagnostics) {
       diagnostics.errors.push(`${label}.secretName is required.`);
     }
     const rendered = renderOidcProvider(entry, entryPath, diagnostics);
-    const displayName = (rendered.displayName ?? key).trim().toLowerCase();
-    if (displayNames.has(displayName)) {
+    const displayName = (rendered.displayName ?? key).trim();
+    const labelMatcher = oidcDisplayNameMatcher(displayName);
+    if (displayNames.some((name) => labelMatcher.test(name))) {
       diagnostics.errors.push("controlPlane.oidc.providers must have distinct button labels.");
     }
-    displayNames.add(displayName);
+    displayNames.push(displayName);
     if (entry.allowSelfLink !== undefined) {
       if (typeof entry.allowSelfLink !== "boolean") {
         diagnostics.errors.push(`${label}.allowSelfLink must be a boolean.`);

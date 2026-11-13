@@ -768,9 +768,10 @@ test(
       OCC_AUTH_OIDC_OKTA_CLIENT_SECRET: { name: "occ-okta-login", key: "client-secret" },
     });
     // Give the API parser dummy values for the references Kubernetes resolves at Pod startup.
-    const configured = oidcLoginConfigurations(
-      Object.fromEntries(oidcEnv.map(({ name, value }) => [name, value ?? `fixture-${name}`])),
+    const environment = Object.fromEntries(
+      oidcEnv.map(({ name, value }) => [name, value ?? `fixture-${name}`]),
     );
+    const configured = oidcLoginConfigurations(environment);
     assert.deepEqual(
       configured.map(({ route, config }) => [
         route,
@@ -815,19 +816,49 @@ test(
     );
     assert.equal(apiEnv.find(({ name }) => name === "OCC_API_HTTPS_EGRESS_OPEN")?.value, "false");
 
-    // Go lowercases the dotted capital I to "i"; the API preserves the combining dot.
-    await assertParity({
-      label: "distinct Unicode button labels",
-      controlPlane: {
-        oidc: {
+    // The three entry points must reject the same case variants before sign-in starts.
+    // Simple folding handles both forms of lowercase sigma and keeps dotted İ distinct from i.
+    await each(
+      [
+        [" Équipe ", "équipe", false],
+        ["ΟΣ", "ος", false],
+        ["İ", "i", true],
+        ["Equipe.*", "Equipe West", true],
+      ] as const,
+      async ([oktaLabel, keycloakLabel, accepted]) => {
+        const oidc = {
           providers: {
-            okta: { ...providers.okta, displayName: "İ" },
-            "keycloak-sso": { ...providers["keycloak-sso"], displayName: "i" },
+            okta: { ...providers.okta, displayName: oktaLabel },
+            "keycloak-sso": { ...providers["keycloak-sso"], displayName: keycloakLabel },
           },
-        },
+        };
+        await assertParity({
+          label: `OIDC button labels ${JSON.stringify(oktaLabel)} and ${JSON.stringify(keycloakLabel)}`,
+          controlPlane: { oidc },
+          values: { auth: { oidc: { enabled: true, ...oidc } } },
+          accepted,
+          chartError: /distinct button labels/,
+          rendererError: /distinct button labels/,
+        });
+        const configure = () =>
+          oidcLoginConfigurations({
+            ...environment,
+            OCC_AUTH_OIDC_OKTA_DISPLAY_NAME: oktaLabel,
+            OCC_AUTH_OIDC_KEYCLOAK_SSO_DISPLAY_NAME: keycloakLabel,
+          });
+        if (accepted) {
+          assert.deepEqual(
+            configure().map(({ config }) => config.displayName),
+            [keycloakLabel, oktaLabel],
+          );
+        } else {
+          assert.throws(
+            configure,
+            /must have distinct keys, routes, issuer\/client pairs, and labels/,
+          );
+        }
       },
-      accepted: true,
-    });
+    );
   },
 );
 
@@ -840,16 +871,6 @@ test("invalid named OIDC provider settings fail preflight and Helm", { skip: hel
     [
       "explicit label collides with another provider's default label",
       { providers: { okta: { ...okta, displayName: "Keycloak" }, keycloak } },
-      /distinct button labels/,
-    ],
-    [
-      "identical trimmed Unicode provider labels",
-      {
-        providers: {
-          okta: { ...okta, displayName: " Équipe " },
-          keycloak: { ...keycloak, displayName: "Équipe" },
-        },
-      },
       /distinct button labels/,
     ],
     [

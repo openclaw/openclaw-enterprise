@@ -344,10 +344,11 @@ jq -n --arg subject '<sub>' --argjson version "$VERSION" \
 ```
 
 The subject is 1–255 printable ASCII characters without spaces. The call returns `409`
-when OIDC is off, the version is stale, the account is disabled, or another account
-holds the subject ("The external identity is already assigned."). Attachment advances
-the account version and ends the account's sessions. The method's `providerId` starts
-with `oidc:`; detach it with `POST /api/auth/accounts/:userId/methods/:methodId/detach`.
+if the provider is unavailable for the selected path, the version is stale, the account
+is disabled, or another account holds the subject ("The external identity is already assigned.").
+Attachment advances the account version and ends the account's sessions.
+The method's `providerId` starts with `oidc:`.
+Detach the method with `POST /api/auth/accounts/:userId/methods/:methodId/detach`.
 Detaching removes that provider from the account and ends every session, including password
 sessions, but other enabled sign-in methods remain usable.
 

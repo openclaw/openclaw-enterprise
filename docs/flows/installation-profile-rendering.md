@@ -119,7 +119,9 @@ Preflight applies downstream contracts for IPv4 CIDRs, native-admin hostnames
 and shared cookie parent (not a public suffix under `tldts`), Google hosted
 domains, GatewayClass, gateway API key, database CA, ChatGPT admin and sign-in
 Secrets, gateway StorageClass, repository ConfigMap, Secret and Service names,
-and paired metrics selectors. Invalid values fail preflight.
+and paired metrics selectors. Helm, preflight and the API compare named OIDC
+button labels without regard to case. Preflight rejects duplicate labels before
+it writes deployment files. Invalid values fail preflight.
 
 `signInProvider` checks GitHub, Google and OIDC Secret names and keys; client-ID
 and client-secret keys must differ after chart defaults. `dedicatedSecrets`
@@ -312,6 +314,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 14:56: Match Helm and API checks for named OIDC button labels in the accompanying change. (authoring-run/c688e7f1-dcc4-4f27-af3c-d7262d775bc2 - 11ea9c2e7578)
 
 - 2026-11-13: Document how Installation checksum changes affect the Slack proxy during chart upgrades. (authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9, accompanying change)
 

@@ -9,6 +9,7 @@ import {
   type ProviderExchange,
 } from "./provider-transport.ts";
 import { verifyIdToken } from "./id-token.ts";
+import { oidcDisplayNameMatcher, oidcDisplayNamePattern } from "./oidc-display-name.ts";
 import {
   oidcEnrollmentPolicy,
   type OidcEnrollmentPolicy,
@@ -72,8 +73,6 @@ const optionalVariables = [
 
 const dnsName =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-// Printable text: no control, format, separator-other or unassigned characters.
-const displayNamePattern = /^[^\p{C}\p{Zl}\p{Zp}]{1,40}$/u;
 
 // An `https:` URL on the default port with a DNS host and no userinfo, query or fragment.
 // Returns the parsed URL, or undefined.
@@ -144,7 +143,7 @@ export function oidcLoginConfiguration(
     throw new Error("OCC_AUTH_OIDC_TOKEN_AUTH must be client_secret_post or client_secret_basic.");
   }
   const displayName = environment.OCC_AUTH_OIDC_DISPLAY_NAME?.trim() || OIDC_DEFAULT_DISPLAY_NAME;
-  if (!displayNamePattern.test(displayName)) {
+  if (!oidcDisplayNamePattern.test(displayName)) {
     throw new Error("OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters.");
   }
   return {
@@ -212,14 +211,19 @@ export function validateOidcProviders(providers: readonly NamedOidcProvider[]): 
   const keys = new Set<string>();
   const routes = new Set<string>();
   const ids = new Set<string>();
-  const labels = new Set<string>();
+  const labels: string[] = [];
   for (const { key, route, config } of providers) {
     if (!oidcProviderKey.test(key) || (route !== "oidc" && route !== `oidc/${key}`)) {
       throw new Error("Invalid OIDC provider key or route.");
     }
     const id = oidcProviderId(config);
-    const label = config.displayName.toLowerCase();
-    if (keys.has(key) || routes.has(route) || ids.has(id) || labels.has(label)) {
+    const label = oidcDisplayNameMatcher(config.displayName);
+    if (
+      keys.has(key) ||
+      routes.has(route) ||
+      ids.has(id) ||
+      labels.some((name) => label.test(name))
+    ) {
       throw new Error(
         "OIDC providers must have distinct keys, routes, issuer/client pairs, and labels.",
       );
@@ -227,7 +231,7 @@ export function validateOidcProviders(providers: readonly NamedOidcProvider[]): 
     keys.add(key);
     routes.add(route);
     ids.add(id);
-    labels.add(label);
+    labels.push(config.displayName);
   }
 }
 

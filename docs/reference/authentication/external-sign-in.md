@@ -179,6 +179,8 @@ Send the version just read, such as `{"expectedVersion":1}`:
 | `POST /api/auth/accounts/:userId/providers/oidc/:providerKey` | Attaches the requested subject from a named OIDC provider. Send `subject` and `expectedVersion`.      |
 | `POST /api/auth/accounts/:userId/methods/:methodId/detach`    | Removes one attached external identity and ends every account session; password methods return `409`. |
 
+An attachment request with an unconfigured named provider key returns `409 RESOURCE_CONFLICT`.
+
 `POST /api/auth/accounts/:userId/enrol` (no body) enrolls a skipped account holding
 its Principal and one password. These operations serialize with session issuance
 and leave IAM grants unchanged.
