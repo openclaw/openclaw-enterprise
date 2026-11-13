@@ -75,18 +75,19 @@ Results retain environment, cleanup and focus/name on preparation failure.
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
 Workflows select runners. Kubernetes requires NetworkPolicy enforcement in the kernel.
 
-Pull requests compare the verified merge to its first parent using that parent’s policy.
-The second parent must match the event head. Main pushes use `before` policy for the
-`before`→verified `after` diff. Missing history,
-forced pushes, and older policies retain full CI.
-Decoding preserves leading UTF-8 BOMs.
+Pull requests use the verified merge’s first-parent policy and diff. Its second parent must
+match the event head. Main pushes use the `before` policy for the verified `before`→`after`
+diff. Forced pushes, older policies and missing history retain full CI.
+Filename decoding preserves leading UTF-8 BOMs.
 `scripts/ci/impact.ts:documentationPath` admits allowlisted Markdown, `docs/docs.json`
 and `specs/rfcs/**/*.png`. Generated API references, other images, executables and
 symlinks require full CI.
 
-Registered test changes may include docs and their own lane-manifest entries. CI runs
-the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
-`checks-baseline-1` if only the fixture job would run. Test-only main pushes, other changes, and remaining event types select full CI. Missing policy or unverifiable source selects full or fails closed.
+Registered test edits may include docs and corresponding manifest entries. The word
+`export` in either version selects full CI because consumers can compute import paths.
+Otherwise eligible tests run both trees’ owning lanes, plus `checks-baseline-2` for
+TypeScript or `checks-baseline-1` for fixture-only coverage. Other changes, test-only
+main pushes and remaining events require full CI. Unverifiable inputs fail closed.
 
 `CI Required` rechecks mode and lanes: impact, static checks and selected lanes
 must succeed; other jobs must skip. Full/tests modes aggregate same-source results;
