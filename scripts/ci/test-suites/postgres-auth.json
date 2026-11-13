@@ -21,12 +21,12 @@
     "tests/integration/postgres-password-default-activation.test.ts",
     "tests/integration/postgres-password-default.test.ts",
     "tests/integration/postgres-oidc-admin-scope.test.ts",
-    "tests/integration/postgres-oidc-cookie-commit.test.mjs",
+    "tests/integration/postgres-oidc-cookie-commit.test.ts",
     "tests/integration/postgres-sign-in-result-processes.test.ts",
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.ts",
     "tests/integration/postgres-human-session-cookie.test.mjs",
     "tests/integration/postgres-service-api-keys.test.ts",
-    "tests/integration/postgres-auth-binding.test.mjs",
+    "tests/integration/postgres-auth-binding.test.ts",
     "tests/integration/postgres-oidc-enrollment.test.ts",
     "tests/integration/postgres-native-host-only-browser.test.ts"
   ],
@@ -53,7 +53,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-oidc-cookie-commit.test.mjs",
+      "path": "tests/integration/postgres-oidc-cookie-commit.test.ts",
       "expectedTests": [
         "opted-in HTTP login and logout preserve cookies until real State commit acknowledgement"
       ]
@@ -164,7 +164,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-auth-binding.test.mjs",
+      "path": "tests/integration/postgres-auth-binding.test.ts",
       "expectedTests": [
         "PostgreSQL auth binding pins transactions, rolls back failures, and preserves caller pool ownership"
       ]

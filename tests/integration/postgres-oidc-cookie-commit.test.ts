@@ -6,12 +6,22 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
+import { oidcLoginConfiguration } from "../../apps/controller/src/auth/oidc.ts";
+import type { PostgresDevelopmentConfig } from "../../apps/controller/src/composition/development-postgres.ts";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { injectLocalhost as injectRequest } from "../helpers/inject-json.mjs";
+import {
+  first,
+  injectLocalhost as injectRequest,
+  integer,
+  record,
+  recordData,
+  signedInHeaders,
+  text,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 import {
   assertProviderAttached,
   fakeOidc,
@@ -19,10 +29,13 @@ import {
   authRowCounts,
   currentSession,
   readAccount,
-  signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+
+type App = Awaited<ReturnType<typeof composePostgresDevelopment>>;
+type CommitAckProxy = Awaited<ReturnType<typeof commitAckProxy>>;
+type RequestOptions = Parameters<typeof injectRequest>[3];
 
 test(
   "opted-in HTTP login and logout preserve cookies until real State commit acknowledgement",
@@ -32,7 +45,13 @@ test(
     const password = "commit-recovery-long-password";
     const authSecret = "commit-cookie-test-secret-at-least-32-bytes";
     const origin = "https://console.oce.localhost";
-    function injectLocalhost(target, method, path, options = {}) {
+    assert.ok(databaseUrl);
+    function injectLocalhost(
+      target: App,
+      method: string,
+      path: string,
+      options: RequestOptions = {},
+    ) {
       return injectRequest(target, method, path, { host: new URL(origin).host, ...options });
     }
     await ensureDevelopmentBootstrap(t, {
@@ -45,10 +64,10 @@ test(
       installationName: "Cookie commit proof",
     });
     const observer = new pg.Pool({ connectionString: databaseUrl });
-    const loggedErrors = [];
-    t.mock.method(console, "error", (...values) => loggedErrors.push(values));
-    const apps = [];
-    const proxies = [];
+    const loggedErrors: unknown[][] = [];
+    t.mock.method(console, "error", (...values: unknown[]) => loggedErrors.push(values));
+    const apps: App[] = [];
+    const proxies: CommitAckProxy[] = [];
     t.after(async () => {
       for (const app of apps.reverse()) {
         await app.close();
@@ -58,40 +77,47 @@ test(
       }
       await observer.end();
     });
-    const recoveryUserId = (
-      await observer.query('SELECT id FROM occ."user" WHERE email=$1', [email])
-    ).rows[0].id;
+    const recoveryUser = await observer.query<{ id: string }>(
+      'SELECT id FROM occ."user" WHERE email=$1',
+      [email],
+    );
+    const recoveryUserId = first(recoveryUser.rows).id;
+    const oidc = oidcLoginConfiguration({
+      OCC_AUTH_OIDC_ISSUER: fixtureOidcIssuer.issuer,
+      OCC_AUTH_OIDC_AUTHORIZATION_URL: fixtureOidcIssuer.authorizationUrl,
+      OCC_AUTH_OIDC_TOKEN_URL: fixtureOidcIssuer.tokenUrl,
+      OCC_AUTH_OIDC_JWKS_URL: fixtureOidcIssuer.jwksUrl,
+      OCC_AUTH_OIDC_TOKEN_AUTH: "client_secret_post",
+      OCC_AUTH_OIDC_DISPLAY_NAME: "single sign-on",
+      OCC_AUTH_OIDC_CLIENT_ID: "commit-client",
+      OCC_AUTH_OIDC_CLIENT_SECRET: "commit-secret",
+    });
+    assert.ok(oidc);
     const config = {
       mode: "development",
       host: "127.0.0.1",
       authSecret,
       authBaseURL: origin,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
-      oidc: {
-        ...fixtureOidcIssuer,
-        tokenAuth: "client_secret_post",
-        displayName: "single sign-on",
-        clientId: "commit-client",
-        clientSecret: "commit-secret",
-        recoveryUserId,
-      },
-    };
+      oidc: { ...oidc, recoveryUserId },
+    } satisfies Omit<PostgresDevelopmentConfig, "databaseUrl">;
     const drivers = () => ({
       computeDriver: createDevelopmentComputeDriver(),
       configurationDriver: createTestConfigurationDriver(),
     });
     // Headerless, as a command-line client signs in: the controller synthesizes the Origin.
-    const signIn = (target) =>
+    const signIn = (target: App) =>
       injectLocalhost(target, "POST", "/api/auth/sign-in/email", { body: { email, password } });
-    const signOut = (target, headers) =>
+    const signOut = (target: App, headers: Record<string, string>) =>
       injectLocalhost(target, "POST", "/api/auth/sign-out", { headers });
-    const auditCount = async (action) =>
-      (
-        await observer.query(
-          "SELECT count(*)::int AS count FROM occ.audit_events WHERE action=$1",
-          [action],
-        )
-      ).rows[0].count;
+    const sessionCount = async () => integer(record(await authRowCounts(observer)).sessions);
+    const auditCount = async (action: string) => {
+      const result = await observer.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM occ.audit_events WHERE action=$1",
+        [action],
+      );
+      return first(result.rows).count;
+    };
     const proxy = await commitAckProxy(databaseUrl);
     proxies.push(proxy);
     const app = await composePostgresDevelopment({ ...config, databaseUrl: proxy.url }, drivers());
@@ -104,9 +130,9 @@ test(
     assert.equal(proxy.observedCommit, true);
     assert.equal(unknown.statusCode, 503, unknown.body);
     assert.equal(unknown.headers["set-cookie"], undefined);
-    assert.equal((await authRowCounts(observer)).sessions, 1);
+    assert.equal(await sessionCount(), 1);
     assert.equal(await auditCount("authentication.login"), 1);
-    assert.equal(unknown.json().data, undefined);
+    assert.equal(record(unknown.json()).data, undefined);
     // The original State owner can observe the committed session even though
     // the failed acknowledgement prevented its cookie from reaching the browser.
     const state = new PostgresPlatformState(observer);
@@ -117,10 +143,13 @@ test(
       installation.id,
       betterAuthIssuer(installation.id),
     );
-    const committed = (
-      await observer.query("SELECT token FROM occ.session WHERE user_id=$1", [recoveryUserId])
-    ).rows[0];
-    assert.equal((await persistence.currentSession(committed.token)).user.id, recoveryUserId);
+    const committed = await observer.query<{ token: string }>(
+      "SELECT token FROM occ.session WHERE user_id=$1",
+      [recoveryUserId],
+    );
+    const session = await persistence.currentSession(first(committed.rows).token);
+    assert.ok(session);
+    assert.equal(session.user.id, recoveryUserId);
     assert.deepEqual(
       loggedErrors,
       [],
@@ -132,34 +161,46 @@ test(
     await t.test(
       "a real audit constraint rejection rolls back HTTP login without releasing a cookie",
       async (auditTest) => {
-        const beforeSessions = (await authRowCounts(observer)).sessions;
+        const beforeSessions = await sessionCount();
         const beforeAudit = await auditCount("authentication.login");
         const query = pg.Client.prototype.query;
         let corrupted = false;
         // Alter only the audit transport parameter. PostgreSQL enforces its real
         // constraint; original State owns rollback of the preceding session write.
-        auditTest.mock.method(pg.Client.prototype, "query", function (sql, ...args) {
-          if (
-            !corrupted &&
-            typeof sql === "string" &&
-            sql.includes("INSERT INTO occ.audit_events")
-          ) {
-            corrupted = true;
-            args[0] = ["invalid-audit-id", ...args[0].slice(1)];
-          }
-          return query.call(this, sql, ...args);
-        });
+        auditTest.mock.method(
+          pg.Client.prototype,
+          "query",
+          function (this: pg.Client, sql: unknown, ...args: unknown[]) {
+            if (
+              !corrupted &&
+              typeof sql === "string" &&
+              sql.includes("INSERT INTO occ.audit_events")
+            ) {
+              const parameters = args[0];
+              assert.ok(Array.isArray(parameters));
+              const values: unknown[] = parameters;
+              corrupted = true;
+              args[0] = ["invalid-audit-id", ...values.slice(1)];
+            }
+            const result: unknown = Reflect.apply(query, this, [sql, ...args]);
+            return result;
+          },
+        );
         const rejected = await signIn(ordinary);
         assert.equal(corrupted, true);
         assert.equal(rejected.statusCode, 503, rejected.body);
         assert.equal(rejected.headers["set-cookie"], undefined);
-        assert.equal((await authRowCounts(observer)).sessions, beforeSessions);
+        assert.equal(await sessionCount(), beforeSessions);
         assert.equal(await auditCount("authentication.login"), beforeAudit);
       },
     );
     const signedIn = await signIn(ordinary);
     assert.equal(signedIn.statusCode, 200, signedIn.body);
     const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
+    const sessionUserId = async (cookie: string) => {
+      const session = record(await currentSession(ordinary, cookie));
+      return text(record(session.user).id);
+    };
     const cookieName = cookie.slice(0, cookie.indexOf("="));
     const ambiguousLogout = await signOut(ordinary, {
       cookie: `${cookieName}=malformed; ${cookie}`,
@@ -168,13 +209,13 @@ test(
     assert.equal(ambiguousLogout.statusCode, 401, ambiguousLogout.body);
     assert.equal(ambiguousLogout.headers["set-cookie"], undefined);
     assert.equal(
-      (await currentSession(ordinary, cookie)).user.id,
+      await sessionUserId(cookie),
       recoveryUserId,
       "rejected ambiguous logout leaves the original session current",
     );
     // A tab pinned to another session cannot end the one this cookie now carries.
     const otherTab = await signIn(ordinary);
-    const otherTabKey = otherTab.json().data.sessionKey;
+    const otherTabKey = text(recordData(otherTab.json()).sessionKey);
     const mismatchedLogout = await signOut(ordinary, {
       cookie,
       origin,
@@ -183,7 +224,7 @@ test(
     assert.equal(mismatchedLogout.statusCode, 401, mismatchedLogout.body);
     assert.equal(mismatchedLogout.headers["set-cookie"], undefined);
     assert.equal(
-      (await currentSession(ordinary, cookie)).user.id,
+      await sessionUserId(cookie),
       recoveryUserId,
       "a mismatched session key neither revokes nor clears the current session",
     );
@@ -235,7 +276,7 @@ test(
       "rejected headerless logout must not clear the browser cookie",
     );
     assert.equal(
-      (await currentSession(ordinary, headerlessCookie)).user.id,
+      await sessionUserId(headerlessCookie),
       recoveryUserId,
       "rejected headerless logout leaves the session current",
     );
@@ -248,7 +289,9 @@ test(
 
     // Browser-style sign-ins from here on: only their cookies matter.
     const adminHeaders = await signedInHeaders(ordinary, origin, { email, password });
-    const expectedVersion = (await readAccount(ordinary, adminHeaders, recoveryUserId)).version;
+    const expectedVersion = integer(
+      record(await readAccount(ordinary, adminHeaders, recoveryUserId)).version,
+    );
     const administrationProxy = await commitAckProxy(databaseUrl);
     proxies.push(administrationProxy);
     const administration = await composePostgresDevelopment(
@@ -269,7 +312,10 @@ test(
     });
     assert.equal(administrationProxy.observedCommit, true);
     assert.equal(unknownAdministration.statusCode, 503, unknownAdministration.body);
-    assert.match(unknownAdministration.json().error.message, /outcome is unknown/i);
+    assert.match(
+      text(record(record(unknownAdministration.json<unknown>()).error).message),
+      /outcome is unknown/i,
+    );
     assert.equal(unknownAdministration.headers["set-cookie"], undefined);
     assert.equal(await auditCount("authentication.account.revoke"), 1);
     assert.equal(await currentSession(ordinary, adminHeaders.cookie), null);
@@ -283,7 +329,7 @@ test(
     });
     assert.equal(observed.statusCode, 200, observed.body);
     assert.equal(observed.headers["cache-control"], "no-store");
-    assert.equal(observed.json().data.version, expectedVersion + 1);
+    assert.equal(integer(recordData(observed.json<unknown>()).version), expectedVersion + 1);
     const stale = await ordinary.inject({
       method: "POST",
       url: `/api/auth/accounts/${recoveryUserId}/revoke`,
@@ -293,7 +339,7 @@ test(
     assert.equal(stale.statusCode, 409, stale.body);
     assert.equal(await auditCount("authentication.account.revoke"), 1);
     assert.equal(
-      (await readAccount(ordinary, recoveredHeaders, recoveryUserId)).version,
+      integer(record(await readAccount(ordinary, recoveredHeaders, recoveryUserId)).version),
       expectedVersion + 1,
       "a refused stale revoke writes nothing",
     );
@@ -309,8 +355,8 @@ test(
           "12345678",
         );
         const idp = fakeOidc(callbackTest, {
-          clientId: "commit-client",
-          clientSecret: "commit-secret",
+          clientId: oidc.clientId,
+          clientSecret: oidc.clientSecret,
         });
         const callbackProxy = await commitAckProxy(databaseUrl);
         proxies.push(callbackProxy);
@@ -326,17 +372,24 @@ test(
           headers: { host: new URL(origin).host, origin },
         });
         assert.equal(started.statusCode, 200, started.body);
-        const state = new URL(started.json().data.url).searchParams.get("state");
-        const code = idp.authorize(started.json().data.url, { subject: "12345678" });
+        const authorizationUrl = text(recordData(started.json<unknown>()).url);
+        const state = new URL(authorizationUrl).searchParams.get("state");
+        assert.ok(state);
+        const code = idp.authorize(authorizationUrl, { subject: "12345678" });
         async function counts() {
-          return (
-            await observer.query(`SELECT
+          const result = await observer.query<{
+            sessions: number;
+            logins: number;
+            denials: number;
+          }>(
+            `SELECT
               (SELECT count(*)::int FROM occ.session) AS sessions,
               (SELECT count(*)::int FROM occ.audit_events
                 WHERE action='authentication.login' AND outcome='success') AS logins,
               (SELECT count(*)::int FROM occ.audit_events
-                WHERE action='authentication.login' AND outcome='denied') AS denials`)
-          ).rows[0];
+                WHERE action='authentication.login' AND outcome='denied') AS denials`,
+          );
+          return first(result.rows);
         }
         const before = await counts();
         // Consume the attempt and capture the enrolled method first. The third
