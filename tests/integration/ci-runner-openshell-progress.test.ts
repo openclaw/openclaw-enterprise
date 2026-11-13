@@ -11,6 +11,7 @@ import {
   createRunnerFixture,
   laneArgs,
   runnerEnv,
+  runRunnerAsync,
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
 
@@ -218,3 +219,68 @@ test(
     }
   },
 );
+
+test("CI retains the unfinished upstream stage without changing the failed case", async (t) => {
+  const file = "tests/integration/openshell-upstream-real.test.ts";
+  const title = "OpenShell model and tool upstream outages fail closed";
+  const stageModule = new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href;
+  for (const [stage, interruption] of [
+    ["installation", "deadline"],
+    ["replacement", "deadline"],
+    ["replacement", "throw"],
+  ] as const) {
+    const root = await createRunnerFixture(t);
+    const results = join(root, "results/upstream.json");
+    const lane = "openshell-installers";
+    const steps = ["installation", "exposure-auth", "initial-model", "replacement"];
+    const selected = steps.slice(0, steps.indexOf(stage) + 1);
+    await writeFile(
+      join(root, "scripts/ci/prepare.mjs"),
+      "export async function prepareFile() { return { cleanup: async () => {} }; }",
+    );
+    await writeFile(
+      join(root, file),
+      `import test from "node:test";
+       import { runOpenShellStage } from ${JSON.stringify(stageModule)};
+       test(${JSON.stringify(title)}, { timeout: 300 }, async (t) => {
+         for (const step of ${JSON.stringify(selected)}) {
+           await runOpenShellStage(t, step, async () => {
+             if (step !== ${JSON.stringify(stage)}) return;
+             if (${JSON.stringify(interruption)} === "throw") throw new Error("fixture failure");
+             await new Promise(() => {
+               const timer = setInterval(() => {}, 1000);
+               t.after(() => clearInterval(timer));
+             });
+           });
+         }
+       });`,
+    );
+    await writeRunnerManifest(root, {
+      lanes: { [lane]: { files: [{ path: file, expectedTests: [title] }] } },
+    });
+    const result = await runRunnerAsync(laneArgs(root, lane, "state/upstream.jsonl", results), {
+      CI_RUNNER_TEST_TIMEOUT_MS: "15000",
+    });
+    assert.equal(result.status, 1, result.stderr);
+    const summary: {
+      status: string;
+      files: {
+        openShellUnfinishedStage?: string;
+        cleanup: { status: string };
+        tests: { name: string; status: string }[];
+      }[];
+    } = JSON.parse(await readFile(results, "utf8"));
+    assert.equal(summary.status, "failed");
+    const [upstream] = summary.files;
+    assert.ok(upstream);
+    assert.deepEqual(
+      upstream.tests.map(({ name, status }) => [name, status]),
+      [[title, "failed"]],
+    );
+    assert.equal(upstream.cleanup.status, "passed");
+    assert.equal(
+      upstream.openShellUnfinishedStage,
+      interruption === "deadline" ? stage : undefined,
+    );
+  }
+});
