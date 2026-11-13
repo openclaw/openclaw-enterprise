@@ -142,16 +142,21 @@ For a scratch run, inspect `files[].measurements` in the lane result. The
 `scratch-sibling-isolation` and `scratch-queued-actor-revocation` stages each
 record the outcome and elapsed milliseconds when the check finishes.
 
-For canonical `openshell` and split `openshell-policy` runs, inspect
-`files[].installationPhases` in the lane result artifact for workspace Helm,
-gateway Helm and gateway Pod readiness intervals. These records do not appear
-in the live log. Each interval identifies its invocation, entry offset and
-outcome; a settled interval also has elapsed milliseconds. An entered phase
-without a terminal record remains `unknown`, including after interruption.
-The receipt retains up to eight invocations (24 intervals). The ninth invocation
-emits one workspace-entry marker that sets `truncated` if received; later
-invocations still run but emit no installation records. These intervals do not
-establish model execution or whole-file success.
+Canonical `openshell` and split `openshell-policy` artifacts record
+`files[].installationPhases` for two independent groups. One observes workspace
+Helm, gateway Helm and gateway Pod readiness. The other observes Namespace
+readiness, Gateway readiness and first revision activation. Each group numbers
+its own invocations and measures entry offsets from its own clock origin.
+Matching numbers across groups do not identify the same installation.
+
+Each group retains eight invocations (48 intervals total). Its ninth start emits
+one workspace Helm or Namespace readiness marker, respectively. Either marker
+sets `truncated`. Later invocations run silently. An entered interval stays
+`unknown` until it settles, then records outcome and elapsed milliseconds.
+Ambiguous readiness evidence stays `unknown`. Failed first activation may include
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE` or
+`RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE` as its refusal. Model execution and
+whole-file success require separate evidence.
 
 When a measured operation rejects, the [stage helper](../../../tests/helpers/openshell-stage.mjs)
 emits an `openshell-stage-failure` record before fixture cleanup. The CI runner

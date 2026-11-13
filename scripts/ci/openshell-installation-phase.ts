@@ -76,7 +76,7 @@ interface PhaseResult {
 export function collectInstallationPhases() {
   const phases: PhaseResult[] = [];
   let truncated = false;
-  const ambiguous = new Set<PhaseResult>();
+  const ambiguous = new Set<string>();
   return {
     accept(row: InstallationPhase) {
       if (row.invocation === maxInstallationInvocations + 1) {
@@ -86,6 +86,15 @@ export function collectInstallationPhases() {
       const phase = phases.find(
         (phase) => phase.invocation === row.invocation && phase.stage === row.stage,
       );
+      const key = `${row.stage}:${row.invocation}`;
+      const readinessStage =
+        row.stage === "first-revision-activation" ||
+        row.stage === "namespace-ready" ||
+        row.stage === "gateway-ready";
+      if (!phase && row.outcome !== "entered" && readinessStage) {
+        ambiguous.add(key);
+        return;
+      }
       if (!phase && row.outcome === "entered") {
         phases.push({
           invocation: row.invocation,
@@ -95,18 +104,16 @@ export function collectInstallationPhases() {
         });
       } else if (
         phase &&
-        (row.stage === "first-revision-activation" ||
-          row.stage === "namespace-ready" ||
-          row.stage === "gateway-ready") &&
+        readinessStage &&
         (row.outcome === "entered" || phase.outcome !== "unknown" || row.offsetMs < phase.enteredMs)
       ) {
-        ambiguous.add(phase);
+        ambiguous.add(key);
         phase.outcome = "unknown";
         delete phase.elapsedMs;
         delete phase.refusal;
       } else if (
         phase &&
-        !ambiguous.has(phase) &&
+        !ambiguous.has(key) &&
         phase.outcome === "unknown" &&
         row.outcome !== "entered" &&
         row.offsetMs >= phase.enteredMs

@@ -322,15 +322,32 @@ test("gateway installation preserves settled phases, operation outcomes and the 
   }
   const ambiguous = collectInstallationPhases();
   const terminal = present(installationPhase(refusal));
-  ambiguous.accept(terminal);
+  const entered = present(installationPhase({ ...raw, stage: refusal.stage, offsetMs: 2 }));
+  ambiguous.accept({ ...entered, outcome: "passed", offsetMs: 1 });
   assert.deepEqual(ambiguous.result().phases, []);
-  const entered = present(installationPhase({ ...raw, stage: refusal.stage }));
   ambiguous.accept(entered);
-  ambiguous.accept(terminal);
-  ambiguous.accept(terminal);
+  ambiguous.accept({ ...terminal, offsetMs: 3 });
+  ambiguous.accept({ ...entered, invocation: 2 });
+  ambiguous.accept({ ...terminal, invocation: 2, offsetMs: 4 });
   assert.deepEqual(ambiguous.result().phases, [
-    { invocation: 1, stage: refusal.stage, enteredMs: 0, outcome: "unknown" },
+    { invocation: 1, stage: refusal.stage, enteredMs: 2, outcome: "unknown" },
+    {
+      invocation: 2,
+      stage: refusal.stage,
+      enteredMs: 2,
+      outcome: "failed",
+      elapsedMs: 2,
+      refusal: refusal.refusal,
+    },
   ]);
+  // A second terminal after a valid interval also makes that interval ambiguous.
+  ambiguous.accept({ ...terminal, invocation: 2, offsetMs: 5 });
+  assert.deepEqual(ambiguous.result().phases[1], {
+    invocation: 2,
+    stage: refusal.stage,
+    enteredMs: 2,
+    outcome: "unknown",
+  });
   const receipt = collectInstallationPhases();
   const writes: unknown[] = [];
   // Validate outside the best-effort writer so diagnostic failures cannot swallow assertions.
