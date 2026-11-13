@@ -254,7 +254,7 @@
     "tests/integration/postgres-agent-sandbox-policy.test.mjs": 3800,
     "tests/integration/postgres-backend-ownership.test.mjs": 4200,
     "tests/integration/postgres-bootstrap-failures.test.mjs": 9600,
-    "tests/integration/postgres-connection-auth.test.mjs": 600,
+    "tests/integration/postgres-connection-auth.test.ts": 600,
     "tests/integration/postgres-controller-work-targets.test.mjs": 300,
     "tests/integration/postgres-credential-source-revision-owner.test.ts": 2300,
     "tests/integration/postgres-egress-policy-transaction.test.ts": 6300,
