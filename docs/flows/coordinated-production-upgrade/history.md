@@ -8,6 +8,15 @@ This record preserves the dated changes to the production image upgrade flow. Se
 
 ## Changelog
 
+- 2026-11-12 20:49: Preserve status after polling errors. (authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b - a627e44694987459dbbf9aa59a3d76b9a97f48a7)
+- 2026-11-12 07:07: Check candidate writer database identity, connection prerequisites and rollback recovery. (authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057 - c7da19f78a8125fe0a7dec649b5417a23ded1d8e)
+
+- 2026-11-12 03:35: Preserve JSON values. (authoring-run/9680374b-51c1-4f5e-a3d5-a7c0c1006b92 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
+
+- 2026-11-12 00:11: Precheck worker patch access. (authoring-run/db7ef311-7726-453b-b06c-e048bc6054ac - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
+
+- 2026-11-11 12:30: Record preflight creation plans and link the separate cleanup-only recovery path. (authoring-run/9239da57-dcad-427a-82aa-c7d64376fdc5 - e961361d56537b17f361347b097d075f5e608fb1)
+
 - 2026-11-11 12:02: Confirm preflight dependency deletion and accept verified absence after failed DELETE. (authoring-run/ecf34abe-0b63-4cb7-bcf5-8333a11c89b2 - ae6cdc2dbe4aed966567ecb642129f3fb96e593b)
 
 - 2026-11-11 11:42: Reuse the final preflight observation before reading logs; retain the post-read identity check. (authoring-run/d7b92a2e-e167-4140-b75a-6f1410267881 - 486a9d4ddfea4bfbab6aefd0cef300a1556149b7)
