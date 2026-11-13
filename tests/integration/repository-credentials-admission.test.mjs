@@ -592,8 +592,8 @@ test("Repository options preserve the full valid GitHub catalog and refuse overf
   // A third-party Driver may return an oversized result even though GitHub policy cannot.
   // Keep the real maximum-size GitHub catalog and add one otherwise valid, distinct choice.
   class OversizedRepositoryDriver extends GitHubRepositoryPolicy {
-    async listOptions(input) {
-      const result = await super.listOptions(input);
+    async listCatalog(input) {
+      const result = await super.listCatalog(input);
       return {
         options: [
           ...result.options,

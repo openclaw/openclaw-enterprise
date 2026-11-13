@@ -560,13 +560,13 @@ async function repositoryGitJourney(
       assert.notEqual(listenPort, port);
       const { Server } = require("@grpc/grpc-js");
       const bind = Server.prototype.bindAsync;
-      let remapped = 0;
+      const remapped: NonNullable<OpenShellGitRuntime["server"]>[] = [];
       const routing = t.mock.method(
         Server.prototype,
         "bindAsync",
         function (this: InstanceType<typeof Server>, address: string, ...args: unknown[]) {
-          if (this === runtime["server"] && address === `127.0.0.1:${port}`) {
-            assert.equal(remapped++, 0, "only the replacement Git listener is remapped");
+          if (address === `127.0.0.1:${port}`) {
+            remapped.push(this);
             return bind.call(this, `127.0.0.1:${listenPort}`, ...args);
           }
           return bind.call(this, address, ...args);
@@ -574,7 +574,9 @@ async function repositoryGitJourney(
       );
       try {
         bound = await bindRuntime();
-        assert.equal(remapped, 1);
+        // The runtime records its server only after the TLS bind succeeds.
+        assert.equal(remapped.length, 1, "only one Git listener may bind the configured address");
+        assert.equal(remapped[0], runtime["server"], "the selected sender was remapped");
       } finally {
         routing.mock.restore();
       }
