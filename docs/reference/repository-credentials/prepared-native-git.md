@@ -144,6 +144,13 @@ the Agent received, and `reason` says where the broker refused the request:
 | `service_error`       | An internal broker failure                                                                             |
 
 The line also carries `status`, and `operation` (such as `git-push`) once the route is known.
+A `not_dispatched` line carries `upstreamConnect` when the worker could not open the GitHub
+connection: `host`, the `addresses` it resolved to when known (each one a dual-stack host
+tried, or the one it reached before TLS failed), `port`, and the socket or TLS `error` code,
+such as `ECONNREFUSED` or `connect-timeout`. Worker egress allows only
+`repositoryCredentials.upstreamCidrs`. A refused or timed-out connect to an address outside
+that list usually means the list is older than GitHub's published ranges: refresh it from
+GitHub's [meta API](https://api.github.com/meta) and apply it with a Helm upgrade.
 A draft create that GitHub did not receive, for example because the connection failed, gets a
 `409` receipt with `not-submitted` and logs `not_dispatched`. An uncertain push or draft
 (`exchange-uncertain`, `outcome_unknown`) is not a refusal and is not logged.

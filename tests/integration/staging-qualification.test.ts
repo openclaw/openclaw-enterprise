@@ -18,13 +18,22 @@ const runtimeChildFixture = new URL(
   import.meta.url,
 );
 
-test(
-  "staging workflow command consumes bound digests and refuses invalid release evidence",
-  checkWorkflowCommand,
-);
+test("staging workflow command consumes bound digests and refuses invalid release evidence", (t) =>
+  checkWorkflowCommand(t));
 test("staging runtime lane preserves the reviewed Codex version in its child", checkRuntimeChild);
+test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
+  checkWorkflowCommand(t, true));
 
-async function checkWorkflowCommand(t: TestContext) {
+for (const change of ["compatible", "controller", "catalog", "runtime"] as const) {
+  test(`staging sign-in preparation checks the current ${change} source pair`, (t) =>
+    checkWorkflowCommand(t, true, change));
+}
+
+async function checkWorkflowCommand(
+  t: TestContext,
+  pairPullOnly = false,
+  signin?: "compatible" | "controller" | "catalog" | "runtime",
+) {
   const directory = await mkdtemp(join(process.cwd(), ".staging-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, "trusted-source");
@@ -49,6 +58,15 @@ async function checkWorkflowCommand(t: TestContext) {
     );
     return (await git(["rev-parse", "HEAD"], cwd)).stdout.trim();
   };
+  if (signin) {
+    // Use real repository objects so the fixed reader/catalog projection is
+    // checked by the production planner, without replacing Git decisions.
+    await execute("git", ["clone", "--shared", "--quiet", process.cwd(), root]);
+    await git(["checkout", "--quiet", "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb"]);
+    await cp("scripts/ci", join(root, "scripts/ci"), { recursive: true });
+    await cp("scripts/upgrade-image-identity.py", join(root, "scripts/upgrade-image-identity.py"));
+    await symlink(resolve("node_modules"), join(root, "node_modules"), "dir");
+  }
   const recipePath = join(root, "deploy/runtime/Dockerfile");
   await mkdir(dirname(recipePath), { recursive: true });
   const recipe = await readFile("deploy/runtime/Dockerfile", "utf8");
@@ -56,8 +74,10 @@ async function checkWorkflowCommand(t: TestContext) {
   assert.ok(nodeBaseImage);
   // All executable files remain the current trusted implementation. Only the
   // literal Dockerfile has fixture history; none of that history is executed.
-  await symlink(resolve("scripts"), join(root, "scripts"), "dir");
-  await symlink(resolve("tests"), join(root, "tests"), "dir");
+  if (!signin) {
+    await symlink(resolve("scripts"), join(root, "scripts"), "dir");
+    await symlink(resolve("tests"), join(root, "tests"), "dir");
+  }
   await writeFile(
     recipePath,
     recipe.replace("OPENAI_CODEX_VERSION=0.164.0", "OPENAI_CODEX_VERSION=0.160.0"),
@@ -75,8 +95,20 @@ async function checkWorkflowCommand(t: TestContext) {
   await symlink("missing-recipe", recipePath);
   const symlinkSource = await commit();
   await rm(recipePath);
-  await writeFile(recipePath, recipe);
+  await writeFile(
+    recipePath,
+    signin === "runtime" ? recipe + "\n# Different release recipe\n" : recipe,
+  );
   const source = await commit();
+  if (signin === "runtime") {
+    await writeFile(recipePath, recipe);
+  }
+  if (signin === "controller" || signin === "catalog") {
+    // A changed production tree cannot inherit the reviewed reader contract.
+    const file =
+      signin === "controller" ? "apps/controller/unreviewed.txt" : "migrations/unreviewed.sql";
+    await writeFile(join(root, file), "Unreviewed input\n");
+  }
   const unrelated = (
     await git([
       "-c",
@@ -94,11 +126,15 @@ async function checkWorkflowCommand(t: TestContext) {
   await git(["update-ref", "refs/remotes/origin/main", workflowSha]);
   // Advance main only on the remote so the runner starts without this commit.
   const remote = join(directory, "official-origin");
-  await git(["clone", "--quiet", "--no-local", root, remote]);
-  await git(["config", "uploadpack.allowFilter", "true"], remote);
-  await writeFile(join(remote, "workflow-marker"), "Main advanced after checkout\n");
-  const newerMain = await commit(remote);
-  const newerTree = (await git(["rev-parse", "HEAD^{tree}"], remote)).stdout.trim();
+  let newerMain = workflowSha;
+  let newerTree = (await git(["rev-parse", "HEAD^{tree}"])).stdout.trim();
+  if (!signin) {
+    await git(["clone", "--quiet", "--no-local", root, remote]);
+    await git(["config", "uploadpack.allowFilter", "true"], remote);
+    await writeFile(join(remote, "workflow-marker"), "Main advanced after checkout\n");
+    newerMain = await commit(remote);
+    newerTree = (await git(["rev-parse", "HEAD^{tree}"], remote)).stdout.trim();
+  }
   const env = {
     ...hostEnv,
     RUNNER_TEMP: directory,
@@ -142,21 +178,37 @@ async function checkWorkflowCommand(t: TestContext) {
   const archive = join(archiveDirectory, "response-header-filename.zip");
   const replacement = join(directory, "replacement.zip");
   const metadata = join(directory, "artifact.json");
+  const candidateDirectory = join(directory, "candidate-publication");
+  await mkdir(candidateDirectory);
+  const candidateArchive = join(candidateDirectory, "publication.zip");
+  const candidateMetadata = join(directory, "candidate-artifact.json");
+  const candidateReceipt = receipt.map((image) => ({
+    ...image,
+    sourceSha: workflowSha,
+    workflowSha,
+    runId: "124",
+    ciRunId: "457",
+    digest: `sha256:${(image.image === "controller" ? "e" : "f").repeat(64)}`,
+    tag: `sha-${workflowSha}`,
+  }));
   const receiptPath = join(directory, "publication.json");
-  const recordArchive = async () => {
-    const bytes = await readFile(archive);
+  const recordArchive = async (path = archive, metadataPath = metadata) => {
+    const bytes = await readFile(path);
     await writeFile(
-      metadata,
+      metadataPath,
       JSON.stringify({
         digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
         size_in_bytes: bytes.length,
       }),
     );
   };
-  const pack = async (value: unknown, path = archive) => {
+  const pack = async (value: unknown, path = archive, stored = false) => {
     await writeFile(receiptPath, JSON.stringify(value));
     await rm(path, { force: true });
-    await execute("zip", ["-q", path, "publication.json"], { cwd: directory, env: hostEnv });
+    await execute("zip", ["-q", ...(stored ? ["-0"] : []), path, "publication.json"], {
+      cwd: directory,
+      env: hostEnv,
+    });
     if (path === archive) {
       await recordArchive();
     }
@@ -200,9 +252,9 @@ if (env.CHANGE_ARCHIVE) {
     return hash;
   };
 }
-const run = (id, workflow, event, attempt) => ({id, run_attempt: attempt, workflow_id: id,
+const run = (id, workflow, event, attempt) => ({id, run_attempt: attempt, workflow_id: workflow === publication ? 123 : 456,
   path: workflow, repository: {full_name: repo}, head_repository: {full_name: repo},
-  head_branch: 'main', head_sha: source, event, status: 'completed', conclusion: 'success'});
+  head_branch: 'main', head_sha: id === 124 || id === 457 ? workflowSha : source, event, status: 'completed', conclusion: 'success'});
 globalThis.fetch = async (url, options) => {
   assert.equal(options.headers.Authorization, 'Bearer ' + token);
   const path = new URL(url).pathname;
@@ -213,25 +265,28 @@ globalThis.fetch = async (url, options) => {
   else if (path.endsWith('/workflows/container-publish.yml')) body = {id: 123, path: publication, state: 'active'};
   else if (path.endsWith('/workflows/ci.yml')) body = {id: 456, path: '.github/workflows/ci.yml', state: 'active'};
   else if (path.endsWith('/workflows/ci.yml/runs')) {
-    assert.equal(new URL(url).searchParams.get('head_sha'), source);
-    const ci = run(456, '.github/workflows/ci.yml', 'push', 1);
+    const selected = new URL(url).searchParams.get('head_sha');
+    assert.ok(selected === source || selected === workflowSha);
+    const ci = run(selected === source ? 456 : 457, '.github/workflows/ci.yml', 'push', 1);
     if (env.FOREIGN_CI) ci.head_repository.full_name = 'other/repository';
     body = {workflow_runs: [ci]};
   }
-  else if (path.endsWith('/runs/123')) {
-    body = run(123, publication, 'workflow_dispatch', env.BAD_ATTEMPT ? 3 : 2);
+  else if (path.endsWith('/runs/123') || path.endsWith('/runs/124')) {
+    body = run(path.endsWith('/runs/123') ? 123 : 124, publication, 'workflow_dispatch', env.BAD_ATTEMPT ? 3 : 2);
     if (env.FOREIGN_PRODUCER) body.head_repository.full_name = 'other/repository';
   }
-  else if (path.endsWith('/runs/456')) body = run(456, '.github/workflows/ci.yml', 'push', 1);
-  else if (path.endsWith('/runs/123/attempts/2/jobs')) body = {jobs: [{name: 'Publish exact OCI digests to public GHCR',
-    status: 'completed', conclusion: env.SKIP_PUBLISH ? 'skipped' : 'success', head_sha: source}]};
+  else if (path.endsWith('/runs/456') || path.endsWith('/runs/457')) body = run(path.endsWith('/runs/456') ? 456 : 457, '.github/workflows/ci.yml', 'push', 1);
+  else if (path.endsWith('/runs/123/attempts/2/jobs') || path.endsWith('/runs/124/attempts/2/jobs')) body = {jobs: [{name: 'Publish exact OCI digests to public GHCR',
+    status: 'completed', conclusion: env.SKIP_PUBLISH ? 'skipped' : 'success', head_sha: path.includes('/runs/124/') ? workflowSha : source}]};
   else if (path.endsWith('/artifacts')) {
-    const artifact = {id: env.BAD_ARTIFACT_ID ? '789\\nsource_sha=bad' : 789, name: 'container-publication-123-2',
-      ...JSON.parse(readFileSync(${JSON.stringify(metadata)}, 'utf8')),
-      expired: !!env.EXPIRED, workflow_run: {id: 123, head_sha: source}};
+    const candidate = path.endsWith('/runs/124/artifacts');
+    assert.ok(candidate || path.endsWith('/runs/123/artifacts'));
+    const artifact = {id: env.BAD_ARTIFACT_ID ? '789\\nsource_sha=bad' : candidate ? 790 : 789, name: 'container-publication-' + (candidate ? 124 : 123) + '-2',
+      ...JSON.parse(readFileSync(candidate ? ${JSON.stringify(candidateMetadata)} : ${JSON.stringify(metadata)}, 'utf8')),
+      expired: !!env.EXPIRED, workflow_run: {id: candidate ? 124 : 123, head_sha: candidate ? workflowSha : source}};
     body = {artifacts: env.DUPLICATE ? [artifact, artifact] : [artifact]};
   }
-  else if (path.endsWith('/runs/456/attempts/1/jobs')) body = {jobs: [{name: 'CI Required', status: 'completed', conclusion: 'success', head_sha: source}]};
+  else if (path.endsWith('/runs/456/attempts/1/jobs') || path.endsWith('/runs/457/attempts/1/jobs')) body = {jobs: [{name: 'CI Required', status: 'completed', conclusion: 'success', head_sha: path.includes('/runs/457/') ? workflowSha : source}]};
   else throw new Error('Unexpected network request: ' + url);
   return new Response(JSON.stringify(body), {status: 200});
 };
@@ -242,6 +297,7 @@ child.execFileSync = (command, args, options) => {
     assert.equal(options.env.GITHUB_TOKEN, undefined);
     assert.equal(options.env.GITHUB_OUTPUT, undefined);
     if (args.includes('fetch')) {
+      assert.equal(env.PULL_PAIR_STORE, undefined, 'Pair pull must use complete local history');
       const official = 'https://github.com/openclaw/openclaw-enterprise.git';
       assert.equal(args.at(-2), official);
       assert.equal(args.at(-1), ${JSON.stringify(newerMain)});
@@ -250,6 +306,11 @@ child.execFileSync = (command, args, options) => {
       // Redirect only transport. Git still fetches and checks the real fixture history.
       return executeSync(command, args.map(arg => arg.replace(official, ${JSON.stringify(pathToFileURL(remote).href)})), options);
     }
+    return executeSync(command, args, options);
+  }
+  if (env.PULL_PAIR_STORE && (command === 'docker' || command === 'python3')) {
+    assert.equal(options.env.GH_TOKEN, undefined);
+    assert.equal(options.env.GITHUB_TOKEN, undefined);
     return executeSync(command, args, options);
   }
   assert.equal(process.env.GH_TOKEN, undefined);
@@ -300,16 +361,32 @@ syncBuiltinESMExports();
 `,
   );
   const workflow = await readFile(".github/workflows/staging-qualification.yml", "utf8");
-  assert.equal((workflow.match(/uses: actions\/checkout@/g) ?? []).length, 1);
-  assert.ok(workflow.includes("ref: ${{ github.workflow_sha }}"));
-  assert.ok(workflow.includes("persist-credentials: false"));
-  assert.ok(workflow.includes("package-manager-cache: false"));
-  assert.ok(workflow.includes("skip-decompress: true"));
-  assert.ok(workflow.includes("digest-mismatch: error"));
+  const jobs = new Map<string, string>();
+  for (const [, name, body] of workflow.matchAll(
+    /^ {2}(qualify|stage-pair):\n((?: {4}[^\n]*\n|\n)+)/gm,
+  )) {
+    assert.ok(name && body, "expected a named staging job with steps");
+    jobs.set(name, body);
+  }
+  assert.equal(jobs.size, 2);
+  for (const [name, body] of jobs) {
+    const checkouts = [
+      ...body.matchAll(/^ {6}- uses: actions\/checkout@[^\n]+\n((?: {8}[^\n]*\n)+)/gm),
+    ];
+    assert.equal(checkouts.length, 1, name);
+    const options = checkouts[0]![1]!;
+    assert.ok(options.includes("ref: ${{ github.workflow_sha }}"), name);
+    assert.ok(options.includes("persist-credentials: false"), name);
+    assert.ok(body.includes("package-manager-cache: false"), name);
+    assert.ok(body.includes("skip-decompress: true"), name);
+    assert.ok(body.includes("digest-mismatch: error"), name);
+  }
   const commands = [
-    ...workflow.matchAll(
-      /^ {8}run: (node scripts\/ci\/staging-qualification\.ts (validate|pull|smoke).*?)$/gm,
-    ),
+    ...jobs
+      .get("qualify")!
+      .matchAll(
+        /^ {8}run: (node scripts\/ci\/staging-qualification\.ts (validate|pull|smoke)(?= |$).*?)$/gm,
+      ),
   ];
   assert.equal(commands.length, 3);
   const run = (command: string, patch: Record<string, string> = {}) => {
@@ -327,6 +404,202 @@ syncBuiltinESMExports();
       .split("\n")
       .map((line) => JSON.parse(line));
   const containerCalls = async () => (await calls()).filter((call) => call.command || call.spawn);
+  if (pairPullOnly) {
+    // Keep the real CLI, ZIP decoder, and OCI verifier; replace only GitHub and
+    // Docker transport with fixed local data. This case never fetches Git history.
+    const bin = join(directory, "pair-bin");
+    await mkdir(bin);
+    await symlink("/usr/bin/git", join(bin, "git"));
+    await symlink("/usr/bin/python3", join(bin, "python3"));
+    const storePath = join(directory, "pair-store.json");
+    await writeFile(
+      join(bin, "docker"),
+      `#!/usr/bin/python3
+import base64, json, os, sys
+from pathlib import Path
+root = Path(__file__).resolve().parent.parent
+store = json.loads((root / 'pair-store.json').read_text())
+args = sys.argv[1:]
+assert 'GH_TOKEN' not in os.environ and 'GITHUB_TOKEN' not in os.environ
+reference = args[-1]
+image = store['images'][reference]
+if args[0] == '--config':
+    assert args[2:6] == ['--host=unix:///var/run/docker.sock', 'pull', '--platform', 'linux/amd64']
+    config = Path(args[1]) / 'config.json'
+    assert config.stat().st_mode & 0o777 == 0o600
+    expected = base64.b64encode(b'fixture-actor:invented-workflow-token').decode()
+    assert json.loads(config.read_text()) == {'auths': {'ghcr.io': {'auth': expected}}}
+    with (root / 'calls.jsonl').open('a') as log:
+        log.write(json.dumps({'pairPull': reference}) + '\\n')
+    if store['failPull']:
+        sys.exit(1)
+else:
+    assert not list(root.glob('staging-docker-*')), 'Registry authentication survived pull phase'
+    if args[:2] == ['image', 'inspect']:
+        native = args[2:-1] == ['--platform', 'linux/amd64']
+        assert native or len(args) == 3
+        print(json.dumps([image['native' if native else 'root']]))
+    else:
+        assert args[:-1] == ['image', 'save', '--platform', 'linux/amd64']
+        sys.stdout.buffer.write(Path(image['tar']).read_bytes())
+`,
+      { mode: 0o700 },
+    );
+    const pairPath = join(directory, "staging-pair-images.json");
+    // The revision case seals authentic bytes containing the wrong revision,
+    // while Docker inspect claims the expected one. Only reading the config
+    // blob can distinguish this from a valid publication.
+    for (const scenario of signin
+      ? ["valid"]
+      : ["valid", "pull-failure", "config-seal", "manifest-seal", "config-revision"]) {
+      const previousImages = await Promise.all(
+        ["controller", "runtime"].map((name) =>
+          pairImage(directory, `${scenario}-previous-${name}`, source),
+        ),
+      );
+      const candidateImages = await Promise.all(
+        ["controller", "runtime"].map((name) =>
+          pairImage(
+            directory,
+            `${scenario}-candidate-${name}`,
+            workflowSha,
+            scenario === "config-revision" && name === "controller" ? source : workflowSha,
+          ),
+        ),
+      );
+      const publications = [receipt, candidateReceipt].map((images, index) =>
+        images.map((image, i) => ({
+          ...image,
+          digest: [previousImages, candidateImages][index]![i]!.digest,
+          platformDigests: [previousImages, candidateImages][index]![i]!.platformDigests.map(
+            (seal) => ({ ...seal }),
+          ),
+        })),
+      );
+      if (scenario === "config-seal" || scenario === "manifest-seal") {
+        const seal = publications[1]![0]!.platformDigests[0]!;
+        seal[scenario === "config-seal" ? "configDigest" : "digest"] = `sha256:${"0".repeat(64)}`;
+      }
+      await pack(publications[0]);
+      await pack(publications[1], candidateArchive);
+      await recordArchive(candidateArchive, candidateMetadata);
+      const references = [previousImages[0]!, candidateImages[0]!, previousImages[1]!].map(
+        (image, i) => `ghcr.io/openclaw/${i === 2 ? "runtime" : "controller"}@${image.digest}`,
+      );
+      const images = Object.fromEntries(
+        [previousImages, candidateImages].flatMap((group) =>
+          group.map((image, i) => [
+            `ghcr.io/openclaw/${i === 0 ? "controller" : "runtime"}@${image.digest}`,
+            image,
+          ]),
+        ),
+      );
+      await writeFile(storePath, JSON.stringify({ images, failPull: scenario === "pull-failure" }));
+      await writeFile(join(directory, "calls.jsonl"), "");
+      const pull = () =>
+        execute(
+          process.execPath,
+          [
+            "scripts/ci/staging-qualification.ts",
+            signin ? "prepare-signin" : "pull-pair",
+            archiveDirectory,
+            candidateDirectory,
+          ],
+          {
+            cwd: root,
+            timeout: 30_000,
+            env: {
+              ...env,
+              PATH: bin,
+              NODE_OPTIONS: `--import=${preload}`,
+              PULL_PAIR_STORE: storePath,
+              PREVIOUS_SOURCE_SHA: source,
+              PREVIOUS_PUBLICATION_RUN_ID: "123",
+              PREVIOUS_PUBLICATION_ATTEMPT: "2",
+              SOURCE_SHA: workflowSha,
+              PUBLICATION_RUN_ID: "124",
+            },
+          },
+        );
+      if (signin && signin !== "compatible") {
+        await assert.rejects(
+          pull(),
+          signin === "runtime"
+            ? /Unreviewed historical runtime recipe/
+            : /Unclassified sign-in reader/,
+        );
+        await assert.rejects(readFile(join(directory, "staging-signin-plan.json")), {
+          code: "ENOENT",
+        });
+        assert.deepEqual(
+          (await calls()).flatMap((call) => (call.pairPull ? [call.pairPull] : [])),
+          signin === "runtime" ? [] : references,
+        );
+        return;
+      }
+      if (scenario === "valid") {
+        await pull();
+        if (signin) {
+          const plan = JSON.parse(
+            await readFile(join(directory, "staging-signin-plan.json"), "utf8"),
+          );
+          assert.equal(plan.fixture, "v3-to-v3");
+          assert.equal(plan.previous.source, source);
+          assert.equal(plan.candidate.source, workflowSha);
+          assert.equal(plan.previous.version, 3);
+          assert.equal(plan.candidate.version, 3);
+          assert.equal(plan.previous.buildInputs, plan.candidate.buildInputs);
+          assert.equal(
+            plan.migrationTree,
+            (
+              await git(["rev-parse", "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb:migrations"])
+            ).stdout.trim(),
+          );
+          assert.equal(
+            plan.stagedImagesSha256,
+            createHash("sha256")
+              .update(await readFile(pairPath))
+              .digest("hex"),
+          );
+        }
+        const staged = JSON.parse(await readFile(pairPath, "utf8"));
+        assert.deepEqual(
+          [
+            staged.previousController.reference,
+            staged.candidateController.reference,
+            staged.fixedRuntime.reference,
+          ],
+          references,
+        );
+        assert.equal(staged.fixedRuntime.revision, source);
+        assert.equal(
+          staged.candidateController.configDigest,
+          candidateImages[0]!.platformDigests[0]!.configDigest,
+        );
+        await rm(pairPath);
+      } else {
+        const reasons: Record<string, RegExp> = {
+          "pull-failure": /Unable to pull/,
+          "config-revision": /revision|image identity verification failed/,
+          "config-seal": /Local platform identity differs from the publication seal/,
+          "manifest-seal": /Local platform identity differs from the publication seal/,
+        };
+        const reason = reasons[scenario]!;
+        await assert.rejects(pull(), reason, scenario);
+        await assert.rejects(readFile(pairPath), { code: "ENOENT" });
+      }
+      assert.deepEqual(
+        (await calls()).flatMap((call) => (call.pairPull ? [call.pairPull] : [])),
+        scenario === "pull-failure" ? references.slice(0, 1) : references,
+      );
+      assert.ok(
+        !(await readdir(directory)).some(
+          (name) => name.startsWith("staging-docker-") || name.startsWith("staging-inspect-"),
+        ),
+      );
+    }
+    return;
+  }
   const refsBefore = (await git(["show-ref", "--head"])).stdout;
   const configPath = join(root, ".git/config");
   const configBefore = await readFile(configPath);
@@ -351,6 +624,62 @@ syncBuiltinESMExports();
     { api: `/repos/${repository}/branches/main` },
   ]);
   assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "owner data\n");
+  // Both releases have independently published, CI-bound archives. Selection
+  // must retain their order and the incumbent runtime without pulling images.
+  // Stored ZIP entries make the archives equal-sized, so swapping them tests
+  // digest identity rather than stopping at an incidental compressed-size check.
+  await pack(receipt, archive, true);
+  await pack(candidateReceipt, candidateArchive, true);
+  await recordArchive(candidateArchive, candidateMetadata);
+  assert.equal((await readFile(archive)).length, (await readFile(candidateArchive)).length);
+  const verifyPair = (previous = archiveDirectory, candidate = candidateDirectory) =>
+    execute(
+      process.execPath,
+      ["scripts/ci/staging-qualification.ts", "verify-pair", previous, candidate],
+      {
+        cwd: root,
+        timeout: 30_000,
+        env: {
+          ...env,
+          NODE_OPTIONS: `--import=${preload}`,
+          PREVIOUS_SOURCE_SHA: source,
+          PREVIOUS_PUBLICATION_RUN_ID: "123",
+          PREVIOUS_PUBLICATION_ATTEMPT: "2",
+          SOURCE_SHA: workflowSha,
+          PUBLICATION_RUN_ID: "124",
+        },
+      },
+    );
+  const pairPath = join(directory, "staging-pair-inputs.json");
+  await verifyPair();
+  const pair = JSON.parse(await readFile(pairPath, "utf8"));
+  assert.equal(pair.previous.sourceSha, source);
+  assert.equal(pair.candidate.sourceSha, workflowSha);
+  assert.equal(pair.previous.publicationRunId, "123");
+  assert.equal(pair.candidate.publicationRunId, "124");
+  assert.equal(pair.previous.ciRunId, "456");
+  assert.equal(pair.candidate.ciRunId, "457");
+  assert.equal(pair.fixedRuntime, `${env.GHCR_RUNTIME_IMAGE}@${digest}`);
+  assert.equal(
+    pair.candidate.selected.controller,
+    `${env.GHCR_CONTROLLER_IMAGE}@sha256:${"e".repeat(64)}`,
+  );
+  await rm(pairPath);
+  await assert.rejects(
+    verifyPair(candidateDirectory, archiveDirectory),
+    /Publication archive digest mismatch/,
+  );
+  await assert.rejects(readFile(pairPath), { code: "ENOENT" });
+  // Rehash the modified archive so rejection must come from its CI provenance,
+  // not an incidental ZIP hash mismatch. The older release's CI really exists.
+  await pack(
+    candidateReceipt.map((image) => ({ ...image, ciRunId: "456" })),
+    candidateArchive,
+  );
+  await recordArchive(candidateArchive, candidateMetadata);
+  await assert.rejects(verifyPair(), /Receipt CI identity is not bound to a service run/);
+  await assert.rejects(readFile(pairPath), { code: "ENOENT" });
+  assert.deepEqual(await containerCalls(), []);
   const success = await run("pull");
   assert.equal(success.stdout, "");
   assert.equal(success.stderr, "");
@@ -535,6 +864,69 @@ with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED) as archive:
   }
   assert.deepEqual(await containerCalls(), before);
   assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "owner data\n");
+}
+
+async function pairImage(
+  directory: string,
+  name: string,
+  revision: string,
+  configRevision = revision,
+) {
+  const layout = join(directory, name);
+  await mkdir(join(layout, "blobs/sha256"), { recursive: true });
+  const hash = (bytes: string) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const blob = async (value: unknown) => {
+    const bytes = JSON.stringify(value);
+    const digest = hash(bytes);
+    await writeFile(join(layout, "blobs/sha256", digest.slice(7)), bytes);
+    return { digest, size: Buffer.byteLength(bytes) };
+  };
+  const manifests = [];
+  const platformDigests = [];
+  for (const architecture of ["amd64", "arm64"]) {
+    const config = await blob({
+      architecture,
+      os: "linux",
+      config: { Labels: { "org.opencontainers.image.revision": configRevision, fixture: name } },
+      rootfs: { type: "layers", diff_ids: [] },
+    });
+    const mediaType = "application/vnd.oci.image.manifest.v1+json";
+    const manifest = await blob({
+      schemaVersion: 2,
+      mediaType,
+      config: { mediaType: "application/vnd.oci.image.config.v1+json", ...config },
+      layers: [],
+    });
+    manifests.push({ mediaType, ...manifest, platform: { os: "linux", architecture } });
+    platformDigests.push({
+      platform: `linux/${architecture}`,
+      digest: manifest.digest,
+      configDigest: config.digest,
+    });
+  }
+  const index = JSON.stringify({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests,
+  });
+  const digest = hash(index);
+  await writeFile(join(layout, "index.json"), index);
+  await writeFile(join(layout, "oci-layout"), JSON.stringify({ imageLayoutVersion: "1.0.0" }));
+  const tar = `${layout}.tar`;
+  await execute("tar", ["-cf", tar, "-C", layout, "oci-layout", "index.json", "blobs"]);
+  return {
+    digest,
+    platformDigests,
+    tar,
+    root: { Descriptor: { digest } },
+    native: {
+      Descriptor: manifests[0],
+      Os: "linux",
+      Architecture: "amd64",
+      Config: { Labels: { "org.opencontainers.image.revision": revision } },
+      Id: platformDigests[0]!.configDigest,
+    },
+  };
 }
 
 async function checkRuntimeChild(t: TestContext) {

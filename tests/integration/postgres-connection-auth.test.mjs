@@ -11,7 +11,7 @@ import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.t
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 

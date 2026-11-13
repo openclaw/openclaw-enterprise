@@ -229,6 +229,18 @@ Repeated bootstrap preserves the existing Installation only when the exact
 administrator account and IAM identity still match; a mismatch fails closed.
 Existing Namespaces and their configuration remain unchanged; no initial
 Namespace is backfilled or recreated.
+For a read-only check of a populated candidate database, set the usual production
+database, authentication and administrator settings, then run
+`node scripts/bootstrap-installation.mjs --verify-existing "$incumbent_installation_id"`.
+Obtain the ID independently from the authenticated incumbent Installation before
+selecting the candidate database. The command checks the singleton ID and the
+ordinary bootstrap administrator account, Principal and direct role binding in
+one read-only PostgreSQL snapshot. On success it prints
+`installation.bootstrap-verified` and the matched ID. An empty database, a different
+ID or a failed administrator check returns a nonzero exit. This mode requires no
+bootstrap output paths and creates no credentials. Check migration history
+separately with `scripts/migrate-production.mjs --require-current`.
+
 On fresh bootstrap, both files are created exclusively with mode `0600`; their
 parent directory must be private and neither destination may already exist.
 Helm sets the key path from `bootstrap.password.mountPath` and

@@ -1,10 +1,91 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { tenant, digest, authContext } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { openShellWorkspaceHarnessConfiguration } from "../integration/sandbox-driver-installation-fixture.ts";
+import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway-fixture.ts";
 import {
   providerReadinessFixture,
   supervisorPeerLabels,
 } from "./kubernetes-provider-readiness.mjs";
+
+// Run the real Sandbox Driver and stop before Compute observes its endpoint.
+export function captureOpenShellHarness({ clients, core, read }, sandbox, egress) {
+  const gateway = workspaceGatewayClient();
+  let request;
+  gateway.createSandbox = async (input) => {
+    assert.equal(request, undefined, "a revision creates its Sandbox only once");
+    request = structuredClone(input);
+    const record = {
+      ...structuredClone(input),
+      phase: "SANDBOX_PHASE_PROVISIONING",
+      serviceUrls: { "": `http://${input.workspace}--${input.name}.openshell.test/` },
+    };
+    gateway.sandboxes.set(input.name, record);
+    return record;
+  };
+  gateway.getService = async (_workspace, name, service) => {
+    const url = gateway.sandboxes.get(name)?.serviceUrls[service];
+    if (url) {
+      return {
+        sandbox: name,
+        name: service,
+        url,
+        advertisedUrl: url,
+        authorizationMode: 2,
+        targetPort: request.serviceExposures[0].targetPort,
+      };
+    }
+  };
+  const base = openShellWorkspaceHarnessConfiguration();
+  const configuration = egress === undefined ? base : { ...base, egress };
+  const openshell = new OpenShellSandboxDriver(configuration, {
+    id: sandbox.id,
+    implementation: "openshell",
+    backend: {
+      id: "fixture-openshell",
+      drivers: { sandbox: sandbox.id },
+      client: new OpenShellGateway(
+        { serviceName: "openshell-gateway" },
+        { gatewayClient: gateway },
+      ),
+    },
+  });
+  const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { KubernetesObjectApi } = require("@kubernetes/client-node");
+  clients.objects = Object.assign(Object.create(KubernetesObjectApi.prototype), clients.objects);
+  const readSecret = core.readNamespacedSecret;
+  core.readNamespacedSecret = (request) =>
+    read("Secret", request.name, request.namespace) ?? readSecret(request);
+  sandbox.validateWorkspaceSetup = openshell.validateWorkspaceSetup.bind(openshell);
+  sandbox.harnessHome = openshell.harnessHome;
+  const provisioned = new Error("OpenShell provisioning complete");
+  sandbox.provisionHarness = async (input) => {
+    await openshell.provisionHarness(input);
+    throw provisioned;
+  };
+  return {
+    openshell,
+    gateway,
+    provisioned,
+    get request() {
+      return request;
+    },
+  };
+}
+
+export function tlsPinnedWorkspaceSetupCode(url, expiresAtMs) {
+  return Buffer.from(
+    JSON.stringify({
+      url,
+      expiresAtMs,
+      bootstrapToken: "one-shot-node-setup",
+      tlsFingerprint: "ab".repeat(32),
+    }),
+  ).toString("base64url");
+}
 
 // In-memory Kubernetes transport plus Sandbox/lifecycle responses. No cluster I/O.
 // Tests own readiness transitions and assertions; prepare/activate remain real Driver calls.
@@ -15,6 +96,7 @@ export function providerEndpointFixture({
   }),
   providerNetwork,
   revisionOverrides,
+  servicePrincipalCredentials,
 } = {}) {
   const hooks = [];
   const provisions = [];
@@ -25,6 +107,7 @@ export function providerEndpointFixture({
   const fixture = providerReadinessFixture({
     providerNetwork,
     revisionOverrides,
+    servicePrincipalCredentials,
     // The Sandbox, and so its relay Pod's labels, exists only once provisioned.
     async workspaceNodePeerLabels({ revision: target }) {
       peerLookups.push(target.id);
@@ -185,8 +268,20 @@ export function providerEndpointFixture({
     return readRequired("Secret", name, target);
   };
   core.createNamespacedSecret = core.replaceNamespacedSecret = async ({ body }) => {
+    const { stringData, ...secret } = body;
     const value = {
-      ...body,
+      ...secret,
+      ...(stringData && {
+        data: {
+          ...secret.data,
+          ...Object.fromEntries(
+            Object.entries(stringData).map(([name, value]) => [
+              name,
+              Buffer.from(value).toString("base64"),
+            ]),
+          ),
+        },
+      }),
       metadata: { ...body.metadata, uid: `${body.metadata.name}-uid`, resourceVersion: "1" },
     };
     writes.push(structuredClone(value));

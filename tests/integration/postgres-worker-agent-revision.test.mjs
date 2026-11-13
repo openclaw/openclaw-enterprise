@@ -1513,6 +1513,7 @@ test(
     );
     const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
     const secret = `synthetic-reflected-${randomUUID()}`;
+    const labelRefusal = "': external resource not admitted by required labels";
     const cases = [
       { prefix: "policy contains unsafe content: ", category: "POLICY_SAFETY" },
       { prefix: "policy middleware validation failed: ", category: "POLICY_MIDDLEWARE_VALIDATION" },
@@ -1528,6 +1529,31 @@ test(
         category: "UNKNOWN",
       },
       { prefix: "policy contains unsafe content: ", method: "Health", category: "UNKNOWN" },
+      {
+        prefix: "PersistentVolumeClaim 'fixture/",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "PVC_ADMISSION_LABELS",
+      },
+      {
+        prefix: "RuntimeClass '",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "CLASS_ADMISSION_LABELS",
+      },
+      {
+        prefix: "reflected PersistentVolumeClaim 'fixture/",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "UNKNOWN",
+      },
+      {
+        prefix:
+          "create sandbox failed: gateway is forbidden from reading metadata for RuntimeClass '",
+        suffix: "' (Kubernetes 403); check gateway RBAC",
+        status: grpc.status.INTERNAL,
+        category: "RESOURCE_METADATA_FORBIDDEN",
+      },
     ].map((scenario, index) => ({
       name: `diagnostic-${index}`,
       method: "CreateSandbox",
@@ -1556,7 +1582,10 @@ test(
         // logger must discard it, even though it has no recognizable credential shape.
         callback({
           code: scenario.status,
-          details: scenario.prefix + call.request.annotations["fixture-reflection"],
+          details:
+            scenario.prefix +
+            call.request.annotations["fixture-reflection"] +
+            (scenario.suffix ?? ""),
         });
       },
       Health(_call, callback) {
@@ -2683,7 +2712,7 @@ revisionTest(
       failure: () =>
         new SandboxRevisionUnsupportedError(
           "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-          "OpenShell v0.1.5 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
+          "OpenShell cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
         ),
       expected: {
         error: {

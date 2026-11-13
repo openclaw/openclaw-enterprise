@@ -226,6 +226,7 @@ type WorkerStatementHook = (
 interface FixtureOptions extends Partial<FixtureDrivers> {
   selectedDrivers?: InstallationRuntimeDrivers;
   nativeAdmin?: boolean;
+  nativeAdminDomain?: string;
   beforeWorkerStatement?: WorkerStatementHook;
   leaseDurationMs?: number;
   onWorkerEvent?: WorkerEventListener;
@@ -502,7 +503,7 @@ export async function createProvisioningFixture(
     nativeAdminSettings = {
       nativeAdmin: {
         enabled: true,
-        domain: "agents.oce.localhost",
+        domain: options.nativeAdminDomain ?? "agents.oce.localhost",
       },
       gatewayApiKeyPath,
     };

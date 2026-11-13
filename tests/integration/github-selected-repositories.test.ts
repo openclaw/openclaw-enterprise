@@ -40,6 +40,42 @@ test("selected repository issuance sends every selected stable ID and explicit p
   }
 });
 
+test("provider issuance identity follows stable scope across separate Agent grants", () => {
+  const origin = "https://api.github.com";
+  const first = prepareProviderScope(origin, grant);
+  const second = prepareProviderScope(origin, {
+    ...grant,
+    id: "independent-grant",
+    isolationId: "revision-b",
+    repositories: [...grant.repositories].reverse(),
+    permissions: { pull_requests: "write", metadata: "read", contents: "write" },
+  });
+  assert.deepEqual(first.issuance, second.issuance);
+  assert.deepEqual(
+    providerRequestOptions(first, "issue", "fixture-jwt", undefined),
+    providerRequestOptions(second, "issue", "fixture-jwt", undefined),
+  );
+  for (const scope of [
+    prepareProviderScope("https://github.example.com", grant),
+    prepareProviderScope(origin, { ...grant, appId: "11" }),
+    prepareProviderScope(origin, { ...grant, installationId: "21" }),
+    prepareProviderScope(origin, { ...grant, repositories: grant.repositories.slice(1) }),
+    prepareProviderScope(origin, {
+      ...grant,
+      permissions: { ...grant.permissions, contents: "read" },
+    }),
+    prepareProviderScope(origin, {
+      id: grant.id,
+      isolationId: grant.isolationId,
+      appId: grant.appId,
+      installationId: grant.installationId,
+      profile: "github-installation",
+    }),
+  ]) {
+    assert.notDeepEqual(first.issuance, scope.issuance);
+  }
+});
+
 test("selected repository response requires exact IDs, names and permissions and refuses broader credentials", () => {
   const now = Date.now();
   const packet = {
@@ -57,7 +93,7 @@ test("selected repository response requires exact IDs, names and permissions and
   });
   assert.equal(
     providerRequestOptions(scope, "issue", "fixture-jwt", undefined).body,
-    '{"repository_ids":[101,102],"permissions":{"metadata":"read","contents":"write","pull_requests":"write"}}',
+    '{"repository_ids":[101,102],"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}',
   );
   const check = (candidate: Record<string, unknown>) =>
     validateInstallationTokenResponse(201, candidate, Buffer.from(packet.token), now, scope, 60000);
