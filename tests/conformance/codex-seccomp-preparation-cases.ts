@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { deriveCodexBwrapProfile } from "../../scripts/lib/codex-seccomp-profile.mjs";
+import { deriveCodexBwrapProfile } from "../../scripts/lib/codex-seccomp-profile.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import {
   fixture,
@@ -46,11 +46,6 @@ type MalformedProcessStatus = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function preparedProfileName(result: unknown) {
-  assert.ok(isRecord(result), "preparation must return a result object");
-  return result.profileName;
 }
 
 // The real helper delivers the shell asset and its positional inputs. Only its two resource roots are remapped
@@ -151,6 +146,85 @@ exec /bin/rm "$@"
   return { stdout: result.stdout, stderr: result.stderr };
 }
 
+async function runDevelopmentPreparation(root: string, repository: string, mode: string) {
+  const state = join(root, "state");
+  const tools = join(root, "tools");
+  const reached = join(root, "profile-derivation");
+  await mkdir(state, { mode: 0o700 });
+  await mkdir(tools, { mode: 0o700 });
+  const dockerHost = "unix:///tmp/inert-probe-fixture.sock";
+  await writeFile(join(state, ".openclaw-development"), "openclaw-enterprise-development-v3\n", {
+    mode: 0o600,
+  });
+  await writeJson(join(state, "state.json"), {
+    version: 3,
+    repository,
+    computeDriver: "kubernetes",
+    deploymentMode: "k3d",
+    sandboxDriver: "none",
+    containerEngine: "docker",
+    cluster: "occ-dev-origin-fixture",
+    dockerHost,
+  });
+  await writeFile(join(state, "kubeconfig"), "{}\n", { mode: 0o600 });
+  // These are inert external commands. The actual preparation entrypoint owns
+  // the execFile callback and error propagation; no Kubernetes or Docker runs.
+  await writeCommand(
+    tools,
+    "kubectl",
+    `const args = process.argv.slice(2);
+const a = args.slice(args.indexOf('--request-timeout') + 2);
+if (a[0] === 'get' && a[1] === 'nodes') {
+  process.stdout.write(JSON.stringify({items:[{metadata:{name:'k3d-occ-dev-origin-fixture-server-0'}}]}));
+} else if (a[0] === 'get' && a[1] === 'pod') {
+  process.stdout.write(JSON.stringify({status:{containerStatuses:[{name:'probe',ready:true,containerID:'containerd://fixture'}]}}));
+} else if (a[0] === 'exec') {
+  const { readFileSync } = process.getBuiltinModule('node:fs');
+  if (a[5] !== 'sh' || a[6] !== '-c' || a[7] !== readFileSync('scripts/lib/codex-sandbox-probe.sh', 'utf8')) {
+    process.exit(72);
+  }
+  const nonce = a.at(-1);
+  const prefix = 'OCE_SANDBOX_PROBE_V1:' + nonce + ':';
+  process.stderr.write(prefix + 'START\\n');
+  if (['done_error','success'].includes(process.env.PROBE_MODE)) {
+    process.stderr.write(prefix + 'ENTERED\\n' + prefix + 'END:DONE:0\\n');
+  } else {
+    process.stderr.write('bwrap: namespace: Operation not permitted\\n' + prefix + 'END:SANDBOX:1\\n');
+  }
+  if (process.env.PROBE_MODE === 'signal') process.kill(process.pid, 'SIGTERM');
+  else process.exit(process.env.PROBE_MODE === 'success' ? 0 : process.env.PROBE_MODE === 'exit2' ? 2 : 1);
+}
+`,
+    { interpreter: process.execPath },
+  );
+  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+  await writeCommand(
+    tools,
+    "docker",
+    `process.getBuiltinModule('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
+process.exit(71);
+`,
+    { interpreter: process.execPath },
+  );
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(repository, "scripts/prepare-development-codex-seccomp.ts"),
+      state,
+      `registry.invalid/runtime@sha256:${"a".repeat(64)}`,
+      "5",
+    ],
+    {
+      cwd: repository,
+      encoding: "utf8",
+      timeout: 15_000,
+      maxBuffer: 8192,
+      env: { PATH: tools, DOCKER_HOST: dockerHost, PROBE_MODE: mode, PROBE_REACHED: reached },
+    },
+  );
+  return { result, reached, state };
+}
+
 export function registerSeccompPreparationCases() {
   test("missing-profile preparation cannot forget a reported container before a later valid observation", async (t) => {
     const control = await missingProfileFixture(t, [reportedContainer, missingProfileWaiting]);
@@ -169,7 +243,7 @@ export function registerSeccompPreparationCases() {
     test(`missing-profile preparation retries ${label} before a valid observation`, async (t) => {
       const control = await missingProfileFixture(t, [first, missingProfileWaiting]);
       const result = await control.run();
-      assert.equal(preparedProfileName(result), "openclaw/codex-bwrap.json");
+      assert.equal(result.profileName, "openclaw/codex-bwrap.json");
       assert.equal(control.reads(), 2);
       await control.assertCleanup();
     });
@@ -435,7 +509,7 @@ export function registerSeccompPreparationCases() {
         runGeneratedProbe(args, root, baseline ? "denied" : "success"),
     });
     const result = await control.run();
-    assert.equal(preparedProfileName(result), "openclaw/codex-bwrap.json");
+    assert.equal(result.profileName, "openclaw/codex-bwrap.json");
     assert.equal(control.installations(), 1);
     await control.assertCleanup();
   });
@@ -443,21 +517,18 @@ export function registerSeccompPreparationCases() {
   test("relocated preparation entrypoints require and deliver the local shell asset", async (t) => {
     const root = await fixture(t);
     const scripts = join(root, "scripts");
-    await mkdir(join(scripts, "ci"), { recursive: true });
-    await mkdir(join(scripts, "lib"));
+    await mkdir(join(scripts, "lib"), { recursive: true });
     for (const path of [
-      "ci/codex-seccomp.mjs",
       "lib/assert-inside-directory.ts",
-      "lib/codex-seccomp-k3d.mjs",
+      "lib/codex-seccomp-k3d.ts",
       "lib/private-owned-path.mjs",
-      "lib/codex-seccomp-profile.mjs",
       "lib/codex-seccomp-profile.ts",
-      "prepare-development-codex-seccomp.mjs",
+      "prepare-development-codex-seccomp.ts",
     ]) {
       await writeFile(join(scripts, path), await readFile(join(repositoryRoot, "scripts", path)));
     }
     // An incomplete source delivery fails before either entrypoint can prepare resources.
-    for (const entrypoint of ["ci/codex-seccomp.mjs", "prepare-development-codex-seccomp.mjs"]) {
+    for (const entrypoint of ["lib/codex-seccomp-k3d.ts", "prepare-development-codex-seccomp.ts"]) {
       const missing = spawnSync(process.execPath, [join(scripts, entrypoint)], {
         cwd: root,
         encoding: "utf8",
@@ -472,23 +543,24 @@ export function registerSeccompPreparationCases() {
       join(scripts, "lib/codex-sandbox-probe.sh"),
       await readFile(join(repositoryRoot, "scripts/lib/codex-sandbox-probe.sh")),
     );
-    const delivered: unknown = await import(
-      pathToFileURL(join(scripts, "ci/codex-seccomp.mjs")).href
-    );
-    assert.ok(isRecord(delivered));
-    const prepareProfile = delivered.prepareCodexSeccompProfile;
-    assert.ok(typeof prepareProfile === "function");
+    const delivered = (await import(
+      pathToFileURL(join(scripts, "lib/codex-seccomp-k3d.ts")).href
+    )) as typeof import("../../scripts/lib/codex-seccomp-k3d.ts");
     const control = await missingProfileFixture(t, [missingProfileWaiting], {
-      async prepareProfile(options) {
-        const result: unknown = await prepareProfile(options);
-        return result;
-      },
+      prepareProfile: delivered.prepareCodexSeccompProfile,
       probeExec: (args, { baseline, root: probeRoot }) =>
         runGeneratedProbe(args, probeRoot, baseline ? "denied" : "success"),
     });
     await control.run();
     assert.equal(control.installations(), 1);
     await control.assertCleanup();
+
+    const { result, reached, state } = await runDevelopmentPreparation(root, root, "success");
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '{"mode":"RuntimeDefault","profileName":""}\n');
+    await assert.rejects(() => readFile(reached, "utf8"), { code: "ENOENT" });
+    assert.ok(!(await readdir(state)).some((name) => name.startsWith("codex-seccomp-")));
   });
 
   test("a client success without completed probe evidence does not qualify a positive", async (t) => {
@@ -503,81 +575,7 @@ export function registerSeccompPreparationCases() {
   for (const mode of ["exit1", "exit2", "signal", "done_error", "success"]) {
     test(`actual preparation adapter binds probe evidence to ${mode}`, async (t) => {
       const root = await fixture(t);
-      const state = join(root, "state");
-      const tools = join(root, "tools");
-      const reached = join(root, "profile-derivation");
-      await mkdir(state, { mode: 0o700 });
-      await mkdir(tools, { mode: 0o700 });
-      const dockerHost = "unix:///tmp/inert-probe-fixture.sock";
-      await writeFile(
-        join(state, ".openclaw-development"),
-        "openclaw-enterprise-development-v3\n",
-        {
-          mode: 0o600,
-        },
-      );
-      await writeJson(join(state, "state.json"), {
-        version: 3,
-        repository: repositoryRoot,
-        computeDriver: "kubernetes",
-        deploymentMode: "k3d",
-        sandboxDriver: "none",
-        containerEngine: "docker",
-        cluster: "occ-dev-origin-fixture",
-        dockerHost,
-      });
-      await writeFile(join(state, "kubeconfig"), "{}\n", { mode: 0o600 });
-      // These are inert external commands. The actual preparation entrypoint owns
-      // the execFile callback and error propagation; no Kubernetes or Docker runs.
-      await writeCommand(
-        tools,
-        "kubectl",
-        `const args = process.argv.slice(2);
-const a = args.slice(args.indexOf('--request-timeout') + 2);
-if (a[0] === 'get' && a[1] === 'nodes') {
-  process.stdout.write(JSON.stringify({items:[{metadata:{name:'k3d-occ-dev-origin-fixture-server-0'}}]}));
-} else if (a[0] === 'get' && a[1] === 'pod') {
-  process.stdout.write(JSON.stringify({status:{containerStatuses:[{name:'probe',ready:true,containerID:'containerd://fixture'}]}}));
-} else if (a[0] === 'exec') {
-  const nonce = a.at(-1);
-  const prefix = 'OCE_SANDBOX_PROBE_V1:' + nonce + ':';
-  process.stderr.write(prefix + 'START\\n');
-  if (['done_error','success'].includes(process.env.PROBE_MODE)) {
-    process.stderr.write(prefix + 'ENTERED\\n' + prefix + 'END:DONE:0\\n');
-  } else {
-    process.stderr.write('bwrap: namespace: Operation not permitted\\n' + prefix + 'END:SANDBOX:1\\n');
-  }
-  if (process.env.PROBE_MODE === 'signal') process.kill(process.pid, 'SIGTERM');
-  else process.exit(process.env.PROBE_MODE === 'success' ? 0 : process.env.PROBE_MODE === 'exit2' ? 2 : 1);
-}
-`,
-        { interpreter: process.execPath },
-      );
-      // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
-      await writeCommand(
-        tools,
-        "docker",
-        `process.getBuiltinModule('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
-process.exit(71);
-`,
-        { interpreter: process.execPath },
-      );
-      const result = spawnSync(
-        process.execPath,
-        [
-          join(repositoryRoot, "scripts/prepare-development-codex-seccomp.mjs"),
-          state,
-          `registry.invalid/runtime@sha256:${"a".repeat(64)}`,
-          "5",
-        ],
-        {
-          cwd: repositoryRoot,
-          encoding: "utf8",
-          timeout: 15_000,
-          maxBuffer: 8192,
-          env: { PATH: tools, DOCKER_HOST: dockerHost, PROBE_MODE: mode, PROBE_REACHED: reached },
-        },
-      );
+      const { result, reached } = await runDevelopmentPreparation(root, repositoryRoot, mode);
       assert.equal(result.error, undefined);
       assert.equal(result.signal, null);
       if (mode === "exit1") {
