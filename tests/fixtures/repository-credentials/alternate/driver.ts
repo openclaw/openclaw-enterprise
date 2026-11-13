@@ -1,9 +1,59 @@
 import { randomBytes, createHash } from "node:crypto";
-import { createAlternatePlan, denied } from "./policy.mjs";
+import type {
+  AcquireOutcome,
+  AttemptContext,
+  AuthorityIdentity,
+  Clock,
+  CredentialRef,
+  DriverCustody,
+  FinalizeOutcome,
+  OriginalOutcome,
+  RepositoryBackend,
+  RequestPlan,
+  RetireOutcome,
+} from "../../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import { createAlternatePlan } from "./policy.ts";
 
-export { denied } from "./policy.mjs";
+export { denied } from "./policy.ts";
 
-const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const digest = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+type OutcomePayload<T> = T extends OriginalOutcome ? Omit<T, keyof OriginalOutcome> : never;
+type AlternateOutcome = OutcomePayload<AcquireOutcome | RetireOutcome | FinalizeOutcome>;
+
+export type AlternateDriverEvent =
+  | {
+      kind: "rotate";
+      attemptId: string;
+      sessionId: string;
+      generation: number;
+      permission: "source:update";
+      previous: boolean;
+    }
+  | { kind: "retire" | "finalize" | "authentication"; sessionId: string };
+
+type AlternateDriverObservation =
+  | { kind: "capture" | "settlement-started" | "settlement-completed"; attemptId: string }
+  | { kind: "plan"; method: string };
+
+export type AlternateDriverOptions = {
+  binding: RepositoryBackend["binding"];
+  authority: AuthorityIdentity;
+  custody: DriverCustody;
+  origin: string;
+  clock: Pick<Clock, "wallNow">;
+  accepted: Map<string, number>;
+  lifetimeMs: number;
+  operationMs: number;
+  controls: {
+    beforeSend?: () => void | Promise<void>;
+    lateCapture?: Promise<void>;
+    waitForAcquisitionAbort?: boolean;
+    rejectScope?: boolean;
+    observe?: (event: AlternateDriverObservation) => void;
+  };
+  events: AlternateDriverEvent[];
+};
 
 export function createAlternateDriver({
   binding,
@@ -16,28 +66,33 @@ export function createAlternateDriver({
   operationMs,
   controls,
   events,
-}) {
-  for (const key of Object.keys(binding)) {
+}: AlternateDriverOptions): RepositoryBackend {
+  for (const key of Object.keys(binding) as (keyof typeof binding)[]) {
     if (authority[key] !== binding[key]) {
       throw new Error("foreign-authority");
     }
   }
-  const outcomes = new WeakMap();
-  const plans = new WeakSet();
-  const handles = new WeakMap();
+  const outcomes = new WeakMap<OriginalOutcome, Promise<void>>();
+  const plans = new WeakSet<RequestPlan>();
+  const handles = new WeakMap<CredentialRef, { digest: string; expires: number }>();
   const renewalBytes = randomBytes(32);
   const renewalDigest = digest(renewalBytes);
   const renewal = custody.retainRenewal(renewalBytes);
   renewalBytes.fill(0);
   let finalized = false;
-  let current;
+  let current: CredentialRef | undefined;
   let generation = 0;
-  function result(attempt, value, settled = Promise.resolve()) {
-    const original = Object.freeze({ attemptId: attempt.id, ...value });
+  function result<T extends AlternateOutcome>(
+    attempt: AttemptContext,
+    value: T,
+    settled = Promise.resolve(),
+  ): Readonly<T> & OriginalOutcome {
+    const original = Object.freeze({ attemptId: attempt.id, ...value }) as Readonly<T> &
+      OriginalOutcome;
     outcomes.set(original, settled);
     return original;
   }
-  const driver = {
+  const driver: RepositoryBackend = {
     binding,
     replacement: "drain-before",
     cleanup: "revocable",
@@ -73,7 +128,7 @@ export function createAlternateDriver({
         });
         const capture = () => {
           if (current) {
-            accepted.delete(handles.get(current).digest);
+            accepted.delete(handles.get(current)!.digest);
           }
           const bytes = randomBytes(24).toString("hex");
           const observation = {
@@ -88,18 +143,18 @@ export function createAlternateDriver({
           accepted.set(digest(bytes), observation.expiresAtWallMs);
           current = credential;
           controls.observe?.({ kind: "capture", attemptId: attempt.id });
-          return { kind: "acquired", credential, ...observation };
+          return { kind: "acquired" as const, credential, ...observation };
         };
         if (controls.lateCapture) {
           const settled = controls.lateCapture.then(() => {
             capture();
           });
           if (controls.waitForAcquisitionAbort) {
-            await new Promise((resolve) => {
+            await new Promise<void>((resolve) => {
               if (attempt.signal.aborted) {
                 resolve();
               } else {
-                attempt.signal.addEventListener("abort", resolve, { once: true });
+                attempt.signal.addEventListener("abort", () => resolve(), { once: true });
               }
             });
           }
@@ -168,7 +223,7 @@ export function createAlternateDriver({
         origin,
         operationMs,
       });
-      if (plan === denied) {
+      if ("kind" in plan) {
         return plan;
       }
       plans.add(plan);
