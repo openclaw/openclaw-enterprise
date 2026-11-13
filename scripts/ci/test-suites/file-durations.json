@@ -78,7 +78,7 @@
     "tests/conformance/kubernetes-api-read.test.ts": 3400,
     "tests/conformance/kubernetes-client.test.mjs": 6100,
     "tests/conformance/kubernetes-compute.test.mjs": 11900,
-    "tests/conformance/kubernetes-configuration.test.mjs": 600,
+    "tests/conformance/kubernetes-configuration.test.ts": 600,
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs": 800,
     "tests/conformance/kubernetes-ownership.test.mjs": 400,
     "tests/conformance/kubernetes-preflight.test.ts": 5300,
