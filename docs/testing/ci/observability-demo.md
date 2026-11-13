@@ -27,8 +27,8 @@ Full Integration also selects this lane when `all` is requested.
 
 | Setup and action                                                                         | Expected outcome                                                                                                  | Test source                                                                    |
 | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Render the chart with supported release names and values that resemble YAML scalars.     | Service names, identifiers, and Grafana URLs remain valid and aligned.                                            | [Chart tests](../../../tests/integration/observability-demo-chart.test.mjs).   |
-| Configure disposable Grafana storage and repeat installation after a cold-cache timeout. | SQLite stays off node disk and the documented installation can be rerun.                                          | [Chart tests](../../../tests/integration/observability-demo-chart.test.mjs).   |
+| Render the chart with supported release names and values that resemble YAML scalars.     | Service names, identifiers, and Grafana URLs remain valid and aligned.                                            | [Chart tests](../../../tests/integration/observability-demo-chart.test.ts).    |
+| Configure disposable Grafana storage and repeat installation after a cold-cache timeout. | SQLite stays off node disk and the documented installation can be rerun.                                          | [Chart tests](../../../tests/integration/observability-demo-chart.test.ts).    |
 | Install the demo in k3d and send fixture telemetry.                                      | Grafana's Prometheus connection returns fixture metrics; dashboards exist and log queries return expected events. | [Kubernetes test](../../../tests/integration/observability-demo-k3d.test.mjs). |
 | Open the dashboard in Chromium, inspect log details, and apply a worker filter.          | Navigation and displayed log records match the expected queries; screenshots record the rendered views.           | [Kubernetes test](../../../tests/integration/observability-demo-k3d.test.mjs). |
 
@@ -64,6 +64,6 @@ through the lane procedure after local failures.
 
 - [Workflow](../../../.github/workflows/observability-demo.yml): exact triggers and artifact policy.
 - [Manifest](../../../scripts/ci/test-suites/k3d-observability-demo.json): files, cases, images, and context requirements.
-- [Chart tests](../../../tests/integration/observability-demo-chart.test.mjs) and [Kubernetes test](../../../tests/integration/observability-demo-k3d.test.mjs): scenario assertions.
+- [Chart tests](../../../tests/integration/observability-demo-chart.test.ts) and [Kubernetes test](../../../tests/integration/observability-demo-k3d.test.mjs): scenario assertions.
 - [Demo helper](../../../tests/helpers/observability-demo-k3d.mjs): fixture stack and telemetry.
 - [Demo Helm chart](../../../deploy/helm/openclaw-observability-demo): installed monitoring components.
