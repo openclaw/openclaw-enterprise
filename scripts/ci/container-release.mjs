@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadTestSuites } from "./test-suites.mjs";
-import { prepareRuntimeImageSmoke } from "./prepare.mjs";
 
 export const repository = "openclaw/openclaw-enterprise";
 export const publishWorkflow = ".github/workflows/container-publish.yml";
@@ -598,6 +597,8 @@ async function smoke(directory, env) {
   const arch = process.arch === "x64" ? "amd64" : process.arch;
   assert.ok(["amd64", "arm64"].includes(arch));
   assert.equal(env.PLATFORM, `linux/${arch}`, "Smoke requires the target's native runner.");
+  // Resolve native runtime tooling before loading an image that would need cleanup.
+  const runtimePreparation = env.IMAGE === "runtime" ? await import("./prepare.mjs") : undefined;
   assert.equal(inspectDigest(`oci:${directory}`), env.IMAGE_DIGEST);
   const root = JSON.parse(await readFile(join(directory, "index.json"), "utf8"));
   assert.equal(root.manifests.length, 1);
@@ -643,8 +644,8 @@ async function smoke(directory, env) {
     }
     assert.equal(loaded.Os, "linux");
     assert.equal(loaded.Architecture, arch);
-    if (env.IMAGE === "runtime") {
-      prepared = await prepareRuntimeImageSmoke({
+    if (runtimePreparation) {
+      prepared = await runtimePreparation.prepareRuntimeImageSmoke({
         image: loaded.Id,
         statePath: join(env.RUNNER_TEMP ?? tmpdir(), `runtime-smoke-${arch}.json`),
       });
