@@ -34,6 +34,10 @@ import {
 } from "../helpers/production-chart-quantity-cases.ts";
 import { productionChartRendererRefusalCases } from "../helpers/production-chart-renderer-refusal-cases.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
+import {
+  startupProjectionReads,
+  writeStartupProjection,
+} from "../helpers/production-upgrade-startup-projection.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
@@ -2358,7 +2362,6 @@ test(
         id: "github-primary",
         type: "github",
         configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-        drivers: { repo: "repository-credentials" },
       },
     ];
     installationDocument.repository = {
@@ -2386,11 +2389,16 @@ test(
     for (const path of [kubeconfig, key]) {
       await writeFile(path, "fixture", { mode: 0o600 });
     }
+    const projection = await writeStartupProjection(
+      directory,
+      JSON.stringify(installationDocument),
+    );
     const secret = join(directory, "secret.json");
     await writeFile(
       secret,
       JSON.stringify({
         metadata: {
+          name: "occ-installation-startup",
           uid: "secret-uid",
           resourceVersion: "1",
           annotations: { "openclaw.dev/installation-id": "ins_test" },
@@ -2424,6 +2432,7 @@ test(
     const wrappers = {
       kubectl: `#!/usr/bin/env bash
 case "$*" in
+  ${startupProjectionReads}
   *'get secret '*) cat "$TEST_SECRET" ;;
   *'get deployment openclaw-enterprise-worker '*) cat "$TEST_WORKER" ;;
   *'get nodes --output json'*) cat "$TEST_NODES" ;;
@@ -2433,10 +2442,10 @@ case "$*" in
 esac
 `,
       occ: `#!/usr/bin/env bash
-[[ $# == 4 && "$1" == --output && "$2" == json && "$3" == installation ]] || exit 94
-case "$4" in
-  get) printf '{"id":"ins_test"}' ;;
-  deployment-inventory) printf '{"installationId":"ins_test","namespaces":[]}' ;;
+case "$*" in
+  '--output json installation get') printf '{"id":"ins_test"}' ;;
+  '--output json --timeout-seconds 900 installation deployment-inventory')
+    printf '{"installationId":"ins_test","namespaces":[]}' ;;
   *) exit 94 ;;
 esac
 `,
@@ -2556,6 +2565,7 @@ esac
               OCC_URL: "https://occ.example.invalid",
               OCC_SERVICE_KEY_FILE: key,
               TEST_SECRET: secret,
+              TEST_PROJECTION: projection,
               TEST_WORKER: worker,
               TEST_NODES: nodes,
               TEST_PROBE_CALLS: probeCalls,

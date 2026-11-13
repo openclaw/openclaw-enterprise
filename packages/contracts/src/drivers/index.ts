@@ -11,7 +11,6 @@ import type { CredentialProxyDriver } from "./credential-proxy/index.ts";
 import type { CredentialRefreshDriver } from "./credential-refresh/index.ts";
 import type { IAMDriver } from "./iam/index.ts";
 import type { PluginDriver } from "./plugin/index.ts";
-import type { RepositoryPolicyDriver } from "./repo/index.ts";
 import type { SandboxDriver } from "./sandbox/index.ts";
 import type { SecretDriver } from "./secret/index.ts";
 import type { ServiceAccountDriver } from "./service-account/index.ts";
@@ -25,7 +24,6 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "sandbox",
   "plugin",
   "channel",
-  "repo",
   "credential_gateway",
   "credential_refresh",
   "credential_proxy",
@@ -56,7 +54,6 @@ export type DriverByCapability = {
   compute: ComputeDriver;
   plugin: PluginDriver;
   channel: ChannelDriver;
-  repo: RepositoryPolicyDriver;
   credential_gateway: CredentialGatewayDriver;
   credential_refresh: CredentialRefreshDriver;
   credential_proxy: CredentialProxyDriver;

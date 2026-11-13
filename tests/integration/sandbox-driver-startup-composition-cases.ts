@@ -58,7 +58,9 @@ export async function verifySharedBackendComposition(t: TestContext) {
   assert.ok(createdDriver?.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
   assert.equal(createdDriver.credentialGatewayDriver.id, "openshell-credentials");
   assert.equal(createdDriver.installation.drivers.credential_gateway?.implementation, "openshell");
-  assert.deepEqual(createdDriver.installation.backend?.[0]?.drivers, {
+  const backend = createdDriver.installation.backend?.[0];
+  assert.ok(backend?.type === "openshell");
+  assert.deepEqual(backend.drivers, {
     sandbox: createdDriver.sandboxDriver?.id,
     credential_gateway: createdDriver.credentialGatewayDriver.id,
   });

@@ -200,12 +200,31 @@ export function validateConfiguration(config: Readonly<Config>): readonly ErrorD
   }
 }
 
-// The test has the workload's credential-free endpoint and can drive ordinary installer work.
-// The installed credential is private to the sender, and each Git request has one send opportunity.
-let counterpart: ReturnType<typeof createServer>;
-export function createCounterpart(tls: ServerOptions) {
-  counterpart = createServer(tls);
-  return counterpart;
+type Broad = NonNullable<Authority["githubInstallation"]>;
+type InstallationMaterial = Extract<Awaited<ReturnType<Broad["readMaterial"]>>, { value: string }>;
+
+// The HTTPS receiver outlives the Worker that binds its transport.
+class Counterpart {
+  readonly server: ReturnType<typeof createServer>;
+  readonly clientSecret = randomUUID();
+  readonly sandboxId = randomUUID();
+  readonly reductions = new Map<string, EgressInstallation>();
+  readonly observationSecret: string;
+  status?: EgressInstallation;
+  installed?: Material | InstallationMaterial;
+  installedOperation?: Route & RepositoryGitMaterialVersion;
+  peer?: typeof peer;
+
+  constructor(tls: ServerOptions, observationSecret: string) {
+    this.server = createServer(tls);
+    this.observationSecret = observationSecret;
+  }
+}
+
+let counterpart: Counterpart | undefined;
+export function createCounterpart(tls: ServerOptions, observationSecret: string = randomUUID()) {
+  counterpart = new Counterpart(tls, observationSecret);
+  return counterpart.server;
 }
 
 export let peer: {
@@ -241,88 +260,17 @@ export let peer: {
     reconciliations: number;
     loseReply: boolean;
     hideObservation: boolean;
+    beforeReadback?: (installedVersion: string | undefined) => Promise<void>;
     reportedVersion?: RepositoryGitMaterialVersion;
     confirmations: RepositoryGitMaterialVersion[];
     rejectedConfirmations: number;
     settled?: { materialVersion: string; expiresAt: string };
   };
 };
-export function createDriver(options: {
-  id: string;
-  implementation: string;
-  configuration: Config;
-}): DriverRegistration {
-  const config = options.configuration;
-  if (validateConfiguration(config).length > 0) {
-    throw new Error(
-      "Protected Git fixture requires distinct, exact loopback TLS origins and valid configuration.",
-    );
-  }
-  const { origin, installationApiOrigin } = config;
-  const base = releaseDriver({
-    ...options,
-    configuration: { endpoint: origin, ca: "unused" },
-  });
-  const { sandbox, credential_proxy: proxy } = base.capabilities;
-  assert.ok(sandbox && proxy);
-  const sender = proxy.sourceControl.sender;
-  const clientSecret = randomUUID();
-  const observationSecret = config.controlSecretFile
-    ? readFileSync(config.controlSecretFile, "utf8")
-    : randomUUID();
-  const sandboxId = randomUUID();
-  let status: EgressInstallation | undefined;
-  const reductions = new Map<string, EgressInstallation>();
-  const reduction: typeof peer.reduction = {
-    attempts: 0,
-    applies: 0,
-    requests: [],
-    applied: [],
-    observations: [],
-    loseReply: false,
-    hideObservation: false,
-  };
-  const capabilityUrl = new URL("/capability", config.capabilityOrigin);
-  const url = new URL(config.peerOrigin);
-  const ca = readFileSync(config.certFile);
-  const peerKeyId = createHash("sha256")
-    .update(new X509Certificate(ca).publicKey.export({ type: "spki", format: "der" }))
-    .digest("base64url");
-  let exchangeAuthority: CredentialProxyExchange | undefined;
-  const accepted = new Map<
-    string,
-    { use: CapturedEgressUse; association: AcceptedEgressAssociation }
-  >();
-  let authority: Authority;
-  let route: Route | undefined;
-  type Broad = NonNullable<Authority["githubInstallation"]>;
-  type InstallationMaterial = Extract<
-    Awaited<ReturnType<Broad["readMaterial"]>>,
-    { value: string }
-  >;
-  type InstallationOperation = Parameters<Broad["authorize"]>[0]["operation"];
-  let installed: Material | InstallationMaterial | undefined;
-  // This receipt belongs to the recipient and survives controller binding replacement.
-  let installedOperation: (Route & RepositoryGitMaterialVersion) | undefined;
-  const delivery: typeof peer.delivery = {
-    stage: "unbound",
-    attempts: 0,
-    installs: 0,
-    reconciliations: 0,
-    loseReply: false,
-    hideObservation: false,
-    confirmations: [],
-    rejectedConfirmations: 0,
-  };
-  let apiUrl: URL;
-  let checkedCapability = false;
-  let authorization: "online-request" | undefined;
-  const gitMarker = "cedar-workload-marker";
-  const basic = (v: string) => "Basic " + Buffer.from("x-access-token:" + v).toString("base64");
-  const decisions: typeof peer.decisions = [];
-  const signal = () => AbortSignal.timeout(5000);
-  const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
+const signal = () => AbortSignal.timeout(5000);
+
+function createPeerClient(url: URL, ca: Buffer, observationSecret: string) {
   const exchange = (to: URL, opts: import("node:https").RequestOptions, body?: Buffer) =>
     new Promise<IncomingMessage>((resolve, reject) => {
       request(to, { ca, agent: false, signal: signal(), ...opts }, resolve)
@@ -344,6 +292,53 @@ export function createDriver(options: {
     assert.equal(res.statusCode, 200, "authenticated sender installation");
     return (await json(res)) as Awaited<ReturnType<typeof observe>>;
   };
+  return { exchange, observe, observePolicy: async () => (await observe()).installation };
+}
+
+export function createDriver(options: {
+  id: string;
+  implementation: string;
+  configuration: Config;
+}): DriverRegistration {
+  const config = options.configuration;
+  if (validateConfiguration(config).length > 0) {
+    throw new Error(
+      "Protected Git fixture requires distinct, exact loopback TLS origins and valid configuration.",
+    );
+  }
+  const { origin, installationApiOrigin } = config;
+  const base = releaseDriver({
+    ...options,
+    configuration: { endpoint: origin, ca: "unused" },
+  });
+  const { sandbox, credential_proxy: proxy } = base.capabilities;
+  assert.ok(sandbox && proxy);
+  const sender = proxy.sourceControl.sender;
+  const receiver = counterpart;
+  const observationSecret = config.controlSecretFile
+    ? readFileSync(config.controlSecretFile, "utf8")
+    : (receiver?.observationSecret ?? randomUUID());
+  const capabilityUrl = new URL("/capability", config.capabilityOrigin);
+  const url = new URL(config.peerOrigin);
+  const ca = readFileSync(config.certFile);
+  const peerKeyId = createHash("sha256")
+    .update(new X509Certificate(ca).publicKey.export({ type: "spki", format: "der" }))
+    .digest("base64url");
+  let exchangeAuthority: CredentialProxyExchange | undefined;
+  const accepted = new Map<
+    string,
+    { use: CapturedEgressUse; association: AcceptedEgressAssociation }
+  >();
+  let authority: Authority;
+  let route: Route | undefined;
+  type InstallationOperation = Parameters<Broad["authorize"]>[0]["operation"];
+  let checkedCapability = false;
+  let authorization: "online-request" | undefined;
+  const gitMarker = "cedar-workload-marker";
+  const basic = (v: string) => "Basic " + Buffer.from("x-access-token:" + v).toString("base64");
+  const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+
+  const { exchange, observe, observePolicy } = createPeerClient(url, ca, observationSecret);
   function configure(plan: ProxyPlan) {
     assert.ok(plan.repositoryGit && (config.policyReduction || !plan.routes.length));
     if (installationApiOrigin) {
@@ -352,9 +347,10 @@ export function createDriver(options: {
     }
     assert.equal(plan.repositoryGitAuthorization, authorization);
     const execution = plan.execution.executionId;
-    status ??= {
+    assert.ok(receiver);
+    receiver.status ??= {
       plan,
-      sandboxId,
+      sandboxId: receiver.sandboxId,
       sender,
       installedAt: new Date().toISOString(),
       enforcement: {
@@ -375,13 +371,45 @@ export function createDriver(options: {
         },
       },
     };
-    assert.deepEqual(plan, status.plan, "this fixture owns exactly one execution");
+    assert.deepEqual(plan, receiver.status.plan, "this fixture owns exactly one execution");
   }
   async function bind(host: Authority) {
     authority = host;
     route = undefined;
-    const server = counterpart;
-    assert.ok(server.listening, "only the worker binds the test-owned HTTPS counterpart");
+    assert.ok(receiver?.server.listening, "only the worker binds the test-owned HTTPS counterpart");
+    const { server, reductions, clientSecret } = receiver;
+    const apiUrl = new URL(url);
+    apiUrl.hostname = "localhost";
+    receiver.peer ??= {
+      url,
+      apiUrl,
+      gitMarker,
+      clientHeader: "Authorization: " + clientSecret,
+      decisions: [],
+      observePolicy,
+      delivery: {
+        stage: "unbound",
+        attempts: 0,
+        installs: 0,
+        reconciliations: 0,
+        loseReply: false,
+        hideObservation: false,
+        confirmations: [],
+        rejectedConfirmations: 0,
+      },
+      reduction: {
+        attempts: 0,
+        applies: 0,
+        requests: [],
+        applied: [],
+        observations: [],
+        loseReply: false,
+        hideObservation: false,
+      },
+    };
+    const controls = receiver.peer;
+    peer = controls;
+    const { delivery, reduction, decisions } = controls;
     server.on(
       "request",
       async function serveProtectedRepositoryGitRequest(req: IncomingMessage, res: ServerResponse) {
@@ -389,7 +417,7 @@ export function createDriver(options: {
           if (
             req.url === "/installation" &&
             req.method === "POST" &&
-            req.headers.authorization === observationSecret
+            req.headers.authorization === receiver.observationSecret
           ) {
             // Count authenticated delivery attempts even when parsing or duplicate rejection fails.
             delivery.attempts++;
@@ -397,16 +425,16 @@ export function createDriver(options: {
               operation: Route & RepositoryGitMaterialVersion;
               material: Material | InstallationMaterial;
             };
-            assert.deepEqual(input.operation.observed, status);
+            assert.deepEqual(input.operation.observed, receiver.status);
             assert.equal(input.operation.preparationAttemptId, input.material.preparationAttemptId);
             assert.equal(input.operation.materialVersion, input.material.materialVersion);
             assert.notEqual(
               input.operation.fence,
-              installedOperation?.fence,
+              receiver.installedOperation?.fence,
               "never reinstall an operation",
             );
-            installedOperation = input.operation;
-            installed = input.material;
+            receiver.installedOperation = input.operation;
+            receiver.installed = input.material;
             delivery.installs++;
             if (delivery.loseReply) {
               req.socket.destroy();
@@ -418,8 +446,12 @@ export function createDriver(options: {
           if (
             req.url === "/installation" &&
             req.method === "GET" &&
-            req.headers.authorization === observationSecret
+            req.headers.authorization === receiver.observationSecret
           ) {
+            if (delivery.beforeReadback) {
+              await delivery.beforeReadback(receiver.installed?.materialVersion);
+            }
+            const { status, installed, installedOperation } = receiver;
             const { preparationAttemptId, materialVersion } =
               delivery.reportedVersion ?? installed ?? {};
             res.writeHead(status ? 200 : 503).end(
@@ -436,15 +468,16 @@ export function createDriver(options: {
           if (
             req.url === "/policy-reduction" &&
             req.method === "POST" &&
-            req.headers.authorization === observationSecret &&
+            req.headers.authorization === receiver.observationSecret &&
             config.policyReduction
           ) {
             // Count every authenticated POST, including malformed or repeated operations.
             reduction.attempts++;
             const operation = (await json(req)) as CredentialPolicyReduction;
-            reduction.requests.push(structuredClone({ operation, current: status }));
+            reduction.requests.push(structuredClone({ operation, current: receiver.status }));
             await reduction.beforeApply?.();
             assert.equal(operation.version, 2);
+            const { status } = receiver;
             assert.ok(status);
             assert.equal(reductions.has(operation.operationId), false, "never replay mutation");
             assert.deepEqual(
@@ -474,7 +507,7 @@ export function createDriver(options: {
               }
             }
             assert.equal(cursor, next.routes.length, "retained routes cannot widen");
-            status = {
+            receiver.status = {
               ...status,
               plan: next,
               enforcement: {
@@ -484,13 +517,13 @@ export function createDriver(options: {
               },
             };
             if (gitRemoved) {
-              installed = undefined;
+              delete receiver.installed;
             }
-            reductions.set(operation.operationId, structuredClone(status));
+            reductions.set(operation.operationId, structuredClone(receiver.status));
             reduction.applies++;
             reduction.applied.push({
               operationId: operation.operationId,
-              installation: structuredClone(status),
+              installation: structuredClone(receiver.status),
             });
             if (reduction.loseReply) {
               req.socket.destroy();
@@ -502,10 +535,11 @@ export function createDriver(options: {
           if (
             req.url?.startsWith("/policy-reduction/") &&
             req.method === "GET" &&
-            req.headers.authorization === observationSecret
+            req.headers.authorization === receiver.observationSecret
           ) {
             const operationId = req.url.slice("/policy-reduction/".length);
             reduction.observations.push(operationId);
+            const { status } = receiver;
             const found = reductions.get(operationId);
             if (reduction.hideObservation || !found || !isDeepStrictEqual(found, status)) {
               res.writeHead(404).end();
@@ -519,6 +553,7 @@ export function createDriver(options: {
             req.method === "GET" &&
             req.headers.authorization === clientSecret
           ) {
+            const { status } = receiver;
             const selected = status?.plan.routes.find(
               (entry) => entry.path === req.url && entry.method === req.method,
             );
@@ -543,7 +578,7 @@ export function createDriver(options: {
               verifiedExecutionPolicyHash: status.enforcement.policyHash,
             };
             const resolved = await exchangeAuthority.resolve(
-              observationSecret,
+              receiver.observationSecret,
               status.sandboxId,
               input,
               signal(),
@@ -560,7 +595,7 @@ export function createDriver(options: {
               return;
             }
             const decision = await exchangeAuthority.authorizeSend(
-              observationSecret,
+              receiver.observationSecret,
               status.sandboxId,
               id,
               resolved.handle,
@@ -582,7 +617,7 @@ export function createDriver(options: {
             }
             const upstream = await exchange(new URL(input.url), { method: "GET" });
             const responseHandle = await exchangeAuthority.beginResponse(
-              observationSecret,
+              receiver.observationSecret,
               status.sandboxId,
               id,
             );
@@ -606,11 +641,12 @@ export function createDriver(options: {
             res.writeHead(safe.status, Object.fromEntries(safe.headers)).end(safe.body);
             return;
           }
-          const m = installed;
+          const { status, installed: m } = receiver;
           if (!status?.plan.repositoryGit || !route || !m) {
             res.writeHead(403).end();
             return;
           }
+          const authorization = status.plan.repositoryGitAuthorization;
           const broad = "scope" in m;
           const api = broad && req.headers.host === apiUrl.host;
           const path = req.url ?? "";
@@ -712,7 +748,7 @@ export function createDriver(options: {
                 confirmation,
                 signal(),
               );
-            peer.replayLastInstallationExchange = async () => {
+            controls.replayLastInstallationExchange = async () => {
               assert.equal(
                 (await authorize()).kind,
                 "denied",
@@ -762,9 +798,10 @@ export function createDriver(options: {
           // An online allow ends at the decision boundary. Only exact dispatch promises a start cutoff.
           const monoUntil = performance.now() + (until - Date.now());
           const current = () =>
-            installed === m && (online || (Date.now() < until && performance.now() < monoUntil));
+            receiver.installed === m &&
+            (online || (Date.now() < until && performance.now() < monoUntil));
           const beforeSend = (stage: "connect" | "request") =>
-            !online && peer.beforeSend?.(stage, decision, deadlineAt);
+            !online && controls.beforeSend?.(stage, decision, deadlineAt);
           await beforeSend("connect");
           if (!current()) {
             res.writeHead(403).end();
@@ -820,24 +857,12 @@ export function createDriver(options: {
         }
       },
     );
-    apiUrl = new URL(url);
-    apiUrl.hostname = "localhost";
-    peer = {
-      url,
-      apiUrl,
-      gitMarker,
-      clientHeader: "Authorization: " + clientSecret,
-      decisions,
-      reduction,
-      observePolicy: async () => (await observe()).installation,
-      delivery,
-    };
     return {
       async reconcile(lifetime: AbortSignal) {
         lifetime.throwIfAborted();
         delivery.reconciliations++;
         delivery.stage = "awaiting-enrollment";
-        if (!status) {
+        if (!receiver.status) {
           return;
         }
         delivery.stage = "observe-installation";
@@ -874,6 +899,7 @@ export function createDriver(options: {
         if (!route) {
           return;
         }
+        const authorization = seen.installation.plan.repositoryGitAuthorization;
         const sender = authorization ? host.online : host;
         const selected = installationApiOrigin ? sender.githubInstallation! : sender;
         if (installationApiOrigin) {
@@ -948,6 +974,7 @@ export function createDriver(options: {
       },
       async close() {
         server.removeAllListeners("request");
+        delete controls.replayLastInstallationExchange;
       },
     };
   }
@@ -1010,7 +1037,7 @@ export function createDriver(options: {
           async retireExpired() {
             return "retire-runtime";
           },
-          routeReadiness: () => (route && delivery.settled ? "ready" : "pending"),
+          routeReadiness: () => (route && receiver?.peer?.delivery.settled ? "ready" : "pending"),
           materialSettledAt: () => undefined,
           isRouteBlockedError: () => false,
         },
@@ -1101,6 +1128,7 @@ export function createDriver(options: {
           const expiresAt = new Date(Date.now() + 240_000).toISOString();
           exchangeAuthority = connect({
             async verify(authorization) {
+              const status = receiver?.status;
               if (authorization !== observationSecret || !status) {
                 return undefined;
               }

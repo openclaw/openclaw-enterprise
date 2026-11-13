@@ -7,6 +7,7 @@ import {
   constants,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -31,6 +32,7 @@ import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test, { describe } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -1510,13 +1512,66 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
                   {
                     kind: "Deployment",
                     name: "openclaw-enterprise-" + component,
-                    uid: component + "-deployment-uid",
+                    uid: state.replicaSetOwner?.[component] ?? component + "-deployment-uid",
                     controller: true,
                   },
                 ],
               },
             },
           ],
+        });
+      } else if (args.includes("get") && args.includes("pod") && args.includes("--selector")) {
+        const component = fileArg("--selector").endsWith("component=worker") ? "worker" : "api";
+        const values = await yamlFile(join(root, "live-values"));
+        const mounted = "/etc/openclaw/installation";
+        // Pod start and the projected directory generation are independent observations.
+        const started = state.startupContainerStart?.[component] ?? state.fixtureContainerStart;
+        out({
+          items: Array.from({ length: state[component] }, (_, replica) => ({
+            metadata: {
+              name: component + "-pod-" + replica,
+              uid: component + "-pod-uid-" + replica,
+              ownerReferences: [
+                {
+                  kind: "ReplicaSet",
+                  name: component + "-rs",
+                  uid: component + "-rs-uid",
+                  controller: true,
+                },
+              ],
+            },
+            spec: {
+              containers: [
+                {
+                  name: component,
+                  env: [{ name: "OCC_CONFIG_PATH", value: mounted + "/installation.yaml" }],
+                  volumeMounts: [
+                    { name: "installation-startup", mountPath: mounted, readOnly: true },
+                  ],
+                },
+              ],
+              volumes: [
+                {
+                  name: "installation-startup",
+                  secret: {
+                    secretName: values.installation.secretName,
+                    items: [{ key: values.installation.key, path: "installation.yaml" }],
+                  },
+                },
+              ],
+            },
+            status: {
+              phase: "Running",
+              containerStatuses: [
+                {
+                  name: component,
+                  ready: true,
+                  containerID: component + "-container",
+                  state: { running: { startedAt: new Date(started).toISOString() } },
+                },
+              ],
+            },
+          })),
         });
       } else if (args.includes("get") && args.includes("pods")) {
         const initialization = args.some((a) => a.includes("component=initialization"));
@@ -1635,6 +1690,29 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         }
       } else if (args.includes("get")) {
         out({ items: [] });
+      } else if (
+        args.includes("exec") &&
+        args.includes("sh") &&
+        args.at(-1).includes("readlink installation.yaml")
+      ) {
+        const mounted = join(root, "startup-projection");
+        const component = fileArg("-c");
+        const marker = join(mounted, component + "-termination-log");
+        // Supply the kubelet mount table and its per-container inode. stat, readlink
+        // and the projection hash still execute against the filesystem.
+        const probe = args
+          .at(-1)
+          .replaceAll("/etc/openclaw/installation", mounted)
+          .replaceAll("/proc/self/mountinfo", marker + "-mountinfo")
+          .replaceAll("/dev/termination-log", marker);
+        try {
+          const result = await execute("sh", ["-ec", probe], {
+            env: { ...process.env, OCC_CONFIG_PATH: join(mounted, "installation.yaml") },
+          });
+          out(result.stdout);
+        } catch {
+          return fail(1, "startup projection read failed");
+        }
       } else if (args.includes("exec") && args.includes("/sys/fs/cgroup/memory.max")) {
         // The gateway container's cgroup v2 files: a 3 GiB limit, with free memory taken
         // from the case's script (ample by default) and 100 MiB of reclaimable file cache.
@@ -2108,6 +2186,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       controllerOnly = false,
       continuity = null,
       repositoryCredentials = false,
+      legacyRepositoryBackend = false,
       simulatePair = false,
       capabilityReplies = [],
       workerPlacement = "container",
@@ -2208,8 +2287,8 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
               {
                 id: "github-primary",
                 type: "github",
+                ...(legacyRepositoryBackend && { drivers: { repo: "repository-credentials" } }),
                 configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-                drivers: { repo: "repository-credentials" },
               },
             ],
             repository: {
@@ -2346,6 +2425,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       preflightPolicy,
       preflightFault,
       installationName,
+      fixtureContainerStart: Date.now() + 60_000,
       inventoryNamespaces,
       inventoryResponses,
       inventoryRequiresApi,
@@ -2386,6 +2466,13 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       },
     };
     await writeFile(join(directory, "state.json"), JSON.stringify(state));
+    // Model kubelet's read-only projection with real symlinks, so the exec probe reads
+    // the file and its generation independently of the Secret returned by the API.
+    const projection = join(directory, "startup-projection");
+    await mkdir(join(projection, "generation"), { recursive: true });
+    await writeFile(join(projection, "generation", "installation.yaml"), installation);
+    symlinkSync("generation", join(projection, "..data"));
+    symlinkSync("..data/installation.yaml", join(projection, "installation.yaml"));
     await writeFile(join(directory, "live-values"), values);
     await writeFile(join(directory, "events"), "");
     for (const [name, content] of Object.entries({
@@ -3431,6 +3518,10 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         state.secret.data["installation.yaml"] = Buffer.from(originalBytes).toString("base64");
         state.installationSuccessor.data["installation.yaml"] =
           Buffer.from(stagedBytes).toString("base64");
+        await writeFile(
+          join(f.directory, "startup-projection", "generation", "installation.yaml"),
+          originalBytes,
+        );
         await writeFile(join(f.directory, "installation.json"), originalBytes);
         await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
         await assert.rejects(f.run(), /string mapping keys/);
@@ -4298,6 +4389,15 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
           await f.readEvidence("native-command-failures.tsv"),
           "quiescence-scale\tworker\t1\n",
         );
+        if (fault === "replace-worker-before-scale") {
+          // The old ReplicaSet still belongs to the replaced Deployment. Keep both
+          // writers in their observed state until the new worker actually owns it.
+          await assert.rejects(f.run("--resume"), /serving Pod is unavailable or unowned/);
+          assert.deepEqual(await f.events(), ["scale-api"]);
+          const reconciled = await f.state();
+          reconciled.replicaSetOwner = { worker: reconciled.deploymentIdentities.worker.uid };
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(reconciled));
+        }
         // After the operator reconciles the conflict, resume observes the current
         // worker and the already-stopped API instead of replaying stale preconditions.
         await f.run("--resume");
@@ -5458,6 +5558,221 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     }
   });
 
+  test("legacy repository owner stays available when the fleet inventory is empty", async (t) => {
+    for (const controllerOnly of [true, false]) {
+      await t.test(controllerOnly ? "controller update" : "runtime replacement", async (t) => {
+        const f = await fixture(t, {
+          controllerOnly,
+          repositoryCredentials: true,
+          legacyRepositoryBackend: true,
+          simulatePair: true,
+        });
+        // A deleted Agent may still have cleanup on this worker. An empty fleet
+        // and a runtime replacement must never authorize replacing that owner.
+        await assert.rejects(f.run(), /deleted-revision cleanup.*direct upgrade is unsupported/u);
+        const state = await f.state();
+        assert.equal(state.api, 1);
+        assert.equal(state.worker, 1);
+        assert.equal(state.version, 1);
+        assert.equal(state.dispatches, 0);
+        assert.deepEqual(state.preflight?.created ?? [], []);
+        assert.deepEqual(await f.events(), []);
+      });
+    }
+  });
+
+  test("legacy preparation preserves a stopped Agent and accepted work before refusing shutdown", async (t) => {
+    const names = [
+      {
+        id: "ns_test",
+        status: "ready",
+        agents: [
+          {
+            id: "agt_running",
+            status: "active",
+            desiredRuntimeState: "running",
+            executionMode: "embedded",
+            activeRevisionId: "rev_old",
+            deploymentInProgress: true,
+          },
+          {
+            id: "agt_stopped",
+            status: "active",
+            desiredRuntimeState: "stopped",
+            executionMode: "dedicated",
+            deploymentInProgress: false,
+          },
+        ],
+      },
+    ];
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+      inventoryNamespaces: names,
+    });
+    // The predecessor omitted repositoryWorkerRestart. An accepted deployment is
+    // evidence to retain while its original owner is serving.
+    await assert.rejects(f.run(), /Recorded the pre-stop Agent desired states/u);
+    const observed = JSON.parse(await f.readEvidence("inventory", "repository-fleet.json"));
+    assert.deepEqual(observed.fleet, {
+      installationId: "ins_test",
+      namespaces: names.map((ns) => ({
+        ...ns,
+        agents: ns.agents.map((agent) => ({
+          activeRevisionId: null,
+          ...agent,
+          repositoryWorkerRestart: null,
+        })),
+      })),
+    });
+    assert.equal(observed.helmRevision, 1);
+    assert.equal(existsSync(join(f.evidence, "prepared")), false);
+    await assert.rejects(f.run("--resume"), /not a prepared deployment/u);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("legacy preparation refuses wrong fleet identity before publishing desired state", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+      inventoryResponses: [{ installationId: "ins_other", namespaces: [] }],
+    });
+    await assert.rejects(f.run(), /belongs to another Installation/u);
+    assert.equal(existsSync(join(f.evidence, "inventory", "repository-fleet.json")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("legacy database inspection failure preserves the fleet and never publishes partial custody", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+      environment: { PGSERVICEFILE: "/dev/null", PGSYSCONFDIR: "/dev/null" },
+    });
+    await assert.rejects(
+      f.run("--inspect-repository-service", "absent"),
+      /custody inspection is incomplete/u,
+    );
+    assert.equal(existsSync(join(f.evidence, "inventory", "repository-fleet.json")), true);
+    assert.equal(existsSync(join(f.evidence, "inventory", "repository-custody.jsonl")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("custom GitHub repository policy is refused before reading the fleet", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+    });
+    const file = join(f.directory, "installation.json");
+    const installed = JSON.parse(await readFile(file, "utf8"));
+    installed.backend[0].drivers.repo = "other-owner";
+    const bytes = JSON.stringify(installed);
+    await writeFile(file, bytes);
+    const state = await f.state();
+    state.secret.data["installation.yaml"] = Buffer.from(bytes).toString("base64");
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(), /Unrecognized repository Driver or GitHub Backend policy/u);
+    assert.equal((await f.state()).inventoryReadCount ?? 0, 0);
+    assert.equal(existsSync(join(f.evidence, "inventory", "repository-fleet.json")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("an inspection request for a canonical installation cannot start an upgrade", async (t) => {
+    const f = await fixture(t, { controllerOnly: true });
+    await assert.rejects(
+      f.run("--inspect-repository-service", "reader"),
+      /no upgrade was attempted/u,
+    );
+    assert.equal(existsSync(join(f.evidence, "prepared")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  // Place the marker and the atomic publication in one clock second. If setup
+  // straddles the boundary or both timestamps tie, use a fresh inode and retry.
+  async function stageSameSecondProjection(directory, generation, component, beforeStart) {
+    const projection = join(directory, "startup-projection");
+    const marker = join(projection, component + "-termination-log");
+    const uid = component + "-pod-uid-0";
+    const link = join(projection, "..data");
+    await writeFile(
+      marker + "-mountinfo",
+      `1 2 0:3 /pods/${uid}/containers/${component}/1234abcd ${marker} rw - ext4 /dev/root rw\n`,
+    );
+    for (let i = 0; i < 20; i++) {
+      const publish = async () => {
+        symlinkSync(generation, join(projection, "..data_tmp"));
+        await rename(join(projection, "..data_tmp"), link);
+      };
+      if (beforeStart) {
+        await publish();
+        await delay(10);
+      }
+      await writeFile(marker + ".new", "");
+      await rename(marker + ".new", marker);
+      if (!beforeStart) {
+        await delay(10);
+        await publish();
+      }
+      const created = statSync(marker, { bigint: true }).birthtimeNs;
+      const published = lstatSync(link, { bigint: true }).ctimeNs;
+      if (
+        created / 1_000_000_000n === published / 1_000_000_000n &&
+        (beforeStart ? published < created : created < published)
+      ) {
+        return Number(created / 1_000_000_000n) * 1000;
+      }
+    }
+    assert.fail("could not stage ordered filesystem timestamps in one second");
+  }
+
+  test("a fast writer accepts its initial startup projection in the container start second", async (t) => {
+    const f = await fixture(t, { controllerOnly: true });
+    const state = await f.state();
+    state.startupContainerStart = {
+      worker: await stageSameSecondProjection(f.directory, "generation", "worker", true),
+    };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("a refreshed Secret cannot stand in for a serving Worker's earlier repository policy", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+      simulatePair: true,
+    });
+    const state = await f.state();
+    // Both the operator baseline and the current Secret now name the canonical policy.
+    // The Worker started before that projection and can still own deleted-revision work.
+    const file = join(f.directory, "installation.json");
+    const edited = JSON.parse(await readFile(file, "utf8"));
+    delete edited.backend[0].drivers;
+    const bytes = JSON.stringify(edited);
+    await writeFile(file, bytes);
+    state.secret.data["installation.yaml"] = Buffer.from(bytes).toString("base64");
+    const projection = join(f.directory, "startup-projection");
+    await mkdir(join(projection, "normalized"));
+    await writeFile(join(projection, "normalized", "installation.yaml"), bytes);
+    state.startupContainerStart = {
+      worker: await stageSameSecondProjection(f.directory, "normalized", "worker", false),
+    };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+
+    await assert.rejects(
+      f.run(),
+      /mounted startup generation does not predate the serving container[\s\S]*configuration loaded by the serving worker/u,
+    );
+    const after = await f.state();
+    assert.deepEqual([after.api, after.worker, after.version, after.dispatches], [1, 1, 1, 0]);
+    assert.deepEqual(after.preflight?.created ?? [], []);
+    assert.deepEqual(await f.events(), []);
+  });
+
   test("reviewed settings survive an interrupted controller upgrade without losing unrelated Secret data", async (t) => {
     const f = await fixture(t, {
       candidates: true,
@@ -5652,7 +5967,6 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
                   id: "github-primary",
                   type: "github",
                   configuration: { registryPath: "/etc/other/registry.json" },
-                  drivers: { repo: "repository-credentials" },
                 },
               ];
             }

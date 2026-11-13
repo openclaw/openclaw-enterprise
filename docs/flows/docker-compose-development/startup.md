@@ -257,7 +257,7 @@ Kubernetes-only mode enters `internal/occdev/openshell_k3d.go:upK3d` before Comp
 `internal/occdev/repository_k3d.go` validates inputs. After `upK3d` completes
 authenticated bootstrap and Namespace readiness, repository setup binds the
 server-assigned Namespace ID, generates CA and exact-host certificates, and upgrades
-Helm with Kubernetes inputs, Repo Driver and worker sidecar. Discovery only checks
+Helm with Kubernetes inputs, repository policy and worker sidecar. Discovery only checks
 approved references and profiles. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
 `OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` for Docker Compute, else

@@ -19,16 +19,12 @@ import { startRegistryCredentialServiceFixture } from "../fixtures/repository-cr
 
 function driverFor(backendId, registry, socket, sessionDurationSeconds = 3600, publicCa) {
   const backend = {
-    id: backendId,
+    backendId: backendId,
     client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
-    drivers: { repo: "repository-credentials" },
+    driverId: "repository-credentials",
   };
   return {
-    policy: new GitHubRepositoryPolicy(
-      { driverId: backend.drivers.repo, backendId: backend.id },
-      registry,
-      { sessionDurationSeconds },
-    ),
+    policy: new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds }),
     sender: new GitHubNativeRepositorySender(backend, {
       ...(publicCa === undefined ? {} : { publicCa }),
     }),
@@ -98,11 +94,11 @@ test(
         { repositoryRef: "repo-b", profile: "git-write" },
       ],
     };
-    const resolution = local.policy.resolve(selection);
+    const resolution = local.policy.resolveBindings(selection);
     assert.equal(resolution.sessionDurationSeconds, 3600);
     assert.throws(
       () =>
-        local.policy.resolve({
+        local.policy.resolveBindings({
           namespaceId: fixture.namespaceId,
           bindings: [{ repositoryRef: "repo-a" }, { repositoryRef: "repo-a" }],
         }),
@@ -113,7 +109,7 @@ test(
         backend: {
           id: fixture.backendId,
           type: "github",
-          drivers: { repo: "repository-credentials" },
+
           configuration: { registryPath: fixture.registryFile },
         },
         selection: {
@@ -127,11 +123,14 @@ test(
         publicCaPath: fixture.tls.certFile,
       },
     );
-    const driver = { policy: composed.repositoryPolicy, sender: composed.nativeRepositorySender };
-    assert.deepEqual(driver.policy.resolve(selection), resolution);
+    const driver = {
+      policy: composed.repositoryAdmission.policy,
+      sender: composed.nativeRepositorySender,
+    };
+    assert.deepEqual(driver.policy.resolveBindings(selection), resolution);
     assert.throws(
       () =>
-        driver.policy.resolve({
+        driver.policy.resolveBindings({
           namespaceId: `${fixture.namespaceId}-unauthorized`,
           bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
         }),
@@ -142,7 +141,7 @@ test(
     });
     await client.health(signal);
     await driver.sender.checkAdmissionReady(signal);
-    const contributor = driver.policy.resolve({
+    const contributor = driver.policy.resolveBindings({
       namespaceId: fixture.namespaceId,
       bindings: [{ repositoryRef: "repo-a" }],
     }).bindings[0];
@@ -321,7 +320,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     socket,
     1,
   );
-  const admitted = driver.policy.resolve({
+  const admitted = driver.policy.resolveBindings({
     namespaceId: "namespace",
     bindings: [{ repositoryRef: "project", profile: "git-read" }],
   }).bindings[0];

@@ -5,13 +5,12 @@ Upgrade [Kubernetes Compute releases](production-installation.md) using
 [Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
 lack the required chart-owned initializer.
 
-1. [Select and prepare the release](#prepare-the-release). Record the live
-   baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
+1. [Select and prepare the release](#prepare-the-release). Record the baseline and follow the [upgrade checklist](upgrade-checklist.md).
 2. [Preflight the target](#rehearse-before-the-maintenance-window).
    [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
-3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
-   [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
-4. [Verify the release](#verify-the-release) with a real workload.
+3. Freeze writers before the [control plane](#upgrade-the-control-plane) or
+   [runtime](#upgrade-agent-runtimes) upgrade. Use fresh evidence.
+4. [Verify the release](#verify-the-release) with a workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
 
 Use `--controller-image` for API and worker. Repository credentials also require
@@ -20,17 +19,19 @@ Use `--controller-image` for API and worker. Repository credentials also require
 concurrently. Allow capacity for overlapping versions. API and worker stop during
 migration and rollout.
 
-Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
-Chart files are verified before cluster access.
+Reserve the unchanged checkout. Store evidence outside the chart.
 
-Configure endpoint and TLS settings in the selected kubeconfig.
-Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
+Configure kubeconfig endpoints and TLS. Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
 `HELM_KUBEINSECURE_SKIP_TLS_VERIFY` before starting or resuming.
-These override kubeconfig/context flags.
 
-For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
+[Prepare candidates](#include-reviewed-settings) for settings changes.
 For the experimental two-cluster profile, first
 [upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart).
+
+Legacy repository selections block upgrades. Keep the original sender running.
+[Inspect the fleet and Git custody](credential-proxy-upgrade.md#inspect-legacy-git-custody), including deleted Agents.
+Allow Pod exec in both writers. Same-second checks use kubelet’s termination-message file.
+Changed or unverifiable projections block shutdown.
 
 ## Prepare the release
 
@@ -154,7 +155,7 @@ Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
 Candidate files cannot change IAM, authentication, Installation identity, database credentials,
 bootstrap, native administration, Compute identity or cluster trust, or repository
-settings, including the GitHub Backend, registry path, Repo Driver and Compute credential-service peer.
+settings, including the GitHub Backend, registry path, repository policy and Compute credential-service peer.
 Select images with their flags; do not edit image fields or the managed
 Installation checksum in candidate files.
 

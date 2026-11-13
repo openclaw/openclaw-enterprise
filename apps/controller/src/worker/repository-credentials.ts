@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
   AgentRevision,
-  RepositoryPolicyDriver,
   NativeRepositorySender,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
@@ -20,6 +19,7 @@ import {
   revisionAdmittedBeforeWork,
   WorkClaimLostError,
   RepositoryExecutionRequiresRedeployError,
+  type validateRepositoryAdmission,
   type ClaimedWork,
   type PlatformUnitOfWork,
   type PlatformReadView,
@@ -52,15 +52,7 @@ export class StandingRepositorySessionDisposingError extends Error {}
 interface Dependencies {
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
-  readonly repository?:
-    | undefined
-    | { readonly kind: "registered"; readonly policy: RepositoryPolicyDriver }
-    | {
-        readonly kind: "bound";
-        readonly policy: RepositoryPolicyDriver & {
-          readonly resolveBindings: RepositoryPolicyDriver["resolve"];
-        };
-      };
+  readonly repository?: ReturnType<typeof validateRepositoryAdmission>;
   readonly nativeSender?: NativeRepositorySender | undefined;
   readonly verifyExecution?: (
     claim: ClaimedWork,
@@ -164,6 +156,7 @@ export class RepositoryCredentialLifecycle {
     const selected = snapshot.driver;
     if (
       !repository ||
+      !repository.hasCurrentIdentity() ||
       !selected ||
       repository.policy.id !== selected.id ||
       repository.policy.implementation !== selected.implementation
@@ -181,6 +174,9 @@ export class RepositoryCredentialLifecycle {
           namespaceId: revision.namespaceId,
           binding,
         });
+      if (!repository.hasCurrentIdentity()) {
+        throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
+      }
       if (
         !binding ||
         snapshot.bindings.length !== 1 ||
@@ -205,12 +201,12 @@ export class RepositoryCredentialLifecycle {
           profile,
         })),
       };
-      resolved =
-        repository.kind === "bound"
-          ? repository.policy.resolveBindings(input)
-          : repository.policy.resolve(input);
+      resolved = repository.policy.resolveBindings(input);
     } catch {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_BINDING_UNAVAILABLE");
+    }
+    if (!repository.hasCurrentIdentity()) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
     }
     if (
       !Number.isSafeInteger(resolved.sessionDurationSeconds) ||
@@ -225,6 +221,7 @@ export class RepositoryCredentialLifecycle {
           matches.length !== 1 ||
           selected === undefined ||
           selected.profile !== binding.profile ||
+          selected.backendId !== repository.backendId ||
           selected.backendId !== binding.backendId ||
           !sameBinding(selected.grant, binding.grant)
         );

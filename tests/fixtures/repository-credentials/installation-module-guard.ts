@@ -43,15 +43,15 @@ if (mode === "selected-blocked") {
   const api = await load();
   const worker = await load();
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
-  assert.ok(api?.repositoryAdmission);
-  assert.ok(worker?.repositoryAdmission);
-  const resolved = api.repositoryAdmission.policy.resolveBindings(selection);
+  assert.ok(api?.repositoryRuntime?.admission);
+  assert.ok(worker?.repositoryRuntime?.admission);
+  const resolved = api.repositoryRuntime?.admission.policy.resolveBindings(selection);
   assert.equal(resolved.bindings[0]?.grant.repositoryId, "34567");
-  assert.deepEqual(worker.repositoryAdmission.policy.resolveBindings(selection), resolved);
+  assert.deepEqual(worker.repositoryRuntime?.admission.policy.resolveBindings(selection), resolved);
   for (const runtime of [api, worker]) {
-    const admission = runtime.repositoryAdmission;
+    const admission = runtime.repositoryRuntime?.admission;
     assert.ok(admission);
-    assert.equal(admission.policyMode, "built-in");
+    assert.ok(admission);
     assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
     assert.throws(
       () => admission.policy.resolveBindings({ ...selection, namespaceId: "ns_other" }),

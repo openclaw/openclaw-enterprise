@@ -44,11 +44,11 @@ test("Missing Sandbox repository capability refuses delivery before Worker sessi
   // Public grant resolution is allowed; any session lookup or broker effect fails the test.
   const lifecycle = new RepositoryCredentialLifecycle({
     repository: {
-      kind: "registered",
+      backendId: binding.backendId,
+      hasCurrentIdentity: () => true,
       policy: {
         ...driver,
-        capability: "repo",
-        resolve: () => ({ bindings: [binding], sessionDurationSeconds: 600 }),
+        resolveBindings: () => ({ bindings: [binding], sessionDurationSeconds: 600 }),
       },
     },
     authorize: (_claim, { harness, sandboxDriverId }) =>

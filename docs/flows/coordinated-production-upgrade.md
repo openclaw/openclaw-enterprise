@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-13"
-last_updated_session: "authoring-run/01a117f8-113d-7610-83db-37431b054e44"
+last_updated_session: "authoring-run/01a1d49f-de14-7d82-8f0d-03d217352800"
 ---
 
 # Production image upgrade flow
@@ -15,9 +15,7 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 - Run `scripts/upgrade-production-images` with reviewed inputs.
 - Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
-- Source: `scripts/upgrade-production-images`,
-  `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
-  and `packages/occ/src/index.ts:OpenClawController.deployAgent`.
+- Source: `scripts/upgrade-production-images`, `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`, `packages/occ/src/index.ts:OpenClawController.deployAgent`.
 
 ## Flow
 
@@ -82,25 +80,24 @@ Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.
 mismatched `HEAD`/`--source-revision`, chart edits/symlinks and internal evidence/baseline
 aliases before access. Other edits/image provenance are unchecked.
 
-`yq -r` tests for nonempty `preprovisionedNamespace`. Continue on success
-with one `false`; otherwise refuse before access (`preprovisioned-namespace.err`).
+Require exactly one `preprovisionedNamespace: false` before access.
 
-Resume locks evidence paths/devices/inodes/aliases and runtime dispatch journals.
+Resume locks evidence and dispatch journals.
 
 `matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings and validates candidates.
-Invalid inputs/unwritable evidence cause `Cannot compare upgrade YAML`.
 Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
 and array-wrapping one registration.
 Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
 live comparison stays exact. Immutable reference switches require string keys.
 Startup validates controllers; broker checks only references.
+Writers must mount baseline bytes before startup. Same-second projections must predate kubelet’s per-container termination-message file.
+Matching legacy GitHub Backends record [fleet and custody evidence](../guides/deploy/credential-proxy-upgrade.md#inspect-legacy-git-custody) before refusal. Other legacy selections block shutdown.
 
-`read_restart_inventory` validates complete authorized inventory ownership, IDs and selection states. Retained running revisions require accepted
-[restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only `occ agent revision AGENT_ID REVISION_ID` requires one owned
-revision with object-valued Harness settings; retain IDs and validation outcome.
-Drafts cannot substitute. Runtime upgrades record replacements; draft validation requires image
-support/size compliance. Quiescence is nonatomic; repository continuity is unverified.
+`read_restart_inventory` validates authorized fleet IDs, states and running revisions’
+[restart dispositions](../reference/repository-credentials/worker-replacement.md).
+Controller-only upgrades verify Harness settings on the owned active revision.
+Runtime upgrades record replacements. Draft checks require image support and size compliance.
+Quiescence is nonatomic.
 
 `OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`:
 unreadable snapshots yield `unknown`; database/identity errors propagate. `getInstallationDeploymentInventory` invokes Compute outside State
@@ -129,8 +126,7 @@ for recovery and refused reservations with synthetic inputs/private receipt list
 recording image identities, requests and responses.
 Kubernetes image availability, receipt durability and disposal remain unverified; the broker hostname stays fixed. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
 
-For immutable switches, `prepare_upgrade` validates identities, unrelated data and
-candidate YAML, then hashes staged bytes; `upgrade-evidence.py` binds both snapshots.
+For immutable switches, `prepare_upgrade` checks identities, unrelated data and candidate YAML. `upgrade-evidence.py` binds both snapshots and staged hashes.
 Changed immutable data requires a successor. Mutable changes require a Kubernetes
 self-review of named-Secret update access: denial stops preparation; inconclusive
 review warns and continues. Replacement still requires update permission.
@@ -146,8 +142,7 @@ environment, mounts and Pod identity before preflight success or shutdown.
 lock without applying migrations. Pending canonical history is allowed. Helm rechecks.
 
 API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects invalid
-bundles; workers skip themes. Both use `loadStartupConfigurationSnapshot` and
-`loadInstallationConfiguration` without database access.
+bundles; workers skip themes. Both load startup configuration without database access (`loadStartupConfigurationSnapshot`, `loadInstallationConfiguration`).
 `connectionPlan` preserves only recognized chart entrypoints. For private OIDC CA
 trust it retains the chart-owned database preload, CA argv position and CA
 assembler/mounts; unknown plans refuse. Both entrypoints require a PostgreSQL URL.
@@ -388,6 +383,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 11:32: Verify fast writer startup. (authoring-run/01a1d49f-de14-7d82-8f0d-03d217352800 - 27fdfb56ed6f716186ed44ec50229b4aeca7b040)
 
 - 2026-11-13 05:08: Exclude terminating Pods when selecting Doctor targets. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - ca6bfc2f0376ee3fd9c5a9a255f7e5f37a454131)
 - 2026-11-12 20:49: Preserve status after polling errors. (authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b - a627e44694987459dbbf9aa59a3d76b9a97f48a7)

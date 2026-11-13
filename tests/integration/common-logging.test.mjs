@@ -826,13 +826,9 @@ function bindDeliveryTransport(reconcile, emit, pendingLog) {
       async close() {},
     }),
   };
-  return bindRepositoryGitTransport(
-    { repositoryGitDriver: driver, protectedDriver: driver },
-    {},
-    undefined,
-    emit,
-    { pendingLog },
-  );
+  return bindRepositoryGitTransport({ protectedDriver: driver }, {}, undefined, emit, {
+    pendingLog,
+  });
 }
 
 test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never other shapes", async () => {

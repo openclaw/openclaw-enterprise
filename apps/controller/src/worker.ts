@@ -9,7 +9,10 @@ import {
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
-import { installationDriverConfigurations } from "./composition/installation-config.ts";
+import {
+  installationDriverConfigurations,
+  repositoryStartupConfiguration,
+} from "./composition/installation-config.ts";
 import {
   DriverConfigurationRegistry,
   type DriverConfigurationRegistration,
@@ -41,7 +44,6 @@ import type {
   PluginDeploymentWarning,
   PluginDriver,
   ComputeReadiness,
-  RepositoryPolicyDriver,
   NativeRepositorySender,
   RepositoryCredentialMaterialRef,
   ComputeRevisionContext,
@@ -122,7 +124,7 @@ import {
   backendDefinitionMap,
   removeNamespacePolicy,
   removedPolicyDetails,
-  validateBackendDefinitions,
+  validateRepositoryAdmission,
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
@@ -1211,8 +1213,7 @@ export class ControllerWorker {
   private claimedLastPass = false;
   private claimedPassesSinceSweep = 0;
   private readonly nativeRepositorySender: NativeRepositorySender | undefined;
-  private readonly repositoryPolicy: RepositoryPolicyDriver | undefined;
-  private readonly repositoryAdmission: InstallationRuntimeDrivers["repositoryAdmission"];
+  private readonly repositoryAdmission: ReturnType<typeof validateRepositoryAdmission>;
   private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDrivers: readonly PluginDriver[];
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
@@ -1274,6 +1275,13 @@ export class ControllerWorker {
       "Worker convergence timeout",
     );
     const drivers = options.drivers;
+    const {
+      backends,
+      runtime,
+      computeDriver: installedCompute,
+      protectedDriver,
+      tokenService,
+    } = repositoryStartupConfiguration(drivers);
     this.driverConfigurations = installationDriverConfigurations(drivers?.installation);
     for (const definition of this.driverConfigurations) {
       this.configurations.register(definition);
@@ -1290,10 +1298,10 @@ export class ControllerWorker {
     };
     this.state = new PostgresPlatformState(options.pool, {
       workQueue: this.queueOptions,
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      preparedTokenProof: tokenService?.postgresCurrentProof,
     });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
-    this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
+    this.backends = backends;
     this.backendMap = backendDefinitionMap(this.backends);
     this.iamDriverId = drivers?.installation.drivers.iam.id ?? "native-iam";
     this.iam =
@@ -1303,7 +1311,7 @@ export class ControllerWorker {
     if (this.iam.capability !== "iam" || this.iam.id !== this.iamDriverId) {
       throw new Error("The selected IAM Driver is unavailable.");
     }
-    const computeDriver = drivers === undefined ? options.computeDriver : drivers.computeDriver;
+    const computeDriver = drivers === undefined ? options.computeDriver : installedCompute;
     if (computeDriver === undefined) {
       throw new Error("The selected Compute Driver must be explicitly provided.");
     }
@@ -1338,8 +1346,8 @@ export class ControllerWorker {
     if (this.configuration !== undefined && !validLifecycleHooks(this.configuration)) {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
-    this.protectedDriver = drivers?.protectedDriver;
-    this.preparedTokens = drivers?.tokenService;
+    this.protectedDriver = protectedDriver;
+    this.preparedTokens = tokenService;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
@@ -1383,20 +1391,13 @@ export class ControllerWorker {
     this.onHealthy = options.onHealthy;
     this.onProgress = options.onProgress;
     this.repositoryGitMaterial = options.repositoryGitMaterial;
-    this.repositoryPolicy = drivers?.repositoryPolicy;
-    this.repositoryAdmission = drivers?.repositoryAdmission;
-    this.nativeRepositorySender = drivers?.nativeRepositorySender;
+    this.repositoryAdmission = validateRepositoryAdmission(runtime?.admission, this.backends);
+    this.nativeRepositorySender = runtime?.nativeSender;
     this.repositoryCleanupRetryMs = positiveInteger(
       this.nativeRepositorySender?.maintenanceIntervalMs ?? 30_000,
       "Repository cleanup retry interval",
     );
     this.pluginDrivers = drivers?.pluginDrivers ?? [];
-    if (this.repositoryPolicy !== undefined) {
-      const driver = this.repositoryPolicy;
-      if (driver.capability !== "repo" || typeof driver.resolve !== "function") {
-        throw new Error("The selected repository credential Driver is unavailable.");
-      }
-    }
     if (this.nativeRepositorySender !== undefined) {
       const sender = this.nativeRepositorySender;
       if (
@@ -1408,22 +1409,10 @@ export class ControllerWorker {
         throw new Error("The selected native repository sender is unavailable.");
       }
     }
-    const bound = this.repositoryAdmission?.policy;
-    if (
-      this.repositoryAdmission !== undefined &&
-      ((this.repositoryAdmission.policyMode === "built-in"
-        ? this.repositoryPolicy !== undefined
-        : bound !== this.repositoryPolicy) ||
-        typeof bound?.resolveBindings !== "function")
-    ) {
-      throw new Error("The bound repository admission owner is not selected or unavailable.");
-    }
     this.repositoryCredentials = new RepositoryCredentialLifecycle({
       state: this.state,
       queueOptions: this.queueOptions,
-      repository: bound
-        ? { kind: "bound", policy: bound }
-        : this.repositoryPolicy && { kind: "registered", policy: this.repositoryPolicy },
+      repository: this.repositoryAdmission,
       nativeSender: this.nativeRepositorySender,
       verifyExecution: (claim, revision) =>
         this.withClaimHeartbeat(
@@ -1463,14 +1452,11 @@ export class ControllerWorker {
         ? {}
         : { nativeWorkerSupport: this.nativeWorkerSupport }),
     };
-    const provisioning =
-      this.repositoryAdmission === undefined
-        ? new OpenClawController(installation, provisioningOptions)
-        : OpenClawController.forInstallation(
-            installation,
-            provisioningOptions,
-            this.repositoryAdmission,
-          );
+    const provisioning = OpenClawController.forInstallation(
+      installation,
+      provisioningOptions,
+      this.repositoryAdmission,
+    );
     if (this.secretDriver) {
       this.preparedTokens?.registerIssuer(
         new OAuthAccountTokens(
@@ -1491,7 +1477,6 @@ export class ControllerWorker {
       this.credentialRefresh,
       this.iam,
       this.secretDriver,
-      this.repositoryPolicy,
       this.compute,
     ] as const) {
       if (driver !== undefined) {

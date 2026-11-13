@@ -15,7 +15,7 @@ Usage: scripts/upgrade-production-images \
   [--occ PATH] [--timeout-seconds SECONDS] [--doctor-heap-mib MIB] [--resume] \
   [--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID] \
   [--migration-history-checked] [--recover-helm --recovery-reviewed] \
-  [--collector-config-reviewed] [--preflight-only]
+  [--collector-config-reviewed] [--preflight-only] [--inspect-repository-service NAME]
 
 Select at least one image. Candidate files contain reviewed settings changes;
 image fields are selected only by the image flags. A controller-only upgrade
@@ -35,6 +35,9 @@ Then, from the original checkout, clean up only its recorded preflight resources
     --evidence-dir DIRECTORY --previous-process-settled --evidence-unrestored
 This preserves the upgrade lock and never resumes deployment. Uncertain creates
 remain incomplete; original, unrestored evidence is required.
+--inspect-repository-service reads the legacy Git custody records through a named
+libpq service. This inspection always stops before the upgrade. Use a fresh evidence
+directory for each observation.
 OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connection.
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
@@ -423,6 +426,7 @@ evidence_dir=
 occ=occ
 verify_agent=
 verify_agent_namespace=
+repository_service=
 timeout_seconds=900
 doctor_heap_mib=384
 resume=0
@@ -445,7 +449,7 @@ while (($#)); do
     --cleanup-preflight) cleanup_only=1; shift ;;
     --previous-process-settled) previous_process_settled=1; shift ;;
     --evidence-unrestored) evidence_unrestored=1; shift ;;
-    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --controller-compatibility-results | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib | --verify-agent | --verify-agent-namespace)
+    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --controller-compatibility-results | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib | --inspect-repository-service | --verify-agent | --verify-agent-namespace)
       (($# >= 2)) || die "$1 requires a value."
       if [[ "$1" == --verify-agent || "$1" == --verify-agent-namespace ]]; then
         [[ -n "$2" ]] || die "$1 requires a nonempty value."
@@ -468,6 +472,10 @@ while (($#)); do
         --runtime-image) runtime_image=$2 ;;
         --source-revision) source_revision=$2 ;;
         --evidence-dir) evidence_dir=$2 ;;
+        --inspect-repository-service)
+          [[ "$2" =~ ^[a-zA-Z0-9_-]{1,128}$ ]] || die "$1 requires a libpq service name."
+          repository_service=$2
+          ;;
         --occ) occ=$2 ;;
         --verify-agent) verify_agent=$2 ;;
         --verify-agent-namespace) verify_agent_namespace=$2 ;;
@@ -579,6 +587,7 @@ done
 [[ -z "$verify_agent" || -z "$runtime_image" ]] ||
   die "--verify-agent cannot be combined with --runtime-image, which selects new Agent revisions."
 
+[[ -z "$repository_service" || "$resume" == 0 ]] || die "repository inspection requires a fresh evidence directory."
 ((resume == 0 || preflight_only == 0)) || die "--resume cannot be combined with --preflight-only."
 ((recover_helm == 0 || (resume && migration_history_checked && recovery_reviewed))) ||
   die "--recover-helm requires --resume --migration-history-checked --recovery-reviewed."
@@ -799,7 +808,7 @@ def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "repositoryInventorySha256": digest("scripts/upgrade-repository-inventory.sql"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -1347,9 +1356,9 @@ verify_agent_continuity() {
 }
 
 # Inventory is an authorized, complete view. Missing collections are not an empty fleet.
-read_restart_inventory() {
+read_deployment_inventory() {
   local destination=$1
-  "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
+  "${occ_json[@]}" --timeout-seconds "$timeout_seconds" installation deployment-inventory </dev/null >"$destination" ||
     die "cannot read the complete deployment inventory before stopping the worker. Restore access to the existing API if quiescence stopped it, then resume; no additional OCC writer was stopped."
   jq -es --arg installationId "$installation_id" '
     def identifier: type == "string" and length > 0;
@@ -1370,6 +1379,11 @@ read_restart_inventory() {
         (.deploymentInProgress | type == "boolean"))))
   ' "$destination" >/dev/null ||
     die "the deployment inventory is incomplete, invalid or belongs to another Installation; no additional OCC writer was stopped."
+}
+
+read_restart_inventory() {
+  local destination=$1
+  read_deployment_inventory "$destination"
   if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$destination" >/dev/null; then
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
@@ -1394,6 +1408,12 @@ normalize_restart_inventory() {
     {id, status, agents: ([.agents[] |
       {id, status, desiredRuntimeState, executionMode, activeRevisionId, deploymentInProgress, repositoryWorkerRestart}]
       | sort_by(.id))}] | sort_by(.id)}' "$1"
+}
+
+verify_startup_projection() {
+  python3 scripts/upgrade-helm-state.py startup-projection "$evidence_dir" "$release" "$kubeconfig" \
+    "$context" "$namespace" "$1" "$installation_key" ||
+    die "Cannot establish the Installation configuration loaded by the serving $1. Keep the original writers and credential sender available; reconcile the startup configuration before upgrading."
 }
 
 prepare_upgrade() {
@@ -1456,6 +1476,49 @@ matches_yaml "$evidence_dir/before-values.yaml" "$evidence_dir/before-live-value
   die "the protected Helm values differ from the live release; refresh --values before upgrading."
 matches_yaml "$evidence_dir/before-installation.yaml" "$evidence_dir/before-live-installation.yaml" ||
   die "the protected Installation YAML differs from the live Secret; refresh --installation before upgrading."
+
+# Inspect the live baseline even when a replacement runtime or a normalized
+# candidate is supplied. Deleted revisions can still own provider cleanup.
+yaml_json "$evidence_dir/before-live-installation.yaml" ||
+  die "cannot inspect the installed repository policy before upgrade."
+repository_policy=$(jq -ers '
+  select(length == 1) | .[0] | select(type == "object") |
+  (if has("drivers") then .drivers else {} end) as $drivers |
+  (if has("backend") then .backend else [] end) as $backends |
+  if ($drivers | type) != "object" or ($backends | type) != "array" or
+    any($backends[]; type != "object") or ($drivers | has("repo")) then "unknown"
+  else [$backends[] | select(.type == "github")] as $github |
+    if all($github[]; has("drivers") | not) then "canonical"
+    elif ($github | length) == 1 and (.repository.id | type == "string" and length > 0)
+      and ($github[0].drivers == {repo: .repository.id}) then "matching-backend"
+    else "unknown" end
+  end
+' <<<"$yaml_text") || die "cannot identify the installed repository policy; keep the original owners running."
+[[ "$repository_policy" != unknown ]] ||
+  die "Unrecognized repository Driver or GitHub Backend policy. Keep the original API, worker and credential sender running; reconcile the policy before maintenance."
+[[ -z "$repository_service" || "$repository_policy" == matching-backend ]] ||
+  die "Repository inspection requires the matching GitHub Backend repository selection; no upgrade was attempted."
+
+for component in api worker; do
+  verify_startup_projection "$component"
+done
+
+if [[ "$repository_policy" == matching-backend ]]; then
+  # Even a fleet without a live Agent can retain a prepared issuance or detached cleanup.
+  # The predecessor's fleet schema has no repositoryWorkerRestart field.
+  installation_id=$cluster_installation_id
+  inventory="$evidence_dir/inventory/deployment-inventory.json"
+  read_deployment_inventory "$inventory"
+  normalize_restart_inventory "$inventory" |
+    python3 scripts/upgrade-preflight-state.py record-repository-fleet "$evidence_dir" "$(jq -er .version "$evidence_dir/before-helm-status.json")" ||
+    die "Cannot preserve the original Agent desired states; the old owners are still serving."
+  if [[ -n "$repository_service" ]]; then
+    read_checkout "${checkout_git[@]}" cat-file blob "$source_revision:scripts/upgrade-repository-inventory.sql" |
+      python3 scripts/upgrade-preflight-state.py inspect-repository "$evidence_dir" "$repository_service" "$installation_id" "$timeout_seconds" ||
+      die "Repository custody inspection is incomplete. Preserve the fleet observation; keep the old owners running."
+  fi
+  die "Recorded the pre-stop Agent desired states in inventory/repository-fleet.json. The original owner must settle deleted-revision cleanup. A direct upgrade is unsupported: this release cannot exclude concurrent admissions. Keep the original API, worker and credential sender running."
+fi
 
 # The bundled Collector reads an operator-created Secret that Helm never
 # updates. Stop before mutation when it still holds another revision's shared
@@ -2070,6 +2133,9 @@ if ((helm_complete == 0)); then
       ' "$evidence_dir/current-$component-deployment.json" >/dev/null ||
         die "The $component Deployment changed during the separate database deployment. Preserve the database and reconcile the writer before resuming."
     fi
+    if jq -e '.spec.replicas == 1' "$evidence_dir/current-$component-deployment.json" >/dev/null; then
+      verify_startup_projection "$component"
+    fi
     # Test and scale atomically: a replacement or concurrent edit must not be stopped.
     jq '[
       {op: "test", path: "/metadata/uid", value: .metadata.uid},
@@ -2254,7 +2320,7 @@ import { GitHubNativeRepositorySender } from "/app/apps/controller/src/drivers/r
 import { UnixRepositoryCredentialControlClient } from "/app/apps/controller/src/backends/repository-credentials/control-client.ts";
 const id = "compatibility-probe";
 const client = new UnixRepositoryCredentialControlClient({ controlSocket: "/run/openclaw/repository-control/private/control.sock" });
-const driver = new GitHubNativeRepositorySender({ id, drivers: { repo: id }, client }, {});
+const driver = new GitHubNativeRepositorySender({ backendId: id, driverId: id, client }, {});
 if (typeof driver.checkAdmissionReady !== "function") throw new Error("capability check unavailable");
 await driver.checkAdmissionReady(AbortSignal.timeout(5000));
 process.stdout.write("repository-admission-ready\n");

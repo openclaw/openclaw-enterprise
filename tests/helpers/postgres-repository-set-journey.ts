@@ -1,5 +1,10 @@
+import { registerCoreDrivers } from "./postgres-backend-state.mjs";
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
 import { createRequire } from "node:module";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  createOpenShellBackend,
+  openShellProviderName,
+} from "../../apps/controller/src/backends/openshell.ts";
 import { waitForRevisionPass, advanceCleanupRetries } from "./postgres-worker-revision-support.mjs";
 import { deferred } from "./deferred.ts";
 import { waitFor, within } from "./wait-for.mjs";
@@ -14,7 +19,6 @@ import {
   COMPUTE_RELEASE_PUBLIC_KEY,
   computeReleasePublicKey,
 } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -23,26 +27,25 @@ import type { TestContext } from "node:test";
 import type {
   AgentRevision,
   ComputeRevisionContext,
-  GitHubRepositoryCredentialBackendDefinition,
   ProxyRevisionContext,
 } from "../../packages/contracts/src/index.ts";
-import { InstalledDriver, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
+import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import {
+  loadInstallationConfiguration,
+  repositoryStartupConfiguration,
+  installationDriverConfigurations,
+  type InstallationRuntimeDrivers,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import type { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
-import {
-  repositoryRestartInventory,
-  repositoryRestartState,
-} from "./postgres-repository-restart-inventory.ts";
+import { repositoryRestartState } from "./postgres-repository-restart-inventory.ts";
 import { standingGitConversation } from "./standing-git-conversation.ts";
 import { expireStoppedClaims, expireWorkLease } from "./postgres-worker-revision-support.mjs";
 import {
@@ -119,6 +122,20 @@ type NarrowPolicy = {
   pushRef?: string;
   sessionDurationSeconds?: number;
   platformProfile?: boolean;
+};
+
+type NarrowStartupComputeEffects = {
+  [
+    Name in
+      | "bindAgent"
+      | "prepareRevision"
+      | "activateRevision"
+      | "retireRevision"
+      | "stopRevision"
+      | "retireExpiredRepositoryAccess"
+      | "requiresStoppedPredecessors"
+      | "supportsWorkspaceSetup"
+  ]: InstallationRuntimeDrivers["computeDriver"][Name];
 };
 
 type NarrowStartupOptions = NarrowPolicy & {
@@ -205,9 +222,6 @@ async function repositoryGitJourney(
   const selectedRepositories = repositorySet.slice(0, standing ? 1 : 2);
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
-  const modelProvider = conversation
-    ? { protocol: "openai-responses" as const, baseUrl: conversation.baseUrl }
-    : undefined;
   const workspace = "selected-journey";
   const tls = await harnessTlsFixture(t);
   const tokenPath = join(tls.directory, "gateway-token");
@@ -246,23 +260,81 @@ async function repositoryGitJourney(
   let middleware = openShellMiddlewareClient(t, port, tls.caBundle);
   const order: string[] = [];
   const id = "selected-stock-openshell";
-  const backend = {
-    id: "selected-gateway",
-    drivers: { sandbox: id, credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
-    client: { placement: () => undefined, clientForNamespace: () => client },
-  };
-  const opts = {
-    middlewareName: "oce-prepared-git",
-    repositoryMiddlewareName: "oce-prepared-git",
-    authorityScope: "execution" as const,
+  const defaults = createCredentialProxyInstallationConfiguration();
+  const { gatewayClients: _clients, ...network } = defaults.drivers.compute.configuration.network;
+  const baseInstallation = {
+    ...defaults,
+    drivers: {
+      ...defaults.drivers,
+      sandbox: {
+        id,
+        configuration: {
+          gateway: { workspaceMode: "operator" },
+          kubernetes: {
+            runtimeClassName: "openshell-sandbox",
+            serviceAccount: { mode: "gatewayConfigured" },
+            sandboxDataMount: {
+              subPath: "workspace",
+              mountPath: "/sandbox/enterprise",
+              readOnly: false,
+            },
+          },
+          policy: {
+            process: { runAsUser: "1000", runAsGroup: "1000" },
+            networkPolicies: [
+              {
+                name: "model",
+                binaries: [{ path: "/usr/bin/codex" }],
+                endpoints: conversation
+                  ? [
+                      {
+                        host: new URL(conversation.baseUrl).hostname,
+                        ports: [Number(new URL(conversation.baseUrl).port)],
+                      },
+                    ]
+                  : [{ host: "api.openai.com", ports: [443] }],
+              },
+            ],
+          },
+        },
+      },
+      credential_gateway: {
+        id: CREDENTIAL_GATEWAY_FIXTURE_ID,
+        configuration: { binaries: ["/usr/bin/codex"] },
+      },
+      credential_proxy: { id, configuration: {} },
+      compute: {
+        ...defaults.drivers.compute,
+        id: "repository-set-compute",
+        configuration: {
+          ...defaults.drivers.compute.configuration,
+          network,
+          gatewayRouting: {
+            hostname: "agents.example.test",
+            gatewayName: "gateways",
+            gatewayNamespace: "occ-system",
+            envoyNamespace: "envoy",
+          },
+          servicePrincipalCredentials: { mode: "disabled" },
+          ...(conversation && {
+            runtime: {
+              ...defaults.drivers.compute.configuration.runtime,
+              modelProvider: {
+                protocol: "openai-responses",
+                baseUrl: conversation.baseUrl,
+              },
+            },
+          }),
+        },
+      },
+    },
   };
   const selected = {
-    id,
+    ...baseInstallation.drivers.sandbox,
     implementation: "openshell",
-    configuration: opts,
     definition: {
-      configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
-      validateConfiguration: OpenShellCredentialProxyDriver.validateConfiguration,
+      configurationSchema: OpenShellSandboxDriver.configurationSchema,
+      validateConfiguration: OpenShellSandboxDriver.validateConfiguration,
       configurationContributions: OpenShellSandboxDriver.configurationContributions,
     },
   };
@@ -281,117 +353,125 @@ async function repositoryGitJourney(
       ...(typeof entry.check === "string" && { check: entry.check }),
     });
   };
-  const createRuntimeOwner = (listenPort = port) => {
-    const runtime = new OpenShellGitRuntime(
-      {
-        registrationName: "oce-prepared-git",
-        authority: {
-          host: "127.0.0.1",
-          port: listenPort,
-          issuer: "https://gateway.example.test",
-          audience: "repository-set",
-          keyId: "gateway-key",
-          certificatePath: tls.certPath,
-          privateKeyPath: tls.keyPath,
-          issuerPublicKeyPath,
-        },
-      },
-      (revision) => createGitHubRepositoryDeliveryResolver(peer.registry)(revision),
-    );
-    const sandbox = new OpenShellSandboxDriver(
-      {
-        gateway: { workspaceMode: "operator" },
-        kubernetes: {
-          runtimeClassName: "openshell-sandbox",
-          serviceAccount: { mode: "gatewayConfigured" },
-          sandboxDataMount: {
-            subPath: "workspace",
-            mountPath: "/sandbox/enterprise",
-            readOnly: false,
-          },
-        },
-        policy: {
-          process: { runAsUser: "1000", runAsGroup: "1000" },
-          networkPolicies: [
-            {
-              name: "model",
-              binaries: [{ path: "/usr/bin/codex" }],
-              endpoints: conversation
-                ? [
-                    {
-                      host: new URL(conversation.baseUrl).hostname,
-                      ports: [Number(new URL(conversation.baseUrl).port)],
-                    },
-                  ]
-                : [{ host: "api.openai.com", ports: [443] }],
-            },
-          ],
-        },
-      },
-      { id, implementation: "openshell", backend: backend as never, openShellGit: runtime },
-    );
-    const proxy = new OpenShellCredentialProxyDriver(opts, {
-      id,
-      sandbox,
-      backend: backend as never,
-      bindRepositoryGit: (authority) => runtime.bindRepositoryGit(authority),
-      ...{
-        mandatoryEnforcement: (ctx: ProxyRevisionContext, box: string) => {
-          const observe = Reflect.get(runtime, "mandatoryEnforcement");
-          assert.equal(
-            typeof observe,
-            "function",
-            "bundled runtime must own mandatory enforcement",
-          );
-          return observe.call(runtime, ctx, box);
-        },
-      },
-    });
-    const owner = new InstalledDriver(selected, {
-      capabilities: { sandbox, credential_proxy: proxy },
-      namespaceLifecycleHooks: {
-        // This journey starts with a provisioned Namespace and tests Git authorization.
-        // Reinitializing it during revision execution would be a regression.
-        async ensureNamespace() {
-          assert.fail(
-            "The pre-provisioned Git journey must not initialize Namespace infrastructure.",
-          );
-        },
-      },
-    });
-    return { runtime, sandbox, proxy, owner };
-  };
-  let { runtime, sandbox, proxy, owner } = createRuntimeOwner();
-  const gateway = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/bin/codex"] },
-    {
-      id: CREDENTIAL_GATEWAY_FIXTURE_ID,
-      backend: backend as never,
-      ...(modelProvider && { modelProvider }),
-    },
-  );
-  const backends: import("../../packages/contracts/src/index.ts").BackendDefinition[] = [
-    {
-      id: "prepared-standing",
-      type: "github",
-      configuration: { registryPath: "/unused/controlled-registry.json" },
-      drivers: { repo: "prepared-standing" },
-    },
-  ];
   const f =
     startupOptions?.maxAttempts === undefined
-      ? await standingExecutionPlatform(t, testUrl, { sandbox: selected }, backends)
+      ? await standingExecutionPlatform(t, testUrl, { sandbox: selected })
       : await createWorkerRevisionFixtures(testUrl).setup(t, {
           driverSelections: { sandbox: selected },
-          backends,
           maxAttempts: startupOptions.maxAttempts,
         });
+  let loaded!: InstallationRuntimeDrivers;
+  let installationPath: string;
+  // The test owns the gateway peer across Worker restarts. The backend owns only
+  // this adapter and reaches the real fixture client after its wire setup.
+  const gatewayClient = new Proxy(
+    Object.create(null) as Awaited<ReturnType<typeof gitExpiryGateway>>["client"],
+    {
+      get(_target, property) {
+        if (property === "close") {
+          return () => {};
+        }
+        const method: unknown = Reflect.get(client, property);
+        return typeof method === "function" ? method.bind(client) : method;
+      },
+    },
+  );
+  const loadRuntime = async () => {
+    const drivers = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: installationPath },
+      createOpenShellBackend: (definition) => createOpenShellBackend(definition, { gatewayClient }),
+    });
+    assert.ok(drivers?.repositoryRuntime?.transport);
+    assert.ok(drivers.protectedDriver);
+    t.after(() => drivers.protectedDriver!.close());
+    assert.ok(drivers.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
+    assert.ok(drivers.sandboxDriver instanceof OpenShellSandboxDriver);
+    assert.equal(drivers.repositoryRuntime.computeDriver, drivers.computeDriver);
+    assert.equal(drivers.repositoryRuntime.protectedDriver, drivers.protectedDriver);
+    assert.equal(drivers.repositoryRuntime.tokenService, drivers.tokenService);
+    assert.equal(drivers.protectedDriver.require("sandbox"), drivers.sandboxDriver);
+    assert.equal(drivers.protectedDriver.require("credential_proxy"), drivers.proxyDriver);
+    repositoryStartupConfiguration(drivers);
+    return drivers;
+  };
   let admitted: AgentRevision | undefined;
   let issuanceStarted = false;
   let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
-    driver: owner.ref,
+    driver: async (origin) => {
+      const registryPath = join(origin.directory, "registry.json");
+      const issuerCaPath = join(origin.directory, "issuer-ca.pem");
+      installationPath = join(origin.directory, "installation.json");
+      assert.equal(
+        new Set([
+          registryPath,
+          issuerCaPath,
+          installationPath,
+          origin.privateKeyPath,
+          origin.custodyKeyPath,
+        ]).size,
+        5,
+        "registry, CA, Installation, signer and custody inputs are distinct",
+      );
+      await writeFile(registryPath, JSON.stringify(origin.registry), { mode: 0o600 });
+      await writeFile(issuerCaPath, origin.tls.ca, { mode: 0o600 });
+      await writeFile(
+        installationPath,
+        JSON.stringify({
+          ...baseInstallation,
+          presets: { includeDefaults: false },
+          runtime: { nativeWorkerSupport: "custom-image" },
+          backend: [
+            {
+              id: "selected-gateway",
+              type: "openshell",
+              configuration: {
+                endpoint: "https://gateway.example.test",
+                auth: { mode: "bearerTokenFile", path: tokenPath },
+              },
+              drivers: {
+                sandbox: id,
+                credential_proxy: id,
+                credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID,
+              },
+            },
+            { id: origin.backendId, type: "github", configuration: { registryPath } },
+          ],
+          repository: {
+            id: origin.backendId,
+            configuration: {
+              sessionDurationSeconds:
+                policy.sessionDurationSeconds ??
+                (standing ? 90 : narrowProfile && policy.draftPull === false ? 180 : 600),
+            },
+            preparedGitHub: {
+              privateKeyPath: origin.privateKeyPath,
+              custodyKeyPath: origin.custodyKeyPath,
+              issuerCaPath,
+              apiOrigin: "https://api.github.com",
+            },
+            openShell: {
+              registrationName: "oce-prepared-git",
+              authority: {
+                host: "127.0.0.1",
+                port,
+                issuer: "https://gateway.example.test",
+                audience: "repository-set",
+                keyId: "gateway-key",
+                certificatePath: tls.certPath,
+                privateKeyPath: tls.keyPath,
+                issuerPublicKeyPath,
+              },
+            },
+          },
+        }),
+        { mode: 0o600 },
+      );
+      loaded = await loadRuntime();
+      return loaded.protectedDriver!.ref;
+    },
     tokenLifetimeMs: 600_000,
     ...(narrowProfile
       ? { ...policy, draftPull: policy.draftPull ?? true }
@@ -424,61 +504,130 @@ async function repositoryGitJourney(
   });
   const events: NarrowJourney["maintenance"]["events"] = [];
   const stopped: string[] = [];
-  runtime.connectRouteStore(f.observerPool, recordTransport);
-  let bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+  // Fixture observation uses the selected Sandbox's runtime, never a second sender.
+  const selectedRuntime = (drivers: InstallationRuntimeDrivers) => {
+    assert.ok(drivers.sandboxDriver instanceof OpenShellSandboxDriver);
+    const runtime = drivers.sandboxDriver["openShellGit"];
+    assert.ok(runtime);
+    return runtime;
+  };
+  const selectedGateway = (drivers: InstallationRuntimeDrivers) => {
+    assert.ok(drivers.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
+    return drivers.credentialGatewayDriver;
+  };
+  let runtime = selectedRuntime(loaded);
+  let sandbox = loaded.sandboxDriver as OpenShellSandboxDriver;
+  let owner = loaded.protectedDriver!;
+  let kube = loaded.computeDriver;
+  let gateway = selectedGateway(loaded);
+  const originalOwnerRef = owner.ref;
+  const logicalInstallation = JSON.parse(JSON.stringify(loaded.installation));
+  const bindRuntime = () =>
+    loaded.repositoryRuntime!.transport!.bind(
+      peer.prepared.protectedGit!,
+      f.observerPool,
+      recordTransport,
+    );
+  let bound = await bindRuntime();
   const replaceRuntime = async (retained?: { replacementPort: number }) => {
     if (!retained) {
       await bound.close();
     }
+    const replacement = await loadRuntime();
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(replacement.installation)),
+      logicalInstallation,
+      "an original-owner restart retains all logical configuration",
+    );
+    assert.deepEqual(
+      replacement.protectedDriver!.ref,
+      originalOwnerRef,
+      "a changed owner cannot recover the original execution",
+    );
+    loaded = replacement;
+    runtime = selectedRuntime(loaded);
+    sandbox = loaded.sandboxDriver as OpenShellSandboxDriver;
+    owner = loaded.protectedDriver!;
+    release = new ProtectedExecutionDriver(owner);
+    kube = loaded.computeDriver;
+    gateway = selectedGateway(loaded);
+    compute = attachControlledCompute(kube);
+    // Real restarts bind the same address in separate Pods. Only this same-process
+    // lost-detach fixture routes the replacement listener to a second loopback port.
+    // The declared authority, TLS identity and durable owner hash stay unchanged.
     const listenPort = retained?.replacementPort ?? port;
-    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner(listenPort));
-    runtime.connectRouteStore(f.observerPool, recordTransport);
-    bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+    if (retained) {
+      assert.notEqual(listenPort, port);
+      const { Server } = require("@grpc/grpc-js");
+      const bind = Server.prototype.bindAsync;
+      const remapped: NonNullable<OpenShellGitRuntime["server"]>[] = [];
+      const routing = t.mock.method(
+        Server.prototype,
+        "bindAsync",
+        function (this: InstanceType<typeof Server>, address: string, ...args: unknown[]) {
+          if (address === `127.0.0.1:${port}`) {
+            remapped.push(this);
+            return bind.call(this, `127.0.0.1:${listenPort}`, ...args);
+          }
+          return bind.call(this, address, ...args);
+        },
+      );
+      try {
+        bound = await bindRuntime();
+        // The runtime records its server only after the TLS bind succeeds.
+        assert.equal(remapped.length, 1, "only one Git listener may bind the configured address");
+        assert.equal(remapped[0], runtime["server"], "the selected sender was remapped");
+      } finally {
+        routing.mock.restore();
+      }
+      t.diagnostic(
+        `Fixture-only Git listener routing: 127.0.0.1:${port} -> 127.0.0.1:${listenPort}; logical owner unchanged`,
+      );
+    } else {
+      bound = await bindRuntime();
+    }
     await runtime["running"];
     middleware = openShellMiddlewareClient(t, listenPort, tls.caBundle);
   };
   t.after(() => bound.close());
-  // The authority listens now. Release the hold before the first request: while both listen, the
-  // kernel may hand a connection to the hold, which resets it.
   await authorityPort.release();
   await runtime["running"];
-  const driver = new GitHubRepositoryPolicy(
-    { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
-    peer.registry,
+  const driver = loaded.repositoryRuntime!.admission.policy;
+  const boundResolve = driver.resolveBindings;
+  assert.ok(Object.isFrozen(driver));
+  const controller = OpenClawController.forInstallation(
+    f.installation,
     {
-      sessionDurationSeconds:
-        policy.sessionDurationSeconds ??
-        (standing ? 90 : narrow && policy.draftPull === false ? 180 : 600),
+      state: f.state,
+      backends: loaded.installation.backend,
+      driverConfigurations: installationDriverConfigurations(loaded.installation),
+      namespaceLifecycleBindings: loaded.namespaceLifecycleBindings,
     },
+    loaded.repositoryRuntime!.admission,
   );
-  f.controller.registerDriver(driver);
-  f.controller.selectDriver("repo", driver.id);
-  f.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
-  f.controller.registerDriver(gateway);
-  f.controller.selectDriver("credential_gateway", gateway.id);
-  const kube = createTestKubernetesComputeDriver("repository-set-compute", {
-    ...(modelProvider && { modelProvider }),
-    repositoryCredentials: true,
-    protectedDriver: owner,
-    credentialGatewayDriver: gateway,
+  registerCoreDrivers(controller, f.state);
+  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+  controller.registerDriver(gateway);
+  controller.selectDriver("credential_gateway", gateway.id);
+  // Keep admission on the loader's exact Compute, with only local effects controlled.
+  Object.assign(kube, {
+    preflight: undefined,
+    setLifecycleDrivers: undefined,
+    getAgentRuntimeCredentialStatus: async () => ({ transportConfigured: true }),
   });
-  // Controlled Compute has the same task-owned launcher transport used below.
-  t.mock.method(kube, "getAgentRuntimeCredentialStatus", async () => ({
-    transportConfigured: true,
-  }));
-  f.controller.registerDriver(kube);
-  f.controller.selectDriver("compute", kube.id);
+  controller.registerDriver(kube);
+  controller.selectDriver("compute", kube.id);
   const agent = await f.agent("repository-set", {
     executionMode: "dedicated",
     auth: "credential_source",
     ...(conversation && { modelConfig: { authorized_base_url: conversation.baseUrl } }),
   });
-  const configuration = await f.controller.createConfiguration(f.actor.id, {
+  const configuration = await controller.createConfiguration(f.actor.id, {
     namespaceId: f.namespace.id,
     kind: "agent",
     values: createHarnessConfiguration("codex", conversation ? "fixture-model" : "gpt-4.1"),
   });
-  await f.controller.updateAgent(f.actor.id, {
+  await controller.updateAgent(f.actor.id, {
     namespaceId: f.namespace.id,
     agentId: agent.id,
     configurationId: configuration.id,
@@ -487,13 +636,13 @@ async function repositoryGitJourney(
       : selectedRepositories.map(({ repositoryRef }) => ({ repositoryRef })),
   });
   if (standing) {
-    const [review] = await f.controller.listAgentStandingApprovalScopes(
+    const [review] = await controller.listAgentStandingApprovalScopes(
       f.actor.id,
       f.namespace.id,
       agent.id,
     );
     assert.ok(review);
-    await f.controller.updateAgent(f.actor.id, {
+    await controller.updateAgent(f.actor.id, {
       namespaceId: f.namespace.id,
       agentId: agent.id,
       configurationId: configuration.id,
@@ -531,38 +680,18 @@ async function repositoryGitJourney(
   });
   const { client } = wire;
   await startupOptions?.beforeAdmission?.({ fixture: f, agent, configuration });
-  const revision = (admitted = await f.controller.deployAgent(
+  const revision = (admitted = await controller.deployAgent(
     f.actor.id,
     { namespaceId: f.namespace.id, agentId: agent.id },
     resolveApprovedHarness,
   ));
   // This is a different API process's owner: production composition supplies its
   // read callback, while the live worker retains its route and launch witness.
-  const inventory =
-    pendingSuccessor === "cold-worker"
-      ? (
-          await repositoryRestartInventory(
-            t,
-            revision,
-            {
-              sandbox: { id, implementation: "openshell", configuration: sandbox["options"] },
-              createSandbox: (configuration, selection) =>
-                new OpenShellSandboxDriver(configuration as (typeof sandbox)["options"], selection),
-              backend: {
-                ...backend,
-                client: { ...backend.client, close: async () => {} },
-              } as never,
-              operatorOwnedKubernetesResources: false,
-              repository: {
-                configuration: runtime.configuration,
-                resolveDelivery: createGitHubRepositoryDeliveryResolver(peer.registry),
-              },
-              proxy: { id, configuration: opts, preparedProviders: [] },
-            },
-            f,
-          )
-        ).read
-      : undefined;
+  const inventoryDrivers = pendingSuccessor === "cold-worker" ? await loadRuntime() : undefined;
+  inventoryDrivers?.repositoryRuntime!.transport!.connectRestartObservation!(f.observerPool);
+  const inventory = inventoryDrivers
+    ? () => selectedRuntime(inventoryDrivers).repositoryWorkerRestartDisposition(revision, t.signal)
+    : undefined;
   const queued = await f.observerPool.query(
     "SELECT idempotency_key FROM occ.controller_work WHERE revision_id=$1",
     [revision.id],
@@ -586,7 +715,7 @@ async function repositoryGitJourney(
     signal: t.signal,
   } as ProxyRevisionContext;
   state.sandbox = sandbox.harnessResource!(context).resourceName;
-  const release = new ProtectedExecutionDriver(owner);
+  let release = new ProtectedExecutionDriver(owner);
   const wiring = await release.configure(context);
   state.policy = wiring.configuration;
   if (beforePrepare) {
@@ -733,12 +862,11 @@ async function repositoryGitJourney(
     };
   };
   const repositoryContext = { ...context, kubernetes: podContinuity ? kubernetes : undefined };
-  const compute = {
-    ...f.compute,
-    id: kube.id,
-    implementation: kube.implementation,
-    validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
-    validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
+  const controlledCompute = {
+    async activateRevision(r: AgentRevision) {
+      // Activation is controlled; this fixture does not activate Kubernetes workloads.
+      assert.equal(r.id, revision.id, "controlled activation must target the test revision");
+    },
     retireExpiredRepositoryAccess: (r: AgentRevision, signal: AbortSignal) =>
       runtime.retireExpiredRepositoryAccess(
         r,
@@ -773,7 +901,9 @@ async function repositoryGitJourney(
       let stage = "provider-bootstrap";
       try {
         if (conversation && !launching) {
-          const login = kube["harnessAuthForRevision"](r, custody, {
+          const harnessAuth = Reflect.get(kube, "harnessAuthForRevision");
+          assert.equal(typeof harnessAuth, "function");
+          const login = harnessAuth.call(kube, r, custody, {
             name: workspace,
             plane: "execution",
           });
@@ -882,7 +1012,7 @@ async function repositoryGitJourney(
               await reconcile();
             }
             retry = true;
-            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => ({
+            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path: string) => ({
               startupId,
               probePath: path,
               reasonCode: (await evaluate({ ...probe, target: { ...probe.target, path } }))
@@ -934,34 +1064,79 @@ async function repositoryGitJourney(
     },
   };
 
-  // Observe the real bound policy calls; neither spy replaces its decisions.
-  const legacyResolve = t.mock.method(driver, "resolve");
-  const boundResolve = t.mock.method(driver, "resolveBindings");
-  const repositoryBackend: GitHubRepositoryCredentialBackendDefinition = {
-    id: peer.registry.backendId,
-    type: "github",
-    configuration: { registryPath: "/unused/controlled-registry.json" },
-    drivers: { repo: driver.id },
+  const attachControlledCompute = (
+    selectedCompute: InstallationRuntimeDrivers["computeDriver"],
+  ) => {
+    // Preserve the selected object's identity and its real admission validators.
+    const effects = Object.fromEntries(
+      Object.entries(f.compute).filter(
+        ([name]) =>
+          ![
+            "id",
+            "implementation",
+            "capability",
+            "admitRevision",
+            "resolveHarnessConfiguration",
+          ].includes(name) && !name.startsWith("validate"),
+      ),
+    );
+    return Object.assign(selectedCompute, effects, controlledCompute, {
+      preflight: undefined,
+      setLifecycleDrivers: undefined,
+      getAgentRuntimeCredentialStatus: async () => ({ transportConfigured: true }),
+    });
   };
-  const selectDrivers = (d: InstallationRuntimeDrivers) => ({
-    ...d,
-    repositoryPolicy: driver,
-    repositoryAdmission: { policy: driver, backendId: peer.registry.backendId },
-    protectedDriver: owner,
-    sandboxDriver: sandbox,
-    proxyDriver: proxy,
-    credentialGatewayDriver: gateway,
-    installation: {
-      ...d.installation,
-      backend: [...(d.installation.backend ?? []), repositoryBackend],
-      drivers: { ...d.installation.drivers, credential_gateway: { id: gateway.id } },
-    },
-  });
-  const start = (
-    computeOverride = compute,
+  let compute = attachControlledCompute(kube);
+  const selectDrivers = (d: InstallationRuntimeDrivers): InstallationRuntimeDrivers => {
+    assert.equal(loaded.repositoryRuntime!.computeDriver, compute);
+    assert.equal(loaded.repositoryRuntime!.protectedDriver, owner);
+    const selected = {
+      ...loaded,
+      configurationDriver: d.configurationDriver,
+      secretDriver: d.secretDriver,
+    };
+    repositoryStartupConfiguration(selected);
+    return selected;
+  };
+  let claimsPaused = false;
+  const pauseRevisionClaims = async () => {
+    await f.pauseRevisionClaims();
+    claimsPaused = true;
+  };
+  const start = async (
+    createEffects?: (baseline: NarrowStartupComputeEffects) => Partial<NarrowStartupComputeEffects>,
     emitOverride?: (event: Readonly<Record<string, unknown>>) => void,
-  ) =>
-    f.start(computeOverride, {
+  ) => {
+    if (claimsPaused) {
+      f.resumeRevisionClaims();
+      claimsPaused = false;
+      return;
+    }
+    if (createEffects) {
+      // Capture bound fixture effects before installing wrappers on the exact
+      // loader-selected object. A cold replacement gets its own fresh baseline;
+      // resuming the live Worker above keeps its already-installed effects.
+      const baseline = {
+        bindAgent: compute.bindAgent?.bind(compute),
+        prepareRevision: compute.prepareRevision.bind(compute),
+        activateRevision: compute.activateRevision.bind(compute),
+        retireRevision: compute.retireRevision?.bind(compute),
+        stopRevision: compute.stopRevision.bind(compute),
+        retireExpiredRepositoryAccess: compute.retireExpiredRepositoryAccess.bind(compute),
+        requiresStoppedPredecessors: compute.requiresStoppedPredecessors?.bind(compute),
+        supportsWorkspaceSetup: compute.supportsWorkspaceSetup,
+      };
+      const effects = createEffects(baseline);
+      // Only this caller's fixture hooks may change; admission stays with the
+      // selected Driver, including its real validators and sealed identity.
+      for (const name of Object.keys(baseline)) {
+        if (Object.hasOwn(effects, name)) {
+          Reflect.set(compute, name, Reflect.get(effects, name));
+        }
+      }
+    }
+    return f.start(compute, {
+      pauseableRevisionClaims: true,
       emit: (event) => {
         recordTransport(event);
         emitOverride?.(event);
@@ -969,6 +1144,7 @@ async function repositoryGitJourney(
       ...{ repositoryGitMaterial: peer.prepared.revisionMaterial },
       transformDrivers: selectDrivers,
     });
+  };
   const readyGit = async () => {
     // Hold the real provider request until the runtime has observed absent material.
     // This makes the pending state deterministic without a sleep or a fabricated token.
@@ -1061,6 +1237,7 @@ async function repositoryGitJourney(
     t.after(() => f.stop());
     return {
       fixture: f,
+      controller,
       agent: { ...agent, configurationId: configuration.id },
       configuration,
       revision,
@@ -1082,6 +1259,7 @@ async function repositoryGitJourney(
       evaluate,
       reconcile,
       start,
+      pauseRevisionClaims,
       readyGit,
     };
   }
@@ -1098,14 +1276,17 @@ async function repositoryGitJourney(
           f.start(compute, {
             transformDrivers: (d: InstallationRuntimeDrivers) => ({
               ...selectDrivers(d),
-              repositoryAdmission: { policy: otherPolicy, backendId: peer.registry.backendId },
+              repositoryPolicy: otherPolicy,
             }),
           }),
-        /The bound repository admission owner is not selected or unavailable/,
+        /Repository Driver selection and policy modes are retired/,
       );
       assert.equal(otherResolve.mock.callCount(), 0);
-      assert.equal(boundResolve.mock.callCount(), 0);
-      assert.equal(legacyResolve.mock.callCount(), 0);
+      assert.equal(
+        driver.resolveBindings,
+        boundResolve,
+        "refusal leaves the sealed policy unchanged",
+      );
       assert.equal(peer.gh.issuesOfTokens.length, 0, "a mismatched owner cannot issue credentials");
       assert.equal(wire.world.writes, 0);
       assert.deepEqual(
@@ -1131,8 +1312,28 @@ async function repositoryGitJourney(
       throw preparationError;
     }
     assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
-    assert.ok(boundResolve.mock.callCount() > 0, "the Worker resolves admitted bindings");
-    assert.equal(legacyResolve.mock.callCount(), 0, "the bound Worker skips the legacy resolver");
+    assert.equal(driver.resolveBindings, boundResolve);
+    assert.equal(loaded.repositoryRuntime!.admission.policy, driver);
+    const resolved = driver.resolveBindings({
+      namespaceId: revision.namespaceId,
+      bindings: revision.repositoryCredentials!.bindings.map(({ repositoryRef, profile }) => ({
+        repositoryRef,
+        profile,
+      })),
+    });
+    assert.deepEqual(
+      resolved.bindings,
+      revision.repositoryCredentials!.bindings,
+      "the committed revision preserves the selected immutable policy decision",
+    );
+    const admittedAttempts = await f.state.read((view) =>
+      view.repositorySessions.listRevisionAttempts({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      }),
+    );
+    assert.ok(admittedAttempts.length > 0, "the Worker opened the admitted repository session");
     order.push("active");
     if (standing) {
       // The issuer independently reads current registry policy. An admitted approval
@@ -1178,7 +1379,11 @@ async function repositoryGitJourney(
       assert.equal(((await request()) as { status: number }).status, 200);
       assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
       if (pendingSuccessor !== "cold-worker") {
-        await f.stop();
+        if (coldWorker) {
+          await f.stop();
+        } else {
+          await pauseRevisionClaims();
+        }
       }
       if (coldWorker) {
         const queue = new f.PostgresWorkQueue(f.observerPool);
@@ -1242,10 +1447,7 @@ async function repositoryGitJourney(
               };
             },
           });
-          const observer = new OpenShellGitRuntime(
-            runtime.configuration,
-            createGitHubRepositoryDeliveryResolver(peer.registry),
-          );
+          const observer = selectedRuntime(await loadRuntime());
           t.after(() => observer.close());
           observer.connectRestartObservation(delayedRoutes.restartEvidence.bind(delayedRoutes));
           const cancelled = new AbortController();
@@ -1404,7 +1606,7 @@ async function repositoryGitJourney(
           },
           { timeoutMs: 45_000 },
         );
-        await f.stop();
+        await pauseRevisionClaims();
         assert.deepEqual(
           (await f.deploymentStatus(agent, revision)).repositoryAccess,
           status.repositoryAccess,
@@ -1496,8 +1698,8 @@ async function repositoryGitJourney(
         );
 
         // The terminal reason belongs to this deployment, not every revision of its
-        // Agent. Admit a replacement through the controller while the worker is stopped.
-        const replacement = await f.controller.deployAgent(
+        // Agent. Admit a replacement while revision work claiming is paused or stopped.
+        const replacement = await controller.deployAgent(
           f.actor.id,
           { namespaceId: f.namespace.id, agentId: agent.id },
           resolveApprovedHarness,
@@ -1526,7 +1728,7 @@ async function repositoryGitJourney(
         }),
       );
       // Cross the original admitted session deadline in real time. Keep the exact
-      // running Sandbox and provider; only the worker is restarted.
+      // running Sandbox and provider while revision work claiming is paused.
       await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
       assert.equal((await evaluate(probe)).decision, 2, "expired session fails closed");
       // Stock withholds the whole environment when Git expires. Renewal must recover
@@ -1576,7 +1778,7 @@ async function repositoryGitJourney(
               if (pendingSuccessor === "recipient") {
                 registration.audience = "different-recipient";
               } else {
-                await f.controller.removeAgentStandingApproval(f.actor.id, {
+                await controller.removeAgentStandingApproval(f.actor.id, {
                   ...ownerKey,
                   approvalId: credentials.standingApprovalId!,
                   expectedGeneration: credentials.standingApprovalGeneration!,
@@ -1602,7 +1804,7 @@ async function repositoryGitJourney(
           () => entry.blocked || entry.absent === "withdrawn" || undefined,
           { timeoutMs: 10_000 },
         );
-        await f.stop();
+        await pauseRevisionClaims();
         assert.equal(peer.gh.issuesOfTokens.length, 2, "the successor was issued before refusal");
         assert.equal(wire.world.writes, writes, "refusal precedes the credential write");
         assert.equal(state.installed, installed, "no successor material reached the recipient");
@@ -1643,7 +1845,7 @@ async function repositoryGitJourney(
         },
         60_000,
       );
-      await f.stop();
+      await pauseRevisionClaims();
       const successor = (await attempts()).find((row) => row.phase === "open")!;
       assert.notEqual(successor.sessionId, first.sessionId);
       assert.equal(successor.predecessorAdmissionId, first.admissionId);
@@ -1655,7 +1857,7 @@ async function repositoryGitJourney(
       assert.deepEqual(peer.gh.issuesOfTokens[1].repositoryIds, [73]);
       assert.deepEqual(peer.gh.issuesOfTokens[1].permissions, repositorySetPermissions);
       assert.equal(((await request()) as { status: number }).status, 200);
-      await f.controller.removeAgentStandingApproval(f.actor.id, {
+      await controller.removeAgentStandingApproval(f.actor.id, {
         ...ownerKey,
         approvalId: credentials.standingApprovalId!,
         expectedGeneration: credentials.standingApprovalGeneration!,
@@ -1702,7 +1904,7 @@ async function repositoryGitJourney(
         ...((policy.draftPull ?? true) && { pull_requests: "write" }),
       });
       const binding = revision.repositoryCredentials!.bindings[0]!;
-      const delivery = createGitHubRepositoryDeliveryResolver(peer.registry)(revision);
+      const delivery = runtime["resolveDelivery"](revision);
       assert.ok(delivery.repository);
       const material = runtime["states"].get(revision.id)!.entry!.material!;
       const installed = {
@@ -1713,7 +1915,7 @@ async function repositoryGitJourney(
       const withLookupFault: NarrowJourney["withLookupFault"] = async (fault, exercise) => {
         const original = runtime["lookup"];
         let calls = 0;
-        runtime["lookup"] = async (...args) => {
+        runtime["lookup"] = async (...args: Parameters<typeof original>) => {
           const live = await original.apply(runtime, args);
           assert.ok(live);
           calls++;
@@ -1767,13 +1969,13 @@ async function repositoryGitJourney(
           heldCredentialStatus: async () => (await peer.send(heldCredential, false)).status,
           admissionId: rows[0].admission_id,
           removeBinding: () =>
-            f.controller.updateAgent(f.actor.id, {
+            controller.updateAgent(f.actor.id, {
               namespaceId: f.namespace.id,
               agentId: agent.id,
               configurationId: configuration.id,
               repositoryBindings: [],
             }),
-          withdraw: () => f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id),
+          withdraw: () => controller.stopAgent(f.actor.id, f.namespace.id, agent.id),
         });
         await peer.noBroker();
       } catch (error) {
@@ -1794,9 +1996,9 @@ async function repositoryGitJourney(
       }
       return;
     }
-    // Keep the released execution serving during a worker outage. Restart after its
-    // admitted grant expires to exercise persisted subtraction, not a fabricated detach.
-    await f.stop();
+    // Keep the selected signed listener and issuer serving while revision work
+    // claiming is paused. Resume to exercise persisted subtraction.
+    await pauseRevisionClaims();
     const originalAttachmentEpoch = entry.installed.attachmentEpoch;
     assert.equal(peer.gh.issuesOfTokens.length, 1, "one issuance for the selected set");
     assert.deepEqual(
@@ -2031,8 +2233,9 @@ async function repositoryGitJourney(
       return rows[0]!;
     };
     const originalRoute = await readRetainedRoute();
-    // Removal commits while no worker is running: no later poll may create its intent.
-    await f.stop();
+    // Removal commits while the claim wrapper is parked: no later claim may
+    // create its intent. The selected signed listener remains live.
+    await pauseRevisionClaims();
     const queue = new f.PostgresWorkQueue(f.observerPool);
     const removalOwner = {
       namespaceId: revision.namespaceId,
@@ -2043,7 +2246,7 @@ async function repositoryGitJourney(
       ({ repositoryRef, profile }) => ({ repositoryRef, profile }),
     );
     const update = (repositoryBindings: typeof originalBindings, actorId = f.actor.id) =>
-      f.controller.updateAgent(actorId, {
+      controller.updateAgent(actorId, {
         namespaceId: f.namespace.id,
         agentId: agent.id,
         configurationId: configuration.id,
@@ -2058,7 +2261,7 @@ async function repositoryGitJourney(
     // This supported rejection happens after saving the proposed binding change. Its entire
     // transaction must roll back, including session closure and the withdrawal obligation.
     await assert.rejects(
-      f.controller.updateAgent(f.actor.id, {
+      controller.updateAgent(f.actor.id, {
         namespaceId: f.namespace.id,
         agentId: agent.id,
         configurationId: configuration.id,
@@ -2081,7 +2284,7 @@ async function repositoryGitJourney(
     const editor = `binding-editor-${randomUUID()}`;
     await f.copyActorGrants(editor, { withoutActions: ["deploy"] });
     await assert.rejects(
-      f.controller.deployAgent(
+      controller.deployAgent(
         editor,
         { namespaceId: f.namespace.id, agentId: agent.id },
         resolveApprovedHarness,
@@ -2251,8 +2454,8 @@ async function repositoryGitJourney(
       () => (wire.world.detaches.length === 1 ? true : undefined),
       30_000,
     );
-    await f.stop();
-    // Detach can be observed before its worker releases the claim. Only after shutdown,
+    await f.stopLoopRetainingOwner();
+    // Detach can be observed before its worker releases the claim. Only after draining,
     // expire this revision's lease so the replacement worker can recover the interrupted pass.
     await expireStoppedClaims(f, revision);
     const reduction = async () => {

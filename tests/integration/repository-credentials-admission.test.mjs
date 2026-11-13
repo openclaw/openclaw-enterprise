@@ -292,23 +292,21 @@ async function fixture(
           id: backendId,
           type: "github",
           configuration: { registryPath: "/unused/repository-admission/registry.json" },
-          drivers: { repo: driverId },
         },
       ]
     : [];
 
   async function compose(registry, Driver) {
-    const controller = new OpenClawController(installation, {
-      state,
-      backends,
-      ...controllerOptions,
-    });
+    const controller = OpenClawController.forInstallation(
+      installation,
+      {
+        state,
+        backends,
+        ...controllerOptions,
+      },
+      registry && { backendId, policy: repositoryDriver(registry, Driver) },
+    );
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
-    }
-    if (registry !== undefined) {
-      const driver = repositoryDriver(registry, Driver);
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
     }
@@ -594,8 +592,8 @@ test("Repository options preserve the full valid GitHub catalog and refuse overf
   // A third-party Driver may return an oversized result even though GitHub policy cannot.
   // Keep the real maximum-size GitHub catalog and add one otherwise valid, distinct choice.
   class OversizedRepositoryDriver extends GitHubRepositoryPolicy {
-    async listOptions(input) {
-      const result = await super.listOptions(input);
+    async listCatalog(input) {
+      const result = await super.listCatalog(input);
       return {
         options: [
           ...result.options,
@@ -622,8 +620,8 @@ test("Repository options refuse Driver display text with C0 controls or DEL", as
   // The utils conformance suite pins every code unit of the shared helper; this pins its use here.
   let override = {};
   class CraftedRepositoryDriver extends GitHubRepositoryPolicy {
-    async listOptions(input) {
-      const result = await super.listOptions(input);
+    async listCatalog(input) {
+      const result = await super.listCatalog(input);
       return { ...result, options: result.options.map((option) => ({ ...option, ...override })) };
     }
   }
@@ -1007,8 +1005,8 @@ test("Agent updates apply repository access and validate plugin policy together"
 test("Agent repository access preserves request order when the Driver returns bindings in another order", async (t) => {
   // Driver resolutions are keyed by reference; their order is not part of the contract.
   class ReorderedRepositoryDriver extends GitHubRepositoryPolicy {
-    resolve(input) {
-      const resolution = super.resolve(input);
+    resolveBindings(input) {
+      const resolution = super.resolveBindings(input);
       return { ...resolution, bindings: [...resolution.bindings].reverse() };
     }
   }

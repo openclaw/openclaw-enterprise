@@ -17,7 +17,7 @@ images; individual Agents cannot choose their own implementations.
    supplied on those hosts, start with [SSH Compute](ssh-compute.md) instead.
 2. Select the required Configuration, IAM, Compute, and Secret implementations.
    The table below lists each capability and its allowed choices. Omit optional
-   Sandbox, Credential Gateway, ServiceAccount, Plugin, and Repo selections
+   Sandbox, Credential Gateway, ServiceAccount, and Plugin selections
    unless you need them.
 3. Set `OCC_CONFIG_PATH` to the absolute path of that trusted YAML and select
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
@@ -47,20 +47,19 @@ IAM, and Docker Compute without Installation YAML and does not select a
 SecretDriver. An operator can select installed IAM, Compute, Configuration, or
 Sandbox packages in trusted YAML in either mode.
 
-| Capability           | Shared contract                                                             | Selection boundary                                                                                                                                       |
-| -------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `configuration`      | [ConfigurationDriver](configuration.md)                                     | Required in Installation YAML; bundled Kubernetes or installed package.                                                                                  |
-| `channel`            | [ChannelDriver](channel.md)                                                 | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                                                                       |
-| `iam`                | [IAMDriver](iam.md)                                                         | Required in Installation YAML; bundled native IAM or installed package.                                                                                  |
-| `compute`            | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                    |
-| `secret`             | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                           |
-| `sandbox`            | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                     |
-| `credential_proxy`   | [CredentialProxyDriver](credential-proxy.md)                                | Optional; the selected Sandbox and Credential Proxy must come from one Driver registration, supplied by bundled OpenShell or a selected Sandbox package. |
-| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
-| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
-| `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
-| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                             |
-| `repo`               | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                          |
+| Capability           | Shared contract                                  | Selection boundary                                                                                                                                       |
+| -------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `configuration`      | [ConfigurationDriver](configuration.md)          | Required in Installation YAML; bundled Kubernetes or installed package.                                                                                  |
+| `channel`            | [ChannelDriver](channel.md)                      | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                                                                       |
+| `iam`                | [IAMDriver](iam.md)                              | Required in Installation YAML; bundled native IAM or installed package.                                                                                  |
+| `compute`            | [ComputeDriver](compute.md)                      | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                    |
+| `secret`             | [SecretDriver](secret.md)                        | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                           |
+| `sandbox`            | [SandboxDriver](sandbox.md)                      | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                     |
+| `credential_proxy`   | [CredentialProxyDriver](credential-proxy.md)     | Optional; the selected Sandbox and Credential Proxy must come from one Driver registration, supplied by bundled OpenShell or a selected Sandbox package. |
+| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md) | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
+| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md) | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
+| `service_account`    | [ServiceAccountDriver](service-account.md)       | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
+| `plugin`             | [PluginDriver](plugin.md)                        | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                             |
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -87,8 +86,7 @@ same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
 registration and check its identity against the Agent revision.
 
-For protected Git, match `repository.id` to the GitHub Backend's `drivers.repo`
-policy member. Set `repository.configuration.sessionDurationSeconds` and
+For protected Git, configure the GitHub Backend with the ID recorded in its registry. Set `repository.configuration.sessionDurationSeconds` and
 `repository.preparedGitHub`. Omit `drivers.repo` and `repository.nativeSender`
 from the Installation. External senders also omit `repository.openShell`.
 No native control socket or broker CA is required. The Driver supplies Sandbox
@@ -143,12 +141,15 @@ An Installation-scoped [Backend](../backends.md) groups an authenticated
 client with exact related Driver selections. `backend[].drivers` owns
 membership, and composition injects the Backend into the concrete member.
 The generic Driver contract has no Backend identity field. All declared members
-are required and must match the selected registry `(capability, id)`. The bundled ChatGPT Backend requires its selected
-ServiceAccount Driver; the bundled GitHub Backend requires its selected Repo
-Driver; the bundled OpenShell Backend requires both its Sandbox and Credential
-Gateway Drivers, and its Credential Refresh Driver when it declares one. A
+are required and must match the selected registry `(capability, id)`. The bundled
+ChatGPT Backend requires its selected ServiceAccount Driver. The bundled
+OpenShell Backend requires both its Sandbox and Credential Gateway Drivers
+and its Credential Refresh Driver when it declares one. A
 selected Credential Gateway or Credential Refresh Driver must belong to a
 configured Backend. There is no per-Agent Driver selection.
+
+The bundled GitHub Backend requires a matching `repository` selection. See
+[Installation policy and delivery](../repository-credentials.md#installation-policy-and-delivery).
 
 Runtime Backend injection is limited to those bundled Drivers; installed
 packages keep the factory arguments below, and Backend loading or injection into
@@ -304,10 +305,9 @@ Driver package. OCC does not merge package-provided defaults.
 IAM, Compute, Configuration, and Sandbox selections accept only `id`, optional
 `package`, and `configuration`. Omit `package` for a bundled Driver. The
 Secret selection accepts only the bundled Kubernetes implementation. The optional
-Repo selection accepts only the bundled GitHub implementation with its declared
-Backend member, and the optional Credential Gateway selection accepts only the
-bundled OpenShell implementation; none of these selections accepts an installed package. Installed implementation identity is
-`<package-name>@<installed-version>`; bundled identity is intrinsic. Operators
+Credential Gateway selection accepts only the bundled OpenShell implementation.
+Installed implementation identity is `<package-name>@<installed-version>`.
+Bundled identity is intrinsic. Operators
 cannot supply `implementation` or `version`; factory identity and capability
 must match the selection:
 

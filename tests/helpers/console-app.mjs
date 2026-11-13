@@ -272,6 +272,20 @@ export function fileConsoleApp(options = {}) {
   return createFileConsoleApp((registrar) => createConsoleAppFixture(registrar, options));
 }
 
+export function consoleRepositoryAdmission(backendId, id, currentPolicy) {
+  return {
+    backendId,
+    policy: {
+      id,
+      implementation: "github",
+      listCatalog: (input) => currentPolicy().listCatalog(input),
+      resolveBindings: (input) => currentPolicy().resolveBindings(input),
+      allowsStandingApproval: (input) => currentPolicy().allowsStandingApproval(input),
+      standingApprovalScope: (input) => currentPolicy().standingApprovalScope(input),
+    },
+  };
+}
+
 /**
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
  * @param {import("./console-file-app.ts").CleanupRegistrar} t
@@ -487,33 +501,39 @@ export async function createConsoleAppFixture(t, options = {}) {
       : { nativeAdminGatewayApiKey: options.nativeAdminGatewayApiKey }),
     resolveHarness: resolveApprovedHarness,
     createController(installation) {
-      controller = new OpenClawController(installation, {
-        state: platformState,
-        namespaceLifecycleBindings:
-          options.namespaceLifecycleBindings ??
-          (options.sandboxDriver?.ensureNamespace === undefined
-            ? []
-            : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
-        ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
-        preparedTokens: options.preparedTokens,
-        ...(options.pluginSourceReader === undefined
-          ? {}
-          : { pluginSourceReader: options.pluginSourceReader }),
-        sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
-        driverConfigurations: options.driverConfigurations,
-        ...(options.now === undefined ? {} : { now: options.now }),
-        recordOperations: options.recordOperations ?? false,
-        backends,
-        defaultPresets: options.defaultPresets ?? [],
-        bundledPresetVersions: options.bundledPresetVersions ?? [],
-        refreshBundledDefaultPresets: options.refreshBundledDefaultPresets === true,
-        ...(options.nativeWorkerSupport === undefined
-          ? {}
-          : { nativeWorkerSupport: options.nativeWorkerSupport }),
-        ...(options.credentialProxyCapacity === undefined
-          ? {}
-          : { credentialProxyCapacity: options.credentialProxyCapacity }),
-      });
+      controller = OpenClawController.forInstallation(
+        installation,
+        {
+          state: platformState,
+          namespaceLifecycleBindings:
+            options.namespaceLifecycleBindings ??
+            (options.sandboxDriver?.ensureNamespace === undefined
+              ? []
+              : [
+                  sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver),
+                ]),
+          ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
+          preparedTokens: options.preparedTokens,
+          ...(options.pluginSourceReader === undefined
+            ? {}
+            : { pluginSourceReader: options.pluginSourceReader }),
+          sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
+          driverConfigurations: options.driverConfigurations,
+          ...(options.now === undefined ? {} : { now: options.now }),
+          recordOperations: options.recordOperations ?? false,
+          backends,
+          defaultPresets: options.defaultPresets ?? [],
+          bundledPresetVersions: options.bundledPresetVersions ?? [],
+          refreshBundledDefaultPresets: options.refreshBundledDefaultPresets === true,
+          ...(options.nativeWorkerSupport === undefined
+            ? {}
+            : { nativeWorkerSupport: options.nativeWorkerSupport }),
+          ...(options.credentialProxyCapacity === undefined
+            ? {}
+            : { credentialProxyCapacity: options.credentialProxyCapacity }),
+        },
+        options.repositoryAdmission,
+      );
       const modelBackends = backends.filter((backend) => backend.type === "chatgpt");
       if (modelBackends.length > 0) {
         const unexpectedBackendCall = async () =>

@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { createServer } from "node:https";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import {
@@ -9,11 +13,18 @@ import {
 import { witnessOpenShellGitLaunch } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import { openShellGitExecutionIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts";
 
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
+import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
+import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { signedLeaf } from "../helpers/certificates.mjs";
+import {
+  loadInstallationConfiguration,
+  type InstallationRuntimeDrivers,
+} from "../../apps/controller/src/composition/installation-config.ts";
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
@@ -32,10 +43,7 @@ test(
   "historical v5 installation cannot renew and settles the original lost detach without replay",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
-    const historicalOnly = () => {
-      throw new Error("no live historical release");
-    };
-    const release = protectedRepositoryGitRelease(historicalOnly, historicalOnly);
+    const f = await standingExecutionPlatform(t, import.meta.url);
     const gateway = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/bin/codex"] },
       {
@@ -52,47 +60,224 @@ test(
         } as never,
       },
     );
-    const { f, key, revision, registry, owner, approval, driver } = await standingExecutionFixture(
-      t,
-      import.meta.url,
-      async (_pool, namespaceId) => ({
-        backendId: "historical-standing",
-        registry: validateGitHubRepositoryRegistry({
-          version: 1,
-          backendId: "historical-standing",
-          providerInstanceId: "historical-provider",
-          appId: "123",
-          githubInstallationId: "456",
-          maximumDurationSeconds: 180,
-          allowStandingApprovals: true,
-          installationAccess: {
-            repositoryRef: "team-installation",
-            namespaces: [{ namespaceId, accessMode: "installation", allowStandingApproval: true }],
-          },
-          repositories: [
+    const registry = validateGitHubRepositoryRegistry({
+      version: 1,
+      backendId: "historical-standing",
+      providerInstanceId: "historical-provider",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 180,
+      allowStandingApprovals: true,
+      installationAccess: {
+        repositoryRef: "team-installation",
+        namespaces: [
+          { namespaceId: f.namespace.id, accessMode: "installation", allowStandingApproval: true },
+        ],
+      },
+      repositories: [
+        {
+          repositoryRef: "source",
+          repositoryId: "789",
+          repository: "example/source",
+          namespaces: [
             {
-              repositoryRef: "source",
-              repositoryId: "789",
-              repository: "example/source",
-              namespaces: [
-                {
-                  namespaceId,
-                  profiles: ["git-write"],
-                  transport: "git-only",
-                  allowStandingApproval: true,
-                  pushRefAllowlist: ["refs/heads/review"],
-                },
-              ],
+              namespaceId: f.namespace.id,
+              profiles: ["git-write"],
+              transport: "git-only",
+              allowStandingApproval: true,
+              pushRefAllowlist: ["refs/heads/review"],
             },
           ],
-        }),
-        requestedBinding: { repositoryRef: "team-installation", profile: "github-installation" },
-        protectedDriver: release.owner,
-        credentialGateway: gateway,
+        },
+      ],
+    });
+    const id = "historical-protected-git";
+    const { directory, entry } = await protectedDriverPackage(t, id, "repository-git");
+    const tls = await harnessTlsFixture(t);
+    const loopback = await signedLeaf(tls.directory, tls.authority, {
+      name: "historical-loopback",
+      commonName: "Historical protected Git fixture",
+      subjectAltName: "IP:127.0.0.1",
+      keyPem: undefined,
+      days: 1,
+    });
+    const serverTls = { cert: loopback.cert, key: loopback.key };
+    const packageFixture = (await import(
+      pathToFileURL(join(entry, "repository-git.mjs")).href
+    )) as typeof import("../fixtures/driver-packages/protected-execution-driver/repository-git.ts");
+    const sender = packageFixture.createCounterpart(serverTls);
+    // Advertise the historical profile through the installed package's real negotiation.
+    // No delivery request is made: the cold OpenShell verifier below must refuse first.
+    const capability = createServer(serverTls, (_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({ profile: "github_installation", authorization: "online-request" }),
+      );
+    });
+    const origins: string[] = [];
+    for (const server of [sender, capability]) {
+      t.after(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+            server.closeAllConnections();
+          }),
+      );
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const address = server.address();
+      assert.ok(address && typeof address !== "string");
+      origins.push(`https://127.0.0.1:${address.port}`);
+    }
+    const registryPath = join(directory, "registry.json");
+    const caPath = join(directory, "ca.pem");
+    await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
+    await writeFile(caPath, tls.caBundle, { mode: 0o600 });
+    const base = createInstallationDriverConfiguration();
+    const { gatewayClients: _clients, ...network } = base.drivers.compute.configuration.network;
+    const path = join(directory, "installation.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...base,
+        presets: { includeDefaults: false },
+        runtime: { nativeWorkerSupport: "custom-image" },
+        backend: [{ id: registry.backendId, type: "github", configuration: { registryPath } }],
+        repository: {
+          id: registry.backendId,
+          configuration: { sessionDurationSeconds: 120 },
+          preparedGitHub: {
+            custodyKeyPath: join(directory, "custody"),
+            privateKeyPath: join(directory, "signer"),
+          },
+        },
+        drivers: {
+          ...base.drivers,
+          compute: {
+            ...base.drivers.compute,
+            configuration: {
+              ...base.drivers.compute.configuration,
+              network,
+              gatewayRouting: {
+                hostname: "agents.example.test",
+                gatewayName: "gateways",
+                gatewayNamespace: "occ-system",
+                envoyNamespace: "envoy",
+              },
+            },
+          },
+          sandbox: {
+            id,
+            package: id,
+            configuration: {
+              origin: origins[0],
+              peerOrigin: origins[0],
+              capabilityOrigin: origins[1],
+              installationApiOrigin: origins[0],
+              certFile: caPath,
+              releaseKey: "unused-before-release",
+            },
+          },
+          credential_proxy: { id, configuration: {} },
+        },
       }),
-      { sandbox: release.sandboxConfiguration },
-      20_000,
+      { mode: 0o600 },
     );
+    const loaded = await loadInstallationConfiguration({
+      mode: "production",
+      packageRoot: directory,
+      environment: { OCC_CONFIG_PATH: path },
+    });
+    assert.ok(loaded?.repositoryRuntime?.protectedDriver);
+    assert.equal(loaded.repositoryRuntime.computeDriver, loaded.computeDriver);
+    assert.equal(loaded.repositoryRuntime.protectedDriver, loaded.protectedDriver);
+    assert.equal(loaded.repositoryRuntime.tokenService, loaded.tokenService);
+    const protectedOwner = loaded.repositoryRuntime.protectedDriver;
+    assert.equal(protectedOwner.require("sandbox"), loaded.sandboxDriver);
+    assert.equal(protectedOwner.require("credential_proxy"), loaded.proxyDriver);
+    let unexpectedEffects = 0;
+    const noEffect = () => {
+      unexpectedEffects++;
+      assert.fail("historical verification must not provision credentials or a harness");
+    };
+    t.after(() => assert.equal(unexpectedEffects, 0));
+    loaded.computeDriver.provisionAgentRuntimeCredentials = noEffect;
+    protectedOwner.require("sandbox").provisionHarness = noEffect;
+    const driver = loaded.repositoryRuntime.admission.policy;
+    f.controller.installDriver(protectedOwner, ["sandbox", "credential_proxy"]);
+    f.controller.registerDriver(gateway);
+    f.controller.selectDriver("credential_gateway", gateway.id);
+    // Retain the normal fixture's dedicated harness admission before recording history.
+    Object.assign(f.compute, {
+      normalizeHarnessOverrides: loaded.computeDriver.normalizeHarnessOverrides?.bind(
+        loaded.computeDriver,
+      ),
+      resolveHarnessConfiguration: loaded.computeDriver.resolveHarnessConfiguration?.bind(
+        loaded.computeDriver,
+      ),
+      admitRevision: loaded.computeDriver.admitRevision?.bind(loaded.computeDriver),
+    });
+    const owner = await f.agent("execution-fence", {
+      executionMode: "dedicated",
+      auth: "credential_source",
+    });
+    const bindings = [
+      { repositoryRef: "team-installation", profile: "github-installation" as const },
+    ];
+    const { bindings: resolvedBindings } = await driver.resolveBindings({
+      namespaceId: f.namespace.id,
+      bindings,
+    });
+    const [binding] = resolvedBindings;
+    assert.ok(binding);
+    await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
+      JSON.stringify(bindings),
+      owner.id,
+    ]);
+    assert.ok(driver.standingApprovalScope);
+    const approvalScope = await driver.standingApprovalScope({
+      namespaceId: f.namespace.id,
+      binding,
+    });
+    assert.ok(approvalScope);
+    const fingerprint = repositoryApprovalFingerprint({
+      namespaceId: f.namespace.id,
+      agentId: owner.id,
+      binding,
+      scope: approvalScope,
+    });
+    const approval = await f.state.transact((u) =>
+      u.repositorySessions.approveStanding({
+        id: randomUUID(),
+        namespaceId: f.namespace.id,
+        agentId: owner.id,
+        binding,
+        scope: approvalScope,
+        scopeFingerprint: fingerprint,
+        approvedBy: f.actor.id,
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    const revisionOptions = {
+      actorId: f.actor.id,
+      compute: {
+        id: loaded.computeDriver.id,
+        implementation: loaded.computeDriver.implementation,
+      },
+      protectedRepositoryDriver: protectedOwner,
+      repositoryCredentials: {
+        driver: { id: driver.id, implementation: driver.implementation },
+        bindings: [binding],
+        deadlineWallMs: Date.now() + 20_000,
+        standingApprovalId: approval.id,
+        standingApprovalGeneration: approval.generation,
+        standingApprovalScopeFingerprint: fingerprint,
+      },
+    };
+    const revision = await f.revision(owner, 1, revisionOptions);
+    const key = { namespaceId: f.namespace.id, agentId: owner.id, revisionId: revision.id };
     await f.state.transact((u) =>
       u.agents.compareAndSetActiveRevision(key.namespaceId, key.agentId, undefined, key.revisionId),
     );
@@ -101,6 +286,7 @@ test(
     );
     assert.ok(persisted);
     assert.deepEqual(persisted.executionAdmission, { version: 5, mode: "protected" });
+    assert.deepEqual(persisted.egressPlan?.driver, protectedOwner.ref);
     assert.equal(persisted.egressPlan?.repositoryGitAuthorization, "online-request");
     assert.equal(persisted.repositoryCredentials?.bindings[0]?.profile, "github-installation");
     assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
@@ -232,7 +418,7 @@ test(
       u.credentialSources.recordEgressInstallation({
         plan,
         sandboxId,
-        sender: release.owner.require("credential_proxy").sourceControl.sender,
+        sender: protectedOwner.require("credential_proxy").sourceControl.sender,
         installedAt: new Date().toISOString(),
         enforcement: {
           authorityScope: "execution",
@@ -398,54 +584,47 @@ test(
     let maintenanceCode: string | undefined;
     let preparations = 0;
     let verifications = 0;
-    const computeAdmission = createTestKubernetesComputeDriver(f.compute.id, {
-      repositoryCredentials: true,
-      protectedDriver: release.owner,
-      credentialGatewayDriver: gateway,
+    // Wrap only effects on the selected Compute instance. Its constructor-bound owner,
+    // policy, Token Service and admission validators stay identical to the sealed runtime.
+    const compute = loaded.computeDriver;
+    Object.assign(compute, {
+      preflight: undefined,
+      setLifecycleDrivers: undefined,
+      getAgentRuntimeCredentialStatus: undefined,
+      async verifyRepositoryExecution() {
+        verifications++;
+        return access.verifyExecution(context);
+      },
+      async prepareRevision() {
+        preparations++;
+        throw new Error("historical execution cannot be prepared");
+      },
+      async observeRevision() {
+        return { state: "running" as const };
+      },
     });
-    await f.start(
-      {
-        ...f.compute,
-        validateExecutionAdmission:
-          computeAdmission.validateExecutionAdmission.bind(computeAdmission),
-        validateRepositoryCredentials:
-          computeAdmission.validateRepositoryCredentials.bind(computeAdmission),
-        async verifyRepositoryExecution() {
-          verifications++;
-          return access.verifyExecution(context);
-        },
-        async prepareRevision() {
-          preparations++;
-          throw new Error("historical execution cannot be prepared");
-        },
-        async observeRevision() {
-          return { state: "running" as const };
-        },
+    assert.equal(packageFixture.peer, undefined, "verification fixture has no bound sender");
+    await f.start(compute, {
+      emit(event) {
+        if (event?.event === "worker.completed" && event.revisionId === revision.id && !stopped) {
+          maintenanceCode = typeof event.code === "string" ? event.code : undefined;
+          stopped = f.stop();
+        }
       },
-      {
-        emit(event) {
-          if (event?.event === "worker.completed" && event.revisionId === revision.id && !stopped) {
-            maintenanceCode = typeof event.code === "string" ? event.code : undefined;
-            stopped = f.stop();
-          }
-        },
-        transformDrivers: (d: { installation: { drivers: object } }) => ({
-          ...d,
-          repositoryPolicy: driver,
-          credentialGatewayDriver: gateway,
-          protectedDriver: release.owner,
-          sandboxDriver: release.owner.require("sandbox"),
-          proxyDriver: release.owner.require("credential_proxy"),
-          installation: {
-            ...d.installation,
-            drivers: {
-              ...d.installation.drivers,
-              credential_gateway: { id: gateway.id },
-            },
+      transformDrivers: (d: InstallationRuntimeDrivers) => ({
+        ...loaded,
+        configurationDriver: d.configurationDriver,
+        secretDriver: d.secretDriver,
+        credentialGatewayDriver: gateway,
+        installation: {
+          ...loaded.installation,
+          drivers: {
+            ...loaded.installation.drivers,
+            credential_gateway: { id: gateway.id },
           },
-        }),
-      },
-    );
+        },
+      }),
+    });
     await waitUntil("historical maintenance to finish its first pass", () => stopped !== undefined);
     await stopped;
     assert.ok(
@@ -458,6 +637,11 @@ test(
       "historical evidence must not dispose its predecessor or create a successor session",
     );
     assert.equal(preparations, 0);
+    assert.equal(
+      packageFixture.peer,
+      undefined,
+      "core Worker verification must not open a sender or create delivery effects",
+    );
     assert.equal(maintenanceCode, "REPOSITORY_EXECUTION_UNVERIFIED");
     const deferred = await f.state.transactWithQueue((_unit, queue) =>
       queue.findWork(maintenanceKey),

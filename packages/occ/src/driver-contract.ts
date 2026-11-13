@@ -174,9 +174,6 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.validateCredentials === "function")
     );
   }
-  if (driver.capability === "repo") {
-    return ["listOptions", "resolve"].every((method) => typeof candidate[method] === "function");
-  }
   return (
     [
       "normalizeHarnessOverrides",

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Keep Helm submissions distinct and verify a same-candidate recovery."""
 
+from datetime import datetime
+from decimal import Decimal
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -576,6 +579,88 @@ def verify_installation_mount(spec, component, secret, key):
             "Installation consumer volume differs")
 
 
+def check_startup_projection(directory, release, kubeconfig, context, namespace, component, key):
+    """Check the chart-mounted generation that predates the running container."""
+    kube = ["kubectl", "--kubeconfig", kubeconfig, "--context", context, "--namespace", namespace,
+            "--request-timeout=15s"]
+    selector = (f"app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance={release},"
+                f"app.kubernetes.io/component={component}")
+    deployment = f"openclaw-enterprise-{component}"
+
+    secret = load(directory / "before-live-installation-secret.json")["metadata"]["name"]
+
+    def identities():
+        def get(*args):
+            return json.loads(command([*kube, "get", *args, "--output", "json"]))
+
+        def owner(metadata, kind):
+            owners = [ref for ref in metadata["ownerReferences"] if ref.get("controller") is True]
+            require(len(owners) == 1 and owners[0]["kind"] == kind, "unexpected startup Pod owner")
+            return owners[0]["name"], owners[0]["uid"]
+
+        current = get("deployment/" + deployment)
+        pods = get("pod", "--selector", selector)["items"]
+        require(pods and current["spec"]["replicas"] == len(pods), "serving Pod count differs")
+        sets = get("replicasets", "--selector", selector)["items"]
+        managed = {(rs["metadata"]["name"], rs["metadata"]["uid"]) for rs in sets
+                   if owner(rs["metadata"], "Deployment") == (deployment, current["metadata"]["uid"])}
+        observed = []
+        for pod in pods:
+            metadata = pod["metadata"]
+            require(not metadata.get("deletionTimestamp") and pod["status"]["phase"] == "Running"
+                    and owner(metadata, "ReplicaSet") in managed, "serving Pod is unavailable or unowned")
+            verify_installation_mount(pod["spec"], component, secret, key)
+            statuses = [item for field in ("containerStatuses", "initContainerStatuses")
+                        for item in pod["status"].get(field, []) if item["name"] == component]
+            require(len(statuses) == 1 and statuses[0]["ready"] and statuses[0]["containerID"],
+                    "serving container identity is unavailable")
+            observed.append((metadata["name"], metadata["uid"], statuses[0]["containerID"],
+                             statuses[0]["state"]["running"]["startedAt"]))
+        return sorted(observed)
+
+    observed = identities()
+    # Kubelet atomically replaces ..data when the projected contents change. Its symlink ctime
+    # includes that rename. Check it on both sides of the hash, not the payload file's mtime.
+    probe = """set -eu
+export LC_ALL=C
+cd /etc/openclaw/installation
+test "$OCC_CONFIG_PATH" = /etc/openclaw/installation/installation.yaml
+test "$(readlink installation.yaml)" = ..data/installation.yaml
+test -L ..data
+before=$(stat -c '%d:%i:%.9Z' ..data)
+sha256sum < installation.yaml
+after=$(stat -c '%d:%i:%.9Z' ..data)
+test "$before" = "$after"
+printf '%s\n' "${after##*:}"
+# Kubelet creates and bind-mounts this per-container file before starting the process.
+# Its birth time remains fixed even if the process later writes its termination message.
+awk '$5 == "/dev/termination-log" {print $4}' /proc/self/mountinfo 2>/dev/null || true
+stat -c '%.9W' /dev/termination-log 2>/dev/null || true
+"""
+    expected = sha(read(directory / "before-live-installation.yaml"))
+    for pod_name, uid, _container, start_time in observed:
+        result = command([*kube, "exec", pod_name, "-c", component, "--",
+                          "sh", "-ec", probe]).decode().splitlines()
+        require(len(result) >= 2 and result[0].split() == [expected, "-"],
+                "mounted startup bytes differ from the baseline")
+        require(re.fullmatch(r"[0-9]+\.[0-9]{9}", result[1]), "startup projection time is unavailable")
+        generation = Decimal(result[1])
+        started = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        require(started.utcoffset() is not None, "serving container start time is unavailable")
+        start_second = int(started.timestamp())
+        predates_start = 0 < generation < start_second
+        # PodStatus can truncate startedAt to seconds. Within that second, require
+        # the actual kubelet mount for this Pod UID and container name. A newer
+        # projection, a tie or an unavailable filesystem birth time proves no order.
+        if (int(generation) == start_second and len(result) == 4
+                and re.fullmatch(r".*/pods/" + re.escape(uid) + "/containers/" + re.escape(component)
+                                 + r"/[0-9a-f]{8}", result[2])
+                and re.fullmatch(r"[0-9]+\.[0-9]{9}", result[3])):
+            predates_start = generation < Decimal(result[3]) < start_second + 1
+        require(predates_start, "the mounted startup generation does not predate the serving container")
+    require(identities() == observed, "serving container changed during the startup check")
+
+
 def verify_installation_consumers(directory, release, kubeconfig, context, namespace):
     root, record = attempt(directory)
     current = json.loads(command(["helm", "status", release, "--kubeconfig", kubeconfig,
@@ -691,6 +776,8 @@ def main():
         recover(directory, *args)
     elif action == "verify-recovery":
         verify_recovery(directory, *args)
+    elif action == "startup-projection":
+        check_startup_projection(directory, *args)
     elif action == "verify-installation":
         verify_installation_consumers(directory, *args)
     else:

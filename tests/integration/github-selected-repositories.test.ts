@@ -161,7 +161,7 @@ test("ordinary fresh selections resolve one or N repositories without broadening
     sessionDurationSeconds: 600,
   });
   for (const refs of [["a"], ["a", "b"], ["b", "a"]]) {
-    const resolved = policy.resolve({
+    const resolved = policy.resolveBindings({
       namespaceId: "team",
       bindings: refs.map((repositoryRef) => ({ repositoryRef })),
     });
@@ -193,7 +193,7 @@ test("ordinary fresh selections resolve one or N repositories without broadening
     namespaceId: "team",
     bindings: [{ repositoryRef: "a" }, { repositoryRef: "b" }],
   };
-  const saved = policy.resolve(selection).bindings;
+  const saved = policy.resolveBindings(selection).bindings;
   // Only B's saved grant ID changes; the registry still permits the homogeneous pair.
   const substituted = [
     saved[0]!,
@@ -215,14 +215,17 @@ test("ordinary fresh selections resolve one or N repositories without broadening
     narrowed,
     { sessionDurationSeconds: 600 },
   );
-  assert.throws(() => narrowedPolicy.resolve(selection), { name: "ScopeViolationError" });
-  const fresh = narrowedPolicy.resolve({ ...selection, bindings: [{ repositoryRef: "b" }] });
+  assert.throws(() => narrowedPolicy.resolveBindings(selection), { name: "ScopeViolationError" });
+  const fresh = narrowedPolicy.resolveBindings({
+    ...selection,
+    bindings: [{ repositoryRef: "b" }],
+  });
   const scope = resolveSelectedRepositoryGrant(narrowed, "team", "revision", fresh.bindings);
   assert.deepEqual(scope.repositories, [{ repositoryId: "102", repository: "team/b" }]);
   assert.deepEqual(scope.permissions, readPermissions);
   assert.throws(
     () =>
-      policy.resolve({
+      policy.resolveBindings({
         namespaceId: "team",
         bindings: [{ repositoryRef: "a", profile: "git-write" }],
       }),

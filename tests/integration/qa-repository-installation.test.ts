@@ -89,11 +89,15 @@ async function generatedInputs(
 type LoadedInstallation = Awaited<ReturnType<typeof loadInstallationConfiguration>>;
 
 async function startWorkerOwner(loaded: LoadedInstallation) {
-  assert.ok(loaded?.repositoryOwner && loaded.preparedRepositoryGit && loaded.repositoryRegistry);
-  const { issuerCaPath, ...prepared } = loaded.preparedRepositoryGit;
+  assert.ok(
+    loaded?.repositoryRuntime?.owner &&
+      loaded.repositoryRuntime?.prepared &&
+      loaded.repositoryRuntime?.admission.registry,
+  );
+  const { issuerCaPath, ...prepared } = loaded.repositoryRuntime.prepared;
   assert.equal(issuerCaPath, undefined);
   // The worker serves this socket; the policy and key checks come first.
-  const { controlSocket, ...owner } = loaded.repositoryOwner;
+  const { controlSocket, ...owner } = loaded.repositoryRuntime.owner;
   assert.equal(typeof controlSocket, "string");
   return startPreparedGitHubGitOwner({
     ...owner,
@@ -102,7 +106,7 @@ async function startWorkerOwner(loaded: LoadedInstallation) {
     // Startup validates before it touches the database; maintenance stays off.
     pool: {} as Parameters<typeof startPreparedGitHubGitOwner>[0]["pool"],
     startWorker: false,
-    registry: loaded.repositoryRegistry,
+    registry: loaded.repositoryRuntime?.admission.registry,
   });
 }
 
@@ -168,22 +172,26 @@ test("QA repository inputs start the controller, worker owner and repository ser
     mode: "production",
     environment: { OCC_CONFIG_PATH: join(root, "installation.yaml") },
   });
-  assert.ok(loaded?.repositoryOwner && loaded.repositoryAdmission && loaded.preparedRepositoryGit);
+  assert.ok(
+    loaded?.repositoryRuntime?.owner &&
+      loaded.repositoryRuntime?.admission &&
+      loaded.repositoryRuntime?.prepared,
+  );
   assert.equal(Object.hasOwn(loaded, "repositoryPolicy"), false);
   assert.equal(Object.hasOwn(loaded.installation.drivers, "repo"), false);
-  assert.equal(loaded.repositoryAdmission.policyMode, "built-in");
-  assert.equal(loaded.repositoryAdmission.backendId, registry.backendId);
-  assert.equal(loaded.repositoryAdmission.policy.id, installation.repository.id);
-  assert.equal(loaded.repositoryGitDriver, undefined);
+  assert.ok(loaded.repositoryRuntime?.admission);
+  assert.equal(loaded.repositoryRuntime?.admission.backendId, registry.backendId);
+  assert.equal(loaded.repositoryRuntime?.admission.policy.id, installation.repository.id);
+  assert.equal(loaded.repositoryRuntime?.protectedDriver, undefined);
   assert.equal("authorityIdentity" in loaded ? loaded.authorityIdentity : undefined, undefined);
   assert.equal(
     "resolveRepositoryDelivery" in loaded ? loaded.resolveRepositoryDelivery : undefined,
     undefined,
   );
-  assert.equal(typeof loaded.nativeRepositorySender, "object");
-  assert.equal(loaded.repositoryOwner.backendId, "github-qa");
+  assert.equal(typeof loaded.repositoryRuntime?.nativeSender, "object");
+  assert.equal(loaded.repositoryRuntime?.owner.backendId, "github-qa");
   assert.equal(
-    loaded.repositoryAdmission.policy.resolveBindings({
+    loaded.repositoryRuntime?.admission.policy.resolveBindings({
       namespaceId: "ns_qa",
       bindings: [{ repositoryRef: "qa" }],
     }).bindings[0]?.profile,
@@ -192,7 +200,7 @@ test("QA repository inputs start the controller, worker owner and repository ser
 
   // The owner refuses an App key it cannot sign with at startup (finding 2217).
   assert.equal(
-    loaded.preparedRepositoryGit.privateKeyPath,
+    loaded.repositoryRuntime?.prepared.privateKeyPath,
     `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`,
   );
   const owner = await startWorkerOwner(loaded);
@@ -248,7 +256,6 @@ test("the retired QA repository shape is refused at startup", async (t) => {
         id: retired.backendId,
         type: "github",
         configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-        drivers: { repo: "repository-credentials" },
       },
     ],
     drivers: {

@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { loadRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
+import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import type { RepositorySelectionMode } from "../helpers/repository-selection-load.ts";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
@@ -445,7 +446,6 @@ test("protected Git resolves repository and installation grants without granting
         id: registry.backendId,
         type: "github",
         configuration: { registryPath: selectedRegistryPath },
-        drivers: { repo: "repo" },
       },
       selection: {
         id: "repo",
@@ -457,7 +457,7 @@ test("protected Git resolves repository and installation grants without granting
   const resolve = access.resolveRepositoryDelivery;
   assert.deepEqual(
     (
-      await access.repositoryPolicy.resolve({
+      await access.repositoryAdmission.policy.resolveBindings({
         namespaceId: revision.namespaceId,
         bindings: [{ repositoryRef: "application", profile: "git-write" }],
       })
@@ -619,11 +619,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy },
   };
   const selected = new InstalledDriver(input.sandbox, registration);
-  const drivers = {
-    protectedDriver: selected,
-    repositoryGitDriver: selected,
-    repositoryTransport: capabilities.repositoryTransport,
-  } as InstallationRuntimeDrivers;
+  const delivery = { protectedDriver: selected, transport: capabilities.repositoryTransport };
   const saved = (
     signal: AbortSignal,
     owner: InstalledDriver,
@@ -671,11 +667,9 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
       end: async () => {},
     }) satisfies PostgresPool;
   const pool = emptyPool();
-  const { repositoryGitDriver: _repositoryGitDriver, ...withoutDriver } = drivers;
   for (const [selection, availableAuthority] of [
-    [{ ...drivers, protectedDriver: new InstalledDriver(input.sandbox, registration) }, authority],
-    [withoutDriver, authority],
-    [drivers, undefined],
+    [{ transport: capabilities.repositoryTransport }, authority],
+    [delivery, undefined],
   ] as const) {
     await assert.rejects(
       bindRepositoryGitTransport(selection, availableAuthority, pool),
@@ -688,8 +682,8 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     /selected Driver/,
   );
   // Both callers use the same dependencies. Only the first reads the pending listener config.
-  const first = bindRepositoryGitTransport(drivers, authority, pool);
-  const second = bindRepositoryGitTransport(drivers, authority, pool);
+  const first = bindRepositoryGitTransport(delivery, authority, pool);
+  const second = bindRepositoryGitTransport(delivery, authority, pool);
   await Promise.all([
     assert.rejects(first, { code: "ENOENT" }),
     assert.rejects(second, /already started or stopped/),
@@ -700,10 +694,10 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   const firstEmit = t.mock.fn();
   const secondEmit = t.mock.fn();
   const secondPool = emptyPool();
-  const active = await bindRepositoryGitTransport(drivers, authority, pool, firstEmit);
+  const active = await bindRepositoryGitTransport(delivery, authority, pool, firstEmit);
   assert.ok(active);
   await assert.rejects(
-    bindRepositoryGitTransport(drivers, authority, secondPool, secondEmit),
+    bindRepositoryGitTransport(delivery, authority, secondPool, secondEmit),
     /already started or stopped/,
   );
 
@@ -747,7 +741,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.equal(secondPool.connect.mock.callCount(), 0);
   await active.close();
   await assert.rejects(
-    bindRepositoryGitTransport(drivers, authority, pool),
+    bindRepositoryGitTransport(delivery, authority, pool),
     /already started or stopped/,
   );
 
@@ -898,7 +892,6 @@ test("repository scope changes invalidate the external Driver identity while a r
         id: registry.backendId,
         type: "github",
         configuration: { registryPath },
-        drivers: { repo: "repo" },
       },
     ],
     repository: {
@@ -927,16 +920,122 @@ test("repository scope changes invalidate the external Driver identity while a r
   };
   const path = join(directory, "installation.json");
   await writeFile(path, JSON.stringify(configuration));
-  const load = async () => {
+  const load = async (configurationPath = path) => {
     const runtime = (await loadInstallationConfiguration({
       mode: "production",
-      environment: { OCC_CONFIG_PATH: path },
+      environment: { OCC_CONFIG_PATH: configurationPath },
       packageRoot: directory,
     }))!;
     t.after(() => runtime.protectedDriver!.close());
     return runtime;
   };
   const original = await load();
+  await t.test(
+    "programmatic production startup accepts only the composed repository authority",
+    async () => {
+      const admission = original.repositoryRuntime!.admission;
+      let databaseReads = 0;
+      let policyCalls = 0;
+      const invokePolicy = () => {
+        policyCalls++;
+        throw new Error("fabricated repository policy executed");
+      };
+      const start = (drivers: InstallationRuntimeDrivers) =>
+        composeProduction({
+          mode: "production",
+          host: "127.0.0.1",
+          get databaseUrl(): string {
+            databaseReads++;
+            throw new Error("database boundary reached");
+          },
+          authSecret: "unused",
+          authBaseURL: "https://example.test",
+          drivers,
+        });
+      // The real file loader supplies authority that proceeds to the next startup boundary.
+      const alternateRegistryPath = join(directory, "alternate-registry.json");
+      await writeFile(alternateRegistryPath, JSON.stringify(registry), { mode: 0o600 });
+      const alternatePath = join(directory, "alternate-installation.json");
+      await writeFile(
+        alternatePath,
+        JSON.stringify({
+          ...configuration,
+          backend: [
+            {
+              id: registry.backendId,
+              type: "github",
+              configuration: { registryPath: alternateRegistryPath },
+            },
+          ],
+        }),
+      );
+      const alternate = await load(alternatePath);
+      await writeFile(registryPath, JSON.stringify({ ...registry, maximumDurationSeconds: 7200 }));
+      const reconfigured = await load();
+      await writeFile(registryPath, JSON.stringify(registry));
+      const selected = original.repositoryRuntime!;
+      const changed = reconfigured.repositoryRuntime!;
+      assert.notDeepEqual(changed.admission.registry, selected.admission.registry);
+      assert.notDeepEqual(changed.protectedDriver!.ref, selected.protectedDriver!.ref);
+      for (const whole of [original, alternate, reconfigured]) {
+        await assert.rejects(start(whole), /database boundary reached/);
+      }
+      assert.equal(databaseReads, 3);
+      databaseReads = 0;
+      const legacyBackends = original.installation.backend.map((backend) =>
+        backend.type === "github"
+          ? { ...backend, drivers: { repo: admission.policy.id } }
+          : backend,
+      );
+      await assert.rejects(
+        start({ ...original, installation: { ...original.installation, backend: legacyBackends } }),
+        /drivers is retired for GitHub Backends/,
+      );
+      const fabricated = {
+        backendId: admission.backendId,
+        policy: {
+          id: admission.policy.id,
+          implementation: admission.policy.implementation,
+          listCatalog: invokePolicy,
+          resolveBindings: invokePolicy,
+          allowsStandingApproval: invokePolicy,
+          standingApprovalScope: invokePolicy,
+        },
+      };
+      for (const candidate of [
+        { ...selected, admission: fabricated },
+        { ...selected },
+        Object.create(selected),
+        { ...selected, admission: changed.admission },
+        alternate.repositoryRuntime,
+        changed,
+      ]) {
+        await assert.rejects(
+          start({ ...original, repositoryRuntime: candidate }),
+          /selected repository runtime/,
+        );
+      }
+      await assert.rejects(
+        start({ ...original, installation: alternate.installation }),
+        /built-in repository admission/,
+      );
+      const independentFields = {
+        ...original,
+        repositoryAdmission: changed.admission,
+        repositoryRegistry: changed.admission.registry,
+      };
+      await assert.rejects(start(independentFields), /selected repository runtime/);
+      // An authentic whole runtime still belongs to both of its selected Driver instances.
+      for (const mixed of [
+        { ...reconfigured, computeDriver: original.computeDriver },
+        { ...reconfigured, protectedDriver: original.protectedDriver! },
+      ]) {
+        await assert.rejects(start(mixed), /selected repository runtime/);
+      }
+      assert.equal(policyCalls, 0);
+      assert.equal(databaseReads, 0);
+    },
+  );
   const reloaded = await load();
   assert.deepEqual(reloaded.protectedDriver!.ref, original.protectedDriver!.ref);
   // A fresh process observes resolution before the installation loader can warm its module cache.
@@ -973,9 +1072,11 @@ test("repository scope changes invalidate the external Driver identity while a r
       const selectedPath = join(directory, `${mode}-policy.json`);
       const loadPolicy = async (
         policyConfiguration: object,
-        selectedRegistryPath = registryPath,
-        ownerId = "repo",
-        controlSocket = "/unselected/control.sock",
+        options: {
+          registryPath?: string;
+          controlSocket?: string;
+          retiredDrivers?: { repo: string };
+        } = {},
       ) => {
         await writeFile(
           selectedPath,
@@ -986,7 +1087,7 @@ test("repository scope changes invalidate the external Driver identity while a r
               ...(mode === "native"
                 ? {
                     nativeSender: {
-                      controlSocket,
+                      controlSocket: options.controlSocket ?? "/unselected/control.sock",
                       publicCaPath: certFile,
                     },
                   }
@@ -996,8 +1097,8 @@ test("repository scope changes invalidate the external Driver identity while a r
             backend: [
               {
                 ...configuration.backend[0],
-                configuration: { registryPath: selectedRegistryPath },
-                drivers: { repo: ownerId },
+                configuration: { registryPath: options.registryPath ?? registryPath },
+                drivers: options.retiredDrivers,
               },
             ],
           }),
@@ -1018,16 +1119,29 @@ test("repository scope changes invalidate the external Driver identity while a r
         1.5,
         Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1,
       ]) {
-        await assert.rejects(loadPolicy({ sessionDurationSeconds }, inaccessible), {
-          name: "ConfigurationValidationError",
-        });
+        await assert.rejects(
+          loadPolicy({ sessionDurationSeconds }, { registryPath: inaccessible }),
+          {
+            name: "ConfigurationValidationError",
+          },
+        );
       }
-      await assert.rejects(loadPolicy({ sessionDurationSeconds: 601 }, inaccessible), {
-        code: "ENOTDIR",
-      });
       await assert.rejects(
-        loadPolicy({ sessionDurationSeconds: 601 }, inaccessible, "other-repo"),
-        /must match the selected repository.id/,
+        loadPolicy({ sessionDurationSeconds: 601 }, { registryPath: inaccessible }),
+        { code: "ENOTDIR" },
+      );
+      await assert.rejects(
+        loadPolicy(
+          { sessionDurationSeconds: 601 },
+          { registryPath: inaccessible, retiredDrivers: { repo: "other-repository" } },
+        ),
+        /drivers is retired for GitHub Backends/,
+      );
+      const foreignRegistry = join(directory, `${mode}-foreign-registry.json`);
+      await writeFile(foreignRegistry, JSON.stringify({ ...registry, backendId: "other-backend" }));
+      await assert.rejects(
+        loadPolicy({ sessionDurationSeconds: 601 }, { registryPath: foreignRegistry }),
+        /invalid-repository-registry/,
       );
       await assert.rejects(
         loadPolicy({ sessionDurationSeconds: registry.maximumDurationSeconds + 1 }),
@@ -1036,15 +1150,31 @@ test("repository scope changes invalidate the external Driver identity while a r
       if (mode === "native") {
         // The native transport rejects overlong socket bytes before it reads the registry.
         await assert.rejects(
-          loadPolicy({ sessionDurationSeconds: 601 }, inaccessible, "repo", `/${"é".repeat(60)}`),
+          loadPolicy(
+            { sessionDurationSeconds: 601 },
+            { registryPath: inaccessible, controlSocket: `/${"é".repeat(60)}` },
+          ),
           { name: "ConfigurationValidationError" },
         );
       }
       const runtime = (await loadPolicy({ sessionDurationSeconds: 601 }))!;
       t.after(() => runtime.protectedDriver?.close());
-      const admission = runtime.repositoryAdmission;
+      const legacy = (await loadPolicy(
+        { sessionDurationSeconds: 601 },
+        { retiredDrivers: { repo: configuration.repository.id } },
+      ))!;
+      t.after(() => legacy.protectedDriver?.close());
+      assert.deepEqual(legacy.installation.backend, configuration.backend);
+      assert.deepEqual(legacy.installation.backend, runtime.installation.backend);
+      assert.equal(Object.hasOwn(legacy.installation.drivers, "repo"), false);
+      assert.deepEqual(legacy.repositoryRuntime!.owner, runtime.repositoryRuntime!.owner);
+      if (mode === "protected") {
+        assert.deepEqual(legacy.protectedDriver!.ref, runtime.protectedDriver!.ref);
+      } else {
+        assert.ok(legacy.repositoryRuntime!.nativeSender);
+      }
+      const admission = runtime.repositoryRuntime?.admission;
       assert.ok(admission);
-      assert.equal(admission.policyMode, "built-in");
       assert.equal(admission.backendId, registry.backendId);
       assert.equal(admission.policy.id, "repo");
       assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
@@ -1053,11 +1183,11 @@ test("repository scope changes invalidate the external Driver identity while a r
         bindings: [{ repositoryRef: "application", profile: "git-write" }],
       });
       assert.equal(binding.sessionDurationSeconds, 601);
-      assert.equal(runtime.repositoryOwner!.driverId, "repo");
-      assert.equal(runtime.repositoryOwner!.backendId, registry.backendId);
+      assert.equal(runtime.repositoryRuntime!.owner.driverId, "repo");
+      assert.equal(runtime.repositoryRuntime!.owner.backendId, registry.backendId);
       if (mode === "native") {
-        assert.equal(runtime.repositoryOwner!.controlSocket, "/unselected/control.sock");
-        assert.ok(runtime.nativeRepositorySender);
+        assert.equal(runtime.repositoryRuntime!.owner.controlSocket, "/unselected/control.sock");
+        assert.ok(runtime.repositoryRuntime?.nativeSender);
       }
     });
   }
@@ -1072,7 +1202,7 @@ test("repository scope changes invalidate the external Driver identity while a r
     });
     assert.equal(child.status, 0, child.error?.message ?? child.stderr);
   }
-  const binding = original.repositoryAdmission!.policy.resolveBindings({
+  const binding = original.repositoryRuntime!.admission.policy.resolveBindings({
     namespaceId: "namespace-a",
     bindings: [{ repositoryRef: "application", profile: "git-write" }],
   });
@@ -1141,7 +1271,7 @@ test("repository scope changes invalidate the external Driver identity while a r
   const reordered = await load();
   assert.deepEqual(reordered.protectedDriver!.ref, original.protectedDriver!.ref);
   assert.deepEqual(
-    reordered.repositoryAdmission!.policy.resolveBindings({
+    reordered.repositoryRuntime!.admission.policy.resolveBindings({
       namespaceId: "namespace-a",
       bindings: [{ repositoryRef: "application", profile: "git-write" }],
     }),

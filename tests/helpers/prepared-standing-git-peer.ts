@@ -151,7 +151,12 @@ export async function preparedStandingGitPeer(
   namespaceId: string,
   options: {
     beforeIssue?: () => Promise<void>;
-    driver?: DriverRegistrationRef;
+    /** Resolve the selected owner after its registry and key paths exist, before custody starts. */
+    driver?:
+      | DriverRegistrationRef
+      | ((
+          origin: Awaited<ReturnType<typeof standingGitOrigin>>,
+        ) => DriverRegistrationRef | Promise<DriverRegistrationRef>);
     installationAccess?: boolean;
     selection?: SelectedRepositories;
     draftPull?: boolean;
@@ -162,6 +167,16 @@ export async function preparedStandingGitPeer(
     ownerClock?: Clock;
   } = {},
 ) {
+  const standingOrigin = await standingGitOrigin(
+    t,
+    namespaceId,
+    options.tokenLifetimeMs,
+    options.beforeIssue,
+    options.installationAccess,
+    options.selection,
+    options.draftPull,
+    options.pushRef,
+  );
   const {
     registry,
     backendId,
@@ -173,16 +188,9 @@ export async function preparedStandingGitPeer(
     registrationName,
     directory,
     controlSocket,
-  } = await standingGitOrigin(
-    t,
-    namespaceId,
-    options.tokenLifetimeMs,
-    options.beforeIssue,
-    options.installationAccess,
-    options.selection,
-    options.draftPull,
-    options.pushRef,
-  );
+  } = standingOrigin;
+  const driver =
+    typeof options.driver === "function" ? await options.driver(standingOrigin) : options.driver;
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
   // the actual issuance and retirement requests, and the production admission and scope checks.
@@ -224,8 +232,8 @@ export async function preparedStandingGitPeer(
         custodyKeyPath,
         ca: tls.ca,
         startWorker: false,
-        repositoryGitCustody: options.driver
-          ? selectBundledRepositoryGitCustody(options.driver)
+        repositoryGitCustody: driver
+          ? selectBundledRepositoryGitCustody(driver)
           : { kind: "unavailable" },
       },
       options.ownerClock,

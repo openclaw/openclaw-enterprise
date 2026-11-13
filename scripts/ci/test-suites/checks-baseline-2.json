@@ -751,7 +751,7 @@
         "external fixture factories enforce structured validation before any peer or file access",
         "external-release-fixture registers its real structured validator and rejects malformed input safely",
         "external-repository-fixture registers its real structured validator and rejects malformed input safely",
-        "github registers its real structured validator and rejects malformed input safely",
+        "GitHub installation policy refuses invalid session durations before registry access",
         "openshell registers its real structured validator and rejects malformed input safely",
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"

@@ -180,16 +180,12 @@ test(
     const client = new UnixRepositoryCredentialControlClient({
       controlSocket: fixture.config.gateway.controlSocket,
     });
-    const backend = { id: fixture.backendId, client, drivers: { repo: "repository-credentials" } };
+    const backend = { backendId: fixture.backendId, client, driverId: "repository-credentials" };
     const driver = new GitHubNativeRepositorySender(backend, { publicCa: fixture.tls.ca });
-    const policy = new GitHubRepositoryPolicy(
-      { driverId: backend.drivers.repo, backendId: backend.id },
-      fixture.registry,
-      {
-        sessionDurationSeconds: 3600,
-      },
-    );
-    const binding = policy.resolve({
+    const policy = new GitHubRepositoryPolicy(backend, fixture.registry, {
+      sessionDurationSeconds: 3600,
+    });
+    const binding = policy.resolveBindings({
       namespaceId,
       bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
     }).bindings[0];

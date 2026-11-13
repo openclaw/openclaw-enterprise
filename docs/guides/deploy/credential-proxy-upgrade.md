@@ -40,6 +40,30 @@ with Gateway-independent source and Harness admission. Verify that a supported
 replacement exists for every retained source and model authentication path
 before withdrawing access. Selecting Credential Proxy alone does not provide one.
 
+### Inspect legacy Git custody
+
+When the live GitHub Backend's sole Driver selection matches `repository.id`, the
+image upgrade helper records the OCC fleet in `inventory/repository-fleet.json`
+and stops. Keep the original API, worker and credential sender running.
+
+To inspect the original database, add `--inspect-repository-service NAME` to the
+same upgrade command with a fresh evidence directory. This option requires
+`psql` and a named libpq service for the Installation's primary database. Use
+your approved reader connection and protected password file. Select an ordinary
+role with SELECT access to the columns in `scripts/upgrade-repository-inventory.sql`.
+The helper rejects predefined PostgreSQL role memberships, elevated role attributes,
+database or OCC schema creation privileges, and OCC relation owners.
+Use verified TLS for a remote database.
+
+A successful read adds `inventory/repository-custody.jsonl` before the helper
+refuses the upgrade. Each line identifies an observed record. Locate detached
+sessions by admission ID and prepared attempts by custody and attempt ID. Check
+delivery writes, Git uses, draft outcomes and queued work with their owners.
+The database snapshot and OCC fleet observation have separate read times.
+Admissions and renewals can continue during both reads. An empty result cannot
+authorize replacement. On inspection failure keep the fleet observation, correct
+the named error, and repeat with a fresh evidence directory.
+
 ### Keep schema histories separate
 
 The migrator recognizes the 59-receipt history before Credential Proxy and the

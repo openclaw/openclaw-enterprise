@@ -9,6 +9,10 @@ import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
+import {
+  startupProjectionReads,
+  writeStartupProjection,
+} from "../helpers/production-upgrade-startup-projection.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
@@ -328,8 +332,8 @@ test("production image upgrades preserve controller/runtime ownership and wait f
 
   const bin = join(directory, "bin");
   await mkdir(bin);
-  // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
+  // Use real JSON operations for the dispatch journal, Installation policy and receipts.
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$*" == *'has("repo")'* || "\${!#}" == */before-live-installation-secret.json || "\${!#}" == */current-live-installation-secret.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -368,8 +372,6 @@ fi
     "jq",
     `${dispatchJson}case "$*" in
   *'.info.status'*) printf 'deployed\\n' ;;
-  *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
-  *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
   '-eS '*) PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
   '-S '*) cat ;;
   *'.installationId == '*) exit 0 ;;
@@ -416,7 +418,7 @@ esac
   command -p python3 "$@"
 elif (($# == 3)); then
   printf '%s\\n' '${"e".repeat(64)}'
-elif [[ "$1" == "-c" && "$2" != *b64decode* ]]; then
+elif [[ "$1" == "-c" ]]; then
   command -p python3 "$@"
 else
   cat >/dev/null
@@ -425,7 +427,15 @@ fi
 `,
     { interpreter: "bash" },
   );
-  await writeCommand(bin, "kubectl", "exit 0\n", { interpreter: "bash" });
+  const baselineReads = `
+  ${startupProjectionReads}
+  *' get secret occ-installation-startup --output json')
+    PATH="$ORIGINAL_TOOL_PATH" exec jq -n --rawfile installation "$LIVE_INSTALLATION_FILE" \\
+      --arg id "$CLUSTER_INSTALLATION_ID" '{metadata: {name: "occ-installation-startup", uid: "secret-uid",
+        resourceVersion: "1", annotations: {"openclaw.dev/installation-id": $id}},
+        data: {"installation.yaml": ($installation | @base64)}}' ;;
+`;
+  await writeCommand(bin, "kubectl", `case "$*" in ${baselineReads} esac`, { interpreter: "bash" });
 
   const occ = await writeCommand(
     bin,
@@ -494,8 +504,11 @@ fi
     "--occ",
     occ,
   ];
+  const projection = await writeStartupProjection(directory, installationDocument);
+  const mountedInstallation = join(projection, "generation", "installation.yaml");
   const environment = {
     ...process.env,
+    TEST_PROJECTION: projection,
     AGENT_DEPLOY_RESPONSE: deployResponse,
     CLUSTER_INSTALLATION_ID: "ins_upgrade_test",
     CURRENT_CONTROLLER_IMAGE: baselineControllerImage,
@@ -552,6 +565,18 @@ fi
   );
   await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
 
+  // The Secret and operator baseline agree, but the still-running writer mounted
+  // different bytes. Its actual exec probe must refuse before Helm preparation.
+  await writeFile(mountedInstallation, installationDocument + "\n");
+  await assert.rejects(
+    execute(upgradeScript, upgradeArguments(join(directory, "stale-mount-evidence")), {
+      cwd: repository,
+      env: environment,
+    }),
+    /mounted startup bytes differ from the baseline/,
+  );
+  await writeFile(mountedInstallation, installationDocument);
+
   // The authenticated OCC endpoint and selected kube context must identify the
   // same Installation before either control plane can be changed.
   await assert.rejects(
@@ -590,11 +615,9 @@ fi
         cwd: repository,
         env: environment,
       }),
-      (error: unknown) => {
-        const failure = processFailure(error);
-        assert.equal(failure.code, 47, failure.stderr);
-        return true;
-      },
+      // The comparison accepts the ordered mappings, then the policy check
+      // refuses a multi-document Installation before the serving writers are touched.
+      /cannot identify the installed repository policy; keep the original owners running/,
     );
 
     // Two valid maps in a different order remain a genuine baseline difference.
@@ -690,8 +713,6 @@ if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
 fi
 case "$*" in
   *'.info.status'*) node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).info.status' "\${!#}" ;;
-  *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
-  *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
   *'.installationId == '*) exit 0 ;;
   *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
@@ -819,12 +840,7 @@ case "$*" in
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
-  *' get deployment/openclaw-enterprise-'*)
-    for arg in "$@"; do
-      case "$arg" in deployment/openclaw-enterprise-*) component=\${arg##*-} ;; esac
-    done
-    printf '{"metadata":{"uid":"fixture-%s","resourceVersion":"1","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"%s"}},"spec":{"replicas":1}}\\n' "$component" "$component"
-    ;;
+  ${baselineReads}
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
   *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;

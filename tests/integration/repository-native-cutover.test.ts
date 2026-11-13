@@ -9,7 +9,9 @@ import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
+  type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repository-credentials/receipt-store.ts";
@@ -85,16 +87,12 @@ async function fixture(t: TestContext) {
   });
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
   const backend = {
-    id: "repository-provider",
-    drivers: { repo: "repository-credentials" },
+    backendId: "repository-provider",
+    driverId: "repository-credentials",
     client,
   };
-  const policy = new GitHubRepositoryPolicy(
-    { driverId: backend.drivers.repo, backendId: backend.id },
-    registry,
-    { sessionDurationSeconds: 600 },
-  );
-  const binding = policy.resolve({
+  const policy = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 600 });
+  const binding = policy.resolveBindings({
     namespaceId,
     bindings: [{ repositoryRef: "project", profile: "git-write" }],
   }).bindings[0]!;
@@ -113,7 +111,7 @@ async function fixture(t: TestContext) {
   const owner = {
     driverId: sender.id,
     implementation: sender.implementation,
-    backendId: backend.id,
+    backendId: backend.backendId,
   };
   const receipts = new RepositoryReceiptStore(state, owner);
   const listener = await startRepositoryReceiptServer({ controlSocket: socket, state, ...owner });
@@ -533,7 +531,6 @@ test("complete native configuration requires explicit selection and custody with
       id: f.registry.backendId,
       type: "github",
       configuration: { registryPath },
-      drivers: { repo: f.sender.id },
     },
   ];
   const repository = {
@@ -546,13 +543,65 @@ test("complete native configuration requires explicit selection and custody with
     },
   };
   configuration.repository = repository;
-  const load = () =>
-    loadInstallationConfiguration({
+  const installationPath = join(f.directory, "installation.yaml");
+  const load = async () => {
+    await writeFile(installationPath, JSON.stringify(configuration), { mode: 0o600 });
+    return loadInstallationConfiguration({
       mode: "production",
-      environment: {},
-      startupConfiguration: { ...snapshot, configuration },
+      environment: { OCC_CONFIG_PATH: installationPath },
     });
-  assert.ok((await load())?.nativeRepositorySender);
+  };
+  const first = await load();
+  assert.ok(first?.repositoryRuntime?.nativeSender);
+  // Both loads select the same paths and IDs, but the second receives a different registry.
+  await writeFile(registryPath, JSON.stringify({ ...f.registry, maximumDurationSeconds: 1200 }));
+  const second = await load();
+  assert.ok(second?.repositoryRuntime?.nativeSender);
+  assert.notEqual(first.repositoryRuntime.nativeSender, second.repositoryRuntime.nativeSender);
+  assert.notEqual(
+    first.repositoryRuntime.admission.registry.maximumDurationSeconds,
+    second.repositoryRuntime.admission.registry.maximumDurationSeconds,
+  );
+  let databaseReads = 0;
+  const start = (drivers: InstallationRuntimeDrivers) =>
+    composeProduction({
+      mode: "production",
+      host: "127.0.0.1",
+      get databaseUrl(): string {
+        databaseReads++;
+        throw new Error("database configuration requested");
+      },
+      authSecret: "unused",
+      authBaseURL: "https://example.test",
+      drivers,
+    });
+  for (const loaded of [first, second]) {
+    await assert.rejects(start(loaded), /database configuration requested/);
+  }
+  const mixed = { ...first.repositoryRuntime, admission: second.repositoryRuntime.admission };
+  await assert.rejects(
+    start({ ...first, repositoryRuntime: mixed }),
+    /selected repository runtime/,
+  );
+  await assert.rejects(
+    start({ ...first, repositoryRuntime: second.repositoryRuntime }),
+    /selected repository runtime/,
+  );
+  assert.equal(databaseReads, 2);
+  // Startup's programmatic API must not issue a trusted runtime for independently supplied roles.
+  const composition = await import("../../apps/controller/src/composition/installation-config.ts");
+  assert.equal("composeNativeRepositoryRuntime" in composition, false);
+  configuration.repository = { ...repository, policyMode: "built-in" };
+  const legacy = await load();
+  assert.ok(legacy?.repositoryRuntime?.nativeSender);
+  assert.deepEqual(legacy.installation.repository, second.installation.repository);
+  assert.deepEqual(legacy.repositoryRuntime.owner, second.repositoryRuntime.owner);
+  assert.equal(Object.hasOwn(legacy.repositoryRuntime.admission, "policyMode"), false);
+  configuration.repository = { ...repository, policyMode: "custom-veto" };
+  await assert.rejects(load(), {
+    name: "Error",
+    message: 'repository.policyMode must be "built-in" when supplied.',
+  });
   configuration.repository = { ...repository, preparedGitHub: undefined };
   await assert.rejects(load(), /requires prepared GitHub custody/);
   // Selecting a Sandbox never downgrades protected delivery to the native socket.

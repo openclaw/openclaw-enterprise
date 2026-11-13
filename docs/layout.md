@@ -87,10 +87,10 @@ It translates schema failures into detail paths and expected values. `http/error
 owns platform-error mapping, response formatting, and removal of request values
 from verbose validation errors after their details are built.
 
-The [repository capability](reference/repository-credentials.md#repo-driver-contract)
-uses `RepositoryPolicyDriver` and `NativeRepositorySender` in
-`packages/contracts/src/drivers/repo/index.ts`, implemented by `drivers/repo/github/policy.ts`
-and `drivers/repo/github/driver.ts`, respectively. Under `apps/controller/src/`, its owners are:
+[Repository access](reference/repository-credentials.md#installation-policy-and-delivery)
+uses the GitHub policy in `drivers/repo/github/policy.ts` through installation composition.
+`NativeRepositorySender` remains in `packages/contracts/src/drivers/repo/index.ts` and
+`drivers/repo/github/driver.ts` implements it. Under `apps/controller/src/`, the owners are:
 
 - `drivers/repo/access/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.

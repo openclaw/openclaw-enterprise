@@ -96,6 +96,7 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/temporary-directory.ts",
+    "helpers/skipper-installed-upgrade.ts",
     "helpers/production-chart-quantity-cases.ts",
     "helpers/production-chart-renderer-refusal-cases.ts",
     "helpers/production-chart-resource.ts",

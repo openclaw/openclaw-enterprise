@@ -1,5 +1,4 @@
 import type { RepositoryGitDeliveryProfile } from "../credential-proxy/index.ts";
-import type { Driver } from "../index.ts";
 
 /** Opaque, nonempty identities: at most 512 UTF-8 bytes each, without ASCII controls. */
 export type RepositoryCredentialGrantIdentity = Readonly<{
@@ -111,24 +110,6 @@ export type RepositoryApprovalValue =
   | readonly RepositoryApprovalValue[]
   | { readonly [key: string]: RepositoryApprovalValue };
 export type RepositoryApprovalScope = Readonly<Record<string, RepositoryApprovalValue>>;
-
-export interface RepositoryPolicyDriver extends Driver {
-  readonly capability: "repo";
-  listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
-  standingApprovalScope?(input: {
-    readonly namespaceId: string;
-    readonly binding: AdmittedRepositoryBinding;
-  }): RepositoryApprovalScope | undefined;
-  /** Current policy permission only; persisted operator approval is checked by OCC. */
-  allowsStandingApproval?(input: {
-    readonly namespaceId: string;
-    readonly binding: AdmittedRepositoryBinding;
-  }): boolean;
-  resolve(input: {
-    readonly namespaceId: string;
-    readonly bindings: readonly RepositoryBindingRequest[];
-  }): RepositoryCredentialResolution;
-}
 
 /** Explicit native sender and retained-session cleanup owner; never a protected fallback. */
 export interface NativeRepositorySender {

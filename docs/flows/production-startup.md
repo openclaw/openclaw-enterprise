@@ -297,8 +297,7 @@ observations; neither process mounts the bootstrap PVC.
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
 With `repository` selected, both processes load the same registry and construct
-`GitHubRepositoryPolicy`; the GitHub Backend's `drivers.repo` member must equal
-`repository.id`. Only native delivery loads the Unix client and CA reader used by
+`GitHubRepositoryPolicy` against the registry’s exact Backend ID. Only native delivery loads the Unix client and CA reader used by
 `GitHubNativeRepositorySender`. Startup refuses the retired Installation
 `drivers.repo`. API startup performs no control operation and loads no App key.
 With prepared repository Git, the worker reads the App key at startup and exits

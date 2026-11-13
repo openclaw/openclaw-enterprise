@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { verifyInstalledUpgrade } from "../helpers/skipper-installed-upgrade.ts";
 import {
   assertOnlyTokenRetirement,
   fetchAfterWithdrawalCommand,
@@ -15,13 +17,33 @@ const socketPath = process.env.OCC_TEST_SKIPPER_PRIVATE_GIT_WITNESS;
 const selected = socketPath !== undefined || process.env.OCC_TEST_SKIPPER_PREPARED_GIT === "1";
 const input = process.env.OCC_TEST_SKIPPER_COMPUTE_INPUTS;
 
+const upgrade = process.env.OCC_TEST_SKIPPER_UPGRADE === "1";
+if (upgrade || !selected) {
+  test(
+    "installed upgrade retains the Agent conversation, workspace and standing private Git approval",
+    { timeout: 95 * 60_000, skip: upgrade ? false : "select the two-release installed upgrade" },
+    async (t) => {
+      const git = await witness("/input");
+      assert.equal(git.teamReview, false);
+      assert.equal((await witness("/evidence")).issued, 0);
+      assert.equal(git.repositoryRef, "private-git");
+      const inputs = JSON.parse(await readFile(input, "utf8"));
+      assert.equal(inputs.upgrade.previousRevision, "54bfa7fc1b99e362450beb5f9211e164991fa7b4");
+      const installed = await prepareComputeSkipper(t, input, git.repositoryRef, {
+        ...git,
+        tokensRetired: async () =>
+          (await witness("/evidence")).tokens.every((token) => token.revoked),
+      });
+      await verifyInstalledUpgrade(inputs, installed, git, witness);
+    },
+  );
+}
+
 test(
   "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats",
   {
     timeout: 30 * 60_000,
-    skip: selected
-      ? false
-      : "requires a fresh Compute-owned installation with synthetic model and private Git",
+    skip: upgrade || !selected ? "requires the standalone private Git withdrawal journey" : false,
   },
   async (t) => {
     const git = await witness("/input");

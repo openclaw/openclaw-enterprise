@@ -253,7 +253,9 @@ export function createBackendWorkerDrivers(
   }
   if (backends.length > 0) {
     installation.drivers.service_account = {
-      id: backends[0]?.drivers.service_account ?? serviceAccountDriverId,
+      id:
+        backends.find((backend) => backend.type === "chatgpt")?.drivers.service_account ??
+        serviceAccountDriverId,
     };
   }
   return {
@@ -276,15 +278,20 @@ export function createBackendWorkerDrivers(
 
 export function createBackendController(fixture, options = {}) {
   const backends = options.backends ?? [backendDefinition()];
-  const controller = new OpenClawController(fixture.installation, {
-    state: fixture.state,
-    backends,
-    driverConfigurations: options.driverConfigurations,
-    nativeWorkerSupport: options.nativeWorkerSupport,
-    now: options.now,
-  });
+  const controller = OpenClawController.forInstallation(
+    fixture.installation,
+    {
+      state: fixture.state,
+      backends,
+      driverConfigurations: options.driverConfigurations,
+      nativeWorkerSupport: options.nativeWorkerSupport,
+      now: options.now,
+    },
+    options.repositoryAdmission,
+  );
   registerCoreDrivers(controller, fixture.state, {
-    serviceAccountDriverId: backends[0]?.drivers.service_account,
+    serviceAccountDriverId: backends.find((backend) => backend.type === "chatgpt")?.drivers
+      .service_account,
   });
   return controller;
 }

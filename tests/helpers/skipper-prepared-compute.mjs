@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual, promisify } from "node:util";
 import pg from "pg";
+import { upgradeNeedsRecovery } from "./skipper-installed-upgrade.ts";
 import {
   runSkipperOperation,
   skipperOperationDiagnostic,
@@ -34,7 +35,7 @@ export async function waitFor(description, observe, timeout = 120_000) {
 }
 
 /** Operate only the supplied fresh, local Compute installation and its synthetic model. */
-export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
+export async function prepareComputeSkipper(t, inputPath, repositoryRef, upgradeGit) {
   // Keep the controller key in this client, never in the environment inherited by Git or kubectl.
   const serviceKey = process.env.OCC_TEST_SKIPPER_COMPUTE_SERVICE_KEY;
   delete process.env.OCC_TEST_SKIPPER_COMPUTE_SERVICE_KEY;
@@ -154,6 +155,9 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   const query = (text, params) => pool.query(text, params);
   const pods = () => resource("pods", "-A", "-l", "openclaw.dev/agent=" + agent.id);
   t.after(async () => {
+    if (upgradeGit && (await upgradeNeedsRecovery(directory))) {
+      return;
+    }
     assert.equal(await uid(), clusterUID);
     await checkpoint("owned-agent-delete-started", { agentId: agent.id });
     await api("DELETE", agentPath, undefined, 202);
@@ -173,7 +177,14 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       "the owned revision broker ingress peer removed",
       async () => (await brokerIngress()).length === 0,
     );
-    await checkpoint("owned-agent-retired-cluster-cleanup-still-required");
+    if (upgradeGit) {
+      // Wait for the provider's independent observation while its retirement owner is still alive.
+      await waitFor("all issued fixture tokens retired", upgradeGit.tokensRetired, 300_000);
+    }
+    await checkpoint(
+      "owned-agent-retired-cluster-cleanup-still-required",
+      upgradeGit ? { agentId: agent.id } : {},
+    );
   });
   // node:test runs after hooks in registration order: the session read above needs this pool.
   t.after(() => pool.end());
@@ -191,6 +202,42 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   const runtime = await api("GET", agentPath + "/runtime-credentials");
   if (!runtime.transportConfigured) {
     await api("POST", agentPath + "/runtime-credentials", {});
+  }
+  let approval;
+  if (upgradeGit) {
+    const scopes = await api("GET", agentPath + "/repository-approval-scopes");
+    assert.equal(scopes.length, 1);
+    const [preview] = scopes;
+    assert.equal(preview.repositoryRef, repositoryRef);
+    assert.equal(preview.scope.repository, upgradeGit.repository);
+    assert.equal(preview.scope.repositoryId, "73");
+    assert.equal(preview.scope.profile, "git-write");
+    assert.equal(preview.scope.transport, "git-only");
+    assert.deepEqual(preview.scope.pushRefAllowlist, [upgradeGit.approvalRef]);
+    assert.deepEqual(preview.scope.apiPermissions, { metadata: "read", contents: "write" });
+    assert.match(preview.scopeFingerprint, /^[a-f0-9]{64}$/);
+    const approvalId = randomUUID();
+    await api("PATCH", agentPath, {
+      configurationId: config.id,
+      repositoryStandingApproval: {
+        repositoryRef,
+        approvalId,
+        approved: true,
+        duration: "until-removed",
+        expectedScopeFingerprint: preview.scopeFingerprint,
+      },
+    });
+    [approval] = await api("GET", agentPath + "/repository-approvals");
+    assert.equal(approval.id, approvalId);
+    assert.equal(approval.scopeFingerprint, preview.scopeFingerprint);
+  }
+  if (upgradeGit) {
+    // Deleting the cluster destroys the worker that owns any provider-token retirement.
+    await writeFile(join(directory, "agent-deploy-intent"), agent.id, {
+      mode: 0o600,
+      flag: "wx",
+      flush: true,
+    });
   }
   await checkpoint("deploy-request-started", { agentId: agent.id });
   const revision = await api("POST", agentPath + "/deploy", undefined, 202);
@@ -215,8 +262,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     720_000,
   );
   const hash = (id) => createHash("sha256").update(id).digest("hex").slice(0, 12);
-  const configMap = "gateway-" + hash(agent.id) + "-rev-" + hash(revision.id);
-  const select = async () => {
+  const select = async (activeRevision = revision.id) => {
+    const configMap = "gateway-" + hash(agent.id) + "-rev-" + hash(activeRevision);
     const entries = (await pods()).items;
     const p = (role) => {
       const found = entries.filter(
@@ -233,13 +280,13 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
           input.runtimeImage,
         );
       } else {
-        assert.equal(pod.metadata.labels["openclaw.dev/revision"], revision.id);
+        assert.equal(pod.metadata.labels["openclaw.dev/revision"], activeRevision);
       }
       return pod;
     };
     return { gateway: p("gateway"), harness: p("agent") };
   };
-  const { gateway, harness } = await select();
+  let { gateway, harness } = await select();
   assert.ok(
     nss.some((n) => n.metadata.name === harness.metadata.namespace),
     "the Agent belongs to the bound tenant placement",
@@ -311,7 +358,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     );
     assert.equal((await api("GET", agentPath)).activeRevisionId, revision.id);
   };
-  const gatewayTarget = [
+  const gatewayTarget = () => [
     gateway.metadata.name,
     "-n",
     gateway.metadata.namespace,
@@ -319,7 +366,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     "gateway",
     "--",
   ];
-  const enter = (...args) => kc("exec", ...gatewayTarget, ...args);
+  const enter = (...args) => kc("exec", ...gatewayTarget(), ...args);
   // The prepared-repository thread profile includes these two read-only paths even when no
   // plugins are selected. Observe the actual Agent as its normal UID, without reading any file.
   await checkpoint("observe-installed-agent-readonly-skill-directories");
@@ -385,7 +432,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     const observation = kubectl(
       "exec",
       "-i",
-      ...gatewayTarget,
+      ...gatewayTarget(),
       "node",
       "-e",
       'require("node:vm").runInThisContext(require("node:fs").readFileSync(0, "utf8"))',
@@ -472,7 +519,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       turnId: completed.turnId,
     });
     await runSkipperOperation("command-cleanup", () => unlink(controlFile));
-    return completed;
+    return { ...completed, marker };
   };
   async function ordinaryChat(label, gatewayChatPhase) {
     const nonce = "OCE_SMOKE_" + randomUUID();
@@ -496,10 +543,121 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     agent,
     namespaceId,
     query,
+    waitFor,
     checkpoint,
     stable,
     sendScript,
     ordinaryChat,
+    approval,
+    observeTurn: native,
+    async writerState(expectedImages) {
+      const result = [];
+      for (const component of ["api", "worker"]) {
+        const owner = await resource(
+          "deployment",
+          "openclaw-enterprise-" + component,
+          "-n",
+          system,
+        );
+        assert.ok(owner.spec.replicas > 0 && owner.status.readyReplicas === owner.spec.replicas);
+        if (expectedImages) {
+          assert.equal(owner.status.observedGeneration, owner.metadata.generation);
+          assert.equal(owner.status.updatedReplicas, owner.spec.replicas);
+          assert.equal(
+            [
+              ...(owner.spec.template.spec.initContainers ?? []),
+              ...owner.spec.template.spec.containers,
+            ].find((container) => container.name === component)?.image,
+            expectedImages.controller,
+          );
+          if (component === "worker") {
+            assert.equal(
+              owner.spec.template.spec.containers.find((c) => c.name === "repository-credentials")
+                ?.image,
+              expectedImages.repository,
+            );
+          }
+        }
+        result.push([owner.metadata.uid, owner.metadata.generation, owner.spec.replicas]);
+      }
+      return result;
+    },
+    async reconnect() {
+      assert.equal(await uid(), clusterUID);
+      const current = await api("GET", agentPath);
+      assert.equal(current.id, agent.id);
+      assert.equal(current.desiredRuntimeState, "running");
+      assert.ok(current.activeRevisionId);
+      ({ gateway, harness } = await select(current.activeRevisionId));
+      return current;
+    },
+    async stoppedControl() {
+      const other = await create("agents", {
+        name: "stopped-" + id,
+        configurationId: config.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "api_key", source: secret.ref },
+      });
+      const path = root + "/agents/" + other.id;
+      t.after(async () => {
+        if (upgradeGit && (await upgradeNeedsRecovery(directory))) {
+          return;
+        }
+        assert.equal(await uid(), clusterUID);
+        await api("DELETE", path, undefined, 202);
+      });
+      await create("iam/access-bindings", {
+        subjectKind: "identity",
+        subjectId: other.servicePrincipalId,
+        roleId: role.id,
+        resourceKind: "secret",
+        resourceId: secret.id,
+      });
+      if (!(await api("GET", path + "/runtime-credentials")).transportConfigured) {
+        await api("POST", path + "/runtime-credentials", {});
+      }
+      const deployed = await api("POST", path + "/deploy", undefined, 202);
+      await waitFor(
+        "second Agent running before deliberate stop",
+        async () => {
+          const deployment = await api("GET", path + "/deployments/" + deployed.id);
+          assert.notEqual(deployment.status, "failed");
+          const state = await api("GET", path);
+          return (
+            deployment.status === "succeeded" &&
+            state.activeRevisionId === deployed.id &&
+            state.desiredRuntimeState === "running"
+          );
+        },
+        720_000,
+      );
+      await api("POST", path + "/stop", undefined, 202);
+      const filter = "openclaw.dev/agent=" + other.id;
+      await waitFor(
+        "second Agent workload stopped",
+        async () => {
+          const state = await api("GET", path);
+          return (
+            state.activeRevisionId === undefined &&
+            (await resource("pods", "-A", "-l", filter)).items.length === 0
+          );
+        },
+        300_000,
+      );
+      const observe = async () => {
+        const state = await api("GET", path);
+        assert.equal(state.id, other.id);
+        assert.equal(state.desiredRuntimeState, "stopped");
+        assert.equal(state.activeRevisionId, undefined);
+
+        assert.equal((await resource("pods", "-A", "-l", filter)).items.length, 0);
+        return (await api("GET", path + "/revisions")).map((r) => r.id);
+      };
+      const before = await observe();
+      assert.deepEqual(before, [deployed.id]);
+      return async () =>
+        assert.deepEqual(await observe(), before, "no deployment of the stopped Agent");
+    },
   };
 }
 

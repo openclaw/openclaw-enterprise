@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { rootCertificates } from "node:tls";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { prepareFile } from "../../scripts/ci/prepare.mjs";
@@ -11,35 +14,66 @@ import {
   requiresPostgres,
 } from "./postgres-backend-state.mjs";
 import { waitFor } from "./wait-for.mjs";
-import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
+import { socketDirectory } from "./socket-directory.mjs";
+import {
+  loadNativeRepositoryAccess,
+  installationDriverConfigurations,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
-// Keep the two worker roles distinct. Tests can still replace the boundary's methods
-// after a worker starts to simulate a lost response or a changed grant.
-function repositoryWorkerRoles(driver) {
-  if (driver === undefined) {
-    return {};
+async function repositoryWorkerFixture(context, driver, namespaceId) {
+  const directory = await socketDirectory(context, "worker-repository-");
+  const registryPath = join(directory, "registry.json");
+  const publicCaPath = join(directory, "ca.pem");
+  const controlSocket = join(directory, "control.sock");
+  await writeFile(publicCaPath, rootCertificates[0], { mode: 0o600 });
+  const backend = { id: driver.backendId, type: "github", configuration: { registryPath } };
+
+  async function load() {
+    const selection = {
+      id: driver.id,
+      implementation: driver.implementation,
+      configuration: { sessionDurationSeconds: driver.sessionDurationSeconds },
+    };
+    const registry = {
+      ...driver.registry,
+      repositories: driver.registry.repositories.map((repository) => ({
+        ...repository,
+        namespaces: [{ namespaceId, profiles: ["git-read"] }],
+      })),
+    };
+    await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
+    const access = await loadNativeRepositoryAccess(
+      { backend, selection },
+      { controlSocket, publicCaPath },
+      { custodyKeyPath: join(directory, "custody"), privateKeyPath: join(directory, "signer") },
+    );
+    return { access, selection };
   }
-  const { id, implementation } = driver;
+
+  const { access } = await load();
+  driver.bindSnapshot(access.repositoryAdmission.policy, namespaceId);
   return {
-    repositoryPolicy: {
-      id,
-      implementation,
-      capability: driver.capability,
-      listOptions: (input) => driver.listOptions(input),
-      resolve: (input) => driver.resolve(input),
-    },
-    nativeRepositorySender: {
-      id,
-      implementation,
-      maintenanceIntervalMs: driver.maintenanceIntervalMs,
-      durableBrokerReceipts: driver.durableBrokerReceipts,
-      checkAdmissionReady: (signal) => driver.checkAdmissionReady(signal),
-      open: (input, signal) => driver.open(input, signal),
-      status: (sessionId, signal) => driver.status(sessionId, signal),
-      close: (sessionId, signal) => driver.close(sessionId, signal),
+    backend,
+    admission: access.repositoryAdmission,
+    async worker(computeDriver) {
+      const { access, selection } = await load();
+      const repositoryRuntime = access.bindCompute(computeDriver);
+      // Exercise the real startup and lifecycle with synthetic operations on its selected sender.
+      // The fixture's PostgreSQL receipt store retains sessions between Worker instances.
+      const sender = repositoryRuntime.nativeSender;
+      assert.ok(sender);
+      Object.assign(sender, {
+        maintenanceIntervalMs: driver.maintenanceIntervalMs,
+        durableBrokerReceipts: driver.durableBrokerReceipts,
+        checkAdmissionReady: (signal) => driver.checkAdmissionReady(signal),
+        open: (input, signal) => driver.open(input, signal),
+        status: (sessionId, signal) => driver.status(sessionId, signal),
+        close: (sessionId, signal) => driver.close(sessionId, signal),
+      });
+      return { repositoryRuntime, selection, tokenService: access.tokenService };
     },
   };
 }
@@ -51,6 +85,79 @@ function checkClaimLockOrder(worker, violations) {
   const transactWithQueue = worker.state.transactWithQueue.bind(worker.state);
   worker.state.transactWithQueue = (work, options) =>
     transactWithQueue((unit, queue) => work(trackLockOrder(unit, violations), queue), options);
+}
+
+// Test-only gate at run()'s single queue.claim() call. This pauses revision work
+// claiming, not the process: independent OAuth maintenance remains live.
+function gateRevisionClaims(worker, signal) {
+  const claim = worker.queue.claim.bind(worker.queue);
+  const stopLoop = worker.stopLoop.bind(worker);
+  let request;
+  worker.queue.claim = async (...args) => {
+    const pending = request;
+    if (pending) {
+      // run() has awaited the preceding process and health; also drain any health
+      // started by that claim's heartbeat before acknowledging the parked wrapper.
+      await worker.pendingHealth;
+      if (request === pending && !worker.stopping) {
+        pending.parked = true;
+        pending.ready.resolve();
+        await pending.release.promise;
+      }
+    }
+    // stopLoop marks stopping synchronously, before releasing a parked wrapper.
+    if (worker.stopping) {
+      return undefined;
+    }
+    return claim(...args);
+  };
+  worker.stopLoop = () => {
+    const stopping = stopLoop();
+    if (request) {
+      request.ready.resolve(new Error("Worker stopped before revision claim pause"));
+      request.release.resolve();
+      request = undefined;
+    }
+    signal.removeEventListener("abort", abort);
+    return stopping;
+  };
+  const abort = () => {
+    // Ordinary fixture disposal still owns stop(), the selected owner and pool.
+    void worker.stopLoop().catch(() => {});
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) {
+    abort();
+  }
+  return {
+    async pause() {
+      assert.ok(!worker.stopping, "cannot pause a stopping Worker");
+      request ??= {
+        ready: Promise.withResolvers(),
+        release: Promise.withResolvers(),
+        parked: false,
+      };
+      const pending = request;
+      // Bound arrival at the gate by the fixture's worker-stop limit; the owning
+      // test signal bounds the parked lifetime. Failure drains rather than claims.
+      const timer = setTimeout(abort, disposeLimitsMs["worker stop"]);
+      try {
+        const error = await pending.ready.promise;
+        if (error) {
+          throw error;
+        }
+        assert.ok(request === pending && pending.parked && !worker.stopping);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    resume() {
+      assert.ok(request?.parked && !worker.stopping, "revision claim wrapper must be parked");
+      const pending = request;
+      request = undefined;
+      pending.release.resolve();
+    },
+  };
 }
 
 function trackLockOrder(unit, violations) {
@@ -264,7 +371,10 @@ export function createWorkerRevisionFixtures(
       onHealthy,
       onProgress,
       metrics,
-      repoDriver,
+      repoDriver = /** @type {ReturnType<typeof import("./postgres-worker-revision-support.mjs").repositoryBoundary>["driver"] | undefined} */ (
+        undefined
+      ),
+      repositoryAdmission,
       driverSelections = {},
       backends = /** @type {import("../../packages/contracts/src/index.ts").BackendDefinition[]} */ ([]),
       secretAuthMethod = "api_key",
@@ -316,6 +426,7 @@ export function createWorkerRevisionFixtures(
       createdAt: new Date().toISOString(),
     };
     let worker;
+    let revisionClaims;
     const lockOrderViolations = [];
     // A throwing after hook skips every later one, which can leave a worker running and the
     // file hanging. A hook added while after hooks run goes last, so check from there.
@@ -341,10 +452,19 @@ export function createWorkerRevisionFixtures(
           }),
     };
     const secretDriver = createBackendWorkerDrivers(compute, []).secretDriver;
+    const repository =
+      repoDriver && (await repositoryWorkerFixture(context, repoDriver, namespace.id));
+    if (repository) {
+      backends = [
+        ...backends.filter((backend) => backend.id !== repository.backend.id),
+        repository.backend,
+      ];
+    }
     const controller = createBackendController(
       { installation, state },
       {
         backends,
+        repositoryAdmission: repositoryAdmission ?? repository?.admission,
         driverConfigurations: installationDriverConfigurations({ drivers: driverSelections }),
       },
     );
@@ -741,7 +861,7 @@ export function createWorkerRevisionFixtures(
       return { id: owner.id, idempotencyKey };
     }
 
-    function start(
+    async function start(
       computeDriver,
       {
         emit = /** @type {NonNullable<Parameters<typeof createControllerWorker>[0]["emit"]>} */ (
@@ -752,17 +872,27 @@ export function createWorkerRevisionFixtures(
         pool = workerPool,
         transformDrivers = (drivers) => drivers,
         repositoryGitMaterial,
+        pauseableRevisionClaims = false,
       } = {},
     ) {
       const configuredDrivers = createBackendWorkerDrivers(computeDriver, providers ?? []);
+      const native = repository && (await repository.worker(computeDriver));
       const drivers = transformDrivers({
         ...configuredDrivers,
         installation: {
           ...configuredDrivers.installation,
+          backend: [
+            ...(configuredDrivers.installation.backend ?? []),
+            ...backends.filter((backend) => backend.type === "github"),
+          ],
           drivers: { ...configuredDrivers.installation.drivers, ...driverSelections },
+          ...(native && { repository: native.selection }),
         },
         secretDriver,
-        ...repositoryWorkerRoles(repoDriver),
+        ...(native && {
+          repositoryRuntime: native.repositoryRuntime,
+          tokenService: native.tokenService,
+        }),
       });
       worker = createControllerWorker({
         metrics,
@@ -779,6 +909,9 @@ export function createWorkerRevisionFixtures(
       });
       database.workers.add(worker);
       checkClaimLockOrder(worker, lockOrderViolations);
+      revisionClaims = pauseableRevisionClaims
+        ? gateRevisionClaims(worker, context.signal)
+        : undefined;
       return worker.start();
     }
 
@@ -786,8 +919,29 @@ export function createWorkerRevisionFixtures(
       if (worker !== undefined) {
         await worker.stop();
         worker = undefined;
+        revisionClaims = undefined;
         workerPool = createWorkerPool();
       }
+    }
+
+    async function pauseRevisionClaims() {
+      assert.ok(revisionClaims, "Worker must opt into revision claim pausing");
+      await revisionClaims.pause();
+    }
+
+    function resumeRevisionClaims() {
+      assert.ok(revisionClaims, "Worker must opt into revision claim pausing");
+      revisionClaims.resume();
+    }
+
+    async function stopLoopRetainingOwner() {
+      assert.ok(worker);
+      await worker.stopLoop();
+      // Keep this Worker in database.workers: ordinary disposal closes its owner
+      // and pool after both old and replacement listeners have been exercised.
+      worker = undefined;
+      revisionClaims = undefined;
+      workerPool = createWorkerPool();
     }
 
     async function admitInitialRevision(
@@ -922,6 +1076,7 @@ export function createWorkerRevisionFixtures(
       state,
       compute,
       secretDriver,
+      repositoryAdmission: repository?.admission,
       productionHarness: PRODUCTION_HARNESS_DESCRIPTOR,
       PostgresWorkQueue,
       agent,
@@ -931,6 +1086,9 @@ export function createWorkerRevisionFixtures(
       work,
       start,
       stop,
+      pauseRevisionClaims,
+      resumeRevisionClaims,
+      stopLoopRetainingOwner,
       createWorkerPool,
       workerPool,
     };

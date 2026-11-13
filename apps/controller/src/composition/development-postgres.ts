@@ -1,3 +1,4 @@
+import { repositoryStartupConfiguration } from "./installation-config.ts";
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
@@ -92,6 +93,14 @@ export async function composePostgresDevelopment(
   dependencies: CompositionDependencies = {},
 ) {
   const drivers = "installation" in options ? options : undefined;
+  const {
+    backends,
+    runtime,
+    computeDriver: installedCompute,
+    protectedDriver,
+    tokenService,
+  } = repositoryStartupConfiguration(drivers);
+  const preparedGitHub = drivers?.preparedGitHub;
   const auditEventFactory = "auditEventFactory" in options ? options.auditEventFactory : undefined;
   const driverId = drivers?.installation.drivers.iam.id ?? "native-iam";
   const serviceAccountSelection = drivers?.installation.drivers.service_account;
@@ -111,10 +120,10 @@ export async function composePostgresDevelopment(
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, drivers?.protectedDriver, drivers?.preparedGitHub, database);
+    closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      preparedTokenProof: tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -122,7 +131,8 @@ export async function composePostgresDevelopment(
     }
     const installationId = persistedInstallation.id;
 
-    const computeDriver = options.computeDriver ?? createDevelopmentDockerComputeDriver();
+    const computeDriver =
+      installedCompute ?? options.computeDriver ?? createDevelopmentDockerComputeDriver();
     if (drivers !== undefined && computeDriver.preflight !== undefined) {
       const result = await computeDriver.preflight();
       if (result !== undefined && config.logger !== undefined) {
@@ -137,7 +147,6 @@ export async function composePostgresDevelopment(
     }
     const sandboxDriver = drivers?.sandboxDriver;
     const credentialGatewayDriver = drivers?.credentialGatewayDriver;
-    const protectedDriver = drivers?.protectedDriver;
     const credentialRefreshDriver = drivers?.credentialRefreshDriver;
     const configurationDriver =
       options.configurationDriver ??
@@ -177,7 +186,7 @@ export async function composePostgresDevelopment(
         ...installationControllerOptions(drivers?.installation),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
-        ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        ...(tokenService && { preparedTokens: tokenService }),
         ...(drivers?.pluginSourceReader === undefined
           ? {}
           : { pluginSourceReader: drivers.pluginSourceReader }),
@@ -186,9 +195,9 @@ export async function composePostgresDevelopment(
         bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
         refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
         ...(loggingLevel === undefined ? {} : { loggingLevel }),
-        ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
+        backends,
       },
-      drivers?.repositoryAdmission,
+      runtime?.admission,
     );
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
@@ -215,7 +224,7 @@ export async function composePostgresDevelopment(
       controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
-      drivers.tokenService?.registerIssuer(
+      tokenService?.registerIssuer(
         new OAuthAccountTokens(
           state,
           drivers.secretDriver,
@@ -226,11 +235,6 @@ export async function composePostgresDevelopment(
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
     controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
-    if (drivers?.repositoryPolicy !== undefined) {
-      const driver = drivers.repositoryPolicy;
-      controller.registerDriver(driver);
-      controller.selectDriver("repo", driver.id);
-    }
     serviceAccountDriverFactory?.(controller, state);
     await controller.validateBackendConfiguration();
     await controller.applyIAMConfiguration();
@@ -329,7 +333,7 @@ export async function composePostgresDevelopment(
       auditSink: state.auditSink,
       ...(drivers === undefined
         ? {}
-        : { backendSummaries: backendSummariesFromDefinitions(drivers.installation.backend) }),
+        : { backendSummaries: backendSummariesFromDefinitions(backends) }),
       ...(observabilityUrl === undefined ? {} : { observabilityUrl }),
       auth,
       ...(config.logger === undefined ? {} : { logger: config.logger }),
@@ -352,8 +356,8 @@ export async function composePostgresDevelopment(
       },
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
-    drivers?.repositoryTransport?.connectRestartObservation?.(pool);
-    await drivers?.preparedGitHub?.connect(pool);
+    runtime?.transport?.connectRestartObservation?.(pool);
+    await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);

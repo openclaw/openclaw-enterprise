@@ -2,9 +2,10 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
@@ -38,6 +39,7 @@ import {
   seedBackendBinding,
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
   assertFailedDeployment,
@@ -87,15 +89,11 @@ test(
   async (context) => {
     // An interrupted worker retains its lease. Keep its expiry inside the observation window.
     const fixture = await setup(context, { leaseDurationMs: 5_000 });
-    const [
-      { GitHubRepositoryPolicy },
-      { UnixRepositoryCredentialControlClient },
-      { startRegistryCredentialServiceFixture },
-    ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/policy.ts"),
-      import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
-      import("../fixtures/repository-credentials/registry.mjs"),
-    ]);
+    const [{ loadNativeRepositoryAccess }, { startRegistryCredentialServiceFixture }] =
+      await Promise.all([
+        import("../../apps/controller/src/composition/installation-config.ts"),
+        import("../fixtures/repository-credentials/registry.mjs"),
+      ]);
     const resources = createResourceScope();
     const credentialResources = createResourceScope();
     let receiptServer;
@@ -114,27 +112,31 @@ test(
         clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
         gateway: { listen: "127.0.0.1:0" },
       });
+      const directory = await socketDirectory(resources, "worker-repository-");
+      const publicCaPath = join(directory, "ca.pem");
+      await writeFile(publicCaPath, credentials.tls.ca, { mode: 0o600 });
       const repositoryBackend = {
         id: credentials.backendId,
-        client: new UnixRepositoryCredentialControlClient({
-          controlSocket: credentials.config.gateway.controlSocket,
-        }),
-        drivers: { repo: "repository-credentials" },
+        type: "github",
+        configuration: { registryPath: credentials.registryFile },
       };
-      const sender = new GitHubNativeRepositorySender(repositoryBackend, {
-        publicCa: credentials.tls.ca,
-      });
-      const driver = new GitHubRepositoryPolicy(
-        { driverId: repositoryBackend.drivers.repo, backendId: repositoryBackend.id },
-        credentials.registry,
-        {
-          sessionDurationSeconds: 60,
-        },
-      );
+      const selection = {
+        id: "repository-credentials",
+        implementation: "github",
+        configuration: { sessionDurationSeconds: 60 },
+      };
+      const loadAccess = () =>
+        loadNativeRepositoryAccess(
+          { backend: repositoryBackend, selection },
+          { controlSocket: credentials.config.gateway.controlSocket, publicCaPath },
+          { custodyKeyPath: join(directory, "custody"), privateKeyPath: join(directory, "signer") },
+        );
+      const admissionAccess = await loadAccess();
+      const driver = admissionAccess.repositoryAdmission.policy;
       // The real resolver admits selection fields and returns the richer frozen
       // binding. Worker revalidation must project that snapshot back to selections;
       // the strict registry parser rejects backendId/grant as caller input.
-      const resolution = driver.resolve({
+      const resolution = driver.resolveBindings({
         namespaceId: fixture.namespace.id,
         bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
       });
@@ -161,62 +163,75 @@ test(
           },
         },
       );
-      const open = sender.open.bind(sender);
       const opens = [];
       const successorChecks = [];
       let lost;
       const lostResponse = new Promise((resolve) => {
         releaseLostResponse = resolve;
       });
-      // Hold the first response until this worker stops. Its successor must recover
-      // the original admission and settle it before opening another session.
-      sender.open = async (input, signal) => {
-        opens.push({ admissionId: input.admissionId, recoverOnly: input.recoverOnly === true });
-        if (lost && input.recoverOnly !== true) {
-          const original = await fixture.state.read(async (view) => ({
-            attempt: await view.repositorySessions.findAttempt(lost.admissionId),
-            receipt: await view.repositorySessions.findBrokerReceipt(lost.admissionId),
-          }));
-          successorChecks.push({
-            admissionId: input.admissionId,
-            originalPhase: original.attempt?.phase,
-            originalReceiptState: original.receipt?.state,
-            originalReceiptSessionId: original.receipt?.sessionId,
-            originalReceiptGeneration: original.receipt?.generation,
-          });
-        }
-        const result = await open(input, signal);
-        if (!lost && result.kind === "created") {
-          lost = { admissionId: input.admissionId, sessionId: result.session.sessionId };
-          await lostResponse;
-          throw new Error("repository admission response lost after creation");
-        }
-        return result;
+      const wrapOpen = (sender) => {
+        const open = sender.open.bind(sender);
+        // Hold the first response until this worker stops. Its successor must recover
+        // the original admission and settle it before opening another session.
+        sender.open = async (input, signal) => {
+          opens.push({ admissionId: input.admissionId, recoverOnly: input.recoverOnly === true });
+          if (lost && input.recoverOnly !== true) {
+            const original = await fixture.state.read(async (view) => ({
+              attempt: await view.repositorySessions.findAttempt(lost.admissionId),
+              receipt: await view.repositorySessions.findBrokerReceipt(lost.admissionId),
+            }));
+            successorChecks.push({
+              admissionId: input.admissionId,
+              originalPhase: original.attempt?.phase,
+              originalReceiptState: original.receipt?.state,
+              originalReceiptSessionId: original.receipt?.sessionId,
+              originalReceiptGeneration: original.receipt?.generation,
+            });
+          }
+          const result = await open(input, signal);
+          if (!lost && result.kind === "created") {
+            lost = { admissionId: input.admissionId, sessionId: result.session.sessionId };
+            await lostResponse;
+            throw new Error("repository admission response lost after creation");
+          }
+          return result;
+        };
       };
       const material = [];
       const events = [];
-      const startWorker = () =>
-        fixture.start(
-          {
-            ...fixture.compute,
-            validateRepositoryCredentials(harness, sandboxDriverId) {
-              assert.equal(harness.mode, "embedded");
-              assert.equal(sandboxDriverId, undefined);
-            },
-            async prepareRevision(revision, deploymentContext) {
-              material.push(...deploymentContext.repositoryCredentials);
-              return fixture.compute.prepareRevision(revision, deploymentContext);
-            },
+      let sender;
+      const startWorker = async () => {
+        const computeDriver = {
+          ...fixture.compute,
+          validateRepositoryCredentials(harness, sandboxDriverId) {
+            assert.equal(harness.mode, "embedded");
+            assert.equal(sandboxDriverId, undefined);
           },
-          {
-            emit: (event) => events.push(event),
-            transformDrivers: (drivers) => ({
-              ...drivers,
-              repositoryPolicy: driver,
-              nativeRepositorySender: sender,
-            }),
+          async prepareRevision(revision, deploymentContext) {
+            material.push(...deploymentContext.repositoryCredentials);
+            return fixture.compute.prepareRevision(revision, deploymentContext);
           },
-        );
+        };
+        // Each Worker owns a fresh native sender and Token Service bound to its Compute.
+        const access = await loadAccess();
+        const repositoryRuntime = access.bindCompute(computeDriver);
+        sender = repositoryRuntime.nativeSender;
+        assert.ok(sender);
+        wrapOpen(sender);
+        return fixture.start(computeDriver, {
+          emit: (event) => events.push(event),
+          transformDrivers: (drivers) => ({
+            ...drivers,
+            installation: {
+              ...drivers.installation,
+              backend: [...(drivers.installation.backend ?? []), repositoryBackend],
+              repository: selection,
+            },
+            repositoryRuntime,
+            tokenService: access.tokenService,
+          }),
+        });
+      };
       await startWorker();
       await waitFor("the first concrete session to open", async () => lost);
       const stopping = fixture.stop();

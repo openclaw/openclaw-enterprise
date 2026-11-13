@@ -1,10 +1,21 @@
 import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
-import { GitHubRepositoryPolicy } from "../../drivers/repo/github/policy.ts";
+import type { InstallationRepositoryAdmission } from "@openclaw-enterprise/occ";
+import { createImmutableGitHubRepositoryPolicy } from "../../drivers/repo/github/policy.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
+  validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
 } from "../../drivers/repo/github/access/registry.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
+
+export type BuiltInRepositoryAdmission = InstallationRepositoryAdmission & {
+  readonly registry: GitHubRepositoryRegistry;
+};
+
+export type RepositoryPolicyBinding = Readonly<{
+  registryPath: string;
+  sessionDurationSeconds: number;
+}>;
 
 export type RepositoryPolicyInput<Configuration = Readonly<Record<string, unknown>>> = {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
@@ -16,12 +27,6 @@ export type RepositoryPolicyInput<Configuration = Readonly<Record<string, unknow
 };
 
 export function repositoryPolicyOwner(input: RepositoryPolicyInput) {
-  if (
-    input.selection.implementation !== "github" ||
-    input.selection.id !== input.backend.drivers.repo
-  ) {
-    throw new Error("The repository credential Driver must match its owning Backend.");
-  }
   return Object.freeze({
     driverId: input.selection.id,
     implementation: input.selection.implementation,
@@ -34,14 +39,15 @@ export async function loadRepositoryPolicy(
 ) {
   const repositoryOwner = repositoryPolicyOwner(input);
   const { sessionDurationSeconds } = input.selection.configuration;
-  const registry = await loadGitHubRepositoryRegistry(
-    input.backend.configuration.registryPath,
-    input.backend.id,
-  );
-  const policy = composeRepositoryPolicy(repositoryOwner, registry, sessionDurationSeconds);
+  const { registryPath } = input.backend.configuration;
+  const registry = await loadGitHubRepositoryRegistry(registryPath, repositoryOwner.backendId);
+  const policy = composeRepositoryPolicy(repositoryOwner, registry, {
+    registryPath,
+    sessionDurationSeconds,
+  });
   return Object.freeze({
     ...policy,
-    resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
+    resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(policy.repositoryRegistry),
   });
 }
 
@@ -49,18 +55,28 @@ export async function loadRepositoryPolicy(
 export function composeRepositoryPolicy(
   repositoryOwner: ReturnType<typeof repositoryPolicyOwner>,
   registry: GitHubRepositoryRegistry,
-  sessionDurationSeconds: number,
+  binding: RepositoryPolicyBinding,
 ) {
-  const repositoryPolicy = new GitHubRepositoryPolicy(repositoryOwner, registry, {
-    sessionDurationSeconds,
+  if (repositoryOwner.implementation !== "github") {
+    throw new Error("Repository admission requires the GitHub implementation.");
+  }
+  const validatedRegistry = validateGitHubRepositoryRegistry(registry, repositoryOwner.backendId);
+  const repositoryPolicy = createImmutableGitHubRepositoryPolicy(
+    repositoryOwner,
+    validatedRegistry,
+    {
+      sessionDurationSeconds: binding.sessionDurationSeconds,
+    },
+  );
+  const repositoryAdmission: BuiltInRepositoryAdmission = Object.freeze({
+    policy: repositoryPolicy,
+    backendId: repositoryOwner.backendId,
+    registry: validatedRegistry,
   });
   return Object.freeze({
-    repositoryRegistry: registry,
+    repositoryRegistry: validatedRegistry,
     repositoryOwner,
-    repositoryPolicy,
-    repositoryAdmission: Object.freeze({
-      policy: repositoryPolicy,
-      backendId: repositoryOwner.backendId,
-    }),
+    repositoryAdmission,
+    repositoryBinding: Object.freeze(binding),
   });
 }

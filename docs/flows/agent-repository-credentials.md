@@ -8,9 +8,9 @@ last_updated_session: "authoring-run/8318a8cc-bd10-4d1f-8290-56ee2f90a929"
 
 ## Overview
 
-Codex uses prepared sessions; [OpenShell](../reference/repository-credentials/protected-openshell-git.md)
+Codex uses prepared sessions. [OpenShell](../reference/repository-credentials/protected-openshell-git.md)
 receives placeholders. Workers authorize signed requests against live grants.
-[Enrollment](../guides/repository-credentials/openshell-enrollment.md); [qualification](../testing/repository-credentials.md).
+See [OpenShell enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
 ## Entry Points
 
@@ -91,29 +91,26 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`listRepositoryOptions` checks Agent `create` in the Namespace or `update` on the
-exact Agent, plus Compute availability. Bundled listings use the bound GitHub
-catalog. Programmatic listings use the registered Repo Driver. Both reject stale
-owner results. Deploy checks the exact Harness. Empty catalogs return `[]`.
-Absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
-Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+`listRepositoryOptions` checks Namespace create or exact Agent update permission
+and Compute availability. It rejects stale results from the bound GitHub catalog
+and closed Namespaces. Empty catalogs return `[]`. Without `repository`, Git stays
+disabled and the route adds `meta.notConfigured`. Classified discovery failures
+return `503 REPOSITORY_OPTIONS_UNAVAILABLE`. Deploy checks the exact Harness.
 
-OCC allows 1,000 ordinary repositories plus the separate Installation option
-(1,001 choices). OCC rejects overflow with `503 DEPENDENCY_UNAVAILABLE`.
-`createRepositoryFields` searches choices and caps attachments at 16.
-`repositorySettings` enforces bound Installation policy for explicit and
-inherited saves. Unbound saves use the registered Repo Driver. The database
-checks bindings. Only fresh, empty drafts tolerate classified outages.
-Catalogs omit sender metadata, credentials and provider descriptions.
+`createRepositoryFields` searches up to 1,000 ordinary repositories plus the Installation option (1,001 choices) with 16 attachments.
+`repositorySettings` rejects explicit or inherited saves that conflict with
+Installation policy. The database checks bindings. Only fresh, empty drafts
+tolerate classified outages. Catalogs omit sender metadata, credentials and
+provider descriptions.
 
 Save Configuration first. Known Agent rejection permits reuse. Repository-scoped
 retries require a successful reload and explicit selection of at least one
 repository and profile. Read stored Agent and Configuration after unknown outcomes.
 
 Requests carry refs and optional profiles, never tokens or grant IDs.
-Nonempty selections without bound built-in policy or a selected Repo Driver
-return `409 RESOURCE_CONFLICT`. OCC preserves order. GitHub defaults legacy profiles
-to `git-write` without provider or control-socket calls.
+Without bound Installation policy, nonempty selections return `409 RESOURCE_CONFLICT`.
+OCC preserves order. GitHub defaults legacy profiles to `git-write` without
+provider or control-socket calls.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. Each binding gets one grant with a
@@ -126,33 +123,33 @@ allowlist. Omitted selections persist. `[]` clears them.
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-matches GitHub Backend and registry IDs. It snapshots policy before loading
-packages or registries, preserving protected Driver identity.
-`packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner.
-File-based `repository` selects built-in policy. Optional `repository.policyMode: built-in`
-preserves identity. Startup rejects other modes, `drivers.repo` and separate
-public Repo Drivers. Programmatic registration remains available.
-`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts` owns
-OpenShell parsing and chart constraints.
+checks GitHub Backend and registry IDs, freezes built-in policy before package
+or registry loads, and derives protected Driver identity. See
+[accepted file inputs](../reference/backends.md#github-repository-credentials).
+`packages/occ/src/index.ts:OpenClawController.forInstallation` binds the built-in policy.
+Public Repo Driver registration is removed.
 
-`OpenClawController.admitRepositoryCredentials` calls `resolveBindings` for
-bound policy and `RepositoryPolicyDriver.resolve` otherwise. OCC checks
-Compute topology and freezes Driver identity, grants and deadline across
-renewal and recovery. `validateRepositoryBrokerNetworkProxy` rejects
-broker-blocking Codex settings.
+Native startup ties the socket sender, public CA, admission and receipt owner
+to selected Compute and Token Service. API and Worker verify this runtime before
+persistence. Custody and transport share it.
 
-After approval lookup, changed bound ownership returns 503 before invocation.
-Unbound deploys recheck their Driver. Denial or changes to binding or scope
-block revision creation.
+`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`
+owns OpenShell parsing and chart constraints.
+
+`OpenClawController.admitRepositoryCredentials` calls the bound `resolveBindings`.
+OCC checks Compute topology and freezes Driver identity, grants and deadline
+for renewal and recovery. `validateRepositoryBrokerNetworkProxy` rejects
+broker-blocking Codex settings. After approval lookup, changed ownership returns
+503 before invocation. Denial, binding changes and scope changes block revision creation.
 
 Protected `repository.preparedGitHub` uses the installed Sandbox/Credential
 Proxy Driver. Finite sessions need no native sender, control socket, broker CA
 or session files.
 
 `repository.nativeSender` selects `GitHubNativeRepositorySender` to own native
-sessions and files without an App key. The worker's prepared provider issues
-and holds credentials. Cleanup uses recorded identity without policy resolution
-or reauthorization.
+sessions and files without an App key. The worker's prepared provider issues and
+holds credentials. Drain admitted work through its recorded sender before cutover.
+Cleanup uses recorded identity without resolving policy or restoring authority.
 
 ### 3. Record ownership before opening a session
 
@@ -206,10 +203,10 @@ validates `new | retained` bindings against the version and hashes sorted
 reference/session pairs.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-store.ts:RepositoryMaterialStore.prepare`
 checks ownership, contents and deadlines before creating immutable Agent/version-owned
-Secrets. It rechecks deadlines after requests and before creation or return.
-Expiry leaves Secrets for owned cleanup. `RepositoryCredentialLifecycle.repair`
-closes missing retained bindings and retries Compute once after confirmed disposal.
-Missing inventory fails.
+Secrets. It rechecks deadlines after requests and before creation or return. Expiry
+leaves Secrets for owned cleanup. For missing retained bindings,
+`RepositoryCredentialLifecycle.repair` closes that subset and retries Compute once
+after confirmed disposal. Missing inventory fails.
 
 `apps/controller/src/drivers/compute/kubernetes/repository-material.ts:repositoryMaterialDeployment`
 mounts Secrets only in the first initializer. Sorted projections prevent
@@ -294,9 +291,9 @@ Maintenance uses 30 seconds, the sender interval or shorter Compute interval. Re
 erases standing tokens after verified expiry plus skew; uncertain revocations remain unresolved.
 
 [Standing admission](../../packages/occ/src/index.ts) requires permission and current scope.
-[Reconciliation](../../apps/controller/src/worker/repository-credentials.ts) retains the bound Installation policy or unbound Repo Driver; conflicts prevent startup.
-Under Namespace/Agent locks, [eligibility](../../packages/occ/src/repository-approval.ts) rejects withdrawal or scope changes with `REPOSITORY_STANDING_POLICY_CHANGED` before release.
-[GitHub](../../apps/controller/src/drivers/repo/github/access/registry.ts) fingerprints exact permissions and repository identity. Issuance/delivery recheck opt-ins and grant; standing delivery requires one binding.
+[Reconciliation](../../apps/controller/src/worker/repository-credentials.ts) renews through the same Installation binding.
+Under Namespace/Agent locks, [eligibility](../../packages/occ/src/repository-approval.ts) returns `REPOSITORY_STANDING_POLICY_CHANGED` on withdrawal or scope change before release.
+[GitHub](../../apps/controller/src/drivers/repo/github/access/registry.ts) fingerprints exact permissions and repository identity. Issuance and delivery recheck opt-ins and the grant. Standing delivery requires one binding.
 After hook acknowledgement, the [observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
 rechecks renewal policy and recipient. It refuses expiry, unacknowledged launches and observed-only previews.
 [Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) and
@@ -312,9 +309,11 @@ and maintenance, or retires the version ([first-token handling](../reference/rep
 
 Missing standing evidence closes Git. Within five seconds, the worker rechecks model authority, withdrawal, stop and replacement without preparation or activation ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 
-`OpenShellGitRuntime.repositoryWorkerRestartDisposition` reports supported
-held/preview execution `original-worker-required`; unsupported legacy routes `unknown`.
-[Preflight](coordinated-production-upgrade.md#1-prepare-the-candidate) cannot authorize execution.
+`OpenShellGitRuntime.repositoryWorkerRestartDisposition` reports
+`original-worker-required` for supported held launches and observed-hook previews,
+and `unknown` for unsupported legacy routes. [Upgrade preflight](coordinated-production-upgrade.md#1-prepare-the-candidate)
+reads the [disposition](../reference/repository-credentials/worker-replacement.md).
+Execution still requires runtime verification.
 
 `OpenShellGitRuntime.verifyExecution` reports `RepositoryExecutionRequiresRedeployError`
 when persisted v5 owner, binding and stable fence prove non-adoptable replacement. `ControllerWorker.completeStandingRepositoryWithdrawal` rechecks
@@ -381,6 +380,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 - 2026-11-10 11:39: Trace scoped GitHub CLI draft request validation. (authoring-run/c50e0843-88eb-48ee-9b60-f931b56fa440 - e8131a4495a3dd34f02bf6f9a5107c994568a313)
 
 - 2026-11-10 07:56: Merge repository flow. (authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296 - 71d4ad6cdb9587a86c46c64c661a9009d413e51f)
+
+- 2026-11-10 05:48: Trace built-in startup authority. (authoring-run/36d2097c-cf60-4565-842b-894c1d75cb67 - 42231202f842080e186a56344d144446f400aeaa)
 
 - 2026-11-10 02:09: Trace built-in repository policy. (authoring-run/a84609c2-f340-4cbc-b986-39550c4c7b2e - 83c78fb0c2ed8524d906cca60845bc9141424000)
 

@@ -114,11 +114,10 @@ Helm values, Agent configuration and command arguments.
 
 ## Select composition and network access
 
-Add the [GitHub Backend and Driver fragment](../../reference/backends.md#github-repository-credentials)
+Add the [GitHub Backend and policy fragment](../../reference/backends.md#github-repository-credentials)
 to the existing Installation YAML. Set its Backend ID to `repository-backend`
 and `sessionDurationSeconds` to `86400`. Select the optional capability through
-`repository.nativeSender` and `repository.preparedGitHub`, with the matching
-Backend `drivers.repo` policy member. The worker alone mounts the App key and
+`repository.nativeSender` and `repository.preparedGitHub`. Omit the GitHub Backend’s retired `drivers` field. The worker alone mounts the App key and
 32-byte custody key. Protected Git instead selects an installed Credential Proxy
 and omits the native sender; see [sender selection](../../reference/drivers/selection.md#select-a-protected-sender). Keep the shown registry, control socket
 and public CA paths; Helm mounts exactly those locations.
@@ -310,6 +309,6 @@ If the service stops without recording disposal, for example when its container
 is killed, the worker cannot prove the old session ended and does not replace it.
 Inspect retained cleanup obligations before explicitly deploying a new authorized
 version. That deployment does not settle old cleanup or replay repository
-operations. See [restart and cleanup limits](../../reference/repository-credentials.md#repo-driver-contract).
+operations. See [restart and cleanup limits](../../reference/repository-credentials.md#installation-policy-and-delivery).
 Updating policy requires a new immutable registry ConfigMap and consistent
 selection by all three consumers; existing admitted grants are not silently widened.

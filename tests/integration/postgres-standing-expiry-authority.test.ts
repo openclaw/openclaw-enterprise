@@ -291,8 +291,7 @@ for (const scenario of [
           : f;
         const {
           credentials,
-          driver,
-          sender,
+          native,
           owner,
           modelSourceId,
           approval,
@@ -408,6 +407,7 @@ for (const scenario of [
           },
         };
         const start = async () => {
+          const access = await native.load();
           const workerOptions: NonNullable<Parameters<typeof f.start>[1]> & {
             providers: ReturnType<typeof backendDefinition>[];
           } = {
@@ -417,7 +417,13 @@ for (const scenario of [
                 events.push(e);
               }
             },
-            transformDrivers: (d: { installation: { drivers: object } }) => {
+            transformDrivers: (d: {
+              computeDriver: ComputeDriver;
+              installation: {
+                drivers: object;
+                backend?: readonly import("../../packages/contracts/src/index.ts").BackendDefinition[];
+              };
+            }) => {
               const gateway = {
                 ...observationGateway(),
                 ...(unavailableGateway && { id: "replacement-gateway" }),
@@ -432,14 +438,18 @@ for (const scenario of [
               };
               return {
                 ...d,
-                repositoryPolicy: driver,
-                nativeRepositorySender: sender,
+                repositoryRuntime: access.bindCompute(d.computeDriver),
+                tokenService: access.tokenService,
                 credentialGatewayDriver: gateway,
                 sandboxDriver: sandbox,
                 installation: {
                   ...d.installation,
+                  repository: native.selection,
                   // Project unavailable configuration into the actual worker composition.
-                  ...(backendUnavailable && authorityFault ? { backend: [] } : {}),
+                  backend: [
+                    ...(backendUnavailable && authorityFault ? [] : (d.installation.backend ?? [])),
+                    native.backend,
+                  ],
                   drivers: {
                     ...d.installation.drivers,
                     sandbox: { id: sandbox.id, configuration: {} },

@@ -73,7 +73,7 @@ test("policy validates the registry against the selected Backend", () => {
   // @ts-expect-error The selected Backend is required.
   assert.throws(() => build({ driverId: selected.driverId }), /owning Backend/);
   for (const driverId of ["", "bad\nidentity", "é".repeat(257)]) {
-    assert.throws(() => build({ ...selected, driverId }), /repository policy Driver/);
+    assert.throws(() => build({ ...selected, driverId }), /repository policy requires an identity/);
   }
   assert.throws(() => build(selected, 601), /session duration exceeds/);
 });
@@ -110,7 +110,7 @@ test("only explicit Namespace and Agent selections allow GitHub installation sco
   const resolve = (
     bindings: { repositoryRef: string; profile?: string }[],
     namespace = namespaceId,
-  ) => repo.resolve({ namespaceId: namespace, bindings }).bindings[0]!;
+  ) => repo.resolveBindings({ namespaceId: namespace, bindings }).bindings[0]!;
   for (const old of [undefined, "git-write", "git-full", "*"]) {
     assert.throws(
       () => resolve([{ repositoryRef, ...(old && { profile: old }) }]),
@@ -147,7 +147,7 @@ test("only explicit Namespace and Agent selections allow GitHub installation sco
       { allowStandingApprovals: true, repositories: [] },
     ),
   );
-  assert.deepEqual((await standing.listOptions({ namespaceId })).options, [
+  assert.deepEqual((await standing.listCatalog({ namespaceId })).options, [
     {
       repositoryRef,
       displayName: "All repositories and permissions available to this GitHub App installation",
@@ -209,7 +209,7 @@ test("installation access needs positive sender capability and a profile-bound s
     true,
   );
 
-  const selected = driver(config(policy)).resolve({
+  const selected = driver(config(policy)).resolveBindings({
     namespaceId,
     bindings: [{ repositoryRef, profile }],
   }).bindings[0]!;

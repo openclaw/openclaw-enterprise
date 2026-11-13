@@ -71,15 +71,20 @@
     {
       "path": "tests/integration/postgres-worker-repository-roles.test.ts",
       "expectedTests": [
-        "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
-        "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
-        "worker refuses repository credentials when repositoryPolicy is absent",
-        "worker refuses repository credentials when nativeRepositorySender is present with the wrong id",
-        "worker refuses repository credentials when nativeRepositorySender is present with the wrong implementation",
+        "worker refuses repository credentials when repositoryAdmission has the wrong id",
+        "worker refuses repository credentials when repositoryAdmission has the wrong implementation",
+        "worker refuses repository credentials when repositoryAdmission is absent",
+        "worker refuses repository credentials when repositoryAdmission is substituted with an unsealed runtime",
+        "worker refuses repository credentials when nativeRepositorySender has the wrong id",
+        "worker refuses repository credentials when nativeRepositorySender has the wrong implementation",
         "worker refuses repository credentials when nativeRepositorySender is absent",
         "worker startup binds built-in repository provisioning without public registration",
-        "built-in Worker settles legacy admission through the original repository sender",
-        "live repository cleanup uses the persisted owner with revision identity only"
+        "retired-role",
+        "retired-mode",
+        "Worker restart settles retained admission through the original repository sender",
+        "original sender",
+        "wrong sender then original sender",
+        "live repository lifecycle refuses resolution identity drift and cleanup uses the persisted owner"
       ]
     },
     {

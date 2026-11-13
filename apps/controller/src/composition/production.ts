@@ -1,3 +1,4 @@
+import { repositoryStartupConfiguration } from "./installation-config.ts";
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
@@ -93,20 +94,23 @@ export async function composeProduction(
   if (config.mode !== "production") {
     throw new Error("Production OCC composition requires explicit production mode.");
   }
+  const drivers = config.drivers;
+  const { backends, runtime, computeDriver, protectedDriver, tokenService } =
+    repositoryStartupConfiguration(drivers);
+  if (!computeDriver) {
+    throw new Error("Production requires the selected Compute Driver.");
+  }
   const {
     installation,
-    computeDriver,
     configurationDriver,
     secretDriver,
     sandboxDriver,
     credentialGatewayDriver,
     credentialRefreshDriver,
-    protectedDriver,
     preparedGitHub,
     pluginDrivers,
-    repositoryPolicy,
     createIAMDriver,
-  } = config.drivers;
+  } = drivers;
   if (
     (installation.drivers.service_account === undefined) !==
     (config.serviceAccountDriverFactory === undefined)
@@ -137,7 +141,7 @@ export async function composeProduction(
     closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
-      preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
+      preparedTokenProof: tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -215,18 +219,18 @@ export async function composeProduction(
         ...installationControllerOptions(config.drivers.installation),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
-        ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        ...(tokenService && { preparedTokens: tokenService }),
         ...(config.drivers.pluginSourceReader === undefined
           ? {}
           : { pluginSourceReader: config.drivers.pluginSourceReader }),
         recordOperations: true,
-        backends: installation.backend,
+        backends,
         defaultPresets: config.drivers.defaultPresets ?? [],
         bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
         refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
         loggingLevel: config.drivers.installation.logging.level,
       },
-      config.drivers.repositoryAdmission,
+      runtime?.admission,
     );
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
@@ -254,7 +258,7 @@ export async function composeProduction(
     controller.selectDriver("configuration", configurationDriver.id);
     // TODO: Select an OpenShell OAuth issuer in the API and worker when its RPC can
     // take custody of the grant and own refresh. Other installations use the built-in issuer.
-    config.drivers.tokenService?.registerIssuer(
+    tokenService?.registerIssuer(
       new OAuthAccountTokens(
         state,
         secretDriver,
@@ -263,10 +267,6 @@ export async function composeProduction(
     );
     config.serviceAccountDriverFactory?.(controller, state);
     controller.installPluginDrivers(pluginDrivers ?? []);
-    if (repositoryPolicy !== undefined) {
-      controller.registerDriver(repositoryPolicy);
-      controller.selectDriver("repo", repositoryPolicy.id);
-    }
     await controller.validateBackendConfiguration();
     await controller.applyIAMConfiguration();
     const auth = await createPostgresControllerAuth({
@@ -375,7 +375,7 @@ export async function composeProduction(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
-      backendSummaries: backendSummariesFromDefinitions(installation.backend),
+      backendSummaries: backendSummariesFromDefinitions(backends),
       ...(installation.observability === undefined
         ? {}
         : { observabilityUrl: installation.observability.url }),
@@ -389,7 +389,7 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
-    config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
+    runtime?.transport?.connectRestartObservation?.(pool);
     await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));

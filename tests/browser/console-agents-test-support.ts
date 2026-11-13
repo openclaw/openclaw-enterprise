@@ -9,12 +9,15 @@ import type {
   SandboxFacet,
   HarnessExecutionMode,
 } from "../../packages/contracts/src/index.ts";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
 import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { type: "json" };
 
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
+import {
+  createConsoleAppFixture,
+  consoleRepositoryAdmission,
+  backendFixtures,
+} from "../helpers/console-app.mjs";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { isRecord, nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
@@ -260,7 +263,6 @@ export const repositoryBackendFixture = Object.freeze({
   id: "console-repositories",
   type: "github",
   configuration: Object.freeze({ registryPath: "/unused/console/repositories.json" }),
-  drivers: Object.freeze({ repo: "console-repository-driver" }),
 });
 
 export async function createRepositoryLaunchFixture(
@@ -271,7 +273,13 @@ export async function createRepositoryLaunchFixture(
     includeInstallationAccess = false,
   }: { reloadablePolicy?: boolean; includeInstallationAccess?: boolean } = {},
 ) {
+  let currentPolicy: GitHubRepositoryPolicy;
   const fixture = await createConsoleAppFixture(t, {
+    repositoryAdmission: consoleRepositoryAdmission(
+      repositoryBackendFixture.id,
+      "console-repository-driver",
+      () => currentPolicy,
+    ),
     defaultPresets: [defaultCodexPreset],
     backends: [...backendFixtures, repositoryBackendFixture],
     repositoryCredentials: true,
@@ -279,27 +287,7 @@ export async function createRepositoryLaunchFixture(
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Repository launch", { ready: true });
   const installationNamespaceId = includeInstallationAccess ? namespace.id : undefined;
-  let currentPolicy = repositoryPolicyDriver(
-    buildRepositories(namespace.id),
-    installationNamespaceId,
-  );
-  // Simulate replacing mounted policy between requests while keeping all projection and resolution
-  // decisions in the actual GitHub Driver. This does not prove production configuration reload.
-  const repoDriver = reloadablePolicy
-    ? {
-        id: currentPolicy.id,
-        capability: currentPolicy.capability,
-        implementation: "test-reloadable-github-policy",
-        listOptions: (input: Parameters<GitHubRepositoryPolicy["listOptions"]>[0]) =>
-          currentPolicy.listOptions(input),
-        resolve: (input: Parameters<GitHubRepositoryPolicy["resolve"]>[0]) =>
-          currentPolicy.resolve(input),
-      }
-    : currentPolicy;
-  const controller: unknown = fixture.controller;
-  assert.ok(controller instanceof OpenClawController);
-  controller.registerDriver(repoDriver);
-  controller.selectDriver("repo", repoDriver.id);
+  currentPolicy = repositoryPolicyDriver(buildRepositories(namespace.id), installationNamespaceId);
   return {
     fixture,
     namespace,
@@ -337,7 +325,7 @@ function repositoryPolicyDriver(
   );
   return new GitHubRepositoryPolicy(
     {
-      driverId: backend.drivers.repo,
+      driverId: "console-repository-driver",
       backendId: backend.id,
     },
     registry,

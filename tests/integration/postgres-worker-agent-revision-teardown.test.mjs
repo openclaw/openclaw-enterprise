@@ -1328,13 +1328,8 @@ test(
     await fixture.work(candidate, "succeeded");
     await fixture.stop();
     const [original] = await repositoryAttempts(fixture, candidate);
-    repository.driver.resolve = () => ({
-      sessionDurationSeconds: 60,
-      bindings: repository.snapshot.bindings.map((binding) => ({
-        ...binding,
-        grant: { ...binding.grant, grantId: "replacement-grant" },
-      })),
-    });
+    // Restart with a genuinely changed registry, so the original grant no longer resolves.
+    repository.driver.registry.providerInstanceId = "replacement-provider-instance";
     const maintenance = await fixture.advanceMaintenance(candidate);
     assert.equal(maintenance.rowCount, 1);
     await fixture.start(compute, { pool: fixture.createWorkerPool() });

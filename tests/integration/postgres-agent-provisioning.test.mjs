@@ -14,14 +14,19 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   ConfigurationHarnessError,
   ProvisioningSecretDriverError,
+  RepositoryBindingSelectionError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import { registerConfigurationResendCases } from "./postgres-agent-provisioning-configuration-resend-cases.ts";
 import {
+  createProtectedProvisioningDrivers,
+  createProvisioningFixture,
+  createProvisioningRepository,
+} from "./postgres-agent-provisioning-fixture.ts";
+import {
   createProvisioningDependencySetup,
   observeProvisioningRetry,
 } from "./postgres-agent-provisioning-dependency-cases.ts";
-import { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
 import { registerProvisioningRefusalCases } from "./postgres-agent-provisioning-refusal-cases.ts";
 import {
   createRuntimeComputeDriver,
@@ -29,7 +34,6 @@ import {
   heldTransportDriver,
   provisioningEffectState,
 } from "./postgres-agent-provisioning-transport-fixture.ts";
-import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   assertProvisioningSourceStatus,
@@ -560,73 +564,57 @@ test(
   },
 );
 
-// The GitHub repository policy the provisioning tests compose: one repository, `project`,
-// approved in `namespaceId` for `profiles`.
-// `installationAccess` also offers the Namespace installation-wide access, as `installation`.
-function provisioningRepositoryPolicy(namespaceId, profiles, installationAccess = false) {
-  return new GitHubRepositoryPolicy(
-    {
-      driverId: "provisioning-repo",
-      backendId: "provisioning-repositories",
-    },
-    {
-      ...(installationAccess && {
-        installationAccess: {
-          repositoryRef: "installation",
-          namespaces: [{ namespaceId, accessMode: "installation" }],
-        },
-      }),
-      version: 1,
-      backendId: "provisioning-repositories",
-      providerInstanceId: "provisioning-github",
-      appId: "123",
-      githubInstallationId: "456",
-      maximumDurationSeconds: 3600,
-      repositories: [
-        {
-          repositoryRef: "project",
-          repositoryId: "789",
-          repository: "example/project",
-          namespaces: [{ namespaceId, profiles }],
-        },
-      ],
-    },
-    { sessionDurationSeconds: 600 },
-  );
-}
-
 // A fresh Namespace with its provisioning Secrets, and a fixture that exercises real repository
 // policy for `project` (approved for `profiles`; with `installationAccess`, also installation-wide
-// access) and Kubernetes topology admission (`topologyId`, with the Sandbox Driver in `options`,
-// if any) without contacting either external system. `compose` opens another app on the same
-// Drivers, as after a change of the Installation's selection.
+// access) and Kubernetes topology admission (`topologyId`). Each native process loads a fresh
+// constructor-bound runtime while sharing registry, selection IDs and fixture storage.
 async function repositoryProvisioningFixture(
   context,
   topologyId,
-  { profiles = ["git-read"], installationAccess = false, ...options } = {},
+  {
+    profiles = ["git-read"],
+    installationAccess = false,
+    protectedSandbox = false,
+    computeDriver: requestedComputeDriver,
+    ...options
+  } = {},
 ) {
-  const initial = await createFixture(context);
+  const initial = await createFixture(context, { computeDriver: requestedComputeDriver });
   const namespace = await initial.bootstrapNamespace();
-  const repoDriver = provisioningRepositoryPolicy(namespace.id, profiles, installationAccess);
   const topology = createTestKubernetesComputeDriver(topologyId, {
     repositoryCredentials: true,
-    ...(options.sandboxDriver === undefined ? {} : { sandboxDriver: options.sandboxDriver }),
   });
   // Reuse the established runtime fixture with the topology's repository admission.
   const computeDriver = initial.computeDriver;
   computeDriver.validateRepositoryCredentials =
     topology.validateRepositoryCredentials.bind(topology);
+  const repository = await createProvisioningRepository(
+    context,
+    namespace.id,
+    profiles,
+    installationAccess,
+  );
   const compose = (composeOptions) =>
     createFixture(context, {
       computeDriver,
       configurationDriver: initial.configurationDriver,
       secretDriver: initial.secretDriver,
-      repoDriver,
+      repository,
       ...composeOptions,
     });
-  const fixture = await compose(options);
+  const selectedDrivers = protectedSandbox
+    ? await createProtectedProvisioningDrivers(context, repository, initial)
+    : undefined;
+  const fixture = await compose({ ...options, ...(selectedDrivers && { selectedDrivers }) });
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
-  return { namespace, repoDriver, computeDriver, fixture, secrets, compose };
+  return {
+    namespace,
+    repository,
+    computeDriver: fixture.computeDriver,
+    fixture,
+    secrets,
+    compose,
+  };
 }
 
 // A provisioning request for `project` at git-read, with no Plugin approvers.
@@ -660,7 +648,7 @@ test(
   "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const { namespace, repoDriver, fixture, secrets } = await repositoryProvisioningFixture(
+    const { namespace, repository, fixture, secrets } = await repositoryProvisioningFixture(
       context,
       "provisioning-topology",
       { profiles: ["git-read", "git-write"], stopAfterProvisioning: true },
@@ -671,45 +659,50 @@ test(
     ).length;
     const body = repositoryProvisioningBody(namespace.id, secrets, { gatewayManagedMode: false });
     const { repositoryAccess } = body;
-    const bound = context.mock.method(repoDriver, "resolveBindings");
-    const legacy = context.mock.method(repoDriver, "resolve");
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
-    assert.equal(bound.mock.callCount(), 1, "fresh planning uses the bound policy exactly once");
-    assert.equal(legacy.mock.callCount(), 0, "fresh planning bypasses the legacy resolver");
-    assert.deepEqual(bound.mock.calls[0]?.arguments, [
-      { namespaceId: namespace.id, bindings: repositoryBindings },
-    ]);
     const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.deepEqual(queued.plan.repositoryBindings, repositoryBindings);
     assert.deepEqual(queued.plan.repositoryAccess, repositoryAccess);
     assert.deepEqual(queued.plan.pluginApprovers, []);
     assert.equal(queued.agent_id, null);
     assert.equal(Object.hasOwn(queued.plan, "reservedAgentId"), false);
-    // Ordinary admission retains the pre-opt-in plan shape. Reopen the API before
-    // a new worker consumes it, without rewriting persisted work or signing in again.
-    await fixture.restartApi();
-    const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body,
-    });
-    assert.equal(replay.status, 202, JSON.stringify(replay.body));
-    assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
-    assert.deepEqual(
-      (await provisioningRow(fixture.pool, namespace.id, body.requestId)).plan,
-      queued.plan,
-    );
-    assert.equal(bound.mock.callCount(), 1, "replay does not repeat repository planning");
-    assert.equal(legacy.mock.callCount(), 0, "replay does not use the legacy resolver");
+    // A replay must use saved work even when a fresh request is no longer approved.
+    // Keep the registry valid by approving a different Namespace, then reload normally.
+    try {
+      await repository.setApprovedNamespace(`ns_${randomUUID()}`);
+      await fixture.restartApi();
+      const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+        body,
+      });
+      assert.equal(replay.status, 202, JSON.stringify(replay.body));
+      assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+      const replayed = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      assert.equal(replayed.work_id, queued.work_id);
+      assert.deepEqual(replayed.plan, queued.plan);
+      const fresh = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+        body: { ...body, requestId: requestId() },
+      });
+      if (fresh.status === 202) {
+        fixture.cancelQueuedWorkAtTeardown(
+          fresh.data.provisioning.workId,
+          "Fresh repository refusal control completed",
+        );
+      }
+      assertApiError(fresh, 400, "INVALID_REQUEST");
+      assert.equal(fresh.body.error.message, RepositoryBindingSelectionError.notApproved);
+    } finally {
+      await repository.setApprovedNamespace(namespace.id);
+      await fixture.restartApi();
+    }
     const changed = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: { ...body, repositoryAccess: { ...repositoryAccess, defaultProfile: "git-write" } },
     });
     assert.equal(changed.status, 409, JSON.stringify(changed.body));
 
-    const boundCallsBeforeWorker = bound.mock.callCount();
-    const legacyCallsBeforeWorker = legacy.mock.callCount();
     await fixture.startWorker();
     const status = await waitFor(
       "Agent provisioning to queue its initial deployment wait",
@@ -725,21 +718,6 @@ test(
       },
     );
     await fixture.stopWorker();
-    const workerBoundCalls = bound.mock.calls.slice(boundCallsBeforeWorker);
-    assert.ok(workerBoundCalls.length > 0, "Worker directly resolves the bound repository policy");
-    for (const call of workerBoundCalls) {
-      assert.equal(call.this, repoDriver);
-      assert.deepEqual(call.arguments, [
-        { namespaceId: namespace.id, bindings: queued.plan.repositoryBindings },
-      ]);
-    }
-    assert.equal(
-      legacy.mock.callCount() - legacyCallsBeforeWorker,
-      0,
-      "Worker bypasses the legacy resolver even when it delegates to resolveBindings",
-    );
-    bound.mock.restore();
-    legacy.mock.restore();
     assert.equal(status.status, "queued");
     assert.match(status.agentId, identifier("agt"));
     assert.match(status.configurationId, identifier("cfg"));
@@ -856,10 +834,9 @@ test(
   "a provisioning job whose saved repository access can no longer be delivered fails before its Agent",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const { namespace, repoDriver, computeDriver, fixture, secrets } =
+    const { namespace, repository, computeDriver, fixture, secrets } =
       await repositoryProvisioningFixture(context, "provisioning-saved-access");
     const validateRepositoryCredentials = computeDriver.validateRepositoryCredentials;
-    let policyRefusal;
     for (const { change, refuse, message, retry } of [
       {
         change: "compute",
@@ -870,12 +847,7 @@ test(
       {
         change: "policy",
         // An Installation administrator withdrew the approval after the request was accepted.
-        // The policy refuses the selection as the Driver contract allows: without a reason.
-        refuse: () => {
-          policyRefusal = context.mock.method(repoDriver, "resolveBindings", () => {
-            throw new Error("synthetic withdrawn approval");
-          });
-        },
+        refuse: () => repository.setApprovedNamespace(`ns_${randomUUID()}`),
         message: SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
       },
       {
@@ -900,7 +872,7 @@ test(
       );
       assert.equal(admitted.status, 202, `${change}: ${JSON.stringify(admitted.body)}`);
       try {
-        refuse();
+        await refuse();
         const failed = await workerFailure(fixture, namespace.id, body.requestId, change);
         assert.equal(failed.status, "failed", change);
         assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
@@ -919,9 +891,9 @@ test(
           assert.equal(retried.body.error.message, retry);
         }
       } finally {
-        policyRefusal?.mock.restore();
-        policyRefusal = undefined;
+        await repository.setApprovedNamespace(namespace.id);
         computeDriver.validateRepositoryCredentials = validateRepositoryCredentials;
+        await fixture.restartApi();
       }
     }
   },
@@ -967,35 +939,13 @@ test(
   "a stored provisioning record whose Codex proxy blocks the repository broker is refused after its Sandbox repository path goes away",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    // This case ends before the worker reaches the Sandbox: only that it has a repository path
-    // matters, so every Sandbox operation fails the test.
-    const sandboxDriver = {
-      id: "sandbox-repository-path",
-      capability: "sandbox",
-      implementation: "test-provisioning",
-      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-      facets: ["networking", "filesystem", "process"],
-      repositoryAccess: Object.fromEntries(
-        [
-          "verifyExecution",
-          "retireExpired",
-          "routeReadiness",
-          "materialSettledAt",
-          "isRouteBlockedError",
-        ].map((name) => [name, () => assert.fail("this case ends before repository delivery")]),
-      ),
-      async provisionHarness() {
-        assert.fail("this case ends before provisioning effects");
+    const { namespace, fixture, secrets, compose } = await repositoryProvisioningFixture(
+      context,
+      "provisioning-sandbox-repositories",
+      {
+        protectedSandbox: true,
       },
-      async cleanup() {},
-    };
-    const { namespace, computeDriver, fixture, secrets, compose } =
-      await repositoryProvisioningFixture(context, "provisioning-sandbox-repositories", {
-        sandboxDriver,
-      });
-    const withoutSandbox = createTestKubernetesComputeDriver("provisioning-proxy-repositories", {
-      repositoryCredentials: true,
-    });
+    );
     const { agents, models } = createHarnessConfiguration("codex", "gpt-6-astra");
     const body = repositoryProvisioningBody(namespace.id, secrets, {
       configuration: {
@@ -1018,16 +968,37 @@ test(
 
     // The Installation now has no Sandbox Driver: the Codex network proxy carries the broker
     // traffic, and the stored setting blocks it.
-    computeDriver.validateRepositoryCredentials =
-      withoutSandbox.validateRepositoryCredentials.bind(withoutSandbox);
+    fixture.cancelQueuedWorkAtTeardown(
+      admitted.data.provisioning.workId,
+      "Sandbox switch completed",
+    );
+    const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.equal(queued.agent_id, null);
     const switched = await compose();
+    const provision = context.mock.method(
+      switched.computeDriver,
+      "provisionAgentRuntimeCredentials",
+      () => assert.fail("selection B must refuse before provisioning effects"),
+    );
+    assert.deepEqual(await provisioningRow(switched.pool, namespace.id, body.requestId), queued);
     const failed = await workerFailure(switched, namespace.id, body.requestId, "Codex proxy");
+    assert.deepEqual(failed.progress.error, {
+      code: "PROVISIONING_REJECTED",
+      message: BROKER_PROXY_DISABLED,
+    });
+    assert.deepEqual(failed.plan, queued.plan);
+    assert.equal(failed.work_id, queued.work_id);
     assert.equal(failed.status, "failed");
     assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
     // Retry names the setting, as Agent save and the request do.
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
     assertApiError(retried, 400, "INVALID_REQUEST");
     assert.equal(retried.body.error.message, BROKER_PROXY_DISABLED);
+    assert.equal(provision.mock.callCount(), 0);
+    const status = await switched.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 200, JSON.stringify(status.body));
+    assert.equal(status.data.status, "failed");
+    assert.deepEqual(status.data.error, failed.progress.error);
   },
 );
 
@@ -3984,9 +3955,9 @@ test(
   },
 );
 
-async function createFailedPreHandoffAgent(fixture, overrides = {}) {
-  const namespace = await fixture.bootstrapNamespace();
-  const secrets = await createProvisioningSecrets(fixture, namespace.id);
+async function createFailedPreHandoffAgent(fixture, overrides = {}, prepared) {
+  const namespace = prepared?.namespace ?? (await fixture.bootstrapNamespace());
+  const secrets = prepared?.secrets ?? (await createProvisioningSecrets(fixture, namespace.id));
   const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets, overrides);
 
   await fixture.startWorker();
@@ -4856,11 +4827,22 @@ test(
 test(
   "existing Agent provisioning status survives repository policy refusal while retry and IAM remain enforced",
   { ...requiresPostgres, timeout: 60_000 },
-  (context) =>
-    assertProvisioningRepositoryStatus(failingTransportDriver(), async (options, overrides) => {
-      const fixture = await createFixture(context, options);
-      return { fixture, ...(await createFailedPreHandoffAgent(fixture, overrides)) };
-    }),
+  async (context) => {
+    const { fixture, namespace, secrets, repository } = await repositoryProvisioningFixture(
+      context,
+      "provisioning-status-repositories",
+      { computeDriver: failingTransportDriver() },
+    );
+    const target = await createFailedPreHandoffAgent(
+      fixture,
+      {
+        repositoryBindings: [{ repositoryRef: "project", profile: "git-read" }],
+        pluginApprovers: [],
+      },
+      { namespace, secrets },
+    );
+    await assertProvisioningRepositoryStatus({ fixture, repository, ...target });
+  },
 );
 
 test(

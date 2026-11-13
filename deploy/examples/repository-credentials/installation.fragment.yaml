@@ -5,8 +5,6 @@ backend:
     type: github
     configuration:
       registryPath: /etc/openclaw/repository-registry/registry.json
-    drivers:
-      repo: repository-credentials
 repository:
   id: repository-credentials
   configuration:

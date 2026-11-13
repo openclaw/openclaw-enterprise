@@ -16,37 +16,27 @@ export async function composeRepositoryAccess(
 ) {
   const { backend: definition, selection } = input;
   const repositoryOwner = repositoryPolicyOwner(input);
-  const configuration = requireConfiguration<typeof nativeSender>(
+  const { controlSocket, publicCaPath } = requireConfiguration<typeof nativeSender>(
     GitHubNativeRepositorySender,
     nativeSender,
   );
-  const registry = await loadGitHubRepositoryRegistry(
-    definition.configuration.registryPath,
-    definition.id,
-  );
-  const publicCa = await loadPublicCa(configuration.publicCaPath);
-  const client = new UnixRepositoryCredentialControlClient({
-    controlSocket: configuration.controlSocket,
+  const { registryPath } = definition.configuration;
+  const { sessionDurationSeconds } = selection.configuration;
+  const registry = await loadGitHubRepositoryRegistry(registryPath, repositoryOwner.backendId);
+  const publicCa = await loadPublicCa(publicCaPath);
+  const client = new UnixRepositoryCredentialControlClient({ controlSocket });
+  const policy = composeRepositoryPolicy(repositoryOwner, registry, {
+    registryPath,
+    sessionDurationSeconds,
   });
-  const policy = composeRepositoryPolicy(
-    repositoryOwner,
-    registry,
-    selection.configuration.sessionDurationSeconds,
-  );
   return Object.freeze({
     ...policy,
-    authorityIdentity: undefined,
-    resolveRepositoryDelivery: undefined,
     repositoryOwner: Object.freeze({
-      controlSocket: configuration.controlSocket,
+      controlSocket,
       ...policy.repositoryOwner,
     }),
     nativeRepositorySender: new GitHubNativeRepositorySender(
-      {
-        id: repositoryOwner.backendId,
-        drivers: Object.freeze({ repo: repositoryOwner.driverId }),
-        client,
-      },
+      { ...repositoryOwner, client },
       { publicCa },
     ),
   });

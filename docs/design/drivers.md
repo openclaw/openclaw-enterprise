@@ -6,7 +6,7 @@ current behavior from remaining design work.
 
 ## Implementation status
 
-Compute, IAM, Configuration, Secret, ServiceAccount, Plugin, Repo, Channel,
+Compute, IAM, Configuration, Secret, ServiceAccount, Plugin, Channel,
 optional Sandbox, and Credential Gateway integrations have current contracts. The
 `InferenceDriver` and general `SandboxPolicy` enforcement described below remain
 planned. Current Channel operations validate credentials and look up provider
@@ -19,6 +19,10 @@ subject to its upstream preconditions. See
 [Driver development](../contributing/driver-development.md),
 [Sandbox](../reference/drivers/sandbox.md), and
 [OpenShell limits](../reference/drivers/openshell-sandbox.md) for current contracts.
+
+Installation `repository` configuration binds built-in repository policy to the
+matching GitHub Backend. See
+[Installation policy and delivery](../reference/repository-credentials.md#installation-policy-and-delivery).
 
 ## ComputeDriver
 

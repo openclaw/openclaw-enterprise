@@ -125,7 +125,9 @@ export function createCredentialWithdrawalChecks({
       assert.ok(createdDriver?.installation.backend[0]);
       assert.ok(createdDriver.credentialGatewayDriver);
       assert.ok(createdDriver.credentialRefreshDriver instanceof OpenShellCredentialRefreshDriver);
-      assert.deepEqual(createdDriver.installation.backend[0].drivers, {
+      const backend = createdDriver.installation.backend?.[0];
+      assert.ok(backend?.type === "openshell");
+      assert.deepEqual(backend.drivers, {
         sandbox: "openshell-sandbox",
         credential_gateway: "openshell-credentials",
         credential_refresh: "openshell-refresh",

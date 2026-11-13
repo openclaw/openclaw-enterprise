@@ -1,4 +1,4 @@
-import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { loadWorkerNativeRepositoryAccess } from "../helpers/postgres-standing-worker-fixture.ts";
 import { closeWorkerComposition } from "../../apps/controller/src/worker/shutdown.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -531,16 +531,12 @@ test(
       },
     });
     const [
-      { GitHubRepositoryPolicy },
-      { UnixRepositoryCredentialControlClient },
       { startRegistryCredentialServiceFixture },
       { startRepositoryReceiptServer },
       { startControlResponseRelay },
       { createResourceScope },
       { dirname },
     ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/policy.ts"),
-      import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
       import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
       import("../fixtures/repository-credentials/control-relay.mjs"),
@@ -561,21 +557,13 @@ test(
     });
     // Simulate the old broker's 404 while all other traffic still reaches the real service.
     relay.setCapabilitiesHidden(true);
-    const repositoryBackend = {
-      id: credentials.backendId,
-      client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
-      drivers: { repo: "repository-credentials" },
-    };
-    const sender = new GitHubNativeRepositorySender(repositoryBackend, {
-      publicCa: credentials.tls.ca,
+    const native = await loadWorkerNativeRepositoryAccess(context, credentials, {
+      sessionDurationSeconds: 60,
+      controlSocket: relay.socketPath,
     });
-    const driver = new GitHubRepositoryPolicy(
-      { driverId: repositoryBackend.drivers.repo, backendId: repositoryBackend.id },
-      credentials.registry,
-      {
-        sessionDurationSeconds: 60,
-      },
-    );
+    const driver = native.access.repositoryAdmission.policy;
+    const sender = native.access.bindCompute(fixture.compute).nativeSender;
+    assert.ok(sender);
     const receiptServer = await startRepositoryReceiptServer({
       state: fixture.state,
       controlSocket: credentials.config.gateway.controlSocket,
@@ -584,7 +572,7 @@ test(
       backendId: credentials.backendId,
     });
     context.after(() => receiptServer.close());
-    const resolution = driver.resolve({
+    const resolution = driver.resolveBindings({
       namespaceId: fixture.namespace.id,
       bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
     });
@@ -604,8 +592,13 @@ test(
         pool: fixture.workerPool,
         transformDrivers: (drivers) => ({
           ...drivers,
-          repositoryPolicy: driver,
-          nativeRepositorySender: sender,
+          repositoryRuntime: native.access.bindCompute(drivers.computeDriver),
+          tokenService: native.access.tokenService,
+          installation: {
+            ...drivers.installation,
+            repository: native.selection,
+            backend: [...(drivers.installation.backend ?? []), native.backend],
+          },
         }),
       },
     );

@@ -287,7 +287,7 @@ atomically deletes the Agent, its Agent revisions, service principal, API keys, 
 exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
 and removes owned artifacts, including workspace data. Namespace Configurations
 and Secrets survive. Deletion releases its name;
-[repository cleanup](repository-credentials.md#repo-driver-contract) continues independently.
+[repository cleanup](repository-credentials.md#installation-policy-and-delivery) continues independently.
 
 Permanent failure or exhausted attempts leave the Agent `deleting`.
 After a fix, the initiating caller can repeat DELETE to

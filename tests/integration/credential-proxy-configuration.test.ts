@@ -92,21 +92,6 @@ const owners: readonly {
     invalid: [null, {}, ...invalidRepositoryConfigurations],
   },
   {
-    capability: "repo",
-    implementation: "github",
-    definition: GitHubRepositoryPolicy,
-    valid: { sessionDurationSeconds: 60 },
-    invalid: [
-      null,
-      {},
-      { sessionDurationSeconds: 0 },
-      { sessionDurationSeconds: 1.5 },
-      { sessionDurationSeconds: Number.MAX_SAFE_INTEGER },
-      { sessionDurationSeconds: sensitive },
-      { sessionDurationSeconds: 60, [sensitive]: sensitive },
-    ],
-  },
-  {
     capability: "credential_proxy",
     implementation: "openshell",
     definition: OpenShellCredentialProxyDriver,
@@ -200,6 +185,23 @@ function redactedConfigurationError(error: unknown): boolean {
   assert.ok(!String(error).includes(sensitive));
   return true;
 }
+
+test("GitHub installation policy refuses invalid session durations before registry access", () => {
+  for (const input of [
+    null,
+    {},
+    { sessionDurationSeconds: 0 },
+    { sessionDurationSeconds: 1.5 },
+    { sessionDurationSeconds: Number.MAX_SAFE_INTEGER },
+    { sessionDurationSeconds: sensitive },
+    { sessionDurationSeconds: 60, [sensitive]: sensitive },
+  ]) {
+    assert.throws(
+      () => requireConfiguration(GitHubRepositoryPolicy, input),
+      redactedConfigurationError,
+    );
+  }
+});
 
 for (const owner of owners) {
   test(`${owner.implementation} registers its real structured validator and rejects malformed input safely`, () => {

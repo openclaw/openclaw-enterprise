@@ -37,9 +37,9 @@ ref against the approved branch. Protect important branches at GitHub.
 See [withdrawal and draft PR creation](repository-credentials/prepared-native-git.md).
 
 [Metadata reads](../flows/credential-source-egress.md) and
-[OpenShell Git](repository-credentials/protected-openshell-git.md) require their
-own sender and Sandbox selections. OCC rejects unsupported combinations.
-Helm uses `Recreate` to prevent overlapping worker or credential service owners.
+[OpenShell Git](repository-credentials/protected-openshell-git.md) need separate
+sender and Sandbox selections. OCC rejects unsupported combinations.
+Helm `Recreate` prevents overlapping worker or credential service owners.
 
 Model credentials stay with their consumer and dedicated Slack tokens with the
 gateway. The repository-bound Codex proxy allows the exact broker hostname.
@@ -49,33 +49,25 @@ NetworkPolicy, TLS and broker authorization still apply. See
 [consumer networking](drivers/kubernetes-compute/networking-and-isolation.md#networking)
 and [anonymous public reads](public-github-reads.md).
 
-## Repo Driver contract
+## Installation policy and delivery
 
-The GitHub Backend selects [GitHub repository policy](../../apps/controller/src/drivers/repo/github/policy.ts)
-by ID in `drivers.repo`. Its [contract](../../packages/contracts/src/drivers/repo/index.ts) is separate from
-`NativeRepositorySender`. For protected Git, [installation composition](../../apps/controller/src/composition/installation-config.ts)
-supplies the resolver that checks the admitted grant and selects its destination.
+`repository` binds built-in policy to the unique GitHub Backend matching the registry ID. The API lists Namespace-approved repositories and binds profiles and deadlines. The Worker rechecks grants and standing approval before renewal.
 
-- `listOptions` lists approved repositories and profiles for the Namespace.
-- `resolve` checks the selection against Namespace policy and returns the bindings and duration.
+Protected Git uses the installed Sandbox and Credential Proxy Driver. Native Git requires `repository.nativeSender` and `repository.preparedGitHub`. A GitHub Backend requires a matching `repository` selection. Startup rejects retired `repo` registration and GitHub Backend `drivers` except a startup file's sole `drivers.repo` exactly matching `repository.id`, discarded before validation and runtime identity calculation.
 
-For protected delivery, select `repository` and the installed Sandbox and
-Credential Proxy Driver. For native delivery, select `repository.nativeSender`
-with `repository.preparedGitHub`. Controller startup rejects the legacy
-Installation-level `drivers.repo` in every mode. Before switching, stop new
-admissions and drain accepted work on its original owner.
+Inventory live revisions, standing approvals, attempts, and prepared provider obligations. Pause admission and renewal. Drain on the recorded release and sender. Uncertain ownership or settlement blocks cutover. That legacy file and its normalized form share new-release identity. Earlier identities may differ. Preserve stored plans. Never replay uncertain issuance. Compare custom rules, including late vetoes. Require fresh approval unless equivalence is proven. Disable Git if built-in policy cannot enforce required constraints.
 
 | Native sender operation          | Result                                                                                                                                      |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `checkAdmissionReady` (optional) | Checks dependencies for fresh admission. Unavailable dependencies block new attempts and worker readiness.                                  |
+| `checkAdmissionReady` (optional) | Unavailable dependencies block new attempts and Worker readiness.                                                                           |
 | `open`                           | Returns `created` with private runtime files, `recovered` with status alone, or `missing`. A recovery-only request cannot create a session. |
-| `status`                         | Returns the current observation or authoritative absence.                                                                                   |
+| `status`                         | Observes current status or authoritative absence.                                                                                           |
 | `close`                          | Ends local use and reports closure or absence. Provider revocation and runtime termination have separate outcomes.                          |
 
 Public status records `sessionId`, `state`, `deadlineWallMs` and `binding`
 (provider instance, repository and grant IDs) in an immutable snapshot.
 Configuration decoding and cleanup counters stay private. Status cannot
-regenerate Git or gh client files, which contain no signing or service modules.
+regenerate Git or gh client files. They contain no signing or service modules.
 
 ### Deletion and restart
 
@@ -86,14 +78,12 @@ cleanup is pending, missing, unknown or `invalidated`. Cleanup Work continues
 independently and is shared by version and purpose. `maintenanceIntervalMs`
 sets the worker's reconciliation interval. It does not set a withdrawal deadline.
 
-On worker restart, surviving sessions and Compute material may still be usable.
-A broker can recover the original broker's committed `DISPOSED` receipt.
-A missing session that was exposed fails the version and keeps its cleanup open.
-A closing session blocks replacement until disposal. A new version cannot settle
-older cleanup. Deletion, invalidation and elapsed deadlines do not establish
-disposal or provider revocation. Evidence pruning and durable recovery of lost token material from
-a session are unimplemented. See [sessions and closure](#sessions-and-closure)
-for what the original broker can confirm.
+After Worker restart, sessions and Compute material may survive. The broker can
+recover the original committed `DISPOSED` receipt. Missing exposed sessions fail
+the version and keep cleanup open. Closing sessions block replacement until
+disposal. New versions cannot settle older cleanup. Deletion, invalidation and
+expiry cannot prove disposal or provider revocation. Evidence pruning and durable recovery of lost
+token material are unimplemented. See [sessions and closure](#sessions-and-closure).
 
 For prospective checks, see [repository access across worker replacement](repository-credentials/worker-replacement.md).
 
@@ -308,9 +298,8 @@ requires a native override. SSH and cross-repository submodules are unsupported.
 
 The generated Git configuration resets helpers, sets `credential.useHttpPath=true`,
 verifies TLS with optional CA trust and disables redirects for the exact gateway
-origin. The helper checks the effective protocol, host, port, username and
-repository path after Git decodes percent-escapes. An escaped spelling can
-match the admitted host and path. The gateway rejects any `%` in a request
+origin. After Git decodes percent-escapes, the helper checks protocol, host, port, username
+and repository path. Escaped spellings can match the admitted host and path. The gateway rejects any `%` in a request
 path. Dot segments, extra components, unmatched names or ambiguous `.git`
 spellings yield no bearer. The broker constructs the canonical upstream path
 for discovery, upload-pack and receive-pack. Endpoint, method, media-type,
@@ -321,16 +310,15 @@ propagates `OCE_REPOSITORY_SELECTION` with generation, reference and session
 ID. A pin cannot change the gateway origin. Conflicting or stale pins fail
 remote authentication. The helper checks its prepared generation and original
 deadline before reading the bearer. The gateway can close the session earlier.
-Local Git commands skip the helper and still work. Pins do not freeze arbitrary
+Local Git commands skip the helper. Pins do not freeze arbitrary
 subprocesses. There is no command-wide preflight. Native settings can override these defaults and other helpers can
 retain credentials. OCE's helper ignores `store` and `erase`.
 
-For the API launcher, use GitHub CLI **2.103.2**, `GH_HOST=github.com` and a
-gateway hostname with verified TLS on port 443. Its private `hosts.yml` uses the
-experimental `api_host` setting and stores the gateway bearer in `oauth_token`.
-The launcher admits [selected commands](repository-credentials/access-levels.md#supported-commands)
-and relative API paths. It rejects absolute destinations. Network controls must
-separately enforce egress restrictions.
+The API launcher requires GitHub CLI **2.103.2**, `GH_HOST=github.com`, and a
+gateway hostname with verified TLS on port 443. Its private `hosts.yml` uses
+experimental `api_host` and stores the gateway bearer in `oauth_token`.
+The launcher accepts [selected commands](repository-credentials/access-levels.md#supported-commands)
+and relative API paths. Absolute destinations fail. Network controls must enforce egress restrictions.
 
 ### Service limits
 

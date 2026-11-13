@@ -38,7 +38,7 @@ import {
   validateSandboxNetworkGrants,
 } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
-import { asRecord } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { createHash, X509Certificate } from "node:crypto";
 import { isAbsolute } from "node:path";
@@ -58,7 +58,6 @@ import type {
   Permission,
   PresetDraftDefinition,
   BackendSummary,
-  RepositoryPolicyDriver,
   NativeRepositorySender,
   PluginDriver,
   SandboxDriver,
@@ -118,7 +117,12 @@ import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/access/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
-import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
+import {
+  loadRepositoryPolicy,
+  type BuiltInRepositoryAdmission,
+  type RepositoryPolicyBinding,
+  type RepositoryPolicyInput,
+} from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
 import { bindOpenShellPluginSourceReader } from "./openshell-plugin-source-reader.ts";
@@ -149,7 +153,11 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 }
 
 export interface InstallationStartupConfiguration {
-  readonly repository?: SelectedDriverConfiguration;
+  readonly repository?: Readonly<{
+    id: string;
+    implementation: "github";
+    configuration: Readonly<{ sessionDurationSeconds: number }>;
+  }>;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** RFC-0026 configured Roles, Groups, and Group bindings; see the configuration reference. */
   readonly iam?: InstallationIAMConfiguration;
@@ -251,28 +259,134 @@ export interface InstallationRuntimeDrivers {
   readonly protectedDriver?: InstalledDriver;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[];
   readonly proxyDriver?: CredentialProxyDriver;
-  /** Present only when this registration owns protected repository delivery. */
-  readonly repositoryGitDriver?: InstalledDriver;
   readonly tokenService?: TokenService;
   readonly preparedGitHub?: PostgresPreparedGitHubLifecycle;
   readonly pluginDrivers?: readonly PluginDriver[];
-  readonly repositoryPolicy?: RepositoryPolicyDriver;
-  readonly repositoryAdmission?: Awaited<
-    ReturnType<typeof loadRepositoryPolicy>
-  >["repositoryAdmission"] & { readonly policyMode?: "built-in" };
-  readonly nativeRepositorySender?: NativeRepositorySender;
-  readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
-  readonly repositoryTransport?: RepositoryTransportBinding;
-  readonly repositoryRegistry?: Awaited<
-    ReturnType<typeof loadRepositoryPolicy>
-  >["repositoryRegistry"];
-  readonly repositoryOwner?: Readonly<{
-    controlSocket?: string;
+  readonly repositoryRuntime?: RepositoryRuntime;
+  readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
+}
+
+/** One startup selection owns admission, custody and delivery for this Compute instance. */
+declare const repositoryRuntimeBrand: unique symbol;
+export interface RepositoryRuntime {
+  readonly [repositoryRuntimeBrand]: true;
+  readonly admission: BuiltInRepositoryAdmission;
+  readonly computeDriver: ComputeDriver;
+  readonly protectedDriver?: InstalledDriver;
+  readonly nativeSender?: NativeRepositorySender;
+  readonly transport?: RepositoryTransportBinding;
+  readonly tokenService?: TokenService;
+  readonly prepared?: PreparedRepositoryGitConfiguration;
+  readonly owner: Readonly<{
     driverId: string;
     implementation: string;
     backendId: string;
+    controlSocket?: string;
   }>;
-  readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
+}
+
+const repositoryRuntimes = new WeakMap<RepositoryRuntime, RepositoryPolicyBinding>();
+
+function sealRepositoryRuntime(
+  binding: RepositoryPolicyBinding,
+  selection: Omit<RepositoryRuntime, typeof repositoryRuntimeBrand>,
+): RepositoryRuntime {
+  const runtime = Object.freeze(selection) as RepositoryRuntime;
+  repositoryRuntimes.set(runtime, binding);
+  return runtime;
+}
+
+/** Read one native owner before Compute construction. Only this load can bind its sender. */
+export async function loadNativeRepositoryAccess(
+  input: RepositoryPolicyInput<Readonly<{ sessionDurationSeconds: number }>>,
+  nativeSender: Readonly<{ controlSocket: string; publicCaPath: string }>,
+  prepared: PreparedRepositoryGitConfiguration | undefined,
+) {
+  const { prepared: preparedConfiguration } = githubRepositoryConfiguration({
+    preparedGitHub: prepared,
+  });
+  if (!preparedConfiguration) {
+    throw new Error("repository.nativeSender requires prepared GitHub custody.");
+  }
+  const { composeRepositoryAccess } = await import("./repository-credentials/platform.ts");
+  const access = await composeRepositoryAccess(input, nativeSender);
+  const tokenService = new TokenService();
+  return Object.freeze({
+    repositoryAdmission: access.repositoryAdmission,
+    resolveRepositoryDelivery: undefined,
+    authorityIdentity: undefined,
+    tokenService,
+    bindCompute(computeDriver: ComputeDriver) {
+      return sealRepositoryRuntime(access.repositoryBinding, {
+        admission: access.repositoryAdmission,
+        nativeSender: access.nativeRepositorySender,
+        owner: access.repositoryOwner,
+        computeDriver,
+        prepared: preparedConfiguration,
+        tokenService,
+      });
+    },
+  });
+}
+
+/** Check the actual Driver instances before opening storage or binding a sender. */
+export function repositoryStartupConfiguration(drivers: InstallationRuntimeDrivers | undefined) {
+  const runtime = drivers?.repositoryRuntime;
+  const computeDriver = drivers?.computeDriver;
+  const protectedDriver = drivers?.protectedDriver;
+  const tokenService = drivers?.tokenService;
+  const binding = runtime === undefined ? undefined : repositoryRuntimes.get(runtime);
+  if (
+    runtime !== undefined &&
+    (!binding ||
+      runtime.computeDriver !== computeDriver ||
+      runtime.protectedDriver !== protectedDriver ||
+      runtime.tokenService !== tokenService)
+  ) {
+    throw new Error("Startup requires the selected repository runtime and its delivery Drivers.");
+  }
+  if (
+    drivers &&
+    ("repositoryPolicy" in drivers ||
+      "repo" in drivers.installation.drivers ||
+      (runtime?.admission && "policyMode" in runtime.admission))
+  ) {
+    throw new Error("Repository Driver selection and policy modes are retired.");
+  }
+  if (
+    drivers &&
+    ("repositoryAdmission" in drivers ||
+      "repositoryRegistry" in drivers ||
+      "nativeRepositorySender" in drivers ||
+      "repositoryTransport" in drivers ||
+      "repositoryGitDriver" in drivers ||
+      "preparedRepositoryGit" in drivers ||
+      "repositoryOwner" in drivers)
+  ) {
+    throw new Error(
+      "Startup requires repository policy and delivery from one selected repository runtime.",
+    );
+  }
+  const backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
+  const selection = drivers?.installation.repository;
+  const githubBackends = backends.filter((backend) => backend.type === "github");
+  if (runtime !== undefined || selection !== undefined || githubBackends.length > 0) {
+    if (
+      !runtime ||
+      !binding ||
+      selection?.id !== runtime.owner.driverId ||
+      selection.implementation !== "github" ||
+      selection.configuration.sessionDurationSeconds !== binding.sessionDurationSeconds ||
+      githubBackends.length !== 1 ||
+      githubBackends[0]?.id !== runtime.owner.backendId ||
+      githubBackends[0].configuration.registryPath !== binding.registryPath
+    ) {
+      throw new Error(
+        "Startup requires built-in repository admission from the selected GitHub Backend.",
+      );
+    }
+  }
+  return { backends, runtime, computeDriver, protectedDriver, tokenService };
 }
 
 /**
@@ -352,12 +466,38 @@ export async function initializeInstallationPresets(
   );
 }
 
+// Older startup files repeated the selected repository ID on the GitHub Backend.
+function normalizeFileBackendDrivers(
+  configuration: ConfigurationRecord | undefined,
+): ConfigurationRecord | undefined {
+  const repositoryId = asRecord(configuration?.repository)?.id;
+  if (!isNonEmptyString(repositoryId) || !Array.isArray(configuration?.backend)) {
+    return configuration;
+  }
+  const backend = configuration.backend.map((entry: unknown) => {
+    const definition = asRecord(entry);
+    const drivers = asRecord(definition?.drivers);
+    if (
+      definition?.type === "github" &&
+      drivers !== undefined &&
+      Object.keys(drivers).length === 1 &&
+      Object.hasOwn(drivers, "repo") &&
+      drivers.repo === repositoryId
+    ) {
+      const { drivers: _drivers, ...canonical } = definition;
+      return canonical;
+    }
+    return entry;
+  });
+  return { ...configuration, backend };
+}
+
 export async function loadStartupConfigurationSnapshot(options: {
   readonly mode: "development" | "production";
   readonly environment?: Readonly<Record<string, string | undefined>>;
 }): Promise<StartupConfigurationSnapshot> {
   const startup = await startupConfiguration(options, options.mode === "production");
-  const { configuration } = startup;
+  const configuration = normalizeFileBackendDrivers(startup.configuration);
   const logging = operationalLoggingConfiguration(configuration?.logging);
   const observability = observabilityConfiguration(configuration?.observability);
   return Object.freeze({
@@ -638,7 +778,7 @@ function selectGitHubRepositoryDelivery(
 
 /** No key bytes or raw registry cross into generic installed-Driver identity composition. */
 function githubRepositoryAuthorityIdentity(
-  selection: SelectedDriverConfiguration,
+  selection: NonNullable<InstallationStartupConfiguration["repository"]>,
   backend: GitHubRepositoryCredentialBackendDefinition,
   registry: GitHubRepositoryRegistry,
   configuration: ReturnType<typeof installationRepositoryConfiguration>,
@@ -668,6 +808,9 @@ function backendConfiguration(
   }
   if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
     throw new Error("repository requires an owning backend entry with type github.");
+  }
+  if (repoSelection === undefined && backends.some((backend) => backend.type === "github")) {
+    throw new Error("A GitHub Backend requires repository selection.");
   }
   if (credentialRefreshId !== undefined && credentialGatewayId === undefined) {
     throw new Error("drivers.credential_refresh requires drivers.credential_gateway.");
@@ -702,14 +845,6 @@ function backendConfiguration(
       continue;
     }
     if (backend.type === "github") {
-      if (repoSelection === undefined) {
-        throw new Error(`backend[${backend.id}].drivers.repo requires repository.`);
-      }
-      if (backend.drivers.repo !== repoSelection.id) {
-        throw new Error(
-          `backend[${backend.id}].drivers.repo must match the selected repository.id.`,
-        );
-      }
       continue;
     }
     if (serviceAccount === undefined) {
@@ -750,8 +885,7 @@ function selected(
     | "credential_gateway"
     | "credential_refresh"
     | "credential_proxy"
-    | "plugin"
-    | "repo",
+    | "plugin",
   implementation: string,
   driver: DriverImplementation,
   path = `drivers.${capability}`,
@@ -935,26 +1069,23 @@ export async function loadInstallationConfiguration(options: {
     configuration.repository,
     options.mode,
   );
-  let repoSelection =
-    repositoryConfiguration &&
-    (selected(
-      repositoryConfiguration.selection,
-      "repo",
-      "github",
-      GitHubRepositoryPolicy,
-      "repository",
-    ) as SelectedDriverConfiguration<Readonly<{ sessionDurationSeconds: number }>>);
-  if (repositoryConfiguration && repoSelection) {
-    // Validate the original first, then retain the accepted flat policy across loader awaits.
-    // Both authority projections must describe the policy used to construct the Driver.
-    const policy = Object.freeze({ ...repoSelection.configuration });
+  let repoSelection: InstallationStartupConfiguration["repository"];
+  if (repositoryConfiguration) {
+    const selection = repositoryConfiguration.selection;
+    const id = nonempty(selection.id, "repository.id");
+    const configuration = Object.freeze({
+      ...requireConfiguration<{ sessionDurationSeconds: number }>(
+        GitHubRepositoryPolicy,
+        object(selection.configuration, "repository.configuration"),
+      ),
+    });
+    repoSelection = Object.freeze({ id, implementation: "github", configuration });
     // The optional built-in spelling contributes no protected sender authority.
-    const { policyMode: _policyMode, ...selection } = repositoryConfiguration.selection;
+    const { policyMode: _policyMode, ...authoritySelection } = selection;
     // A non-enumerable configuration never contributed to the raw selection's digest.
-    repositoryConfiguration.selection = Object.hasOwn(selection, "configuration")
-      ? { ...selection, configuration: policy }
-      : selection;
-    repoSelection = Object.freeze({ ...repoSelection, configuration: policy });
+    repositoryConfiguration.selection = Object.hasOwn(authoritySelection, "configuration")
+      ? { ...authoritySelection, configuration }
+      : authoritySelection;
   }
   const nativeRepositorySelection = repositoryConfiguration?.nativeSender;
   const preparedRepositoryGit = repositoryConfiguration?.prepared;
@@ -1355,20 +1486,20 @@ export async function loadInstallationConfiguration(options: {
       : (options.createOpenShellBackend?.(openShellBackend) ??
         createOpenShellBackend(openShellBackend));
   const repositoryBackend = backends.find((backend) => backend.type === "github");
-  let repositoryRuntime;
+  let repositoryAccess;
   if (repoSelection !== undefined && repositoryBackend !== undefined) {
     if (nativeRepositorySelection !== undefined) {
-      const { composeRepositoryAccess } = await import("./repository-credentials/platform.ts");
-      repositoryRuntime = await composeRepositoryAccess(
+      repositoryAccess = await loadNativeRepositoryAccess(
         { backend: repositoryBackend, selection: repoSelection },
         nativeRepositorySelection,
+        preparedRepositoryGit,
       );
     } else {
       const policy = await loadRepositoryPolicy({
         backend: repositoryBackend,
         selection: repoSelection,
       });
-      repositoryRuntime = Object.freeze({
+      repositoryAccess = Object.freeze({
         ...policy,
         authorityIdentity: githubRepositoryAuthorityIdentity(
           repoSelection,
@@ -1381,7 +1512,7 @@ export async function loadInstallationConfiguration(options: {
   }
   validateOpenShellRepositoryTransport(repositoryTransportConfiguration, {
     prepared: preparedRepositoryGit !== undefined,
-    repository: repositoryRuntime !== undefined,
+    repository: repositoryAccess !== undefined,
     backend: openShellBackend,
     backendIndex: openShellBackend === undefined ? -1 : backends.indexOf(openShellBackend),
     sandbox: sandbox !== undefined,
@@ -1390,7 +1521,7 @@ export async function loadInstallationConfiguration(options: {
   });
   const repositoryDelivery = {
     configuration: repositoryTransportConfiguration,
-    resolveDelivery: repositoryRuntime?.resolveRepositoryDelivery,
+    resolveDelivery: repositoryAccess?.resolveRepositoryDelivery,
   };
   const credentialGatewayDriver =
     credentialGateway === undefined
@@ -1429,7 +1560,10 @@ export async function loadInstallationConfiguration(options: {
       installationSecretNamespace: environment.OCC_INSTALLATION_SECRET_NAMESPACE,
     },
   );
-  const tokenService = new TokenService();
+  const tokenService =
+    repositoryAccess && "tokenService" in repositoryAccess
+      ? repositoryAccess.tokenService
+      : new TokenService();
   let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
   if (preparedGitHubKeyPath !== undefined) {
     const { PostgresPreparedGitHubLifecycle } =
@@ -1442,10 +1576,11 @@ export async function loadInstallationConfiguration(options: {
       tokenService,
     );
   }
-  const { sandboxDriver, protectedDriver, repositoryTransport } = ((): Pick<
-    InstallationRuntimeDrivers,
-    "sandboxDriver" | "protectedDriver" | "repositoryTransport"
-  > => {
+  const { sandboxDriver, protectedDriver, repositoryTransport } = ((): {
+    sandboxDriver?: SandboxDriver;
+    protectedDriver?: InstalledDriver;
+    repositoryTransport?: RepositoryTransportBinding;
+  } => {
     if (sandbox === undefined) {
       return {};
     }
@@ -1470,7 +1605,7 @@ export async function loadInstallationConfiguration(options: {
       const owner = createExternalProtectedDriver(
         sandboxPackage.module,
         sandbox,
-        repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
+        repositoryDeliveryMode === "protected" ? repositoryAccess?.authorityIdentity : undefined,
       );
       return { sandboxDriver: owner.require("sandbox"), protectedDriver: owner };
     }
@@ -1506,7 +1641,7 @@ export async function loadInstallationConfiguration(options: {
           backend: openShellBackend,
           proxy: drivers.credential_proxy,
           ...(repositoryTransport && {
-            repositoryAuthorityIdentity: repositoryRuntime!.authorityIdentity,
+            repositoryAuthorityIdentity: repositoryAccess!.authorityIdentity,
             modelGateway: drivers.credential_gateway,
           }),
           namespaceBinding,
@@ -1616,7 +1751,25 @@ export async function loadInstallationConfiguration(options: {
       "Production Compute Drivers must implement activateRevision, deactivateRevision, and stopRevision.",
     );
   }
-  const { repositoryPolicy: _repositoryPolicy, ...repositoryServices } = repositoryRuntime ?? {};
+  let repositoryRuntime: RepositoryRuntime | undefined;
+  if (repositoryAccess) {
+    if ("bindCompute" in repositoryAccess) {
+      repositoryRuntime = repositoryAccess.bindCompute(computeDriver);
+    } else {
+      if (!repositoryGitDriver) {
+        throw new Error("Missing the selected Driver's protected repository Git authority.");
+      }
+      repositoryRuntime = sealRepositoryRuntime(repositoryAccess.repositoryBinding, {
+        admission: repositoryAccess.repositoryAdmission,
+        computeDriver,
+        protectedDriver: repositoryGitDriver,
+        ...(repositoryTransport && { transport: Object.freeze(repositoryTransport) }),
+        ...(preparedRepositoryGit && { prepared: Object.freeze({ ...preparedRepositoryGit }) }),
+        owner: repositoryAccess.repositoryOwner,
+        tokenService,
+      });
+    }
+  }
   return Object.freeze({
     defaultPresets: Object.freeze(defaultPresets),
     shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
@@ -1633,20 +1786,11 @@ export async function loadInstallationConfiguration(options: {
     ...(protectedDriver === undefined
       ? {}
       : { protectedDriver, proxyDriver: protectedDriver.require("credential_proxy") }),
-    ...(repositoryGitDriver && { repositoryGitDriver }),
     tokenService,
     ...(preparedGitHub === undefined ? {} : { preparedGitHub }),
     createIAMDriver,
     pluginDrivers: plugins.map(({ driver }) => driver),
-    ...repositoryServices,
-    ...(repositoryRuntime && {
-      repositoryAdmission: Object.freeze({
-        ...repositoryRuntime.repositoryAdmission,
-        policyMode: "built-in" as const,
-      }),
-    }),
-    ...(preparedRepositoryGit ? { preparedRepositoryGit } : {}),
-    ...(repositoryTransport ? { repositoryTransport } : {}),
+    ...(repositoryRuntime && { repositoryRuntime }),
   });
 }
 

@@ -81,7 +81,7 @@ startup; the renderer validates the list but does not read container files. See
 resolution and startup validation.
 
 Repository support is optional. When enabled, the renderer wires the broker
-container, GitHub Backend, Repo Driver, and Compute peer. The repository registry
+container, GitHub Backend, repository policy, and Compute peer. The repository registry
 needs Namespace IDs that only exist after the first bootstrap, so most installs
 render with repositories disabled, bootstrap the platform, create the registry,
 then rerender with `repository.enabled: true`.
