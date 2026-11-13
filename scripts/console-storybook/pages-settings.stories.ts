@@ -49,3 +49,25 @@ export const StorageUnavailable = {
   ...story("settingsStorageUnavailable"),
   name: "Browser storage unavailable",
 };
+
+export const CeilingEmpty = { ...story("ceilingEmpty") };
+
+export const CeilingLoading = { ...story("ceilingLoading") };
+
+export const CeilingStartup = { ...story("ceilingStartup") };
+
+export const CeilingForbidden = { ...story("ceilingForbidden") };
+
+export const CeilingUnavailable = { ...story("ceilingUnavailable") };
+
+export const CeilingReview = { ...story("ceilingReview") };
+
+export const CeilingSaved = { ...story("ceilingSaved") };
+
+export const CeilingInvalid = { ...story("ceilingInvalid") };
+
+export const CeilingConflict = { ...story("ceilingConflict") };
+
+export const CeilingUncertain = { ...story("ceilingUncertain") };
+
+export const CeilingPermissionLost = { ...story("ceilingPermissionLost") };

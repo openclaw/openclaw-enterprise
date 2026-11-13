@@ -69,8 +69,11 @@
 - [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver accepted startup values and configuration schemas.
 - [`getInstallation`](../api.md#get-installation): Get the singleton Installation.
 - [`getInstallationDeploymentInventory`](../api.md#get-installationdeploymentinventory): Get the complete authorized Agent deployment inventory.
+- [`getInstallationSandboxNetworkPolicyCeiling`](../api.md#get-installationsandboxnetworkpolicyceiling): Get the Installation network policy ceiling.
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
 - [`bootstrapInstallation`](../api.md#post-installationbootstrap): Bootstrap the singleton Installation.
+- [`updateInstallationSandboxNetworkPolicyCeiling`](../api.md#put-installationsandboxnetworkpolicyceiling): Update the Installation network policy ceiling.
+- [`validateInstallationSandboxNetworkPolicyCeiling`](../api.md#post-installationsandboxnetworkpolicyceilingvalidate): Validate proposed Installation network policy ceiling rules.
 
 ### Namespaces
 

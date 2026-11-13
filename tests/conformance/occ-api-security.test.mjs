@@ -1469,6 +1469,7 @@ test("mutations are attributable and authorization failures never leak credentia
       .filter((event) => ["bootstrap", "mutation"].includes(event.kind))
       .map((event) => [event.kind, event.resource.kind]),
     [
+      ["mutation", "installation"],
       ["bootstrap", "installation"],
       ["mutation", "namespace"],
       ["mutation", "configuration"],

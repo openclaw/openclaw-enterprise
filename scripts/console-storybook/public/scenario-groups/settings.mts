@@ -1,8 +1,15 @@
+import type { createFixtureFetch } from "../preview-rules.mts";
+import type { CeilingScenario } from "../ceiling-fixture.mts";
 import type { StoryAction } from "../../story-action.mts";
 import type { DriverConfigurationDescriptor } from "@openclaw-enterprise/contracts";
 import type { ErrorCode } from "../../../../packages/contracts/src/api/common.ts";
 
 type SettingsRule =
+  | (Parameters<typeof createFixtureFetch>[0][number] & {
+      path:
+        | "/installation/sandbox-network-policy-ceiling"
+        | "/installation/sandbox-network-policy-ceiling/validate";
+    })
   | ({ path: "/installation/driver-configurations" } & (
       | { data: { configurations: readonly DriverConfigurationDescriptor[] } }
       | { hold: true }
@@ -10,7 +17,7 @@ type SettingsRule =
     ))
   | { path: "/api/auth/sign-out"; method: "POST"; status: number };
 
-type SettingsScenario = {
+type SettingsScenario = CeilingScenario & {
   actions?: StoryAction[];
   group: "Pages/Settings";
   name: string;
@@ -165,5 +172,121 @@ export const settingsScenarios = {
     steps: [
       "Choose Retry: it repeats the sign-out and keeps private content hidden until it succeeds.",
     ],
+  },
+  ceilingEmpty: {
+    group: "Pages/Settings",
+    name: "Ceiling empty",
+    path: "/console/settings",
+    ceilingState: "empty",
+    description:
+      "No additional access is delegated. Add a rule with the shared form, review it, then save. Running access stays unchanged.",
+  },
+  ceilingLoading: {
+    group: "Pages/Settings",
+    name: "Ceiling loading",
+    path: "/console/settings",
+    rules: [{ path: "/installation/sandbox-network-policy-ceiling", hold: true }],
+    description:
+      "The ceiling read is pending. No editing controls are offered before the saved value is known.",
+  },
+  ceilingStartup: {
+    group: "Pages/Settings",
+    name: "Ceiling startup management",
+    path: "/console/settings",
+    ceilingState: "startup",
+    description:
+      "Managed by startup configuration makes the ceiling read-only, with operator guidance.",
+  },
+  ceilingForbidden: {
+    group: "Pages/Settings",
+    name: "Ceiling forbidden",
+    path: "/console/settings",
+    rules: [
+      { path: "/installation/sandbox-network-policy-ceiling", status: 403, code: "FORBIDDEN" },
+    ],
+    description:
+      "The ceiling read is refused. Mutation controls remain hidden; account and session controls remain usable.",
+  },
+  ceilingUnavailable: {
+    group: "Pages/Settings",
+    name: "Ceiling unavailable",
+    path: "/console/settings",
+    rules: [
+      { path: "/installation/sandbox-network-policy-ceiling", networkError: true, once: true },
+    ],
+    description:
+      "The first ceiling read fails. Retry ceiling read loads the saved value without sending a write.",
+  },
+  ceilingReview: {
+    group: "Pages/Settings",
+    name: "Ceiling reduction review",
+    path: "/console/settings",
+    actions: [{ click: "Remove rule" }, { click: "Review changes" }],
+    description:
+      "Clearing the ceiling requires review and warns about future admission and pending applications. Save ceiling is an explicit action.",
+  },
+  ceilingSaved: {
+    group: "Pages/Settings",
+    name: "Ceiling saved",
+    path: "/console/settings",
+    actions: [{ click: "Remove rule" }, { click: "Review changes" }, { click: "Save ceiling" }],
+    description: "A confirmed save advances the version and leaves running access unchanged.",
+  },
+  ceilingInvalid: {
+    group: "Pages/Settings",
+    name: "Ceiling invalid draft",
+    path: "/console/settings",
+    ceilingState: "invalid",
+    actions: [
+      { click: "Edit rule" },
+      {
+        selector: '.network-policy-ceiling [aria-label="Destination hostname"]',
+        value: "bad..example.org",
+      },
+      { click: "Review changes" },
+    ],
+    description:
+      "Review reports the server's field error and keeps the invalid draft. Edit the rule to correct it. This fixture fixes the refusal for inspection.",
+  },
+  ceilingConflict: {
+    group: "Pages/Settings",
+    name: "Ceiling stale save",
+    path: "/console/settings",
+    ceilingState: "conflict",
+    actions: [{ click: "Remove rule" }, { click: "Review changes" }, { click: "Save ceiling" }],
+    description:
+      "Another administrator saves first. Load current ceiling retains the draft, sets the newer review baseline, and requires another review before saving.",
+  },
+  ceilingUncertain: {
+    group: "Pages/Settings",
+    name: "Ceiling uncertain save",
+    path: "/console/settings",
+    rules: [
+      {
+        path: "/installation/sandbox-network-policy-ceiling",
+        method: "PUT",
+        lostAnswer: true,
+        once: true,
+      },
+    ],
+    actions: [{ click: "Remove rule" }, { click: "Review changes" }, { click: "Save ceiling" }],
+    description:
+      "The simulated save commits and its response is lost. Inspect saved ceiling confirms the matching saved version through a read. No PUT is retried automatically.",
+  },
+  ceilingPermissionLost: {
+    group: "Pages/Settings",
+    name: "Ceiling permission lost",
+    path: "/console/settings",
+    rules: [
+      {
+        path: "/installation/sandbox-network-policy-ceiling",
+        method: "PUT",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [{ click: "Remove rule" }, { click: "Review changes" }, { click: "Save ceiling" }],
+    description:
+      "A refused save retains the draft and removes mutation controls. The operator must restore access before a Settings refresh.",
   },
 } satisfies Record<string, SettingsScenario>;

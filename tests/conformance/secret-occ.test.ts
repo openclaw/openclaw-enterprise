@@ -206,6 +206,7 @@ async function buildFixture(options: FixtureOptions) {
     { id: "secret-occ-iam" },
   );
   const controller = new OpenClawController(installation, { state: new InMemoryPlatformState() });
+  await controller.initializeSandboxNetworkPolicyCeiling(administrator);
   const compute =
     options.computeOverrides === undefined
       ? createDevelopmentComputeDriver()

@@ -1,5 +1,6 @@
 import type { FastifyError, FastifyReply } from "fastify";
 import {
+  ConfigurationValidationError as DriverConfigurationValidationError,
   ConnectionTemplateValidationError,
   PresetValidationError,
 } from "@openclaw-enterprise/contracts";
@@ -886,6 +887,14 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof ConfigurationSizeError) {
     // The message names the Driver's limit and what to change, never the content.
     return failure(400, "INVALID_REQUEST", capped(error.message));
+  }
+  if (error instanceof DriverConfigurationValidationError) {
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      "The supplied configuration is invalid.",
+      error.error.details,
+    );
   }
   if (error instanceof ConfigurationValidationError) {
     return failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.");

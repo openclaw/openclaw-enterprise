@@ -85,7 +85,7 @@ the paths.
 | [Authentication](#authentication) | 23 operations |
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
-| [Installation](#installation) | 5 operations |
+| [Installation](#installation) | 8 operations |
 | [Namespaces](#namespaces) | 7 operations |
 | [Agents](#agents) | 52 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
@@ -2833,6 +2833,9 @@ Complete a browser connection for the signed-in person who started it
 | [`POST /installation/bootstrap`](#post-installationbootstrap) | Bootstrap the singleton Installation |
 | [`GET /installation/deployment-inventory`](#get-installationdeploymentinventory) | Get the complete authorized Agent deployment inventory |
 | [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver accepted startup values and configuration schemas |
+| [`GET /installation/sandbox-network-policy-ceiling`](#get-installationsandboxnetworkpolicyceiling) | Get the Installation network policy ceiling |
+| [`PUT /installation/sandbox-network-policy-ceiling`](#put-installationsandboxnetworkpolicyceiling) | Update the Installation network policy ceiling |
+| [`POST /installation/sandbox-network-policy-ceiling/validate`](#post-installationsandboxnetworkpolicyceilingvalidate) | Validate proposed Installation network policy ceiling rules |
 | [`GET /observability`](#get-observability) | Get the configured external observability destination |
 
 #### `GET /installation`
@@ -3198,6 +3201,279 @@ Example response
 {
   "data": {
     "configurations": []
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /installation/sandbox-network-policy-ceiling`
+
+<span id="get-installationsandboxnetworkpolicyceiling"></span>
+
+Get the Installation network policy ceiling
+
+**Operation ID:** `getInstallationSandboxNetworkPolicyCeiling`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.installationId` | `string` | Yes | — |
+| `data.managementMode` | `"console" or "startup"` | Yes | — |
+| `data.rules` | `array<object>` | Yes | max items: 32 |
+| `data.rules[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
+| `data.rules[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
+| `data.rules[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
+| `data.rules[].ports` | `array<object>` | Yes | min items: 1; max items: 16 |
+| `data.rules[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
+| `data.rules[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
+| `data.updatedAt` | `string` | Yes | — |
+| `data.updatedBy` | `string` | Yes | — |
+| `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "installationId": "ins_123e4567-e89b-42d3-a456-426614174000",
+    "managementMode": "console",
+    "rules": [],
+    "updatedAt": "2026-10-01T12:00:00.000Z",
+    "updatedBy": "principal-administrator",
+    "version": 1
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `PUT /installation/sandbox-network-policy-ceiling`
+
+<span id="put-installationsandboxnetworkpolicyceiling"></span>
+
+Update the Installation network policy ceiling
+
+**Operation ID:** `updateInstallationSandboxNetworkPolicyCeiling`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+| `rules` | `array<object>` | Yes | max items: 32 |
+| `rules[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
+| `rules[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
+| `rules[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
+| `rules[].ports` | `array<object>` | Yes | min items: 1; max items: 16 |
+| `rules[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
+| `rules[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
+
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "rules": [
+    {
+      "binary": "/usr/bin/python3.11",
+      "host": "service.example.com",
+      "id": "approved-service",
+      "ports": [
+        {
+          "from": 443,
+          "to": 443
+        }
+      ]
+    }
+  ]
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.installationId` | `string` | Yes | — |
+| `data.managementMode` | `"console" or "startup"` | Yes | — |
+| `data.rules` | `array<object>` | Yes | max items: 32 |
+| `data.rules[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
+| `data.rules[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
+| `data.rules[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
+| `data.rules[].ports` | `array<object>` | Yes | min items: 1; max items: 16 |
+| `data.rules[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
+| `data.rules[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
+| `data.updatedAt` | `string` | Yes | — |
+| `data.updatedBy` | `string` | Yes | — |
+| `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "installationId": "ins_123e4567-e89b-42d3-a456-426614174000",
+    "managementMode": "console",
+    "rules": [
+      {
+        "binary": "/usr/bin/python3.11",
+        "host": "service.example.com",
+        "id": "approved-service",
+        "ports": [
+          {
+            "from": 443,
+            "to": 443
+          }
+        ]
+      }
+    ],
+    "updatedAt": "2026-10-01T12:00:00.000Z",
+    "updatedBy": "principal-administrator",
+    "version": 2
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /installation/sandbox-network-policy-ceiling/validate`
+
+<span id="post-installationsandboxnetworkpolicyceilingvalidate"></span>
+
+Validate proposed Installation network policy ceiling rules
+
+**Operation ID:** `validateInstallationSandboxNetworkPolicyCeiling`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+| `rules` | `any` | Yes | — |
+
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "rules": [
+    {
+      "binary": "/usr/bin/python3.11",
+      "host": "service.example.com",
+      "id": "approved-service",
+      "ports": [
+        {
+          "from": 443,
+          "to": 443
+        }
+      ]
+    }
+  ]
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "data": {
+      "rules": [
+        {
+          "binary": "/usr/bin/python3.11",
+          "host": "service.example.com",
+          "id": "approved-service",
+          "ports": [
+            {
+              "from": 443,
+              "to": 443
+            }
+          ]
+        }
+      ]
+    },
+    "success": true
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -8167,7 +8443,9 @@ Example response
 ```json
 {
   "data": {
-    "data": [],
+    "data": {
+      "additions": []
+    },
     "success": true
   },
   "meta": {

@@ -1,5 +1,6 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
+import { acquireInstallationCeilingStartup } from "./installation-ceiling-startup.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -128,13 +129,25 @@ export async function composeProduction(
     phaseStartedAt = now;
   };
 
+  if (config.poolMax !== undefined && config.poolMax < 2) {
+    throw new Error(
+      "API startup ceiling ownership requires a PostgreSQL pool maximum of at least two connections.",
+    );
+  }
+
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
 
+  let ceilingStartup: Awaited<ReturnType<typeof acquireInstallationCeilingStartup>> | undefined;
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
-  const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, protectedDriver, preparedGitHub, database);
+  const close = async (database: { close(): Promise<void> }) => {
+    try {
+      await ceilingStartup?.close();
+    } finally {
+      await closeResources(exchange, protectedDriver, preparedGitHub, database);
+    }
+  };
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
@@ -213,6 +226,8 @@ export async function composeProduction(
       persistedInstallation,
       {
         ...installationControllerOptions(config.drivers.installation),
+        assertSandboxNetworkPolicyCeilingStartupAuthority: async () =>
+          ceilingStartup?.assertCurrent(),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
@@ -228,6 +243,7 @@ export async function composeProduction(
       },
       config.drivers.repositoryAdmission,
     );
+    ceilingStartup = await acquireInstallationCeilingStartup(pool, controller, installation);
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);

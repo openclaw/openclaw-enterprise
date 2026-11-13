@@ -6,7 +6,6 @@ import type {
   ComputeDriver,
   IAMDriver,
   SandboxDriver,
-  SandboxNetworkGrant,
   SandboxPolicy,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -31,7 +30,6 @@ interface PolicyWorkOptions {
   readonly compute: ComputeDriver;
   readonly iam: IAMDriver;
   readonly installationId: string;
-  readonly ceiling: readonly SandboxNetworkGrant[];
   readonly signal: AbortSignal;
   readonly maxAttempts: number;
   readonly deadlineMs: number;
@@ -133,6 +131,7 @@ export async function reconcileSandboxPolicy(
     if ((await queue.heartbeat(claim)) === undefined) {
       throw new WorkClaimLostError();
     }
+    await unit.installations.holdSandboxNetworkPolicyCeiling("shared");
     const namespace = await unit.namespaces.lockNamespace(claim.namespaceId, {
       includeDeleted: true,
     });
@@ -165,7 +164,12 @@ export async function reconcileSandboxPolicy(
       return "permanent";
     }
     // Disabling future edits preserves already admitted additions and application work.
-    if (!sandboxNetworkGrantsWithinCeiling(policy.additions, options.ceiling)) {
+    const ceiling = await unit.installations.getSandboxNetworkPolicyCeiling();
+    if (ceiling === undefined) {
+      await fail("SANDBOX_POLICY_CEILING_UNAVAILABLE");
+      return "permanent";
+    }
+    if (!sandboxNetworkGrantsWithinCeiling(policy.additions, ceiling.rules)) {
       await fail("SANDBOX_POLICY_CEILING_CHANGED");
       return "permanent";
     }

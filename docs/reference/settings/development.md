@@ -95,7 +95,7 @@ network access.
 | `OCC_DATABASE_URL`         | Compose supplies PostgreSQL. Manual host-process debugging should also set the application-role URL. | Must use a `postgresql:` or `postgres:` URL and the application role for the supported development path.                      |
 | `OCC_CONFIG_PATH`          | Optional in development; required in production.                                                     | Must be an absolute path to trusted, closed-schema Installation startup YAML whenever present.                                |
 | `OCC_GATEWAY_API_KEY_PATH` | Optional when development selects Kubernetes Compute with private routing.                           | Absolute mounted service-key file, read by the API only. Docker Compute does not provide private gateway endpoint resolution. |
-| `OCC_DATABASE_POOL_MAX`    | The installed PostgreSQL client's default: `10`.                                                     | Must be a positive safe integer. Applies to the PostgreSQL connection pool; it is validated whenever present.                 |
+| `OCC_DATABASE_POOL_MAX`    | The installed PostgreSQL client's default: `10`.                                                     | Must be a safe integer of at least `2` for PostgreSQL API startup. One connection holds ceiling startup ownership.            |
 
 OCC resolves the one persisted Installation internally; no startup environment
 variable or YAML field supplies its identifier. The stable ID remains visible

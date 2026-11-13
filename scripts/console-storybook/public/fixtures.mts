@@ -1,3 +1,4 @@
+import { createCeilingFixture } from "./ceiling-fixture.mts";
 import { createConnectionTemplateFixture } from "./connection-template-fixture.mts";
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
@@ -28,7 +29,8 @@ import {
   fixtureResponse as response,
 } from "./preview-rules.mts";
 
-type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
+type FixtureScenario = Parameters<typeof createCeilingFixture>[0] &
+  Parameters<typeof createConfigurationStore>[0] &
   Parameters<typeof createAgentLifecycle>[0] &
   Parameters<typeof configurationValues>[0] &
   Parameters<typeof createPresetFixtures>[0] &
@@ -421,8 +423,13 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     candidateRevisionId,
     seedAgent: () => lifecycle.seedAgent(),
   });
+  const ceiling = createCeilingFixture(scenario, createdAt);
   const answer = async (url: URL, method: string, body: unknown): Promise<Response> => {
     const path = url.pathname;
+    const ceilingResponse = ceiling(path, method, body);
+    if (ceilingResponse) {
+      return ceilingResponse;
+    }
     if (path === "/api/auth/providers" && method === "GET") {
       return response({
         oidc: scenario.oidcEnabled === true,

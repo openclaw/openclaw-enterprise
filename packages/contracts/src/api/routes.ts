@@ -3,6 +3,9 @@ import {
   ConfigurationValidationResponse,
 } from "./driver-configurations.ts";
 import {
+  InstallationSandboxNetworkPolicyCeilingResponse,
+  InstallationSandboxNetworkPolicyCeilingUpdateBody,
+  InstallationSandboxNetworkPolicyCeilingValidateBody,
   SandboxPolicyParams,
   SandboxPolicyRevisionParams,
   SandboxPolicyResponse,
@@ -384,6 +387,53 @@ export const occApiRoutes = [
     },
   },
 
+  {
+    operationId: "getInstallationSandboxNetworkPolicyCeiling",
+    method: "GET",
+    path: "/installation/sandbox-network-policy-ceiling",
+    action: "openclaw.installation.sandbox_network_policy_ceiling.get",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Get the Installation network policy ceiling",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      response: { 200: InstallationSandboxNetworkPolicyCeilingResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "validateInstallationSandboxNetworkPolicyCeiling",
+    method: "POST",
+    path: "/installation/sandbox-network-policy-ceiling/validate",
+    action: "openclaw.installation.sandbox_network_policy_ceiling.validate",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Validate proposed Installation network policy ceiling rules",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      body: InstallationSandboxNetworkPolicyCeilingValidateBody,
+      response: { 200: ConfigurationValidationResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "updateInstallationSandboxNetworkPolicyCeiling",
+    method: "PUT",
+    path: "/installation/sandbox-network-policy-ceiling",
+    action: "openclaw.installation.sandbox_network_policy_ceiling.update",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Update the Installation network policy ceiling",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      body: InstallationSandboxNetworkPolicyCeilingUpdateBody,
+      response: { 200: InstallationSandboxNetworkPolicyCeilingResponse, ...createErrors },
+    },
+  },
   {
     operationId: "bootstrapInstallation",
     method: "POST",

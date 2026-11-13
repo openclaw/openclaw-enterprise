@@ -74,6 +74,8 @@ before(async () => {
     controller.selectDriver("iam", iam.id);
     // The normal first controller transaction persists the server-owned Installation and IAM seed.
     await controller.createNamespace(seed.principal.id, { name: "Default" });
+    // Direct bootstrap must initialize the ceiling with its administrator before API startup.
+    await controller.initializeSandboxNetworkPolicyCeiling(seed.principal.id);
     assert.equal((await state.loadInstallation())?.id, installation.id);
     const role = await pool.query(
       "SELECT current_user AS role, rolsuper FROM pg_roles WHERE rolname=current_user",

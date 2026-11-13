@@ -64,7 +64,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * @param [options.secretDriver]
  * @param [options.transportDatabaseUrl]
  * @param [options.poolOptions]
- * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
+ * @returns `{ pool, databaseUrl, state, controller, computeDriver, app, principal, inject, deployAgent }`.
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose
  *   ServicePrincipal may operate that Secret, deploys it, and returns
@@ -209,6 +209,7 @@ export async function createPostgresAgentApp(
 
   return {
     pool,
+    databaseUrl: transportDatabaseUrl,
     state,
     controller,
     computeDriver,

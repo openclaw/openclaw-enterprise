@@ -24,6 +24,7 @@ import {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -936,6 +937,35 @@ test(
   async (context) => {
     const { environment } = await bootstrapExistingInstallation(context, "stored-name");
     const configurationRoot = await temporaryDirectory(context, "openclaw-bootstrap-stored-name-");
+    // Complete trusted API initialization before corrupting the name. The worker must
+    // reach the stored-name guard with its required saved ceiling already initialized.
+    const startupConfiguration = { ...createInstallationDriverConfiguration(), backend: [] };
+    const initializedApi = await composePostgresDevelopment(
+      {
+        mode: "development",
+        host: "127.0.0.1",
+        databaseUrl: failureDatabaseUrl,
+        poolMax: 2,
+        logging: { level: "warn" },
+        authBaseURL: environment.OCC_AUTH_BASE_URL,
+        authSecret: environment.OCC_AUTH_SECRET,
+        nativeAdmin: { enabled: false, domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN },
+      },
+      {
+        installation: startupConfiguration,
+        computeDriver: passiveComputeDriver(),
+        configurationDriver: createTestConfigurationDriver(),
+        secretDriver: createTestSecretDriver({ id: startupConfiguration.drivers.secret.id }),
+        createIAMDriver(state: PostgresPlatformState) {
+          return new NativeIAMDriver(state, { id: startupConfiguration.drivers.iam.id });
+        },
+      },
+    );
+    try {
+      await initializedApi.ready();
+    } finally {
+      await initializedApi.close();
+    }
     // An Installation stored before OCC applied the Name rule can hold a trailing NBSP:
     // PostgreSQL's name check accepts it.
     await withPool(migratorDatabaseUrl(), (pool: Pool) =>

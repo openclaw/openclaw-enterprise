@@ -103,6 +103,7 @@ async function createFixture() {
             ? `cfg_00000000-0000-4000-8000-${String(++configurationSequence).padStart(12, "0")}`
             : `${kind}-${++sequence}`,
   });
+  await controller.initializeSandboxNetworkPolicyCeiling("principal-admin");
   const configurationDriver = createTestConfigurationDriver({ id: "configuration-read-test" });
   const compute = {
     ...createDevelopmentComputeDriver(),

@@ -1854,13 +1854,15 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
           return use(value);
         });
     }
-    if (stage === "before-admission") {
-      const transact = fixture.platformState.transact.bind(fixture.platformState);
-      fixture.platformState.transact = (operation) => {
-        deny();
-        return transact(operation);
-      };
-    }
+    const revokeBeforeAdmission = () => {
+      if (stage === "before-admission") {
+        const transact = fixture.platformState.transact.bind(fixture.platformState);
+        fixture.platformState.transact = (operation) => {
+          deny();
+          return transact(operation);
+        };
+      }
+    };
     if (stage === "cross-namespace") {
       const read = fixture.platformState.read.bind(fixture.platformState);
       fixture.platformState.read = (operation) =>
@@ -1888,6 +1890,7 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
     let result;
     try {
       const url = await app.listen({ host: "127.0.0.1", port: 0 });
+      revokeBeforeAdmission();
       result = await request(url, "POST", `${path}/deploy-first`, {
         session: app.defaultSession,
         body: intent,
@@ -8745,8 +8748,16 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
   );
   assert.equal(deletionDenied.status, 403);
 
-  const mutationEvents = fixture.auditSink.events.filter((event) =>
-    ["bootstrap", "mutation"].includes(event.kind),
+  const initializationEvents = fixture.auditSink.events.filter(
+    (event) => event.action === "openclaw.installation.sandbox_network_policy_ceiling.initialize",
+  );
+  assert.equal(initializationEvents.length, 1);
+  assert.equal(initializationEvents[0].actorId, fixture.principal.id);
+  assert.equal(initializationEvents[0].installationId, fixture.installationId);
+  assert.equal(initializationEvents[0].outcome, "success");
+  const mutationEvents = fixture.auditSink.events.filter(
+    (event) =>
+      ["bootstrap", "mutation"].includes(event.kind) && !initializationEvents.includes(event),
   );
   assert.equal(mutationEvents.length, 5);
   assert.deepEqual(
@@ -9354,7 +9365,16 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
 
   const unchanged = await injectedRequest(fixture.app, "GET", "/namespaces");
   assertOnlyDefaultNamespace(unchanged);
-  assert.equal(fixture.auditSink.events.length, 1);
+  assert.deepEqual(
+    fixture.auditSink.events.map(({ action, kind }) => ({ action, kind })),
+    [
+      {
+        action: "openclaw.installation.sandbox_network_policy_ceiling.initialize",
+        kind: "mutation",
+      },
+      { action: "openclaw.installation.bootstrap", kind: "bootstrap" },
+    ],
+  );
 
   const originalAuthorize = fixture.iamDriver.authorize;
   fixture.iamDriver.authorize = async () => {

@@ -124,12 +124,23 @@ import type {
 
 export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 
+import type { InstallationSandboxNetworkPolicyCeiling } from "@openclaw-enterprise/contracts";
+
 export interface InstallationReadRepository {
+  getBootstrapActor(): Promise<string | undefined>;
+  getSandboxNetworkPolicyCeiling(): Promise<
+    Readonly<InstallationSandboxNetworkPolicyCeiling> | undefined
+  >;
   findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
   getInstallation(): Promise<Readonly<Installation> | undefined>;
 }
 
 export interface InstallationRepository extends InstallationReadRepository {
+  holdSandboxNetworkPolicyCeiling(mode: "shared" | "exclusive"): Promise<void>;
+  saveSandboxNetworkPolicyCeiling(
+    ceiling: InstallationSandboxNetworkPolicyCeiling,
+    expectedVersion: number,
+  ): Promise<Readonly<InstallationSandboxNetworkPolicyCeiling> | undefined>;
   createInstallation(installation: Installation): Promise<Readonly<Installation>>;
   /**
    * Holds a human Principal's account until COMMIT so a disable cannot commit first.
@@ -1251,6 +1262,7 @@ interface IAMSubjectSource {
 interface PlatformSnapshot {
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
+  ceiling: Readonly<InstallationSandboxNetworkPolicyCeiling> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
@@ -1374,6 +1386,7 @@ function storedCopy<T>(value: T): Readonly<T> {
 
 function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
+    ceiling: snapshot.ceiling,
     installation:
       snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
     namespaces: new Map(
@@ -1802,6 +1815,32 @@ function repositories(
   preparedTokenProof: PreparedTokenCurrentProof,
 ): PlatformUnitOfWork {
   const installations: InstallationRepository = {
+    getBootstrapActor: async () =>
+      snapshot.audit.find(
+        (event) => event.kind === "bootstrap" && event.resource.kind === "installation",
+      )?.actorId,
+    getSandboxNetworkPolicyCeiling: async () =>
+      snapshot.ceiling === undefined ? undefined : immutableCopy(snapshot.ceiling),
+    holdSandboxNetworkPolicyCeiling: async () => undefined,
+    saveSandboxNetworkPolicyCeiling: async (ceiling, expectedVersion) => {
+      assertInitialized(snapshot);
+      if (
+        (ceiling.managementMode !== "console" && ceiling.managementMode !== "startup") ||
+        snapshot.installation!.id !== ceiling.installationId ||
+        ceiling.version < 1 ||
+        !Number.isInteger(ceiling.version) ||
+        ceiling.version !== expectedVersion + 1 ||
+        ceiling.version > 2147483647
+      ) {
+        throw new ScopeViolationError("Invalid Installation ceiling ownership or version.");
+      }
+      validateSandboxNetworkGrants(ceiling.rules, "/rules");
+      if ((snapshot.ceiling?.version ?? 0) !== expectedVersion) {
+        return undefined;
+      }
+      snapshot.ceiling = immutableCopy(ceiling);
+      return snapshot.ceiling;
+    },
     findInstallation: async (installationId) =>
       snapshot.installation?.id === installationId
         ? immutableCopy(snapshot.installation)
@@ -4527,6 +4566,7 @@ function finalizeAgentDeletion(
 export class InMemoryPlatformState implements PlatformStateStore {
   private snapshot: PlatformSnapshot = {
     installation: undefined,
+    ceiling: undefined,
     namespaces: new Map(),
     configurations: new Map(),
     connectionTemplates: new Map(),

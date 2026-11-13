@@ -609,6 +609,14 @@
       "tag": "0076_native_browser_access",
       "breakpoints": true,
       "sha256": "5ba98d253eb755b61548a60471475a45d704622059db76fe5b769461ab628aec"
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1787000000077,
+      "tag": "0077_installation_network_policy_ceiling",
+      "breakpoints": true,
+      "sha256": "6f5ca1be38308121d4b387384e9920258dc58c45bb0a5ba18e52a3295e223765"
     }
   ],
   "initialSchemaStates": {
@@ -701,10 +709,16 @@
       "35e58241d2983bd4fc147d33258696016190972b54fd75d58e2821f031facd06",
       "e49f7d68ea7114a24cc7250d84eb8d98ec8253fcf486635c479888a109ea6733",
       "6956ee10610cf9510a9e5c8f1322d3c6dcf73489118e2b3ca72c9549855538b5"
+    ],
+    "52fa7a7d0e9fe78786544b99f8b9af49908f67176c06c12b9e9b985135ef1f44": [
+      "21702ee579a5e20da185ad860f5eae02e77f48c18cef6ca1c307742ad78ba981",
+      "b98fe2e1d63d83dac3b4c58fdd0e7cdd3c5e977e7231df863240d6c13d54c63f",
+      "17eef875f803185113ead76de406712c19ca17116bd1525b3fb462c3d22fa873",
+      "812ef8276ab70afd2b4237853b5fcd779c31ad72e7fcf0aa58b9304da6156979"
     ]
   },
   "catalogs": {
-    "completed": "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed",
+    "completed": "52fa7a7d0e9fe78786544b99f8b9af49908f67176c06c12b9e9b985135ef1f44",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -755,7 +769,8 @@
     "preHarnessOverrides": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b",
     "preAccountAdministrationPolicy": "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c",
     "preFiniteRepositorySessionWithdrawal": "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33",
-    "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600"
+    "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600",
+    "preInstallationNetworkPolicyCeiling": "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -764,7 +779,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0077 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, and 76 upgraded to 0077."
   },
   "compatibleLineages": {
     "providerCompleted": {

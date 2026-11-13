@@ -291,6 +291,7 @@ test("startup composes both OpenShell members from one Backend for static source
     },
   );
   const principal = "attachment-administrator";
+  await controller.initializeSandboxNetworkPolicyCeiling(principal);
   const iam = new NativeIAMDriver({
     async loadNativeIAMState() {
       return {
