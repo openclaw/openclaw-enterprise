@@ -181,6 +181,17 @@ principal, and any selected Secret Driver identity and normalized bindings.
 Backend locators and value bytes are not stored in the Agent revision. Subsequent nested
 Configuration edits increment its generation but affect only later explicit
 deployments; historical Agent revisions and their admitted snapshots remain unchanged.
+
+After Compute admission, OCC calls the selected Driver's optional
+`snapshotRuntimeInputs` hook and saves any result as `compute.runtimeInputs`
+in the immutable revision snapshot. For locally managed dedicated Codex
+revisions without protected egress, Kubernetes Compute captures the Gateway
+and Agent image references. During preparation and activation it selects those
+saved images, including the Gateway image for workspace setup, even if the
+Installation's image settings have changed. Revisions without the field keep
+using the configured images. A malformed snapshot or unknown version
+fails revision validation. See [immutable runtime inputs](../../reference/drivers/compute-admission.md#immutable-runtime-inputs).
+
 PostgreSQL enforces the supported kind, positive generation, exact admitted
 snapshot shape, ownership, and Agent revision immutability. OCC records an
 attributable sanitized admission event and hands the Agent revision to
