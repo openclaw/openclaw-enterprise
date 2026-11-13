@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-12
-last_updated_session: authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8
+updated: 2026-11-13
+last_updated_session: authoring-run/195f17af-c4ed-4cc2-94a3-d6bfc4faca7c
 ---
 
 # Protected credential request flow
@@ -100,35 +100,34 @@ Codex without inference access. Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
-Compute passes Credential Proxy wiring to Sandbox. Protected sources require
-admission, API-key login and an exact source-key match. Only Gateway-owned sources
-receive their exact Gateway attachment and authentication environment.
+Compute passes Proxy wiring to Sandbox. Protected sources require admission,
+API-key login and matching source keys. Only Gateway-owned sources receive
+their Gateway attachment and authentication environment.
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
-emits `/**` on inference routes so any verified executable in the admitted
-execution can reach the model endpoint through credential middleware.
-The egress Driver compares the full prepared policy against the plan, including
-the explicit matcher.
+uses `/**` so any verified executable in the admitted execution can reach the
+model through credential middleware. The Driver compares the complete policy,
+including this matcher, with the plan.
 
 Authenticated [V1 evidence](../reference/credential-sources/protected-inference.md#loaded-enforcement)
 binds both policies to the Sandbox, instance, policy version, configuration and
 environment revisions, and capabilities. The gateway compares unknown fields.
-Installation and revalidation accept only the exact name-only rule exception.
-Missing, legacy, widened or changed evidence refuses. The local comparison
-fingerprint covers both policies and hashes.
+Installation and revalidation allow only the exact name-only exception and reject
+missing, legacy, widened or changed evidence. The fingerprint covers both
+policies and hashes. `loadedPolicy` checks the same Sandbox ID and positive
+resource version before and after observation. Metadata changes defer confirmation.
 
-Compute sets `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from protected Harness admission.
-The helper matches the manifest before opening the authenticated listener.
-The provider receives only the verifier; Compute withholds the private status
-revision, port, container name and Pod UID.
+Compute sets `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from protected admission.
+The helper verifies the manifest before listening. Compute gives the provider
+only the verifier and retains the private status revision, port, container name
+and Pod UID.
 
-The Harness waits before its first model probe. Compute awaits installation commit, rechecks evidence
-and calls the Sandbox Driver. The Driver verifies the Sandbox and service and reads
-the execution/plan challenge. Compute signs the fresh process nonce and current
-installation with its control-plane key. The listener closes before Codex starts.
-Restart invalidates the old release. After 180 seconds startup fails closed and remains held.
-Reconciliation can repeat readiness checks without resolving material or retrying
-business requests. Active revisions require queued work; default Kubernetes has
-no periodic maintenance for [Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration).
+Before the first model probe, Compute awaits installation commit and rechecks
+evidence. The Sandbox Driver verifies the Sandbox and service and reads their
+execution/plan challenge. Compute’s control-plane key signs the new process nonce and installation.
+The listener closes before Codex starts. Restart invalidates its release. A
+180-second timeout holds startup. Readiness rechecks neither resolve material
+nor retry business requests. Active revisions require queued work. Default
+Kubernetes has no periodic [Harness-only restart](../reference/credential-sources/protected-inference.md#installation-configuration) maintenance.
 
 During held Git enrollment, `openshell-git-runtime.ts:observeHeldPreview` logs
 [curl and response failures](../reference/repository-credentials/protected-openshell-git.md#worker-log).
@@ -341,6 +340,8 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-13 21:02: Require stable Sandbox identity and resource version during protected policy observation. (authoring-run/195f17af-c4ed-4cc2-94a3-d6bfc4faca7c - 5bbb615eee0dc55be58393205de920220de88c55)
 
 - 2026-11-12 19:08: Preserve source-free Proxy admission while bypassing it for ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
 

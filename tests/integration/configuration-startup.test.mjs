@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import test, { before } from "node:test";
 import pg from "pg";
 import {
+  installationControllerOptions,
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
@@ -32,6 +33,7 @@ import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compu
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
+  protectedDownloadDestinationAllowed,
   admitLoggingConfiguration,
   ConfigurationValidationError,
 } from "../../packages/contracts/src/index.ts";
@@ -943,6 +945,82 @@ test("startup loads singleton Installation YAML and validates Drivers before con
   assert.equal(updated.computeDriver.id, drivers.computeDriver.id);
   assert.equal(updated.computeDriver.implementation, drivers.computeDriver.implementation);
   assert.equal(updated.installation.drivers.compute.configuration.network.gatewayPort, 8081);
+});
+
+test("Installation startup admits protected download limits for the selected client", async (t) => {
+  async function load(settings) {
+    const configuration = installation();
+    if (settings !== undefined) {
+      configuration.protectedDownloads = settings;
+    }
+    const loaded = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+    return installationControllerOptions(loaded.installation).protectedDownloads;
+  }
+  const mirror = { scheme: "http", host: "mirror.example.org", port: 80 };
+  const archive = { scheme: "https", host: "shared.example.org", port: 443 };
+  const artifact = { ...archive, path: "/project/archive.tgz" };
+  const provider = {
+    executablePath: "/usr/bin/curl",
+    reservedCredentialHosts: ["identity.example.org"],
+  };
+  const settings = {
+    executablePaths: [provider.executablePath],
+    reservedHosts: ["auth.example.org"],
+    httpMirrors: [mirror.host],
+    sharedArchiveHosts: [archive.host],
+    sharedArchiveObjects: [artifact],
+    delegatedDestinations: [artifact],
+  };
+  assert.equal(protectedDownloadDestinationAllowed(await load(), artifact, provider), false);
+  const limits = await load(settings);
+  assert.deepEqual(limits.delegatedDestinations, [artifact]);
+  assert.equal(protectedDownloadDestinationAllowed(limits, artifact, undefined), false);
+  assert.equal(
+    protectedDownloadDestinationAllowed(limits, artifact, {
+      ...provider,
+      executablePath: "/tmp/curl",
+    }),
+    false,
+  );
+  for (const destination of [artifact, mirror, { ...archive, host: "new.example.org" }]) {
+    assert.equal(protectedDownloadDestinationAllowed(limits, destination, provider), true);
+  }
+  for (const destination of [
+    archive,
+    { ...artifact, path: "/sibling/archive.tgz" },
+    { ...mirror, host: archive.host, path: artifact.path },
+    { ...mirror, host: "unlisted.example.org" },
+    { ...archive, host: "identity.example.org" },
+    { ...artifact, host: "auth.example.org" },
+    { ...artifact, path: "/a/../artifact" },
+  ]) {
+    assert.equal(protectedDownloadDestinationAllowed(limits, destination, provider), false);
+  }
+  for (const invalid of [
+    { executablePaths: [] },
+    { executablePaths: [provider.executablePath, provider.executablePath] },
+    { executablePaths: ["/usr/*/curl"] },
+    { httpMirrors: [archive.host] },
+    { sharedArchiveHosts: ["*.example.org"] },
+    { sharedArchiveObjects: [archive] },
+    { sharedArchiveObjects: [{ ...mirror, path: artifact.path }] },
+    { sharedArchiveObjects: [{ ...artifact, host: "different.example.org" }] },
+    { delegatedDestinations: [{ ...artifact, path: "/sibling/archive.tgz" }] },
+    { delegatedDestinations: [archive] },
+    { delegatedDestinations: [{ ...mirror, host: "unlisted.example.org" }] },
+    { delegatedDestinations: [{ ...mirror, port: 8080 }] },
+    { delegatedDestinations: [{ ...artifact, path: "/a/%2F" }] },
+    { delegatedDestinations: [{ ...artifact, owner: "private-owner-value" }] },
+  ]) {
+    await assert.rejects(load({ ...settings, ...invalid }), (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.doesNotMatch(JSON.stringify(error.error), /private-owner-value/);
+      return true;
+    });
+  }
 });
 
 test("shared startup loads backend metadata without reading the API-only ChatGPT admin Secret", async (t) => {

@@ -15,7 +15,16 @@ export function bindPlatformUnitOfWork(
       "save",
       "authorize",
     ]),
-    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find", "save"]),
+    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, [
+      "find",
+      "canRetainProtectedDownloadRecovery",
+      "protectedDownloadTargetAvailable",
+      "nextProtectedDownloadRecovery",
+      "findProtectedDownloadRecovery",
+      "save",
+      "retainProtectedDownloadRecovery",
+      "clearProtectedDownloadRecovery",
+    ]),
     installations: bindRepository(repositories.installations, lifetime, [
       "findInstallation",
       "getInstallation",

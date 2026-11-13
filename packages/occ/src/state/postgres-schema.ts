@@ -1,4 +1,7 @@
-import type { CredentialPolicyReductionState } from "./platform-state.ts";
+import type {
+  CredentialPolicyReductionState,
+  ProtectedDownloadRecovery,
+} from "./platform-state.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
@@ -1260,6 +1263,9 @@ export const controllerWork = occSchema.table(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     reasonCode: text("reason_code"),
     resultData: jsonb("result_data").$type<Record<string, unknown>>(),
+    protectedDownloadRecovery: jsonb(
+      "protected_download_recovery",
+    ).$type<ProtectedDownloadRecovery>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
@@ -1434,6 +1440,9 @@ export const controllerWork = occSchema.table(
         )
       )`,
     ),
+    index("controller_work_protected_download_recovery_idx")
+      .on(table.idempotencyKey)
+      .where(sql`${table.protectedDownloadRecovery} IS NOT NULL`),
     index("controller_work_ready")
       .on(table.availableAt, table.createdAt, table.idempotencyKey)
       .where(sql`${table.state} = 'queued'`),

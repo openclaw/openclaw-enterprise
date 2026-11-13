@@ -7,6 +7,14 @@ const namespaceId = id("ns");
 const agentId = id("agt");
 const configurationId = id("cfg");
 const revisionId = id("rev");
+export const protectedDownloadApprovalExample = {
+  expectedVersion: 1,
+  revisionId,
+  downloadChange: {
+    action: "approve-and-enable",
+    destination: { scheme: "https", host: "registry.npmjs.org", port: 443 },
+  },
+};
 const nativeBrowserOrigin = "https://agent-0123456789abcdef0123456789abcdef.agents.example.com";
 const secretRef = { kind: "secret", namespaceId, id: id("sec") };
 const harnessAuth = { method: "api_key", source: secretRef };

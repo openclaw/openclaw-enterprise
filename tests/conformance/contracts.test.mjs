@@ -6,6 +6,7 @@ import { constants as osConstants } from "node:os";
 import test from "node:test";
 import { getSystemErrorMap } from "node:util";
 import vm from "node:vm";
+import { Check } from "typebox/value";
 
 import {
   AGENT_RUNTIME_ENTRYPOINT,
@@ -51,9 +52,70 @@ import {
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
   ConfigurationValidationError,
+  ProtectedDownloadDestinationSchema,
   sandboxNetworkGrantsWithinCeiling,
   validateSandboxNetworkGrants,
 } from "../../packages/contracts/src/index.ts";
+
+test("protected download destinations preserve exact scheme, host, port and object scope", () => {
+  const dest = { scheme: "https", host: "artifacts.example.org", port: 443 };
+  const accepts = (value) => Check(ProtectedDownloadDestinationSchema, value);
+  assert.ok(accepts(dest));
+  assert.ok(accepts({ ...dest, scheme: "http", port: 80 }));
+  assert.ok(accepts({ ...dest, path: "/releases/v1.2/toolchain-x86_64+1.tar.gz" }));
+  assert.ok(accepts({ ...dest, path: "/proxy-cache/go.example:toolchain-v1.linux-amd64.zip" }));
+  assert.ok(accepts({ ...dest, path: "/modules/toolchain/@v/v1.0.0.zip" }));
+  for (const host of [
+    "*.example.org",
+    "Example.org",
+    "example.org.",
+    "user@example.org",
+    "localhost",
+    "internal",
+    "metadata.google.internal",
+    "service.cluster.local",
+    "a.home.arpa",
+    "a.localdomain6",
+    "127.0.0.1",
+    "127.1",
+    "0x7f.0x01",
+    "0177.1",
+    "2130706433",
+    "[::1]",
+    "example.org\n",
+  ]) {
+    assert.equal(accepts({ ...dest, host }), false, host);
+  }
+  for (const path of [
+    "/",
+    "relative",
+    "/a//b",
+    "/a/",
+    "/a/../b",
+    "/./a",
+    "/a/.",
+    "/a%2fb",
+    "/%252e%252e/b",
+    "/a\\b",
+    "/a?token=value",
+    "/a#part",
+    "/files/*",
+    "/[ab]",
+    "/{one,two}",
+    "/a\n",
+  ]) {
+    assert.equal(accepts({ ...dest, path }), false, path);
+  }
+  for (const fields of [
+    { scheme: "http" },
+    { port: 80 },
+    { port: 8443 },
+    { scheme: "ftp" },
+    { method: "POST" },
+  ]) {
+    assert.equal(accepts({ ...dest, ...fields }), false);
+  }
+});
 
 test("network delegation covers every requested host label and port without broadening executables", () => {
   const grant = {

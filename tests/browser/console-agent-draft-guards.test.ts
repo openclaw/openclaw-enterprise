@@ -953,6 +953,164 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   assert.deepEqual(unchanged.additions, [grant]);
 });
 
+test("Protected Downloads submits one scoped change and keeps desired and confirmed access separate", async (t) => {
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const seeded = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const revisionId = text(record(seeded.revision).id);
+  const { page } = await newPage(t, fixture);
+  const prior = { scheme: "http", host: "deb.debian.org", port: 80 };
+  const next = {
+    scheme: "https",
+    host: "storage.googleapis.com",
+    port: 443,
+    path: "/tools/tool.tar.gz",
+  };
+  const original = await fixture.request("GET", base);
+  const view = record(original.data);
+  const policy = record(view.policy);
+  view.protectedExecution = true;
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: true };
+  record(record(record(view.configuration).actions).apply).available = true;
+  Object.assign(policy, {
+    approvedDownloadDestinations: [prior],
+    downloadDestinations: [prior],
+    applied: {
+      kind: "protected_downloads",
+      operationId: crypto.randomUUID(),
+      revisionId,
+      policyVersion: 1,
+      appliedAt: "2026-01-02T12:00:00Z",
+      providerVersion: "1",
+      confirmedDownloadDestinations: [prior],
+    },
+  });
+  const requests = apiRequests(page, fixture.origin);
+  // The stock fixture has no qualified pair. Supply the public policy responses to exercise
+  // the browser's authenticated mutation, readback and error presentation independently.
+  await page.route(fixture.origin + base, (route) => route.fulfill({ json: { data: view } }));
+  const pending = {
+    kind: "protected_downloads",
+    id: crypto.randomUUID(),
+    revisionId,
+    policyVersion: 2,
+    action: "approve-and-enable",
+    destination: next,
+    state: "pending",
+    requestedAt: "2026-01-02T12:01:00Z",
+    requestedBy: "admin",
+  };
+  await page.route(fixture.origin + base + "/apply", (route) => {
+    Object.assign(policy, {
+      version: 2,
+      approvedDownloadDestinations: [prior, next],
+      downloadDestinations: [prior, next],
+      application: pending,
+    });
+    return route.fulfill({ status: 202, json: { data: policy } });
+  });
+  await loginThroughForm(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "policy"),
+  );
+  const panel = page.getByRole("region", { name: "Downloads", exact: true });
+  await panel.getByText("http://deb.debian.org:80", { exact: true }).waitFor();
+  await panel.getByLabel("Hostname", { exact: true }).fill(next.host);
+  await panel.getByLabel("Exact archive path (required for shared hosts)").fill(next.path);
+  await panel.getByRole("button", { name: "Allow download", exact: true }).click();
+  await panel.getByText(/Pending · Policy v2/).waitFor();
+  await panel
+    .getByText("Agent-approved · Desired on · Last confirmed off", { exact: true })
+    .waitFor();
+  assert.equal(await panel.getByRole("button", { name: "Allow download", exact: true }).count(), 0);
+  assert.deepEqual(
+    pathRequests(requests, "POST", base + "/apply").map((r) => r.body),
+    [
+      {
+        expectedVersion: 1,
+        revisionId,
+        downloadChange: { action: "approve-and-enable", destination: next },
+      },
+    ],
+  );
+  policy.application = { ...pending, state: "failed", reason: "PROTECTED_DOWNLOAD_UNCONFIRMED" };
+  view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
+  await panel.getByRole("button", { name: "Refresh download status", exact: true }).click();
+  await panel.getByText(/Failed · PROTECTED_DOWNLOAD_UNCONFIRMED/).waitFor();
+  await panel
+    .getByText("Agent-approved · Desired on · Last confirmed off", { exact: true })
+    .waitFor();
+  assert.equal(await panel.getByRole("button", { name: "Withdraw approval" }).count(), 0);
+  // Restore the qualified view for a delegated editor. The actual stock fixture still has no
+  // protected pair: exercise the authenticated HTTP refusal and check the form survives it.
+  policy.application = { ...pending, state: "applied" };
+  policy.applied = {
+    ...record(policy.applied),
+    operationId: pending.id,
+    policyVersion: 2,
+    confirmedDownloadDestinations: [prior, next],
+  };
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
+  await panel.getByRole("button", { name: "Refresh download status", exact: true }).click();
+  await panel.getByText(/Applied · Policy v2/).waitFor();
+  assert.equal(await panel.getByRole("button", { name: "Withdraw approval" }).count(), 0);
+  await page.unroute(fixture.origin + base + "/apply");
+  await panel.getByRole("button", { name: "Disable", exact: true }).first().click();
+  await page.getByRole("alert").filter({ hasText: "RESOURCE_CONFLICT" }).waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 2,
+    revisionId,
+    downloadChange: { action: "disable", destination: prior },
+  });
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: true };
+  await page.reload();
+  const priorRow = panel.locator(".sandbox-download-row").filter({ hasText: "deb.debian.org" });
+  await priorRow.getByRole("button", { name: "Withdraw approval", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "RESOURCE_CONFLICT" }).waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 2,
+    revisionId,
+    downloadChange: { action: "withdraw-approval", destination: prior },
+  });
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
+  policy.applied = { ...record(policy.applied), revisionId: "retired-revision" };
+  await page.reload();
+  await priorRow.getByText("http://deb.debian.org:80", { exact: true }).waitFor();
+  assert.equal(await priorRow.getByRole("button", { name: "Enable", exact: true }).count(), 1);
+  await priorRow.getByRole("button", { name: "Enable", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "RESOURCE_CONFLICT" }).waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 2,
+    revisionId,
+    downloadChange: { action: "enable", destination: prior },
+  });
+
+  await panel.getByLabel("Hostname", { exact: true }).fill(prior.host);
+  await panel.getByLabel("Protocol", { exact: true }).selectOption("http");
+  const denied = page.waitForResponse((r) => r.url() === fixture.origin + base + "/apply");
+  await panel.getByRole("button", { name: "Allow download", exact: true }).click();
+  const response = await denied;
+  assert.equal(response.status(), 409);
+  const refusal = record(record(await response.json()).error);
+  await page
+    .getByRole("alert")
+    .filter({ hasText: text(refusal.code) })
+    .waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 2,
+    revisionId,
+    downloadChange: { action: "enable", destination: prior },
+  });
+  assert.equal(await panel.getByLabel("Hostname", { exact: true }).inputValue(), prior.host);
+});
+
 test("Agent policy under protected execution offers only removal of saved network rules", async (t) => {
   const {
     fixture,
@@ -963,7 +1121,7 @@ test("Agent policy under protected execution offers only removal of saved networ
   const namespace = resource(rawNamespace);
   const agent = agentFields(rawAgent);
   // Rules saved before protected execution applied block every protected deploy. This fixture
-  // selects no Credential Proxy, so only the view's protectedExecution flag is set on the read;
+  // selects no Credential Proxy, so the read supplies the protected view for an unsupported pair;
   // the removal itself goes through real HTTP, IAM and OCC admission.
   const saved = await fixture.request("PUT", base, {
     body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
@@ -978,6 +1136,10 @@ test("Agent policy under protected execution offers only removal of saved networ
     const response = await route.fetch();
     const body = record(await response.json());
     record(body.data).protectedExecution = true;
+    record(body.data).protectedDownloads = {
+      state: "unavailable",
+      reason: "unsupported-driver-pair",
+    };
     await route.fulfill({ response, json: body });
   });
   const requests = apiRequests(page, fixture.origin);
@@ -988,13 +1150,11 @@ test("Agent policy under protected execution offers only removal of saved networ
   const readResponse = await read;
   t.diagnostic(`Policy GET status: ${readResponse.status()}`);
   assert.equal(readResponse.status(), 200);
+  const driverNotice =
+    "The selected Sandbox and Credential Proxy Drivers do not support protected downloads together.";
+  await page.getByText(driverNotice, { exact: false }).waitFor();
   await page.getByRole("button", { name: "Manage rules", exact: true }).click();
-  await page
-    .getByText(
-      "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByRole("dialog").getByText(driverNotice, { exact: false }).waitFor();
   // Neither adding a rule nor widening a saved rule is available under protected execution.
   assert.equal(
     await page.getByRole("button", { name: "Add rule", exact: true }).isVisible(),

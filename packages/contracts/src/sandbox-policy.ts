@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
+import { validRepositoryGitRecipient } from "./drivers/credential-proxy/index.ts";
 import type { ErrorDetail } from "./api/common.ts";
 import type { OpenClawConfigurationDocument } from "./index.ts";
 
@@ -42,6 +43,169 @@ export const SandboxNetworkGrantsSchema = Type.Array(SandboxNetworkGrantSchema, 
 });
 export type SandboxNetworkGrant = Type.Static<typeof SandboxNetworkGrantSchema>;
 
+// Only destination spelling is a wire property. Operator admission owns the HTTP mirror
+// and shared-object exceptions; the provider must check resolved peers on each connection.
+const dnsLabel = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+const nonPublicSuffix =
+  "arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt";
+// A segment is literal in both a URL and a path matcher. Refuse escapes, empty
+// segments and standalone dot segments before a URL parser can normalize them.
+const downloadPath = Type.String({
+  maxLength: 2048,
+  pattern: "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+});
+const destinationFields = {
+  host: Type.String({
+    format: "hostname",
+    maxLength: 253,
+    pattern: `^(?!.*\\.(?:${nonPublicSuffix})$)(?:${dnsLabel}\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])`,
+  }),
+  path: Type.Optional(downloadPath),
+};
+
+export const ProtectedDownloadDestinationSchema = Type.Union([
+  Type.Object(
+    { scheme: Type.Literal("https"), port: Type.Literal(443), ...destinationFields },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { scheme: Type.Literal("http"), port: Type.Literal(80), ...destinationFields },
+    { additionalProperties: false },
+  ),
+]);
+export type ProtectedDownloadDestination = Type.Static<typeof ProtectedDownloadDestinationSchema>;
+export const ProtectedDownloadDestinationsSchema = Type.Array(ProtectedDownloadDestinationSchema, {
+  maxItems: 32,
+  uniqueItems: true,
+});
+export function validProtectedDownloadDestinations(
+  value: unknown,
+): value is ProtectedDownloadDestination[] {
+  return Check(ProtectedDownloadDestinationsSchema, value);
+}
+
+const downloadHosts = Type.Array(destinationFields.host, { uniqueItems: true });
+
+export const ProtectedDownloadLimitsSchema = Type.Object(
+  {
+    executablePaths: Type.Array(
+      Type.String({
+        maxLength: 512,
+        pattern: "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9_+.@-]+)+(?![\\s\\S])",
+      }),
+      { minItems: 1, uniqueItems: true },
+    ),
+    reservedHosts: Type.Optional(downloadHosts),
+    httpMirrors: Type.Optional(downloadHosts),
+    sharedArchiveHosts: Type.Optional(downloadHosts),
+    sharedArchiveObjects: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            scheme: Type.Literal("https"),
+            port: Type.Literal(443),
+            host: destinationFields.host,
+            path: downloadPath,
+          },
+          { additionalProperties: false },
+        ),
+        { uniqueItems: true },
+      ),
+    ),
+    delegatedDestinations: Type.Optional(
+      Type.Array(ProtectedDownloadDestinationSchema, { uniqueItems: true }),
+    ),
+  },
+  { additionalProperties: false },
+);
+export type ProtectedDownloadLimits = Type.Static<typeof ProtectedDownloadLimitsSchema>;
+
+export function protectedDownloadDestinationWithinLimits(
+  limits: ProtectedDownloadLimits,
+  destination: ProtectedDownloadDestination,
+): boolean {
+  return (
+    Check(ProtectedDownloadDestinationSchema, destination) &&
+    !limits.reservedHosts?.includes(destination.host) &&
+    (destination.scheme === "https" || limits.httpMirrors?.includes(destination.host) === true) &&
+    (!limits.sharedArchiveHosts?.includes(destination.host) ||
+      (destination.scheme === "https" &&
+        limits.sharedArchiveObjects?.some(
+          (object) => object.host === destination.host && object.path === destination.path,
+        ) === true))
+  );
+}
+
+/** Caller supplies current, exact credential hostnames and the executable selected by the pair. */
+export function protectedDownloadDestinationAllowed(
+  limits: ProtectedDownloadLimits | undefined,
+  destination: ProtectedDownloadDestination,
+  provider:
+    | { readonly executablePath: string; readonly reservedCredentialHosts: readonly string[] }
+    | undefined,
+): boolean {
+  return (
+    limits !== undefined &&
+    provider !== undefined &&
+    limits.executablePaths.includes(provider.executablePath) &&
+    protectedDownloadDestinationWithinLimits(limits, destination) &&
+    !provider.reservedCredentialHosts.some(
+      (host) => host.toLowerCase().replace(/\.$/, "") === destination.host,
+    )
+  );
+}
+
+const protectedDownloadInstallationSchema = Type.Object({
+  protectedDownloads: ProtectedDownloadLimitsSchema,
+});
+
+export function parseProtectedDownloadLimits(value: unknown): ProtectedDownloadLimits {
+  return requireConfiguration(
+    {
+      configurationSchema: { ...protectedDownloadInstallationSchema },
+      validateConfiguration({
+        protectedDownloads: limits,
+      }: Type.Static<typeof protectedDownloadInstallationSchema>) {
+        const details: ErrorDetail[] = [];
+        for (const key of ["httpMirrors", "sharedArchiveHosts"] as const) {
+          limits[key]?.forEach((host, index) => {
+            if (
+              limits.reservedHosts?.includes(host) ||
+              (key === "httpMirrors" && limits.sharedArchiveHosts?.includes(host))
+            ) {
+              details.push({
+                path: `/protectedDownloads/${key}/${index}`,
+                code: "INVALID_VALUE",
+                message: "Host classifications must be disjoint.",
+              });
+            }
+          });
+        }
+        limits.sharedArchiveObjects?.forEach((object, index) => {
+          if (!limits.sharedArchiveHosts?.includes(object.host)) {
+            details.push({
+              path: `/protectedDownloads/sharedArchiveObjects/${index}/host`,
+              code: "INVALID_VALUE",
+              message: "Declare the shared archive host before allowing an object.",
+            });
+          }
+        });
+        limits.delegatedDestinations?.forEach((destination, index) => {
+          if (!protectedDownloadDestinationWithinLimits(limits, destination)) {
+            details.push({
+              path: `/protectedDownloads/delegatedDestinations/${index}`,
+              code: "INVALID_VALUE",
+              message: "Delegated destination conflicts with the Installation download limits.",
+            });
+          }
+        });
+        return details;
+      },
+    },
+    { protectedDownloads: value },
+  ).protectedDownloads;
+}
+
 /** The defaults are an opaque, nonsecret Driver snapshot. OCC never interprets provider syntax. */
 export interface SandboxPolicySnapshot {
   readonly driverId: string;
@@ -58,17 +222,166 @@ export interface ProtectedCodexArtifactPolicyAdmission {
   readonly snapshot: SandboxPolicySnapshot;
 }
 
-export interface SandboxPolicyApplication {
+interface ApplicationIdentity {
   readonly id: string;
   readonly revisionId: string;
   readonly policyVersion: number;
-  readonly snapshot: SandboxPolicySnapshot;
   readonly state: "pending" | "applied" | "failed";
   readonly requestedBy: string;
   readonly requestedAt: string;
-  readonly expectedProviderVersion?: string;
   readonly providerVersion?: string;
   readonly reason?: string;
+}
+
+const closed = { additionalProperties: false };
+const identifier = Type.String({
+  minLength: 1,
+  maxLength: 256,
+  pattern: "^[A-Za-z0-9._:-]+(?![\\s\\S])",
+});
+const operationId = Type.String({ format: "uuid" });
+const timestamp = Type.String({ format: "date-time", maxLength: 40 });
+const version = Type.Integer({ minimum: 1, maximum: 0xffffffff });
+const hash = Type.String({ minLength: 64, maxLength: 64, pattern: "^[0-9a-f]{64}$" });
+const repositoryGitRecipient = Type.Object(
+  {
+    providerId: identifier,
+    attachmentEpoch: identifier,
+    processInstanceId: identifier,
+    networkInstanceId: identifier,
+    deliveryProfile: Type.Optional(
+      Type.Union([Type.Literal("github_installation"), Type.Literal("github_repository")]),
+    ),
+    authorization: Type.Optional(
+      Type.Union([Type.Literal("online-request"), Type.Literal("request-hook-observed")]),
+    ),
+    observedHook: Type.Optional(
+      Type.Object(
+        { startupId: Type.String({ format: "uuid", maxLength: 36 }), observationId: hash },
+        closed,
+      ),
+    ),
+  },
+  closed,
+);
+const fence = Type.Object(
+  {
+    sandboxId: identifier,
+    instanceId: identifier,
+    configurationId: identifier,
+    peer: Type.Union([
+      Type.Object({ keyId: identifier }, closed),
+      Type.Object({ repositoryGitRecipient }, closed),
+    ]),
+    installationLimitsHash: hash,
+    providerResourceVersion: identifier,
+    policyVersion: version,
+    sourcePolicyHash: hash,
+    effectivePolicyHash: hash,
+  },
+  closed,
+);
+const protectedApplication = Type.Object(
+  {
+    kind: Type.Literal("protected_downloads"),
+    id: operationId,
+    revisionId: identifier,
+    policyVersion: version,
+    state: Type.Union([Type.Literal("pending"), Type.Literal("applied"), Type.Literal("failed")]),
+    requestedBy: Type.String({ minLength: 1, maxLength: 512 }),
+    requestedAt: timestamp,
+    providerVersion: Type.Optional(identifier),
+    reason: Type.Optional(Type.String({ pattern: "^[A-Z][A-Z0-9_]{0,127}(?![\\s\\S])" })),
+    action: Type.Union([
+      Type.Literal("approve-and-enable"),
+      Type.Literal("enable"),
+      Type.Literal("disable"),
+      Type.Literal("withdraw-approval"),
+    ]),
+    destination: ProtectedDownloadDestinationSchema,
+    desiredSourcePolicyHash: hash,
+    priorDesiredDownloadDestinations: ProtectedDownloadDestinationsSchema,
+    priorApprovedDownloadDestinations: ProtectedDownloadDestinationsSchema,
+    previousDownloadDestinations: ProtectedDownloadDestinationsSchema,
+    desiredDownloadDestinations: ProtectedDownloadDestinationsSchema,
+    expected: fence,
+    writeState: Type.Union([Type.Literal("prepared"), Type.Literal("dispatched")]),
+    acknowledgedWrite: Type.Optional(
+      Type.Object(
+        {
+          state: Type.Literal("committed"),
+          sandboxId: identifier,
+          operationId,
+          policyVersion: version,
+          sourcePolicyHash: hash,
+        },
+        closed,
+      ),
+    ),
+  },
+  closed,
+);
+
+type Fence = import("./drivers/credential-proxy/index.ts").ProtectedDownloadPolicyFence;
+type Write = import("./drivers/credential-proxy/index.ts").ProtectedDownloadPolicyWrite;
+
+export function validProtectedDownloadPolicyFence(value: unknown): value is Fence {
+  if (!Check(fence, value)) {
+    return false;
+  }
+  if ("keyId" in value.peer) {
+    return true;
+  }
+  const recipient = value.peer.repositoryGitRecipient;
+  return validRepositoryGitRecipient(
+    recipient,
+    recipient.deliveryProfile ?? "repository_git",
+    recipient.authorization,
+  );
+}
+
+export type SandboxPolicyApplication = ApplicationIdentity &
+  (
+    | {
+        readonly kind?: never;
+        readonly snapshot: SandboxPolicySnapshot;
+        readonly expectedProviderVersion?: string;
+      }
+    | {
+        readonly kind: "protected_downloads";
+        readonly expectedProviderVersion?: never;
+        readonly action: Type.Static<typeof protectedApplication>["action"];
+        readonly destination: ProtectedDownloadDestination;
+        readonly desiredSourcePolicyHash: string;
+        readonly priorDesiredDownloadDestinations: readonly ProtectedDownloadDestination[];
+        readonly priorApprovedDownloadDestinations: readonly ProtectedDownloadDestination[];
+        readonly previousDownloadDestinations: readonly ProtectedDownloadDestination[];
+        readonly desiredDownloadDestinations: readonly ProtectedDownloadDestination[];
+        readonly expected: Fence;
+        readonly writeState: "prepared" | "dispatched";
+        readonly acknowledgedWrite?: Write;
+      }
+  );
+
+export function validProtectedDownloadApplication(value: unknown): boolean {
+  return Check(protectedApplication, value) && validProtectedDownloadPolicyFence(value.expected);
+}
+
+const protectedReceipt = Type.Object(
+  {
+    kind: Type.Literal("protected_downloads"),
+    operationId,
+    revisionId: identifier,
+    policyVersion: version,
+    providerVersion: identifier,
+    appliedAt: timestamp,
+    confirmedDownloadDestinations: ProtectedDownloadDestinationsSchema,
+    fence,
+  },
+  closed,
+);
+export function validProtectedDownloadReceipt(value: unknown): boolean {
+  return Check(protectedReceipt, value) && validProtectedDownloadPolicyFence(value.fence);
 }
 
 export interface SandboxPolicy {
@@ -77,13 +390,23 @@ export interface SandboxPolicy {
   readonly agentId: string;
   readonly version: number;
   readonly additions: readonly SandboxNetworkGrant[];
+  readonly approvedDownloadDestinations?: readonly ProtectedDownloadDestination[];
+  readonly downloadDestinations?: readonly ProtectedDownloadDestination[];
   readonly application?: SandboxPolicyApplication;
   readonly applied?: {
     readonly revisionId: string;
     readonly policyVersion: number;
     readonly providerVersion: string;
     readonly appliedAt: string;
-  };
+  } & (
+    | { readonly kind?: never }
+    | {
+        readonly kind: "protected_downloads";
+        readonly operationId: string;
+        readonly confirmedDownloadDestinations: readonly ProtectedDownloadDestination[];
+        readonly fence: Fence;
+      }
+  );
 }
 
 export interface SandboxPolicyObservation {

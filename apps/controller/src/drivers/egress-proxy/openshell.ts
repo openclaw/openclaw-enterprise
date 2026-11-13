@@ -576,31 +576,32 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const client = this.backend.client.clientForNamespace(ref.namespaceName);
     const workspace = openShellWorkspaceName(context.namespace);
     const name = ref.resourceName;
-    const existing = await client.getSandbox({ workspace, name }, context.signal);
+    const read = () => client.getSandbox({ workspace, name }, context.signal);
+    const existing = await read();
+    const resourceVersion = revisionNumber(existing?.resourceVersion);
     if (
-      !existing ||
-      (expectedSandboxId !== undefined &&
-        (existing.id !== expectedSandboxId || !client.getSandboxPolicyStatus))
+      !existing?.id ||
+      resourceVersion === undefined ||
+      resourceVersion === "0" ||
+      (expectedSandboxId !== undefined && existing.id !== expectedSandboxId) ||
+      !client.getSandboxPolicyStatus
     ) {
       return undefined;
     }
     this.assertOwned(existing.annotations, context);
-    if (!existing.id || !client.getSandboxPolicyStatus) {
-      return undefined;
-    }
     const status = await client.getSandboxPolicyStatus(workspace, name, context.signal);
     const sandboxId = existing.id;
     return {
       status,
       sandboxId,
-      enforcement: () =>
-        context.plan.repositoryGit
+      enforcement: async () => {
+        const witness = context.plan.repositoryGit
           ? context.plan.repositoryGitAuthorization === "request-hook-observed" &&
             context.revision.executionAdmission.version === 6 &&
             workspace === this.options.observedHookPreviewWorkspace
-            ? this.previewEnforcement?.(context, sandboxId)
+            ? await this.previewEnforcement?.(context, sandboxId)
             : this.mandatoryEnforcement
-              ? this.mandatoryEnforcement(context, sandboxId)
+              ? await this.mandatoryEnforcement(context, sandboxId)
               : this.repositoryGitEnforcement(context, status, sandboxId)
           : enforcementEvidence(
               status,
@@ -608,7 +609,21 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
               context.plan.generation,
               context.revision.id,
               this.options,
-            ),
+            );
+        if (!witness) {
+          return undefined;
+        }
+        // Status is queried by name and carries no Sandbox object CAS. Require the
+        // same immutable ID and positive GetSandbox metadata.resource_version on
+        // both sides. Metadata-only churn also invalidates this observation. A
+        // later check can confirm once the object is stable.
+        const current = await read();
+        if (current?.id !== sandboxId || current.resourceVersion !== resourceVersion) {
+          return undefined;
+        }
+        this.assertOwned(current.annotations, context);
+        return witness;
+      },
     };
   }
 

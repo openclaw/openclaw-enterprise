@@ -16,6 +16,13 @@ export type {
   CredentialPolicyObservation,
   CredentialPolicyReducer,
   CredentialPolicyWithdrawalOptions,
+  ProtectedDownloadPolicyChange,
+  ProtectedDownloadPolicyContext,
+  ProtectedDownloadPolicyFence,
+  ProtectedDownloadPolicyPreparation,
+  ProtectedDownloadPolicyUnavailable,
+  ProtectedDownloadPolicyWrite,
+  ProtectedDownloadPolicyObservation,
   EgressRef,
   EgressSourceKey,
   ExecutionAdmission,
@@ -134,12 +141,18 @@ export {
   serializeStartupConfiguration,
 } from "./configuration-definition.ts";
 export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
-export type { SandboxPolicyViewWire } from "./api/sandbox-policy.ts";
+export type {
+  ProtectedDownloadEdit,
+  SandboxPolicyMutationWire,
+  SandboxPolicyViewWire,
+} from "./api/sandbox-policy.ts";
 export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";
 import type { SandboxPolicySnapshot } from "./sandbox-policy.ts";
 
 export type {
   ProtectedCodexArtifactPolicyAdmission,
+  ProtectedDownloadDestination,
+  ProtectedDownloadLimits,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxPolicySnapshot,
@@ -149,6 +162,16 @@ export type {
   SandboxPolicyRecommendations,
 } from "./sandbox-policy.ts";
 export {
+  ProtectedDownloadDestinationSchema,
+  ProtectedDownloadDestinationsSchema,
+  validProtectedDownloadApplication,
+  validProtectedDownloadPolicyFence,
+  validProtectedDownloadReceipt,
+  validProtectedDownloadDestinations,
+  ProtectedDownloadLimitsSchema,
+  parseProtectedDownloadLimits,
+  protectedDownloadDestinationAllowed,
+  protectedDownloadDestinationWithinLimits,
   SandboxNetworkGrantSchema,
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
@@ -1504,6 +1527,7 @@ export type {
   SandboxHarnessLostCode,
   SandboxHarnessRestart,
   SandboxHarnessObservation,
+  ProtectedDownloadSandboxPreparation,
 } from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,

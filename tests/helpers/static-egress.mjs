@@ -825,6 +825,7 @@ async function buildStaticEgressFixture(
   // This is an authenticated gateway-observation fixture, not supervisor execution proof.
   observed.sandbox = {
     id: sandboxId,
+    resource_version: "1",
     name: ref.resourceName,
     phase: "SANDBOX_PHASE_READY",
     annotations: {

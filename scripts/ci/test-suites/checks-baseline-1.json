@@ -937,6 +937,15 @@
       ]
     },
     {
+      "path": "tests/conformance/protected-download-policy.test.ts"
+    },
+    {
+      "path": "tests/integration/protected-download-state.test.ts"
+    },
+    {
+      "path": "tests/integration/protected-download-policy-worker.test.ts"
+    },
+    {
       "path": "tests/conformance/namespace-lifecycle.test.ts"
     },
     {

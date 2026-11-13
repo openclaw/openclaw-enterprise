@@ -1,3 +1,7 @@
+import {
+  observeOriginalDownload,
+  reconcileProtectedDownload,
+} from "./protected-download-policy.ts";
 import { randomUUID } from "node:crypto";
 import type { WorkOutcome } from "../metrics/index.ts";
 import type {
@@ -15,6 +19,9 @@ import {
   validateSandboxNetworkGrants,
 } from "@openclaw-enterprise/contracts";
 import {
+  protectedDownloadTargetMatches,
+  protectedDownloadPeerMatches,
+  protectedDownloadLimitsHash,
   SandboxNetworkPolicyConflictError,
   WorkClaimLostError,
   type ClaimedWork,
@@ -29,6 +36,8 @@ interface PolicyWorkOptions {
   readonly queueOptions: PostgresWorkQueueOptions;
   readonly driver: SandboxDriver | undefined;
   readonly compute: ComputeDriver;
+  readonly protectedDriver?: import("@openclaw-enterprise/occ").InstalledDriver;
+  readonly protectedDownloads?: import("@openclaw-enterprise/contracts").ProtectedDownloadLimits;
   readonly iam: IAMDriver;
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
@@ -50,20 +59,50 @@ function ownsApplication(
 }
 
 async function authority(
-  options: PolicyWorkOptions,
-  claim: ClaimedWork,
-  policy: Readonly<SandboxPolicy>,
+  options: Pick<PolicyWorkOptions, "iam" | "installationId">,
+  claim: Pick<ClaimedWork, "actorId" | "agentId" | "namespaceId">,
+  policy: Pick<SandboxPolicy, "id">,
   unit: PlatformUnitOfWork,
+  protectedAction?: Extract<
+    NonNullable<SandboxPolicy["application"]>,
+    { kind: "protected_downloads" }
+  >["action"],
 ): Promise<boolean> {
-  for (const [action, kind, id] of [
-    ["manage_policy", "agent", claim.agentId!],
-    ["update", "sandbox_policy", policy.id],
-  ] as const) {
-    const request: AuthorizationRequest = {
+  const requests: AuthorizationRequest[] = [
+    {
       principalId: claim.actorId,
-      action,
-      resource: { kind, id, namespaceId: claim.namespaceId },
-    };
+      action: "manage_policy",
+      resource: { kind: "agent", id: claim.agentId!, namespaceId: claim.namespaceId },
+    },
+    ...(protectedAction
+      ? [
+          {
+            principalId: claim.actorId,
+            action: "read" as const,
+            parentAgentId: claim.agentId!,
+            resource: {
+              kind: "sandbox_policy" as const,
+              id: policy.id,
+              namespaceId: claim.namespaceId,
+            },
+          },
+        ]
+      : []),
+    {
+      principalId: claim.actorId,
+      action: "update",
+      parentAgentId: claim.agentId!,
+      resource: { kind: "sandbox_policy", id: policy.id, namespaceId: claim.namespaceId },
+    },
+  ];
+  if (protectedAction === "approve-and-enable" || protectedAction === "withdraw-approval") {
+    requests.push({
+      principalId: claim.actorId,
+      action: "administer",
+      resource: { kind: "installation", id: options.installationId },
+    });
+  }
+  for (const request of requests) {
     const decision = await options.iam.authorize(request);
     if (decision.allowed) {
       continue;
@@ -71,7 +110,7 @@ async function authority(
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
       installationId: options.installationId,
-      namespaceId: claim.namespaceId,
+      ...(request.resource.namespaceId && { namespaceId: request.resource.namespaceId }),
       occurredAt: new Date().toISOString(),
       kind: "authorization_denial",
       source: "occ",
@@ -106,6 +145,14 @@ function applicationAudit(
     resource: { kind: "sandbox_policy", id: policy.id, namespaceId: claim.namespaceId },
     outcome: policy.application?.state === "applied" ? "success" : "failure",
     details: {
+      ...(policy.application?.kind === "protected_downloads" && {
+        agentId: policy.agentId,
+        operationId: policy.application.id,
+        action: policy.application.action,
+        destination: policy.application.destination,
+        previous: policy.application.previousDownloadDestinations,
+        desired: policy.application.desiredDownloadDestinations,
+      }),
       revisionId: policy.application!.revisionId,
       policyVersion: policy.version,
       state: policy.application!.state,
@@ -119,9 +166,36 @@ async function savePolicy(
   unit: PlatformUnitOfWork,
   policy: Readonly<SandboxPolicy>,
 ): Promise<void> {
-  if ((await unit.sandboxPolicies.save(policy, policy.version)) === undefined) {
+  if (
+    (await unit.sandboxPolicies.save(policy, policy.version, policy.application!.id)) === undefined
+  ) {
     throw new Error("Sandbox policy changed during reconciliation");
   }
+}
+
+function failedPolicy(
+  policy: SandboxPolicy & { application: NonNullable<SandboxPolicy["application"]> },
+  reason: string,
+  beforeProviderCall: boolean,
+): SandboxPolicy {
+  const application = policy.application;
+  if (
+    application.kind === "protected_downloads" &&
+    (application.writeState === "prepared" || beforeProviderCall)
+  ) {
+    return {
+      ...policy,
+      downloadDestinations: application.priorDesiredDownloadDestinations,
+      approvedDownloadDestinations: application.priorApprovedDownloadDestinations,
+      application: {
+        ...application,
+        state: "failed" as const,
+        reason,
+        writeState: "prepared" as const,
+      },
+    };
+  }
+  return { ...policy, application: { ...application, state: "failed", reason } };
 }
 
 /** Persist the provider CAS version in one pass before a later pass can mutate it. */
@@ -129,8 +203,26 @@ export async function reconcileSandboxPolicy(
   options: PolicyWorkOptions,
   claim: ClaimedWork,
 ): Promise<WorkOutcome> {
+  const first = await policyPass(options, claim);
+  if (typeof first === "string") {
+    return first;
+  }
+  // Only the invocation whose marker committed can issue the write. A recovered claim only observes.
+  const second = await policyPass(options, claim, first.dispatchId);
+  if (typeof second !== "string") {
+    throw new Error("Sandbox policy dispatch marker disappeared");
+  }
+  return second;
+}
+
+async function policyPass(
+  options: PolicyWorkOptions,
+  claim: ClaimedWork,
+  dispatchId?: string,
+): Promise<WorkOutcome | { dispatchId: string }> {
   return options.state.transactWithQueue(async (unit, queue) => {
-    if ((await queue.heartbeat(claim)) === undefined) {
+    const passClaim = await queue.heartbeat(claim);
+    if (!passClaim) {
       throw new WorkClaimLostError();
     }
     const namespace = await unit.namespaces.lockNamespace(claim.namespaceId, {
@@ -142,11 +234,10 @@ export async function reconcileSandboxPolicy(
       await queue.complete(claim);
       return "success";
     }
+    // A recovered dispatch marker is uncertain. Only this invocation knows whether it called apply.
+    let beforeProviderCall = dispatchId === policy.application.id;
     const fail = async (reason: string) => {
-      const failed = {
-        ...policy,
-        application: { ...policy.application, state: "failed" as const, reason },
-      };
+      const failed = failedPolicy(policy, reason, beforeProviderCall);
       await savePolicy(unit, failed);
       await unit.audit.append(applicationAudit(options, claim, failed));
       await queue.fail(claim, { code: reason });
@@ -160,13 +251,13 @@ export async function reconcileSandboxPolicy(
       await fail("SANDBOX_POLICY_REVISION_CHANGED");
       return "permanent";
     }
-    if (!(await authority(options, claim, policy, unit))) {
+    const protectedAction =
+      policy.application.kind === "protected_downloads" ? policy.application.action : undefined;
+    if (
+      policy.application.requestedBy !== claim.actorId ||
+      !(await authority(options, claim, policy, unit, protectedAction))
+    ) {
       await fail("AUTHORIZATION_DENIED");
-      return "permanent";
-    }
-    // Disabling future edits preserves already admitted additions and application work.
-    if (!sandboxNetworkGrantsWithinCeiling(policy.additions, options.ceiling)) {
-      await fail("SANDBOX_POLICY_CEILING_CHANGED");
       return "permanent";
     }
     const revision = await unit.revisions.findRevision(
@@ -174,6 +265,117 @@ export async function reconcileSandboxPolicy(
       claim.agentId!,
       policy.application.revisionId,
     );
+    if (policy.application.kind === "protected_downloads") {
+      // A final observation may settle a dispatched write, but expired work cannot start one.
+      if (
+        (policy.application.writeState === "prepared" || dispatchId === policy.application.id) &&
+        passClaim.ageMs >= options.deadlineMs
+      ) {
+        await fail("SANDBOX_POLICY_UNCONFIRMED");
+        return "permanent";
+      }
+      let result;
+      try {
+        result = await reconcileProtectedDownload(
+          options,
+          unit,
+          namespace,
+          agent,
+          revision,
+          policy,
+          policy.application,
+          dispatchId,
+          AbortSignal.any([
+            options.signal,
+            AbortSignal.timeout(
+              Math.max(1, Math.min(15000, Math.floor(options.leaseDurationMs / 2))),
+            ),
+          ]),
+          async () => {
+            if (options.signal.aborted || !(await queue.heartbeat(claim))) {
+              throw new WorkClaimLostError();
+            }
+            const allowed = await authority(options, claim, policy, unit, protectedAction);
+            const renewed = await queue.heartbeat(claim);
+            if (options.signal.aborted || !renewed) {
+              throw new WorkClaimLostError();
+            }
+            return { allowed, deadlineReached: renewed.ageMs >= options.deadlineMs };
+          },
+          () => {
+            beforeProviderCall = false;
+          },
+        );
+      } catch (error) {
+        if (options.signal.aborted || error instanceof WorkClaimLostError) {
+          throw error;
+        }
+        result = { state: "pending" as const };
+      }
+      if (!(await queue.heartbeat(claim))) {
+        throw new WorkClaimLostError();
+      }
+      if (result.state === "dispatch") {
+        await savePolicy(unit, {
+          ...policy,
+          application: { ...policy.application, writeState: "dispatched" as const },
+        });
+        return { dispatchId: policy.application.id };
+      }
+      if (result.state === "applied") {
+        const applied = {
+          ...policy,
+          applied: result.receipt,
+          application: {
+            ...policy.application,
+            state: "applied" as const,
+            acknowledgedWrite: result.acknowledgedWrite,
+            providerVersion: result.receipt.providerVersion,
+          },
+        };
+        await savePolicy(unit, applied);
+        await unit.audit.append(applicationAudit(options, claim, applied));
+        await queue.complete(claim);
+        return "success";
+      }
+      if (result.state === "not-applied") {
+        beforeProviderCall = true;
+        await fail(result.reason);
+        return "permanent";
+      }
+      if (
+        beforeProviderCall ||
+        result.state === "failed" ||
+        passClaim.ageMs >= options.deadlineMs
+      ) {
+        await fail(result.state === "failed" ? result.reason : "SANDBOX_POLICY_UNCONFIRMED");
+        return "permanent";
+      }
+      if (result.acknowledgedWrite) {
+        await savePolicy(unit, {
+          ...policy,
+          application: { ...policy.application, acknowledgedWrite: result.acknowledgedWrite },
+        });
+      }
+      await queue.defer(claim, { code: "SANDBOX_POLICY_PENDING" });
+      return "pending";
+    }
+    if ("kind" in policy.application) {
+      await fail("SANDBOX_POLICY_UNSUPPORTED");
+      return "permanent";
+    }
+    // A protected execution runs under its exact protected egress policy; applying an
+    // Agent policy to that Sandbox would replace it. OCC refuses the application first
+    // (finding 2053); this names the same rule for work queued before that refusal.
+    if (revision?.executionAdmission.mode === "protected") {
+      await fail("SANDBOX_POLICY_PROTECTED_EXECUTION");
+      return "permanent";
+    }
+    // Disabling future ordinary edits preserves already admitted additions and application work.
+    if (!sandboxNetworkGrantsWithinCeiling(policy.additions, options.ceiling)) {
+      await fail("SANDBOX_POLICY_CEILING_CHANGED");
+      return "permanent";
+    }
     const driver = options.driver;
     if (
       revision === undefined ||
@@ -183,13 +385,6 @@ export async function reconcileSandboxPolicy(
       driver.observeNetworkPolicy === undefined
     ) {
       await fail("SANDBOX_POLICY_UNSUPPORTED");
-      return "permanent";
-    }
-    // A protected execution runs under its exact protected egress policy; applying an
-    // Agent policy to that Sandbox would replace it. OCC refuses the application first
-    // (finding 2053); this names the same rule for work queued before that refusal.
-    if (revision.executionAdmission.mode === "protected") {
-      await fail("SANDBOX_POLICY_PROTECTED_EXECUTION");
       return "permanent";
     }
     try {
@@ -331,15 +526,138 @@ export async function failAbandonedSandboxPolicies(
     ) {
       continue;
     }
-    const failed = {
-      ...policy,
-      application: {
-        ...policy.application,
-        state: "failed" as const,
-        reason: "SANDBOX_POLICY_UNCONFIRMED",
-      },
-    };
+    const failed = failedPolicy(
+      { ...policy, application: policy.application },
+      "SANDBOX_POLICY_UNCONFIRMED",
+      false,
+    );
     await savePolicy(unit, failed);
     await unit.audit.append(applicationAudit({ installationId }, work, failed));
   }
+}
+
+/** Observe one retained original operation. The successor's policy and work are never written. */
+export async function settleOriginalProtectedDownload(
+  options: Pick<PolicyWorkOptions, "compute" | "iam" | "installationId" | "signal" | "state"> &
+    Required<Pick<PolicyWorkOptions, "protectedDriver" | "protectedDownloads">>,
+  work: { workKey: string; actorId: string; namespaceId: string; agentId: string },
+): Promise<void> {
+  const { workKey, namespaceId, agentId, actorId } = work;
+  await options.state.transact(async (unit) => {
+    const namespace = await unit.namespaces.lockNamespace(namespaceId, { includeDeleted: true });
+    const agent = await unit.agents.lockAgent(namespaceId, agentId);
+    const old = await unit.sandboxPolicies.findProtectedDownloadRecovery(
+      namespaceId,
+      agentId,
+      workKey,
+      actorId,
+    );
+    if (
+      !old ||
+      !namespace ||
+      !agent ||
+      workKey !== `agent:${agentId}:reconcile:sandbox_policy:${old.operationId}`
+    ) {
+      return;
+    }
+    const policy = await unit.sandboxPolicies.find(namespaceId, agentId);
+    if (!policy || policy.application?.id === old.operationId || !agent.sandboxPolicyEditing) {
+      return;
+    }
+    const revision = await unit.revisions.findRevision(namespaceId, agentId, old.revisionId);
+    const installed = await unit.credentialSources.findRevisionEgressInstallation(
+      namespaceId,
+      old.revisionId,
+    );
+    const owner = options.protectedDriver;
+    const sandbox = owner.require("sandbox").protectedDownloadPolicy;
+    const verifier = owner.require("credential_proxy").protectedDownloadPolicy;
+    if (
+      !revision?.egressPlan ||
+      !installed ||
+      sandbox?.version !== 1 ||
+      verifier?.version !== 1 ||
+      !options.compute.resolveSandboxNamespace ||
+      !protectedDownloadTargetMatches(
+        options.installationId,
+        namespace,
+        agent,
+        revision,
+        owner,
+        options.compute,
+        installed,
+        "original-read",
+      ) ||
+      !protectedDownloadPeerMatches(installed, old.expected.peer) ||
+      installed.sandboxId !== old.expected.sandboxId ||
+      installed.enforcement.instanceId !== old.expected.instanceId ||
+      protectedDownloadLimitsHash(options.protectedDownloads) !==
+        old.expected.installationLimitsHash ||
+      !(await authority(options, work, policy, unit, old.action))
+    ) {
+      return;
+    }
+    let evidence;
+    try {
+      const context = {
+        namespace: await options.compute.resolveSandboxNamespace(namespace),
+        revision,
+        plan: revision.egressPlan,
+        protectedDownloadLimits: options.protectedDownloads,
+        signal: options.signal,
+      };
+      options.signal.throwIfAborted();
+      evidence = await observeOriginalDownload(
+        context,
+        {
+          operationId: old.operationId,
+          expected: old.expected,
+          previous: old.previous,
+          desired: old.desired,
+          desiredSourcePolicyHash: old.desiredSourcePolicyHash,
+        },
+        old.acknowledgedWrite,
+        sandbox,
+        verifier,
+      );
+    } catch {
+      // Missing evidence, including a timed-out provider, leaves this exact operation unresolved.
+      return;
+    }
+    if (
+      !evidence ||
+      options.signal.aborted ||
+      !(await authority(options, work, policy, unit, old.action)) ||
+      options.signal.aborted ||
+      !(await unit.sandboxPolicies.clearProtectedDownloadRecovery(
+        namespaceId,
+        agentId,
+        workKey,
+        actorId,
+        old,
+      ))
+    ) {
+      return;
+    }
+    await unit.audit.append({
+      id: `aud_${randomUUID()}`,
+      installationId: options.installationId,
+      namespaceId,
+      occurredAt: new Date().toISOString(),
+      kind: "mutation",
+      source: "occ",
+      actorId,
+      action: "openclaw.agents.sandbox_policy.reconciliation",
+      resource: { kind: "sandbox_policy", id: policy.id, namespaceId },
+      outcome: "success",
+      details: {
+        agentId,
+        operationId: old.operationId,
+        revisionId: old.revisionId,
+        policyVersion: old.policyVersion,
+        providerVersion: String(evidence.write.policyVersion),
+        disposition: "confirmed-applied",
+      },
+    });
+  });
 }

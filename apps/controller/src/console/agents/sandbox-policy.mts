@@ -3,8 +3,11 @@ import type {
   AgentRuntimeLogPageWire,
   DriverConfigurationDescriptor,
   JSONSchema,
+  ProtectedDownloadDestination,
+  ProtectedDownloadEdit,
   RuntimeLogRecord,
   SandboxNetworkGrant,
+  SandboxPolicyMutationWire,
   SandboxPolicyRecommendations,
   SandboxPolicyViewWire,
 } from "@openclaw-enterprise/contracts";
@@ -654,6 +657,25 @@ export function renderAgentSandboxPolicy(
   let policyTimer: number | undefined;
   const current = () => context.isCurrent();
   const protectedExecution = () => view?.protectedExecution === true;
+  function protectedDownloadNotice() {
+    const status = view?.protectedExecution && view.protectedDownloads;
+    if (!status) {
+      return undefined;
+    }
+    if (status.state === "verified") {
+      return `The Sandbox and Credential Proxy Drivers passed protected download checks for revision ${status.revisionId}. Downloads use the protected policy.`;
+    }
+    switch (status.reason) {
+      case "installation-disabled":
+        return "Protected downloads are off for this Installation. Ask an Installation administrator to review the download policy.";
+      case "no-active-protected-revision":
+        return "Protected download checks need an active protected revision. Check the Agent’s deployment status.";
+      case "unsupported-driver-pair":
+        return "The selected Sandbox and Credential Proxy Drivers do not support protected downloads together. Ask an Installation administrator to review the selected Drivers.";
+      case "installation-unconfirmed":
+        return "The Drivers have not confirmed the protected download policy for the active revision. Check the revision status and refresh the policy.";
+    }
+  }
   const hasEditAuthority = () =>
     view?.configuration?.actions?.save?.available &&
     view?.editingEnabled &&
@@ -672,6 +694,291 @@ export function renderAgentSandboxPolicy(
     view.capability?.live &&
     agent.activeRevisionId === revisionId &&
     agent.desiredRuntimeState === "running";
+
+  const hostname = element("input", {
+    required: true,
+    maxlength: 253,
+    placeholder: "downloads.example.org",
+    autocomplete: "off",
+    spellcheck: "false",
+    pattern: "[A-Za-z0-9.\\-]+",
+    title: "Enter a hostname without a URL, port or wildcard.",
+  });
+  const archive = element("input", {
+    maxlength: 2048,
+    placeholder: "/releases/tool.tar.gz",
+    autocomplete: "off",
+    spellcheck: "false",
+    pattern: "(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@\\-]+)+",
+    title:
+      "For a shared host, enter the exact path approved by the Installation. Omit query parameters and fragments.",
+  });
+  const protocol = element(
+    "select",
+    { "aria-label": "Protocol" },
+    element("option", { value: "https" }, "HTTPS · 443"),
+    element("option", { value: "http" }, "HTTP · 80 (approved mirror)"),
+  );
+  const verifiedHere = () =>
+    view?.protectedExecution === true &&
+    view.protectedDownloads?.state === "verified" &&
+    view.protectedDownloads.revisionId === revisionId &&
+    agent.activeRevisionId === revisionId &&
+    agent.desiredRuntimeState === "running";
+  const canChangeDownloads = () =>
+    current() &&
+    verifiedHere() &&
+    canEdit() &&
+    view?.configuration?.actions.apply?.available === true;
+  const canApproveDownloads = () =>
+    view?.protectedDownloads?.state === "verified" && view.protectedDownloads.canApprove;
+  function changeDownload(
+    action: ProtectedDownloadEdit["action"],
+    destination: ProtectedDownloadDestination,
+  ) {
+    if (
+      !canChangeDownloads() ||
+      !view?.configuration ||
+      ((action === "approve-and-enable" || action === "withdraw-approval") &&
+        !canApproveDownloads())
+    ) {
+      return;
+    }
+    const { configuration, policy } = view;
+    const endpoint = configurationAction(configuration, "apply");
+    void mutate(
+      async () => {
+        let saved: SandboxPolicyMutationWire;
+        try {
+          saved = (await context.request(endpoint.href, {
+            method: endpoint.method,
+            expectedStatus: 202,
+            body: {
+              expectedVersion: policy.version,
+              revisionId,
+              downloadChange: { action, destination },
+            },
+          })) as SandboxPolicyMutationWire;
+        } catch (error) {
+          if (requestFailure(error).status === 409 && current()) {
+            await loadPolicy();
+          }
+          throw error;
+        }
+        const op = saved?.application;
+        if (
+          saved?.id !== policy.id ||
+          saved.agentId !== agent.id ||
+          saved.namespaceId !== agent.namespaceId ||
+          saved.version !== policy.version + 1 ||
+          !op ||
+          !("kind" in op) ||
+          op.kind !== "protected_downloads" ||
+          op.state !== "pending" ||
+          !op.id ||
+          op.id === policy.application?.id ||
+          op.revisionId !== revisionId ||
+          op.policyVersion !== saved.version ||
+          op.action !== action ||
+          !sameValue(op.destination, destination)
+        ) {
+          throw unconfirmedApply;
+        }
+        if (current()) {
+          hostname.value = "";
+          archive.value = "";
+          protocol.value = "https";
+          await loadPolicy();
+        }
+      },
+      false,
+      (error) => {
+        const failure = requestFailure(error);
+        return [
+          failure.code,
+          failure.serverMessage ||
+            errorText(error, "changing protected downloads", POLICY_APPLY_GRANT),
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      },
+      true,
+    );
+  }
+
+  function renderDownloads(model: SandboxPolicyViewWire) {
+    const { policy } = model;
+    const section = element(
+      "section",
+      { "aria-label": "Downloads", className: "sandbox-downloads" },
+      element("h3", {}, "Downloads"),
+    );
+    const status = model.protectedDownloads;
+    const notice = protectedDownloadNotice();
+    if (notice) {
+      section.append(element("p", { className: "hint" }, notice));
+    }
+    const receipt =
+      policy.applied &&
+      "kind" in policy.applied &&
+      policy.applied.kind === "protected_downloads" &&
+      policy.applied.revisionId === revisionId
+        ? policy.applied
+        : undefined;
+    const op =
+      policy.application &&
+      "kind" in policy.application &&
+      policy.application.kind === "protected_downloads"
+        ? policy.application
+        : undefined;
+    const format = (d: ProtectedDownloadDestination) =>
+      `${d.scheme}://${d.host}:${d.port}${d.path ?? ""}`;
+    const confirmed = receipt?.confirmedDownloadDestinations ?? [];
+    const approved = new Set(policy.approvedDownloadDestinations.map(format));
+    const desired = new Set(policy.downloadDestinations.map(format));
+    const scopes = new Map(
+      [...policy.approvedDownloadDestinations, ...policy.downloadDestinations, ...confirmed].map(
+        (d) => [format(d), d],
+      ),
+    );
+    if (op && op.revisionId === revisionId) {
+      const state =
+        op.state === "failed"
+          ? `Failed · ${op.reason ?? "unconfirmed"}`
+          : op.state === "applied" && receipt?.operationId === op.id && verifiedHere()
+            ? "Applied"
+            : op.state === "pending"
+              ? "Pending"
+              : "Unconfirmed";
+      if (op.state === "pending" || op.state === "failed") {
+        section.append(
+          button("Refresh download status", () => void loadPolicy(true), {
+            size: "sm",
+            disabled: mutation,
+          }),
+        );
+      }
+      section.append(
+        element(
+          "p",
+          { role: op.state === "failed" ? "alert" : "status" },
+          `${state} · Policy v${op.policyVersion} · ${format(op.destination)}`,
+        ),
+      );
+    }
+    if (scopes.size || op || status?.state === "verified") {
+      section.append(
+        element(
+          "p",
+          { className: "hint" },
+          receipt
+            ? `Last confirmed on revision ${receipt.revisionId} · Policy v${receipt.policyVersion} · ${receipt.appliedAt}`
+            : "No confirmed download policy for this revision.",
+        ),
+      );
+    }
+    const writable = canChangeDownloads();
+    for (const [url, d] of scopes) {
+      const active = confirmed.some((entry) => format(entry) === url);
+      const row = element(
+        "div",
+        { className: "sandbox-download-row" },
+        element("strong", {}, url),
+        element(
+          "span",
+          {},
+          `${approved.has(url) ? "Agent-approved" : "No Agent approval"} · Desired ${desired.has(url) ? "on" : "off"} · ${receipt ? `Last confirmed ${active ? "on" : "off"}` : verifiedHere() ? "Off on this revision" : "Unconfirmed"}`,
+        ),
+      );
+      if (writable) {
+        if (!active && (approved.has(url) || desired.has(url))) {
+          row.append(button("Enable", () => changeDownload("enable", d), { size: "sm" }));
+        }
+        if (active || desired.has(url)) {
+          row.append(
+            button(active ? "Disable" : "Remove from desired", () => changeDownload("disable", d), {
+              size: "sm",
+            }),
+          );
+        }
+        if (canApproveDownloads() && approved.has(url)) {
+          row.append(
+            button("Withdraw approval", () => changeDownload("withdraw-approval", d), {
+              size: "sm",
+            }),
+          );
+        }
+      }
+      section.append(row);
+    }
+    if (writable && scopes.size) {
+      section.append(
+        element(
+          "p",
+          { className: "hint" },
+          "Disabling keeps the approval. Withdrawing Agent approval removes access that depends on it. Existing transfers can finish.",
+        ),
+      );
+    }
+    if (status?.state !== "verified") {
+      return section;
+    }
+    if (!writable) {
+      if (!verifiedHere()) {
+        section.append(
+          element(
+            "p",
+            { className: "hint" },
+            "Open the current running revision to change downloads.",
+          ),
+        );
+      } else if (!model.editingEnabled) {
+        section.append(
+          element("p", { className: "hint" }, "Turn on Policy editing to change downloads."),
+        );
+      }
+      return section;
+    }
+    const submit = element(
+      "button",
+      { type: "submit", className: "button button--primary" },
+      "Allow download",
+    );
+    const form = element(
+      "form",
+      { className: "sandbox-download-form", autocomplete: "off" },
+      element("label", {}, "Hostname", hostname),
+      element("label", {}, "Protocol", protocol),
+      element("label", {}, "Exact archive path (required for shared hosts)", archive),
+      submit,
+    );
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const host = hostname.value.toLowerCase();
+      const d: ProtectedDownloadDestination = {
+        host,
+        ...(archive.value ? { path: archive.value } : {}),
+        ...(protocol.value === "http"
+          ? { scheme: "http", port: 80 }
+          : { scheme: "https", port: 443 }),
+      };
+      changeDownload(
+        canApproveDownloads() && !approved.has(format(d)) ? "approve-and-enable" : "enable",
+        d,
+      );
+    });
+    section.append(
+      element(
+        "p",
+        { className: "hint" },
+        canApproveDownloads()
+          ? "Allow approved download clients to read from this destination. A new approval applies only to this Agent."
+          : "Enable a destination covered by Agent or Installation approval.",
+      ),
+      form,
+    );
+    return section;
+  }
 
   function denied(record: RuntimeLogRecord): record is LogLine {
     return (
@@ -1792,7 +2099,8 @@ export function renderAgentSandboxPolicy(
             element(
               "p",
               { role: "status", className: "sandbox-policy-protected" },
-              "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
+              protectedDownloadNotice() ??
+                "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
             ),
             ...(policy.additions.length > 0 && !editingEnabled
               ? [
@@ -1858,7 +2166,7 @@ export function renderAgentSandboxPolicy(
         ...(apply ? { revisionId } : {}),
         ...(reviewedRules === undefined ? {} : { additions: reviewedRules }),
       },
-    })) as Policy | null;
+    })) as SandboxPolicyMutationWire | null;
     if (
       saved?.id !== policy.id ||
       saved.agentId !== agent.id ||
@@ -1878,7 +2186,13 @@ export function renderAgentSandboxPolicy(
     if (apply && current()) {
       feedback.textContent = `Policy v${saved.version} saved. Application to the current revision is pending. Enforcement is confirmed only after the provider loads this policy.`;
     }
-    return saved;
+    // Ordinary mutations return only the ordinary rules. Keep the separately
+    // read download scopes when updating this already-authorized view.
+    return {
+      ...saved,
+      approvedDownloadDestinations: policy.approvedDownloadDestinations,
+      downloadDestinations: policy.downloadDestinations,
+    };
   }
 
   function applySavedPolicy() {
@@ -1932,7 +2246,11 @@ export function renderAgentSandboxPolicy(
         void policySupported();
         return;
       }
-      if (wasPending && view.policy.application?.state !== "pending") {
+      if (
+        wasPending &&
+        view.policy.application?.state !== "pending" &&
+        !(view.policy.application && "kind" in view.policy.application)
+      ) {
         feedback.textContent = "Policy refreshed.";
         if (view.policy.application?.state === "applied") {
           feedback.textContent = "Policy application confirmed by the Sandbox provider.";
@@ -1989,6 +2307,10 @@ export function renderAgentSandboxPolicy(
   }
 
   function policyEditingExplanation() {
+    const protectedNotice = protectedDownloadNotice();
+    if (protectedNotice) {
+      return [element("p", { className: "hint sandbox-editing-explanation" }, protectedNotice)];
+    }
     if (!view?.editingEnabled) {
       return [
         element(
@@ -2093,6 +2415,13 @@ export function renderAgentSandboxPolicy(
         if (policy.application?.state === "failed") {
           return { label: "Application unconfirmed", tone: "warning" };
         }
+        if (
+          applied &&
+          "operationId" in applied &&
+          (!verifiedHere() || policy.application?.id !== applied.operationId)
+        ) {
+          return { label: "Application unconfirmed", tone: "warning" };
+        }
         if (applied?.policyVersion === policy.version) {
           return { label: "Applied", tone: "success" };
         }
@@ -2180,13 +2509,13 @@ export function renderAgentSandboxPolicy(
             ),
           ),
         ),
-        ...policyEditingExplanation(),
+        ...(view.protectedExecution ? [renderDownloads(view)] : policyEditingExplanation()),
         ...(unknownOutcome
           ? [
               element(
                 "p",
                 { role: "alert" },
-                "The last change could not be confirmed. Open Manage rules and refresh policy before changing access.",
+                "The last change could not be confirmed. Refresh the policy before changing access.",
               ),
             ]
           : []),
@@ -2242,7 +2571,7 @@ export function renderAgentSandboxPolicy(
         text: "The Sandbox confirmed these rules are active. Earlier denials remain in the historical log.",
       };
     }
-    if (outcome) {
+    if (outcome && (!application || !("kind" in application) || unknownOutcome)) {
       const actions = element("div", { className: "sandbox-outcome-actions" });
       if (outcome.title === "Saved for later" && !hasProposedChanges() && canApplySavedPolicy()) {
         actions.append(

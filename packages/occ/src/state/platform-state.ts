@@ -1,3 +1,9 @@
+import {
+  projectProtectedDownloadEdit,
+  protectedDownloadBaselineMatches,
+  protectedDownloadPeerMatches,
+  protectedDownloadScopeCovers,
+} from "../protected-download-policy.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
@@ -15,7 +21,12 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { StoredOAuthClient } from "../ports/oauth-client.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
-import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
+import {
+  validateSandboxNetworkGrants,
+  validProtectedDownloadDestinations,
+  validProtectedDownloadApplication,
+  validProtectedDownloadReceipt,
+} from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
@@ -195,14 +206,224 @@ export interface WorkspaceSetupRepository extends WorkspaceSetupReadRepository {
   delete(namespaceId: string, agentId: string): Promise<boolean>;
 }
 
+/** Private observation inputs. The original work row supplies the Agent, actor and work key. */
+export interface ProtectedDownloadRecovery {
+  readonly version: 1;
+  readonly operationId: string;
+  readonly revisionId: string;
+  readonly policyVersion: number;
+  readonly action: ProtectedApplication["action"];
+  readonly destination: ProtectedApplication["destination"];
+  readonly expected: ProtectedApplication["expected"];
+  readonly previous: ProtectedApplication["previousDownloadDestinations"];
+  readonly desired: ProtectedApplication["desiredDownloadDestinations"];
+  readonly desiredSourcePolicyHash: string;
+  readonly acknowledgedWrite?: NonNullable<ProtectedApplication["acknowledgedWrite"]>;
+  readonly priorConfirmation?: NonNullable<SandboxPolicy["applied"]>;
+}
+
+interface ProtectedDownloadRecoveryOwner {
+  readonly workKey: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly actorId: string;
+}
+
 export interface SandboxPolicyReadRepository {
+  canRetainProtectedDownloadRecovery(policy: SandboxPolicy): Promise<boolean>;
+  protectedDownloadTargetAvailable(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    sandboxId: string,
+    instanceId: string,
+  ): Promise<boolean>;
+  nextProtectedDownloadRecovery(
+    afterWorkKey?: string,
+  ): Promise<ProtectedDownloadRecoveryOwner | undefined>;
+  findProtectedDownloadRecovery(
+    namespaceId: string,
+    agentId: string,
+    workKey: string,
+    actorId?: string,
+  ): Promise<ProtectedDownloadRecovery | undefined>;
   find(namespaceId: string, agentId: string): Promise<Readonly<SandboxPolicy> | undefined>;
 }
 export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
+  retainProtectedDownloadRecovery(policy: SandboxPolicy): Promise<boolean>;
+  clearProtectedDownloadRecovery(
+    namespaceId: string,
+    agentId: string,
+    workKey: string,
+    actorId: string,
+    expected: ProtectedDownloadRecovery,
+  ): Promise<boolean>;
   save(
     policy: SandboxPolicy,
     expectedVersion: number,
+    expectedPendingApplicationId?: string,
   ): Promise<Readonly<SandboxPolicy> | undefined>;
+}
+
+type ProtectedApplication = Extract<
+  NonNullable<SandboxPolicy["application"]>,
+  { kind: "protected_downloads" }
+>;
+
+function sameDownloadTarget(
+  left: ProtectedApplication["expected"],
+  right: ProtectedApplication["expected"],
+) {
+  return (
+    left.sandboxId === right.sandboxId &&
+    left.instanceId === right.instanceId &&
+    left.installationLimitsHash === right.installationLimitsHash &&
+    isDeepStrictEqual(left.peer, right.peer)
+  );
+}
+
+function scopesEqual(left: SandboxPolicy, right: SandboxPolicy) {
+  return (
+    isDeepStrictEqual(left.approvedDownloadDestinations, right.approvedDownloadDestinations) &&
+    isDeepStrictEqual(left.downloadDestinations, right.downloadDestinations)
+  );
+}
+
+function validateDownloadTransition(
+  policy: SandboxPolicy,
+  existing: SandboxPolicy,
+  application: ProtectedApplication,
+  activeProtected: boolean,
+): void {
+  const previous = existing.application;
+  const receipt = policy.applied;
+  const ack = application.acknowledgedWrite;
+  const restored = application.state === "failed" && application.writeState === "prepared";
+  if (
+    (restored &&
+      (!isDeepStrictEqual(
+        policy.downloadDestinations ?? [],
+        application.priorDesiredDownloadDestinations,
+      ) ||
+        !isDeepStrictEqual(
+          policy.approvedDownloadDestinations ?? [],
+          application.priorApprovedDownloadDestinations,
+        ))) ||
+    (application.state === "failed") !== (application.reason !== undefined) ||
+    (application.state === "applied") !== (application.providerVersion !== undefined) ||
+    (ack !== undefined &&
+      (application.writeState !== "dispatched" ||
+        ack.operationId !== application.id ||
+        ack.sandboxId !== application.expected.sandboxId ||
+        ack.sourcePolicyHash !== application.desiredSourcePolicyHash ||
+        ack.policyVersion <= application.expected.policyVersion))
+  ) {
+    throw new ScopeViolationError("Invalid protected download application.");
+  }
+
+  if (policy.version !== existing.version) {
+    // The writer checks Installation delegation. Only entries within the withdrawal
+    // need independent coverage to survive it in either projection.
+    const projection = projectProtectedDownloadEdit(
+      existing,
+      application.previousDownloadDestinations,
+      application,
+      application.action === "withdraw-approval"
+        ? [
+            ...(policy.downloadDestinations ?? []),
+            ...application.desiredDownloadDestinations,
+          ].filter((entry) => protectedDownloadScopeCovers(application.destination, entry))
+        : [application.destination],
+    );
+    const confirmed = existing.applied;
+    const onSameTarget =
+      confirmed?.kind === "protected_downloads" && confirmed.revisionId === application.revisionId;
+    if (
+      !activeProtected ||
+      previous?.state === "pending" ||
+      previous?.id === application.id ||
+      (confirmed?.kind === "protected_downloads" && confirmed.operationId === application.id) ||
+      application.state !== "pending" ||
+      application.writeState !== "prepared" ||
+      !isDeepStrictEqual(
+        application.priorDesiredDownloadDestinations,
+        existing.downloadDestinations ?? [],
+      ) ||
+      !isDeepStrictEqual(
+        application.priorApprovedDownloadDestinations,
+        existing.approvedDownloadDestinations ?? [],
+      ) ||
+      projection.status !== "changed" ||
+      !isDeepStrictEqual(application.desiredDownloadDestinations, projection.target) ||
+      !scopesEqual(policy, projection.policy) ||
+      !isDeepStrictEqual(policy.additions, existing.additions) ||
+      !isDeepStrictEqual(
+        application.previousDownloadDestinations,
+        onSameTarget ? confirmed.confirmedDownloadDestinations : [],
+      ) ||
+      (onSameTarget && !protectedDownloadBaselineMatches(application.expected, confirmed.fence))
+    ) {
+      throw new ScopeViolationError("Invalid protected download admission.");
+    }
+    return;
+  }
+
+  if (previous?.kind !== "protected_downloads" || previous.id !== application.id) {
+    throw new ScopeViolationError("Protected download work requires a fresh policy version.");
+  }
+  const {
+    state,
+    writeState,
+    acknowledgedWrite,
+    reason: _reason,
+    providerVersion,
+    ...inputs
+  } = application;
+  const {
+    state: _priorState,
+    writeState: _priorWriteState,
+    acknowledgedWrite: _priorAck,
+    reason: _priorReason,
+    providerVersion: _priorProviderVersion,
+    ...priorInputs
+  } = previous;
+  if (!isDeepStrictEqual(inputs, priorInputs)) {
+    throw new ScopeViolationError("Protected download application inputs are immutable.");
+  }
+  if (
+    (previous.state !== "pending" && !isDeepStrictEqual(application, previous)) ||
+    (previous.writeState === "dispatched" && writeState !== "dispatched" && !restored) ||
+    (previous.acknowledgedWrite !== undefined &&
+      !isDeepStrictEqual(acknowledgedWrite, previous.acknowledgedWrite)) ||
+    (previous.writeState === "prepared" &&
+      writeState === "dispatched" &&
+      (!activeProtected || state !== "pending" || acknowledgedWrite !== undefined))
+  ) {
+    throw new ScopeViolationError("Invalid protected download write transition.");
+  }
+  if (
+    state === "applied" &&
+    ((previous.state === "pending" && !activeProtected) ||
+      previous.writeState !== "dispatched" ||
+      receipt?.kind !== "protected_downloads" ||
+      !validProtectedDownloadReceipt(receipt) ||
+      receipt.operationId !== application.id ||
+      !isDeepStrictEqual(
+        receipt.confirmedDownloadDestinations,
+        application.desiredDownloadDestinations,
+      ) ||
+      !sameDownloadTarget(receipt.fence, application.expected) ||
+      receipt.fence.providerResourceVersion === application.expected.providerResourceVersion ||
+      receipt.fence.policyVersion <= application.expected.policyVersion ||
+      providerVersion !== String(receipt.fence.policyVersion) ||
+      ack === undefined ||
+      ack.policyVersion !== receipt.fence.policyVersion ||
+      ack.sourcePolicyHash !== receipt.fence.sourcePolicyHash)
+  ) {
+    throw new ScopeViolationError(
+      "Protected download confirmation requires matching post-update evidence.",
+    );
+  }
 }
 
 export interface AgentReadRepository {
@@ -3228,17 +3449,35 @@ function repositories(
   };
 
   const sandboxPolicies: SandboxPolicyRepository = {
+    // This adapter records enqueue intent only. It cannot attest a terminal writer fence.
+    canRetainProtectedDownloadRecovery: async () => false,
+    retainProtectedDownloadRecovery: async () => false,
+    nextProtectedDownloadRecovery: async () => undefined,
+    findProtectedDownloadRecovery: async () => undefined,
+    clearProtectedDownloadRecovery: async () => false,
+    protectedDownloadTargetAvailable: async () => true,
     find: async (namespaceId, agentId) => {
       const value = snapshot.sandboxPolicies.get(agentKey(namespaceId, agentId));
       return value === undefined ? undefined : immutableCopy(value);
     },
-    save: async (policy, expectedVersion) => {
+    save: async (policy, expectedVersion, expectedPendingApplicationId) => {
       const key = agentKey(policy.namespaceId, policy.agentId);
       const existing = snapshot.sandboxPolicies.get(key);
-      if (existing === undefined || existing.version !== expectedVersion) {
+      if (
+        existing === undefined ||
+        existing.version !== expectedVersion ||
+        (expectedPendingApplicationId !== undefined &&
+          (existing.application?.id !== expectedPendingApplicationId ||
+            existing.application.state !== "pending"))
+      ) {
         return undefined;
       }
       validateSandboxNetworkGrants(policy.additions);
+      for (const scopes of [policy.approvedDownloadDestinations, policy.downloadDestinations]) {
+        if (scopes !== undefined && !validProtectedDownloadDestinations(scopes)) {
+          throw new ScopeViolationError("Invalid protected download destinations.");
+        }
+      }
       if (
         !snapshot.agents.has(key) ||
         existing.id !== policy.id ||
@@ -3252,11 +3491,28 @@ function repositories(
       }
       const application = policy.application;
       const previousApplication = existing.application;
+      const versionChanged = policy.version !== existing.version;
+      const protectedEdit = application?.kind === "protected_downloads";
+      const sameApplication =
+        application !== undefined && application.id === previousApplication?.id;
       if (
-        (policy.version === existing.version &&
-          !isDeepStrictEqual(policy.additions, existing.additions)) ||
-        (policy.version !== existing.version &&
-          (previousApplication?.state === "pending" || application !== undefined))
+        (!versionChanged &&
+          (!isDeepStrictEqual(policy.additions, existing.additions) ||
+            (!(
+              protectedEdit &&
+              application.state === "failed" &&
+              application.writeState === "prepared"
+            ) &&
+              !scopesEqual(policy, existing)))) ||
+        (versionChanged &&
+          (previousApplication?.state === "pending" ||
+            (!protectedEdit && (application !== undefined || !scopesEqual(policy, existing))))) ||
+        (!versionChanged && previousApplication !== undefined && application === undefined) ||
+        (previousApplication?.kind === "protected_downloads" &&
+          ((previousApplication.state === "failed" &&
+            previousApplication.writeState === "dispatched") ||
+            (!versionChanged && !sameApplication)) &&
+          !isDeepStrictEqual(application, previousApplication))
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy version transition.");
       }
@@ -3264,15 +3520,44 @@ function repositories(
         const revision = (snapshot.revisions.get(key) ?? []).find(
           ({ id }) => id === application.revisionId,
         );
-        if (
-          revision === undefined ||
-          application.policyVersion !== policy.version ||
-          application.snapshot.version !== policy.version ||
+        if (revision === undefined || application.policyVersion !== policy.version) {
+          throw new ScopeViolationError("Invalid SandboxPolicy application ownership or version.");
+        }
+        if (application.kind === "protected_downloads") {
+          if (!validProtectedDownloadApplication(application)) {
+            throw new ScopeViolationError("Invalid protected download application.");
+          }
+          const installed = await credentialSources.findRevisionEgressInstallation(
+            policy.namespaceId,
+            revision.id,
+          );
+          const baseline =
+            existing.applied?.kind !== "protected_downloads" ||
+            existing.applied.revisionId !== revision.id;
+          validateDownloadTransition(
+            policy,
+            existing,
+            application,
+            revision.executionAdmission.mode === "protected" &&
+              snapshot.agents.get(key)?.activeRevisionId === revision.id &&
+              installed !== undefined &&
+              isDeepStrictEqual(installed.plan, revision.egressPlan) &&
+              application.expected.sandboxId === installed.sandboxId &&
+              application.expected.instanceId === installed.enforcement.instanceId &&
+              protectedDownloadPeerMatches(installed, application.expected.peer) &&
+              (!versionChanged ||
+                !baseline ||
+                (application.expected.configurationId === installed.enforcement.configurationId &&
+                  application.expected.effectivePolicyHash === installed.enforcement.policyHash &&
+                  application.expected.policyVersion === installed.plan.generation)),
+          );
+        } else if (
+          Object.hasOwn(application, "kind") ||
+          application.snapshot?.version !== policy.version ||
           !isDeepStrictEqual(application.snapshot.additions, policy.additions)
         ) {
           throw new ScopeViolationError("Invalid SandboxPolicy application ownership or snapshot.");
-        }
-        if (application.id === previousApplication?.id) {
+        } else if (application.id === previousApplication?.id) {
           const {
             state: _state,
             expectedProviderVersion: _expected,
@@ -3308,6 +3593,11 @@ function repositories(
       if (
         !isDeepStrictEqual(policy.applied, existing.applied) &&
         (application?.state !== "applied" ||
+          previousApplication?.state !== "pending" ||
+          !sameApplication ||
+          policy.applied === undefined ||
+          policy.applied.kind !== application.kind ||
+          (policy.applied.kind === undefined && Object.hasOwn(policy.applied, "kind")) ||
           policy.applied?.policyVersion !== application.policyVersion ||
           policy.applied?.revisionId !== application.revisionId ||
           policy.applied?.providerVersion !== application.providerVersion)
@@ -4347,6 +4637,22 @@ function repositories(
             );
           }
           return;
+        }
+        if (operation.kind === "agent" && operation.target === "sandbox_policy") {
+          const policy = snapshot.sandboxPolicies.get(
+            agentKey(operation.namespaceId, operation.resourceId),
+          );
+          if (
+            policy?.application?.kind === "protected_downloads" &&
+            (policy.application.state !== "pending" ||
+              policy.application.id !== operation.operationId ||
+              policy.application.requestedBy !== operation.actorId ||
+              policy.application.policyVersion !== policy.version)
+          ) {
+            throw new ScopeViolationError(
+              "Protected download work requires its exact pending application and actor.",
+            );
+          }
         }
         snapshot.operations.push(immutableCopy(operation));
       },

@@ -6317,3 +6317,37 @@ html:has(#create-agent-form) {
     min-height: 300px;
   }
 }
+
+.sandbox-downloads {
+  border-top: 1px solid var(--color-border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+.sandbox-downloads h3 {
+  margin: 0;
+}
+.sandbox-download-form,
+.sandbox-download-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.sandbox-download-form label {
+  display: grid;
+  gap: 0.25rem;
+}
+.sandbox-download-row {
+  align-items: center;
+  margin-block: 0.5rem;
+}
+.sandbox-download-row strong {
+  overflow-wrap: anywhere;
+}
+.sandbox-download-form input {
+  box-sizing: border-box;
+  min-height: 2.5rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}

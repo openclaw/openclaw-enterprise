@@ -14,7 +14,11 @@ import {
   DriverConfigurationRegistry,
   type DriverConfigurationRegistration,
 } from "@openclaw-enterprise/occ";
-import { reconcileSandboxPolicy, failAbandonedSandboxPolicies } from "./worker/sandbox-policy.ts";
+import {
+  reconcileSandboxPolicy,
+  failAbandonedSandboxPolicies,
+  settleOriginalProtectedDownload,
+} from "./worker/sandbox-policy.ts";
 import { timerDelayMs } from "./worker/timer-settings.ts";
 import {
   isSecretHarnessAuth,
@@ -1173,6 +1177,7 @@ export class ControllerWorker {
   private readonly state: PostgresPlatformState;
   private readonly driverConfigurations: readonly DriverConfigurationRegistration[];
   private readonly configurations = new DriverConfigurationRegistry();
+  private readonly protectedDownloads: InstallationRuntimeDrivers["installation"]["protectedDownloads"];
   private readonly policyCeiling: readonly import("@openclaw-enterprise/contracts").SandboxNetworkGrant[];
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
@@ -1193,6 +1198,8 @@ export class ControllerWorker {
   private connectionRevocationScanAfter = 0;
   private connectionMaintenance: Promise<void> | undefined;
   private nextClientCleanup = 0;
+  private nextProtectedDownloadRecovery = 0;
+  private protectedDownloadRecoveryCursor: string | undefined;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
@@ -1278,6 +1285,7 @@ export class ControllerWorker {
     for (const definition of this.driverConfigurations) {
       this.configurations.register(definition);
     }
+    this.protectedDownloads = drivers?.installation.protectedDownloads;
     this.policyCeiling = drivers?.installation.sandboxNetworkPolicyCeiling ?? [];
     this.configuredServiceAccountDriverId = drivers?.installation.drivers.service_account?.id;
     this.nativeWorkerSupport = drivers?.installation.runtime?.nativeWorkerSupport;
@@ -1452,6 +1460,7 @@ export class ControllerWorker {
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
       preparedTokens: this.preparedTokens,
       state: this.state,
+      ...(this.protectedDownloads && { protectedDownloads: this.protectedDownloads }),
       sandboxNetworkPolicyCeiling: this.policyCeiling,
       driverConfigurations: this.driverConfigurations,
       backends: this.backends,
@@ -1575,6 +1584,7 @@ export class ControllerWorker {
           this.claimedPassesSinceSweep = 0;
           await this.withdrawPendingHarnessExposure();
           await this.sweepConnectionRevocation();
+          await this.reconcileOriginalProtectedDownload();
           if (Date.now() >= this.nextClientCleanup) {
             this.nextClientCleanup = Date.now() + 30_000;
             await this.provisioningController?.cleanupOAuthClients();
@@ -1755,6 +1765,35 @@ export class ControllerWorker {
           throw error;
         }
       }
+    }
+  }
+
+  private async reconcileOriginalProtectedDownload(): Promise<void> {
+    if (
+      !this.protectedDownloads ||
+      !this.protectedDriver ||
+      Date.now() < this.nextProtectedDownloadRecovery
+    ) {
+      return;
+    }
+    this.nextProtectedDownloadRecovery = Date.now() + 30_000;
+    const work = await this.state.read((view) =>
+      view.sandboxPolicies.nextProtectedDownloadRecovery(this.protectedDownloadRecoveryCursor),
+    );
+    this.protectedDownloadRecoveryCursor = work?.workKey;
+    if (work) {
+      await settleOriginalProtectedDownload(
+        {
+          state: this.state,
+          compute: this.compute,
+          iam: this.iam,
+          installationId: this.installation!.id,
+          protectedDownloads: this.protectedDownloads,
+          protectedDriver: this.protectedDriver,
+          signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
+        },
+        work,
+      );
     }
   }
 
@@ -2677,6 +2716,8 @@ export class ControllerWorker {
           iam: this.iam,
           installationId: this.installation!.id,
           ceiling: this.policyCeiling,
+          ...(this.protectedDownloads && { protectedDownloads: this.protectedDownloads }),
+          ...(this.protectedDriver && { protectedDriver: this.protectedDriver }),
           configurations: this.configurations,
           signal: this.abort.signal,
           maxAttempts: this.maxAttempts,

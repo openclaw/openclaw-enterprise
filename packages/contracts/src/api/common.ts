@@ -1031,6 +1031,7 @@ export const ERROR_CODES = Object.freeze([
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
   "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
   "CREDENTIAL_TOKEN_UNSETTLED",
+  "SANDBOX_POLICY_DOWNLOAD_UNCHANGED",
   "SANDBOX_POLICY_PROTECTED_EXECUTION",
   "REPOSITORY_GIT_SENDER_UNQUALIFIED",
   "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
@@ -1121,6 +1122,7 @@ export const ErrorResponse = Type.Object(
             description:
               "A provider token issued for the source may still be valid after a lost issue or revocation outcome; retry the deletion after the time in the message.",
           }),
+          Type.Literal("SANDBOX_POLICY_DOWNLOAD_UNCHANGED"),
           Type.Literal("SANDBOX_POLICY_PROTECTED_EXECUTION", {
             description:
               "Protected execution keeps only its Credential Proxy egress policy: Agent network policy additions are refused at save and deploy while the running or next revision is protected, and live application to a protected revision is refused.",

@@ -114,6 +114,31 @@ interface WorkRow {
   readonly updated_at: Date | string;
 }
 
+// Keep private reconciliation payloads on their owning row, outside ordinary queue reads.
+const workColumns = (alias: string) =>
+  [
+    "work_kind",
+    "idempotency_key",
+    "namespace_id",
+    "agent_id",
+    "revision_id",
+    "actor_id",
+    "namespace_target",
+    "agent_target",
+    "state",
+    "available_at",
+    "attempt_count",
+    "claim_token",
+    "lease_expires_at",
+    "completed_at",
+    "reason_code",
+    "result_data",
+    "created_at",
+    "updated_at",
+  ]
+    .map((column) => `${alias}.${column}`)
+    .join(", ");
+
 /** The work's age on PostgreSQL's clock, for a claim or renewal to return. */
 const CLAIM_AGE_SQL = (alias: string) =>
   `GREATEST(0, EXTRACT(EPOCH FROM clock_timestamp() - ${alias}.created_at) * 1000)::double precision AS age_ms`;
@@ -852,7 +877,7 @@ export class PostgresWorkQueue {
          clock_timestamp(), clock_timestamp()
        )
        ON CONFLICT (idempotency_key) DO NOTHING
-       RETURNING *`,
+       RETURNING ${workColumns("controller_work")}`,
       [
         kind,
         idempotencyKey,
@@ -871,7 +896,7 @@ export class PostgresWorkQueue {
     }
 
     const existing = await this.client.query(
-      `SELECT *,
+      `SELECT ${workColumns("controller_work")},
           namespace_id IS DISTINCT FROM $2::text
           OR agent_id IS DISTINCT FROM $3::text
           OR revision_id IS DISTINCT FROM $4::text
@@ -934,7 +959,7 @@ export class PostgresWorkQueue {
     );
     const result = await this.client.query(
       `WITH source AS MATERIALIZED (
-         SELECT * FROM occ.controller_work AS work
+         SELECT ${workColumns("work")} FROM occ.controller_work AS work
          WHERE work.idempotency_key = $1 AND work.claim_token = $2::uuid
            AND work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()
          FOR UPDATE OF work
@@ -995,7 +1020,7 @@ export class PostgresWorkQueue {
              AND attempt.revision_id = owner.revision_id AND attempt.phase IN ('closing', 'invalidated')
          ))
          ${CLEANUP_CONFLICT_SQL}
-         RETURNING *
+         RETURNING ${workColumns("controller_work")}
        )
        SELECT EXISTS (SELECT 1 FROM source) AS claim_current,
          EXISTS (SELECT 1 FROM owner) AS owner_allowed,
@@ -1052,7 +1077,7 @@ export class PostgresWorkQueue {
                updated_at = clock_timestamp()
            FROM candidate
            WHERE work.idempotency_key = candidate.idempotency_key
-           RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
+           RETURNING ${workColumns("work")}, ${CLAIM_AGE_SQL("work")}`,
           [claimToken, this.maxAttempts, this.leaseDurationMs],
         );
         return claimed.rows[0] === undefined ? undefined : asClaimedWork(claimed.rows[0]);
@@ -1079,7 +1104,7 @@ export class PostgresWorkQueue {
          AND state = 'claimed'
          AND claim_token = $2::uuid
          AND lease_expires_at > clock_timestamp()
-       RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
+       RETURNING ${workColumns("work")}, ${CLAIM_AGE_SQL("work")}`,
       [claim.idempotencyKey, claim.claimToken, this.leaseDurationMs],
     );
     return renewed.rows[0] === undefined ? undefined : asClaimedWork(renewed.rows[0]);
@@ -1129,7 +1154,7 @@ export class PostgresWorkQueue {
 
   async findWork(idempotencyKey: string): Promise<ControllerWork | undefined> {
     const found = await this.client.query(
-      `SELECT *, state = 'claimed' AND lease_expires_at > clock_timestamp() AS lease_active
+      `SELECT ${workColumns("controller_work")}, state = 'claimed' AND lease_expires_at > clock_timestamp() AS lease_active
        FROM occ.controller_work WHERE idempotency_key = $1`,
       [nonempty(idempotencyKey, "Controller work idempotency key")],
     );
@@ -1288,7 +1313,7 @@ export class PostgresWorkQueue {
            AND state = 'claimed'
            AND claim_token = $2::uuid
            AND lease_expires_at > clock_timestamp()
-         RETURNING *
+         RETURNING ${workColumns("controller_work")}
        ), ${INSERT_EVIDENCE_SQL}`,
       [
         claim.idempotencyKey,
@@ -1365,7 +1390,7 @@ export class PostgresWorkQueue {
            AND state = 'claimed'
            AND claim_token = $2::uuid
            AND lease_expires_at > clock_timestamp()
-         RETURNING *
+         RETURNING ${workColumns("controller_work")}
        ), ${INSERT_DEFER_EVIDENCE_SQL}`,
       [
         claim.idempotencyKey,
@@ -1420,7 +1445,7 @@ export class PostgresWorkQueue {
            AND state = 'claimed'
            AND claim_token = $2::uuid
            AND lease_expires_at > clock_timestamp()
-         RETURNING *
+         RETURNING ${workColumns("work")}
        ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
       [
@@ -1463,7 +1488,7 @@ export class PostgresWorkQueue {
     // the worker does, or this deadlocks with admission's Namespace-then-Agent order.
     const failed = await this.client.query(
       `WITH source AS MATERIALIZED (
-         SELECT * FROM occ.controller_work AS work
+         SELECT ${workColumns("work")} FROM occ.controller_work AS work
          WHERE work.idempotency_key = $1 AND work.state = 'claimed'
            AND work.claim_token = $2::uuid AND work.lease_expires_at > clock_timestamp()
          FOR UPDATE OF work
@@ -1506,7 +1531,7 @@ export class PostgresWorkQueue {
          FROM eligible
          WHERE work.idempotency_key = eligible.idempotency_key
            AND work.lease_expires_at > clock_timestamp()
-         RETURNING work.*
+         RETURNING ${workColumns("work")}
        ), ${transferRepositoryCleanupSql("$7::boolean", "source.reason_code = 'REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED'")} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_CTE_SQL}
        SELECT EXISTS (SELECT 1 FROM source) AS claim_current,
@@ -1593,7 +1618,7 @@ export class PostgresWorkQueue {
              updated_at = clock_timestamp()
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
-         RETURNING work.*
+         RETURNING ${workColumns("work")}
        ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
        ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL, "true")}
        ${SETTLE_PROVISIONING_FAILURE_SQL}
@@ -1647,7 +1672,7 @@ export class PostgresWorkQueue {
              updated_at = clock_timestamp()
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
-         RETURNING work.*
+         RETURNING ${workColumns("work")}
        ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
        ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL, "true")}
        ${SETTLE_PROVISIONING_FAILURE_SQL}

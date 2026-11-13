@@ -4,6 +4,8 @@ import type { TestContext } from "node:test";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
+  CredentialProxyDriver,
+  SandboxDriver,
   SandboxPolicySnapshot,
   ProxyRevisionContext,
 } from "../../packages/contracts/src/index.ts";
@@ -11,6 +13,7 @@ import {
   openShellEgressConfiguration,
   OpenShellCredentialProxyDriver,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { openShellProtectedCodexArtifacts } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { openShellGitRuntimeFixture } from "../helpers/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -18,6 +21,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { OpenShellNetworkPolicyRule } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import type { OpenShellSandboxDeleteRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
 const native =
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
@@ -400,4 +404,293 @@ test("paired observation rejects changed, missing or extra artifact rules before
     }),
     /unavailable for protected execution/,
   );
+});
+
+test("ordinary OpenShell policy observation cannot confirm a protected revision", async (t) => {
+  const backend = newBackend();
+  const driver = sandbox(t, [artifact()], [artifact().name], backend);
+  const snapshot = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
+  const revision = protectedRevision(snapshot);
+  const namespace = {
+    id: revision.namespaceId,
+    name: "artifact",
+    status: "ready" as const,
+    createdAt: revision.createdAt,
+  };
+  const context = { namespace, revision, signal: AbortSignal.timeout(2_000) };
+  const policy = { network_policies: snapshot.defaults };
+  const client = backend.client.clientForNamespace(namespace.name);
+  const target = t.mock.method(
+    client,
+    "getSandbox",
+    async ({ name, workspace }: OpenShellSandboxDeleteRequest) => ({
+      name,
+      workspace,
+      resourceVersion: "9",
+      labels: {},
+      annotations: {
+        "openclaw.dev/namespace-id": namespace.id,
+        "openclaw.dev/agent-id": revision.agentId,
+        "openclaw.dev/revision-id": revision.id,
+      },
+      spec: { policy },
+      serviceUrls: {},
+    }),
+  );
+  const status = t.mock.fn(async () => ({
+    version: 7,
+    activeVersion: 7,
+    state: "POLICY_STATUS_LOADED",
+    policy,
+  }));
+  client.getPolicyStatus = status;
+
+  const ordinaryRevision = {
+    ...revision,
+    executionAdmission: { version: 2, mode: "unprotected" } as const,
+  };
+  delete ordinaryRevision.egressPlan;
+  assert.deepEqual(
+    await driver.observeNetworkPolicy({ ...context, revision: ordinaryRevision }, snapshot),
+    { resourceVersion: "9", policyVersion: "7", state: "applied", matches: true },
+  );
+  assert.equal(target.mock.callCount(), 1);
+  assert.equal(status.mock.callCount(), 1);
+
+  await assert.rejects(
+    driver.observeNetworkPolicy(context, snapshot),
+    /Live policy observation is unavailable for protected execution/,
+  );
+  assert.equal(target.mock.callCount(), 1, "protected observation never reads the Sandbox");
+  assert.equal(status.mock.callCount(), 1, "protected observation never queries ordinary status");
+});
+
+test("OpenShell confirms only the same owned Sandbox and leaves live protected downloads unavailable", async (t) => {
+  const backend = newBackend();
+  const driver = sandbox(t, [artifact()], [artifact().name], backend);
+  const revision = protectedRevision(driver.admitProtectedCodexArtifactPolicy(1).snapshot);
+  const options = { middlewareName: "artifact-exchange", authorityScope: "execution" } as const;
+  const proxy = new OpenShellCredentialProxyDriver(options, {
+    id: driver.id,
+    backend,
+    sandbox: driver,
+  });
+  assert.equal((driver as SandboxDriver).protectedDownloadPolicy, undefined);
+  assert.equal((proxy as CredentialProxyDriver).protectedDownloadPolicy, undefined);
+
+  // This fixture uses the existing protected supervisor path without a Git recipient.
+  const plan = { ...revision.egressPlan! };
+  delete plan.repositoryGit;
+  delete plan.repositoryGitAuthorization;
+  const namespace = {
+    id: revision.namespaceId,
+    name: "artifact",
+    status: "ready" as const,
+    createdAt: revision.createdAt,
+  };
+  const runtimeRevision = { ...revision, egressPlan: plan };
+  delete runtimeRevision.repositoryCredentials;
+  delete runtimeRevision.sandboxPolicy;
+  const context = {
+    namespace,
+    revision: runtimeRevision,
+    plan,
+    signal: AbortSignal.timeout(5_000),
+  };
+  const configuration = openShellEgressConfiguration(plan, options, context.revision);
+  const policy = { ...configuration, filesystem: { read_only: ["/usr"] } };
+  const client = backend.client.clientForNamespace(namespace.name);
+  const discovery = backend.client.clientForNamespace("");
+  discovery.getGatewayInfo = async () => ({
+    extensions: [
+      {
+        configured_name: options.middlewareName,
+        kind: "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE",
+        protocol_major: 1,
+        supported_capabilities: [...openShellExchangeCapabilities],
+        required_capabilities: [...openShellExchangeCapabilities],
+      },
+    ],
+  });
+  const hash = "a".repeat(64);
+  const boxId = "sandbox-original";
+  const evidence = {
+    sandbox_id: boxId,
+    instance_id: "8b6023fe-c1c7-4c6f-8c0f-a4b8596d2437",
+    policy_version: plan.generation,
+    policy_hash: hash,
+    enforced_capabilities: [...openShellExchangeCapabilities],
+  };
+  let sandboxId: string | undefined = boxId;
+  let resourceVersion: string | undefined = "9";
+  let replacement = false;
+  let metadataChurn = false;
+  let instanceId = evidence.instance_id;
+  let observedStatus = false;
+  client.getSandbox = async ({ name, workspace }) => {
+    const id = observedStatus && replacement ? "sandbox-successor" : sandboxId;
+    const cas = observedStatus && metadataChurn ? "10" : resourceVersion;
+    return {
+      ...(id === undefined ? {} : { id }),
+      ...(cas === undefined ? {} : { resourceVersion: cas }),
+      name,
+      workspace,
+      labels: {},
+      annotations: {
+        "openclaw.dev/namespace-id": namespace.id,
+        "openclaw.dev/agent-id": revision.agentId,
+        "openclaw.dev/revision-id": revision.id,
+      },
+      serviceUrls: {},
+    };
+  };
+  client.getSandboxPolicyStatus = async () => {
+    observedStatus = true;
+    return {
+      active_version: plan.generation,
+      revision: {
+        version: plan.generation,
+        status: "POLICY_STATUS_LOADED",
+        policy_hash: hash,
+        policy,
+      },
+      loaded_policy_observation: {
+        source_policy_hash: hash,
+        effective_policy: policy,
+        enforcement: { ...evidence, instance_id: instanceId },
+        registered_exchange_public_key: Buffer.alloc(32, 1),
+      },
+    };
+  };
+  const installed = await proxy.wiringStatus(context, { plan, configuration: policy });
+  assert.ok(installed);
+  assert.equal(installed.enforcement.policyHash, hash);
+  assert.equal(installed.sandboxId, boxId);
+  assert.equal(await proxy.verifyInstallation(context, installed), true);
+
+  instanceId = "8b6023fe-c1c7-4c6f-8c0f-a4b8596d2438";
+  assert.equal(
+    await proxy.verifyInstallation(context, installed),
+    false,
+    "a new supervisor invalidates the old witness",
+  );
+  instanceId = evidence.instance_id;
+  await t.test("replacement with the same CAS invalidates confirmation", async () => {
+    observedStatus = false;
+    replacement = true;
+    assert.equal(await proxy.verifyInstallation(context, installed), false);
+    replacement = false;
+  });
+  await t.test("metadata-only CAS churn requires a stable later observation", async () => {
+    observedStatus = false;
+    metadataChurn = true;
+    assert.equal(await proxy.verifyInstallation(context, installed), false);
+    metadataChurn = false;
+    resourceVersion = "10";
+    assert.equal(await proxy.verifyInstallation(context, installed), true);
+  });
+  for (const [label, cas] of [
+    ["omitted", undefined],
+    ["zero", "0"],
+    ["invalid", "18446744073709551616"],
+  ] as const) {
+    await t.test(`${label} CAS cannot confirm the same Sandbox`, async () => {
+      resourceVersion = cas;
+      assert.equal(await proxy.wiringStatus(context, { plan, configuration: policy }), undefined);
+      assert.equal(await proxy.verifyInstallation(context, installed), false);
+    });
+  }
+  resourceVersion = "10";
+  await t.test("missing immutable identity cannot confirm installation", async () => {
+    sandboxId = undefined;
+    assert.equal(await proxy.wiringStatus(context, { plan, configuration: policy }), undefined);
+    assert.equal(await proxy.verifyInstallation(context, installed), false);
+  });
+});
+
+test("stable Sandbox identity and CAS preserve the protected Git recipient witness", async (t) => {
+  const backend = newBackend();
+  const driver = sandbox(t, [artifact()], [artifact().name], backend);
+  const revision = protectedRevision(driver.admitProtectedCodexArtifactPolicy(1).snapshot);
+  const plan = { ...revision.egressPlan!, repositoryGitAuthorization: "online-request" } as const;
+  const namespace = {
+    id: revision.namespaceId,
+    name: "artifact",
+    status: "ready" as const,
+    createdAt: revision.createdAt,
+  };
+  const context = {
+    namespace,
+    revision: { ...revision, egressPlan: plan },
+    plan,
+    signal: t.signal,
+  };
+  const options = {
+    middlewareName: "artifact-exchange",
+    repositoryMiddlewareName: "prepared-git",
+    authorityScope: "execution",
+  } as const;
+  const sandboxId = "protected-git-sandbox";
+  const witness = {
+    instanceId: "git-network",
+    policyHash: "b".repeat(64),
+    authorityScope: "execution",
+    configurationId: "c".repeat(64),
+    repositoryGitRecipient: {
+      providerId: "git-provider",
+      attachmentEpoch: "git-epoch",
+      processInstanceId: "git-process",
+      networkInstanceId: "git-network",
+      authorization: "online-request",
+    },
+  } as const;
+  const observe = t.mock.fn(async (_context: ProxyRevisionContext, id: string) =>
+    id === sandboxId ? witness : undefined,
+  );
+  const proxy = new OpenShellCredentialProxyDriver(options, {
+    id: driver.id,
+    backend,
+    sandbox: driver,
+    mandatoryEnforcement: observe,
+  });
+  const configuration = openShellEgressConfiguration(plan, options, context.revision);
+  const client = backend.client.clientForNamespace(namespace.name);
+  backend.client.clientForNamespace("").getGatewayInfo = async () => ({
+    extensions: [
+      {
+        configured_name: options.repositoryMiddlewareName,
+        kind: "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE",
+        protocol_major: 1,
+      },
+    ],
+  });
+  client.getSandbox = async ({ name, workspace }) => ({
+    id: sandboxId,
+    name,
+    workspace,
+    resourceVersion: "18446744073709551615",
+    labels: {},
+    annotations: {
+      "openclaw.dev/namespace-id": namespace.id,
+      "openclaw.dev/agent-id": revision.agentId,
+      "openclaw.dev/revision-id": revision.id,
+    },
+    serviceUrls: {},
+  });
+  client.getSandboxPolicyStatus = async () => ({
+    active_version: plan.generation,
+    revision: {
+      version: plan.generation,
+      status: "POLICY_STATUS_LOADED",
+      policy: configuration,
+    },
+  });
+
+  // The selected Git runtime is the witness producer. Exercise the real Proxy's
+  // installation and revalidation without substituting its observation decisions.
+  const installed = await proxy.wiringStatus(context, { plan, configuration });
+  assert.ok(installed);
+  assert.deepEqual(installed.enforcement.repositoryGitRecipient, witness.repositoryGitRecipient);
+  assert.equal(await proxy.verifyInstallation(context, installed), true);
+  assert.equal(observe.mock.callCount(), 2);
 });

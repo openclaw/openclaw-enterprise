@@ -86,6 +86,55 @@ Policies are created and removed with the Agent; there is no standalone
 create/delete or policy-reference API. Exact policy AccessBindings and
 Restrictions are removed with their policy.
 
+## Downloads on a running protected Agent
+
+This control requires Installation-level editing limits and a Sandbox and
+Credential Proxy pair that can confirm the effective download rules on the
+running revision. Stock OpenShell 0.1.8 reports that the pair lacks this
+capability.
+
+Open the Agent’s **Network policy**, turn on policy editing, and find **Downloads**.
+An Installation administrator can enter a new domain and choose **Allow download**.
+The default is HTTPS on port 443. For a shared archive host, enter the exact object
+path. Plain HTTP on port 80 is available only for a mirror explicitly named by the
+Installation operator. Keep the package manager’s signature and checksum checks enabled.
+
+Wait for confirmation on the current revision, then use the download in the existing
+shell. If the connection drops while saving, refresh the policy to see whether OCE
+accepted the operation. The card distinguishes the desired destinations from those the
+running Sandbox has confirmed. Disabling a destination stops new connections after
+confirmation. Withdrawing its approval also removes the per-Agent delegation.
+
+The Installation’s `protectedDownloads` settings select eligible download executables,
+reserved hosts, HTTP mirrors and exact objects on shared hosts. An administrator can
+add an eligible HTTPS hostname to one Agent in the Console without editing that
+Installation configuration. Delegated editors can enable or disable destinations
+within their approved scope.
+
+After a revision replacement, the Agent keeps its saved destinations and
+approvals. **Off on this revision** means the running replacement has not
+enabled that destination. Choose **Enable** to allow that destination alone,
+or **Remove from desired** to remove it from the Agent’s saved list.
+
+API clients use the existing networking `apply` endpoint. For example, an
+administrator who just read policy version 3 can submit the following body,
+using the active revision ID returned by the service.
+
+```json
+{
+  "expectedVersion": 3,
+  "revisionId": "rev_11111111-1111-4111-8111-111111111111",
+  "downloadChange": {
+    "action": "approve-and-enable",
+    "destination": { "scheme": "https", "host": "registry.npmjs.org", "port": 443 }
+  }
+}
+```
+
+HTTP 202 means the change was queued. Read the policy again to see whether
+the current revision confirmed it. After a version conflict, read the latest
+version and review the requested change before submitting it again.
+
 ## Desired and applied versions
 
 Saving additions requires `expectedVersion` and advances the desired policy

@@ -1119,6 +1119,7 @@
                     "description": "A provider token issued for the source may still be valid after a lost issue or revocation outcome; retry the deletion after the time in the message.",
                     "type": "string"
                   },
+                  { "const": "SANDBOX_POLICY_DOWNLOAD_UNCHANGED", "type": "string" },
                   {
                     "const": "SANDBOX_POLICY_PROTECTED_EXECUTION",
                     "description": "Protected execution keeps only its Credential Proxy egress policy: Agent network policy additions are refused at save and deploy while the running or next revision is protected, and live application to a protected revision is refused.",
@@ -30639,62 +30640,336 @@
                               "type": "string"
                             },
                             "application": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "id": { "format": "uuid", "type": "string" },
-                                "policyVersion": {
-                                  "maximum": 2147483647,
-                                  "minimum": 1,
-                                  "type": "integer"
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": { "format": "uuid", "type": "string" },
+                                    "policyVersion": {
+                                      "maximum": 2147483647,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "providerVersion": { "type": "string" },
+                                    "reason": { "type": "string" },
+                                    "requestedAt": { "type": "string" },
+                                    "requestedBy": { "type": "string" },
+                                    "revisionId": {
+                                      "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "state": {
+                                      "anyOf": [
+                                        { "const": "pending", "type": "string" },
+                                        { "const": "applied", "type": "string" },
+                                        { "const": "failed", "type": "string" }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "revisionId",
+                                    "policyVersion",
+                                    "state",
+                                    "requestedBy",
+                                    "requestedAt"
+                                  ],
+                                  "type": "object"
                                 },
-                                "providerVersion": { "type": "string" },
-                                "reason": { "type": "string" },
-                                "requestedAt": { "type": "string" },
-                                "requestedBy": { "type": "string" },
-                                "revisionId": {
-                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                  "type": "string"
-                                },
-                                "state": {
-                                  "anyOf": [
-                                    { "const": "pending", "type": "string" },
-                                    { "const": "applied", "type": "string" },
-                                    { "const": "failed", "type": "string" }
-                                  ]
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "action": {
+                                      "anyOf": [
+                                        { "const": "approve-and-enable", "type": "string" },
+                                        { "const": "enable", "type": "string" },
+                                        { "const": "disable", "type": "string" },
+                                        { "const": "withdraw-approval", "type": "string" }
+                                      ]
+                                    },
+                                    "destination": {
+                                      "anyOf": [
+                                        {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "host": {
+                                              "format": "hostname",
+                                              "maxLength": 253,
+                                              "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                              "type": "string"
+                                            },
+                                            "path": {
+                                              "maxLength": 2048,
+                                              "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                              "type": "string"
+                                            },
+                                            "port": { "const": 443, "type": "number" },
+                                            "scheme": { "const": "https", "type": "string" }
+                                          },
+                                          "required": ["scheme", "port", "host"],
+                                          "type": "object"
+                                        },
+                                        {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "host": {
+                                              "format": "hostname",
+                                              "maxLength": 253,
+                                              "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                              "type": "string"
+                                            },
+                                            "path": {
+                                              "maxLength": 2048,
+                                              "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                              "type": "string"
+                                            },
+                                            "port": { "const": 80, "type": "number" },
+                                            "scheme": { "const": "http", "type": "string" }
+                                          },
+                                          "required": ["scheme", "port", "host"],
+                                          "type": "object"
+                                        }
+                                      ]
+                                    },
+                                    "id": { "format": "uuid", "type": "string" },
+                                    "kind": { "const": "protected_downloads", "type": "string" },
+                                    "policyVersion": {
+                                      "maximum": 2147483647,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "providerVersion": { "type": "string" },
+                                    "reason": { "type": "string" },
+                                    "requestedAt": { "type": "string" },
+                                    "requestedBy": { "type": "string" },
+                                    "revisionId": {
+                                      "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "state": {
+                                      "anyOf": [
+                                        { "const": "pending", "type": "string" },
+                                        { "const": "applied", "type": "string" },
+                                        { "const": "failed", "type": "string" }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "revisionId",
+                                    "policyVersion",
+                                    "state",
+                                    "requestedBy",
+                                    "requestedAt",
+                                    "kind",
+                                    "action",
+                                    "destination"
+                                  ],
+                                  "type": "object"
                                 }
-                              },
-                              "required": [
-                                "id",
-                                "revisionId",
-                                "policyVersion",
-                                "state",
-                                "requestedBy",
-                                "requestedAt"
-                              ],
-                              "type": "object"
+                              ]
                             },
                             "applied": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "appliedAt": { "type": "string" },
-                                "policyVersion": {
-                                  "maximum": 2147483647,
-                                  "minimum": 1,
-                                  "type": "integer"
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "appliedAt": { "type": "string" },
+                                    "policyVersion": {
+                                      "maximum": 2147483647,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "providerVersion": { "type": "string" },
+                                    "revisionId": {
+                                      "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "revisionId",
+                                    "policyVersion",
+                                    "providerVersion",
+                                    "appliedAt"
+                                  ],
+                                  "type": "object"
                                 },
-                                "providerVersion": { "type": "string" },
-                                "revisionId": {
-                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                  "type": "string"
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "appliedAt": { "type": "string" },
+                                    "confirmedDownloadDestinations": {
+                                      "items": {
+                                        "anyOf": [
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "host": {
+                                                "format": "hostname",
+                                                "maxLength": 253,
+                                                "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                                "type": "string"
+                                              },
+                                              "path": {
+                                                "maxLength": 2048,
+                                                "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                                "type": "string"
+                                              },
+                                              "port": { "const": 443, "type": "number" },
+                                              "scheme": { "const": "https", "type": "string" }
+                                            },
+                                            "required": ["scheme", "port", "host"],
+                                            "type": "object"
+                                          },
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "host": {
+                                                "format": "hostname",
+                                                "maxLength": 253,
+                                                "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                                "type": "string"
+                                              },
+                                              "path": {
+                                                "maxLength": 2048,
+                                                "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                                "type": "string"
+                                              },
+                                              "port": { "const": 80, "type": "number" },
+                                              "scheme": { "const": "http", "type": "string" }
+                                            },
+                                            "required": ["scheme", "port", "host"],
+                                            "type": "object"
+                                          }
+                                        ]
+                                      },
+                                      "maxItems": 32,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    },
+                                    "kind": { "const": "protected_downloads", "type": "string" },
+                                    "operationId": { "format": "uuid", "type": "string" },
+                                    "policyVersion": {
+                                      "maximum": 2147483647,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "providerVersion": { "type": "string" },
+                                    "revisionId": {
+                                      "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "revisionId",
+                                    "policyVersion",
+                                    "providerVersion",
+                                    "appliedAt",
+                                    "kind",
+                                    "operationId",
+                                    "confirmedDownloadDestinations"
+                                  ],
+                                  "type": "object"
                                 }
+                              ]
+                            },
+                            "approvedDownloadDestinations": {
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "host": {
+                                        "format": "hostname",
+                                        "maxLength": 253,
+                                        "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                        "type": "string"
+                                      },
+                                      "path": {
+                                        "maxLength": 2048,
+                                        "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                        "type": "string"
+                                      },
+                                      "port": { "const": 443, "type": "number" },
+                                      "scheme": { "const": "https", "type": "string" }
+                                    },
+                                    "required": ["scheme", "port", "host"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "host": {
+                                        "format": "hostname",
+                                        "maxLength": 253,
+                                        "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                        "type": "string"
+                                      },
+                                      "path": {
+                                        "maxLength": 2048,
+                                        "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                        "type": "string"
+                                      },
+                                      "port": { "const": 80, "type": "number" },
+                                      "scheme": { "const": "http", "type": "string" }
+                                    },
+                                    "required": ["scheme", "port", "host"],
+                                    "type": "object"
+                                  }
+                                ]
                               },
-                              "required": [
-                                "revisionId",
-                                "policyVersion",
-                                "providerVersion",
-                                "appliedAt"
-                              ],
-                              "type": "object"
+                              "maxItems": 32,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "downloadDestinations": {
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "host": {
+                                        "format": "hostname",
+                                        "maxLength": 253,
+                                        "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                        "type": "string"
+                                      },
+                                      "path": {
+                                        "maxLength": 2048,
+                                        "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                        "type": "string"
+                                      },
+                                      "port": { "const": 443, "type": "number" },
+                                      "scheme": { "const": "https", "type": "string" }
+                                    },
+                                    "required": ["scheme", "port", "host"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "host": {
+                                        "format": "hostname",
+                                        "maxLength": 253,
+                                        "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                        "type": "string"
+                                      },
+                                      "path": {
+                                        "maxLength": 2048,
+                                        "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                        "type": "string"
+                                      },
+                                      "port": { "const": 80, "type": "number" },
+                                      "scheme": { "const": "http", "type": "string" }
+                                    },
+                                    "required": ["scheme", "port", "host"],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
+                              "maxItems": 32,
+                              "type": "array",
+                              "uniqueItems": true
                             },
                             "id": { "pattern": "^sbp_[0-9a-f-]{36}$", "type": "string" },
                             "namespaceId": {
@@ -30703,8 +30978,50 @@
                             },
                             "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                           },
-                          "required": ["id", "namespaceId", "agentId", "version", "additions"],
+                          "required": [
+                            "id",
+                            "namespaceId",
+                            "agentId",
+                            "version",
+                            "additions",
+                            "approvedDownloadDestinations",
+                            "downloadDestinations"
+                          ],
                           "type": "object"
+                        },
+                        "protectedDownloads": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "reason": {
+                                  "anyOf": [
+                                    { "const": "installation-disabled", "type": "string" },
+                                    { "const": "no-active-protected-revision", "type": "string" },
+                                    { "const": "unsupported-driver-pair", "type": "string" },
+                                    { "const": "installation-unconfirmed", "type": "string" }
+                                  ]
+                                },
+                                "state": { "const": "unavailable", "type": "string" }
+                              },
+                              "required": ["state", "reason"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "canApprove": { "type": "boolean" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "state": { "const": "verified", "type": "string" }
+                              },
+                              "required": ["state", "revisionId", "canApprove"],
+                              "type": "object"
+                            }
+                          ],
+                          "description": "Protected download checks for the active revision. Verification does not grant access."
                         },
                         "protectedExecution": {
                           "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
@@ -31037,62 +31354,336 @@
                           "type": "string"
                         },
                         "application": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "id": { "format": "uuid", "type": "string" },
-                            "policyVersion": {
-                              "maximum": 2147483647,
-                              "minimum": 1,
-                              "type": "integer"
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": { "format": "uuid", "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "reason": { "type": "string" },
+                                "requestedAt": { "type": "string" },
+                                "requestedBy": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "state": {
+                                  "anyOf": [
+                                    { "const": "pending", "type": "string" },
+                                    { "const": "applied", "type": "string" },
+                                    { "const": "failed", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "revisionId",
+                                "policyVersion",
+                                "state",
+                                "requestedBy",
+                                "requestedAt"
+                              ],
+                              "type": "object"
                             },
-                            "providerVersion": { "type": "string" },
-                            "reason": { "type": "string" },
-                            "requestedAt": { "type": "string" },
-                            "requestedBy": { "type": "string" },
-                            "revisionId": {
-                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "state": {
-                              "anyOf": [
-                                { "const": "pending", "type": "string" },
-                                { "const": "applied", "type": "string" },
-                                { "const": "failed", "type": "string" }
-                              ]
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "action": {
+                                  "anyOf": [
+                                    { "const": "approve-and-enable", "type": "string" },
+                                    { "const": "enable", "type": "string" },
+                                    { "const": "disable", "type": "string" },
+                                    { "const": "withdraw-approval", "type": "string" }
+                                  ]
+                                },
+                                "destination": {
+                                  "anyOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "host": {
+                                          "format": "hostname",
+                                          "maxLength": 253,
+                                          "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                          "type": "string"
+                                        },
+                                        "path": {
+                                          "maxLength": 2048,
+                                          "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                          "type": "string"
+                                        },
+                                        "port": { "const": 443, "type": "number" },
+                                        "scheme": { "const": "https", "type": "string" }
+                                      },
+                                      "required": ["scheme", "port", "host"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "host": {
+                                          "format": "hostname",
+                                          "maxLength": 253,
+                                          "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                          "type": "string"
+                                        },
+                                        "path": {
+                                          "maxLength": 2048,
+                                          "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                          "type": "string"
+                                        },
+                                        "port": { "const": 80, "type": "number" },
+                                        "scheme": { "const": "http", "type": "string" }
+                                      },
+                                      "required": ["scheme", "port", "host"],
+                                      "type": "object"
+                                    }
+                                  ]
+                                },
+                                "id": { "format": "uuid", "type": "string" },
+                                "kind": { "const": "protected_downloads", "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "reason": { "type": "string" },
+                                "requestedAt": { "type": "string" },
+                                "requestedBy": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "state": {
+                                  "anyOf": [
+                                    { "const": "pending", "type": "string" },
+                                    { "const": "applied", "type": "string" },
+                                    { "const": "failed", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "revisionId",
+                                "policyVersion",
+                                "state",
+                                "requestedBy",
+                                "requestedAt",
+                                "kind",
+                                "action",
+                                "destination"
+                              ],
+                              "type": "object"
                             }
-                          },
-                          "required": [
-                            "id",
-                            "revisionId",
-                            "policyVersion",
-                            "state",
-                            "requestedBy",
-                            "requestedAt"
-                          ],
-                          "type": "object"
+                          ]
                         },
                         "applied": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "appliedAt": { "type": "string" },
-                            "policyVersion": {
-                              "maximum": 2147483647,
-                              "minimum": 1,
-                              "type": "integer"
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "appliedAt": { "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "revisionId",
+                                "policyVersion",
+                                "providerVersion",
+                                "appliedAt"
+                              ],
+                              "type": "object"
                             },
-                            "providerVersion": { "type": "string" },
-                            "revisionId": {
-                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "appliedAt": { "type": "string" },
+                                "confirmedDownloadDestinations": {
+                                  "items": {
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "host": {
+                                            "format": "hostname",
+                                            "maxLength": 253,
+                                            "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                            "type": "string"
+                                          },
+                                          "path": {
+                                            "maxLength": 2048,
+                                            "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                            "type": "string"
+                                          },
+                                          "port": { "const": 443, "type": "number" },
+                                          "scheme": { "const": "https", "type": "string" }
+                                        },
+                                        "required": ["scheme", "port", "host"],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "host": {
+                                            "format": "hostname",
+                                            "maxLength": 253,
+                                            "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                            "type": "string"
+                                          },
+                                          "path": {
+                                            "maxLength": 2048,
+                                            "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                            "type": "string"
+                                          },
+                                          "port": { "const": 80, "type": "number" },
+                                          "scheme": { "const": "http", "type": "string" }
+                                        },
+                                        "required": ["scheme", "port", "host"],
+                                        "type": "object"
+                                      }
+                                    ]
+                                  },
+                                  "maxItems": 32,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "kind": { "const": "protected_downloads", "type": "string" },
+                                "operationId": { "format": "uuid", "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "revisionId",
+                                "policyVersion",
+                                "providerVersion",
+                                "appliedAt",
+                                "kind",
+                                "operationId",
+                                "confirmedDownloadDestinations"
+                              ],
+                              "type": "object"
                             }
+                          ]
+                        },
+                        "approvedDownloadDestinations": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 443, "type": "number" },
+                                  "scheme": { "const": "https", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 80, "type": "number" },
+                                  "scheme": { "const": "http", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              }
+                            ]
                           },
-                          "required": [
-                            "revisionId",
-                            "policyVersion",
-                            "providerVersion",
-                            "appliedAt"
-                          ],
-                          "type": "object"
+                          "maxItems": 32,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "downloadDestinations": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 443, "type": "number" },
+                                  "scheme": { "const": "https", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 80, "type": "number" },
+                                  "scheme": { "const": "http", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              }
+                            ]
+                          },
+                          "maxItems": 32,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "id": { "pattern": "^sbp_[0-9a-f-]{36}$", "type": "string" },
                         "namespaceId": {
@@ -31219,7 +31810,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/apply": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy. Requires read permission on the requested SandboxPolicy.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy. Requires read permission on the requested SandboxPolicy. Requires administer permission on the Installation only when downloadChange.action is approve-and-enable or withdraw-approval.",
         "operationId": "applyAgentSandboxPolicy",
         "parameters": [
           {
@@ -31276,87 +31867,176 @@
             "application/json": {
               "examples": {
                 "example": {
-                  "summary": "Example request",
+                  "summary": "Apply the saved ordinary network rules",
                   "value": {
+                    "expectedVersion": 1,
+                    "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000"
+                  }
+                },
+                "protectedDownload": {
+                  "summary": "Approve and enable an HTTPS download for a protected Agent",
+                  "value": {
+                    "downloadChange": {
+                      "action": "approve-and-enable",
+                      "destination": {
+                        "host": "registry.npmjs.org",
+                        "port": 443,
+                        "scheme": "https"
+                      }
+                    },
                     "expectedVersion": 1,
                     "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000"
                   }
                 }
               },
               "schema": {
-                "additionalProperties": false,
-                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
-                "properties": {
-                  "additions": {
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "binary": {
-                          "description": "Absolute path of the executable receiving access.",
-                          "maxLength": 512,
-                          "minLength": 2,
-                          "pattern": "^/[^\\s\\x00-\\x1f]+$",
-                          "title": "Executable path",
-                          "type": "string"
-                        },
-                        "host": {
-                          "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
-                          "maxLength": 253,
-                          "minLength": 1,
-                          "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
-                          "title": "Destination hostname",
-                          "type": "string"
-                        },
-                        "id": {
-                          "pattern": "^[a-z][a-z0-9-]{0,47}$",
-                          "title": "Rule ID",
-                          "type": "string"
-                        },
-                        "ports": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "from": {
-                                "maximum": 65535,
-                                "minimum": 1,
-                                "title": "Start port",
-                                "type": "integer"
-                              },
-                              "to": {
-                                "maximum": 65535,
-                                "minimum": 1,
-                                "title": "End port",
-                                "type": "integer"
-                              }
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+                    "properties": {
+                      "additions": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "binary": {
+                              "description": "Absolute path of the executable receiving access.",
+                              "maxLength": 512,
+                              "minLength": 2,
+                              "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                              "title": "Executable path",
+                              "type": "string"
                             },
-                            "required": ["from", "to"],
-                            "type": "object"
+                            "host": {
+                              "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
+                              "maxLength": 253,
+                              "minLength": 1,
+                              "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                              "title": "Destination hostname",
+                              "type": "string"
+                            },
+                            "id": {
+                              "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                              "title": "Rule ID",
+                              "type": "string"
+                            },
+                            "ports": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "from": {
+                                    "maximum": 65535,
+                                    "minimum": 1,
+                                    "title": "Start port",
+                                    "type": "integer"
+                                  },
+                                  "to": {
+                                    "maximum": 65535,
+                                    "minimum": 1,
+                                    "title": "End port",
+                                    "type": "integer"
+                                  }
+                                },
+                                "required": ["from", "to"],
+                                "type": "object"
+                              },
+                              "maxItems": 16,
+                              "minItems": 1,
+                              "title": "Port ranges",
+                              "type": "array"
+                            }
                           },
-                          "maxItems": 16,
-                          "minItems": 1,
-                          "title": "Port ranges",
-                          "type": "array"
-                        }
+                          "required": ["id", "binary", "host", "ports"],
+                          "type": "object"
+                        },
+                        "maxItems": 32,
+                        "title": "Network rules",
+                        "type": "array"
                       },
-                      "required": ["id", "binary", "host", "ports"],
-                      "type": "object"
+                      "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
+                      "revisionId": {
+                        "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
                     },
-                    "maxItems": 32,
-                    "title": "Network rules",
-                    "type": "array"
+                    "required": ["expectedVersion", "revisionId"],
+                    "type": "object"
                   },
-                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
-                  "revisionId": {
-                    "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                    "type": "string"
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "downloadChange": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "action": {
+                            "anyOf": [
+                              { "const": "approve-and-enable", "type": "string" },
+                              { "const": "enable", "type": "string" },
+                              { "const": "disable", "type": "string" },
+                              { "const": "withdraw-approval", "type": "string" }
+                            ]
+                          },
+                          "destination": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 443, "type": "number" },
+                                  "scheme": { "const": "https", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 80, "type": "number" },
+                                  "scheme": { "const": "http", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              }
+                            ]
+                          }
+                        },
+                        "required": ["action", "destination"],
+                        "type": "object"
+                      },
+                      "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
+                      "revisionId": {
+                        "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["expectedVersion", "revisionId", "downloadChange"],
+                    "type": "object"
                   }
-                },
-                "required": ["expectedVersion", "revisionId"],
-                "type": "object"
+                ]
               }
             }
           },
-          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
           "required": true
         },
         "responses": {
@@ -31455,62 +32135,336 @@
                           "type": "string"
                         },
                         "application": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "id": { "format": "uuid", "type": "string" },
-                            "policyVersion": {
-                              "maximum": 2147483647,
-                              "minimum": 1,
-                              "type": "integer"
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": { "format": "uuid", "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "reason": { "type": "string" },
+                                "requestedAt": { "type": "string" },
+                                "requestedBy": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "state": {
+                                  "anyOf": [
+                                    { "const": "pending", "type": "string" },
+                                    { "const": "applied", "type": "string" },
+                                    { "const": "failed", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "revisionId",
+                                "policyVersion",
+                                "state",
+                                "requestedBy",
+                                "requestedAt"
+                              ],
+                              "type": "object"
                             },
-                            "providerVersion": { "type": "string" },
-                            "reason": { "type": "string" },
-                            "requestedAt": { "type": "string" },
-                            "requestedBy": { "type": "string" },
-                            "revisionId": {
-                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "state": {
-                              "anyOf": [
-                                { "const": "pending", "type": "string" },
-                                { "const": "applied", "type": "string" },
-                                { "const": "failed", "type": "string" }
-                              ]
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "action": {
+                                  "anyOf": [
+                                    { "const": "approve-and-enable", "type": "string" },
+                                    { "const": "enable", "type": "string" },
+                                    { "const": "disable", "type": "string" },
+                                    { "const": "withdraw-approval", "type": "string" }
+                                  ]
+                                },
+                                "destination": {
+                                  "anyOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "host": {
+                                          "format": "hostname",
+                                          "maxLength": 253,
+                                          "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                          "type": "string"
+                                        },
+                                        "path": {
+                                          "maxLength": 2048,
+                                          "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                          "type": "string"
+                                        },
+                                        "port": { "const": 443, "type": "number" },
+                                        "scheme": { "const": "https", "type": "string" }
+                                      },
+                                      "required": ["scheme", "port", "host"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "host": {
+                                          "format": "hostname",
+                                          "maxLength": 253,
+                                          "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                          "type": "string"
+                                        },
+                                        "path": {
+                                          "maxLength": 2048,
+                                          "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                          "type": "string"
+                                        },
+                                        "port": { "const": 80, "type": "number" },
+                                        "scheme": { "const": "http", "type": "string" }
+                                      },
+                                      "required": ["scheme", "port", "host"],
+                                      "type": "object"
+                                    }
+                                  ]
+                                },
+                                "id": { "format": "uuid", "type": "string" },
+                                "kind": { "const": "protected_downloads", "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "reason": { "type": "string" },
+                                "requestedAt": { "type": "string" },
+                                "requestedBy": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "state": {
+                                  "anyOf": [
+                                    { "const": "pending", "type": "string" },
+                                    { "const": "applied", "type": "string" },
+                                    { "const": "failed", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "revisionId",
+                                "policyVersion",
+                                "state",
+                                "requestedBy",
+                                "requestedAt",
+                                "kind",
+                                "action",
+                                "destination"
+                              ],
+                              "type": "object"
                             }
-                          },
-                          "required": [
-                            "id",
-                            "revisionId",
-                            "policyVersion",
-                            "state",
-                            "requestedBy",
-                            "requestedAt"
-                          ],
-                          "type": "object"
+                          ]
                         },
                         "applied": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "appliedAt": { "type": "string" },
-                            "policyVersion": {
-                              "maximum": 2147483647,
-                              "minimum": 1,
-                              "type": "integer"
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "appliedAt": { "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "revisionId",
+                                "policyVersion",
+                                "providerVersion",
+                                "appliedAt"
+                              ],
+                              "type": "object"
                             },
-                            "providerVersion": { "type": "string" },
-                            "revisionId": {
-                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "appliedAt": { "type": "string" },
+                                "confirmedDownloadDestinations": {
+                                  "items": {
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "host": {
+                                            "format": "hostname",
+                                            "maxLength": 253,
+                                            "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                            "type": "string"
+                                          },
+                                          "path": {
+                                            "maxLength": 2048,
+                                            "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                            "type": "string"
+                                          },
+                                          "port": { "const": 443, "type": "number" },
+                                          "scheme": { "const": "https", "type": "string" }
+                                        },
+                                        "required": ["scheme", "port", "host"],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "host": {
+                                            "format": "hostname",
+                                            "maxLength": 253,
+                                            "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                            "type": "string"
+                                          },
+                                          "path": {
+                                            "maxLength": 2048,
+                                            "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                            "type": "string"
+                                          },
+                                          "port": { "const": 80, "type": "number" },
+                                          "scheme": { "const": "http", "type": "string" }
+                                        },
+                                        "required": ["scheme", "port", "host"],
+                                        "type": "object"
+                                      }
+                                    ]
+                                  },
+                                  "maxItems": 32,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "kind": { "const": "protected_downloads", "type": "string" },
+                                "operationId": { "format": "uuid", "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "revisionId",
+                                "policyVersion",
+                                "providerVersion",
+                                "appliedAt",
+                                "kind",
+                                "operationId",
+                                "confirmedDownloadDestinations"
+                              ],
+                              "type": "object"
                             }
+                          ]
+                        },
+                        "approvedDownloadDestinations": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 443, "type": "number" },
+                                  "scheme": { "const": "https", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 80, "type": "number" },
+                                  "scheme": { "const": "http", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              }
+                            ]
                           },
-                          "required": [
-                            "revisionId",
-                            "policyVersion",
-                            "providerVersion",
-                            "appliedAt"
-                          ],
-                          "type": "object"
+                          "maxItems": 32,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "downloadDestinations": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 443, "type": "number" },
+                                  "scheme": { "const": "https", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": {
+                                    "format": "hostname",
+                                    "maxLength": 253,
+                                    "pattern": "^(?!.*\\.(?:arpa|internal|local|localdomain[46]?|localhost|lan|home|corp|intranet|private|svc|onion|test|invalid|example|alt)$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,58}[a-z0-9])(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "path": {
+                                    "maxLength": 2048,
+                                    "pattern": "^(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@-]+)+(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "port": { "const": 80, "type": "number" },
+                                  "scheme": { "const": "http", "type": "string" }
+                                },
+                                "required": ["scheme", "port", "host"],
+                                "type": "object"
+                              }
+                            ]
+                          },
+                          "maxItems": 32,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "id": { "pattern": "^sbp_[0-9a-f-]{36}$", "type": "string" },
                         "namespaceId": {
@@ -31627,12 +32581,18 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Queue policy application to the running Agent revision, optionally replacing saved additions",
+        "summary": "Apply network policy changes to a running Agent revision",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
           { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" },
-          { "action": "read", "resourceKind": "sandbox_policy", "scope": "requested" }
+          { "action": "read", "resourceKind": "sandbox_policy", "scope": "requested" },
+          {
+            "action": "administer",
+            "condition": "protected_download_approval",
+            "resourceKind": "installation",
+            "scope": "installation"
+          }
         ]
       }
     },

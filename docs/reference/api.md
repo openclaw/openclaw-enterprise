@@ -62,7 +62,7 @@ the paths.
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `error` | `object` | Yes | — |
-| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
+| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_DOWNLOAD_UNCHANGED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
 | `error.details` | `array<object>` | No | max items: 32 |
 | `error.details[].code` | `"REQUIRED" or "UNKNOWN_FIELD" or "INVALID_TYPE" or "INVALID_FORMAT" or "INVALID_VALUE" or "TOO_LONG" or "TOO_DEEP" or "INVALID_RANGE" or "OUTSIDE_CEILING"` | Yes | — |
 | `error.details[].message` | `string` | No | max length: 512 |
@@ -3832,7 +3832,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-images`](#get-namespacesnamespaceidagentsagentidruntimeimages) | Read observed images and source commits for an Agent's active runtime |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}`](#get-namespacesnamespaceidagentsagentidsandboxpolicyfacet) | Read one Agent sandbox policy and delegation ceiling |
 | [`PUT /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}`](#put-namespacesnamespaceidagentsagentidsandboxpolicyfacet) | Replace one Agent network policy additions |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/apply`](#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply) | Queue policy application to the running Agent revision, optionally replacing saved additions |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/apply`](#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply) | Apply network policy changes to a running Agent revision |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/editing`](#patch-namespacesnamespaceidagentsagentidsandboxpolicyfacetediting) | Temporarily enable or disable future policy edits for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate`](#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetvalidate) | Preview Agent network policy admission without saving or applying |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/stop`](#post-namespacesnamespaceidagentsagentidstop) | Stop one Agent and keep its saved Agent revision and persistent state |
@@ -7695,23 +7695,14 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.policy.additions[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `data.policy.additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `data.policy.agentId` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.policy.application` | `object` | No | — |
-| `data.policy.application.id` | `string (uuid)` | Yes | — |
-| `data.policy.application.policyVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.policy.application.providerVersion` | `string` | No | — |
-| `data.policy.application.reason` | `string` | No | — |
-| `data.policy.application.requestedAt` | `string` | Yes | — |
-| `data.policy.application.requestedBy` | `string` | Yes | — |
-| `data.policy.application.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.policy.application.state` | `"pending" or "applied" or "failed"` | Yes | — |
-| `data.policy.applied` | `object` | No | — |
-| `data.policy.applied.appliedAt` | `string` | Yes | — |
-| `data.policy.applied.policyVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.policy.applied.providerVersion` | `string` | Yes | — |
-| `data.policy.applied.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.policy.application` | `object or object` | No | — |
+| `data.policy.applied` | `object or object` | No | — |
+| `data.policy.approvedDownloadDestinations` | `array<object or object>` | Yes | max items: 32 |
+| `data.policy.downloadDestinations` | `array<object or object>` | Yes | max items: 32 |
 | `data.policy.id` | `string` | Yes | pattern: `^sbp_[0-9a-f-]{36}$` |
 | `data.policy.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.policy.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+| `data.protectedDownloads` | `object or object` | No | Protected download checks for the active revision. Verification does not grant access. |
 | `data.protectedExecution` | `boolean` | Yes | True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed. |
 | `data.unavailableReason` | `string` | No | Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give. |
 | `meta` | `object` | Yes | — |
@@ -7816,20 +7807,10 @@ Example request
 | `data.additions[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `data.additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `data.agentId` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.application` | `object` | No | — |
-| `data.application.id` | `string (uuid)` | Yes | — |
-| `data.application.policyVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.application.providerVersion` | `string` | No | — |
-| `data.application.reason` | `string` | No | — |
-| `data.application.requestedAt` | `string` | Yes | — |
-| `data.application.requestedBy` | `string` | Yes | — |
-| `data.application.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.application.state` | `"pending" or "applied" or "failed"` | Yes | — |
-| `data.applied` | `object` | No | — |
-| `data.applied.appliedAt` | `string` | Yes | — |
-| `data.applied.policyVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.applied.providerVersion` | `string` | Yes | — |
-| `data.applied.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.application` | `object or object` | No | — |
+| `data.applied` | `object or object` | No | — |
+| `data.approvedDownloadDestinations` | `array<object or object>` | No | max items: 32 |
+| `data.downloadDestinations` | `array<object or object>` | No | max items: 32 |
 | `data.id` | `string` | Yes | pattern: `^sbp_[0-9a-f-]{36}$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
@@ -7856,17 +7837,18 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply"></span>
 
-Queue policy application to the running Agent revision, optionally replacing saved additions
+Apply network policy changes to a running Agent revision
 
 **Operation ID:** `applyAgentSandboxPolicy`
 
-**Permissions:** Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy. Requires read permission on the requested SandboxPolicy.
+**Permissions:** Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy. Requires read permission on the requested SandboxPolicy. Requires administer permission on the Installation only when downloadChange.action is approve-and-enable or withdraw-approval.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `manage_policy` | `agent` | `requested` |
 | `update` | `sandbox_policy` | `requested` |
 | `read` | `sandbox_policy` | `requested` |
+| `administer` | `installation` | `installation` (when `downloadChange.action` is `approve-and-enable` or `withdraw-approval`) |
 
 ##### Parameters
 
@@ -7882,21 +7864,27 @@ Queue policy application to the running Agent revision, optionally replacing sav
 
 **Content type:** `application/json`
 
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `additions` | `array<object>` | No | max items: 32 |
-| `additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
-| `additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
-| `additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
-| `additions[].ports` | `array<object>` | Yes | min items: 1; max items: 16 |
-| `additions[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
-| `additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
-| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+Schema: `object or object`.
 
-Example request
+Apply the saved ordinary network rules
 ```json
 {
+  "expectedVersion": 1,
+  "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000"
+}
+```
+
+Approve and enable an HTTPS download for a protected Agent
+```json
+{
+  "downloadChange": {
+    "action": "approve-and-enable",
+    "destination": {
+      "host": "registry.npmjs.org",
+      "port": 443,
+      "scheme": "https"
+    }
+  },
   "expectedVersion": 1,
   "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000"
 }
@@ -7930,20 +7918,10 @@ Example request
 | `data.additions[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `data.additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `data.agentId` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.application` | `object` | No | — |
-| `data.application.id` | `string (uuid)` | Yes | — |
-| `data.application.policyVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.application.providerVersion` | `string` | No | — |
-| `data.application.reason` | `string` | No | — |
-| `data.application.requestedAt` | `string` | Yes | — |
-| `data.application.requestedBy` | `string` | Yes | — |
-| `data.application.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.application.state` | `"pending" or "applied" or "failed"` | Yes | — |
-| `data.applied` | `object` | No | — |
-| `data.applied.appliedAt` | `string` | Yes | — |
-| `data.applied.policyVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.applied.providerVersion` | `string` | Yes | — |
-| `data.applied.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.application` | `object or object` | No | — |
+| `data.applied` | `object or object` | No | — |
+| `data.approvedDownloadDestinations` | `array<object or object>` | No | max items: 32 |
+| `data.downloadDestinations` | `array<object or object>` | No | max items: 32 |
 | `data.id` | `string` | Yes | pattern: `^sbp_[0-9a-f-]{36}$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |

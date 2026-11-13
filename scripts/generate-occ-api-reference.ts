@@ -247,6 +247,8 @@ const permissionScopeQualifiers: Record<string, string> = {
   gateway_managed_mode_disabled: " (when `gatewayManagedMode` is `false`)",
   gateway_managed_mode_changed: " (when the request changes `gatewayManagedMode`)",
   saved_sandbox_policy_additions: " (when saved network policy additions exist)",
+  protected_download_approval:
+    " (when `downloadChange.action` is `approve-and-enable` or `withdraw-approval`)",
 };
 
 function renderedExamples(content: unknown, contentType: string) {

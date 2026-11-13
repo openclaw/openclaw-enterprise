@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-13"
-last_updated_session: "01a117f8-113d-7610-83db-37431b054e44"
+last_updated_session: authoring-run/195f17af-c4ed-4cc2-94a3-d6bfc4faca7c
 ---
 
 # Agent sandbox policy flow
@@ -86,8 +86,22 @@ repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
 identity, version and empty additions before runtime credential provisioning.
-That immutable snapshot remains ineligible for live apply. The policy view reports
-`protectedExecution`.
+That immutable snapshot remains ineligible for ordinary live apply.
+
+For a running protected Agent, the Console’s **Downloads** section reads the selected
+Sandbox and Credential Proxy Drivers. Both must confirm the same current Sandbox and
+policy before offering an edit. Installation administrators can approve a new hostname
+for this Agent. Delegated editors can enable or disable an approved destination.
+HTTP mirrors and shared archive paths must match the Installation’s `protectedDownloads`
+limits. The stock OpenShell pair reports that it lacks this capability.
+
+**Allow download** saves the desired change and queues one operation on the active
+revision. The worker records its intent before the provider write. After a lost response
+it looks up that operation. The Console shows the previous confirmed destinations until
+both Drivers confirm the new policy on the same Sandbox and supervisor instance.
+A refusal before the provider write restores the earlier approval and desired lists.
+If the write outcome is unknown, the worker retains the original operation for
+reconciliation. Withdrawal follows the same path and applies to new connections.
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
@@ -258,6 +272,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-13 21:02: Trace protected download approval, withdrawal, and confirmation on the running Agent. (authoring-run/195f17af-c4ed-4cc2-94a3-d6bfc4faca7c - 5bbb615eee0dc55be58393205de920220de88c55)
 
 - 2026-11-13: Trace the Console’s single save-and-apply request and its atomic admission for a running Agent.
 
