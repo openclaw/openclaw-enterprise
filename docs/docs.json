@@ -157,6 +157,10 @@
                     "label": "Workspace Files"
                   },
                   {
+                    "page": "guides/topics/repository-development",
+                    "label": "Repository Development"
+                  },
+                  {
                     "page": "guides/topics/agent-logs",
                     "label": "Runtime Logs"
                   },
