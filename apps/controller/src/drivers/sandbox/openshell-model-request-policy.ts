@@ -96,6 +96,9 @@ export function openShellModelRequestPolicy(
         headerName: "Authorization",
         tokenGrant: {
           token_endpoint: registration.tokenEndpoint,
+          ...(registration.tokenEndpointCaPem === undefined
+            ? {}
+            : { token_endpoint_ca_pem: registration.tokenEndpointCaPem }),
           jwt_svid_audience: registration.tokenEndpoint,
           audience: bindingId,
           client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
@@ -120,7 +123,11 @@ export function openShellModelRequestPolicy(
     provider: { name, profile },
     environment: { OPENAI_API_KEY: "oce:request-authorized:model" },
     host,
-    registration: { name: options.middlewareName, ...registration },
+    registration: {
+      name: options.middlewareName,
+      audience: registration.audience,
+      tokenEndpoint: registration.tokenEndpoint,
+    },
   };
 }
 
@@ -147,6 +154,7 @@ export function verifyModelRequestProfile(
     Number(ttl.seconds ?? 0) !== 0 ||
     Number(ttl.nanos ?? 0) !== 0 ||
     actual.token_endpoint !== grant.token_endpoint ||
+    actual.token_endpoint_ca_pem !== grant.token_endpoint_ca_pem ||
     actual.jwt_svid_audience !== grant.jwt_svid_audience ||
     actual.audience !== grant.audience ||
     actual.client_assertion_type !== grant.client_assertion_type ||

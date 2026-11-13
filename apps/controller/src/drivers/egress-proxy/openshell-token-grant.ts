@@ -2,7 +2,7 @@ import type {
   CredentialProxyBinding,
   CredentialProxyExchange,
 } from "@openclaw-enterprise/contracts";
-import { asRecord } from "@openclaw-enterprise/utils";
+import { asRecord, publicCaBundle } from "@openclaw-enterprise/utils";
 import { createLocalJWKSet, jwtVerify, type JWK } from "jose";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
@@ -10,13 +10,17 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { isAbsolute } from "node:path";
 import { readPublicFile } from "../../composition/repository-credentials/public-file.ts";
-import type { EgressAuthorityConfiguration } from "../../composition/installation-fields.ts";
+import {
+  InstallationFieldError,
+  type EgressAuthorityConfiguration,
+} from "../../composition/installation-fields.ts";
 
 export interface OpenShellTokenGrantConfiguration {
   readonly endpoint: string;
   readonly port: number;
   readonly trustDomain: string;
   readonly bundlePath: string;
+  readonly issuerCaPath?: string;
 }
 
 export const tokenGrantSchema = {
@@ -28,6 +32,7 @@ export const tokenGrantSchema = {
     port: { type: "integer", minimum: 1, maximum: 65535 },
     trustDomain: { type: "string", pattern: "^[a-z0-9._-]{1,255}$" },
     bundlePath: { type: "string", minLength: 1 },
+    issuerCaPath: { type: "string", minLength: 1, maxLength: 4096, pattern: "^/" },
   },
 };
 
@@ -37,7 +42,7 @@ export function validTokenGrantConfiguration(
   const c = asRecord(value);
   if (
     !c ||
-    Object.keys(c).length !== 4 ||
+    Object.keys(c).some((key) => !Object.hasOwn(tokenGrantSchema.properties, key)) ||
     typeof c.endpoint !== "string" ||
     typeof c.port !== "number" ||
     !Number.isInteger(c.port) ||
@@ -47,6 +52,11 @@ export function validTokenGrantConfiguration(
     !/^[a-z0-9._-]{1,255}$/.test(c.trustDomain) ||
     typeof c.bundlePath !== "string" ||
     !isAbsolute(c.bundlePath) ||
+    (Object.hasOwn(c, "issuerCaPath") &&
+      (typeof c.issuerCaPath !== "string" ||
+        !isAbsolute(c.issuerCaPath) ||
+        c.issuerCaPath.includes("\0") ||
+        Buffer.byteLength(c.issuerCaPath) > 4096)) ||
     !URL.canParse(c.endpoint)
   ) {
     return false;
@@ -60,6 +70,35 @@ export function validTokenGrantConfiguration(
     !url.hash &&
     url.href === c.endpoint
   );
+}
+
+export const maxTokenEndpointCaBytes = 65_536;
+
+/** Snapshot the operator's public issuer roots at the same boundary as Driver selection. */
+export async function readTokenEndpointCa(path: string): Promise<string> {
+  const invalid =
+    "tokenGrant.issuerCaPath must identify a readable PEM CA bundle of at most 64 KiB.";
+  try {
+    const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      const bytes = await readPublicFile(file, path, maxTokenEndpointCaBytes, invalid);
+      const pem = publicCaBundle(bytes.toString("utf8"));
+      if (Buffer.byteLength(pem) > maxTokenEndpointCaBytes) {
+        throw new Error(invalid);
+      }
+      return pem;
+    } finally {
+      await file.close();
+    }
+  } catch {
+    throw new InstallationFieldError([
+      {
+        path: "/drivers/credential_proxy/configuration/tokenGrant/issuerCaPath",
+        code: "INVALID_VALUE",
+        message: invalid,
+      },
+    ]);
+  }
 }
 
 // The mounted trust bundle is selected by the operator. Read it again on each exchange

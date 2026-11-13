@@ -7,6 +7,9 @@ import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/san
 import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { certificateAuthority } from "../helpers/certificates.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { ensureOpenShellProviderProfile } from "../../apps/controller/src/backends/openshell.ts";
 import {
@@ -340,6 +343,45 @@ test("model profile wire retains zero-cache token grants and output-only endpoin
   await client.importProviderProfile(workspace, { ...profile, annotations: {} }, signal);
   const read = () => client.getProviderProfile(workspace, name, signal);
   verifyModelRequestProfile(await read(), profile, workspace);
+  // An acknowledged write can lose optional fields at an older Gateway. Compare the
+  // decoded profile we actually read before accepting either native or private trust.
+  const issuer = await certificateAuthority(await temporaryDirectory(t, "model-issuer-"), {
+    caName: "Model token issuer",
+    caKeyPem: undefined,
+  });
+  const issuerCa = await readFile(issuer.caPath, "utf8");
+  const selectedCredential = profile.credentials[0]!;
+  const privateProfile = {
+    ...profile,
+    credentials: [
+      {
+        ...selectedCredential,
+        tokenGrant: { ...selectedCredential.tokenGrant, token_endpoint_ca_pem: issuerCa },
+      },
+    ],
+  };
+  await assert.rejects(
+    async () => verifyModelRequestProfile(await read(), privateProfile, workspace),
+    /zero-cache model token grant/,
+  );
+  await client.importProviderProfile(workspace, { ...privateProfile, annotations: {} }, signal);
+  const privateRead = await read();
+  verifyModelRequestProfile(privateRead, privateProfile, workspace);
+  assert.throws(
+    () => verifyModelRequestProfile(privateRead, profile, workspace),
+    /zero-cache model token grant/,
+  );
+  const retained = (stored!.credentials as { token_grant: Record<string, unknown> }[])[0]!
+    .token_grant;
+  retained.token_endpoint_ca_pem = "";
+  const emptyRead = await read();
+  for (const selection of [profile, privateProfile]) {
+    assert.throws(
+      () => verifyModelRequestProfile(emptyRead, selection, workspace),
+      /zero-cache model token grant/,
+    );
+  }
+  delete retained.token_endpoint_ca_pem;
   const credential = (stored!.credentials as { token_grant: Record<string, unknown> }[])[0]!;
   assert.deepEqual(credential.token_grant.cache_ttl, { seconds: "0", nanos: 0 });
   const grant = structuredClone(credential.token_grant);

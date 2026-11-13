@@ -1,6 +1,19 @@
 {{- if and .Values.egressAuthority.tokenGrant.enabled (not .Values.egressAuthority.enabled) }}
 {{- fail "egressAuthority.tokenGrant requires egressAuthority.enabled" }}
 {{- end }}
+{{- $tokenGrant := .Values.egressAuthority.tokenGrant }}
+{{- if hasKey $tokenGrant "issuerCaConfigMapName" }}
+{{- include "openclaw.requireString" (dict "label" "egressAuthority.tokenGrant.issuerCaConfigMapName" "value" $tokenGrant.issuerCaConfigMapName) }}
+{{- with $tokenGrant.issuerCaConfigMapName }}
+{{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.tokenGrant.issuerCaConfigMapName" "value" .) }}
+{{- if or (not (kindIs "bool" $tokenGrant.enabled)) (not $tokenGrant.enabled) }}
+{{- fail "egressAuthority.tokenGrant.issuerCaConfigMapName requires egressAuthority.tokenGrant.enabled: true" }}
+{{- end }}
+{{- if or (not (kindIs "bool" $.Values.egressAuthority.enabled)) (not $.Values.egressAuthority.enabled) }}
+{{- fail "egressAuthority.tokenGrant.issuerCaConfigMapName requires egressAuthority.enabled: true" }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if .Values.egressAuthority.enabled }}
 {{- $authority := .Values.egressAuthority }}
 {{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.tlsSecretName" "value" (required "egressAuthority.tlsSecretName is required" $authority.tlsSecretName)) }}
@@ -10,7 +23,6 @@
 {{- if or (lt $port 1024) (gt $port 65535) (eq $port (int .Values.api.port)) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
 {{- fail "egressAuthority.port must be a distinct TCP port from 1024 to 65535" }}
 {{- end }}
-{{- $tokenGrant := $authority.tokenGrant }}
 {{- $tokenPort := 0 }}
 {{- if $tokenGrant.enabled }}
 {{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.tokenGrant.bundleConfigMapName" "value" (required "egressAuthority.tokenGrant.bundleConfigMapName is required" $tokenGrant.bundleConfigMapName)) }}

@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-10
-last_updated_session: authoring-run/18b830fb-bbb7-4b75-b14c-a01437b51c41
+updated: 2026-11-13
+last_updated_session: authoring-run/01a117f8-113d-7610-83db-37431b054e44
 ---
 
 # Authorize model credentials per request
@@ -75,7 +75,10 @@ remains metadata; it receives no model-key copy or attachment for this path.
 
 `verifyModelRequestProfile` and `verifyModelRequestPolicy` in that file check the
 provider, token endpoint, audience, mandatory middleware and actual admitted
-policy. Overlapping model routes and a missing required hook refuse release.
+policy. For explicit private issuer trust, installation loading binds the canonical
+public CA contents to the Driver identity. Provisioning and subsequent
+request-installation verification compare the returned CA field with the selected
+profile. Any missing, changed or unsolicited value refuses the protected operation. Overlapping model routes and a missing required hook refuse release.
 Git has its own provider and disjoint route. Compute releases the Harness only
 after current installation checks. Codex uses the existing custom Responses
 provider with WebSockets disabled; an API-key selection alone does not establish
@@ -227,6 +230,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-13: Trace issuer-specific HTTPS trust through installation loading, profile readback and subsequent requests. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - e4de4baf)
 
 - 2026-11-10 05:07: Align initial policy versions, carry the database release budget through monotonic timing and order authorization against configured-role changes. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - cf0f7b52125917f76d3ff93c4e99e6b1a6c5dcd9)
 

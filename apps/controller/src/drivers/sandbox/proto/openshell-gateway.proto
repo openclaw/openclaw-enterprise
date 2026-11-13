@@ -880,6 +880,8 @@ message ProviderCredentialTokenGrant {
   int32 grant_type = 8;
   ProviderCredentialTokenGrantSubjectToken subject_token = 9;
   string requested_token_type = 10;
+  // Optional issuer-specific TLS trust; older gateways omit this field on readback.
+  optional string token_endpoint_ca_pem = 12;
   google.protobuf.Duration cache_ttl = 104;
 }
 

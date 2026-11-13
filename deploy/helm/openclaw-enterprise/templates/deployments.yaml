@@ -74,6 +74,9 @@ spec:
               - {key: tls.crt, path: tls.crt}
               - {key: tls.key, path: tls.key}
         {{- end }}
+        {{- if $.Values.egressAuthority.tokenGrant.issuerCaConfigMapName }}
+        {{- include "openclaw.tokenIssuerCaVolume" $ | nindent 8 }}
+        {{- end }}
         {{- if and (eq $component "api") $.Values.egressAuthority.enabled }}
         - name: egress-authority-tls
           secret:
@@ -500,6 +503,9 @@ spec:
             - name: openshell-client
               mountPath: /etc/openclaw/openshell
               readOnly: true
+            {{- end }}
+            {{- if $.Values.egressAuthority.tokenGrant.issuerCaConfigMapName }}
+            {{- include "openclaw.tokenIssuerCaMount" $ | nindent 12 }}
             {{- end }}
             {{- if and (eq $component "api") $.Values.egressAuthority.enabled }}
             - name: egress-authority-tls

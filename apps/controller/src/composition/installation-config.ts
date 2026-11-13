@@ -1,4 +1,7 @@
-import type { OpenShellTokenGrantConfiguration } from "../drivers/egress-proxy/openshell-token-grant.ts";
+import {
+  readTokenEndpointCa,
+  type OpenShellTokenGrantConfiguration,
+} from "../drivers/egress-proxy/openshell-token-grant.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -986,6 +989,13 @@ export async function loadInstallationConfiguration(options: {
   const sandboxSelection =
     drivers.sandbox === undefined ? undefined : object(drivers.sandbox, "drivers.sandbox");
   let proxySelection: SelectedDriverConfiguration | undefined;
+  let tokenEndpointCaDigest: string | undefined;
+  let bundledProxy:
+    | {
+        selection: ConfigurationRecord;
+        policy: ReturnType<typeof openShellProxyConfiguration>["policy"];
+      }
+    | undefined;
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
   let requestTokenGrant: OpenShellTokenGrantConfiguration | undefined;
@@ -1031,12 +1041,7 @@ export async function loadInstallationConfiguration(options: {
           await readPublicCaBundle(configuredProxy.prepared.issuerCaPath),
         );
       }
-      proxySelection = selected(
-        { ...selection, configuration: configuredProxy.policy },
-        "credential_proxy",
-        "openshell",
-        OpenShellCredentialProxyDriver,
-      );
+      bundledProxy = { selection, policy: configuredProxy.policy };
     }
   }
 
@@ -1048,6 +1053,25 @@ export async function loadInstallationConfiguration(options: {
     openShellGitChartListener,
   );
 
+  if (bundledProxy) {
+    const { selection, policy } = bundledProxy;
+    const issuerCaPath = requestTokenGrant?.issuerCaPath;
+    const tokenEndpointCaPem = issuerCaPath && (await readTokenEndpointCa(issuerCaPath));
+    if (tokenEndpointCaPem) {
+      tokenEndpointCaDigest = createHash("sha256").update(tokenEndpointCaPem).digest("hex");
+    }
+    proxySelection = selected(
+      {
+        ...selection,
+        configuration: tokenEndpointCaPem
+          ? { ...policy, requestCredentials: { ...policy.requestCredentials, tokenEndpointCaPem } }
+          : policy,
+      },
+      "credential_proxy",
+      "openshell",
+      OpenShellCredentialProxyDriver,
+    );
+  }
   const backends = backendConfiguration(
     configuration.backend,
     serviceAccount,
@@ -1511,6 +1535,7 @@ export async function loadInstallationConfiguration(options: {
           sandbox: sandbox.configuration,
           backend: openShellBackend,
           proxy: drivers.credential_proxy,
+          ...(tokenEndpointCaDigest && { tokenEndpointCaDigest }),
           ...(repositoryTransport && {
             repositoryAuthorityIdentity: repositoryRuntime!.authorityIdentity,
             modelGateway: drivers.credential_gateway,

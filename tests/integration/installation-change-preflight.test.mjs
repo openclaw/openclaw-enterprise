@@ -411,6 +411,7 @@ test(
               "OCC_EGRESS_AUTHORITY_PORT",
               "OCC_OPENSHELL_GIT_PORT",
               "OCC_TOKEN_GRANT_PORT",
+              "OCC_TOKEN_GRANT_ISSUER_CA_PATH",
             ].includes(name),
           )
           .map(({ name, value }) => [name, value]),
@@ -434,11 +435,19 @@ test(
       trustDomain: "example.test",
       bundlePath: "/etc/openclaw/egress/token-grant/bundle.json",
     };
-    const tokenEnvironment = await chartEnvironment({
+    const tokenValues = {
       ...preparedGitHubValues,
       "egressAuthority.tokenGrant.enabled": "true",
       "egressAuthority.tokenGrant.bundleConfigMapName": "supervisor-jwt-bundle",
+    };
+    const tokenEnvironment = await chartEnvironment(tokenValues);
+    const issuerCaEnvironment = await chartEnvironment({
+      ...tokenValues,
+      "egressAuthority.tokenGrant.issuerCaConfigMapName": "token-endpoint-ca",
     });
+    const issuerCaOnly = structuredClone(requestCredentials);
+    issuerCaOnly.drivers.credential_proxy.configuration.tokenGrant.issuerCaPath =
+      "/operator-private-layout/issuer-ca.crt";
     const acceptedToken = await runCheck(t, requestCredentials, {}, () => tokenEnvironment);
     assert.equal(acceptedToken.status, 0, acceptedToken.stderr);
     const wrongBundle = structuredClone(requestCredentials);
@@ -446,6 +455,9 @@ test(
       "/unmounted/bundle.json";
     for (const [configuration, environment, diagnostic] of [
       [requestCredentials, enabled, /Helm egressAuthority.tokenGrant.enabled is false/],
+      [requestCredentials, issuerCaEnvironment, /issuerCaPath must match/],
+      [issuerCaOnly, tokenEnvironment, /issuerCaPath must match/],
+      [issuerCaOnly, issuerCaEnvironment, /issuerCaPath must match/],
       [
         requestCredentials,
         { ...tokenEnvironment, OCC_TOKEN_GRANT_PORT: "9555" },
