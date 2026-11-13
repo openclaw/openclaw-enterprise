@@ -1,3 +1,4 @@
+import { registerChannelCurrentnessCases } from "./postgres-agent-provisioning-channel-currentness-cases.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -5152,3 +5153,10 @@ test(
     assert.equal(completedReplay.data.provisioning.revisionId, status.revisionId);
   },
 );
+
+registerChannelCurrentnessCases({
+  createFixture,
+  createProvisioningConfigurationDriver,
+  createProvisioningSecrets,
+  provisioningBody,
+});
