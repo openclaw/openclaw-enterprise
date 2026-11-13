@@ -1,33 +1,155 @@
 import assert from "node:assert/strict";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { describe, test } from "node:test";
+import { describe, test, type TestContext, type TestOptions } from "node:test";
+import type { Pool } from "pg";
+
+import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
+import type {
+  AgentListResponse,
+  AgentReadResponse,
+  AgentRevisionListResponse,
+  AgentRevisionReadResponse,
+  AgentRevisionResponse,
+  AgentRevisionSummaryWire,
+  AgentResponse,
+  AuditEvent,
+  ConfigurationResponse,
+  ErrorResponse,
+  InstallationResponse,
+  NamespaceResponse,
+} from "../../packages/contracts/src/index.ts";
+import type { ControllerWork } from "../../packages/occ/src/index.ts";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import {
   adminEmail,
   admitted,
   caseDatabasesAvailable,
   cleanupKubernetesNamespaces,
-  createConfiguration,
-  createKubernetesConfiguredAgent as createConfiguredAgent,
-  createKubernetesHarnessAuth,
+  createConfiguration as createConfigurationRaw,
+  createKubernetesConfiguredAgent as createConfiguredAgentRaw,
+  createKubernetesHarnessAuth as createKubernetesHarnessAuthRaw,
   defaultAgentConfigurationValues,
   grantTenantAccess,
-  pollUntil,
-  prepareCaseDatabase,
-  request,
+  pollUntil as pollUntilRaw,
+  prepareCaseDatabase as prepareCaseDatabaseRaw,
+  request as requestRaw,
   requiresPostgresAndKubernetesConfiguration,
-  startKubernetesController,
-  startKubernetesWorker,
-  updateConfiguration,
-  waitForNamespaceReady,
+  startKubernetesController as startKubernetesControllerRaw,
+  startKubernetesWorker as startKubernetesWorkerRaw,
+  updateConfiguration as updateConfigurationRaw,
+  waitForNamespaceReady as waitForNamespaceReadyRaw,
 } from "../helpers/postgres-platform-state.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
 
+interface Worker {
+  child: ChildProcess;
+  output: () => string;
+}
+
+interface Controller extends Worker {
+  origin: string;
+  session: { cookie: string; origin: string };
+}
+
+type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
+type NamespaceCompletion = WorkerEvent & {
+  event: "worker.completed";
+  operation: "namespace.ensure";
+  namespaceId: string;
+};
+
+type Revision = AgentRevisionResponse["data"];
+type Configuration = ConfigurationResponse["data"];
+type Namespace = NamespaceResponse["data"];
+type Installation = InstallationResponse["data"];
+type Agent = AgentResponse["data"];
+type FixtureAgent = Agent & {
+  harnessAuth: Extract<Agent["harnessAuth"], { method: "api_key" }>;
+};
+
+interface HttpResult<Data> {
+  status: number;
+  data: Data;
+  error: ErrorResponse["error"] | undefined;
+}
+
+const startKubernetesController: (context: TestContext) => Promise<Controller> =
+  startKubernetesControllerRaw;
+const startKubernetesWorker: (context: TestContext) => Promise<Worker> = startKubernetesWorkerRaw;
+const prepareCaseDatabase: (
+  context: TestContext,
+  selection: { lane: string; testFile: string },
+) => Promise<string | undefined> = prepareCaseDatabaseRaw;
+
+const request: <Data = unknown>(
+  controller: Controller,
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+  options?: { authenticated?: boolean },
+) => Promise<HttpResult<Data>> = requestRaw;
+
+const pollUntil: <Value>(
+  description: string,
+  operation: () => Value | undefined | Promise<Value | undefined>,
+  options: { worker: Worker; timeoutMs?: number },
+) => Promise<Value> = pollUntilRaw;
+
+const createConfiguration: (
+  api: Controller,
+  namespaceId: string,
+  values: typeof defaultAgentConfigurationValues & Record<string, unknown>,
+) => Promise<Configuration> = createConfigurationRaw;
+
+const updateConfiguration: (
+  api: Controller,
+  namespaceId: string,
+  configurationId: string,
+  values: Configuration["values"],
+) => Promise<Configuration> = updateConfigurationRaw;
+
+const createConfiguredAgent: (
+  pool: Pool,
+  api: Controller,
+  namespaceId: string,
+  name: string,
+  values?: Configuration["values"],
+) => Promise<{ configuration: Configuration; agent: FixtureAgent }> = createConfiguredAgentRaw;
+
+const createKubernetesHarnessAuth: (
+  api: Controller,
+  namespaceId: string,
+) => Promise<{ method: string; source: unknown }> = createKubernetesHarnessAuthRaw;
+
+const waitForNamespaceReady: (
+  api: Controller,
+  namespaceId: string,
+  worker: Worker,
+) => Promise<Namespace> = waitForNamespaceReadyRaw;
+
+interface PersistedRevisionSpec {
+  compute: { admission: string };
+}
+
+interface NamespaceWorkRow {
+  namespace_id: string;
+  namespace_target: NonNullable<ControllerWork["namespaceTarget"]> | null;
+  state: ControllerWork["state"];
+}
+
+interface CountRow {
+  count: number;
+}
+
 // Revision lists return summaries, newest first (finding 1323), each with its deployment's
 // status. An activated revision's deployment is finishing or has finished, with no error.
-const revisionSummary = (revision, deploymentStatus) => ({
+const revisionSummary = (
+  revision: Revision,
+  deploymentStatus: AgentRevisionSummaryWire["deploymentStatus"],
+): AgentRevisionSummaryWire => ({
   id: revision.id,
   namespaceId: revision.namespaceId,
   agentId: revision.agentId,
@@ -42,17 +164,18 @@ const revisionSummary = (revision, deploymentStatus) => ({
 });
 // Compute admission is private in HTTP responses. Check its durable format separately,
 // while retaining the exact API-visible Driver identity in the complete snapshot assertion.
-const persistedCompute = (spec, selection) => {
+const persistedCompute = (spec: PersistedRevisionSpec, selection: Revision["compute"]) => {
   assert.match(spec.compute.admission, /^model-provider:v1:[a-f0-9]{64}:$/);
   return { ...selection, admission: spec.compute.admission };
 };
-const activatedStatuses = (listed) => {
-  const statuses = listed.map((item) => item.deploymentStatus);
-  for (const status of statuses) {
-    assert.ok(status === "running" || status === "succeeded", `deployment status ${status}`);
-  }
-  return statuses;
-};
+const activatedStatuses = (listed: AgentRevisionListResponse["data"]) =>
+  listed.map(({ deploymentStatus }) => {
+    assert.ok(
+      deploymentStatus === "running" || deploymentStatus === "succeeded",
+      `deployment status ${deploymentStatus}`,
+    );
+    return deploymentStatus;
+  });
 
 // Each case owns a database (prepareCaseDatabase), so its own Installation, and its own scoped
 // controller identity, platform namespace, ClusterRoles and binding (named from a random hash).
@@ -63,8 +186,9 @@ const activatedStatuses = (listed) => {
 // what the lane's other files already use at the same time, so under the CI runner the cases
 // run two at a time (the describe at the end of this file).
 const ownDatabase = { lane: "k3d-fixture-state", testFile: import.meta.url };
-const cases = [];
-const stateCase = (...definition) => cases.push(definition);
+type StateCase = [name: string, options: TestOptions, run: (context: TestContext) => Promise<void>];
+const cases: StateCase[] = [];
+const stateCase = (...definition: StateCase) => cases.push(definition);
 
 stateCase(
   "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
@@ -75,24 +199,24 @@ stateCase(
     context.after(() => pool.end());
 
     const first = await startKubernetesController(context);
-    const existing = await request(first, "GET", "/installation");
-    let installation;
+    const existing = await request<Installation>(first, "GET", "/installation");
+    let installation: Installation;
     if (existing.status === 200) {
       installation = existing.data;
     } else {
       assert.equal(existing.status, 404);
-      const created = await request(first, "POST", "/installation/bootstrap", {
+      const created = await request<Installation>(first, "POST", "/installation/bootstrap", {
         name: "PostgreSQL restart integration",
       });
       assert.equal(created.status, 201);
       // The read adds the capabilities derived from the selected Drivers (#2670).
-      const read = await request(first, "GET", "/installation");
+      const read = await request<Installation>(first, "GET", "/installation");
       assert.equal(read.status, 200);
       assert.equal(read.data.id, created.data.id);
       installation = read.data;
     }
 
-    const namespace = await request(first, "POST", "/namespaces", {
+    const namespace = await request<Namespace>(first, "POST", "/namespaces", {
       name: `restart-${randomUUID()}`,
     });
     assert.equal(namespace.status, 201);
@@ -102,14 +226,16 @@ stateCase(
     const worker = await startKubernetesWorker(context);
     // The worker has created the Kubernetes namespace but cannot reconcile tenant resources
     // until its tenant-local RoleBinding exists. Inspect only this Namespace's own pass.
-    const completion = (matches) =>
-      jsonLines(worker.output(), { lenient: true }).find(
-        (line) =>
+    const completion = (matches: (event: WorkerEvent) => boolean) => {
+      const events: WorkerEvent[] = jsonLines(worker.output(), { lenient: true });
+      return events.find(
+        (line): line is NamespaceCompletion =>
           line.event === "worker.completed" &&
           line.operation === "namespace.ensure" &&
           line.namespaceId === namespace.data.id &&
           matches(line),
       );
+    };
     const denied = await pollUntil(
       "the worker to report the denied tenant request",
       () => completion((line) => line.hintCode === "KUBERNETES_TENANT_ACCESS_DENIED"),
@@ -138,7 +264,12 @@ stateCase(
     assert.notEqual(agent.servicePrincipalId.trim(), "");
     assert.equal(agent.namespaceId, namespace.data.id);
 
-    const persisted = await pool.query(
+    const persisted = await pool.query<{
+      audit_events: number;
+      queued_operations: number;
+      configurations: number;
+      agent_service_principals: number;
+    }>(
       `SELECT
        (SELECT count(*)::integer FROM occ.audit_events
          WHERE resource_id = $1 OR resource_id = $2 OR resource_id = $3) AS audit_events,
@@ -151,43 +282,53 @@ stateCase(
            AND kind = 'service_principal') AS agent_service_principals`,
       [namespace.data.id, agent.id, agent.configurationId],
     );
-    assert.ok(persisted.rows[0].audit_events >= 3);
-    assert.equal(persisted.rows[0].queued_operations, 1);
-    assert.equal(persisted.rows[0].configurations, 1);
-    assert.equal(persisted.rows[0].agent_service_principals, 1);
+    const [persistedCounts] = persisted.rows;
+    assert.ok(persistedCounts);
+    assert.ok(persistedCounts.audit_events >= 3);
+    assert.equal(persistedCounts.queued_operations, 1);
+    assert.equal(persistedCounts.configurations, 1);
+    assert.equal(persistedCounts.agent_service_principals, 1);
 
     // The live worker can still produce unrelated lifecycle audit rows, such as
     // bootstrap Namespace convergence, so stop it before measuring this request.
     await stopProcess(worker.child);
 
-    const auditBeforeUnauthenticatedRequest = await pool.query(
+    const auditBeforeUnauthenticatedRequest = await pool.query<CountRow>(
       "SELECT count(*)::integer AS count FROM occ.audit_events",
     );
+    const [auditBefore] = auditBeforeUnauthenticatedRequest.rows;
+    assert.ok(auditBefore);
     const unauthenticated = await request(first, "GET", "/namespaces", undefined, {
       authenticated: false,
     });
     assert.equal(unauthenticated.status, 401);
-    const auditAfterUnauthenticatedRequest = await pool.query(
+    const auditAfterUnauthenticatedRequest = await pool.query<CountRow>(
       "SELECT count(*)::integer AS count FROM occ.audit_events",
     );
+    const [auditAfter] = auditAfterUnauthenticatedRequest.rows;
+    assert.ok(auditAfter);
     assert.equal(
-      auditAfterUnauthenticatedRequest.rows[0].count,
-      auditBeforeUnauthenticatedRequest.rows[0].count,
+      auditAfter.count,
+      auditBefore.count,
       "unauthenticated requests have no attributable actor and cannot write audit rows",
     );
 
     await stopProcess(first.child);
     const restarted = await startKubernetesController(context);
 
-    const reloadedInstallation = await request(restarted, "GET", "/installation");
+    const reloadedInstallation = await request<Installation>(restarted, "GET", "/installation");
     assert.equal(reloadedInstallation.status, 200);
     assert.deepEqual(reloadedInstallation.data, installation);
 
-    const reloadedNamespace = await request(restarted, "GET", `/namespaces/${namespace.data.id}`);
+    const reloadedNamespace = await request<Namespace>(
+      restarted,
+      "GET",
+      `/namespaces/${namespace.data.id}`,
+    );
     assert.equal(reloadedNamespace.status, 200);
     assert.deepEqual(reloadedNamespace.data, readyNamespace);
 
-    const reloadedAgent = await request(
+    const reloadedAgent = await request<AgentReadResponse["data"]>(
       restarted,
       "GET",
       `/namespaces/${namespace.data.id}/agents/${agent.id}`,
@@ -199,10 +340,12 @@ stateCase(
       name: "Forbidden second Installation",
     });
     assert.equal(duplicateBootstrap.status, 409);
-    const installations = await pool.query(
+    const installations = await pool.query<CountRow>(
       "SELECT count(*)::integer AS count FROM occ.installation",
     );
-    assert.equal(installations.rows[0].count, 1);
+    const [installationCount] = installations.rows;
+    assert.ok(installationCount);
+    assert.equal(installationCount.count, 1);
   },
 );
 
@@ -215,7 +358,7 @@ stateCase(
     context.after(() => pool.end());
     const process = await startKubernetesController(context);
 
-    const namespace = await request(process, "POST", "/namespaces", {
+    const namespace = await request<Namespace>(process, "POST", "/namespaces", {
       name: `concurrent-agents-${randomUUID()}`,
     });
     assert.equal(namespace.status, 201);
@@ -236,13 +379,13 @@ stateCase(
       createConfiguration(process, namespace.data.id, secondValues),
     ]);
     const [first, second] = await Promise.all([
-      request(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
+      request<FixtureAgent>(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
         name: `first-${randomUUID()}`,
         configurationId: firstConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
         gatewayManagedMode: false,
       }),
-      request(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
+      request<FixtureAgent>(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
         name: `second-${randomUUID()}`,
         configurationId: secondConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
@@ -264,17 +407,28 @@ stateCase(
       ),
     );
 
-    const stillReady = await request(process, "GET", `/namespaces/${namespace.data.id}`);
+    const stillReady = await request<Namespace>(process, "GET", `/namespaces/${namespace.data.id}`);
     assert.equal(stillReady.status, 200);
     assert.equal(stillReady.data.status, "ready");
-    const listed = await request(process, "GET", `/namespaces/${namespace.data.id}/agents`);
+    const listed = await request<AgentListResponse["data"]>(
+      process,
+      "GET",
+      `/namespaces/${namespace.data.id}/agents`,
+    );
     assert.equal(listed.status, 200);
     assert.deepEqual(
       listed.data.map(({ id }) => id).sort(),
       [first.data.id, second.data.id].sort(),
     );
 
-    const persistedAgents = await pool.query(
+    const persistedAgents = await pool.query<{
+      id: string;
+      namespace_id: string;
+      execution_mode: Agent["executionMode"];
+      service_principal_id: string;
+      kind: string;
+      agent_id: string;
+    }>(
       `SELECT agent.id, agent.namespace_id, agent.execution_mode, agent.service_principal_id,
               identity.kind, identity.agent_id
        FROM occ.agents AS agent
@@ -286,18 +440,21 @@ stateCase(
       [namespace.data.id],
     );
     assert.equal(persistedAgents.rowCount, 2);
+    const [firstPersistedAgent, secondPersistedAgent] = persistedAgents.rows;
+    assert.ok(firstPersistedAgent);
+    assert.ok(secondPersistedAgent);
     assert.deepEqual(
       persistedAgents.rows.map(({ id }) => id),
       [first.data.id, second.data.id].sort(),
     );
     assert.notEqual(
-      persistedAgents.rows[0].service_principal_id,
-      persistedAgents.rows[1].service_principal_id,
+      firstPersistedAgent.service_principal_id,
+      secondPersistedAgent.service_principal_id,
     );
     assert.ok(persistedAgents.rows.every(({ execution_mode }) => execution_mode === "embedded"));
     assert.ok(persistedAgents.rows.every(({ kind }) => kind === "service_principal"));
 
-    const historyBefore = await request(
+    const historyBefore = await request<AgentRevisionListResponse["data"]>(
       process,
       "GET",
       `/namespaces/${namespace.data.id}/agents/${first.data.id}/revisions`,
@@ -305,7 +462,7 @@ stateCase(
     assert.equal(historyBefore.status, 200);
     assert.deepEqual(historyBefore.data, []);
 
-    const deployment = await request(
+    const deployment = await request<Revision>(
       process,
       "POST",
       `/namespaces/${namespace.data.id}/agents/${first.data.id}/deploy`,
@@ -344,7 +501,7 @@ stateCase(
     const activeAgent = await pollUntil(
       `independent worker to activate admitted revision ${revision.id}`,
       async () => {
-        const current = await request(
+        const current = await request<AgentReadResponse["data"]>(
           process,
           "GET",
           `/namespaces/${namespace.data.id}/agents/${first.data.id}`,
@@ -356,8 +513,12 @@ stateCase(
     );
 
     const [firstHistory, secondHistory] = await Promise.all([
-      request(process, "GET", `/namespaces/${namespace.data.id}/agents/${first.data.id}/revisions`),
-      request(
+      request<AgentRevisionListResponse["data"]>(
+        process,
+        "GET",
+        `/namespaces/${namespace.data.id}/agents/${first.data.id}/revisions`,
+      ),
+      request<AgentRevisionListResponse["data"]>(
         process,
         "GET",
         `/namespaces/${namespace.data.id}/agents/${second.data.id}/revisions`,
@@ -366,10 +527,11 @@ stateCase(
     assert.equal(firstHistory.status, 200);
     assert.equal(secondHistory.status, 200);
     const [firstStatus] = activatedStatuses(firstHistory.data);
+    assert.ok(firstStatus);
     assert.deepEqual(firstHistory.data, [revisionSummary(revision, firstStatus)]);
     assert.deepEqual(secondHistory.data, []);
 
-    const actor = await pool.query(
+    const actor = await pool.query<{ id: string }>(
       `SELECT identity.id
        FROM occ.iam_identities AS identity
        JOIN occ."user" AS auth_user ON auth_user.id = identity.subject
@@ -377,9 +539,18 @@ stateCase(
       [adminEmail],
     );
     assert.equal(actor.rowCount, 1);
-    const principalId = actor.rows[0].id;
+    const [identity] = actor.rows;
+    assert.ok(identity);
+    const principalId = identity.id;
 
-    const persistedRevision = await pool.query(
+    const persistedRevision = await pool.query<{
+      agent_id: string;
+      namespace_id: string;
+      active_revision_id: string | null;
+      revision_id: string;
+      revision_number: string;
+      admitted_spec: PersistedRevisionSpec;
+    }>(
       `SELECT agent.id AS agent_id, agent.namespace_id, agent.active_revision_id,
               revision.id AS revision_id, revision.revision_number, revision.admitted_spec
        FROM occ.agents AS agent
@@ -389,11 +560,13 @@ stateCase(
       [namespace.data.id, first.data.id],
     );
     assert.equal(persistedRevision.rowCount, 1);
-    assert.equal(persistedRevision.rows[0].agent_id, first.data.id);
-    assert.equal(persistedRevision.rows[0].namespace_id, namespace.data.id);
-    assert.equal(persistedRevision.rows[0].revision_id, revision.id);
-    assert.equal(Number(persistedRevision.rows[0].revision_number), 1);
-    assert.deepEqual(persistedRevision.rows[0].admitted_spec, {
+    const [revisionRow] = persistedRevision.rows;
+    assert.ok(revisionRow);
+    assert.equal(revisionRow.agent_id, first.data.id);
+    assert.equal(revisionRow.namespace_id, namespace.data.id);
+    assert.equal(revisionRow.revision_id, revision.id);
+    assert.equal(Number(revisionRow.revision_number), 1);
+    assert.deepEqual(revisionRow.admitted_spec, {
       configuration_id: revision.configurationId,
       configuration_kind: revision.configurationKind,
       configuration_generation: revision.configurationGeneration,
@@ -404,10 +577,10 @@ stateCase(
         secretDriverId: "secret-kubernetes",
       },
       harness: revision.harness,
-      compute: persistedCompute(persistedRevision.rows[0].admitted_spec, revision.compute),
+      compute: persistedCompute(revisionRow.admitted_spec, revision.compute),
       execution_admission: { version: 2, mode: "unprotected" },
     });
-    assert.equal(persistedRevision.rows[0].active_revision_id, revision.id);
+    assert.equal(revisionRow.active_revision_id, revision.id);
     assert.equal(activeAgent.activeRevisionId, revision.id);
 
     // Activation is visible before post-commit effects complete the worker claim.
@@ -415,18 +588,26 @@ stateCase(
     const revisionWork = await pollUntil(
       `admitted revision ${revision.id} work to succeed`,
       async () => {
-        const current = await pool.query(
+        const current = await pool.query<{
+          namespace_id: string;
+          agent_id: string | null;
+          revision_id: string | null;
+          actor_id: string;
+          state: ControllerWork["state"];
+        }>(
           `SELECT namespace_id, agent_id, revision_id, actor_id, state
            FROM occ.controller_work WHERE revision_id = $1`,
           [revision.id],
         );
         assert.equal(current.rowCount, 1);
+        const [workRow] = current.rows;
+        assert.ok(workRow);
         assert.notEqual(
-          current.rows[0].state,
+          workRow.state,
           "failed_permanent",
           `Revision ${revision.id} work failed permanently`,
         );
-        return current.rows[0].state === "succeeded" ? current : undefined;
+        return workRow.state === "succeeded" ? current : undefined;
       },
       { worker },
     );
@@ -462,8 +643,8 @@ stateCase(
     }
 
     const [removed, retained] = await Promise.all([
-      request(api, "POST", "/namespaces", { name: `worker-remove-${randomUUID()}` }),
-      request(api, "POST", "/namespaces", { name: `worker-retain-${randomUUID()}` }),
+      request<Namespace>(api, "POST", "/namespaces", { name: `worker-remove-${randomUUID()}` }),
+      request<Namespace>(api, "POST", "/namespaces", { name: `worker-retain-${randomUUID()}` }),
     ]);
     for (const namespace of [removed, retained]) {
       assert.equal(namespace.status, 201);
@@ -488,14 +669,14 @@ stateCase(
       retained.data.id,
       `worker-agent-${randomUUID()}`,
     );
-    const preDeploymentWork = await pool.query(
+    const preDeploymentWork = await pool.query<{ idempotency_key: string }>(
       `SELECT idempotency_key FROM occ.controller_work
        WHERE namespace_id = $1 AND agent_id = $2`,
       [retained.data.id, agent.id],
     );
     assert.equal(preDeploymentWork.rowCount, 0, "Agent creation must not enqueue deployment work");
 
-    const deployment = await request(
+    const deployment = await request<Revision>(
       api,
       "POST",
       `/namespaces/${retained.data.id}/agents/${agent.id}/deploy`,
@@ -523,7 +704,7 @@ stateCase(
     await pollUntil(
       `independent worker to activate admitted revision ${revision.id}`,
       async () => {
-        const current = await request(
+        const current = await request<AgentReadResponse["data"]>(
           api,
           "GET",
           `/namespaces/${retained.data.id}/agents/${agent.id}`,
@@ -534,19 +715,22 @@ stateCase(
       { worker, timeoutMs: 60_000 },
     );
 
-    const deletion = await request(api, "DELETE", `/namespaces/${removed.data.id}`);
+    const deletion = await request<Namespace>(api, "DELETE", `/namespaces/${removed.data.id}`);
     assert.equal(deletion.status, 202);
     assert.equal(deletion.data.status, "deleting");
 
     const tombstone = await pollUntil(
       `Namespace ${removed.data.id} to receive its exact durable deletion tombstone`,
       async () => {
-        const rows = await pool.query(
-          "SELECT id, status, deleted_at FROM occ.namespaces WHERE id = $1",
-          [removed.data.id],
-        );
+        const rows = await pool.query<{
+          id: string;
+          status: Namespace["status"];
+          deleted_at: Date | null;
+        }>("SELECT id, status, deleted_at FROM occ.namespaces WHERE id = $1", [removed.data.id]);
         assert.equal(rows.rowCount, 1);
-        return rows.rows[0].deleted_at === null ? undefined : rows.rows[0];
+        const [row] = rows.rows;
+        assert.ok(row);
+        return row.deleted_at === null ? undefined : row;
       },
       { worker, timeoutMs: 60_000 },
     );
@@ -555,12 +739,12 @@ stateCase(
     assert.ok(tombstone.deleted_at instanceof Date);
     assert.equal((await request(api, "GET", `/namespaces/${removed.data.id}`)).status, 404);
 
-    const unaffected = await request(api, "GET", `/namespaces/${retained.data.id}`);
+    const unaffected = await request<Namespace>(api, "GET", `/namespaces/${retained.data.id}`);
     assert.equal(unaffected.status, 200);
     assert.equal(unaffected.data.id, retained.data.id);
     assert.equal(unaffected.data.status, "ready");
 
-    const work = await pool.query(
+    const work = await pool.query<NamespaceWorkRow>(
       `SELECT namespace_id, namespace_target, state
        FROM occ.controller_work
        WHERE namespace_id = ANY($1::text[]) AND agent_id IS NULL
@@ -583,19 +767,28 @@ stateCase(
       }),
     );
 
-    const admittedWork = await pool.query(
+    const admittedWork = await pool.query<{
+      idempotency_key: string;
+      state: ControllerWork["state"];
+      attempt_count: number;
+      claim_token: string | null;
+      lease_expires_at: Date | null;
+      completed_at: Date | null;
+    }>(
       `SELECT idempotency_key, state, attempt_count, claim_token,
               lease_expires_at, completed_at
        FROM occ.controller_work WHERE revision_id = $1`,
       [revision.id],
     );
     assert.equal(admittedWork.rowCount, 1);
-    assert.equal(admittedWork.rows[0].idempotency_key, `agent_revision:${revision.id}:reconcile`);
-    assert.equal(admittedWork.rows[0].state, "succeeded");
-    assert.equal(admittedWork.rows[0].attempt_count, 1);
-    assert.equal(admittedWork.rows[0].claim_token, null);
-    assert.equal(admittedWork.rows[0].lease_expires_at, null);
-    assert.ok(admittedWork.rows[0].completed_at instanceof Date);
+    const [admittedWorkRow] = admittedWork.rows;
+    assert.ok(admittedWorkRow);
+    assert.equal(admittedWorkRow.idempotency_key, `agent_revision:${revision.id}:reconcile`);
+    assert.equal(admittedWorkRow.state, "succeeded");
+    assert.equal(admittedWorkRow.attempt_count, 1);
+    assert.equal(admittedWorkRow.claim_token, null);
+    assert.equal(admittedWorkRow.lease_expires_at, null);
+    assert.ok(admittedWorkRow.completed_at instanceof Date);
   },
 );
 
@@ -619,8 +812,8 @@ stateCase(
     }
 
     const [firstNamespace, secondNamespace] = await Promise.all([
-      request(api, "POST", "/namespaces", { name: `revision-tenant-a-${randomUUID()}` }),
-      request(api, "POST", "/namespaces", { name: `revision-tenant-b-${randomUUID()}` }),
+      request<Namespace>(api, "POST", "/namespaces", { name: `revision-tenant-a-${randomUUID()}` }),
+      request<Namespace>(api, "POST", "/namespaces", { name: `revision-tenant-b-${randomUUID()}` }),
     ]);
     assert.equal(firstNamespace.status, 201);
     assert.equal(secondNamespace.status, 201);
@@ -686,18 +879,20 @@ stateCase(
     assert.equal(persistedConfiguration.generation, 2);
     assert.deepEqual(persistedConfiguration.values, persistedConfigValues);
 
-    const noMetadataEffects = await pool.query(
+    const noMetadataEffects = await pool.query<CountRow>(
       `SELECT count(*)::integer AS count FROM occ.controller_work
        WHERE namespace_id = ANY($1::text[]) AND agent_id IS NOT NULL`,
       [[namespaceA, namespaceB]],
     );
-    assert.equal(noMetadataEffects.rows[0].count, 0);
+    const [metadataEffects] = noMetadataEffects.rows;
+    assert.ok(metadataEffects);
+    assert.equal(metadataEffects.count, 0);
 
     const deniedTargetConfiguration = await createConfiguration(api, namespaceA, {
       ...defaultAgentConfigurationValues,
       model: { id: "unauthorized-update" },
     });
-    await pool.query(
+    await pool.query<never>(
       `INSERT INTO occ.iam_restrictions
        (id, namespace_id, action, resource_kind, resource_id, effect)
        VALUES ($1, $3, 'update', 'agent', $4, 'deny'),
@@ -712,7 +907,7 @@ stateCase(
 
     await stopProcess(api.child);
     api = await startKubernetesController(context);
-    const afterRestart = await request(
+    const afterRestart = await request<Configuration>(
       api,
       "GET",
       `/namespaces/${namespaceA}/configurations/${primaryConfiguration.id}`,
@@ -734,7 +929,11 @@ stateCase(
       `/namespaces/${namespaceA}/agents/${restricted.id}/deploy`,
     );
     assert.equal(deniedDeployment.status, 403);
-    const deniedMutation = await pool.query(
+    const deniedMutation = await pool.query<{
+      configuration_id: string;
+      revisions: number;
+      work: number;
+    }>(
       `SELECT agent.configuration_id,
               (SELECT count(*)::integer FROM occ.agent_revisions WHERE agent_id = agent.id)
                 AS revisions,
@@ -747,7 +946,7 @@ stateCase(
       { configuration_id: restricted.configurationId, revisions: 0, work: 0 },
     ]);
 
-    const firstDeployment = await request(
+    const firstDeployment = await request<Revision>(
       api,
       "POST",
       `/namespaces/${namespaceA}/agents/${primary.id}/deploy`,
@@ -806,7 +1005,11 @@ stateCase(
     await pollUntil(
       `first revision ${firstRevision.id} to become active`,
       async () => {
-        const current = await request(api, "GET", `/namespaces/${namespaceA}/agents/${primary.id}`);
+        const current = await request<AgentReadResponse["data"]>(
+          api,
+          "GET",
+          `/namespaces/${namespaceA}/agents/${primary.id}`,
+        );
         assert.equal(current.status, 200);
         return current.data.activeRevisionId === firstRevision.id ? current.data : undefined;
       },
@@ -827,9 +1030,9 @@ stateCase(
     assert.equal(replacement.generation, 3);
 
     const [secondDeployment, siblingDeployment, foreignDeployment] = await Promise.all([
-      request(api, "POST", `/namespaces/${namespaceA}/agents/${primary.id}/deploy`),
-      request(api, "POST", `/namespaces/${namespaceA}/agents/${sibling.id}/deploy`),
-      request(api, "POST", `/namespaces/${namespaceB}/agents/${foreign.id}/deploy`),
+      request<Revision>(api, "POST", `/namespaces/${namespaceA}/agents/${primary.id}/deploy`),
+      request<Revision>(api, "POST", `/namespaces/${namespaceA}/agents/${sibling.id}/deploy`),
+      request<Revision>(api, "POST", `/namespaces/${namespaceB}/agents/${foreign.id}/deploy`),
     ]);
     for (const deployment of [secondDeployment, siblingDeployment, foreignDeployment]) {
       assert.equal(deployment.status, 202);
@@ -845,15 +1048,16 @@ stateCase(
       admitted(servedAs(replacementConfigValues, primary.name)),
     );
 
-    for (const [namespaceId, agent, revision] of [
+    const deployments = [
       [namespaceA, primary, secondRevision],
       [namespaceA, sibling, siblingDeployment.data],
       [namespaceB, foreign, foreignDeployment.data],
-    ]) {
+    ] as const;
+    for (const [namespaceId, agent, revision] of deployments) {
       await pollUntil(
         `Agent ${agent.id} to activate revision ${revision.id}`,
         async () => {
-          const current = await request(
+          const current = await request<AgentReadResponse["data"]>(
             api,
             "GET",
             `/namespaces/${namespaceId}/agents/${agent.id}`,
@@ -865,18 +1069,20 @@ stateCase(
       );
     }
 
-    const history = await request(
+    const history = await request<AgentRevisionListResponse["data"]>(
       api,
       "GET",
       `/namespaces/${namespaceA}/agents/${primary.id}/revisions`,
     );
     assert.equal(history.status, 200);
     const [secondStatus, earlierStatus] = activatedStatuses(history.data);
+    assert.ok(secondStatus);
+    assert.ok(earlierStatus);
     assert.deepEqual(history.data, [
       revisionSummary(secondRevision, secondStatus),
       revisionSummary(firstRevision, earlierStatus),
     ]);
-    const firstRevisionRead = await request(
+    const firstRevisionRead = await request<AgentRevisionReadResponse["data"]>(
       api,
       "GET",
       `/namespaces/${namespaceA}/agents/${primary.id}/revisions/${firstRevision.id}`,
@@ -890,7 +1096,14 @@ stateCase(
     );
     assert.equal(foreignRead.status, 404);
 
-    const persistedRevisions = await pool.query(
+    const persistedRevisions = await pool.query<{
+      id: string;
+      namespace_id: string;
+      agent_id: string;
+      revision_number: string;
+      admitted_spec: PersistedRevisionSpec;
+      service_principal_id: string;
+    }>(
       `SELECT revision.id, revision.namespace_id, revision.agent_id,
               revision.revision_number, revision.admitted_spec,
               agent.service_principal_id
@@ -901,7 +1114,10 @@ stateCase(
       [primary.id],
     );
     assert.equal(persistedRevisions.rowCount, 2);
-    assert.deepEqual(persistedRevisions.rows[0].admitted_spec, {
+    const [firstPersistedRevision, secondPersistedRevision] = persistedRevisions.rows;
+    assert.ok(firstPersistedRevision);
+    assert.ok(secondPersistedRevision);
+    assert.deepEqual(firstPersistedRevision.admitted_spec, {
       configuration_id: firstRevision.configurationId,
       configuration_kind: firstRevision.configurationKind,
       configuration_generation: firstRevision.configurationGeneration,
@@ -912,10 +1128,10 @@ stateCase(
         secretDriverId: "secret-kubernetes",
       },
       harness: firstRevision.harness,
-      compute: persistedCompute(persistedRevisions.rows[0].admitted_spec, firstRevision.compute),
+      compute: persistedCompute(firstPersistedRevision.admitted_spec, firstRevision.compute),
       execution_admission: { version: 2, mode: "unprotected" },
     });
-    assert.deepEqual(persistedRevisions.rows[1].admitted_spec, {
+    assert.deepEqual(secondPersistedRevision.admitted_spec, {
       configuration_id: secondRevision.configurationId,
       configuration_kind: secondRevision.configurationKind,
       configuration_generation: secondRevision.configurationGeneration,
@@ -926,20 +1142,24 @@ stateCase(
         secretDriverId: "secret-kubernetes",
       },
       harness: secondRevision.harness,
-      compute: persistedCompute(persistedRevisions.rows[1].admitted_spec, secondRevision.compute),
+      compute: persistedCompute(secondPersistedRevision.admitted_spec, secondRevision.compute),
       execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.equal(
-      persistedRevisions.rows[0].admitted_spec.compute.admission,
-      persistedRevisions.rows[1].admitted_spec.compute.admission,
+      firstPersistedRevision.admitted_spec.compute.admission,
+      secondPersistedRevision.admitted_spec.compute.admission,
       "unchanged saved provider settings retain their admission across draft revisions",
     );
     assert.equal(
-      persistedRevisions.rows[0].service_principal_id,
-      persistedRevisions.rows[1].service_principal_id,
+      firstPersistedRevision.service_principal_id,
+      secondPersistedRevision.service_principal_id,
     );
 
-    const identities = await pool.query(
+    const identities = await pool.query<{
+      namespace_id: string | null;
+      agent_id: string | null;
+      id: string;
+    }>(
       `SELECT namespace_id, agent_id, id FROM occ.iam_identities
        WHERE kind = 'service_principal' AND agent_id = ANY($1::text[])
        ORDER BY agent_id`,
@@ -948,8 +1168,9 @@ stateCase(
     assert.equal(identities.rowCount, 3);
     assert.equal(new Set(identities.rows.map(({ id }) => id)).size, 3);
     const primaryIdentity = identities.rows.find(({ agent_id }) => agent_id === primary.id);
+    assert.ok(primaryIdentity);
     assert.equal(primaryIdentity.namespace_id, namespaceA);
-    assert.equal(primaryIdentity.id, persistedRevisions.rows[0].service_principal_id);
+    assert.equal(primaryIdentity.id, firstPersistedRevision.service_principal_id);
 
     // Activation becomes visible before post-commit effects finish and the worker
     // completes its claim, so wait for the durable work state asserted below.
@@ -962,7 +1183,13 @@ stateCase(
     const work = await pollUntil(
       "the four admitted revision work items to succeed",
       async () => {
-        const current = await pool.query(
+        const current = await pool.query<{
+          namespace_id: string;
+          agent_id: string | null;
+          revision_id: string | null;
+          idempotency_key: string;
+          state: ControllerWork["state"];
+        }>(
           `SELECT namespace_id, agent_id, revision_id, idempotency_key, state
            FROM occ.controller_work WHERE agent_id = ANY($1::text[])
            ORDER BY agent_id, idempotency_key`,
@@ -990,7 +1217,7 @@ stateCase(
       assert.equal(item.idempotency_key, `agent_revision:${item.revision_id}:reconcile`);
     }
 
-    const namespaceWork = await pool.query(
+    const namespaceWork = await pool.query<NamespaceWorkRow>(
       `SELECT namespace_id, namespace_target, state FROM occ.controller_work
        WHERE namespace_id = ANY($1::text[]) AND agent_id IS NULL`,
       [[namespaceA, namespaceB]],
@@ -1002,7 +1229,12 @@ stateCase(
       ),
     );
 
-    const lifecycle = await pool.query(
+    const lifecycle = await pool.query<{
+      resource_id: string;
+      action: string;
+      outcome: AuditEvent["outcome"];
+      details: Record<string, unknown> | null;
+    }>(
       `SELECT resource_id, action, outcome, details
        FROM occ.audit_events
        WHERE resource_id = ANY($1::text[])
@@ -1016,6 +1248,7 @@ stateCase(
       ({ resource_id, action }) =>
         resource_id === secondRevision.id && action === "openclaw.agents.lifecycle.activate",
     );
+    assert.ok(secondActivation?.details);
     assert.equal(secondActivation.details.previousRevisionId, firstRevision.id);
   },
 );
