@@ -265,7 +265,8 @@
       "path": "tests/integration/ci-runner-openshell-progress.test.ts",
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
-        "run reports bounded OpenShell progress before the test file finishes"
+        "run reports bounded OpenShell progress before the test file finishes",
+        "CI retains the unfinished upstream stage without changing the failed case"
       ]
     },
     {
