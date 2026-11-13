@@ -13,6 +13,7 @@
     "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/plugin-compute-codex-install.test.ts",
     "tests/conformance/protected-codex-artifact-policy.test.ts",
     "tests/integration/openshell-quickstart-policy.test.ts",
     "tests/conformance/codex-native-startup.test.mjs",
@@ -555,6 +556,33 @@
     },
     {
       "path": "tests/conformance/plugin-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-compute-codex-install.test.ts",
+      "expectedTests": [
+        "Codex runtime skips the plugin API when no plugins are selected",
+        "Codex runtime helper installs a plugin with skills and applies write action approval without tool inventory",
+        "Codex startup explicitly denies inherited apps and replaces inherited approval exceptions",
+        "Codex runtime helper verifies explicit reviewers before readiness without constraining omission",
+        "Codex runtime helper discovers tool policy after installation and before readiness",
+        "Codex runtime helper rejects incomplete or unbounded tool discovery before writing app policy",
+        "Codex runtime helper reports plugin install warnings without retrying",
+        "Codex runtime helper reports connector-auth warnings with the admitted key",
+        "Codex runtime helper disables curated plugins at once under API-key login",
+        "Codex runtime helper waits for a late app-server before disabling API-key plugin selections",
+        "Codex runtime helper keeps malformed matching install responses generic",
+        "Codex runtime refuses request timeouts and install deadlines outside 1 to 2147483647 ms",
+        "Codex runtime cannot report installation success when its deadline expires before the first attempt",
+        "Codex selected-plugin search stops before writes or continuation when its budget expires",
+        "Codex runtime helper keeps pre-install native uncertainty generic",
+        "Codex runtime keeps disabled selected plugins default-denied while preserving install identity",
+        "Codex runtime installs and reports only enabled selections in mixed plugin sets",
+        "Codex runtime helper fails before readiness when catalog identity is absent",
+        "Codex runtime helper rejects catalog drift before app grants and readiness",
+        "Codex runtime helper verifies defaults and rejects inherited unselected app or plugin enablement",
+        "Codex runtime helper checks effective app, tool, and account policy before readiness",
+        "Codex runtime helper fails before readiness when selected plugin lacks app mapping"
+      ]
     },
     {
       "path": "tests/conformance/protected-codex-artifact-policy.test.ts"
