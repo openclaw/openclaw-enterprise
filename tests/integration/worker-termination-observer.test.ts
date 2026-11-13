@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import {
   mkdtemp,
@@ -17,10 +17,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { decodeOtlpLogs } from "../helpers/production-observability-collector.ts";
 import {
   workerObserverCollectorBinary,
   writeWorkerObserverExporter,
-} from "../helpers/worker-termination-installed.mjs";
+} from "../helpers/worker-termination-installed.ts";
 
 type Terminated = {
   exitCode: number;
@@ -46,10 +48,12 @@ type Pod = {
   spec: object;
   status: { containerStatuses?: ContainerStatus[]; initContainerStatuses?: ContainerStatus[] };
 };
-type LogRecord = {
-  attributes: { key: string; value: { stringValue?: string; intValue?: string } }[];
-};
-type Request = { resourceLogs: { scopeLogs: { logRecords: LogRecord[] }[] }[] };
+async function exitCode(child: ChildProcess, event: "exit" | "close") {
+  const [code]: unknown[] = await once(child, event);
+  assert.ok(code === null || typeof code === "number");
+  return code;
+}
+
 const canary = "PRIVATE_PAYLOAD_CANARY";
 const oldID = `containerd://${"1".repeat(64)}`;
 const secondID = `containerd://${"2".repeat(64)}`;
@@ -142,24 +146,26 @@ test(
       await symlink(process.env.OCC_KUBECTL_BIN, join(directory, "kubectl"));
     }
     const collectorBinary = await workerObserverCollectorBinary(directory);
-    const batches: Request[] = [];
+    const batches: unknown[] = [];
     const records = () =>
-      batches.flatMap((r) =>
-        r.resourceLogs.flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords)),
-      );
+      batches.flatMap((payload) => decodeOtlpLogs(payload).flatMap(({ records }) => records));
     const attrs = () =>
-      records().map((r) =>
+      records().map((record) =>
         Object.fromEntries(
-          r.attributes.map((a) => [a.key, a.value.stringValue ?? Number(a.value.intValue)]),
+          record.attributes.map(({ key, stringValue, intValue }) => [
+            key,
+            stringValue ?? Number(intValue),
+          ]),
         ),
       );
 
     const receiver = createServer(async (req, res) => {
       let body = "";
-      for await (const chunk of req) {
-        body += chunk;
+      for await (const chunk of req as AsyncIterable<unknown>) {
+        assert.ok(Buffer.isBuffer(chunk));
+        body += chunk.toString();
       }
-      const request = JSON.parse(body) as Request;
+      const request: unknown = JSON.parse(body);
       batches.push(request);
       res.setHeader("content-type", "application/json");
       res.end("{}");
@@ -167,7 +173,9 @@ test(
     receiver.listen(0, "127.0.0.1");
     await once(receiver, "listening");
     t.after(() => receiver.close());
-    const receiverPort = (receiver.address() as { port: number }).port;
+    const receiverAddress = receiver.address();
+    assert.ok(receiverAddress && typeof receiverAddress !== "string");
+    const receiverPort = receiverAddress.port;
     const endpoint = join(directory, "observations.jsonl");
     await writeFile(endpoint, "", { mode: 0o600 });
     const state = join(directory, "state");
@@ -197,8 +205,9 @@ test(
       );
     let collector = startCollector();
     let collectorErrors = "";
-    collector.stderr.on("data", (chunk) => {
-      collectorErrors += chunk;
+    collector.stderr.on("data", (chunk: unknown) => {
+      assert.ok(Buffer.isBuffer(chunk));
+      collectorErrors += chunk.toString();
     });
     t.after(() => {
       collector.kill();
@@ -206,7 +215,7 @@ test(
         t.diagnostic(collectorErrors);
       }
     });
-    let watch: ServerResponse | undefined;
+    const active: { watch?: ServerResponse } = {};
     const requests: URL[] = [];
     let denyApi = false;
     const api = createServer((req, res) => {
@@ -219,7 +228,7 @@ test(
         return;
       }
       if (url.searchParams.get("watch") === "true") {
-        watch = res;
+        active.watch = res;
         res.flushHeaders();
       } else {
         const unavailable = pod();
@@ -238,9 +247,11 @@ test(
     api.listen(0, "127.0.0.1");
     await once(api, "listening");
     t.after(() => {
-      watch?.destroy();
+      active.watch?.destroy();
       api.close();
     });
+    const apiAddress = api.address();
+    assert.ok(apiAddress && typeof apiAddress !== "string");
     const kubeconfig = join(directory, "kubeconfig");
     await writeFile(
       kubeconfig,
@@ -250,7 +261,7 @@ test(
         clusters: [
           {
             name: "fake",
-            cluster: { server: `http://127.0.0.1:${(api.address() as { port: number }).port}` },
+            cluster: { server: `http://127.0.0.1:${apiAddress.port}` },
           },
         ],
         contexts: [{ name: "fixture", context: { cluster: "fake", user: "none" } }],
@@ -271,24 +282,28 @@ test(
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
-    const exited = once(child, "exit");
+    const exited = exitCode(child, "exit");
     let output = "";
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
+    child.stdout.on("data", (chunk: unknown) => {
+      assert.ok(Buffer.isBuffer(chunk));
+      output += chunk.toString();
     });
-    child.stderr.on("data", (chunk) => {
-      output += chunk;
+    child.stderr.on("data", (chunk: unknown) => {
+      assert.ok(Buffer.isBuffer(chunk));
+      output += chunk.toString();
     });
     t.after(() => {
       child.kill();
     });
     await until(() => {
       assert.equal(child.exitCode, null, output);
-      return Boolean(watch);
+      return Boolean(active.watch);
     });
     await until(() => attrs().some((r) => r["oce.observation.state"] === "baseline"));
-    const emit = (value: object, type = "MODIFIED") =>
-      watch!.write(`${JSON.stringify({ type, object: value })}\n`);
+    const emit = (value: object, type = "MODIFIED") => {
+      assert.ok(active.watch);
+      return active.watch.write(`${JSON.stringify({ type, object: value })}\n`);
+    };
     const first = termination(pod(1), 139, oldID, "2030-01-01T00:00:01Z");
     first.status.containerStatuses![0]!.lastState!.terminated!.reason = "UnknownAlphabeticReason";
     // During backoff kubelet can move the just-exited container to lastState
@@ -424,8 +439,7 @@ test(
     assert.equal(requests[1]!.searchParams.get("resourceVersion"), "opaque-10");
     // A compacted watch is a coverage break, never a healthy silent observer.
     emit({ kind: "Status", code: 410, message: canary }, "ERROR");
-    const [code] = await exited;
-    assert.equal(code, 1);
+    assert.equal(await exited, 1);
     assert.match(output, /coverage is incomplete/);
     assert.ok(!output.includes(canary));
     assert.equal(collector.exitCode, null, collectorErrors);
@@ -434,18 +448,25 @@ test(
     const lines = (await readFile(endpoint, "utf8"))
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line));
+      .map((line) => {
+        const parsed: unknown = JSON.parse(line);
+        const record = asRecord(parsed);
+        assert.ok(record);
+        return record;
+      });
     assert.ok(!JSON.stringify(lines).includes("UnknownAlphabeticReason"));
     const valid = lines.find((line) => line.event === "worker.termination.observed");
+    const fields = asRecord(valid?.fields);
+    assert.ok(valid && fields);
     await writeFile(join(directory, "untrusted.jsonl"), JSON.stringify(valid) + "\n");
     const bad = [
       { ...valid, stream: canary },
       { ...valid, event: canary },
       { ...valid, body: canary },
       { ...valid, resource: { attributes: { secret: canary } }, scope: { name: canary } },
-      { ...valid, fields: { ...valid.fields, "oce.observation.id": { secret: canary } } },
-      { ...valid, fields: { ...valid.fields, "oce.termination.exit_code": "139" } },
-      { ...valid, fields: { ...valid.fields, "oce.termination.exit_code": 139.5 } },
+      { ...valid, fields: { ...fields, "oce.observation.id": { secret: canary } } },
+      { ...valid, fields: { ...fields, "oce.termination.exit_code": "139" } },
+      { ...valid, fields: { ...fields, "oce.termination.exit_code": 139.5 } },
     ];
     await appendFile(endpoint, bad.map((line) => JSON.stringify(line)).join("\n") + "\n");
     await appendFile(
@@ -453,7 +474,7 @@ test(
       JSON.stringify({
         ...valid,
         fields: {
-          ...valid.fields,
+          ...fields,
           extra: { secret: canary },
           resource: { secret: canary },
           scope: { name: canary },
@@ -471,13 +492,14 @@ test(
     assert.equal(attrs().at(-1)!["oce.termination.reason"], undefined);
     assert.ok(!collectorErrors.includes(canary));
     // Persistent offsets and queue state are reused across an actual restart.
-    const stopped = once(collector, "exit");
+    const stopped = exitCode(collector, "exit");
     collector.kill();
     await stopped;
     const retainedCount = records().length;
     collector = startCollector();
-    collector.stderr.on("data", (chunk) => {
-      collectorErrors += chunk;
+    collector.stderr.on("data", (chunk: unknown) => {
+      assert.ok(Buffer.isBuffer(chunk));
+      collectorErrors += chunk.toString();
     });
     await delay(500);
     const restartObservationID = "f".repeat(64);
@@ -485,7 +507,7 @@ test(
       endpoint,
       JSON.stringify({
         ...valid,
-        fields: { ...valid.fields, "oce.observation.id": restartObservationID },
+        fields: { ...fields, "oce.observation.id": restartObservationID },
       }) + "\n",
     );
     await until(() => records().length > retainedCount);
@@ -509,10 +531,11 @@ test(
     );
     t.after(() => denied.kill());
     let deniedStderr = "";
-    denied.stderr.on("data", (chunk) => {
-      deniedStderr += chunk;
+    denied.stderr.on("data", (chunk: unknown) => {
+      assert.ok(Buffer.isBuffer(chunk));
+      deniedStderr += chunk.toString();
     });
-    assert.equal((await once(denied, "close"))[0], 1);
+    assert.equal(await exitCode(denied, "close"), 1);
     assert.equal(
       requests.length - requestsBeforeDenial,
       0,
@@ -530,7 +553,7 @@ test(
           {
             requests: requests.map(String),
             batches,
-            records: records(),
+            records: records().map(({ raw }) => raw),
             output,
             privateDirectory: {
               stderr: deniedStderr,
