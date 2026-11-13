@@ -43,8 +43,8 @@ graph TD
     end
     subgraph Helm["Helm-owned startup"]
         RD --> E["Run Helm install once with attempt marker"]
-        E --> F["Run initialization Job with migrator and application roles"]
-        F --> V{"PostgreSQL before 17?"}
+        E --> F["Initialization Job validates mounted Installation"]
+        F -->|Startup checks pass| V{"PostgreSQL before 17?"}
         V -->|Yes| P["Refuse initialization before migration DDL"]
         V -->|No| O{"Canonical migration history?"}
         O -->|No| P

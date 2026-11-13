@@ -2548,15 +2548,14 @@ test(
     assert.equal(pod.automountServiceAccountToken, false);
     assert.deepEqual(pod.nodeSelector, { "oce-role": "control" });
     assert.equal(pod.securityContext.fsGroupChangePolicy, "OnRootMismatch");
-    assert.equal(pod.initContainers[0].name, "migration");
-    assert.deepEqual(pod.initContainers[0].args, [
-      "scripts/migrate-production.mjs",
-      "--expect-empty",
-    ]);
+    const [check, migration] = pod.initContainers;
+    assert.equal(check.name, "installation-check");
+    assert.equal(migration.name, "migration");
+    assert.deepEqual(migration.args, ["scripts/migrate-production.mjs", "--expect-empty"]);
     assert.equal(pod.containers[0].name, "bootstrap");
     assert.deepEqual(pod.containers[0].args, ["scripts/bootstrap-installation.mjs"]);
-    assert.ok(pod.initContainers[0].env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
-    assert.ok(!pod.initContainers[0].env.some(({ name }) => name === "OCC_DATABASE_URL"));
+    assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
+    assert.ok(!migration.env.some(({ name }) => name === "OCC_DATABASE_URL"));
     assert.ok(pod.containers[0].env.some(({ name }) => name === "OCC_DATABASE_URL"));
     assert.ok(!pod.containers[0].env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
     assert.ok(
@@ -3303,7 +3302,9 @@ test(
       items: [{ key: "ca.pem", path: "ca.pem" }],
     });
     assert.deepEqual(
-      initializationPod.initContainers[0].volumeMounts.find(({ name }) => name === "database-ca"),
+      initializationPod.initContainers
+        .find(({ name }) => name === "migration")
+        .volumeMounts.find(({ name }) => name === "database-ca"),
       { name: "database-ca", mountPath: "/etc/openclaw/database-ca", readOnly: true },
     );
     assert.deepEqual(
@@ -5687,7 +5688,7 @@ test(
         },
       ]);
 
-      // The API and upgrade check can read the registry. Only the worker gets signing and custody keys.
+      // The API and installation check can read the registry. Only the worker gets signing and custody keys.
       const readers = {};
       for (const { spec } of objects.filter(({ kind }) => ["Deployment", "Job"].includes(kind))) {
         const pod = spec.template.spec;
@@ -5716,7 +5717,7 @@ test(
       assert.deepEqual(readers, {
         api: registry,
         worker: [...registry, "prepared-repository-owner", "prepared-repository-ca"],
-        ...(isUpgrade ? { "installation-check": registry } : {}),
+        "installation-check": registry,
       });
     }
     for (const [override, diagnostic] of [

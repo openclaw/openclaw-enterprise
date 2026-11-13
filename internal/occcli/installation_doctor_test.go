@@ -41,7 +41,7 @@ func TestInstallationDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	asUpgrade := func(job string) string {
+	withStartupCheck := func(job string) string {
 		return strings.Replace(job, `"initContainers":[`, `"initContainers":[{"name":"installation-check","command":["node"],"args":["--input-type=module","-e",`+string(checkArg)+`]},`, 1)
 	}
 	withSidecar := func(body string) string {
@@ -56,12 +56,13 @@ func TestInstallationDoctor(t *testing.T) {
 	}{
 		{"install", 200, job, "Initialization Job (install hook): complete", true, ""},
 		{"unguarded-install", 200, unguarded, "steps do not match", false, ""},
-		{"upgrade", 200, asUpgrade(unguarded), "upgrade hook): complete", true, ""},
+		{"upgrade", 200, withStartupCheck(unguarded), "upgrade hook): complete", true, ""},
 		{"sidecar-migration", 200, withSidecar(job), "runs an initialization step as a sidecar", false, "id"},
-		{"sidecar-upgrade-check", 200, withSidecar(asUpgrade(unguarded)), "runs an initialization step as a sidecar", false, "id"},
-		{"wrong-upgrade-check", 200, strings.Replace(asUpgrade(unguarded), string(checkArg), `"process.exit(0)"`, 1), "steps do not match", false, ""},
-		{"altered-upgrade-check", 200, strings.Replace(asUpgrade(unguarded), string(checkArg), string(alteredCheckArg), 1), "steps do not match", false, ""},
-		{"guarded-upgrade", 200, asUpgrade(job), "steps do not match", false, ""},
+		{"sidecar-upgrade-check", 200, withSidecar(withStartupCheck(unguarded)), "runs an initialization step as a sidecar", false, "id"},
+		{"wrong-upgrade-check", 200, strings.Replace(withStartupCheck(unguarded), string(checkArg), `"process.exit(0)"`, 1), "steps do not match", false, ""},
+		{"altered-upgrade-check", 200, strings.Replace(withStartupCheck(unguarded), string(checkArg), string(alteredCheckArg), 1), "steps do not match", false, ""},
+		{"checked-install", 200, withStartupCheck(job), "install hook): complete", true, ""},
+		{"altered-install-check", 200, strings.Replace(withStartupCheck(job), string(checkArg), string(alteredCheckArg), 1), "steps do not match", false, ""},
 		{"extra-install-arg", 200, strings.Replace(job, `"--expect-empty"`, `"--expect-empty","unexpected"`, 1), "steps do not match", false, ""},
 		{"wrong-release", 200, wrongRelease, "did not identify", false, "id"},
 		{"deleting", 200, strings.Replace(job, `"uid":"id"`, `"uid":"id","deletionTimestamp":"now"`, 1), "did not identify", false, "id"},
