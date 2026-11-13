@@ -8,8 +8,13 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../repo/access/client-contracts.ts";
 import {
+  clientSessionFileMaxBytes as limits,
+  clientGitconfig,
+  clientGhConfiguration,
+  renderClientGhHosts,
   hasControlCharacter,
   isValidGitClientConnection,
+  isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
 } from "../../repo/access/client-contracts.ts";
 import { createHash } from "node:crypto";
@@ -32,19 +37,8 @@ export const REPOSITORY_MATERIAL_KEYS = {
   "ca.pem": "ca.pem",
 } as const;
 
-const limits = {
-  bearer: 256,
-  "client.json": 16 * 1024,
-  gitconfig: 16 * 1024,
-  "gh/hosts.yml": 16 * 1024,
-  "gh/config.yml": 16 * 1024,
-  "ca.pem": 64 * 1024,
-};
 const refPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const sessionPattern = /^[A-Za-z0-9_-]{1,128}$/;
-const gitconfig =
-  "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n";
-const ghConfiguration = "version: 1\nprompt: disabled\ngit_protocol: https\n";
 
 interface RepositoryMaterialIdentity {
   readonly repositoryRef: string;
@@ -157,10 +151,7 @@ function validateClient(value: unknown): RepositoryCredentialClientConfiguration
     !isValidGitClientConnection(origin, remote, client) ||
     !/^\/[A-Za-z0-9._/-]+\.git$/.test(remote.pathname) ||
     remote.pathname.includes("..") ||
-    !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) ||
-    client.apiHost !== origin.hostname ||
+    !isValidGitClientUsernameAndHosts(origin, client) ||
     !/^[A-Za-z0-9._/-]{1,512}$/.test(client.repository)
   ) {
     return invalid();
@@ -221,10 +212,10 @@ export function repositorySessionFiles(
     return invalid();
   }
   const client = validateClient(document.client);
-  const hosts = `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(files.bearer)}\n`;
+  const hosts = renderClientGhHosts(client, files.bearer as string);
   if (
-    files.gitconfig !== gitconfig ||
-    files["gh/config.yml"] !== ghConfiguration ||
+    files.gitconfig !== clientGitconfig ||
+    files["gh/config.yml"] !== clientGhConfiguration ||
     files["gh/hosts.yml"] !== hosts
   ) {
     return invalid();

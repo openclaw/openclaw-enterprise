@@ -63,6 +63,20 @@ events use `bootstrap`, `mutation` or `authorization_denial`. The event names
 the permission that admitted the reader, `read_logs` or `administer`. Runtime
 status reads are not audited.
 
+## Investigate an uncertain Agent edit
+
+If an Agent draft save loses its response, read the Agent and compare the fields
+you edited. A matching value tells you what is saved now. Another writer could
+have saved the same value.
+
+To trace the edit, give your platform operator the approximate time, caller,
+Namespace and Agent IDs, and the original OCC request ID if available. Each
+request has its own ID, including the later read. Using approved database access,
+the operator can look for a successful `openclaw.agents.update` event for that
+actor and Agent. OCC commits the edit and event together. The event records the
+request ID. Use the Agent read to check field values. If several requests match,
+attribution remains uncertain.
+
 ## Investigate an external sign-in
 
 Using approved database access, inspect recent sign-in outcomes:

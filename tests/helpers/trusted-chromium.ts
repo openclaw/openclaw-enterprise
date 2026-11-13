@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { BrowserType } from "playwright";
 
 const run = promisify(execFile);
+const browserHome = "browser-home";
+type BrowserHost = { address: string; host: string };
 
 // Chromium on Linux reads trust anchors from NSS under its process's HOME.
 export async function launchTrustingBrowser(
@@ -12,10 +14,10 @@ export async function launchTrustingBrowser(
   root: string,
   instructions: {
     caFiles: readonly string[];
-    hosts: readonly { address: string; host: string }[];
+    hosts: readonly BrowserHost[];
   },
 ) {
-  const home = join(root, "browser-home");
+  const home = join(root, browserHome);
   const database = join(home, ".pki", "nssdb");
   await mkdir(database, { recursive: true, mode: 0o700 });
   const db = `sql:${database}`;
@@ -43,4 +45,26 @@ export async function launchTrustingBrowser(
       ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
       : {}),
   });
+}
+
+export async function preflightTrustingBrowser(
+  chromium: BrowserType,
+  root: string,
+  hosts: readonly BrowserHost[],
+) {
+  try {
+    const browser = await launchTrustingBrowser(chromium, root, { caFiles: [], hosts });
+    try {
+      const page = await browser.newPage();
+      await page.goto("data:text/html,<title>Browser preflight</title>");
+      if ((await page.title()) !== "Browser preflight") {
+        throw new Error("Chromium did not render the local preflight page.");
+      }
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    // The owner session initializes this same NSS home with the installed CA.
+    await rm(join(root, browserHome), { recursive: true, force: true });
+  }
 }

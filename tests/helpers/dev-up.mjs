@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
-import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { withoutShellStartup } from "./environment.ts";
@@ -63,7 +63,7 @@ async function writeExecutable(path, body) {
 
 // The external commands dev-up runs (the container engine, yq, uname, the project's occ,
 // and k3d, kubectl and helm for Kubernetes Compute) are bash scripts answered by the
-// fixture's command server (fixture-command-server.mjs), so their logic below runs in
+// fixture's command server (fixture-command-server.ts), so their logic below runs in
 // the test process: a command costs a bash start instead of a node start. The real CLI,
 // scripts/dev-up and scripts/dev-down still start each one as a process. A command
 // sends the environment variables below.
@@ -151,9 +151,6 @@ async function runFake(io, logic) {
     io.exit(code);
   }
 }
-
-const fixtureNamespaceId = "namespace_fixture";
-const fixtureNamespaceNetwork = "oce-namespace-fixture-0123456789ab";
 
 function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   const { engine, options } = fake;
@@ -302,16 +299,6 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     writeServiceKey(args[args.length - 1], "key_3033697e-6397-4cc6-9b04-8ec17af78cf1");
     exit(0);
   }
-  // The Namespace network Docker Compute created for the fixture Installation's Namespace.
-  if (args[0] === "network" && args[1] === "ls") {
-    if (args.includes("label=org.openclaw.enterprise.namespace-id=" + fixtureNamespaceId)) {
-      stdout(fixtureNamespaceNetwork + "\n");
-    }
-    exit(0);
-  }
-  if (args[0] === "network" && args[1] === "rm") {
-    exit(0);
-  }
   if (args[0] !== "compose") {
     exit(99, "unexpected " + engine + " command: " + args.join(" "));
   }
@@ -395,11 +382,6 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   }
   if (engine === "docker" && command === "cp") {
     writeServiceKey(args[args.length - 1], "key_3033697e-6397-4cc6-9b04-8ec17af78cf1");
-    exit(0);
-  }
-  if (command === "exec" && args.includes("psql")) {
-    // The fixture Installation's database records one Namespace.
-    stdout(fixtureNamespaceId + "\n");
     exit(0);
   }
   if (command === "exec") {
@@ -637,15 +619,15 @@ function lifecycleCommand(fake, invocation, io) {
             ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
             [
               "openclaw-development/openshell-gateway:occ-dev-owned",
-              "f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+              "d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
             ],
             [
               "openclaw-development/openshell-sandbox:occ-dev-owned",
-              "1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+              "f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
             ],
             [
               "openclaw-development/openshell-supervisor:occ-dev-owned",
-              "ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+              "deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
             ],
           ]
             .map(
@@ -1167,7 +1149,6 @@ export {
   createFixture,
   customRuntimeOverride,
   defaultRuntimeImage,
-  fixtureNamespaceNetwork,
   matchingInstallationId,
   mismatchedInstallationId,
   perImageOverride,

@@ -18,6 +18,11 @@ export const NativeHostOnlyUnavailable = {
 };
 export const NativeStopped = { ...story("nativeStopped"), name: "Stopped" };
 export const NativeUnsupported = { ...story("nativeUnsupported"), name: "Unsupported" };
+export const NativeBrowserChatOff = { ...story("nativeBrowserChatOff"), name: "Browser chat off" };
+export const NativeBrowserChatOffReader = {
+  ...story("nativeBrowserChatOffReader"),
+  name: "Browser chat off, read-only caller",
+};
 export const NativeDenied = { ...story("nativeDenied"), name: "Denied and hidden" };
 export const NativeRefreshing = { ...story("nativeRefreshing"), name: "Refreshing access" };
 export const NativeAvailableAfterDeploy = {

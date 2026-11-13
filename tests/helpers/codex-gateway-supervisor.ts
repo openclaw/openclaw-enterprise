@@ -7,7 +7,7 @@ import {
   readRuntimeStatusFromHandler,
   readStatusFromHandler,
 } from "../fixtures/codex-native-startup.mjs";
-import { listen as listenServer } from "./listen.mjs";
+import { listen as listenServer } from "./listen.ts";
 
 type PeerFailure = { pluginId: string; code: string };
 type PeerStatus = {

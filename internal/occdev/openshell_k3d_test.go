@@ -518,3 +518,117 @@ func TestRoutingFailureKeepsOnlySelectedDetails(t *testing.T) {
 		})
 	}
 }
+
+// Exercise the actual Go -> Node boundary without starting the installer or a cluster.
+func TestDevelopmentCodexReadinessStderr(t *testing.T) {
+	t.Run("writable", func(t *testing.T) { testDevelopmentCodexReadinessStderr(t, false) })
+	t.Run("closed reader", func(t *testing.T) { testDevelopmentCodexReadinessStderr(t, true) })
+}
+
+func testDevelopmentCodexReadinessStderr(t *testing.T, closedReader bool) {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err = filepath.EvalSymlinks(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(root, "state")
+	if err := os.Mkdir(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	tools := t.TempDir()
+	const host = "unix:///tmp/codex-readiness-fixture.sock"
+	data, err := json.Marshal(map[string]any{
+		"version": 3, "repository": repository, "computeDriver": "kubernetes",
+		"deploymentMode": "k3d", "sandboxDriver": "none", "containerEngine": "docker",
+		"cluster": "occ-dev-readiness", "dockerHost": host,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{"state.json": data, ".openclaw-development": []byte("openclaw-enterprise-development-v3\n"), "kubeconfig": []byte("{}\n")} {
+		if err := os.WriteFile(filepath.Join(state, name), content, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(node, filepath.Join(tools, "node")); err != nil {
+		t.Fatal(err)
+	}
+	// Only kubectl is simulated; readiness and error reporting run in the real helper.
+	fixture := `#!/bin/sh
+case "$7 $8" in
+"get nodes") echo '{"items":[{"metadata":{"name":"k3d-occ-dev-readiness-server-0"}}]}' ;;
+"get pod") echo '{"status":{"containerStatuses":[{"name":"probe","state":{"waiting":{"reason":"ErrImageNeverPull","message":"waiting-message-sentinel"}}}]}}' ;;
+"create namespace"|"apply -f") ;;
+"delete namespace") printf 'deleted\n' > "${2%/*}/deleted" ;;
+*) exit 90 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(tools, "kubectl"), []byte(fixture), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tools)
+	t.Setenv("DOCKER_HOST", host)
+	var output, diagnostic bytes.Buffer
+	opts := Options{Repository: repository, Out: &output, Err: &diagnostic}
+	if closedReader {
+		// The concurrent runner passes a file directly to the helper, including a broken pipe.
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer writer.Close()
+		if err := reader.Close(); err != nil {
+			t.Fatal(err)
+		}
+		opts.Err = writer
+	}
+	r := newRunner(opts)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	image := "registry.invalid/runtime@sha256:" + strings.Repeat("a", 64)
+	err = r.concurrently(ctx, func(ctx context.Context, step *runner) error {
+		profile, err := step.prepareDevelopmentCodexSandbox(ctx, &developmentState{directory: state}, image, 1)
+		if profile != "" {
+			t.Errorf("failure returned a profile: %q", profile)
+		}
+		return err
+	})
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || err.Error() != "dedicated Codex sandbox preparation failed: exit status 1" {
+		t.Fatalf("lost original subprocess failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "deleted")); err != nil {
+		t.Fatalf("namespace deletion did not finish: %v", err)
+	}
+	entries, err := os.ReadDir(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "codex-seccomp-") {
+			t.Fatalf("probe scratch remained after cleanup: %s", entry.Name())
+		}
+	}
+	if closedReader {
+		return
+	}
+	const marker = "OCE_CODEX_SECCOMP_READINESS_FAILURE {\"operation\":\"runtime-default-pod-readiness\",\"reason\":\"ErrImageNeverPull\"}\n"
+	if strings.Count(diagnostic.String(), "OCE_CODEX_SECCOMP_READINESS_FAILURE") != 1 || !strings.HasPrefix(diagnostic.String(), marker) || !strings.Contains(diagnostic.String(), "Development Codex sandbox preparation failed: Timed out waiting for Pod ") {
+		t.Fatalf("lost helper stderr: %s", &diagnostic)
+	}
+	if strings.Contains(diagnostic.String(), "waiting-message-sentinel") {
+		t.Fatal("installer diagnostics included the Pod waiting message")
+	}
+}

@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import { browserEnvironment } from "../helpers/compose.mjs";
 import {
   composeInvocations,
   composeOptions,
   createFixture,
   customRuntimeOverride,
   defaultRuntimeImage,
-  fixtureNamespaceNetwork,
   matchingInstallationId,
   mismatchedInstallationId,
   perImageOverride,
@@ -44,6 +44,13 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     result.stdout,
   );
   assert.ok(result.stdout.includes("API URL: http://127.0.0.1:3000"));
+  // The ready text names the profile, which cannot deploy Agents (finding 3165).
+  assert.ok(
+    result.stdout.includes(
+      "Control plane: Compose\nCompute Driver: Docker (control-plane preview; it cannot deploy Agents)",
+    ),
+    result.stdout,
+  );
   assert.ok(result.stdout.includes(`Installation ID: ${matchingInstallationId}`));
   assert.ok(result.stdout.includes(`Service key file: ${keyOutput}`));
   assert.ok(result.stdout.includes(`OCC_SERVICE_KEY_FILE=${keyOutput.replaceAll(" ", "\\ ")}`));
@@ -61,6 +68,11 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
   const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
+  // A missing runtime tag means a first build, which compiles Node.js with no build cache.
+  assert.match(
+    result.stderr,
+    /dev-up: Building the runtime image\. With no build cache, this compiles Node\.js/,
+  );
   assert.deepEqual(runtimeBuild?.args, [
     "build",
     "-f",
@@ -164,6 +176,7 @@ test("dev-up preserves a selected custom runtime image and skips the quickstart 
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /API URL: http:\/\/127\.0\.0\.1:4137/);
+  assert.doesNotMatch(result.stderr, /Building the runtime image/);
   const dockerLogs = await readJsonLines(fixture.dockerLog);
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === "image inspect custom-runtime:local"),
@@ -236,113 +249,195 @@ async function ownedKeyDirectories(fixture) {
   );
 }
 
-test("dev-down removes the service key directory dev-up created and keeps a chosen key output", async (t) => {
+for (const engine of ["docker", "podman"]) {
+  test(`printed cleanup preserves the ${engine} Compose selection through occ dev down`, async (t) => {
+    const fixture = await createFixture(t, { engine, macosPodmanMachine: "rootful" });
+    const overlay = join(fixture.directory, "user's $overlay.yaml");
+    const project = engine === "podman" ? "oce-dev-up-test" : "printed-cleanup";
+    await writeFile(overlay, `name: ${project}\nservices: {}\n`);
+    const settings = ["--env-file", fixture.emptyEnv, "--project-name", project];
+    const files = ["-f", "compose.yaml", "-f", overlay];
+    const env = { ...fixture.env, COMPOSE_PROJECT_NAME: "overridden-project" };
+    let options;
+    let expected;
+    if (engine === "podman") {
+      // The Podman fixture has an isolated PATH. The printed command uses env.
+      await symlink("/usr/bin/env", join(fixture.directory, "bin", "env"));
+      env.COMPOSE_FILE = ["compose.yaml", overlay].join("|");
+      env.COMPOSE_PATH_SEPARATOR = "|";
+      options = settings;
+      expected = [
+        ...files,
+        ...settings,
+        "-f",
+        join(fixture.fixtureRepository, "compose.podman.yaml"),
+      ];
+    } else {
+      options = [...settings, ...files, "-f", overlay];
+      expected = options;
+    }
+
+    const started = await runDevUp(["--", ...options], env);
+    assert.equal(started.status, 0, started.stderr);
+    const command = started.stdout.match(/^Cleanup:\n {2}(.+)$/m)?.[1];
+    assert.ok(command, started.stdout);
+    const stopped = await runCommand("/bin/bash", ["-c", command], {
+      cwd: fixture.fixtureRepository,
+      env: fixture.env,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+    const calls = await readJsonLines(engine === "podman" ? fixture.podmanLog : fixture.dockerLog);
+    const cleanup = calls.filter(({ args }) => args.includes("down"));
+    assert.deepEqual(
+      cleanup.map(({ args }) => args),
+      [
+        [
+          "compose",
+          ...expected,
+          "--project-name",
+          project,
+          "-f",
+          join(fixture.fixtureRepository, "compose.native-admin.yaml"),
+          "down",
+        ],
+      ],
+    );
+    if (engine === "podman") {
+      assert.equal(cleanup[0].env.CONTAINER_CONNECTION, "podman-machine-default-root");
+      assert.equal(
+        cleanup[0].env.PODMAN_COMPOSE_PROVIDER,
+        join(fixture.directory, "bin", "podman-compose"),
+      );
+    }
+  });
+}
+
+for (const selection of ["environment", "explicit", "default", "interpolated"]) {
+  test(`printed cleanup targets the ${selection} project in a different shell`, async (t) => {
+    const fixture = await createFixture(t);
+    if (fixture.env.DEV_UP_REAL_COMPOSE_FORMAT !== "json") {
+      t.skip("Docker Compose is required to compare resolved Docker project names");
+      return;
+    }
+    const original = { ...fixture.env };
+    delete original.COMPOSE_PROJECT_NAME;
+    const startup =
+      selection === "default" || selection === "interpolated"
+        ? original
+        : { ...original, COMPOSE_PROJECT_NAME: "command-scoped-project" };
+    const later =
+      selection === "environment"
+        ? original
+        : { ...original, COMPOSE_PROJECT_NAME: "unrelated-project" };
+    const options = ["--env-file", fixture.emptyEnv];
+    if (selection === "explicit") {
+      options.push("-p", "explicit-project");
+    }
+    if (selection === "interpolated") {
+      const overlay = join(fixture.directory, "project.yaml");
+      await writeFile(overlay, "name: ${STACK_NAME:-fallback-project}\n");
+      options.push("-f", "compose.yaml", "-f", overlay);
+      startup.STACK_NAME = "interpolated-project";
+      delete later.COMPOSE_PROJECT_NAME;
+      later.STACK_NAME = "other-interpolated-project";
+    }
+    const expectedProject = {
+      interpolated: "interpolated-project",
+      default: "openclaw-enterprise-development",
+      environment: "command-scoped-project",
+      explicit: "explicit-project",
+    }[selection];
+    const started = await runDevUp(["--", ...options], startup);
+    assert.equal(started.status, 0, started.stderr);
+    const command = started.stdout.match(/^Cleanup:\n {2}(.+)$/m)?.[1];
+    assert.ok(command, started.stdout);
+    const stopped = await runCommand("/bin/bash", ["-c", command], {
+      cwd: fixture.fixtureRepository,
+      env: later,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+
+    const calls = composeInvocations(await readJsonLines(fixture.dockerLog));
+    for (const [verb, shell] of [
+      ["up", startup],
+      ["down", later],
+    ]) {
+      const call = calls.find(({ args }) => args.includes(verb));
+      assert.ok(call, verb);
+      const options = call.args.slice(1, call.args.indexOf(verb));
+      const rendered = await runCommand(
+        fixture.env.DEV_UP_REAL_COMPOSE_COMMAND,
+        ["compose", ...options, "config", "--format", "json"],
+        {
+          cwd: fixture.fixtureRepository,
+          env: {
+            ...shell,
+            PATH: fixture.env.DEV_UP_REAL_PATH,
+            ...browserEnvironment,
+            DOCKER_HOST: `unix://${fixture.directory}/absent.sock`,
+            OCC_DEVELOPMENT_BROWSER_PORT: "8443",
+            OCC_DEVELOPMENT_BROWSER_TLS_CERT: "/fixture/tls.crt",
+            OCC_DEVELOPMENT_BROWSER_TLS_KEY: "/fixture/tls.key",
+          },
+        },
+      );
+      assert.equal(rendered.status, 0, rendered.stderr);
+      assert.equal(JSON.parse(rendered.stdout).name, expectedProject, verb);
+    }
+  });
+}
+
+test("Compose shutdown keeps copied service keys and leaves Namespace networks to Docker Compute", async (t) => {
   const fixture = await createFixture(t);
   const options = composeOptions(fixture);
-
   const started = await runDevUp(["--", ...options], fixture.env);
   assert.equal(started.status, 0, started.stderr);
-  const [owned, ...others] = await ownedKeyDirectories(fixture);
-  assert.deepEqual(others, []);
-  const ownedKey = join(fixture.directory, owned, "initial-admin-service-key.json");
-  assert.ok(started.stdout.includes(`Service key file: ${ownedKey}`), started.stdout);
-  assert.match(await readFile(ownedKey, "utf8"), new RegExp(serviceKey));
+  const [created] = await ownedKeyDirectories(fixture);
+  const key = join(fixture.directory, created, "initial-admin-service-key.json");
+  assert.ok(started.stdout.includes(`Service key file: ${key}`), started.stdout);
+  const copy = await readFile(key, "utf8");
+  assert.match(copy, new RegExp(serviceKey));
 
-  // A key the operator placed with --key-output is theirs: down never removes it.
-  const chosenDirectory = join(fixture.directory, "chosen key directory");
-  await mkdir(chosenDirectory, { mode: 0o700 });
-  const chosenKey = join(chosenDirectory, "service-key.json");
-  const chosen = await runDevUp(["--key-output", chosenKey, "--", ...options], fixture.env);
-  assert.equal(chosen.status, 0, chosen.stderr);
+  // Older launchers shared one list across all projects in this checkout.
+  const [browser] = (await readdir(fixture.directory)).filter((name) =>
+    name.startsWith("occ-docker-"),
+  );
+  const record = join(fixture.directory, browser, "dev-up-key-directories");
+  await assert.rejects(stat(record), { code: "ENOENT" });
+  const other = join(fixture.directory, "openclaw-dev-up-key.other");
+  await mkdir(other, { mode: 0o700 });
+  const otherKey = join(other, "initial-admin-service-key.json");
+  await writeFile(otherKey, "other project", { mode: 0o600 });
+  const entries = `${join(fixture.directory, created)}\n${other}\n`;
+  await writeFile(record, entries, { mode: 0o600 });
 
-  const stopped = await runCommand(fixture.cli, ["dev", "down", "--", ...options], {
+  const before = (await readJsonLines(fixture.dockerLog)).length;
+  const stopped = await runCommand(fixture.cli, ["dev", "down", "--volumes", "--", ...options], {
     cwd: fixture.fixtureRepository,
     env: fixture.env,
   });
   assert.equal(stopped.status, 0, stopped.stderr);
-  assert.ok(
-    stopped.stdout.includes(`Removed service key directory ${join(fixture.directory, owned)}.`),
-    stopped.stdout,
-  );
-  assert.deepEqual(await ownedKeyDirectories(fixture), []);
-  assert.match(await readFile(chosenKey, "utf8"), new RegExp(serviceKey));
-});
-
-test("dev-up records a clean key directory path when TMPDIR ends in a slash", async (t) => {
-  const fixture = await createFixture(t);
-  const options = composeOptions(fixture);
-  // macOS sets TMPDIR to ".../T/".
-  const env = { ...fixture.env, TMPDIR: fixture.directory + "/" };
-
-  const started = await runDevUp(["--", ...options], env);
-  assert.equal(started.status, 0, started.stderr);
-  const [owned, ...others] = await ownedKeyDirectories(fixture);
-  assert.deepEqual(others, []);
-  const [browser] = (await readdir(fixture.directory)).filter((name) =>
-    name.startsWith("occ-docker-"),
-  );
-  assert.equal(
-    await readFile(join(fixture.directory, browser, "dev-up-key-directories"), "utf8"),
-    join(fixture.directory, owned) + "\n",
-  );
-
-  const stopped = await runCommand(fixture.cli, ["dev", "down", "--", ...options], {
-    cwd: fixture.fixtureRepository,
-    env,
-  });
-  assert.equal(stopped.status, 0, stopped.stderr);
-  assert.doesNotMatch(stopped.stderr, /kept service key directory/);
-  assert.deepEqual(await ownedKeyDirectories(fixture), []);
-});
-
-test("dev-down --volumes removes the Installation's Docker Compute Namespace networks", async (t) => {
-  const fixture = await createFixture(t);
-  const options = composeOptions(fixture);
-  const started = await runDevUp(["--", ...options], fixture.env);
-  assert.equal(started.status, 0, started.stderr);
-  const down = (args) =>
-    runCommand(fixture.cli, ["dev", "down", ...args, "--", ...options], {
-      cwd: fixture.fixtureRepository,
-      env: fixture.env,
-    });
-  const networkCommands = async () =>
-    (await readJsonLines(fixture.dockerLog)).filter(
-      (entry) => entry.args[0] === "network" || entry.args.includes("psql"),
-    );
-
-  // A plain down keeps the database, and the next start reuses its Namespace networks.
-  const kept = await down([]);
-  assert.equal(kept.status, 0, kept.stderr);
-  assert.deepEqual(await networkCommands(), []);
-
-  // Deleting the volumes deletes the Installation: down reads its Namespaces from the
-  // database first, then removes only networks labelled for those Namespaces.
-  const removed = await down(["--volumes"]);
-  assert.equal(removed.status, 0, removed.stderr);
-  assert.ok(
-    removed.stdout.includes(`Removed Docker Compute Namespace network ${fixtureNamespaceNetwork}.`),
-    removed.stdout,
-  );
-  const commands = await networkCommands();
-  assert.ok(commands[0].args.includes("psql"));
+  const calls = (await readJsonLines(fixture.dockerLog)).slice(before).map(({ args }) => args);
   assert.deepEqual(
-    commands.slice(1).map((entry) => entry.args),
+    calls.filter((args) => args.includes("down")),
     [
       [
-        "network",
-        "ls",
-        "--filter",
-        "label=org.openclaw.enterprise.managed=true",
-        "--filter",
-        "label=org.openclaw.enterprise.compute-driver=docker",
-        "--filter",
-        "label=org.openclaw.enterprise.namespace-id=namespace_fixture",
-        "--format",
-        "{{.Name}}",
+        "compose",
+        ...options,
+        "-f",
+        join(fixture.fixtureRepository, "compose.native-admin.yaml"),
+        "down",
+        "--volumes",
       ],
-      ["network", "rm", fixtureNamespaceNetwork],
     ],
   );
+  assert.deepEqual(
+    calls.filter((args) => args[0] === "network" || args.includes("psql")),
+    [],
+  );
+  assert.equal(await readFile(key, "utf8"), copy);
+  assert.equal(await readFile(otherKey, "utf8"), "other project");
+  assert.equal(await readFile(record, "utf8"), entries);
 });
 
 test("a failed dev-up removes the empty service key directory it created", async (t) => {
@@ -974,14 +1069,39 @@ test("dev-up routes Kubernetes Compute through the unified entry point", async (
   assert.match(result.stdout, /occ dev up/);
 });
 
-test("development entry points default to the Compose profile", async (t) => {
+test("development entry points default to the Kubernetes-only profile", async (t) => {
   const fixture = await createFixture(t);
   const env = { ...fixture.env };
   delete env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
   delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
   delete env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "default-state");
 
-  // Both entry points must start the same Compose profile when no selector is set.
+  // With no selector set, both entry points must choose the same Kubernetes-only
+  // profile. Only that profile refuses Compose options, before any mutation; the
+  // Docker profile would start Compose with them.
+  for (const result of [
+    await runDevUp(["--", "--env-file", fixture.emptyEnv], env),
+    await runCommand(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
+      cwd: fixture.fixtureRepository,
+      env,
+    }),
+  ]) {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Kubernetes-only profile does not accept Compose options/);
+  }
+  await assert.rejects(stat(env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+});
+
+test("explicit Docker Compute keeps the Compose profile through both entry points", async (t) => {
+  const fixture = await createFixture(t);
+  const env = { ...fixture.env, OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker" };
+  delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+
+  // Docker Compute without a control-plane selection must still resolve the
+  // Compose control plane, not the Kubernetes default, in both entry points.
   const options = composeOptions(fixture);
   const script = await runDevUp(
     ["--key-output", join(fixture.directory, "script-key.json"), "--", ...options],

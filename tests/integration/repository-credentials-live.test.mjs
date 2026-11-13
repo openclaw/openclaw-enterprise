@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, chmod } from "node:fs/promises";
+import { createServer } from "node:https";
+import { readFile, chmod, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
@@ -10,7 +11,72 @@ import {
   closeAndDispose,
   registerResourceCleanup,
 } from "../fixtures/repository-credentials/cleanup.mjs";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import {
+  cleanEnvironment,
+  listen,
+  run,
+  temporaryDirectory,
+} from "../fixtures/repository-credentials/process.mjs";
+
+test("a BOM-prefixed public CA published for a client session verifies Git HTTPS", async (t) => {
+  const parent = await realpath(await temporaryDirectory(t, "repository-credentials-live-ca-"));
+  await chmod(parent, 0o700);
+  const { key, cert, certPath } = await selfSigned(parent, {
+    commonName: "localhost",
+    subjectAltName: "IP:127.0.0.1",
+  });
+  const pem = await readFile(certPath);
+  const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), pem]);
+  const requests = [];
+  const server = createServer({ key, cert }, (_request, response) => {
+    requests.push(1);
+    response.writeHead(200);
+    response.end();
+  });
+  const origin = await listen(t, server);
+  const { writeClientConfiguration, readClientConfiguration } =
+    await credentialDriverModule("client/config");
+  const { singleSessionGitConfiguration } = await credentialDriverModule("client/native-git");
+  const session = join(parent, "session");
+  await writeClientConfiguration(
+    {
+      session: { sessionId: "session-live-ca", deadlineWallMs: Date.now() + 86_400_000 },
+      bearer: "controlled_gateway_bearer_0000000000000000000000",
+      client: {
+        gatewayOrigin: origin,
+        gitRemote: `${origin}/example/project.git`,
+        gitUsername: "gateway-session",
+        canonicalApiHost: "github.com",
+        apiHost: new URL(origin).hostname,
+        repository: "example/project",
+      },
+    },
+    session,
+    withBom,
+  );
+  const published = await readFile(join(session, "ca.pem"));
+  assert.equal(published.subarray(0, 3).toString("hex"), "2d2d2d");
+  const configuration = await readClientConfiguration(session);
+  assert.equal(configuration.hasPublicCa, true);
+  const settings = singleSessionGitConfiguration(configuration, session);
+  assert.ok(
+    settings.some((entry) => entry.startsWith("http.") && entry.endsWith(".sslVerify=true")),
+  );
+  const result = await run(
+    "/usr/bin/git",
+    [
+      ...settings.flatMap((entry) => ["-c", entry]),
+      "-c",
+      "http.sslVerify=true",
+      "ls-remote",
+      `${origin}/example/project.git`,
+    ],
+    { env: cleanEnvironment({ HOME: parent }), allowFailure: true },
+  );
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(requests.length > 0, result.stderr);
+});
 
 test(
   "authorized live development-token smoke runs through the native sender with bounded cleanup",
