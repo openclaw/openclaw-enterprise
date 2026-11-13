@@ -82,11 +82,13 @@
     "tests/conformance/occ-read.test.mjs",
     "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.mjs",
+    "tests/conformance/configuration-model-policy.test.ts",
     "tests/conformance/credential-source-occ.test.mjs",
     "tests/conformance/kubernetes-real-kubectl.test.ts",
     "tests/conformance/k3d-failure-diagnostics.test.ts",
     "tests/conformance/secret-occ.test.ts",
     "tests/conformance/http-errors.test.mjs",
+    "tests/conformance/http-error-details.test.ts",
     "tests/conformance/docker-compute.test.mjs",
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
@@ -206,6 +208,30 @@
     },
     {
       "path": "tests/conformance/http-errors.test.mjs"
+    },
+    {
+      "path": "tests/conformance/configuration-model-policy.test.ts",
+      "expectedTests": [
+        "model policy refusals offer only what the next deployment accepts",
+        "Agent roster refusals name the setting and the fix",
+        "model policy refusals name the Configuration setting"
+      ]
+    },
+    {
+      "path": "tests/conformance/http-error-details.test.ts",
+      "expectedTests": [
+        "a nullable union of a referenced schema attributes the reference's problems to its branch",
+        "a reference that two union branches make is attributed to neither",
+        "a capped detail path is unchanged by cutting a long first segment",
+        "a multi-megabyte first segment is capped in bounded time and heap",
+        "a contract refusal lists at most the 32 details the error contract allows",
+        "a contract message shows fewer problems rather than cut a path below 32 characters",
+        "unstorable text keeps document order, key precedence, and capped pointers",
+        "a caller denial names each checked grant without disclosing a Restriction or an unsent ID",
+        "an Agent principal denial names a bound resource only when the caller sent or may read it",
+        "only path parameters and reference fields count as IDs a request sent",
+        "denial ID discovery charges primitive and reference-list entries to its budget"
+      ]
     },
     {
       "path": "tests/conformance/credential-source-occ.test.mjs"

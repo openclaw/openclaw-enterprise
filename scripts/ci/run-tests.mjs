@@ -17,7 +17,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
-import { access, appendFile, lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -37,306 +37,36 @@ import {
   recordsCoverage,
 } from "./full-integration-coverage.ts";
 import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
-import { loadTestSuites } from "./test-suites.mjs";
-import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
 import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
+import {
+  absoluteInputPath,
+  auditManifest,
+  defaultManifestPath,
+  exists,
+  fileConcurrency,
+  fileInputEnv,
+  isObject,
+  issue,
+  laneNamesForTarget,
+  loadRunnerManifest,
+  mergeEnv,
+  parseArgs,
+  repoRelativePath,
+  resolveRepoPath,
+  selectLane,
+  selectedLaneNames,
+  sourceEvidence,
+  startOrder,
+  usage,
+} from "./runner-inputs.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
-const defaultManifestPath = "scripts/ci/test-suites.json";
-const testRoots = ["tests/conformance", "tests/integration", "tests/browser", "tests/docs"];
-
-function usage() {
-  return [
-    "Usage:",
-    "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
-    "    Use --test-name=<literal> for names beginning with --.",
-    "    Complete mode requires the canonical manifest under --root; normalized relative or absolute paths are accepted, symlink aliases are not.",
-    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
-  ].join("\n");
-}
-
-function parseArgs(argv) {
-  const [command, ...rest] = argv;
-  const options = {};
-  const positionals = [];
-
-  for (let index = 0; index < rest.length; index += 1) {
-    const token = rest[index];
-    if (!token.startsWith("--")) {
-      positionals.push(token);
-      continue;
-    }
-
-    if (token === "--test-name-pattern" || token.startsWith("--test-name-pattern=")) {
-      throw new Error(
-        "--test-name-pattern is unsupported; use --test-name with one literal case name.",
-      );
-    }
-    if (
-      (token === "--test-name" || token.startsWith("--test-name=")) &&
-      Object.hasOwn(options, "test-name")
-    ) {
-      throw new Error("--test-name may only be specified once.");
-    }
-    if (token.startsWith("--test-name=")) {
-      options["test-name"] = token.slice("--test-name=".length);
-      continue;
-    }
-    const key = token.slice(2);
-    const value = rest[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error(`Missing value for --${key}`);
-    }
-    options[key] = value;
-    index += 1;
-  }
-
-  if (!["audit", "check-selection", "run", "aggregate", "prepared-signin"].includes(command)) {
-    throw new Error(usage());
-  }
-
-  return { command, positionals, options };
-}
-
-function issue(code, message, extra = {}) {
-  return { code, message, ...extra };
-}
-
-function isObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function stringArray(value, path, issues, required = false) {
-  if (value === undefined) {
-    if (required) {
-      issues.push(issue("invalid-manifest", `${path} is required`));
-    }
-    return [];
-  }
-  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
-    issues.push(issue("invalid-manifest", `${path} must be an array of strings`));
-    return [];
-  }
-  return value;
-}
-
-function envObject(value, path, issues) {
-  if (value === undefined) {
-    return {};
-  }
-  if (!isObject(value)) {
-    issues.push(issue("invalid-manifest", `${path} must be an object`));
-    return {};
-  }
-
-  const env = {};
-  for (const [name, envValue] of Object.entries(value)) {
-    if (
-      name === "__proto__" ||
-      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
-      typeof envValue !== "string"
-    ) {
-      issues.push(issue("invalid-manifest", `${path}.${name} must be a string env value`));
-      continue;
-    }
-    env[name] = envValue;
-  }
-  return env;
-}
-
-function normalizeFile(file, laneName, index, issues) {
-  const path = `lanes.${laneName}.files.${index}`;
-  if (!isObject(file) || typeof file.path !== "string") {
-    issues.push(issue("invalid-manifest", `${path} must be an object with a path string`));
-    return null;
-  }
-  for (const selector of ["allowedSkips", "namePattern"]) {
-    if (Object.hasOwn(file, selector)) {
-      issues.push(issue("invalid-manifest", `${path}.${selector} is no longer supported`));
-    }
-  }
-
-  return {
-    path: file.path,
-    expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
-    env: envObject(file.env, `${path}.env`, issues),
-    requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
-    optionalEnv: stringArray(file.optionalEnv, `${path}.optionalEnv`, issues),
-  };
-}
-
-// Files run one at a time unless the lane sets fileConcurrency and lists the file in
-// parallelFiles, the files audited to share the runner (which start longest first, ties in
-// listed order; see fileDurations).
-// serialFiles names why a file must run alone. Any other file also runs alone, so a
-// new or unaudited file fails closed.
-function fileModes(lane, laneName, files, issues) {
-  const path = `lanes.${laneName}`;
-  const paths = new Set(files.map((file) => file.path));
-  const parallel = stringArray(lane.parallelFiles, `${path}.parallelFiles`, issues);
-  const serial = lane.serialFiles ?? {};
-  if (!isObject(serial)) {
-    issues.push(issue("invalid-manifest", `${path}.serialFiles must be an object`));
-  }
-  for (const [file, reason] of isObject(serial) ? Object.entries(serial) : []) {
-    if (typeof reason !== "string" || reason.trim() === "") {
-      issues.push(issue("invalid-manifest", `${path}.serialFiles.${file} must name a reason`));
-    }
-    if (!paths.has(file)) {
-      issues.push(issue("invalid-manifest", `${path}.serialFiles.${file} is not a lane file`));
-    }
-  }
-  const seen = new Set();
-  for (const file of parallel) {
-    if (!paths.has(file)) {
-      issues.push(issue("invalid-manifest", `${path}.parallelFiles ${file} is not a lane file`));
-    }
-    if (seen.has(file)) {
-      issues.push(issue("invalid-manifest", `${path}.parallelFiles lists ${file} twice`));
-      continue;
-    }
-    if (isObject(serial) && Object.hasOwn(serial, file)) {
-      issues.push(issue("invalid-manifest", `${path}.parallelFiles ${file} is also serial`));
-    }
-    seen.add(file);
-  }
-  return parallel.filter(
-    (file) => paths.has(file) && !(isObject(serial) && Object.hasOwn(serial, file)),
-  );
-}
-
-function fileConcurrencyLimit(value, path, issues) {
-  if (value === undefined) {
-    return 1;
-  }
-  if (!Number.isInteger(value) || value < 1 || value > 32) {
-    issues.push(issue("invalid-manifest", `${path} must be an integer from 1 to 32`));
-    return 1;
-  }
-  return value;
-}
-
-// The index may name a table of measured file times (repository path to milliseconds,
-// e.g. medians of green main runs). Shared slots start the longest file first, so a long
-// file never waits for a slot while short ones run. A file without a row starts before
-// every measured one, in parallelFiles order: nothing says it is short.
-function fileDurations(raw, manifestPath, issues) {
-  const durations = new Map();
-  const reference = raw.fileDurations;
-  if (reference === undefined) {
-    return durations;
-  }
-  if (
-    typeof reference !== "string" ||
-    !/^\.\/[A-Za-z0-9._/-]+\.json$/.test(reference) ||
-    reference.split("/").includes("..")
-  ) {
-    issues.push(issue("invalid-manifest", "fileDurations must be a ./relative .json path"));
-    return durations;
-  }
-  let table;
-  try {
-    table = JSON.parse(readFileSync(resolve(dirname(manifestPath), reference), "utf8"));
-  } catch {
-    issues.push(issue("invalid-manifest", `fileDurations ${reference} is not readable JSON`));
-    return durations;
-  }
-  if (!isObject(table) || table.version !== 1 || !isObject(table.files)) {
-    issues.push(
-      issue("invalid-manifest", `fileDurations ${reference} must be version 1 with a files object`),
-    );
-    return durations;
-  }
-  for (const [path, ms] of Object.entries(table.files)) {
-    if (!Number.isInteger(ms) || ms < 0) {
-      issues.push(
-        issue("invalid-manifest", `fileDurations ${path} must be a whole number of milliseconds`),
-      );
-      continue;
-    }
-    durations.set(path, ms);
-  }
-  return durations;
-}
-
-function normalizeManifest(raw, manifestPath) {
-  const issues = [];
-  const lanes = new Map();
-  const groups = new Map();
-
-  if (!isObject(raw)) {
-    return {
-      lanes,
-      groups,
-      durations: new Map(),
-      issues: [issue("invalid-manifest", "manifest must be a JSON object")],
-    };
-  }
-  const durations = fileDurations(raw, manifestPath, issues);
-  if (raw.version !== 1) {
-    issues.push(issue("invalid-manifest", "manifest version must be 1"));
-  }
-  if (!isObject(raw.lanes)) {
-    issues.push(issue("invalid-manifest", "lanes must be an object"));
-  }
-  if (!isObject(raw.groups)) {
-    issues.push(issue("invalid-manifest", "groups must be an object"));
-  }
-
-  for (const [laneName, lane] of Object.entries(raw.lanes ?? {})) {
-    if (!isObject(lane)) {
-      issues.push(issue("invalid-manifest", `lanes.${laneName} must be an object`));
-      continue;
-    }
-    const files = Array.isArray(lane.files)
-      ? lane.files
-          .map((file, index) => normalizeFile(file, laneName, index, issues))
-          .filter(Boolean)
-      : [];
-    if (!Array.isArray(lane.files)) {
-      issues.push(issue("invalid-manifest", `lanes.${laneName}.files must be an array`));
-    }
-    lanes.set(laneName, {
-      name: laneName,
-      env: envObject(lane.env, `lanes.${laneName}.env`, issues),
-      requiredEnv: stringArray(lane.requiredEnv, `lanes.${laneName}.requiredEnv`, issues),
-      optionalEnv: stringArray(lane.optionalEnv, `lanes.${laneName}.optionalEnv`, issues),
-      focusedEnv: stringArray(lane.focusedEnv, `lanes.${laneName}.focusedEnv`, issues),
-      fileConcurrency: fileConcurrencyLimit(
-        lane.fileConcurrency,
-        `lanes.${laneName}.fileConcurrency`,
-        issues,
-      ),
-      parallelFiles: [...new Set(fileModes(lane, laneName, files, issues))],
-      files,
-    });
-  }
-
-  for (const [groupName, laneNames] of Object.entries(raw.groups ?? {})) {
-    groups.set(groupName, stringArray(laneNames, `groups.${groupName}`, issues, true));
-  }
-
-  return { lanes, groups, durations, issues };
-}
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
-}
-
-function absoluteInputPath(root, path) {
-  if (typeof path === "string" && path.startsWith("file://")) {
-    return fileURLToPath(path);
-  }
-  return isAbsolute(path) ? path : resolve(root, path);
-}
-
-function repoRelativePath(root, path) {
-  return relative(root, absoluteInputPath(root, path)).split(sep).join("/");
 }
 
 function suiteSource(root, data) {
@@ -374,207 +104,6 @@ function suiteSource(root, data) {
   } catch {
     return undefined;
   }
-}
-
-function resolveRepoPath(root, path, issues, context) {
-  if (isAbsolute(path)) {
-    issues.push(issue("invalid-path", `${context} must be repository-relative`, { path }));
-    return null;
-  }
-
-  const absolutePath = resolve(root, path);
-  const relativePath = relative(root, absolutePath);
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    issues.push(issue("invalid-path", `${context} escapes repository root`, { path }));
-    return null;
-  }
-  return absolutePath;
-}
-
-async function exists(path) {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function discoverUnder(root, relativeRoot, files) {
-  const absoluteRoot = resolve(root, relativeRoot);
-  if (!(await exists(absoluteRoot))) {
-    return;
-  }
-
-  for (const entry of await readdir(absoluteRoot, { withFileTypes: true })) {
-    const absolutePath = join(absoluteRoot, entry.name);
-    const relativePath = relative(root, absolutePath).split(sep).join("/");
-    if (entry.isDirectory()) {
-      await discoverUnder(root, relativePath, files);
-    } else if (entry.isFile() && /\.test\.(?:mjs|ts)$/.test(entry.name)) {
-      files.push(relativePath);
-    }
-  }
-}
-
-async function discoverTests(root) {
-  const files = [];
-  for (const testRoot of testRoots) {
-    await discoverUnder(root, testRoot, files);
-  }
-  return files.sort();
-}
-
-async function auditManifest(root, manifest) {
-  const issues = [...manifest.issues];
-  const discovered = await discoverTests(root);
-  const selections = new Map();
-
-  for (const lane of manifest.lanes.values()) {
-    if (lane.files.length === 0) {
-      issues.push(
-        issue("selected-zero", `lane ${lane.name} selects no files`, { lane: lane.name }),
-      );
-    }
-
-    for (const file of lane.files) {
-      const absolutePath = resolveRepoPath(
-        root,
-        file.path,
-        issues,
-        `lanes.${lane.name}.${file.path}`,
-      );
-      if (!absolutePath) {
-        continue;
-      }
-      const relativePath = repoRelativePath(root, file.path);
-      const entries = selections.get(relativePath) ?? [];
-      entries.push({ lane: lane.name, file });
-      selections.set(relativePath, entries);
-      if (!(await exists(absolutePath))) {
-        issues.push(
-          issue("missing-file", `selected file is missing: ${relativePath}`, {
-            lane: lane.name,
-            file: relativePath,
-          }),
-        );
-      }
-    }
-  }
-
-  for (const file of discovered) {
-    if (!selections.has(file)) {
-      issues.push(issue("unmapped-file", `discovered test file is not mapped: ${file}`, { file }));
-    }
-  }
-
-  for (const [file, entries] of selections.entries()) {
-    if (entries.length > 1) {
-      issues.push(
-        issue("duplicate-file", `file is mapped by multiple lane entries: ${file}`, {
-          file,
-          lanes: entries.map((entry) => entry.lane),
-        }),
-      );
-    }
-  }
-
-  for (const [groupName, laneNames] of manifest.groups.entries()) {
-    for (const laneName of laneNames) {
-      if (!manifest.lanes.has(laneName)) {
-        issues.push(
-          issue("missing-lane", `group ${groupName} references missing lane ${laneName}`, {
-            group: groupName,
-            lane: laneName,
-          }),
-        );
-      }
-    }
-  }
-
-  const source = sourceEvidence(root);
-  const allIssues = [...issues, ...source.issues];
-  return {
-    version: 1,
-    command: "audit",
-    sourceSha: source.sha,
-    status: allIssues.length === 0 ? "passed" : "failed",
-    discoveredFiles: discovered,
-    selectedFiles: [...selections.keys()].sort(),
-    issues: allIssues,
-  };
-}
-
-function gitHead(root) {
-  const result = spawnSync("git", ["rev-parse", "HEAD"], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  return result.status === 0 ? result.stdout.trim() : null;
-}
-
-function sourceEvidence(root) {
-  const head = gitHead(root);
-  const githubSha = process.env.GITHUB_SHA || null;
-  if (head && githubSha && head !== githubSha) {
-    return {
-      sha: head,
-      issues: [
-        issue("source-sha-mismatch", "GITHUB_SHA does not match checked-out Git HEAD", {
-          expectedSourceSha: head,
-          observedSourceSha: githubSha,
-        }),
-      ],
-    };
-  }
-  return { sha: githubSha || head, issues: [] };
-}
-
-function mergeEnv(...objects) {
-  return Object.assign({}, ...objects);
-}
-
-function shouldRemoveInheritedEnv(name) {
-  return (
-    name === "ACTIONS_RUNTIME_TOKEN" ||
-    name === "ACTIONS_RESULTS_URL" ||
-    name === "KEEP" ||
-    name === "DEBUG" ||
-    name === "NODE_TEST_CONTEXT" ||
-    name === "NODE_TEST_WORKER_ID" ||
-    name === "OPENCLAW_CI_COMPLETE_PHASE" ||
-    name.startsWith("OCC_TEST_") ||
-    name.startsWith("OCC_PROBE_") ||
-    name.endsWith("_KEEP") ||
-    name.endsWith("_DEBUG")
-  );
-}
-
-function baseChildEnv(inheritedEnv) {
-  const env = { ...process.env };
-  for (const name of Object.keys(env)) {
-    if (shouldRemoveInheritedEnv(name)) {
-      delete env[name];
-    }
-  }
-  for (const name of inheritedEnv) {
-    if (process.env[name] !== undefined) {
-      env[name] = process.env[name];
-    }
-  }
-  return env;
-}
-
-function fileInputEnv(lane, file) {
-  return mergeEnv(
-    baseChildEnv([
-      ...lane.requiredEnv,
-      ...file.requiredEnv,
-      ...lane.optionalEnv,
-      ...file.optionalEnv,
-    ]),
-    lane.env,
-  );
 }
 
 function testTimeoutMs() {
@@ -697,35 +226,6 @@ function fileTimeout() {
   }
   const timeoutMs = Math.min(limitMs, Math.max(minStepMs, deadline - Date.now()));
   return { timeoutMs, laneDeadline: timeoutMs < limitMs };
-}
-
-// Longest measured first; unmeasured files lead, and ties keep parallelFiles order (the
-// sort is stable).
-function startOrder(paths, durations) {
-  const rank = (path) => durations.get(path) ?? Number.POSITIVE_INFINITY;
-  return [...paths].sort((left, right) => {
-    const [a, b] = [rank(left), rank(right)];
-    return a === b ? 0 : a > b ? -1 : 1;
-  });
-}
-
-// The lane's audited files may share up to fileConcurrency slots, capped by the CPUs
-// this runner may use. CI_RUNNER_FILE_CONCURRENCY replaces that limit for lanes that
-// allow concurrency (1 runs every file alone, as lanes without fileConcurrency do).
-function fileConcurrency(lane, issues) {
-  if (lane.fileConcurrency === 1) {
-    return 1;
-  }
-  const override = process.env.CI_RUNNER_FILE_CONCURRENCY;
-  if (override === undefined || override === "") {
-    return Math.max(1, Math.min(lane.fileConcurrency, availableParallelism()));
-  }
-  const value = Number(override);
-  if (!Number.isInteger(value) || value < 1 || value > 32) {
-    issues.push(issue("invalid-env", "CI_RUNNER_FILE_CONCURRENCY must be an integer from 1 to 32"));
-    return 1;
-  }
-  return value;
 }
 
 async function loadPrepare(root) {
@@ -1961,65 +1461,6 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   };
 }
 
-function selectLane(manifest, laneName, selectedFile, testName) {
-  let lane = manifest.lanes.get(laneName);
-  const issues = [...manifest.issues];
-
-  if (lane && selectedFile !== undefined) {
-    const selected = lane.files.find((file) => file.path === selectedFile);
-    if (!selected) {
-      issues.push(
-        issue("invalid-file-selection", "--file must exactly match a file in the selected lane", {
-          lane: laneName,
-        }),
-      );
-    } else {
-      if (
-        testName !== undefined &&
-        selected.expectedTests.filter((name) => name === testName).length !== 1
-      ) {
-        issues.push(
-          issue(
-            "invalid-test-selection",
-            "--test-name must exactly match one required manifest case",
-            { file: selectedFile },
-          ),
-        );
-      }
-      // File-only runs keep every required case. Explicit case selection keeps
-      // the exact required name; the child must still report that passing case.
-      lane = {
-        ...lane,
-        files: [
-          testName === undefined
-            ? selected
-            : {
-                ...selected,
-                expectedTests: selected.expectedTests.filter((name) => name === testName),
-              },
-        ],
-        optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
-        parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
-      };
-      const error = openShellHarnessError(laneName, selected.path, fileInputEnv(lane, selected));
-      if (error) {
-        issues.push(
-          issue("invalid-file-selection", error, { lane: laneName, file: selected.path }),
-        );
-      }
-    }
-  }
-
-  if (!lane) {
-    issues.push(
-      issue("missing-lane", `manifest does not define lane ${laneName}`, { lane: laneName }),
-    );
-  } else if (lane.files.length === 0) {
-    issues.push(issue("selected-zero", `lane ${laneName} selects no files`, { lane: laneName }));
-  }
-  return { lane, issues };
-}
-
 async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile, testName) {
   const source = sourceEvidence(root);
   const { lane, issues } = selectLane(manifest, laneName, selectedFile, testName);
@@ -2198,16 +1639,6 @@ function logIssues(issues) {
   }
 }
 
-function laneNamesForTarget(manifest, target) {
-  if (manifest.groups.has(target)) {
-    return manifest.groups.get(target);
-  }
-  if (manifest.lanes.has(target)) {
-    return [target];
-  }
-  return null;
-}
-
 function validateLaneEvidence(summary, laneName, lane, issues) {
   if (summary.version !== 1 || summary.command !== "run" || !Array.isArray(summary.files)) {
     issues.push(
@@ -2312,27 +1743,6 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
 }
 
 // A verified test-only selection aggregates only its lanes, all from the group.
-function selectedLaneNames(groupLanes, selection, issues) {
-  let lanes;
-  try {
-    lanes = JSON.parse(selection);
-  } catch {
-    lanes = null;
-  }
-  if (
-    !Array.isArray(lanes) ||
-    lanes.length === 0 ||
-    new Set(lanes).size !== lanes.length ||
-    !lanes.every((lane) => typeof lane === "string" && groupLanes.includes(lane))
-  ) {
-    issues.push(
-      issue("invalid-lane-selection", "selected lanes must be distinct lanes of the target"),
-    );
-    return null;
-  }
-  return groupLanes.filter((lane) => lanes.includes(lane));
-}
-
 async function aggregateGroup(
   root,
   manifest,
@@ -2594,10 +2004,7 @@ async function completePhaseChild() {
       await owner.cleanupState(statePath);
       exitCode = 0;
     } else if (phase === "run") {
-      const manifest = normalizeManifest(
-        loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
-        manifestPath,
-      );
+      const manifest = loadRunnerManifest(manifestPath, process.env.OCC_CI_SUITE_VIEW);
       exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
       uncertain = abandonedSteps > 0;
     }
@@ -2994,10 +2401,7 @@ async function main() {
       "Complete lifecycle requires the canonical scripts/ci/test-suites.json manifest under --root.",
     );
   }
-  const manifest = normalizeManifest(
-    loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
-    manifestPath,
-  );
+  const manifest = loadRunnerManifest(manifestPath, process.env.OCC_CI_SUITE_VIEW);
 
   if (options.lifecycle !== undefined && (command !== "run" || options.lifecycle !== "complete")) {
     throw new Error("--lifecycle supports only run --lifecycle complete.");

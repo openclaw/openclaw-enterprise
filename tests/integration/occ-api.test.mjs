@@ -10059,6 +10059,20 @@ async function createSlackValidationFixture(controller, namespaceName) {
     base,
     app,
     bot,
+    async saveConfiguration(configuration) {
+      const result = await controller.request("POST", `${base}/configurations`, {
+        body: configuration,
+      });
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      return result.data;
+    },
+    async createAgent(name, configurationId) {
+      const result = await controller.request("POST", `${base}/agents`, {
+        body: { name, configurationId },
+      });
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      return result.data;
+    },
     provision(configuration) {
       return controller.request("POST", `${base}/agents/provision`, {
         body: provisioningRequestBody(namespace.id, secrets, { configuration }),
@@ -10099,10 +10113,8 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     },
     configurationDriver,
   });
-  const { fixture, namespace, base, app, bot, provision } = await createSlackValidationFixture(
-    controller,
-    "slack-reference-forms",
-  );
+  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
+    await createSlackValidationFixture(controller, "slack-reference-forms");
   let calls = 0;
   const channel = new SlackChannelDriver(async () => {
     calls++;
@@ -10170,29 +10182,23 @@ test("Agent provisioning and deploy name a refused channel token reference form 
       },
     },
   };
-  const config = await controller.request("POST", `${base}/configurations`, {
-    body: {
-      kind: "agent",
-      values,
-      secretBindings: {
-        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-      },
+  const config = await saveConfiguration({
+    kind: "agent",
+    values,
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
     },
   });
-  assert.equal(config.status, 201, JSON.stringify(config.body));
-  const agent = await controller.request("POST", `${base}/agents`, {
-    body: { name: "slack-forms", configurationId: config.data.id },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
+  const agent = await createAgent("slack-forms", config.id);
+  await bindHarnessKey(fixture, namespace.id, agent);
   for (const [botToken, message] of forms) {
-    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: config.data.id });
+    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: config.id });
     await configurationDriver.update({
       ...stored,
       values: { ...values, channels: { slack: { ...values.channels.slack, botToken } } },
     });
-    const refused = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+    const refused = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
     assertApiError(refused, 400, "INVALID_REQUEST");
     assert.equal(refused.body.error.message, message, botToken);
     assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|SECRET/);
@@ -10205,10 +10211,8 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture, namespace, base, app, bot, provision } = await createSlackValidationFixture(
-    controller,
-    "slack-admission",
-  );
+  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
+    await createSlackValidationFixture(controller, "slack-admission");
   let calls = 0;
   let response = { ok: true, bot_id: "B123", team_id: "T123" };
   const channel = new SlackChannelDriver(async (url, options) => {
@@ -10300,21 +10304,15 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   };
   response = { ...enterprise, team_id: enterprise.enterprise_id };
   assert.equal((await provision(configuration)).body.error.code, "DEPENDENCY_UNAVAILABLE");
-  const config = await controller.request("POST", `${base}/configurations`, {
-    body: configuration,
-  });
-  assert.equal(config.status, 201, JSON.stringify(config.body));
-  const agent = await controller.request("POST", `${base}/agents`, {
-    body: { name: "slack-agent", configurationId: config.data.id },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
+  const config = await saveConfiguration(configuration);
+  const agent = await createAgent("slack-agent", config.id);
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent, { app, bot });
   response = { ok: false, error: "invalid_auth" };
-  const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
   assert.equal(deploy.body.error.details[0].path, "/channels/slack/botToken");
   response = enterprise;
-  const good = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  const good = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assert.equal(good.status, 202, JSON.stringify(good.body));
   response = { ...enterprise, enterprise_id: "invalid", team_id: "T123" };
   assert.equal((await provision(configuration)).body.error.code, "CHANNEL_CREDENTIAL_UNAVAILABLE");
@@ -10364,10 +10362,8 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture, namespace, base, app, bot, provision } = await createSlackValidationFixture(
-    controller,
-    "slack-whole-reference",
-  );
+  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
+    await createSlackValidationFixture(controller, "slack-whole-reference");
   const tokens = [];
   const channel = new SlackChannelDriver(async (url, options) => {
     assert.equal(new URL(url).pathname, "/api/auth.test");
@@ -10409,17 +10405,11 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
   assert.equal(tokens.length, 1);
 
   // Deployment of a saved Configuration applies the same rule.
-  const config = await controller.request("POST", `${base}/configurations`, {
-    body: configuration,
-  });
-  assert.equal(config.status, 201, JSON.stringify(config.body));
-  assert.equal(config.data.values.channels.slack.botToken, "${SLACK_BOT_TOKEN}");
-  const agent = await controller.request("POST", `${base}/agents`, {
-    body: { name: "slack-whole-reference", configurationId: config.data.id },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
-  const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  const config = await saveConfiguration(configuration);
+  assert.equal(config.values.channels.slack.botToken, "${SLACK_BOT_TOKEN}");
+  const agent = await createAgent("slack-whole-reference", config.id);
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent, { app, bot });
+  const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assert.equal(deploy.status, 202, JSON.stringify(deploy.body));
   assert.deepEqual(tokens, ["Bearer xoxb-synthetic-bot", "Bearer xoxb-synthetic-bot"]);
 });
@@ -10429,10 +10419,8 @@ test("Slack validation with no Slack proxy names the setting at provision and de
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture, namespace, base, app, bot, provision } = await createSlackValidationFixture(
-    controller,
-    "slack-no-route",
-  );
+  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
+    await createSlackValidationFixture(controller, "slack-no-route");
   // This Installation expects a proxy. If a direct check gets no answer, report the missing route.
   // The rejection has the shape Node's fetch gives a connection that timed out.
   const timedOut = () =>
@@ -10498,16 +10486,10 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   answer = timedOut();
 
   // Deployment of a saved Agent gets the same answer.
-  const config = await controller.request("POST", `${base}/configurations`, {
-    body: configuration,
-  });
-  assert.equal(config.status, 201, JSON.stringify(config.body));
-  const agent = await controller.request("POST", `${base}/agents`, {
-    body: { name: "slack-no-route", configurationId: config.data.id },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
-  const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  const config = await saveConfiguration(configuration);
+  const agent = await createAgent("slack-no-route", config.id);
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent, { app, bot });
+  const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assertApiError(deploy, 409, "RESOURCE_CONFLICT");
   assert.equal(deploy.body.error.message, noRoute);
 });
