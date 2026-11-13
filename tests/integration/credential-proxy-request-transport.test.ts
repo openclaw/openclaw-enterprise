@@ -508,6 +508,17 @@ for (const harnessId of ["codex", "openclaw"] as const) {
         ]);
         assert.deepEqual(expected.environment, { OPENAI_API_KEY: "oce:request-authorized:model" });
       }
+      const explicitOrigin = "https://models.example.test:8443";
+      const withPort = openShellModelRequestPolicy(
+        {
+          ...context.plan,
+          routes: context.plan.routes.map((route) => ({ ...route, origin: explicitOrigin })),
+        },
+        egressOptions,
+        revision,
+      );
+      assert.equal(withPort?.origin, explicitOrigin);
+      assert.equal(withPort.provider.profile.endpoints[0]?.port, 8443);
       const numericOrigin = {
         ...context.plan,
         routes: context.plan.routes.map((route, index) =>
@@ -554,7 +565,7 @@ for (const harnessId of ["codex", "openclaw"] as const) {
           "openclaw.dev/revision-id": revision.id,
         },
       };
-      const sandboxSpec = {
+      const sandboxSpec: { restart_policy?: string | number; providers: string[] } = {
         ...(harnessId === "openclaw" && { restart_policy: "SANDBOX_RESTART_POLICY_NEVER" }),
         providers: [
           expected.provider.name,
@@ -641,6 +652,14 @@ for (const harnessId of ["codex", "openclaw"] as const) {
         });
       assert.equal(await verify(), true);
       if (harnessId === "openclaw") {
+        sandboxSpec.restart_policy = 1;
+        assert.equal(await verify(), true);
+        delete sandboxSpec.restart_policy;
+        assert.equal(
+          await verify(),
+          false,
+          "native enrollment requires an explicit restart policy",
+        );
         sandboxSpec.restart_policy = "SANDBOX_RESTART_POLICY_ALWAYS";
         assert.equal(await verify(), false, "native process replacement requires fresh enrollment");
         sandboxSpec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";

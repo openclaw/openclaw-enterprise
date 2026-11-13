@@ -1,4 +1,5 @@
 import {
+  isOpenShellRestartNever,
   openShellModelRequestPolicy,
   verifyModelRequestProfile,
   verifyModelRequestPolicy,
@@ -230,6 +231,14 @@ export function openShellEgressConfiguration(
   options: OpenShellProxyOptions,
   revision?: Readonly<AgentRevision>,
 ): Readonly<Record<string, unknown>> {
+  return selectOpenShellEgressPolicy(plan, options, revision).configuration;
+}
+
+export function selectOpenShellEgressPolicy(
+  plan: ProxyPlan,
+  options: OpenShellProxyOptions,
+  revision?: Readonly<AgentRevision>,
+) {
   const artifacts = openShellProtectedCodexArtifacts(revision);
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
     throw new Error("The protected execution permits at most one binding.");
@@ -252,14 +261,17 @@ export function openShellEgressConfiguration(
     if (!model || (plan.repositoryGit && !options.repositoryMiddlewareName)) {
       throw new DependencyUnavailableError("Request-authorized model delivery is unavailable.");
     }
-    return immutableCopy({
-      network_policies: artifacts,
-      network_middlewares: {
-        ...model.middlewares,
-        ...(plan.repositoryGit &&
-          openShellGitMiddleware(options.repositoryMiddlewareName!, plan.execution.executionId)),
+    return selectedEgressPolicy(
+      {
+        network_policies: artifacts,
+        network_middlewares: {
+          ...model.middlewares,
+          ...(plan.repositoryGit &&
+            openShellGitMiddleware(options.repositoryMiddlewareName!, plan.execution.executionId)),
+        },
       },
-    });
+      model,
+    );
   }
   if (plan.repositoryGit) {
     if (plan.routes.length || !options.repositoryMiddlewareName) {
@@ -269,7 +281,7 @@ export function openShellEgressConfiguration(
     }
     // The prepared provider supplies the endpoints for the admitted GitHub scope. No generic exchange
     // authority, broad Git network rule or second credential-bearing sender accompanies it.
-    return immutableCopy({
+    return selectedEgressPolicy({
       network_policies: artifacts,
       network_middlewares: openShellGitMiddleware(
         options.repositoryMiddlewareName,
@@ -277,7 +289,7 @@ export function openShellEgressConfiguration(
       ),
     });
   }
-  return immutableCopy({
+  return selectedEgressPolicy({
     network_policies: Object.fromEntries(
       plan.routes.map((route, index) => {
         const origin = new URL(route.origin);
@@ -312,6 +324,13 @@ export function openShellEgressConfiguration(
       },
     },
   });
+}
+
+function selectedEgressPolicy(
+  configuration: Readonly<Record<string, unknown>>,
+  modelRequest?: ReturnType<typeof openShellModelRequestPolicy>,
+) {
+  return { configuration: immutableCopy(configuration), modelRequest };
 }
 
 export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
@@ -584,8 +603,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       sandbox.id !== expectedSandboxId ||
       sandbox.workspace !== workspace ||
       (revision.harness.id === "openclaw" &&
-        sandbox.spec?.restart_policy !== 1 &&
-        sandbox.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER") ||
+        !isOpenShellRestartNever(sandbox.spec?.restart_policy)) ||
       ![2, "SANDBOX_PHASE_READY"].includes(sandbox.phase as string | number)
     ) {
       return undefined;

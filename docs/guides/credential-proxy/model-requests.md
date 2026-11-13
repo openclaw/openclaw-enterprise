@@ -147,13 +147,15 @@ installed-path checks below. Gateway ownership does not mean it holds the key.
 A source update retains its selected provider and cannot change authorization
 profiles.
 
-Follow [create the Agent and grant the source](../deploy/openshell-credential-sources.md#create-the-agent-and-grant-the-source)
-for a dedicated Codex Agent, exact source binding, API-key authentication and
-Agent service-principal `operate` permission. Select one authorized model and
-the HTTPS Responses provider. The runtime must use the generated custom Codex
-provider with WebSockets disabled, not the built-in OpenAI provider's WebSocket
-transport. The current profile permits one `/v1/responses` route; it does not
-admit Chat Completions or provider-hosted tools.
+Create a dedicated Agent, bind this exact source with API-key authentication,
+and grant the Agent service principal `operate` permission on it. Select one
+authorized model. The profile permits only HTTPS `POST /v1/responses` and
+excludes provider-hosted tools.
+
+### Dedicated Codex
+
+Follow [the Codex setup](../deploy/openshell-credential-sources.md#create-the-agent-and-grant-the-source)
+to configure the generated custom provider with WebSockets disabled.
 
 Before deploying, save the identical destination in the dedicated Codex
 Harness's `modelProvider.baseUrl` using [deployment overrides](../topics/agent-revisions.md#choose-a-harness-destination):

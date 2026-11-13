@@ -2030,6 +2030,9 @@ test("native Compute resumes signed startup across preparation passes", async (t
       policyHash: "a".repeat(64),
     },
   };
+  const withdrawals = [];
+  let replaceDuringStatus = false;
+  let liveConfiguration = installed.enforcement.configurationId;
   let recorded;
   let receipt;
   let liveProcess = installed.enforcement.instanceId;
@@ -2070,8 +2073,13 @@ test("native Compute resumes signed startup across preparation passes", async (t
     async harnessEndpoint() {
       assert.fail();
     },
-    async withdrawHarnessExposure() {},
+    async withdrawHarnessExposure(context) {
+      withdrawals.push(context);
+    },
     async harnessStatus() {
+      if (replaceDuringStatus) {
+        liveConfiguration = "replacement";
+      }
       return held ? { state: "failed", runtimeFailure: held } : { state: "starting" };
     },
     cleanup: assert.fail,
@@ -2093,7 +2101,8 @@ test("native Compute resumes signed startup across preparation passes", async (t
     removeRevision: assert.fail,
     configureRevision: async () => ({ plan, configuration: {} }),
     wiringStatus: async () => installed,
-    verifyInstallation: async () => true,
+    verifyInstallation: async (_context, observed) =>
+      observed.enforcement.configurationId === liveConfiguration,
   };
   const owner = new InstalledDriver(
     { id: sandboxDriver.id, implementation: sandboxDriver.implementation, configuration: {} },
@@ -2208,11 +2217,20 @@ test("native Compute resumes signed startup across preparation passes", async (t
     checkedAt: revision.createdAt,
   };
   assert.deepEqual((await prepare()).runtimeFailure, held);
+  assert.deepEqual(withdrawals, []);
+  replaceDuringStatus = true;
+  await assert.rejects(prepare(), /requires the exact current committed installation/);
+  assert.deepEqual(withdrawals, []);
+  replaceDuringStatus = false;
+  liveConfiguration = installed.enforcement.configurationId;
   held = undefined;
   state.connected = true;
   await prepare();
   await prepare();
   markReady(gatewayName);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].revision.id, revision.id);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
   assert.equal((await prepare()).ready, true);
   assert.equal(posts, 1);
 });

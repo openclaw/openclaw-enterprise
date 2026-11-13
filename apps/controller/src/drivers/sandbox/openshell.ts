@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import {
   modelRequestProviderName,
-  nativeOpenShellModelRequest,
+  isOpenShellRestartNever,
   openShellModelRequestPolicy,
   verifyModelRequestPolicy,
   verifyModelRequestProfile,
@@ -27,7 +27,7 @@ import {
 } from "../kubernetes/network-policy.ts";
 import { unsentManifestFields } from "../kubernetes/manifest-fields.ts";
 import {
-  openShellEgressConfiguration,
+  selectOpenShellEgressPolicy,
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
@@ -2775,7 +2775,7 @@ function protectedEgressPolicy(
   options: OpenShellSandboxDriverOptions,
   requirements: HarnessWorkloadRequirements,
   revision: Readonly<AgentRevision>,
-): Readonly<Record<string, unknown>> {
+) {
   const attachment = requirements.proxyWiring;
   const auth = attachment?.plan.harnessCredentialSource;
   const [model] = requirements.credentialAttachments;
@@ -2795,8 +2795,8 @@ function protectedEgressPolicy(
       "Protected egress requires its exact paired policy and only the admitted Harness credential attachment.",
     );
   }
-  const expected = openShellEgressConfiguration(attachment.plan, options.egress, revision);
-  if (!isDeepStrictEqual(attachment.configuration, expected)) {
+  const expected = selectOpenShellEgressPolicy(attachment.plan, options.egress, revision);
+  if (!isDeepStrictEqual(attachment.configuration, expected.configuration)) {
     throw new OpenShellSandboxConfigurationFailure("Protected egress attachment was altered.");
   }
   return expected;
@@ -3435,9 +3435,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "The protected repository execution must retain its admitted Harness credential source.",
       );
     }
-    const egressPolicy =
+    const selected =
       plan && protectedEgressPolicy(this.options, context.requirements, context.revision);
-    const nativeModel = plan !== undefined && nativeOpenShellModelRequest(context.revision, plan);
+    const modelRequest = selected?.modelRequest;
+    const nativeModel = context.revision.harness.id === "openclaw" && modelRequest !== undefined;
     if (plan !== undefined && context.revision.harness.id !== "codex" && !nativeModel) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
@@ -3461,10 +3462,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Refusing an AgentRevision pinned to another Sandbox Driver.",
       );
     }
-    if (nativeModel) {
+    if (nativeModel && plan) {
       const expected = {
         [NATIVE_MODEL_ENROLLMENT_ENV]: JSON.stringify(harnessEgressEnrollment(plan)),
-        [NATIVE_MODEL_ORIGIN_ENV]: plan.routes[0]!.origin,
+        [NATIVE_MODEL_ORIGIN_ENV]: modelRequest.origin,
       };
       for (const [name, value] of Object.entries(expected)) {
         const entries = context.requirements.environment.filter((entry) => entry.name === name);
@@ -3486,10 +3487,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
-    const modelRequest =
-      plan && this.options.egress
-        ? openShellModelRequestPolicy(plan, this.options.egress, context.revision)
-        : undefined;
     const plugin = openShellPluginPolicy(
       context.revision,
       context.requirements,
@@ -3639,7 +3636,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           ...(git ? ["GITHUB_TOKEN"] : []),
         ]),
         runtimeCredentialMaterial.binding,
-        egressPolicy,
+        selected?.configuration,
         plugin,
         mcpPolicies,
       ),
@@ -3816,11 +3813,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
     // environment and policy. A replacement is created above without either plugin setting.
-    if (
-      nativeModel &&
-      existing.spec?.restart_policy !== 1 &&
-      existing.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER"
-    ) {
+    if (nativeModel && !isOpenShellRestartNever(existing.spec?.restart_policy)) {
       throw new OpenShellSandboxConfigurationFailure(
         "Protected native model execution cannot adopt a restartable Sandbox.",
       );

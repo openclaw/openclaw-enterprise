@@ -71,6 +71,8 @@ global.clearTimeout = (handle) => { timers.delete(handle); cancel(handle); };
 process.on("message", (command) => {
   if (command === "probe") {
     sender.stdin.end("start");
+  } else if (command === "stop-sender") {
+    sender.kill("SIGTERM");
   } else {
     elapsed += command;
     for (const [handle, task] of timers) {
@@ -88,6 +90,17 @@ for (const name of ["existsSync", "lstatSync", "readdirSync", "cpSync"]) {
     source === "/app/skills" ? join(fixture, "skills") : source,
     ...args,
   );
+}
+const remove = fs.rmSync;
+fs.rmSync = (path, ...args) => {
+  if (${JSON.stringify(probeStatus === "sender-exit")} && dirnameOfModelConfig(path)) {
+    throw Object.assign(new Error("fixture-private-directory-detail"), { code: "EACCES" });
+  }
+  return remove(path, ...args);
+};
+function dirnameOfModelConfig(path) {
+  return require("node:path").dirname(path) === process.env.TMPDIR &&
+    require("node:path").basename(path).startsWith("model-");
 }
 for (const name of ["spawn", "spawnSync", "execFile"]) {
   const run = cp[name];
@@ -134,6 +147,12 @@ const provider = config.models.providers.openai;
 assert.equal(process.env.OPENAI_API_KEY, "oce:request-authorized:model");
 assert.match(provider.baseUrl, /^http:\/\/127\.0\.0\.1:[0-9]+\/v1$/);
 if (process.argv[2] === "models") {
+  if (${JSON.stringify(["deadline", "terminate"].includes(probeStatus))} && !process.env.FIXTURE_MODEL_CHILD) {
+    require("node:child_process").spawn(process.execPath, process.argv.slice(1), {
+      env: { ...process.env, FIXTURE_MODEL_CHILD: "1" }, stdio: "inherit",
+    }).unref();
+    return;
+  }
   assert.equal(provider.request.allowPrivateNetwork, true);
   fetch(provider.baseUrl + "/responses", {
     method: "POST",
@@ -141,8 +160,13 @@ if (process.argv[2] === "models") {
   }).then(async (response) => {
     assert.equal(await response.text(), "fixture model response");
     await (await fetch(${JSON.stringify(probeGate)})).text();
+    const outputLimitStream = ${JSON.stringify(["stdout", "stderr"].includes(probeStatus) ? probeStatus : null)};
+    if (outputLimitStream) {
+      process[outputLimitStream].write(Buffer.alloc(1024 * 1024, 32));
+      return;
+    }
     console.log(JSON.stringify({ auth: { probes: { results: [
-      { provider: "openai", model: "openai/fixture-model", source: "env", status: ${JSON.stringify(probeStatus)} },
+      { provider: "openai", model: "openai/fixture-model", source: "env", status: ${JSON.stringify(probeStatus === "sender-exit" ? "ok" : probeStatus)} },
     ] } } }));
   }).catch((error) => { console.error(error); process.exitCode = 1; });
 } else {
@@ -154,7 +178,12 @@ if (process.argv[2] === "models") {
   assert.equal(process.env.OPENCLAW_NATIVE_MODEL_ENROLLMENT, undefined);
   assert.equal(process.env.OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY, undefined);
   console.log(JSON.stringify({ event: "node-connect", endpoint: provider.baseUrl }));
-  setInterval(() => {}, 1000);
+  if (${JSON.stringify(probeStatus === "sender-exit")}) {
+    // Closing this request observes termination of the real connect subprocess.
+    fetch(${JSON.stringify(probeGate + "/connected")}, { signal: AbortSignal.timeout(5000) }).catch(() => {});
+  } else {
+    setInterval(() => {}, 1000);
+  }
 }
 `,
   );
@@ -168,6 +197,9 @@ export async function exerciseProtectedNativeWorkerStartup(t) {
     ["held before the observation boundary", "auth", false],
     ["held after the observation boundary", "auth", true],
     ["connected after the observation boundary", "ok", true],
+    ["probe exceeds its stdout limit", "stdout", false],
+    ["probe exceeds its stderr limit", "stderr", false],
+    ["sender exits after connection and config cleanup fails", "sender-exit", true],
     ["deadline while the probe is running", "deadline", true],
     ["terminated while the probe is running", "terminate", true],
   ]) {
@@ -259,7 +291,14 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
     }
   };
   const held = await waitFor(
-    async () => (await request())?.json(),
+    async () => {
+      const response = await request();
+      if (!response) {
+        return undefined;
+      }
+      assert.equal(response.status, 200);
+      return response.json();
+    },
     worker,
     () => diagnostics,
   );
@@ -299,19 +338,23 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
     assert.deepEqual(await ack, [command, undefined]);
   };
   const observe = async () => {
-    assert.deepEqual(
-      await (await fetch(url, { headers, signal: AbortSignal.timeout(1500) })).json(),
-      {
-        acceptedRelease: signedRelease,
-      },
-    );
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(1500) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { acceptedRelease: signedRelease });
     assert.equal((await send(signedRelease)).status, 410);
     assert.equal((await fetch(url)).status, 401);
   };
   const statusUrl = new URL("/openclaw/runtime/status", url);
   const readFailure = async () => {
     const response = await fetch(statusUrl, { headers });
-    return response.ok && (await response.json()).runtimeFailure;
+    if (response.status === 410) {
+      assert.deepEqual(await response.json(), { error: "expired" });
+      return false;
+    }
+    assert.equal(response.status, 200);
+    const { runtimeFailure } = await response.json();
+    assert.ok(runtimeFailure);
+    return runtimeFailure;
   };
   await control(599999);
   await observe();
@@ -323,6 +366,10 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
   const probeEntered = once(gate, "request", { signal: AbortSignal.timeout(5000) });
   await control("probe");
   const [, probeResponse] = await probeEntered;
+  const connection =
+    probeStatus === "sender-exit"
+      ? once(gate, "request", { signal: AbortSignal.timeout(5000) })
+      : undefined;
   try {
     await observe();
     assert.equal(await readFailure(), false);
@@ -345,7 +392,7 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
     probeResponse.end();
   }
   let connected;
-  if (probeStatus === "ok") {
+  if (probeStatus === "ok" || connection) {
     await waitFor(
       () => output.includes("\n"),
       worker,
@@ -358,10 +405,15 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
   } else {
     const failure = await waitFor(readFailure, worker, () => diagnostics);
     assert.equal(failure.check, "model-probe");
-    assert.equal(
-      failure.code,
-      probeStatus === "deadline" ? "MODEL_PROBE_TIMEOUT" : "AUTHENTICATION_FAILED",
-    );
+    if (probeStatus === "stdout" || probeStatus === "stderr") {
+      assert.equal(failure.code, "MODEL_PROBE_FAILED");
+      assert.deepEqual(failure.cause, { kind: "PROCESS_EXIT", detail: "error-ENOBUFS" });
+    } else {
+      assert.equal(
+        failure.code,
+        probeStatus === "deadline" ? "MODEL_PROBE_TIMEOUT" : "AUTHENTICATION_FAILED",
+      );
+    }
     if (!lateProbe) {
       await control(2);
     }
@@ -370,8 +422,20 @@ async function runLauncher(t, privateKey, previousRelease, probeStatus, lateProb
     assert.equal(output, "");
   }
   await observe();
-  worker.kill("SIGTERM");
-  assert.deepEqual(await exited, [0, null]);
+  if (connection) {
+    const [request, response] = await connection;
+    assert.equal(request.url, "/connected");
+    const closed = once(response, "close", { signal: AbortSignal.timeout(2000) });
+    await control("stop-sender");
+    assert.deepEqual(await exited, [1, null]);
+    await closed;
+    assert.match(diagnostics, /The protected model sender stopped/);
+    assert.match(diagnostics, /model configuration cleanup failed/);
+    assert.doesNotMatch(diagnostics, /fixture-private-directory-detail/);
+  } else {
+    worker.kill("SIGTERM");
+    assert.deepEqual(await exited, [0, null]);
+  }
   const refused = (error) => error.cause?.code === "ECONNREFUSED";
   await assert.rejects(fetch(url, { headers }), refused);
   if (connected) {

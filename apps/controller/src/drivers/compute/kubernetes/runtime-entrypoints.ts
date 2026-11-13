@@ -5405,6 +5405,16 @@ export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoin
   withNode: true,
 });
 
+const KILL_WORKER_GROUP = String.raw`function killWorkerGroup(worker, signal) {
+  if (!worker?.pid) return;
+  try { process.kill(-worker.pid, signal); }
+  catch (error) {
+    // Provider sandboxes can reject signaling a group containing only zombies.
+    if (error.code === "EPERM") worker.kill(signal);
+    else if (error.code !== "ESRCH") throw error;
+  }
+}`;
+
 const NATIVE_MODEL_STARTUP_HELPER = String.raw`
 function isPlainObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
 ${NATIVE_HARNESS_EGRESS_ENROLLMENT_HELPER}
@@ -5414,23 +5424,54 @@ let modelSender;
 let workerConfigDirectory;
 let nativeProbe;
 
-// Keep serving the accepted release while the CLI runs. Match the synchronous
-// probe result consumed by the shared deadline and failure classification.
-function runNativeProbe(executable, args, { timeout, ...options }) {
+${KILL_WORKER_GROUP}
+
+function stopNativeProbe(signal) {
+  try {
+    killWorkerGroup(nativeProbe, signal);
+    nativeProbe = undefined;
+  } catch (error) {
+    // Keep the handle for wrapper shutdown and withhold readiness if retirement failed.
+    console.error("Native model probe cleanup failed.");
+    return error;
+  }
+}
+
+// The CLI may delegate the probe to a subprocess that inherits its output pipes.
+function runNativeProbe(executable, args, { timeout, killSignal, maxBuffer, ...options }) {
   return new Promise((resolve) => {
-    let timedOut = false;
-    const child = execFile(executable, args, options, (error, stdout) => {
-      clearTimeout(timer);
-      nativeProbe = undefined;
-      if (timedOut) error = { code: "ETIMEDOUT" };
-      else if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") error = { code: "ENOBUFS" };
-      resolve({ stdout, error, status: child.exitCode, signal: child.signalCode });
-    });
+    const child = spawn(executable, args, { ...options, detached: true });
     nativeProbe = child;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill(options.killSignal);
-    }, timeout);
+    const output = [];
+    let settled = false;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const timer = setTimeout(() => finish({ code: "ETIMEDOUT" }), timeout);
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const cleanupError = stopNativeProbe(killSignal);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve({
+        stdout: Buffer.concat(output).toString("utf8"),
+        error: error ?? cleanupError,
+        status: child.exitCode,
+        signal: child.signalCode,
+      });
+    }
+    child.stdout.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxBuffer) finish({ code: "ENOBUFS" });
+      else output.push(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > maxBuffer) finish({ code: "ENOBUFS" });
+    });
+    child.once("error", finish);
+    child.once("close", () => finish());
   });
 }
 
@@ -5526,9 +5567,12 @@ const NATIVE_MODEL_ENROLL_AND_START = String.raw`
 (async () => {
 const workerConfiguration = JSON.parse(inferenceConfig);
 process.once("exit", () => {
-  nativeProbe?.kill("SIGKILL");
+  stopNativeProbe("SIGKILL");
   stopModelSender();
-  if (workerConfigDirectory) rmSync(workerConfigDirectory, {recursive: true, force: true});
+  if (workerConfigDirectory) {
+    try { rmSync(workerConfigDirectory, { recursive: true, force: true }); }
+    catch { console.error("Native worker model configuration cleanup failed."); }
+  }
 });
 process.on("SIGTERM", stopBeforeWorker);
 process.on("SIGINT", stopBeforeWorker);
@@ -5780,16 +5824,11 @@ let pendingSetupCode;
 let retirementTimer;
 let stopTimer;
 let terminating = false;
-function killWorkerGroup(worker, signal) {
-  if (!worker?.pid) return;
-  try { process.kill(-worker.pid, signal); }
-  catch (error) {
-    // Provider sandboxes can reject signaling a group containing only zombies.
-    if (error.code === "EPERM") worker.kill(signal);
-    else if (error.code !== "ESRCH") throw error;
-  }
-}
-${protectedModel ? 'process.once("exit", () => killWorkerGroup(child, "SIGKILL"));\n' : ""}function startWorker(target) {
+${
+  protectedModel
+    ? 'process.once("exit", () => killWorkerGroup(child, "SIGKILL"));\n'
+    : KILL_WORKER_GROUP + "\n"
+}function startWorker(target) {
   if (terminating) return;
   runningSetupCode = target;
   pendingSetupCode = undefined;

@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-13
-last_updated_session: authoring-run/d5a55373-0598-451b-b42f-06f7ad4f0fb2
+last_updated_session: authoring-run/cae0a6e8-decf-48fc-9929-a42b8a422ce5
 ---
 
 # Authorize model credentials per request
@@ -104,7 +104,9 @@ signed receipt against the current Sandbox, process, configuration and key.
 The launcher can serve the receipt while the model probe runs. It rejects
 repeat releases and serves the accepted receipt and any held startup failure
 until the process exits. The signature expiry applies to the original POST.
-Compute withdraws the temporary bootstrap service after node enrollment and
+The launcher stops the probe and its subprocesses at the deadline or on exit.
+Compute verifies the current installation before it reports a held failure.
+It withdraws the temporary bootstrap service after node enrollment and
 verifies the installed recipient again before activation.
 
 The native runtime uses the loopback port announced by
@@ -247,6 +249,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-13 23:24: Describe probe subprocess retirement and the installation check for held failures. (authoring-run/cae0a6e8-decf-48fc-9929-a42b8a422ce5 - b27b10cdbf98b422a90f620266c9cc8ba9de71b6)
 
 - 2026-11-13 20:05: Document the signed native startup, its observable status, and the execution-scoped Responses sender. (authoring-run/d5a55373-0598-451b-b42f-06f7ad4f0fb2 - 7e7cb6005e6fe7f94463524ad36ae93fa8e2097a)
 

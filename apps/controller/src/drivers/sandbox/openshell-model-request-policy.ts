@@ -17,10 +17,11 @@ function unsupported(message: string): never {
   throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", message);
 }
 
-export function nativeOpenShellModelRequest(
-  revision: Readonly<AgentRevision>,
-  plan: ProxyPlan,
-): boolean {
+export function isOpenShellRestartNever(policy: unknown): boolean {
+  return policy === 1 || policy === "SANDBOX_RESTART_POLICY_NEVER";
+}
+
+function nativeOpenShellModelRequest(revision: Readonly<AgentRevision>, plan: ProxyPlan): boolean {
   const binding = plan.routes[0]?.binding;
   return (
     revision.harness.id === "openclaw" &&
@@ -150,6 +151,7 @@ export function openShellModelRequestPolicy(
     provider: { name, profile },
     environment: { OPENAI_API_KEY: "oce:request-authorized:model" },
     host,
+    origin: route.origin,
     registration: { name: options.middlewareName, ...registration },
   };
 }
@@ -211,7 +213,7 @@ export function verifyModelRequestProfile(
 /** Inspect actual admission and provider-derived routes, not merely the desired profile. */
 export function verifyModelRequestPolicy(
   config: Readonly<Record<string, unknown>> | undefined,
-  expected: ModelRequestPolicy,
+  expected: Pick<ModelRequestPolicy, "host" | "middlewares" | "provider" | "registration">,
   workspace: string,
 ): void {
   const registrations = Array.isArray(config?.supervisor_middleware_services)

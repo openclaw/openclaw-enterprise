@@ -7669,6 +7669,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
               // enrolled, the exposure the read used is withdrawn.
               const held = heldProviderHarnessFailure(await observeProviderHarness());
               if (held !== undefined) {
+                if (nativeModelOrigin !== undefined) {
+                  await requireCurrentNativeInstallation();
+                }
                 return held;
               }
             }

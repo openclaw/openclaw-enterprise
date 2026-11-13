@@ -109,7 +109,7 @@ func TestSender(t *testing.T) {
 		}
 	})
 	local := startSender(t, ctx, origin, caFile)
-	send := func(method, path, body string, alter func(*http.Request)) *http.Response {
+	send := func(t *testing.T, method, path, body string, alter func(*http.Request)) *http.Response {
 		t.Helper()
 		req, err := http.NewRequestWithContext(ctx, method, local+path, strings.NewReader(body))
 		if err != nil {
@@ -152,15 +152,14 @@ func TestSender(t *testing.T) {
 		{"encoded request", "POST", "/v1/responses", 400, func(r *http.Request) { r.Header.Set("Content-Encoding", "gzip") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := send(tc.method, tc.path, `{"stream":true}`, tc.alter)
+			resp := send(t, tc.method, tc.path, `{"stream":true}`, tc.alter)
 			if resp.StatusCode != tc.want {
 				t.Errorf("got status %d, want %d", resp.StatusCode, tc.want)
 			}
-			resp.Body.Close()
 		})
 	}
 	for _, chunked := range []bool{false, true} {
-		resp := send("POST", "/v1/responses", strings.Repeat("a", 1024*1024+1), func(r *http.Request) {
+		resp := send(t, "POST", "/v1/responses", strings.Repeat("a", 1024*1024+1), func(r *http.Request) {
 			if chunked {
 				r.ContentLength = -1
 			}
@@ -175,7 +174,7 @@ func TestSender(t *testing.T) {
 	}
 
 	for _, body := range []string{`{"redirect":true}`, `{"compressed":true}`} {
-		resp := send("POST", "/v1/responses", body, nil)
+		resp := send(t, "POST", "/v1/responses", body, nil)
 		if resp.StatusCode != 502 || resp.Header.Get("Location") != "" {
 			t.Fatalf("unsupported response escaped with status %d", resp.StatusCode)
 		}
@@ -185,7 +184,7 @@ func TestSender(t *testing.T) {
 		t.Fatal("sender followed redirect")
 	}
 
-	resp := send("POST", "/v1/responses", `{"stream":true}`, nil)
+	resp := send(t, "POST", "/v1/responses", `{"stream":true}`, nil)
 	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" ||
 		resp.Header.Get("Set-Cookie") != "" {
 		t.Fatalf("unexpected SSE status or headers: %d", resp.StatusCode)
@@ -198,7 +197,7 @@ func TestSender(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	resp = send("POST", "/v1/responses", `{"cancel":true}`, nil)
+	resp = send(t, "POST", "/v1/responses", `{"cancel":true}`, nil)
 	checkSSEPrefix(t, resp, first)
 	resp.Body.Close()
 	select {
