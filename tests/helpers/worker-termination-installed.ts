@@ -1,28 +1,135 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import { promisify } from "node:util";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { availablePort } from "./available-port.ts";
+import {
+  decodeOtlpLogs,
+  type ReadObservabilityLogs,
+} from "./production-observability-collector.ts";
 
-const attributes = (entries = []) =>
-  Object.fromEntries(
-    entries.map(({ key, value }) => [key, value.stringValue ?? Number(value.intValue)]),
+type WorkerKind = "container" | "restartable-init";
+type Shutdown = () => Promise<void>;
+type ObserverMetadata = { name: string; namespace: string; labels: Record<string, string> };
+type ObserverResource =
+  | { apiVersion: "v1"; kind: "ServiceAccount"; metadata: ObserverMetadata }
+  | {
+      apiVersion: "rbac.authorization.k8s.io/v1";
+      kind: "Role";
+      metadata: ObserverMetadata;
+      rules: { apiGroups: string[]; resources: string[]; verbs: string[] }[];
+    }
+  | {
+      apiVersion: "rbac.authorization.k8s.io/v1";
+      kind: "RoleBinding";
+      metadata: ObserverMetadata;
+      subjects: { kind: "ServiceAccount"; name: string; namespace: string }[];
+      roleRef: { apiGroup: string; kind: "Role"; name: string };
+    };
+
+export type InstalledWorkerFixture = {
+  directory: string;
+  selection: { kubeconfigPath: string; kubernetesContext: string };
+  monitoring: string;
+  system: string;
+  release: string;
+  secrets: string[];
+  metadata: (name: string) => ObserverMetadata;
+  apply: (resource: ObserverResource) => Promise<string>;
+  kubectl: (...args: string[]) => Promise<string>;
+  currentPod: (component: string) => Promise<unknown>;
+  get: (kind: "pod", name: string) => Promise<unknown>;
+  waitFor: <T>(description: string | (() => string), probe: () => Promise<T | false>) => Promise<T>;
+  record: (message: string) => void;
+};
+
+type WorkerStatus = {
+  restartCount: number;
+  ready: boolean;
+  containerID: string | undefined;
+  startedAt: string | undefined;
+  running: boolean;
+  waiting: boolean;
+  exitCode: number | undefined;
+  previousExitCode: number | undefined;
+};
+
+function workerPod(value: unknown) {
+  const pod = asRecord(value);
+  const metadata = asRecord(pod?.metadata);
+  const status = asRecord(pod?.status);
+  const spec = asRecord(pod?.spec);
+  assert.ok(typeof metadata?.name === "string" && typeof metadata.uid === "string");
+  assert.ok(status && spec, "Expected the installed worker Pod spec and status");
+  return { metadata: { name: metadata.name, uid: metadata.uid }, status, spec };
+}
+
+function workerEntry(entries: unknown) {
+  assert.ok(Array.isArray(entries), "Expected worker container entries");
+  const values: unknown[] = entries;
+  const worker = values.map(asRecord).find((entry) => entry?.name === "worker");
+  assert.ok(worker, "Expected an installed worker container");
+  return worker;
+}
+
+function workerStatus(pod: ReturnType<typeof workerPod>, kind: WorkerKind): WorkerStatus {
+  const worker = workerEntry(
+    kind === "container" ? pod.status.containerStatuses : pod.status.initContainerStatuses,
   );
+  const { restartCount, ready, containerID } = worker;
+  const state = asRecord(worker.state);
+  const running = asRecord(state?.running);
+  const startedAt = running?.startedAt;
+  const exitCode = asRecord(state?.terminated)?.exitCode;
+  const previousExitCode = asRecord(asRecord(worker.lastState)?.terminated)?.exitCode;
+  assert.ok(typeof restartCount === "number" && typeof ready === "boolean");
+  assert.ok(containerID === undefined || typeof containerID === "string");
+  assert.ok(startedAt === undefined || typeof startedAt === "string");
+  assert.ok(exitCode === undefined || typeof exitCode === "number");
+  assert.ok(previousExitCode === undefined || typeof previousExitCode === "number");
+  return {
+    restartCount,
+    ready,
+    containerID,
+    startedAt,
+    running: Boolean(running),
+    waiting: Boolean(state?.waiting),
+    exitCode,
+    previousExitCode,
+  };
+}
 
-export async function workerObserverCollectorBinary(directory) {
+type LogAttributes = ReturnType<typeof decodeOtlpLogs>[number]["attributes"];
+
+function attributes(entries: LogAttributes) {
+  return Object.fromEntries(
+    entries.map(({ key, stringValue, intValue }) => [key, stringValue ?? Number(intValue)]),
+  );
+}
+
+export async function workerObserverCollectorBinary(directory: string) {
   // CI already prepares this immutable local image. Extraction never pulls or
   // starts it. The standalone override is only for isolated no-Docker proof.
   let collectorBinary = process.env.OCC_TEST_WORKER_COLLECTOR_BIN;
   if (!collectorBinary) {
-    const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-    const { loadYaml } = require("@kubernetes/client-node");
-    const production = loadYaml(
+    const require: (id: string) => unknown = createRequire(
+      new URL("../../apps/controller/package.json", import.meta.url),
+    );
+    const kubernetes: unknown = require("@kubernetes/client-node");
+    const loadYaml = asRecord(kubernetes)?.loadYaml;
+    assert.ok(typeof loadYaml === "function");
+    const values: unknown = loadYaml(
       await readFile("deploy/helm/openclaw-enterprise/values.yaml", "utf8"),
     );
-    const image = production.logging.collector.image;
-    assert.ok(image, "Prepared observability Collector image is required");
+    const logging = asRecord(asRecord(values)?.logging);
+    const image = asRecord(logging?.collector)?.image;
+    assert.ok(
+      typeof image === "string" && image,
+      "Prepared observability Collector image is required",
+    );
     assert.match(image, /@sha256:[a-f0-9]{64}$/);
     const docker = process.env.OCC_DOCKER_BIN ?? "docker";
     const exec = promisify(execFile);
@@ -42,7 +149,7 @@ export async function workerObserverCollectorBinary(directory) {
   return collectorBinary;
 }
 
-export async function writeWorkerObserverExporter(directory, port) {
+export async function writeWorkerObserverExporter(directory: string, port: number) {
   const config = join(directory, "exporter.yaml");
   await writeFile(
     config,
@@ -66,7 +173,11 @@ service:
 
 // Run the operator's actual observer and private-file Collector against the
 // installed API and OTLP receiver. No Pod status or observer output is manufactured.
-async function observeInstalledWorker(f, readLogs, children) {
+async function observeInstalledWorker(
+  f: InstalledWorkerFixture,
+  readLogs: ReadObservabilityLogs,
+  children: Shutdown[],
+) {
   const directory = join(f.directory, "worker-observer");
   await mkdir(directory, { mode: 0o700 });
   const observations = join(directory, "observations.jsonl");
@@ -77,7 +188,7 @@ async function observeInstalledWorker(f, readLogs, children) {
     await symlink(process.env.OCC_KUBECTL_BIN, join(directory, "kubectl"));
   }
   const collectorBinary = await workerObserverCollectorBinary(directory);
-  const start = (command, args, env = {}) => {
+  const start = (command: string, args: string[], env: NodeJS.ProcessEnv = {}) => {
     const child = spawn(command, args, {
       env: { PATH: process.env.PATH, HOME: directory, ...env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -85,14 +196,14 @@ async function observeInstalledWorker(f, readLogs, children) {
     let ready = false;
     let finished = false;
     // Keep diagnostics fixed. kubectl and Collector errors can contain private inputs.
-    child.stdout.on("data", (chunk) => {
-      if (chunk.toString().includes("Forwarding from 127.0.0.1:")) {
+    child.stdout.on("data", (chunk: unknown) => {
+      if (Buffer.isBuffer(chunk) && chunk.toString().includes("Forwarding from 127.0.0.1:")) {
         ready = true;
       }
     });
     child.stderr.resume();
     child.on("error", () => {});
-    const closed = new Promise((resolve) =>
+    const closed = new Promise<void>((resolve) =>
       child.once("close", () => {
         finished = true;
         resolve();
@@ -165,7 +276,7 @@ async function observeInstalledWorker(f, readLogs, children) {
   });
   const token = (await f.kubectl("-n", f.system, "create", "token", name, "--duration=15m")).trim();
   f.secrets.push(token);
-  const cluster = JSON.parse(
+  const decodedCluster: unknown = JSON.parse(
     await f.kubectl(
       "config",
       "view",
@@ -176,6 +287,8 @@ async function observeInstalledWorker(f, readLogs, children) {
       "jsonpath={.clusters[0].cluster}",
     ),
   );
+  const cluster = asRecord(decodedCluster);
+  assert.ok(cluster, "Expected the selected observer cluster configuration");
   const kubeconfig = join(directory, "kubeconfig");
   await writeFile(
     kubeconfig,
@@ -208,17 +321,15 @@ async function observeInstalledWorker(f, readLogs, children) {
         "OTLP export contains a credential",
       );
     }
-    return payloads.flatMap(({ resourceLogs = [] }) =>
-      resourceLogs.flatMap((resource) =>
-        attributes(resource.resource?.attributes)["service.name"] === "oce-worker-observer"
-          ? (resource.scopeLogs ?? []).flatMap(({ logRecords = [] }) =>
-              logRecords.map((record) => attributes(record.attributes)),
-            )
+    return payloads.flatMap((payload) =>
+      decodeOtlpLogs(payload).flatMap((resource) =>
+        attributes(resource.attributes)["service.name"] === "oce-worker-observer"
+          ? resource.records.map((record) => attributes(record.attributes))
           : [],
       ),
     );
   };
-  const pod = await f.currentPod("worker");
+  const pod = workerPod(await f.currentPod("worker"));
   await f.waitFor("installed worker observation baseline", async () =>
     (await records()).some(
       (record) =>
@@ -229,28 +340,27 @@ async function observeInstalledWorker(f, readLogs, children) {
   return { records, pod };
 }
 
-export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
-  const children = [];
+export async function verifyInstalledWorkerRestarts(
+  f: InstalledWorkerFixture,
+  readLogs: ReadObservabilityLogs,
+  kind: WorkerKind,
+) {
+  const children: Shutdown[] = [];
   try {
     const { records, pod } = await observeInstalledWorker(f, readLogs, children);
-    const statuses = (value) =>
-      kind === "container" ? value.status.containerStatuses : value.status.initContainerStatuses;
-    const status = (value) => statuses(value).find(({ name }) => name === "worker");
-    const initial = status(pod).restartCount;
+    let running = workerStatus(pod, kind);
+    const initial = running.restartCount;
     if (kind === "restartable-init") {
-      assert.equal(
-        pod.spec.initContainers.find(({ name }) => name === "worker").restartPolicy,
-        "Always",
-      );
+      assert.equal(workerEntry(pod.spec.initContainers).restartPolicy, "Always");
     }
-    const captured = [];
-    let running = status(pod);
+    const captured: { containerID: string; startedAt: number; replacedAt: number }[] = [];
     for (let index = 0; index < 2; index++) {
       // Identify the live instance before requesting its exit. Kubernetes can
       // discard lastState before the replacement becomes ready; backend evidence
       // must still identify this exact instance rather than its replacement.
       const containerID = running.containerID;
-      const startedAt = Date.parse(running.state?.running?.startedAt);
+      assert.ok(containerID && running.startedAt);
+      const startedAt = Date.parse(running.startedAt);
       assert.match(containerID, /^[a-zA-Z0-9_.-]+:\/\/[^\s]+$/);
       assert.ok(Number.isFinite(startedAt));
       // The installed worker is PID 1. Its SIGTERM handler closes the actual
@@ -267,34 +377,33 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
         "-e",
         "process.kill(1, 'SIGTERM')",
       );
-      let observed;
+      let observed: Omit<WorkerStatus, "containerID" | "startedAt"> | undefined;
       running = await f.waitFor(
         () =>
           `same worker Pod replacement ready (${kind}, expected restart count ${initial + index + 1}, observed ${JSON.stringify(observed)})`,
         async () => {
-          const current = await f.get("pod", pod.metadata.name);
+          const current = workerPod(await f.get("pod", pod.metadata.name));
           assert.equal(current.metadata.uid, pod.metadata.uid);
-          const worker = status(current);
+          const worker = workerStatus(current, kind);
           // Keep only lifecycle fields; Pod payloads and termination messages can contain secrets.
           observed = {
             restartCount: worker.restartCount,
             ready: worker.ready,
-            running: Boolean(worker.state?.running),
-            waiting: Boolean(worker.state?.waiting),
-            exitCode: worker.state?.terminated?.exitCode,
-            previousExitCode: worker.lastState?.terminated?.exitCode,
+            running: worker.running,
+            waiting: worker.waiting,
+            exitCode: worker.exitCode,
+            previousExitCode: worker.previousExitCode,
           };
           // Readiness establishes replacement only. The observer's retained OTLP
           // event below proves the prior instance's exit independently of lastState.
-          return worker.restartCount === initial + index + 1 &&
-            worker.ready &&
-            worker.state?.running
+          return worker.restartCount === initial + index + 1 && worker.ready && worker.running
             ? worker
             : false;
         },
       );
       assert.notEqual(running.containerID, containerID);
-      const replacedAt = Date.parse(running.state.running.startedAt);
+      assert.ok(running.startedAt);
+      const replacedAt = Date.parse(running.startedAt);
       assert.ok(Number.isFinite(replacedAt));
       captured.push({ containerID, startedAt, replacedAt });
       await f.waitFor("worker exit retained at OTLP backend", async () =>
@@ -307,13 +416,15 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
         ),
       );
     }
-    assert.notEqual(captured[0].containerID, captured[1].containerID);
+    const [first, second] = captured;
+    assert.ok(first && second);
+    assert.notEqual(first.containerID, second.containerID);
     const exits = (await records()).filter(
       (record) =>
         record["k8s.pod.uid"] === pod.metadata.uid &&
         record["event.name"] === "worker.termination.observed",
     );
-    const ids = new Set();
+    const ids = new Set<string>();
     for (const [index, expected] of captured.entries()) {
       const matches = exits.filter(
         (record) => record["oce.termination.container_id"] === expected.containerID,
@@ -330,13 +441,17 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
           0,
           "Worker completed its shutdown handler",
         );
-        const finishedAt = Date.parse(record["oce.termination.finished_at"]);
+        const finished = record["oce.termination.finished_at"];
+        assert.ok(typeof finished === "string");
+        const finishedAt = Date.parse(finished);
         assert.ok(
           finishedAt >= expected.startedAt && finishedAt <= expected.replacedAt,
           "Observed exit falls between the actual instance and replacement start times",
         );
-        assert.match(record["oce.observation.id"], /^[a-f0-9]{64}$/);
-        ids.add(record["oce.observation.id"]);
+        const id = record["oce.observation.id"];
+        assert.ok(typeof id === "string");
+        assert.match(id, /^[a-f0-9]{64}$/);
+        ids.add(id);
       }
     }
     assert.equal(ids.size, 2);
