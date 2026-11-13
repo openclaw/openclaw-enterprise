@@ -474,22 +474,28 @@ test(
     const stopped = once(collector, "exit");
     collector.kill();
     await stopped;
+    const retainedCount = records().length;
     collector = startCollector();
     collector.stderr.on("data", (chunk) => {
       collectorErrors += chunk;
     });
-    const retainedCount = records().length;
     await delay(500);
+    const restartObservationID = "f".repeat(64);
     await appendFile(
       endpoint,
       JSON.stringify({
         ...valid,
-        fields: { ...valid.fields, "oce.observation.id": "f".repeat(64) },
+        fields: { ...valid.fields, "oce.observation.id": restartObservationID },
       }) + "\n",
     );
-    await until(() => records().length === retainedCount + 1);
+    await until(() => records().length > retainedCount);
     await delay(300);
-    assert.equal(records().length, retainedCount + 1);
+    assert.deepEqual(
+      attrs()
+        .slice(retainedCount)
+        .map((record) => ({ event: record["event.name"], id: record["oce.observation.id"] })),
+      [{ event: "worker.termination.observed", id: restartObservationID }],
+    );
     assert.equal(collector.exitCode, null, collectorErrors);
     // Reject non-private directory permissions before any API request. If this
     // guard regresses, the fixture refuses requests so the child cannot hang.
