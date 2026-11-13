@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-05
-last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
+updated: 2026-11-13
+last_updated_session: authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9
 ---
 
 # Installation Profile Rendering Flow
@@ -243,7 +243,10 @@ Input-loading failures exit without a preflight report.
 The preflight report lists warnings, external prerequisites, and the next
 operator steps. It tells the operator to update the Installation startup Secret
 before the Helm upgrade, so API and worker pod-template annotations roll when
-startup-only configuration changes. The report does not claim live readiness:
+startup-only configuration changes. The Slack proxy reads its configuration from its
+Pod template. Removing the checksum annotation from a previously annotated proxy
+triggers one rollout. Later Installation checksum changes preserve its Pod template.
+The report does not claim live readiness:
 Helm rendering, Secret creation, runtime proof, hosted discovery, Slack consumer
 activation, and repository registry creation need separate evidence.
 
@@ -282,6 +285,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13: Document how Installation checksum changes affect the Slack proxy during chart upgrades. (authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9, accompanying change)
 
 - 2026-11-05 23:27: Remove provider DNS resolution from profile rendering. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 30037b3d8929ce73cb8f01dd0a9ec6ebf2d3fae6)
 

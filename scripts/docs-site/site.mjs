@@ -98,6 +98,31 @@ function openSearch() {
 }
 document.querySelector("#search-open").addEventListener("click", openSearch);
 document.querySelector("#search-close").addEventListener("click", () => dialog.close());
+document.querySelector("#search").addEventListener("click", (event) => {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return;
+  }
+
+  const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+  if (
+    link instanceof HTMLAnchorElement &&
+    (!link.target || link.target.toLowerCase() === "_self") &&
+    !link.hasAttribute("download") &&
+    link.hash &&
+    link.origin === window.location.origin &&
+    link.pathname === window.location.pathname &&
+    link.search === window.location.search
+  ) {
+    dialog.close();
+  }
+});
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();

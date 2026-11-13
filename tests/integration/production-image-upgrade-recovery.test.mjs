@@ -1971,7 +1971,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       "req",
       "-x509",
       "-newkey",
-      "rsa:2048",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
       "-nodes",
       "-days",
       "1",
@@ -2087,6 +2089,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       reads: control.reads,
       executionReads: target?.reads ?? [],
       reviews: target?.reviews ?? [],
+    };
+  }
+
+  function evidenceFiles(evidence) {
+    return {
+      evidence,
+      readEvidence: (...parts) => readFile(join(evidence, ...parts), "utf8"),
     };
   }
 
@@ -2453,7 +2462,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     }
     return {
       directory,
-      evidence,
+      ...evidenceFiles(evidence),
       commands,
       databaseSessions: database?.sessions ?? [],
       runIdentityCheck: async (component, action = "identity-job", protocol) => {
@@ -2614,7 +2623,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           /continuity failed; completion was not recorded/,
         );
         assert.equal(existsSync(join(f.evidence, "completed")), false);
-        const baseline = await readFile(join(f.evidence, "agent-continuity.json"), "utf8");
+        const baseline = await f.readEvidence("agent-continuity.json");
         const state = await f.state();
         assert.equal(state.helmSubmissions, 1);
         state.continuity.after = continuityObservation("restored");
@@ -2622,7 +2631,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         await f.run(...continuityFlags, "--resume");
         assert.equal((await f.state()).helmSubmissions, 1);
         assert.equal((await f.state()).dispatches, 0);
-        assert.equal(await readFile(join(f.evidence, "agent-continuity.json"), "utf8"), baseline);
+        assert.equal(await f.readEvidence("agent-continuity.json"), baseline);
         assert.ok(existsSync(join(f.evidence, "completed")));
       });
     }
@@ -2835,8 +2844,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const f = await fixture(t, { controllerOnly: true, environment });
     await f.failNext("lost-helm-response");
     await assert.rejects(f.run(), injectedFault);
-    const parameters = await readFile(join(f.evidence, "parameters.json"), "utf8");
-    const submission = await readFile(join(f.evidence, "helm-started"), "utf8");
+    const parameters = await f.readEvidence("parameters.json");
+    const submission = await f.readEvidence("helm-started");
     const commands = f.commands.length;
     const events = await f.events();
     // A changed shell environment must not redirect reconciliation of an accepted
@@ -2847,8 +2856,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       delete environment[variable];
       assert.equal(f.commands.length, commands);
       assert.deepEqual(await f.events(), events);
-      assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), parameters);
-      assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), submission);
+      assert.equal(await f.readEvidence("parameters.json"), parameters);
+      assert.equal(await f.readEvidence("helm-started"), submission);
       assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
     }
     await f.run("--resume");
@@ -2948,7 +2957,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await assert.rejects(f.run(...flags), injectedFault);
     const frozen = join(f.evidence, "controller-compatibility-results.json");
     await assertPrivateReceipt(frozen, contents);
-    const continuityBefore = await readFile(join(f.evidence, "agent-continuity.json"), "utf8");
+    const continuityBefore = await f.readEvidence("agent-continuity.json");
     const before = await f.events();
 
     // Neither a replacement nor deletion of prepared evidence can change the
@@ -2965,10 +2974,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await f.run(...flags, "--resume");
     await assertPrivateReceipt(frozen, contents);
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
-    assert.equal(
-      await readFile(join(f.evidence, "agent-continuity.json"), "utf8"),
-      continuityBefore,
-    );
+    assert.equal(await f.readEvidence("agent-continuity.json"), continuityBefore);
     const continuityAfter = JSON.parse(
       await readFile(join(f.evidence, "agent-continuity-after.json")),
     );
@@ -3241,7 +3247,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         ),
       );
     }
-    assert.equal(await readFile(join(f.evidence, "candidate-installation.yaml"), "utf8"), f.staged);
+    assert.equal(await f.readEvidence("candidate-installation.yaml"), f.staged);
     // Preflight-only evidence is deliberately not resumable. A fresh normal
     // attempt proves that Helm receives the same staged bytes and reference.
     const deployment = await immutableInstallationSwitch(t);
@@ -3387,9 +3393,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const completed = await f.state();
     assert.equal(completed.helmSubmissions, 1);
     assert.equal(completed.dispatches, 1);
-    const receipt = JSON.parse(
-      await readFile(join(f.evidence, "installation-initializer.json"), "utf8"),
-    );
+    const receipt = JSON.parse(await f.readEvidence("installation-initializer.json"));
     assert.equal(receipt.jobUid, accepted.installationInitializer.job.metadata.uid);
     assert.equal(receipt.podUid, accepted.installationInitializer.pod.metadata.uid);
     await assertImmutableInstallationRetained(f);
@@ -3722,7 +3726,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   }
 
   async function assertHelmIntent(f, previousRevision, expectedRevision) {
-    const intent = JSON.parse(await readFile(join(f.evidence, "helm-started"), "utf8"));
+    const intent = JSON.parse(await f.readEvidence("helm-started"));
     assert.equal(intent.previousRevision, previousRevision);
     assert.equal(intent.expectedRevision, expectedRevision);
     const attempt = join(f.evidence, "helm-attempts", intent.attempt.nonce);
@@ -4116,7 +4120,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.state()).worker, 1);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
     assert.deepEqual(await f.events(), ["scale-api"]);
-    const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"), "utf8");
+    const originalCheck = await f.readEvidence("preflight-migration.log");
     // Compatibility can change after preparation. A fresh refusal on resume must
     // leave the remaining writer running and preserve the original check's evidence.
     const state = await f.state();
@@ -4129,16 +4133,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.state()).version, 1);
     assert.deepEqual(await f.events(), ["scale-api"]);
     assert.equal(await readFile(path, "utf8"), receipt);
-    assert.equal(
-      await readFile(join(f.evidence, "preflight-migration.log"), "utf8"),
-      originalCheck,
-    );
+    assert.equal(await f.readEvidence("preflight-migration.log"), originalCheck);
     const [retry] = (await readdir(f.evidence)).filter((name) =>
       name.startsWith("upgrade-preflight-resume."),
     );
     assert.ok(retry);
     assert.equal(
-      await readFile(join(f.evidence, retry, "preflight-migration.log"), "utf8"),
+      await f.readEvidence(retry, "preflight-migration.log"),
       "migration history changed\n",
     );
     const retryState = await f.state();
@@ -4294,7 +4295,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         assert.equal(existsSync(join(f.evidence, "helm-started")), false);
         assert.deepEqual(await f.events(), ["scale-api"]);
         assert.equal(
-          await readFile(join(f.evidence, "native-command-failures.tsv"), "utf8"),
+          await f.readEvidence("native-command-failures.tsv"),
           "quiescence-scale\tworker\t1\n",
         );
         // After the operator reconciles the conflict, resume observes the current
@@ -5167,7 +5168,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         (await f.events()).filter((event) => event.startsWith("doctor ")),
         [doctorCommand(384), doctorCommand(384)],
       );
-      const targets = (await readFile(join(f.evidence, "doctor-targets.jsonl"), "utf8"))
+      const targets = (await f.readEvidence("doctor-targets.jsonl"))
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));
@@ -6074,9 +6075,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             const f = await fixture(subtest, { controllerOnly: true, collector });
             await f.run(...extra);
             assert.equal((await f.state()).controller, newController);
-            const drift = (
-              await readFile(join(f.evidence, "collector-config-drift"), "utf8")
-            ).trim();
+            const drift = (await f.readEvidence("collector-config-drift")).trim();
             assert.equal(drift, collector === "stale" ? "collector.yaml\nkubernetes.yaml" : "");
           }),
         );
@@ -6163,9 +6162,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
                   "secret",
                 ],
               );
-              assert.match(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), failure);
+              assert.match(await f.readEvidence("preflight-api.log"), failure);
               assert.match(
-                await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+                await f.readEvidence("preflight-worker.log"),
                 /installation-startup-ready/,
               );
             } else {
@@ -6207,7 +6206,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // Both components fail the same way, and both logs are saved (finding 447).
     for (const component of ["api", "worker"]) {
       assert.match(
-        await readFile(join(f.evidence, `preflight-${component}.log`), "utf8"),
+        await f.readEvidence(`preflight-${component}.log`),
         /Preset file \/app\/deploy\/presets\/devday\.json is unavailable\./,
       );
     }
@@ -6244,7 +6243,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     });
     await assertStoppedBeforeWriters(f);
     for (const component of ["api", "worker"]) {
-      const log = await readFile(join(f.evidence, `preflight-${component}.log`), "utf8");
+      const log = await f.readEvidence(`preflight-${component}.log`);
       const line = log
         .split("\n")
         .find((line) => line.startsWith("DRIVER_CONFIGURATION_INVALID: "));
@@ -6301,9 +6300,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         return true;
       });
       await assertStoppedBeforeWriters(f);
-      const pod = JSON.parse(
-        await readFile(join(f.evidence, `preflight-${component}-job.json`), "utf8"),
-      ).spec.template;
+      const pod = JSON.parse(await f.readEvidence(`preflight-${component}-job.json`)).spec.template;
       assert.deepEqual(
         pod.spec.containers[0].env.find(
           (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME",
@@ -6660,31 +6657,24 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       assert.match(error.stderr, /could not confirm database migration compatibility/);
       return true;
     });
-    const status = JSON.parse(
-      await readFile(join(f.evidence, "preflight-api-status.json"), "utf8"),
-    );
+    const status = JSON.parse(await f.readEvidence("preflight-api-status.json"));
     assert.equal(status.status.containerStatuses[0].state.waiting.reason, "ImagePullBackOff");
-    assert.match(
-      await readFile(join(f.evidence, "preflight-api-logs.err"), "utf8"),
-      /waiting to start/,
-    );
-    assert.equal((await readFile(join(f.evidence, "preflight-api.log"), "utf8")).trim(), "");
+    assert.match(await f.readEvidence("preflight-api-logs.err"), /waiting to start/);
+    assert.equal((await f.readEvidence("preflight-api.log")).trim(), "");
     assert.equal(
-      JSON.parse(await readFile(join(f.evidence, "preflight-worker-status.json"), "utf8")).status
-        .phase,
+      JSON.parse(await f.readEvidence("preflight-worker-status.json")).status.phase,
       "Failed",
     );
     assert.equal(
-      await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+      await f.readEvidence("preflight-worker.log"),
       "loading drivers\nworker cannot load the Installation\n",
     );
     assert.equal(
-      await readFile(join(f.evidence, "preflight-migration.log"), "utf8"),
+      await f.readEvidence("preflight-migration.log"),
       "migration history is inconsistent\n",
     );
     assert.equal(
-      JSON.parse(await readFile(join(f.evidence, "preflight-migration-status.json"), "utf8")).status
-        .phase,
+      JSON.parse(await f.readEvidence("preflight-migration-status.json")).status.phase,
       "Failed",
     );
     const state = await f.state();
@@ -6747,7 +6737,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const failure = await f.run("--preflight-only").catch((error) => error);
     assert.equal(failure.code, 1);
     assert.ok(failure.stderr.includes(guidance), failure.stderr);
-    assert.equal(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), guidance + "\n");
+    assert.equal(await f.readEvidence("preflight-api.log"), guidance + "\n");
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
     await assertStoppedBeforeWriters(f);
   });
@@ -6774,8 +6764,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // Container output and successful kubectl diagnostics are independent streams.
     // The real helper must find the check record without accepting a wrong marker.
     await f.run("--preflight-only");
-    assert.equal(await readFile(join(f.evidence, "preflight-migration.log"), "utf8"), log);
-    assert.equal(await readFile(join(f.evidence, "preflight-migration-logs.err"), "utf8"), warning);
+    assert.equal(await f.readEvidence("preflight-migration.log"), log);
+    assert.equal(await f.readEvidence("preflight-migration-logs.err"), warning);
     assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
     assert.equal((await f.state()).api, 1);
     assert.equal((await f.state()).worker, 1);
@@ -6800,11 +6790,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       f.run("--preflight-only"),
       /cannot read the migration startup preflight logs/,
     );
-    assert.equal(await readFile(join(f.evidence, "preflight-migration.log"), "utf8"), log);
-    assert.match(
-      await readFile(join(f.evidence, "preflight-migration-logs.err"), "utf8"),
-      /log stream interrupted/,
-    );
+    assert.equal(await f.readEvidence("preflight-migration.log"), log);
+    assert.match(await f.readEvidence("preflight-migration-logs.err"), /log stream interrupted/);
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
     await assertStoppedBeforeWriters(f);
     assert.deepEqual((await f.state()).preflight.jobs, {});
@@ -6858,7 +6845,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       return true;
     });
     assert.equal(
-      await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+      await f.readEvidence("preflight-worker.log"),
       "worker cannot load the Installation\n",
     );
     const state = await f.state();
@@ -6900,7 +6887,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     }
     const secret = state.preflight.created.find((resource) => resource.kind === "secret");
     assert.ok(secret.name.startsWith(`${release}-upgrade-preflight-`));
-    const job = JSON.parse(await readFile(join(f.evidence, "preflight-worker-job.json"), "utf8"));
+    const job = JSON.parse(await f.readEvidence("preflight-worker-job.json"));
     const pod = job.spec.template;
     assert.equal(job.apiVersion, "batch/v1");
     assert.equal(job.kind, "Job");
@@ -6920,7 +6907,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     );
     // Both Pods ran Kubernetes Compute preflight on this shared-layout state.
     for (const component of ["api", "worker"]) {
-      const log = await readFile(join(f.evidence, `preflight-${component}.log`), "utf8");
+      const log = await f.readEvidence(`preflight-${component}.log`);
       assert.match(log, /^kubernetes-compute-preflight-passed$/m);
       assert.match(log, /^installation-startup-ready$/m);
     }
@@ -6932,11 +6919,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal(f.kubernetesReads.filter((path) => path === "/api/v1/namespaces").length, 2);
     // The chart's default-deny policy selects the preflight Pods too. The temporary
     // policy selects exactly them and grants the candidate's dependency egress.
-    const policy = JSON.parse(
-      await readFile(join(f.evidence, "preflight-networkpolicy.json"), "utf8"),
-    );
+    const policy = JSON.parse(await f.readEvidence("preflight-networkpolicy.json"));
     assert.deepEqual(policy.spec.podSelector.matchLabels, pod.metadata.labels);
-    const rendered = (await readFile(join(f.evidence, "preflight-rendered.jsonl"), "utf8"))
+    const rendered = (await f.readEvidence("preflight-rendered.jsonl"))
       .split("\n")
       .filter((line) => line.trim().startsWith("{"))
       .map((line) => JSON.parse(line));
@@ -6952,9 +6937,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       ),
       "the upgrade initialization Job includes the installation-check init container",
     );
-    const migrationJob = JSON.parse(
-      await readFile(join(f.evidence, "preflight-migration-job.json"), "utf8"),
-    );
+    const migrationJob = JSON.parse(await f.readEvidence("preflight-migration-job.json"));
     const migrationPod = migrationJob.spec.template;
     const initializer = initialization.spec.template.spec;
     const migration = initializer.initContainers.find(
@@ -6991,10 +6974,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.ok(
       migrationPod.spec.volumes.some((volume) => volume.name === "database-ca" && volume.secret),
     );
-    assert.deepEqual(
-      JSON.parse(await readFile(join(f.evidence, "preflight-migration.log"), "utf8")),
-      { event: "migration.checked", history: "providerCompleted" },
-    );
+    assert.deepEqual(JSON.parse(await f.readEvidence("preflight-migration.log")), {
+      event: "migration.checked",
+      history: "providerCompleted",
+    });
     assert.deepEqual(
       policy.spec.egress,
       rendered.find(
@@ -7024,19 +7007,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await assert.rejects(f.run("--resume", "--preflight-only"), /cannot be combined/);
     assert.equal(existsSync(f.evidence), false);
     assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
-    assert.match(
-      await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
-      /^installation-startup-ready$/m,
-    );
+    assert.match(await f.readEvidence("preflight-worker.log"), /^installation-startup-ready$/m);
     // The API Pod checked the recorded Agent's draft with the selected image's deploy rules.
-    assert.match(
-      await readFile(join(f.evidence, "preflight-api.log"), "utf8"),
-      /^agent-drafts-accepted$/m,
-    );
-    assert.deepEqual(
-      JSON.parse(await readFile(join(f.evidence, "preflight-migration.log"), "utf8")),
-      { event: "migration.checked", history: "providerCompleted" },
-    );
+    assert.match(await f.readEvidence("preflight-api.log"), /^agent-drafts-accepted$/m);
+    assert.deepEqual(JSON.parse(await f.readEvidence("preflight-migration.log")), {
+      event: "migration.checked",
+      history: "providerCompleted",
+    });
     assert.equal(existsSync(join(f.evidence, "prepared")), false);
     await assert.rejects(f.run("--resume"), /not a prepared deployment/);
     await assertStoppedBeforeWriters(f);
@@ -7071,11 +7048,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       assert.equal(state.dispatches, 0);
       assert.equal(existsSync(join(f.evidence, "prepared")), false);
       // Only the API Pod carries the drafts; the worker's check is unchanged.
-      const api = JSON.parse(await readFile(join(f.evidence, "preflight-api-job.json"), "utf8"))
-        .spec.template;
-      const worker = JSON.parse(
-        await readFile(join(f.evidence, "preflight-worker-job.json"), "utf8"),
-      ).spec.template;
+      const api = JSON.parse(await f.readEvidence("preflight-api-job.json")).spec.template;
+      const worker = JSON.parse(await f.readEvidence("preflight-worker-job.json")).spec.template;
       assert.ok(
         api.spec.volumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"),
       );
@@ -7157,10 +7131,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         if (valid) {
           await f.run();
           assert.equal((await f.state()).dispatches, 1);
-          assert.match(
-            await readFile(join(f.evidence, "preflight-api.log"), "utf8"),
-            /^agent-drafts-accepted$/m,
-          );
+          assert.match(await f.readEvidence("preflight-api.log"), /^agent-drafts-accepted$/m);
         } else {
           await assert.rejects(f.run(), (error) => {
             assert.match(
@@ -7177,7 +7148,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           const state = await assertStoppedBeforeWriters(f);
           assert.equal(state.dispatches, 0);
           assert.equal(existsSync(join(f.evidence, "prepared")), false);
-          const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8");
+          const log = await f.readEvidence("preflight-api.log");
           assert.doesNotMatch(log, /synthetic-|agent-drafts-accepted/);
         }
       });
@@ -7212,20 +7183,15 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       );
       return true;
     });
-    const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8");
+    const log = await f.readEvidence("preflight-api.log");
     assert.match(log, /^Agent draft check could not load the configured Harness resolver\.$/m);
     assert.doesNotMatch(
       log,
       /agent-draft-check-unavailable|agent-drafts-accepted|Agent draft refused:|installation-startup-ready/,
     );
-    const status = JSON.parse(
-      await readFile(join(f.evidence, "preflight-api-status.json"), "utf8"),
-    );
+    const status = JSON.parse(await f.readEvidence("preflight-api-status.json"));
     assert.equal(status.status.phase, "Failed");
-    assert.match(
-      await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
-      /^installation-startup-ready$/m,
-    );
+    assert.match(await f.readEvidence("preflight-worker.log"), /^installation-startup-ready$/m);
     const state = await assertStoppedBeforeWriters(f);
     assert.equal(state.dispatches, 0);
     assert.equal(state.controller, controller);
@@ -7253,7 +7219,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       result.stderr,
       /upgrade-production-images: the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it\./,
     );
-    const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8");
+    const log = await f.readEvidence("preflight-api.log");
     assert.match(log, /^agent-draft-check-unavailable$/m);
     assert.doesNotMatch(log, /^agent-drafts-accepted$/m);
     const state = await f.state();
@@ -7284,8 +7250,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       /upgrade-production-images: the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it\./,
     );
     // Neither the Secret nor the API Pod carried the drafts.
-    const api = JSON.parse(await readFile(join(f.evidence, "preflight-api-job.json"), "utf8")).spec
-      .template;
+    const api = JSON.parse(await f.readEvidence("preflight-api-job.json")).spec.template;
     assert.ok(!api.spec.volumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"));
     assert.ok(
       !api.spec.containers[0].env.some(
@@ -7379,7 +7344,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         (state.preflight.logRequests ?? []).includes("api"),
         mode === "replace-during-logs",
       );
-      const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8").catch((error) => {
+      const log = await f.readEvidence("preflight-api.log").catch((error) => {
         if (error.code !== "ENOENT") {
           throw error;
         }
@@ -7399,13 +7364,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     });
     const failure = await f.run("--preflight-only").catch((error) => error);
     assert.equal(failure.code, 1);
-    const job = JSON.parse(
-      await readFile(join(f.evidence, "preflight-api-job-status.json"), "utf8"),
-    );
+    const job = JSON.parse(await f.readEvidence("preflight-api-job-status.json"));
     assert.deepEqual(job.status.conditions, [
       { type: "Failed", status: "True", reason: "DeadlineExceeded" },
     ]);
-    const pod = JSON.parse(await readFile(join(f.evidence, "preflight-api-status.json"), "utf8"));
+    const pod = JSON.parse(await f.readEvidence("preflight-api-status.json"));
     assert.equal(pod.status.phase, "Succeeded");
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
     await assertStoppedBeforeWriters(f);
@@ -7579,7 +7542,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   test("same-candidate recovery refuses retained predecessor resources and checks their absence on resume", async (t) => {
     const { f, run, pending, policy, key } = await interruptedProxyRemoval(t);
-    const originalIntent = await readFile(join(f.evidence, "helm-started"), "utf8");
+    const originalIntent = await f.readEvidence("helm-started");
     for (const mode of ["live", "deleting", "keep", "forbidden"]) {
       await t.test(mode, async () => {
         const state = structuredClone(pending);
@@ -7632,7 +7595,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await run("--resume");
     assert.equal((await f.state()).rollbackSubmissions, 1);
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
-    assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), originalIntent);
+    assert.equal(await f.readEvidence("helm-started"), originalIntent);
   });
 
   test("same-candidate recovery verifies a changed retained environment selection after rollback", async (t) => {
@@ -7656,13 +7619,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   ]) {
     test(`same-candidate recovery refuses a predecessor resource recreated ${stage}`, async (t) => {
       const { f, run, pending, key, policy } = await interruptedProxyRemoval(t);
-      const originalIntent = await readFile(join(f.evidence, "helm-started"), "utf8");
+      const originalIntent = await f.readEvidence("helm-started");
       pending.retiredResourceRecreation = { stage, key, resource: policy };
       await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
       await assert.rejects(run(...recoverHelm), /predecessor-only resource still exists/);
       assert.equal((await f.state()).rollbackSubmissions ?? 0, rollbacks);
       assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
-      assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), originalIntent);
+      assert.equal(await f.readEvidence("helm-started"), originalIntent);
       assert.ok(existsSync(join(f.evidence, "helm-recovery", "intent.json")));
       assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
       assert.equal(existsSync(join(f.evidence, "completed")), false);
@@ -7770,7 +7733,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await assert.rejects(f.run("--recovery-reviewed"), /requires --recover-helm/);
     assert.deepEqual(await f.events(), []);
     await loseHelmResponseWithCompletedHook(f);
-    const original = await readFile(join(f.evidence, "helm-started"), "utf8");
+    const original = await f.readEvidence("helm-started");
     // A new rollback can restart the candidate writers. A refused application
     // observation must block dispatch, even though the hook already completed.
     const pending = await f.state();
@@ -7784,7 +7747,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await assert.rejects(f.run(...recoverHelm), /does not identify the incumbent Installation/);
     assert.equal((await f.state()).rollbackSubmissions, undefined);
     assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
-    assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), original);
+    assert.equal(await f.readEvidence("helm-started"), original);
     const corrected = await f.state();
     delete corrected.preflightResults;
     await writeFile(join(f.directory, "state.json"), JSON.stringify(corrected));
@@ -7817,7 +7780,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     }
     await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
     await f.run("--resume");
-    assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), original);
+    assert.equal(await f.readEvidence("helm-started"), original);
     assert.equal((await f.state()).rollbackSubmissions, 1);
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
     assert.ok(existsSync(join(f.evidence, "completed")));
@@ -7892,7 +7855,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await assert.rejects(f.run(), injectedFault);
     const original = await assertHelmIntent(f, 1, 2);
     const originalValues = await assertProtectedValues(f.evidence, original, newController);
-    const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
+    const preparation = await f.readEvidence("parameters.json");
     // The retry's dry-run fails after staging values, before replacing the local
     // values or publishing a new intent. The failed submission stays authoritative.
     await f.failNext("fail-server-dry-run");
@@ -7906,21 +7869,16 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const retry = await assertHelmIntent(f, 2, 3);
     assert.notEqual(retry.attempt.nonce, original.attempt.nonce);
     assert.deepEqual(
-      JSON.parse(
-        await readFile(
-          join(f.evidence, "helm-attempts", original.attempt.nonce, "intent.json"),
-          "utf8",
-        ),
-      ),
+      JSON.parse(await f.readEvidence("helm-attempts", original.attempt.nonce, "intent.json")),
       original,
     );
-    assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
+    assert.equal(await f.readEvidence("parameters.json"), preparation);
     await f.run("--resume");
     await assertProtectedValues(f.evidence, retry, newController);
 
     const nextEvidence = join(f.directory, "next-evidence");
     await f.run("--controller-image", controller, "--evidence-dir", nextEvidence);
-    const next = await assertHelmIntent({ evidence: nextEvidence }, 3, 4);
+    const next = await assertHelmIntent(evidenceFiles(nextEvidence), 3, 4);
     assert.notEqual(next.attempt.nonce, retry.attempt.nonce);
     await assertProtectedValues(nextEvidence, next, controller);
   });
@@ -7965,7 +7923,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         await f.failNext("reject-helm-submission");
         await assert.rejects(f.run(), injectedFault);
         const intent = await assertHelmIntent(f, 1, 2);
-        const original = await readFile(join(f.evidence, "helm-started"), "utf8");
+        const original = await f.readEvidence("helm-started");
         const directory = join(f.evidence, "helm-attempts", intent.attempt.nonce);
         // Retain the exact real intent, modeling interruption after its exclusive
         // creation but before publication. No Helm revision or migration was created.
@@ -8045,12 +8003,12 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // The controlled server accepted recovery, but the helper did not acknowledge
     // it. A healthy successor alone must not authorize replay or adoption.
     assert.equal((await f.state()).version, 3);
-    const intent = await readFile(join(f.evidence, "helm-recovery", "intent.json"), "utf8");
+    const intent = await f.readEvidence("helm-recovery", "intent.json");
     const preflightCount = (await f.state()).preflight.created.length;
     await assert.rejects(f.run(...recoverHelm), /Do not replay recovery/);
     assert.equal((await f.state()).preflight.created.length, preflightCount);
     assert.equal((await f.state()).rollbackSubmissions, 1);
-    assert.equal(await readFile(join(f.evidence, "helm-recovery", "intent.json"), "utf8"), intent);
+    assert.equal(await f.readEvidence("helm-recovery", "intent.json"), intent);
     assert.equal(existsSync(join(f.evidence, "completed")), false);
   });
 
@@ -8059,7 +8017,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await f.failNext("fail-migration");
     await assert.rejects(f.run(), injectedFault);
     const original = await assertHelmIntent(f, 1, 2);
-    const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
+    const preparation = await f.readEvidence("parameters.json");
     // Simulate loss at the last native read after local values replacement, before
     // publishing the next intent. Resume must require explicit reconciliation.
     await f.failNext("fail-before-helm-intent");
@@ -8074,7 +8032,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     );
     assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
     assert.equal((await f.state()).helmSubmissions, 1);
-    assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
+    assert.equal(await f.readEvidence("parameters.json"), preparation);
   });
 
   test("certificate admission refusal leaves the incumbent controllers running", async (t) => {
@@ -8087,7 +8045,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal(state.worker, 1);
     assert.equal(state.version, 1);
     assert.equal(
-      await readFile(join(f.evidence, "preflight-certificates.err"), "utf8"),
+      await f.readEvidence("preflight-certificates.err"),
       "certificate webhook refused dry-run\n",
     );
   });
