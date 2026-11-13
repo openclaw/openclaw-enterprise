@@ -1406,6 +1406,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.hold_account_administration_policy(text)", true],
+      ["occ.hold_agent_audit_policy(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1966,7 +1967,7 @@ async function canonicalData(db) {
       "gateway_managed_mode",
     ],
     agent_revisions: ["gateway_managed_mode"],
-    controller_work: ["work_kind"],
+    controller_work: ["work_kind", "audit_attempt_id"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -2277,6 +2278,7 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2770,6 +2772,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2965,6 +2968,7 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -3054,6 +3058,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3077,6 +3082,7 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         const rollbackTag = [
+          [76, "CREATE INDEX"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],

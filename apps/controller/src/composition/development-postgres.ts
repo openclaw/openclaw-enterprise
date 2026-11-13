@@ -3,6 +3,10 @@ import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.t
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
+import {
+  CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
+  controlPlaneAuditDatabaseOptions,
+} from "./control-plane-audit.ts";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type { ComputeDriver, ConfigurationDriver } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
@@ -69,6 +73,7 @@ export interface PostgresDevelopmentConfig {
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
+  readonly controlPlaneAuditEnabled?: boolean;
 }
 
 export type PostgresDevelopmentRuntimeOptions =
@@ -105,8 +110,10 @@ export async function composePostgresDevelopment(
     throw new Error("Google sign-in does not support native administration.");
   }
 
+  const auditEnabled = config.controlPlaneAuditEnabled !== false;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
@@ -115,6 +122,7 @@ export async function composePostgresDevelopment(
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -327,6 +335,9 @@ export async function composePostgresDevelopment(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedHarness,
       auditSink: state.auditSink,
+      ...(auditEnabled
+        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
+        : {}),
       ...(drivers === undefined
         ? {}
         : { backendSummaries: backendSummariesFromDefinitions(drivers.installation.backend) }),

@@ -955,6 +955,17 @@ function evaluateValidatedAuthorization(
     ...[...applicableGroupIds].flatMap((groupId) => policy.groupBindings.get(groupId) ?? []),
   ];
   for (const binding of subjectBindings) {
+    if (
+      request.action === "read_audit" &&
+      (identity.kind !== "principal" ||
+        request.resource.kind !== "agent" ||
+        binding.subjectKind !== "identity" ||
+        binding.namespaceId !== request.resource.namespaceId ||
+        binding.resourceKind !== "agent" ||
+        binding.resourceId !== request.resource.id)
+    ) {
+      continue;
+    }
     if (!bindingScopeMatches(binding, request)) {
       continue;
     }

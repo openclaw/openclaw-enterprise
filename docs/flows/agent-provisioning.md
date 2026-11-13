@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: 2026-11-12
-last_updated_session: authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec
+last_updated_session: authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d
 ---
 
 # Agent provisioning flow
@@ -196,7 +196,17 @@ are [resent](configuration-driver.md#2-resolve-singleton-state-and-select-driver
 Only pre-record Configuration refusals roll back, deleting the written Configuration
 or marking it for later cleanup.
 
-While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. A cancelled provisioning never runs again. Agent deletion settles an effect it left pending one worker lease after cancellation: it removes runtime credentials and records the receipt with its finalizer, deferring without spending attempts. Deploy, Agent update and runtime-credential requests settle it once the cancelled claim's stored lease expires, returning `409` until then. Namespace deletion waits for queued or running work and for any effect without a matching receipt, not for settled effects on terminal work. Namespace Secrets and completed Configurations remain available.
+Provisioning blocks conflicting edits and manual deployment. With audit enabled,
+Stop or Delete saves `openclaw.agents.provision.cancelled` with the cancellation.
+This record links the API request to the provisioning work. Handoff saves
+`openclaw.controller_work.completed` with the work result and claim ID. A stale
+worker cannot hand off deployment. After one worker lease, Agent deletion
+settles pending effects. It removes runtime credentials and saves the receipt
+with deletion, deferring without spending attempts. Deploy, Agent update, and
+runtime-credential requests return `409` until the stored lease expires, then
+settle the effect. Namespace deletion waits for queued or running work and
+effects without receipts. Namespace Secrets and completed Configurations
+remain available.
 
 Requests have no delete API; Agent deletion removes its requests. Agent-less requests
 remain; for migration `0049` blockers, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
@@ -223,6 +233,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 14:06: Record provisioning cancellation. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
 
 - 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
 

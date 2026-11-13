@@ -121,6 +121,14 @@ replacing the mounted Secret and restarting; it also invalidates every
 [known-device cookie](../authentication.md#known-devices) until each browser's next sign-in.
 Revoking one account's cookies needs no rotation: reset its password.
 
+### Control Plane audit
+
+Control Plane audit is off by default in production. To enable it, first check
+ledger capacity and review the covered operations in the
+[audit guide](../../guides/topics/audit-log.md). Set Helm
+`controlPlaneAudit.enabled: true`, or set `OCC_CONTROL_PLANE_AUDIT_ENABLED=true`
+on both the API and worker in a deployment that does not use Helm.
+
 ### External sign-in and trusted proxies
 
 These optional variables reach only the API, never other workloads.
