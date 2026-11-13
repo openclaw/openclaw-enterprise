@@ -24,7 +24,7 @@ import {
   retryKubectlRead,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
-import { kubectlGetJson } from "../helpers/kubernetes-api-read.mjs";
+import { kubectlGetJson } from "../helpers/kubernetes-api-read.ts";
 import { waitForResult } from "../helpers/wait-for.mjs";
 
 export const execute = promisify(execFile);
