@@ -535,6 +535,17 @@ export function createGitHubRepositoryDeliveryResolver(
   registry: GitHubRepositoryRegistry,
 ): RepositoryGitDeliveryResolver {
   return (revision) => {
+    const publicReader =
+      revision.compute?.serviceAccess?.some((service) => service.id === "public-github-read") ===
+      true;
+    const dispatch = (repositories: readonly string[]) =>
+      publicReader
+        ? {
+            authenticatedRepositories: Object.freeze(
+              [...new Set(repositories.map((name) => name.toLowerCase()))].sort(),
+            ),
+          }
+        : {};
     const state = revision.repositoryCredentials;
     const binding = state?.bindings[0];
     if (
@@ -551,6 +562,7 @@ export function createGitHubRepositoryDeliveryResolver(
     if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
       const scope = resolveSelectedRepositoryScope(registry, revision.namespaceId, state.bindings);
       return Object.freeze({
+        ...dispatch(scope.repositories.map((repository) => repository.repository)),
         binding: state.bindings[0]!,
         delivery: Object.freeze({
           scope: "github-repository" as const,
@@ -569,6 +581,13 @@ export function createGitHubRepositoryDeliveryResolver(
     }
     if (binding.profile === githubInstallationProfile) {
       return Object.freeze({
+        ...dispatch(
+          registry.repositories
+            .filter((repository) =>
+              repository.namespaces.some((policy) => policy.namespaceId === revision.namespaceId),
+            )
+            .map((repository) => repository.repository),
+        ),
         binding: resolved,
         delivery: Object.freeze({ installationId: registry.githubInstallationId }),
       });
@@ -584,6 +603,7 @@ export function createGitHubRepositoryDeliveryResolver(
       throw new Error("Repository Git delivery requires one explicit review ref and transport.");
     }
     return Object.freeze({
+      ...dispatch([repository.repository]),
       binding: resolved,
       delivery: Object.freeze({ repository: repository.repository }),
       repository: Object.freeze({

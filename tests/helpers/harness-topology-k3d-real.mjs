@@ -1433,44 +1433,6 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   // Cases share an Installation, so keep its policy after the Default user case
   // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.
   workerConfiguration.iam = defaultUsersIAM();
-  const publicGithubRead =
-    options.publicGithubRead !== true
-      ? undefined
-      : await installPublicGithubReadFixture({
-          namespace: platformNamespace,
-          controllerImage,
-          kubectl,
-          applyManifest,
-          waitFor,
-        });
-  if (publicGithubRead !== undefined) {
-    workerConfiguration.drivers.compute.configuration.network.publicGithubRead =
-      publicGithubRead.peer;
-  }
-  const apiConfiguration = structuredClone(workerConfiguration);
-  if (workspaceGateway !== undefined) {
-    apiConfiguration.drivers.configuration.configuration.authentication = { mode: "inCluster" };
-    apiConfiguration.drivers.secret.configuration.authentication = { mode: "inCluster" };
-    apiConfiguration.drivers.compute.configuration.authentication = { mode: "inCluster" };
-  } else {
-    apiConfiguration.drivers.secret.configuration.authentication = controller.apiAuthentication;
-  }
-  await writeFile(startupPath, JSON.stringify(apiConfiguration), { mode: 0o600 });
-  await writeFile(workerStartupPath, JSON.stringify(workerConfiguration), { mode: 0o600 });
-  const drivers =
-    workspaceGateway === undefined
-      ? await loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: startupPath },
-        })
-      : undefined;
-  const workerDrivers =
-    workspaceGateway === undefined
-      ? await loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: workerStartupPath },
-        })
-      : undefined;
   const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const platformState = new PostgresPlatformState(observerPool);
   let detachPostgres;
@@ -1621,6 +1583,46 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     );
     createdFreshInstallation = true;
   }
+
+  const publicGithubRead =
+    options.publicGithubRead !== true
+      ? undefined
+      : await installPublicGithubReadFixture({
+          namespace: platformNamespace,
+          installationId: activeInstallation.id,
+          controllerImage,
+          kubectl,
+          applyManifest,
+          waitFor,
+        });
+  if (publicGithubRead !== undefined) {
+    workerConfiguration.drivers.compute.configuration.network.publicGithubRead =
+      publicGithubRead.peer;
+  }
+  const apiConfiguration = structuredClone(workerConfiguration);
+  if (workspaceGateway !== undefined) {
+    apiConfiguration.drivers.configuration.configuration.authentication = { mode: "inCluster" };
+    apiConfiguration.drivers.secret.configuration.authentication = { mode: "inCluster" };
+    apiConfiguration.drivers.compute.configuration.authentication = { mode: "inCluster" };
+  } else {
+    apiConfiguration.drivers.secret.configuration.authentication = controller.apiAuthentication;
+  }
+  await writeFile(startupPath, JSON.stringify(apiConfiguration), { mode: 0o600 });
+  await writeFile(workerStartupPath, JSON.stringify(workerConfiguration), { mode: 0o600 });
+  const drivers =
+    workspaceGateway === undefined
+      ? await loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: startupPath },
+        })
+      : undefined;
+  const workerDrivers =
+    workspaceGateway === undefined
+      ? await loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: workerStartupPath },
+        })
+      : undefined;
 
   if (oidc !== undefined) {
     // External sign-in activates the guarded profile with a real, existing recovery
@@ -2023,6 +2025,10 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     nativeOptions,
   );
   if (publicGithubRead !== undefined) {
+    launchValues.plugins.entries.codex.config.publicGithubRead = {
+      mode: "repositories",
+      repositories: ["example/public-project"],
+    };
     launchValues.plugins.entries.codex.config.appServer.networkProxy = {
       enabled: true,
       mode: "limited",

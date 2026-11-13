@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { gatewayRoutingPins } from "../../scripts/ci/routing.mjs";
 import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
 import { registerQaSecret } from "./qa-secrets.mjs";
+import { deleteNamespaceExplained } from "./kubernetes-real.mjs";
 
 export async function verifyNetworkPolicy(f) {
   const namespace = `qa-policy-${f.suffix}`;
@@ -103,7 +104,15 @@ export async function verifyNetworkPolicy(f) {
     );
     await f.record("network-policy", { allowed: true, denied: true, control: true });
   } finally {
-    await f.kubectl("delete", "namespace", namespace, "--wait=true", "--timeout=120s");
+    await f.record("network-policy-cleanup-start", {
+      namespace,
+      startedAt: new Date().toISOString(),
+    });
+    await deleteNamespaceExplained((...args) => f.kubectl(...args), namespace);
+    await f.record("network-policy-cleanup-complete", {
+      namespace,
+      completedAt: new Date().toISOString(),
+    });
   }
 }
 
@@ -111,22 +120,34 @@ async function resolveComposeControllerImage(f) {
   const container = (await f.compose("ps", "-q", "controller")).trim();
   const observed = JSON.parse(await f.run("docker", ["inspect", container]))[0];
   f.controllerDockerImage = observed.Image;
-  const [image] = JSON.parse(await f.run("docker", ["image", "inspect", observed.Image]));
+  // The Compose API/worker image remains the actual built development image.
+  // An explicit controller input supplies the smaller, source-matched reader
+  // image without exporting development-only tooling into the cluster.
+  const source = f.env.OCC_DEVELOPMENT_CONTROLLER_IMAGE ?? observed.Image;
+  const [image] = JSON.parse(await f.run("docker", ["image", "inspect", source]));
+  f.importedControllerImageId = image.Id;
+  await f.record("controller-image-selection", {
+    composeImageId: observed.Image,
+    importedSource: source,
+    importedImageId: image.Id,
+  });
   const tag = `openclaw-qa/controller:${f.suffix}`;
   const archive = join(f.directory, "controller-image.tar");
   const existing = JSON.parse(
-    await f.run("docker", ["image", "inspect", tag], { allowExitCodes: [0, 1] }),
+    await f.run("docker", ["image", "inspect", tag], {
+      allowExitCodes: f.env.OCC_DEVELOPMENT_CONTAINER_ENGINE === "podman" ? [0, 1, 125] : [0, 1],
+    }),
   );
   assert.equal(existing.length, 0, "preserve any pre-existing controller image tag");
-  // The Compose launcher builds from source without an image field. Import that
-  // actual image to obtain its manifest digest for the routing chart's validation.
-  await f.run("docker", ["tag", observed.Image, tag]);
+  // Freeze the selected local image ID before exporting it for the chart reader.
+  await f.run("docker", ["tag", image.Id, tag]);
   try {
     await f.run("docker", [
       "image",
       "save",
-      "--platform",
-      `${image.Os}/${image.Architecture}`,
+      ...(f.env.OCC_DEVELOPMENT_CONTAINER_ENGINE === "podman"
+        ? []
+        : ["--platform", `${image.Os}/${image.Architecture}`]),
       "--output",
       archive,
       tag,
@@ -137,7 +158,7 @@ async function resolveComposeControllerImage(f) {
     const fields = listed
       .split("\n")
       .map((line) => line.trim().split(/\s+/))
-      .find(([name]) => name === tag || name === `docker.io/${tag}`);
+      .find(([name]) => name === tag || name === `docker.io/${tag}` || name === `localhost/${tag}`);
     assert.match(fields?.[2] ?? "", /^sha256:[a-f0-9]{64}$/);
     f.controllerChartImage = `docker.io/openclaw-qa/controller@${fields[2]}`;
     await f.run("docker", [
@@ -153,6 +174,8 @@ async function resolveComposeControllerImage(f) {
     ]);
     await f.record("controller-image", {
       dockerImageId: observed.Image,
+      importedImageId: image.Id,
+      importedSource: source,
       chartReference: f.controllerChartImage,
     });
   } finally {
@@ -171,6 +194,28 @@ export async function prepareHybridInstallation(f) {
     email: compose.services.bootstrap.environment.OPENCLAW_DEV_EMAIL,
     password: compose.services.bootstrap.environment.OPENCLAW_DEV_PASSWORD,
   };
+  const shippedRouting = f.configuration.drivers.compute.configuration.gatewayRouting;
+  if (shippedRouting) {
+    for (const service of ["controller", "worker-kubernetes"]) {
+      assert.ok(
+        compose.services[service].environment.OCC_GATEWAY_API_KEY_PATH,
+        "launcher must mount its routing key",
+      );
+      assert.ok(
+        compose.services[service].environment.NODE_EXTRA_CA_CERTS,
+        "launcher must mount verified routing trust",
+      );
+    }
+    // The current launcher installs and owns routing before tenant provisioning.
+    // Reapplying an older fixture controller manifest would conflict with that
+    // lifecycle and could replace its key or certificate ownership.
+    await verifyNetworkPolicy(f);
+    await f.record("routing", {
+      setup: "shipping dev-up routing reused",
+      configuration: shippedRouting,
+    });
+    return;
+  }
   // Use the same pinned controllers as the shipped Kubernetes-only launcher.
   for (const pin of Object.values(gatewayRoutingPins)) {
     const response = await fetch(pin.url, { signal: AbortSignal.timeout(90_000) });

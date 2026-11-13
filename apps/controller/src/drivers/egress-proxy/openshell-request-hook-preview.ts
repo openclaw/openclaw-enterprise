@@ -1,7 +1,9 @@
+import { openShellRevisionServiceRules } from "../sandbox/openshell-service-access.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type {
+  AgentRevision,
   EgressInstallation,
   ProxyRevisionContext,
   RepositoryGitRecipient,
@@ -19,6 +21,7 @@ export const observedHookPath = "/oce-observe-request/";
 type Hook = NonNullable<RepositoryGitRecipient["observedHook"]>;
 
 interface Selection {
+  readonly revision?: Readonly<AgentRevision>;
   readonly mandatory?: true;
   readonly client: OpenShellGatewayClient;
   readonly sandbox: OpenShellSandboxResponse;
@@ -39,6 +42,7 @@ function expectedPolicy(
   git: Selection["gitRule"],
   modelProvider: string,
   runtimeProvider: string,
+  services: Readonly<Record<string, unknown>>,
 ) {
   const { network_policies: desired, ...staticPolicy } = source;
   const { network_policies: network, ...applied } = effective;
@@ -64,7 +68,17 @@ function expectedPolicy(
   ) {
     return false;
   }
-  for (const raw of Object.values(others)) {
+  // An exact admitted service can use its pinned ClusterIP. Other source rules
+  // retain the literal public-host restriction, including when a service is selected.
+  for (const [name, rule] of Object.entries(services)) {
+    if (!isDeepStrictEqual(wirePolicy(sourceRules[name]), wirePolicy(rule))) {
+      return false;
+    }
+  }
+  for (const [name, raw] of Object.entries(others)) {
+    if (Object.hasOwn(services, name)) {
+      continue;
+    }
     const endpoints = asRecord(raw)?.endpoints ?? [];
     if (
       !Array.isArray(endpoints) ||
@@ -90,6 +104,7 @@ function expectedPolicy(
  * an empty membership list nor any observation below is a lock against an operator change. */
 export async function previewPolicyAndRecipient({
   client,
+  revision,
   sandbox,
   observed: o,
   registration,
@@ -138,7 +153,14 @@ export async function previewPolicyAndRecipient({
     !c ||
     !policy ||
     !source ||
-    !expectedPolicy(source, policy, gitRule, modelProvider, runtimeProvider) ||
+    !expectedPolicy(
+      source,
+      policy,
+      gitRule,
+      modelProvider,
+      runtimeProvider,
+      openShellRevisionServiceRules(revision),
+    ) ||
     c.version !== admission.policy_version ||
     c.workspace !== o.workspace ||
     c.configuration_instance_id !== admission.instance_id ||

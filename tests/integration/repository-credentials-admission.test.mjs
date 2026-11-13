@@ -71,6 +71,7 @@ import {
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { protectedSourceInputs } from "../helpers/protected-source-refusals.mjs";
 
 const driverId = "repository-credentials";
@@ -260,6 +261,7 @@ async function fixture(
     controllerOptions = {},
     extraRepositories = [],
     installationAccess = false,
+    configurationValues,
   } = {},
 ) {
   const installation = {
@@ -339,7 +341,7 @@ async function fixture(
   const namespaceResponse = await initial.request("POST", "/namespaces", { name: "repositories" });
   assert.equal(namespaceResponse.status, 201, JSON.stringify(namespaceResponse));
   const namespace = namespaceResponse.data;
-  const native = createHarnessConfiguration(harness, "gpt-5.1");
+  const native = configurationValues ?? createHarnessConfiguration(harness, "gpt-5.1");
   delete native.gateway.auth;
   const configurationResponse = await initial.request(
     "POST",
@@ -413,6 +415,8 @@ async function fixture(
 
   return {
     ...composed,
+    compute,
+    installation,
     actorId: auth.seed.principal.id,
     requestWithoutGrants,
     iamState,
@@ -1875,6 +1879,7 @@ async function protectedOpenShellComposition(
     installationAccess = false,
     preview = false,
     gatewayVersion = "0.1.5",
+    configurationValues,
     installedProfile,
     sandboxNetworkPolicyCeiling = [],
     runtimeAuthCompute = false,
@@ -1912,6 +1917,7 @@ async function protectedOpenShellComposition(
       .map(({ repositoryRef }) => repositoryRef)
       .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
     installationAccess,
+    configurationValues,
   });
   let sandbox = repositorySandbox(
     f.registry,
@@ -2041,7 +2047,7 @@ async function protectedOpenShellComposition(
     f.controller.registerDriver(refresh);
     f.controller.selectDriver(refresh.capability, refresh.id);
   }
-  return { ...f, providers, protectedDriver: owner, gatewayReads: () => gatewayReads };
+  return { ...f, sandbox, providers, protectedDriver: owner, gatewayReads: () => gatewayReads };
 }
 
 // Deploys a dedicated Codex Agent with `bindings` on that composition; the response and the
@@ -2932,4 +2938,302 @@ test("the policy worker fails a Driver's named policy refusal at once", async ()
   assert.deepEqual(outcomes, ["fail SANDBOX_POLICY_UNSUPPORTED"]);
   assert.equal(policy.application.state, "failed");
   assert.equal(policy.application.reason, "SANDBOX_POLICY_UNSUPPORTED");
+});
+
+test("Agent deployment freezes Compute service access from source before Sandbox normalization and refuses changed acknowledgement", async (t) => {
+  const compute = kubernetesCompute();
+  const service = {
+    id: "fixture-read-service",
+    driverId: compute.id,
+    implementation: compute.implementation,
+    endpoint: "https://192.0.2.10:8080",
+    configuration: { scope: ["example/library"] },
+  };
+  let contributions = [service];
+  let observedSource;
+  compute.admitServiceAccess = ({ configuration }) => {
+    observedSource = configuration.plugins.entries.codex.config.appServer.networkProxy;
+    return contributions;
+  };
+  const f = await fixture(t, {
+    compute,
+    repositories: false,
+    harness: "codex",
+    controllerOptions: {
+      driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
+    },
+    configurationValues: codexProxyValues("codex", {
+      enabled: true,
+      domains: { "192.0.2.10": "allow" },
+    }),
+  });
+  const sandbox = repositorySandbox();
+  let change = (services) => services;
+  const normal = sandbox.admitNetworkPolicy.bind(sandbox);
+  sandbox.admitNetworkPolicy = (additions, version, defaults, scope) => ({
+    ...normal(additions, version, defaults, {
+      repositoryCredentials: scope?.repositoryCredentials,
+    }),
+    ...(scope?.serviceAccess?.length ? { serviceAccess: change(scope.serviceAccess) } : {}),
+  });
+  Object.assign(sandbox, {
+    namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(compute, sandbox).hooks,
+  });
+  f.controller.registerDriver(sandbox);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  const agent = await f.createAgent({ executionMode: "dedicated" });
+  await f.prepareDeployment(agent);
+  const path = `${f.collection}/${agent.id}`;
+  const first = await f.request("POST", `${path}/deploy`);
+  assert.equal(first.status, 202, JSON.stringify(first));
+  assert.deepEqual(observedSource, { enabled: true, domains: { "192.0.2.10": "allow" } });
+  const revision = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, first.data.id),
+  );
+  assert.deepEqual(revision.sandboxPolicy.serviceAccess, [service]);
+  assert.equal(
+    revision.configuration.plugins.entries.codex.config.appServer.networkProxy,
+    undefined,
+  );
+  for (const changed of [
+    () => [],
+    (services) => [{ ...services[0], endpoint: "https://192.0.2.11:8080" }],
+  ]) {
+    change = changed;
+    const denied = await f.request("POST", `${path}/deploy`);
+    assert.equal(denied.status, 409, JSON.stringify(denied));
+  }
+  change = (services) => services;
+  contributions = [];
+  const old = await f.request("POST", `${path}/deploy`);
+  assert.equal(old.status, 202, JSON.stringify(old));
+  const oldRevision = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, old.data.id),
+  );
+  assert.equal(oldRevision.sandboxPolicy.serviceAccess, undefined);
+  assert.deepEqual(revision.sandboxPolicy.serviceAccess, [service]);
+  contributions = [service];
+  sandbox.admitNetworkPolicy = undefined;
+  const unsupported = await f.request("POST", `${path}/deploy`);
+  assert.equal(unsupported.status, 503, JSON.stringify(unsupported));
+});
+
+test("protected Agent admission requires exact protected-network acknowledgement while preserving artifact-only revisions", async (t) => {
+  const bindings = [{ repositoryRef: "installation", profile: "github-installation" }];
+  const f = await protectedOpenShellComposition(t, {
+    bindings,
+    installationAccess: true,
+    preview: true,
+    gatewayVersion: "0.1.6",
+  });
+  const tls = await harnessTlsFixture(t);
+  const service = {
+    id: "public-github-read",
+    driverId: f.compute.id,
+    implementation: f.compute.implementation,
+    endpoint: "https://10.96.0.55:8080",
+    configuration: {
+      policy: { mode: "all" },
+      peer: { namespace: "reader", podLabels: { app: "reader" } },
+      authorizationConfigMapName: "reader-authorizations",
+      installationId: f.installation.id,
+      caBundle: tls.caBundle,
+    },
+  };
+  let services = [service];
+  f.compute.admitServiceAccess = () => services;
+  // This case proves OCC acknowledgement with a synthetic descriptor, independently of
+  // Kubernetes' configured reader installation and its separate admission fingerprint.
+  f.compute.admitRevision = undefined;
+  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: bindings });
+  await f.prepareDeployment(agent);
+  const path = `${f.collection}/${agent.id}`;
+  const original = f.sandbox.admitProtectedNetworkPolicy.bind(f.sandbox);
+  for (const producer of [
+    undefined,
+    (version, descriptors) => ({
+      ...original(version, descriptors),
+      purpose: "protected-codex-artifacts",
+    }),
+    (version, descriptors) => ({ ...original(version, descriptors), declaredRuleNames: [] }),
+    (version, descriptors) => ({
+      ...original(version, descriptors),
+      snapshot: { ...original(version, descriptors).snapshot, serviceAccess: [] },
+    }),
+  ]) {
+    f.sandbox.admitProtectedNetworkPolicy = producer;
+    const refused = await f.request("POST", `${path}/deploy`);
+    assert.equal(refused.status, 409, JSON.stringify(refused));
+    assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
+  }
+  f.sandbox.admitProtectedNetworkPolicy = original;
+  const admitted = await f.request("POST", `${path}/deploy`);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted));
+  const frozen = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, admitted.data.id),
+  );
+  assert.equal(frozen.executionAdmission.mode, "protected");
+  assert.deepEqual(frozen.sandboxPolicy.serviceAccess, [service]);
+  services = [];
+  f.sandbox.admitProtectedNetworkPolicy = () => {
+    throw new Error("old revisions must retain the artifact-only path");
+  };
+  const old = await f.request("POST", `${path}/deploy`);
+  assert.equal(old.status, 202, JSON.stringify(old));
+  const oldRevision = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, old.data.id),
+  );
+  assert.equal(oldRevision.sandboxPolicy.serviceAccess, undefined);
+  assert.deepEqual(frozen.sandboxPolicy.serviceAccess, [service]);
+});
+
+for (const protectedExecution of [false, true]) {
+  test(`${protectedExecution ? "protected" : "ordinary"} Agent deployment binds the real reader descriptor to OCC runtime identity`, async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const reader = {
+      namespace: "reader",
+      podLabels: { app: "reader" },
+      address: "10.96.0.55",
+      authorizationConfigMapName: "reader-authorizations",
+      caBundle: tls.caBundle,
+    };
+    const values = createHarnessConfiguration("codex", "gpt-5.1");
+    values.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+    // Authored plugin data must never choose the Installation owning the service.
+    values.plugins.entries.codex.config.installationId = "ins_authored";
+    const f = protectedExecution
+      ? await protectedOpenShellComposition(t, { advertised: true, configurationValues: values })
+      : await fixture(t, { repositories: false, harness: "codex", configurationValues: values });
+    const compute = f.compute;
+    compute.options.network.publicGithubRead = reader;
+    const agent = await f.createAgent({ executionMode: "dedicated" });
+    await f.prepareDeployment(agent);
+    const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
+    assert.equal(deployed.status, 202, JSON.stringify(deployed));
+    const revision = await f.state.read((view) =>
+      view.revisions.findRevision(f.namespace.id, agent.id, deployed.data.id),
+    );
+    assert.equal(revision.compute.serviceAccess?.length, 1);
+    assert.equal(revision.compute.serviceAccess[0].configuration.installationId, f.installation.id);
+    assert.equal(
+      revision.executionAdmission.mode,
+      protectedExecution ? "protected" : "unprotected",
+    );
+    if (protectedExecution) {
+      assert.deepEqual(revision.sandboxPolicy.serviceAccess, revision.compute.serviceAccess);
+    } else {
+      assert.equal(revision.sandboxPolicy, undefined);
+    }
+    // OCC admission uses the fixture's cluster-free Compute. Rendering also
+    // needs the selected Sandbox, as in the production constructor composition.
+    const runtimeCompute = protectedExecution
+      ? new compute.constructor(compute.options, { nodeEnrollment: {}, sandboxDriver: f.sandbox })
+      : compute;
+    assert.equal(
+      runtimeCompute.pluginRuntimeSnapshot(revision).runtime.publicGithubRead.endpoint,
+      "https://10.96.0.55:8080",
+    );
+    // Persisted identity is covered by the exact admission fingerprint even without a Sandbox.
+    const changed = structuredClone(revision);
+    changed.compute.serviceAccess[0].configuration.installationId = "ins_other";
+    assert.throws(
+      () => runtimeCompute.pluginRuntimeSnapshot(changed),
+      /exact Compute admission|not acknowledged/,
+    );
+    delete changed.compute.serviceAccess[0].configuration.installationId;
+    assert.throws(() => compute.pluginRuntimeSnapshot(changed), /reader service is unavailable/);
+  });
+}
+
+test("Compute-only ordinary Agent revisions freeze service facts without requiring a Sandbox", async (t) => {
+  const compute = kubernetesCompute();
+  const service = {
+    id: "fixture-read-service",
+    driverId: compute.id,
+    implementation: compute.implementation,
+    endpoint: "https://192.0.2.10:8080",
+    configuration: { scope: ["example/library"] },
+  };
+  let services = [service];
+  compute.admitServiceAccess = () => services;
+  const f = await fixture(t, { compute, repositories: false, harness: "codex" });
+  const agent = await f.createAgent({ executionMode: "dedicated" });
+  await f.prepareDeployment(agent);
+  const path = `${f.collection}/${agent.id}`;
+  const deploy = await f.request("POST", `${path}/deploy`);
+  assert.equal(deploy.status, 202, JSON.stringify(deploy));
+  const stored = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, deploy.data.id),
+  );
+  assert.deepEqual(stored.compute.serviceAccess, [service]);
+  assert.equal(stored.sandboxPolicy, undefined);
+  services = [];
+  const old = await f.request("POST", `${path}/deploy`);
+  assert.equal(old.status, 202, JSON.stringify(old));
+  const oldRevision = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, old.data.id),
+  );
+  assert.equal(oldRevision.compute.serviceAccess, undefined);
+  assert.deepEqual(stored.compute.serviceAccess, [service]);
+});
+
+test("a protected Codex Agent without repository bindings admits only its exactly acknowledged service", async (t) => {
+  const f = await protectedOpenShellComposition(t, { advertised: true });
+  const tls = await harnessTlsFixture(t);
+  const service = {
+    id: "public-github-read",
+    driverId: f.compute.id,
+    implementation: f.compute.implementation,
+    endpoint: "https://10.96.0.55:8080",
+    configuration: {
+      policy: { mode: "all" },
+      peer: { namespace: "reader", podLabels: { app: "reader" } },
+      authorizationConfigMapName: "reader-authorizations",
+      installationId: f.installation.id,
+      caBundle: tls.caBundle,
+    },
+  };
+  let services = [service];
+  f.compute.admitServiceAccess = () => services;
+  // This case proves OCC's generic acknowledgement, without a configured reader installation.
+  f.compute.admitRevision = undefined;
+  const agent = await f.createAgent({ executionMode: "dedicated" });
+  await f.prepareDeployment(agent);
+  const path = `${f.collection}/${agent.id}`;
+  const admitted = await f.request("POST", `${path}/deploy`);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted));
+  const frozen = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, admitted.data.id),
+  );
+  assert.equal(frozen.executionAdmission.mode, "protected");
+  assert.equal(frozen.repositoryCredentials, undefined);
+  assert.equal(frozen.egressPlan.repositoryGit, undefined);
+  assert.deepEqual(frozen.egressPlan.routes, []);
+  assert.deepEqual(frozen.sandboxPolicy, {
+    driverId: f.sandbox.id,
+    implementation: f.sandbox.implementation,
+    version: 1,
+    defaults: {},
+    additions: [],
+    serviceAccess: [service],
+  });
+  const original = f.sandbox.admitProtectedNetworkPolicy.bind(f.sandbox);
+  for (const producer of [
+    undefined,
+    (version, descriptors) => ({
+      ...original(version, descriptors),
+      snapshot: { ...original(version, descriptors).snapshot, serviceAccess: [] },
+    }),
+  ]) {
+    f.sandbox.admitProtectedNetworkPolicy = producer;
+    const denied = await f.request("POST", `${path}/deploy`);
+    assert.equal(denied.status, 409, JSON.stringify(denied));
+  }
+  services = [];
+  const old = await f.request("POST", `${path}/deploy`);
+  assert.equal(old.status, 202, JSON.stringify(old));
+  const oldRevision = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, old.data.id),
+  );
+  assert.equal(oldRevision.sandboxPolicy, undefined);
 });

@@ -57,6 +57,7 @@ async function observedGitRoute(
     removeBinding = false,
     changedStartup = false,
     narrowRepository,
+    publicReader = false,
     afterRelease,
     probeFailure,
   } = {},
@@ -107,6 +108,7 @@ async function observedGitRoute(
   const revision = {
     ...f.revision,
     repositoryCredentials: credentials,
+    ...(publicReader && { compute: { serviceAccess: [{ id: "public-github-read" }] } }),
     executionAdmission: { version: mandatoryPolicy ? 5 : 6, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
@@ -241,6 +243,28 @@ async function observedGitRoute(
   } else {
     assert.equal(f.entry.authorization.binding.profile, "git-write");
     assert.equal("scope" in f.owner.material, false, "this control requires narrow material");
+  }
+  if (publicReader) {
+    // Reuse the admitted mandatory recipient fixture: selected Git authority stays exact
+    // when the independent public reader receives its authenticated-name dispatch material.
+    assert.equal(binding.profile, "github-repository");
+    const prepared = await f.runtime.prepare(
+      revision,
+      f.client,
+      f.sandbox.workspace,
+      f.sandbox.name,
+      AbortSignal.timeout(2_000),
+      "/sandbox/enterprise",
+      ["openai"],
+    );
+    assert.deepEqual(
+      JSON.parse(
+        prepared.environment.find(
+          (entry) => entry.name === "OCE_PUBLIC_GITHUB_AUTHENTICATED_REPOSITORIES",
+        )?.value ?? "null",
+      ),
+      ["example/application"],
+    );
   }
   {
     const config = f.client.getSandboxConfig;
@@ -611,6 +635,9 @@ for (const policy of [undefined, 2, 3]) {
       await observedGitRoute(policy, { legacy: true });
     }
     await observedGitRoute(policy);
+    if (policy === 2) {
+      await observedGitRoute(policy, { publicReader: true });
+    }
     if (policy) {
       await observedGitRoute(policy, { narrowRepository: "healthy" });
     }
@@ -618,6 +645,90 @@ for (const policy of [undefined, 2, 3]) {
     await observedGitRoute(policy, { changedStartup: true });
   });
 }
+
+test("public-reader dispatch preserves Repo-resolved authenticated names without broadening Git authority", async () => {
+  const resolve = createGitHubRepositoryDeliveryResolver(registry);
+  const f = fixture({ store: routeStore() });
+  const revision = {
+    ...f.revision,
+    executionAdmission: { version: 5, mode: "protected" },
+    egressPlan: {
+      driver: { id: "openshell" },
+      execution: { executionId: "public-reader-dispatch" },
+      repositoryGitAuthorization: "online-request",
+      repositoryGit: f.revision.repositoryCredentials,
+    },
+    compute: {
+      id: "kubernetes",
+      implementation: "kubernetes",
+      serviceAccess: [{ id: "public-github-read" }],
+    },
+  };
+  f.entry.revision = revision;
+  f.entry.authorization = resolve(revision);
+  const prepared = await f.runtime.prepare(
+    revision,
+    f.client,
+    f.sandbox.workspace,
+    f.sandbox.name,
+    AbortSignal.timeout(2_000),
+    "/sandbox/enterprise",
+    ["openai"],
+  );
+  const routing = prepared.environment.find(
+    (entry) => entry.name === "OCE_PUBLIC_GITHUB_AUTHENTICATED_REPOSITORIES",
+  );
+  assert.deepEqual(JSON.parse(routing?.value ?? "null"), ["example/application"]);
+  // Public dispatch keeps the selected repository and its write-ref authority exact.
+  assert.deepEqual(resolve(revision).delivery, { repository: "example/application" });
+  const installationRegistry = validateGitHubRepositoryRegistry(
+    {
+      ...registry,
+      installationAccess: {
+        repositoryRef: "installation",
+        namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
+      },
+    },
+    registry.backendId,
+  );
+  const installation = {
+    ...revision,
+    repositoryCredentials: {
+      ...revision.repositoryCredentials,
+      bindings: [
+        resolveGitHubRepositoryBinding(installationRegistry, {
+          namespaceId: "namespace-a",
+          repositoryRef: "installation",
+          profile: "github-installation",
+        }),
+      ],
+    },
+  };
+  const delivery = createGitHubRepositoryDeliveryResolver(installationRegistry);
+  assert.deepEqual(delivery(installation).authenticatedRepositories, ["example/application"]);
+  const { compute: _compute, ...old } = installation;
+  assert.equal(delivery(old).authenticatedRepositories, undefined);
+  const empty = fixture({
+    store: routeStore(),
+    resolveDelivery: (selected) => ({ ...resolve(selected), authenticatedRepositories: [] }),
+  });
+  await assert.rejects(
+    empty.runtime.prepare(
+      revision,
+      empty.client,
+      empty.sandbox.workspace,
+      empty.sandbox.name,
+      AbortSignal.timeout(2_000),
+      "/sandbox/enterprise",
+      ["openai"],
+    ),
+    (error) => {
+      assert.match(error.error.details[0].message, /explicit github-repository bindings/);
+      return true;
+    },
+  );
+  assert.equal(empty.calls.providerWrites, 0);
+});
 
 test("held Git probe failures reach worker diagnostics without response content or retries", async () => {
   for (const probeFailure of [

@@ -15,6 +15,9 @@ import { startRepositoryReceiptServer } from "../../apps/controller/src/backends
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import type {
   CredentialGatewayDriver,
+  ComputeDriver,
+  OpenClawConfigurationDocument,
+  RevisionHarnessDescriptor,
   PluginRevisionState,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -78,7 +81,19 @@ export async function setupStandingWorkerDatabase(
 export async function setupStandingWorkerAuthority(
   t: TestContext,
   f: Awaited<ReturnType<typeof setupStandingWorkerDatabase>>,
-  { nonModelSources, plugins }: { nonModelSources?: number; plugins?: PluginRevisionState } = {},
+  {
+    nonModelSources,
+    plugins,
+    harness,
+    configuration,
+    admissionCompute,
+  }: {
+    nonModelSources?: number;
+    plugins?: PluginRevisionState;
+    harness?: RevisionHarnessDescriptor;
+    configuration?: OpenClawConfigurationDocument;
+    admissionCompute?: ComputeDriver;
+  } = {},
 ) {
   const credentials = await startRegistryCredentialServiceFixture(t, {
     namespaceId: f.namespace.id,
@@ -116,7 +131,11 @@ export async function setupStandingWorkerAuthority(
     backendId: credentials.backendId,
   });
   t.after(() => receipt.close());
-  const owner = await f.agent("standing-runtime", { auth: "credential_source", nonModelSources });
+  const owner = await f.agent("standing-runtime", {
+    auth: "credential_source",
+    nonModelSources,
+    ...(harness === undefined ? {} : { executionMode: harness.mode }),
+  });
   const modelSourceId =
     owner.harnessAuth?.method === "credential_source" ? owner.harnessAuth.sourceId : undefined;
   const [selected] = driver.resolve({
@@ -150,6 +169,9 @@ export async function setupStandingWorkerAuthority(
   const originalBoundary = Date.now() + 90_000;
   const revisionOptions = {
     ...(plugins === undefined ? {} : { plugins }),
+    ...(harness === undefined ? {} : { harness }),
+    ...(configuration === undefined ? {} : { configuration }),
+    ...(admissionCompute === undefined ? {} : { admissionCompute }),
     actorId: f.actor.id,
     repositoryCredentials: {
       driver: { id: driver.id, implementation: driver.implementation },

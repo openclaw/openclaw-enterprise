@@ -2277,6 +2277,7 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preComputeServiceAccess"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2303,6 +2304,20 @@ test(
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+        if (history === "preComputeServiceAccess") {
+          const legacy = await db.app.query(
+            `SELECT admitted_spec #> '{compute,serviceAccess}' AS compute_services,
+                    admitted_spec #> '{sandbox_policy,serviceAccess}' AS sandbox_services
+             FROM occ.agent_revisions`,
+          );
+          assert.ok(legacy.rows.length > 0);
+          assert.ok(
+            legacy.rows.every(
+              (row) => row.compute_services === null && row.sandbox_services === null,
+            ),
+            "the forward migration must not grant service access to existing revisions",
+          );
+        }
         // Upgrading an existing revision must never invent a recoverable first-deployment intent.
         const existingBindings = await db.app.query(
           "SELECT first_deployment_digest FROM occ.agent_revisions",
@@ -2770,6 +2785,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preComputeServiceAccess"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2965,6 +2981,7 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preComputeServiceAccess"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -3054,6 +3071,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preComputeServiceAccess"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3077,6 +3095,7 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         const rollbackTag = [
+          [76, "ALTER TABLE"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],

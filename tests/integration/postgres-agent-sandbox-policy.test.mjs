@@ -10,8 +10,13 @@ import {
   InstalledDriver,
   OpenClawController,
   PostgresWorkQueue,
+  PostgresPlatformState,
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
+import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -1260,3 +1265,227 @@ test(
     );
   },
 );
+
+for (const mode of ["ordinary", "protected", "compute-only"]) {
+  const protectedExecution = mode === "protected";
+  test(
+    `PostgreSQL reload preserves ${mode} Compute service access`,
+    requiresPostgres,
+    async (t) => {
+      const f = await createPolicyApp(t);
+      const {
+        namespace,
+        agent,
+        revision: legacy,
+      } = await f.deployAgent("Persisted service access");
+      const tls = await harnessTlsFixture(t);
+      let owner;
+      if (protectedExecution) {
+        const proxyConfiguration = {
+          middlewareName: "service-access",
+          authorityScope: "execution",
+        };
+        const proxy = new OpenShellCredentialProxyDriver(proxyConfiguration, {
+          id: f.sandboxDriver.id,
+          sandbox: f.sandboxDriver,
+          backend: {
+            id: "openshell",
+            drivers: { sandbox: f.sandboxDriver.id, credential_proxy: f.sandboxDriver.id },
+            // Gateway discovery is an owning protocol fixture; the service producer and
+            // policy acknowledgement are the bundled production Drivers.
+            client: {
+              clientForNamespace: () => ({
+                getGatewayInfo: async () => ({
+                  gateway_version: "0.1.5",
+                  extensions: [
+                    {
+                      configured_name: "service-access",
+                      kind: 4,
+                      protocol_major: 1,
+                      required_capabilities: [...openShellExchangeCapabilities],
+                      supported_capabilities: [...openShellExchangeCapabilities],
+                    },
+                  ],
+                }),
+              }),
+              placement: () => undefined,
+            },
+          },
+        });
+        owner = new InstalledDriver(
+          {
+            id: f.sandboxDriver.id,
+            implementation: "openshell",
+            configuration: proxyConfiguration,
+          },
+          { capabilities: { sandbox: f.sandboxDriver, credential_proxy: proxy } },
+        );
+        const restarted = new OpenClawController(f.controller.installation, {
+          namespaceLifecycleBindings: [
+            sandboxNamespaceLifecycleBinding(
+              f.controller.selectedDriver("compute"),
+              f.sandboxDriver,
+              owner,
+            ),
+          ],
+          state: f.state,
+          recordOperations: false,
+          driverConfigurations: [
+            {
+              capability: "sandbox",
+              driverId: f.sandboxDriver.id,
+              implementation: "openshell",
+              definition: OpenShellSandboxDriver,
+            },
+          ],
+        });
+        for (const capability of ["iam", "configuration", "secret"]) {
+          const driver = f.controller.selectedDriver(capability);
+          restarted.registerDriver(driver);
+          restarted.selectDriver(capability, driver.id);
+        }
+        restarted.installDriver(owner, ["sandbox", "credential_proxy"]);
+        f.controller = restarted;
+        f.app = f.createApp(restarted);
+      }
+      if (mode === "compute-only") {
+        const restarted = new OpenClawController(f.controller.installation, {
+          state: f.state,
+          recordOperations: false,
+        });
+        for (const capability of ["iam", "configuration", "secret"]) {
+          const driver = f.controller.selectedDriver(capability);
+          restarted.registerDriver(driver);
+          restarted.selectDriver(capability, driver.id);
+        }
+        f.controller = restarted;
+        f.app = f.createApp(restarted);
+      }
+      const compute = createTestKubernetesComputeDriver("persisted-service-compute", {
+        gatewayRuntime: true,
+        sandboxDriver: mode === "compute-only" ? undefined : f.sandboxDriver,
+        protectedDriver: owner,
+      });
+      compute.options.network.publicGithubRead = {
+        namespace: "reader",
+        podLabels: { app: "reader" },
+        address: "10.96.0.55",
+        authorizationConfigMapName: "reader-authorizations",
+        caBundle: tls.caBundle,
+      };
+      // Transport readiness is a controlled prerequisite. Production admission, service
+      // production, Sandbox acknowledgement, PostgreSQL and reconstruction remain real.
+      compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
+      f.controller.registerDriver(compute);
+      f.controller.selectDriver("compute", compute.id);
+      const values = createHarnessConfiguration("codex", "gpt-4.1");
+      values.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+      await f.controller.updateConfiguration(f.principal.id, {
+        namespaceId: namespace.id,
+        configurationId: agent.configurationId,
+        values,
+      });
+      const response = await f.inject(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+        undefined,
+        f.app,
+      );
+      assert.equal(response.statusCode, 202, response.body);
+      const reloaded = await new PostgresPlatformState(f.pool).read((view) =>
+        view.revisions.findRevision(namespace.id, agent.id, response.json().data.id),
+      );
+      assert.equal(reloaded.compute.serviceAccess.length, 1);
+      assert.equal(
+        reloaded.compute.serviceAccess[0].configuration.installationId,
+        f.controller.installation.id,
+      );
+      if (mode === "compute-only") {
+        assert.equal(reloaded.sandboxPolicy, undefined);
+      } else {
+        assert.deepEqual(reloaded.sandboxPolicy.serviceAccess, reloaded.compute.serviceAccess);
+      }
+      assert.equal(
+        reloaded.executionAdmission.mode,
+        protectedExecution ? "protected" : "unprotected",
+      );
+      assert.equal(
+        compute.pluginRuntimeSnapshot(reloaded).runtime.publicGithubRead.endpoint,
+        "https://10.96.0.55:8080",
+      );
+      const old = await new PostgresPlatformState(f.pool).read((view) =>
+        view.revisions.findRevision(namespace.id, agent.id, legacy.id),
+      );
+      assert.equal(old.compute.serviceAccess, undefined);
+      assert.equal(old.sandboxPolicy.serviceAccess, undefined);
+      if (mode === "ordinary") {
+        const stored = (
+          await f.pool.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
+            reloaded.id,
+          ])
+        ).rows[0].admitted_spec;
+        const service = stored.compute.serviceAccess[0];
+        // Write through the application role: malformed stored descriptors must fail the
+        // exact snapshot constraint, even when a caller bypasses Core admission.
+        const invalidServices = [
+          null,
+          {},
+          [],
+          [null],
+          [service, service],
+          [{ ...service, id: "UpperCase" }],
+          [{ ...service, id: "a".repeat(65) }],
+          [{ ...service, driverId: "other-compute" }],
+          [{ ...service, implementation: "" }],
+          [{ ...service, implementation: "other-implementation" }],
+          [{ ...service, endpoint: "" }],
+          [{ ...service, endpoint: 42 }],
+          [{ ...service, configuration: null }],
+          [{ ...service, configuration: [] }],
+          [{ ...service, capability: "must-not-persist" }],
+          [Object.fromEntries(Object.entries(service).filter(([key]) => key !== "endpoint"))],
+        ];
+        const documents = invalidServices.flatMap((services) => [
+          { ...stored, compute: { ...stored.compute, serviceAccess: services } },
+          { ...stored, sandbox_policy: { ...stored.sandbox_policy, serviceAccess: services } },
+        ]);
+        const { serviceAccess: _acknowledgement, ...withoutAcknowledgement } =
+          stored.sandbox_policy;
+        documents.push(
+          { ...stored, sandbox_policy: withoutAcknowledgement },
+          { ...stored, compute: { ...stored.compute, unknown: true } },
+          {
+            ...stored,
+            sandbox_policy: {
+              ...stored.sandbox_policy,
+              serviceAccess: [{ ...service, endpoint: "https://other.example" }],
+            },
+          },
+          {
+            ...stored,
+            compute: { id: stored.compute.id, implementation: stored.compute.implementation },
+          },
+        );
+        for (const document of documents) {
+          const client = await f.pool.connect();
+          try {
+            await client.query("BEGIN");
+            await assert.rejects(
+              client.query(
+                `INSERT INTO occ.agent_revisions
+             (id,namespace_id,agent_id,revision_number,backend_id,admitted_spec,gateway_managed_mode,admitted_at)
+           SELECT $1,namespace_id,agent_id,revision_number+100,backend_id,$2::jsonb,gateway_managed_mode,now()
+           FROM occ.agent_revisions WHERE id=$3`,
+                [`rev_${randomUUID()}`, JSON.stringify(document), reloaded.id],
+              ),
+              { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
+            );
+          } finally {
+            await client.query("ROLLBACK");
+            client.release();
+          }
+        }
+      }
+    },
+  );
+}

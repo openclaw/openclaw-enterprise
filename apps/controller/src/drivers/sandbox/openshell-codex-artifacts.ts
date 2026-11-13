@@ -4,6 +4,7 @@ import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import type { AgentRevision, OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
+import { openShellRevisionServiceRules } from "./openshell-service-access.ts";
 import { AGENT_POLICY_PREFIX } from "./openshell-policy.ts";
 
 // These are the two native entrypoints shipped by the qualified bundled Codex release.
@@ -157,19 +158,23 @@ export function openShellProtectedCodexArtifacts(
   if (snapshot === undefined) {
     return {};
   }
-  exactKeys(snapshot, ["driverId", "implementation", "version", "defaults", "additions"]);
+  const services = openShellRevisionServiceRules(revision);
+  exactKeys(snapshot, [
+    "driverId",
+    "implementation",
+    "version",
+    "defaults",
+    "additions",
+    ...(snapshot.serviceAccess === undefined ? [] : ["serviceAccess"]),
+  ]);
   if (
     revision?.executionAdmission.mode !== "protected" ||
     revision.harness.id !== "codex" ||
     revision.harness.mode !== "dedicated" ||
-    !revision.egressPlan?.repositoryGit ||
-    revision.repositoryCredentials === undefined ||
-    !Array.isArray(revision.repositoryCredentials.bindings) ||
-    revision.repositoryCredentials.bindings.length === 0 ||
     typeof snapshot.driverId !== "string" ||
     snapshot.driverId.length === 0 ||
     snapshot.driverId !== revision.sandboxDriverId ||
-    snapshot.driverId !== revision.egressPlan.sandboxDriverId ||
+    snapshot.driverId !== revision.egressPlan?.sandboxDriverId ||
     snapshot.implementation !== "openshell" ||
     !Number.isSafeInteger(snapshot.version) ||
     snapshot.version < 1 ||
@@ -178,5 +183,19 @@ export function openShellProtectedCodexArtifacts(
   ) {
     refuse();
   }
-  return qualifiedMap(snapshot.defaults);
+  const defaults = qualifiedMap(snapshot.defaults);
+  const repositoryScope =
+    revision.egressPlan?.repositoryGit &&
+    revision.repositoryCredentials !== undefined &&
+    Array.isArray(revision.repositoryCredentials.bindings) &&
+    revision.repositoryCredentials.bindings.length > 0;
+  const serviceOnlyScope =
+    Object.keys(services).length > 0 &&
+    Object.keys(defaults).length === 0 &&
+    revision.repositoryCredentials === undefined &&
+    revision.egressPlan?.repositoryGit === undefined;
+  if (!repositoryScope && !serviceOnlyScope) {
+    refuse();
+  }
+  return defaults;
 }

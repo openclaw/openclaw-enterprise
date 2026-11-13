@@ -1839,9 +1839,21 @@ for (const scenario of [
       const events = [];
       let preparations = 0;
       let observations = 0;
+      let activations = 0;
+      let serviceMaintenances = 0;
       let result = scenario;
       const compute = {
         ...fixture.compute,
+        async activateRevision(revision) {
+          if (revision.id === candidate.id) {
+            activations++;
+          }
+        },
+        async maintainServiceAccess(revision, signal) {
+          assert.equal(revision.id, candidate.id);
+          signal.throwIfAborted();
+          serviceMaintenances++;
+        },
         async prepareRevision(revision, context) {
           if (revision.id === candidate.id) {
             preparations++;
@@ -1874,11 +1886,13 @@ for (const scenario of [
           (event) =>
             event.event === "worker.completed" &&
             event.revisionId === candidate.id &&
-            event.workId?.includes(":repository_cleanup:"),
+            event.workId?.includes(":repository_cleanup:") &&
+            event.code !== "REPOSITORY_CLEANUP_COMPLETE",
         );
       await start();
       await fixture.work(candidate, "succeeded");
       await fixture.stop();
+      events.length = 0;
       const [original] = await repositoryAttempts(fixture, candidate);
       assert.equal(original.phase, "open");
       assert.equal(original.deadlineWallMs, repository.snapshot.deadlineWallMs);
@@ -1921,8 +1935,15 @@ for (const scenario of [
         );
         assert.equal(repository.calls.filter((call) => call.operation === "open").length, 1);
         assert.equal(preparations, 1);
+        assert.equal(activations, 1);
       };
       await checkNoNewGit();
+      if (scenario === "withdrawn") {
+        assert.ok(
+          serviceMaintenances > 0,
+          "independent selected services need maintenance after Git expires",
+        );
+      }
       if (scenario === "retire-runtime" || scenario === "unsupported") {
         assert.equal(first.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
         await waitFor("confirmed retirement clears only this active revision", async () =>
@@ -1979,6 +2000,7 @@ for (const scenario of [
       assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
       await fixture.stop();
       const previous = observations;
+      const previousServiceMaintenances = serviceMaintenances;
       const {
         rowCount: count,
         rows: [next],
@@ -1992,6 +2014,10 @@ for (const scenario of [
         "REPOSITORY_ACCESS_WITHDRAWN",
       );
       assert.ok(observations > previous, "cold maintenance verifies the reduced runtime");
+      assert.ok(
+        serviceMaintenances > previousServiceMaintenances,
+        "a cold worker renews independently authorized services without replaying Git",
+      );
       await checkNoNewGit();
       assert.deepEqual(stopped, []);
       const agent = await fixture.currentAgent(owner);
@@ -1999,6 +2025,7 @@ for (const scenario of [
       assert.equal(agent.desiredRuntimeState, "running");
 
       // Offboard the requester after Git withdrawal. IAM now denies this exact revision.
+      const maintenancesBeforeRevocation = serviceMaintenances;
       const removed = await removeAccessBindings(fixture, fixture.actor.id);
       assert.ok(removed.rowCount > 0, "remove the requester's actual access bindings");
       await fixture.advanceMaintenance(candidate);
@@ -2006,6 +2033,11 @@ for (const scenario of [
         (await fixture.currentAgent(owner)).activeRevisionId === undefined ? true : undefined,
       );
       assert.deepEqual(stopped, [candidate.id]);
+      assert.equal(
+        serviceMaintenances,
+        maintenancesBeforeRevocation,
+        "independent authority loss must prevent further service renewal",
+      );
       await checkNoNewGit();
     },
   );

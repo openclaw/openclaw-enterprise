@@ -184,14 +184,27 @@ repositoryCredentials:
   upstreamCidrs: []
   upstreamPort: 443 # decimal, without leading zeros
 
-# Anonymous reads of known public GitHub repositories, for ordinary dedicated
-# Codex Agents whose authored proxy allows the exact Service IP. No GitHub App or token required.
+# Anonymous API and Git reads for explicitly selected dedicated Codex Agents.
+# The reader authenticates revision capabilities; no GitHub App or token is used.
 publicGithubRead:
   enabled: false
   # Reserve this Service IP until all revisions granting access to it retire.
   clusterIP: ""
-  # Operator-approved IPv4 CIDRs for api.github.com; no default Internet grant.
+  # Operator-approved IPv4 CIDRs for both github.com and api.github.com.
   upstreamCidrs: []
+  # Ceiling only: enabling the reader does not select any Agent.
+  policy:
+    mode: repositories
+    repositories: []
+  # Actual OCC Installation identity, not a Helm release name or cluster name.
+  installationId: ""
+  # Existing mutable registry initialized once; Helm never owns its data.
+  authorizationConfigMapName: ""
+  # Dedicated operator-created TLS Secret containing tls.crt and tls.key.
+  # The certificate needs an IP SAN for clusterIP.
+  tlsSecretName: ""
+  # Public PEM certificates only, at most 65 KiB. Never put a private key here.
+  caBundle: ""
 
 gatewayRouting:
   # Requires operator-installed routing controllers/CRDs, an existing GatewayClass,

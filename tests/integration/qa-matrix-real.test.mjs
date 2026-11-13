@@ -133,6 +133,16 @@ test(
         "openshell-linear-read",
       );
     }
+    if (selection.publicGithubGit) {
+      const { verifyQaPublicGithubGit } = await import("../helpers/qa-public-github-git.mjs");
+      await stage(
+        context,
+        "compose/Codex/ordinary OpenShell",
+        "ordinary native public Git clone, fetch and revision isolation",
+        () => verifyQaPublicGithubGit(context, artifacts),
+        "public-github-git",
+      );
+    }
     for (const installation of selection.installations.filter((value) =>
       selection.cells.some((cell) => cell.installation === value && cell.scenarios.length > 0),
     )) {

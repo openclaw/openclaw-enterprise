@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-11
-last_updated_session: authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6
+updated: 2026-11-12
+last_updated_session: authoring-run/154c8688-8890-47f1-ba61-7dab0ea29cd5
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -283,18 +283,19 @@ After replay, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#cre
 
 Provisioning reads [Agent sizing and RuntimeClass](../reference/drivers/openshell-sandbox.md#configuration)
 from the current Installation. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
-annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
+annotations/spec and a Sandbox that is neither stopped nor deleting. `canonicalSandboxPolicy` equates empty/omitted endpoint lists, preserving
+nonempty/malformed differences. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
-ends after confirmed deletion through `withdrawHarnessExposure`, adoption or
+ends through confirmed `withdrawHarnessExposure`, adoption or
 recreation with `workspaceNodeEnrolled`.
 
 After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
 require the recorded release acknowledgment and authenticated WebSocket. Other
 non-`200` responses stay pending or refuse enrollment without an upgrade.
 
-The Backend reuses clients and retries setup. Cancellation follows
-setup/credential preparation; stalled initialization/file reads have no cancellation deadline.
+The Backend reuses clients, retrying setup. Cancellation follows
+setup/credential preparation; initialization/file reads lack cancellation deadlines.
 After dispatch it stops local gRPC, but remote mutations may require recovery.
 
 `GetService` separates control/workload addresses. `harnessEndpoint` returns the WebSocket
@@ -421,6 +422,8 @@ model execution.
 
 ## Changelog
 
+- 2026-11-12 10:44: Preserve endpoint normalization during main merge. (authoring-run/154c8688-8890-47f1-ba61-7dab0ea29cd5 - 1de1eb4ad23a6fdf3c5b51310e7b64dc3b262fb4)
+
 - 2026-11-11 21:41: Bind controller preload to node identity. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - 7a2f352a44c42459a3a33c784199a47d11d98e1e)
 
 - 2026-11-11 21:12: Preload Agent Sandbox locally. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
@@ -446,7 +449,5 @@ model execution.
 - 2026-11-10 12:22: Clarify Gateway authority. (authoring-run/64da6dd5-9c32-4858-b176-ff11e8c8ae92 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
 
 - 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
-
-- 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

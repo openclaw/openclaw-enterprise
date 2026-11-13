@@ -145,6 +145,7 @@ async function mintFixtureCertificate() {
     });
     await run("openssl", [
       "req",
+      "-new",
       "-x509",
       "-key",
       keyFile,

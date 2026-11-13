@@ -1,14 +1,19 @@
 import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { chartTooling, helmTemplate } from "../helpers/production-chart.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { createHash, createPrivateKey, X509Certificate } from "node:crypto";
+import { createServer } from "node:http";
+import { promisify } from "node:util";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -126,17 +131,63 @@ function render(
   };
 }
 
-test(
-  "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer",
-  { skip: helmSkip },
-  () => {
-    const clusterIP = "10.43.0.19";
-    const output = render(
-      "codex",
-      codexInput({
-        publicGithubRead: { enabled: true, clusterIP, upstreamCidrs: ["192.0.2.20/32"] },
+async function readerInput(overrides = {}) {
+  const directory = fileTemporaryDirectory("oce-profile-reader-tls-");
+  const tls = await selfSigned(directory);
+  return codexInput({
+    publicGithubRead: {
+      enabled: true,
+      clusterIP: "10.43.0.19",
+      upstreamCidrs: ["192.0.2.20/32", "192.0.2.21/32"],
+      installationId: "ins_public_reader",
+      authorizationConfigMapName: "public-reader-authorizations",
+      tlsSecretName: "public-reader-tls",
+      caBundleFile: tls.certPath,
+      ...overrides,
+    },
+  });
+}
+
+test("reader profile startup loads without an authored Installation identity", async () => {
+  const input = await readerInput();
+  const output = render("codex", input);
+  // Exercise the production composition loader, including its recursive safe-file guard,
+  // schema validation and Driver construction; this does not start a controller or cluster.
+  const loaded = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: join(output.directory, "installation.yaml") },
+  });
+  assert.equal(loaded.computeDriver.implementation, "occ/kubernetes");
+  assert.equal(
+    loaded.installation.drivers.compute.configuration.network.publicGithubRead.installationId,
+    undefined,
+  );
+  assert.equal(
+    loadYaml(output.values).publicGithubRead.installationId,
+    input.publicGithubRead.installationId,
+  );
+  for (const key of ["installationId", "installation_id"]) {
+    const injected = loadYaml(output.installation);
+    injected.drivers.compute.configuration.network.publicGithubRead[key] = "ins_untrusted";
+    const path = join(output.directory, `injected-${key}.yaml`);
+    writeFileSync(path, JSON.stringify(injected));
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: path },
       }),
+      /must not contain an Installation ID/,
     );
+  }
+});
+
+test(
+  "Codex profile pairs authenticated HTTPS public GitHub reader and the revision's exact network peer",
+  { skip: helmSkip },
+  async () => {
+    const clusterIP = "10.43.0.19";
+    const input = await readerInput();
+    const output = render("codex", input);
     const compute = loadYaml(output.installation).drivers.compute.configuration;
     assert.equal(compute.network.publicGithubRead.address, clusterIP);
     assert.match(output.values, /publicGithubRead:\n {2}enabled: true/);
@@ -162,9 +213,106 @@ test(
       );
     }
     assert.equal(reader.spec.automountServiceAccountToken, false);
-    assert.equal(reader.spec.volumes, undefined);
+    assert.deepEqual(loadYaml(output.values).publicGithubRead.policy, {
+      mode: "repositories",
+      repositories: [],
+    });
+    assert.equal(compute.network.publicGithubRead.installationId, undefined);
+    assert.equal(
+      loadYaml(output.values).publicGithubRead.installationId,
+      input.publicGithubRead.installationId,
+    );
+    assert.equal(
+      compute.network.publicGithubRead.authorizationConfigMapName,
+      "public-reader-authorizations",
+    );
+    assert.equal(
+      compute.network.publicGithubRead.caBundle,
+      readFileSync(input.publicGithubRead.caBundleFile, "utf8"),
+    );
+    const container = reader.spec.containers[0];
+    assert.deepEqual(service.ports, [{ name: "https", port: 8080, targetPort: "https" }]);
+    assert.equal(container.readinessProbe.httpGet.scheme, "HTTPS");
+    assert.deepEqual(Object.fromEntries(container.env.map(({ name, value }) => [name, value])), {
+      PUBLIC_GITHUB_READ_TLS_CERT_FILE: "/etc/public-read/tls/tls.crt",
+      PUBLIC_GITHUB_READ_TLS_KEY_FILE: "/etc/public-read/tls/tls.key",
+      PUBLIC_GITHUB_READ_POLICY_FILE: "/etc/public-read/policy/policy.json",
+      PUBLIC_GITHUB_READ_AUTHORIZATIONS_FILE: "/etc/public-read/authorizations/authorizations.json",
+    });
+    assert.deepEqual(
+      reader.spec.volumes.filter(({ secret }) => secret).map(({ secret }) => secret.secretName),
+      ["public-reader-tls"],
+    );
+    const registryMount = container.volumeMounts.find(({ name }) => name === "authorizations");
+    assert.equal(
+      registryMount.subPath,
+      undefined,
+      "whole-directory mount receives registry updates",
+    );
+    assert.equal(registryMount.readOnly, true);
+    const allObjects = helmTemplate(output)
+      .split(/\n---\n/)
+      .map((document) => JSON.parse(JSON.stringify(loadYaml(document))));
+    const registry = allObjects.find(
+      ({ kind, metadata }) =>
+        kind === "ConfigMap" && metadata.name === "public-reader-authorizations",
+    );
+    assert.equal(
+      registry,
+      undefined,
+      "Helm must never render mutable authorization data or restore stale grants on upgrade",
+    );
+    const readerConfiguration = JSON.stringify(
+      allObjects.filter(
+        ({ kind, metadata }) => kind === "ConfigMap" && metadata.name.startsWith(name),
+      ),
+    );
+    assert.doesNotMatch(readerConfiguration, /PRIVATE KEY|clientSecret|appKey|tokenSha256/);
+    const supervisor = policy.ingress[0]._from.find(
+      ({ podSelector }) => podSelector.matchLabels["openshell.ai/boundary-role"] === "supervisor",
+    );
+    assert.deepEqual(supervisor.podSelector.matchLabels, {
+      "openshell.ai/boundary-role": "supervisor",
+    });
+    assert.ok(
+      supervisor.namespaceSelector.matchExpressions.some(
+        ({ key }) => key === "openclaw.dev/namespace",
+      ),
+    );
+    const ordinaryPeer = policy.ingress[0]._from.find(
+      ({ podSelector }) => podSelector.matchLabels["openclaw.dev/workload-role"] === "agent",
+    );
+    assert.equal(
+      ordinaryPeer.podSelector.matchLabels["openclaw.dev/network-profile"],
+      "broad-egress-v1",
+    );
+    const role = allObjects.find(
+      ({ kind, metadata }) => kind === "Role" && metadata.name === `${name}-authorizations`,
+    );
+    assert.deepEqual(role.rules, [
+      {
+        apiGroups: [""],
+        resources: ["configmaps"],
+        resourceNames: ["public-reader-authorizations"],
+        verbs: ["get", "update"],
+      },
+    ]);
+    const roleBinding = allObjects.find(
+      ({ kind, metadata }) => kind === "RoleBinding" && metadata.name === role.metadata.name,
+    );
+    assert.deepEqual(roleBinding.subjects.map(({ name }) => name).sort(), [
+      "openclaw-enterprise-api",
+      "openclaw-enterprise-worker",
+    ]);
+    const controlPeers = policy.ingress[0]._from.filter(({ podSelector }) =>
+      ["api", "worker"].includes(podSelector.matchLabels["app.kubernetes.io/component"]),
+    );
+    assert.equal(controlPeers.length, 2, "controllers can observe the loaded registry digest");
     assert.equal(reader.spec.containers[0].securityContext.readOnlyRootFilesystem, true);
-    assert.deepEqual(policy.egress.at(-1).to, [{ ipBlock: { cidr: "192.0.2.20/32" } }]);
+    assert.deepEqual(policy.egress.at(-1).to, [
+      { ipBlock: { cidr: "192.0.2.20/32" } },
+      { ipBlock: { cidr: "192.0.2.21/32" } },
+    ]);
     assert.deepEqual(policy.ingress[0].ports, [{ port: 8080, protocol: "TCP" }]);
 
     const ordinary = render("codex", codexInput(), output.directory);
@@ -179,6 +327,242 @@ test(
   },
 );
 
+test(
+  "public reader profile and chart require verified TLS and validate all/list ceilings",
+  { skip: helmSkip },
+  async () => {
+    const input = await readerInput();
+    for (const policy of [
+      { mode: "all" },
+      { mode: "repositories", repositories: ["OpenClaw/Example"] },
+    ]) {
+      const output = render("codex", {
+        ...input,
+        publicGithubRead: { ...input.publicGithubRead, policy },
+      });
+      const ceiling = loadYaml(output.values).publicGithubRead.policy;
+      assert.deepEqual(
+        ceiling,
+        policy.mode === "all"
+          ? policy
+          : { mode: "repositories", repositories: ["openclaw/example"] },
+      );
+      const objects = helmTemplate(output)
+        .split(/\n---\n/)
+        .map((document) => JSON.parse(JSON.stringify(loadYaml(document))));
+      const configuration = objects.find(
+        ({ kind, metadata }) =>
+          kind === "ConfigMap" && metadata.name === "openclaw-enterprise-public-github-read-policy",
+      );
+      assert.deepEqual(JSON.parse(configuration.data["policy.json"]), ceiling);
+    }
+    for (const field of [
+      "tlsSecretName",
+      "installationId",
+      "authorizationConfigMapName",
+      "caBundleFile",
+    ]) {
+      const incomplete = { ...input.publicGithubRead };
+      delete incomplete[field];
+      assert.throws(
+        () => render("codex", { ...input, publicGithubRead: incomplete }),
+        (error) => error.profileRendererOutput.includes(field),
+      );
+    }
+    for (const policy of [
+      { mode: "all", repositories: [] },
+      { mode: "repositories", repositories: ["bad/path/extra"] },
+      { mode: "repositories", repositories: Array(257).fill("owner/repo") },
+    ]) {
+      assert.throws(
+        () =>
+          render("codex", { ...input, publicGithubRead: { ...input.publicGithubRead, policy } }),
+        (error) => error.profileRendererOutput.includes("policy"),
+      );
+    }
+    const output = render("codex", input);
+    for (const setting of [
+      "publicGithubRead.tlsSecretName=",
+      "publicGithubRead.caBundle=",
+      "publicGithubRead.installationId=",
+      "publicGithubRead.authorizationConfigMapName=",
+      "publicGithubRead.policy.mode=invalid",
+      "publicGithubRead.policy.repositories[0]=owner/repo/extra",
+    ]) {
+      assert.throws(
+        () => helmTemplate(output, [], "oce", ["--set", setting]),
+        (error) => error.stderr.includes(setting.split("=")[0].split(".").slice(0, 2).join(".")),
+      );
+    }
+    const relative = {
+      ...input,
+      publicGithubRead: {
+        ...input.publicGithubRead,
+        caBundleFile: basename(input.publicGithubRead.caBundleFile),
+      },
+    };
+    assert.equal(
+      render("codex", relative, dirname(input.publicGithubRead.caBundleFile)).summary.ok,
+      true,
+      "public CA paths resolve relative to the profile input",
+    );
+    const oversized = join(output.directory, "oversized-ca.pem");
+    writeFileSync(oversized, readFileSync(input.publicGithubRead.caBundleFile, "utf8").repeat(200));
+    assert.throws(
+      () =>
+        render("codex", {
+          ...input,
+          publicGithubRead: { ...input.publicGithubRead, caBundleFile: oversized },
+        }),
+      (error) => error.profileRendererOutput.includes("65 KiB"),
+    );
+    assert.throws(
+      () => helmTemplate(output, [], "oce", ["--set", "publicGithubRead.tlsSecretName=occ-auth"]),
+      (error) => error.stderr.includes("dedicated Secret"),
+    );
+    const privateInput = await readerInput();
+    privateInput.publicGithubRead.caBundleFile = privateInput.publicGithubRead.caBundleFile.replace(
+      /\.crt$/,
+      ".key",
+    );
+    assert.throws(
+      () => render("codex", privateInput),
+      (error) => error.profileRendererOutput.includes("public PEM"),
+    );
+  },
+);
+
+test(
+  "Helm upgrades leave mutable authorization outside the release and refuse another Installation",
+  { skip: helmSkip },
+  async (t) => {
+    const input = await readerInput();
+    const output = render("codex", input);
+    const name = input.publicGithubRead.authorizationConfigMapName;
+    const label = createHash("sha256")
+      .update(input.publicGithubRead.installationId)
+      .digest("hex")
+      .slice(0, 32);
+    let registry = {
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: {
+        name,
+        namespace: "openclaw-system",
+        resourceVersion: "42",
+        labels: { "openclaw.dev/public-read-installation": label },
+      },
+      data: {
+        "authorizations.json":
+          JSON.stringify({
+            revision: { tokenSha256: "a".repeat(64), validUntil: "2030-01-01T00:00:00.000Z" },
+          }) + "\n",
+        "operator-note": "preserve",
+      },
+    };
+    const discovery = new Map();
+    for (const document of helmTemplate(output).split(/\n---\n/)) {
+      const object = loadYaml(document);
+      const resources = discovery.get(object.apiVersion) ?? new Map();
+      resources.set(object.kind, {
+        name: object.kind === "ConfigMap" ? "configmaps" : object.kind.toLowerCase() + "s",
+        singularName: object.kind.toLowerCase(),
+        namespaced: !object.kind.startsWith("Cluster"),
+        kind: object.kind,
+        verbs: ["get"],
+      });
+      discovery.set(object.apiVersion, resources);
+    }
+    const apiGroups = [...discovery.keys()]
+      .filter((version) => version.includes("/"))
+      .map((groupVersion) => {
+        const [name, version] = groupVersion.split("/");
+        return {
+          name,
+          versions: [{ groupVersion, version }],
+          preferredVersion: { groupVersion, version },
+        };
+      });
+    let registryReads = 0;
+    const server = createServer((request, response) => {
+      const path = new URL(request.url, "http://localhost").pathname;
+      response.setHeader("Content-Type", "application/json");
+      const groupVersion = path.startsWith("/apis/")
+        ? path.slice(6)
+        : path === "/api/v1"
+          ? "v1"
+          : undefined;
+      if (discovery.has(groupVersion)) {
+        response.end(
+          JSON.stringify({
+            kind: "APIResourceList",
+            apiVersion: "v1",
+            groupVersion,
+            resources: [...discovery.get(groupVersion).values()],
+          }),
+        );
+      } else if (path === `/api/v1/namespaces/openclaw-system/configmaps/${name}`) {
+        registryReads++;
+        response.end(JSON.stringify(registry));
+      } else if (path === "/version") {
+        response.end(JSON.stringify({ major: "1", minor: "35", gitVersion: "v1.35.0" }));
+      } else if (path === "/api") {
+        response.end(JSON.stringify({ kind: "APIVersions", apiVersion: "v1", versions: ["v1"] }));
+      } else if (path === "/apis") {
+        response.end(JSON.stringify({ kind: "APIGroupList", apiVersion: "v1", groups: apiGroups }));
+      } else {
+        response.statusCode = 404;
+        response.end(
+          JSON.stringify({
+            kind: "Status",
+            apiVersion: "v1",
+            status: "Failure",
+            reason: "NotFound",
+            code: 404,
+          }),
+        );
+      }
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const renderUpgrade = () =>
+      promisify(execFile)(
+        helm,
+        [
+          "template",
+          "oce",
+          "deploy/helm/openclaw-enterprise",
+          "--namespace",
+          "openclaw-system",
+          "--values",
+          join(output.directory, "values.yaml"),
+          "--is-upgrade",
+          "--dry-run=server",
+          "--validate",
+          "--disable-openapi-validation",
+          "--kubeconfig",
+          "/dev/null",
+          "--kube-apiserver",
+          `http://127.0.0.1:${server.address().port}`,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    const { stdout } = await renderUpgrade();
+    const retained = stdout
+      .split(/\n---\n/)
+      .map((document) => JSON.parse(JSON.stringify(loadYaml(document))))
+      .find(({ kind, metadata }) => kind === "ConfigMap" && metadata.name === name);
+    assert.equal(
+      retained,
+      undefined,
+      "an upgrade must not render even a previously observed registry",
+    );
+    assert.ok(registryReads > 0, "Helm must read the current registry");
+    registry.metadata.labels["openclaw.dev/public-read-installation"] = "other-installation";
+    await assert.rejects(renderUpgrade(), /authorization ConfigMap ownership mismatch/);
+  },
+);
+
 test("reader fixture waits for a current ready endpoint owned by its Service", async (t) => {
   const tooling = await chartTooling();
   if (tooling.skip) {
@@ -189,6 +573,7 @@ test("reader fixture waits for a current ready endpoint owned by its Service", a
   const serviceUid = "reader-service-uid";
   const podUid = "reader-pod-uid";
   let selector;
+  let fixtureItems;
   let sliceReads = 0;
   const slice = (ownerUid, targetUid, endpoints = true) => ({
     metadata: { ownerReferences: [{ kind: "Service", uid: ownerUid }] },
@@ -208,6 +593,7 @@ test("reader fixture waits for a current ready endpoint owned by its Service", a
     if (manifest.kind === "Service") {
       assert.equal(manifest.spec.selector, undefined, "reservation must not add a stale selector");
     } else {
+      fixtureItems = manifest.items;
       selector = manifest.items.find((item) => item.kind === "Service").spec.selector;
     }
   };
@@ -246,12 +632,107 @@ test("reader fixture waits for a current ready endpoint owned by its Service", a
   };
   const reader = await installPublicGithubReadFixture({
     namespace: "oce-system",
+    installationId: "ins_reader_fixture",
     controllerImage: `registry.example.invalid/controller@sha256:${digestA}`,
     kubectl,
     applyManifest,
     waitFor,
   });
+  // Inspect actual generated Secret/chart material, not authored certificate options.
+  const secret = fixtureItems.find((item) => item.kind === "Secret");
+  const leaf = new X509Certificate(Buffer.from(secret.data["tls.crt"], "base64"));
+  const issuer = new X509Certificate(reader.peer.caBundle);
+  assert.equal(leaf.ca, false, "the reader must serve an end-entity certificate");
+  assert.equal(issuer.ca, true);
+  assert.notEqual(leaf.fingerprint256, issuer.fingerprint256);
+  assert.ok(leaf.verify(issuer.publicKey));
+  assert.ok(issuer.verify(issuer.publicKey));
+  assert.equal(leaf.checkIP(reader.peer.address), reader.peer.address);
+  assert.deepEqual(leaf.keyUsage, ["1.3.6.1.5.5.7.3.1"]);
+  assert.deepEqual(Object.keys(secret.data).sort(), ["tls.crt", "tls.key"]);
+  assert.ok(leaf.checkPrivateKey(createPrivateKey(Buffer.from(secret.data["tls.key"], "base64"))));
+  const publicMaterial = JSON.stringify(fixtureItems.filter((item) => item.kind !== "Secret"));
+  assert.ok(publicMaterial.includes(JSON.stringify(reader.peer.caBundle).slice(1, -1)));
+  assert.doesNotMatch(publicMaterial + reader.peer.caBundle, /PRIVATE KEY/);
+  assert.equal(publicMaterial.includes(JSON.stringify(leaf.toString()).slice(1, -1)), false);
   assert.equal(sliceReads, observations.length);
   assert.deepEqual(reader.peer.podLabels, selector);
   assert.equal(reader.peer.address, "10.43.0.19");
+  assert.equal(reader.peer.installationId, undefined);
+});
+
+test("native reader material serves a verified leaf and receipts expose only bounded event classes", async (t) => {
+  const { publicReaderTls, publicReadReceipts, readPublicReadReceipts } =
+    await import("../helpers/public-github-read-fixture.mjs");
+  const { createServer, get } = await import("node:https");
+  const { listen } = await import("../helpers/listen.mjs");
+  const tls = await publicReaderTls("127.0.0.1", "api.github.com");
+  const leaf = new X509Certificate(tls.cert);
+  const issuer = new X509Certificate(tls.ca);
+  assert.equal(leaf.ca, false);
+  assert.equal(issuer.ca, true);
+  assert.ok(leaf.verify(issuer.publicKey));
+  assert.notEqual(leaf.fingerprint256, issuer.fingerprint256);
+  assert.equal(leaf.checkHost("api.github.com"), "api.github.com");
+  assert.equal(leaf.checkIP("127.0.0.1"), "127.0.0.1");
+  assert.deepEqual(leaf.keyUsage, ["1.3.6.1.5.5.7.3.1"]);
+  assert.doesNotMatch(tls.ca, /PRIVATE KEY/);
+  const lines = [];
+  const server = createServer({ key: tls.key, cert: tls.cert }, (_req, res) => {
+    res.writeHead(502).end("private-response-must-not-escape");
+  });
+  publicReadReceipts((line) => lines.push(line))(server, "reader");
+  const port = await listen(t, server);
+  const request = (ca) =>
+    new Promise((resolve, reject) => {
+      get(
+        {
+          hostname: "127.0.0.1",
+          port,
+          ca,
+          path: "/private-path",
+          headers: { authorization: "private-header" },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", resolve);
+        },
+      ).on("error", reject);
+    });
+  const { once } = await import("node:events");
+  const failedTls = once(server, "tlsClientError");
+  await assert.rejects(request((await publicReaderTls("127.0.0.1")).ca), {
+    code: /^(UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|CERT_SIGNATURE_FAILURE)$/,
+  });
+  await failedTls;
+  await request(tls.ca);
+  const first = readPublicReadReceipts(lines.join("\n"));
+  assert.equal(first.collected, true);
+  assert.ok(first.events.some((event) => event.event === "tls-error"));
+  assert.ok(first.events.some((event) => event.event === "tls-accepted"));
+  assert.ok(first.events.some((event) => event.event === "http-entry"));
+  assert.ok(first.events.some((event) => event.event === "http-finish" && event.status === 502));
+  for (let i = 0; i < 40; i++) {
+    await request(tls.ca);
+  }
+  const bounded = readPublicReadReceipts(lines.join("\n"));
+  assert.equal(bounded.events.length, 64);
+  assert.equal(bounded.truncated, true);
+  assert.equal(lines.length, 66);
+  assert.doesNotMatch(
+    JSON.stringify(bounded) + lines.join("\n"),
+    /private-|PRIVATE KEY|BEGIN CERTIFICATE/,
+  );
+  for (const raw of [
+    "{",
+    '{"role":"reader","event":"http-finish","status":502,"secret":"private-value"}',
+    "null",
+  ]) {
+    const malformed = readPublicReadReceipts(lines[0] + "\npublic-read-receipt " + raw);
+    assert.equal(malformed.collected, false);
+    assert.equal(malformed.malformed, true);
+    assert.doesNotMatch(JSON.stringify(malformed), /private-value/);
+  }
+  assert.equal(readPublicReadReceipts(undefined).collected, false);
+  assert.equal(readPublicReadReceipts("x".repeat(65537)).collected, false);
 });

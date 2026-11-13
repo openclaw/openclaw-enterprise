@@ -1144,3 +1144,164 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
     assert.deepEqual([child.status, child.stdout], [0, ""], String(status));
   }
 });
+
+test("managed model tool reports exact missing stages without exposing environment values", async () => {
+  const { publicReadCommand, publicReadToolResult, publicReadFailure } =
+    await import("../fixtures/public-read-model.mjs");
+  const cases = [
+    [{}, "proxy-active"],
+    [{ CODEX_NETWORK_PROXY_ACTIVE: "1" }, "local-binding"],
+    [{ CODEX_NETWORK_PROXY_ACTIVE: "1", CODEX_NETWORK_ALLOW_LOCAL_BINDING: "0" }, "helper-present"],
+    [
+      {
+        CODEX_NETWORK_PROXY_ACTIVE: "1",
+        CODEX_NETWORK_ALLOW_LOCAL_BINDING: "0",
+        GIT_EXEC_PATH: "/private-sensitive-path",
+      },
+      "config-present",
+    ],
+    [
+      {
+        CODEX_NETWORK_PROXY_ACTIVE: "1",
+        CODEX_NETWORK_ALLOW_LOCAL_BINDING: "0",
+        GIT_EXEC_PATH: "/private-sensitive-path",
+        OCE_PUBLIC_GITHUB_READ_CONFIG: "/private-sensitive-path",
+      },
+      "ca-present",
+    ],
+    [
+      {
+        CODEX_NETWORK_PROXY_ACTIVE: "1",
+        CODEX_NETWORK_ALLOW_LOCAL_BINDING: "0",
+        GIT_EXEC_PATH: "/private-sensitive-path",
+        OCE_PUBLIC_GITHUB_READ_CONFIG: "/private-sensitive-path",
+        OCE_PUBLIC_GITHUB_READ_CA_FILE: "/private-sensitive-path",
+      },
+      "capability-present",
+    ],
+    [
+      {
+        CODEX_NETWORK_PROXY_ACTIVE: "1",
+        CODEX_NETWORK_ALLOW_LOCAL_BINDING: "0",
+        GIT_EXEC_PATH: "/private-sensitive-path",
+        OCE_PUBLIC_GITHUB_READ_CONFIG: "/private-sensitive-path",
+        OCE_PUBLIC_GITHUB_READ_CA_FILE: "/private-sensitive-path",
+        OCE_PUBLIC_GITHUB_READ_CAPABILITY: "private-sensitive-value",
+      },
+      "helper-readable",
+    ],
+  ];
+  for (const [env, stage] of cases) {
+    const failure = await execute("/bin/sh", ["-c", publicReadCommand()], { env }).then(
+      () => assert.fail("preflight must fail"),
+      (error) => error,
+    );
+    const receipt = publicReadToolResult(failure.stdout);
+    assert.equal(receipt.stage, stage);
+    assert.equal(receipt.exit, 1);
+    assert.equal(receipt.receipt, "collected");
+    assert.equal(failure.stderr, "");
+    assert.doesNotMatch(failure.stdout + JSON.stringify(receipt), /private-sensitive/);
+  }
+  // This is the real helper's fixed refusal, not a simulated subprocess message.
+  const refused = await execute(
+    process.execPath,
+    [
+      "apps/controller/src/drivers/repo/github/public-read/transport.mjs",
+      "--api-get",
+      "/repos/example/public-project/pulls/27",
+    ],
+    { env: {} },
+  ).catch((error) => error);
+  assert.equal(publicReadFailure(refused.stderr), "managed-refusal");
+  // Execute the command's real final invocation with a missing private path:
+  // Node's raw MODULE_NOT_FOUND stack must be consumed, never returned to the model.
+  const invocation = publicReadCommand().split("trap - EXIT\n").at(-1);
+  const failedChild = await execute("/bin/sh", ["-c", invocation], {
+    env: { PATH: process.env.PATH, GIT_EXEC_PATH: "/private-sensitive-path" },
+  }).catch((error) => error);
+  assert.equal(failedChild.stderr, "");
+  assert.equal(publicReadToolResult(failedChild.stdout).error, "node-MODULE_NOT_FOUND");
+  assert.doesNotMatch(failedChild.stdout, /private-sensitive/);
+});
+
+test("model tool classifiers retain only bounded known receipts and error classes", async () => {
+  const { publicReadToolResult, publicReadFailure } =
+    await import("../fixtures/public-read-model.mjs");
+  const title = "public-pull-" + "a".repeat(36);
+  const output =
+    JSON.stringify({ title }) +
+    "\npublic-read-check:ca-readable\npublic-read-exit:api-read:0:none\n";
+  assert.deepEqual(publicReadToolResult(output), {
+    result: "title-returned",
+    receipt: "collected",
+    checks: ["ca-readable"],
+    stage: "api-read",
+    exit: 0,
+    error: "none",
+    refusal: { phase: "unknown", code: "unknown" },
+    title,
+  });
+  assert.equal(publicReadFailure("curl: (60) private-sensitive-url"), "curl-60");
+  assert.equal(
+    publicReadFailure("private-sensitive-path", "MODULE_NOT_FOUND"),
+    "node-MODULE_NOT_FOUND",
+  );
+  assert.equal(
+    publicReadFailure("The managed public API read refused the response."),
+    "api-response-refusal",
+  );
+  assert.equal(
+    publicReadFailure("The managed public reader child could not start."),
+    "child-start-failure",
+  );
+  assert.equal(publicReadFailure("private-sensitive-unknown"), "unknown");
+  for (const text of [
+    "public-read-exit:private-sensitive-stage:1:unknown",
+    "public-read-exit:api-read:999:unknown",
+    "public-read-exit:api-read:1:private-sensitive-error",
+    "public-read-exit:api-read:1:unknown:private-sensitive-extra",
+    "public-read-check:private-sensitive-stage",
+    "public-read-exit:api-read:1:unknown\npublic-read-exit:api-read:0:none",
+  ]) {
+    const receipt = publicReadToolResult(text);
+    assert.equal(receipt.receipt, "malformed");
+    assert.doesNotMatch(JSON.stringify(receipt), /private-sensitive/);
+  }
+  for (const value of [null, {}, "private-sensitive-unknown", "x".repeat(262145)]) {
+    const receipt = publicReadToolResult(value);
+    assert.equal(receipt.receipt, "missing");
+    assert.doesNotMatch(JSON.stringify(receipt), /private-sensitive/);
+  }
+});
+
+test("model preserves only the actual helper's closed refusal phase and code", async () => {
+  const { publicReadRefusal, publicReadToolResult, publicReadCommand } =
+    await import("../fixtures/public-read-model.mjs");
+  const invocation = publicReadCommand().split("trap - EXIT\n").at(-1);
+  const failure = await execute("/bin/sh", ["-c", invocation], {
+    env: {
+      PATH: process.env.PATH,
+      GIT_EXEC_PATH: fileURLToPath(
+        new URL("../../apps/controller/src/drivers/repo/github/public-read/", import.meta.url),
+      ),
+      OCE_PUBLIC_GITHUB_READ_CONFIG: "/private-refusal-sentinel",
+    },
+  }).catch((error) => error);
+  assert.equal(failure.stderr, "");
+  assert.doesNotMatch(failure.stdout, /private-refusal-sentinel/);
+  assert.deepEqual(publicReadToolResult(failure.stdout).refusal, {
+    phase: "configuration",
+    code: "ENOENT",
+  });
+  for (const value of [
+    "public-git-refusal:private-refusal-sentinel:ENOENT",
+    "public-git-refusal:authorization:private-refusal-sentinel",
+    "public-git-refusal:configuration:ENOENT:private-refusal-sentinel",
+    "public-git-refusal:configuration:ENOENT\npublic-git-refusal:authorization:unknown",
+    "x".repeat(128 * 1024 + 1),
+    null,
+  ]) {
+    assert.deepEqual(publicReadRefusal(value), { phase: "unknown", code: "unknown" });
+  }
+});

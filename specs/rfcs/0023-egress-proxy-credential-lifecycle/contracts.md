@@ -60,6 +60,14 @@ action, exact target generations, audience, input digest and expiry.
 Compute builds the `ProxyPlan` from admitted routes, bindings and source projections. A Sandbox receipt records what was applied;
 wiring and receipts do not authorize requests.
 
+### Qualified service access under protection
+
+For qualified nonsecret services,
+[RFC-0020](../0020-anonymous-public-github-reads.md#proposed-extension-public-git-alongside-protected-git)
+owns pre-normalization selection, frozen Installation identity, exact service/default
+acknowledgement, paired compiler checks and refusal conditions. Artifact-only
+admission excludes services; destination qualification and IAM remain required.
+
 ### Classification refusal diagnostics
 
 Proposed amendment for [PR #5448](https://github.com/openclaw/openclaw-enterprise/pull/5448).

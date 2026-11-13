@@ -73,6 +73,8 @@
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
+    "tests/integration/public-github-git-read.test.mjs",
+    "tests/integration/public-github-git-transport.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.ts",
@@ -142,6 +144,7 @@
     "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
+    "tests/integration/public-github-read-authorizations.test.ts",
     "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
@@ -564,6 +567,12 @@
       "path": "tests/integration/public-github-read-http.test.mjs"
     },
     {
+      "path": "tests/integration/public-github-git-read.test.mjs"
+    },
+    {
+      "path": "tests/integration/public-github-git-transport.test.mjs"
+    },
+    {
       "path": "tests/integration/repository-credentials-transport-bounds.test.ts"
     },
     {
@@ -767,6 +776,17 @@
     },
     {
       "path": "tests/integration/staging-qualification.test.ts"
+    },
+    {
+      "path": "tests/integration/public-github-read-authorizations.test.ts",
+      "expectedTests": [
+        "retired public-reader revision churn keeps large-policy storage bounded and admits a new grant",
+        "retirement frontiers preserve suspended old grants and separate exact admission lineages",
+        "authorization CAS races cannot restore a retired revision or overwrite another lineage",
+        "legacy grants migrate atomically while exact withdrawn identities remain denied",
+        "retirement metadata and combined ConfigMap capacity fail closed before publication",
+        "the real reader observes compacted withdrawal and cold restart without resurrecting its bearer"
+      ]
     },
     {
       "path": "tests/integration/gateway-workspace-readiness.test.ts"

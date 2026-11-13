@@ -786,7 +786,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec} #>> '{harness,mode}') IN ('embedded', 'dedicated')
         AND jsonb_typeof(${table.admittedSpec}->'compute') = 'object'
         AND ((${table.admittedSpec}->'compute') ?& ARRAY['id', 'implementation'])
-        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission' - 'serviceAccess') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,id}') = 'string'
         AND COALESCE(btrim(${table.admittedSpec} #>> '{compute,id}'), '') <> ''
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,implementation}') = 'string'
@@ -834,6 +834,14 @@ export const agentRevisions = occSchema.table(
         AND (
           NOT (${table.admittedSpec} ? 'credential_sources')
           OR occ.credential_source_snapshots_are_valid(${table.admittedSpec}->'credential_sources')
+        )
+        AND (
+          NOT ((${table.admittedSpec}->'compute') ? 'serviceAccess')
+          OR occ.compute_service_access_is_valid(${table.admittedSpec} #> '{compute,serviceAccess}', ${table.admittedSpec}->'compute')
+        )
+        AND (
+          NOT (${table.admittedSpec} ? 'sandbox_policy')
+          OR (${table.admittedSpec} #> '{sandbox_policy,serviceAccess}') IS NOT DISTINCT FROM (${table.admittedSpec} #> '{compute,serviceAccess}')
         )`.inlineParams(),
     ),
   ],

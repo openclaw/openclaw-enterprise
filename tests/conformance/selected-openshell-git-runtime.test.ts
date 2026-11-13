@@ -1,5 +1,7 @@
+import { openShellRevisionServiceRules } from "../../apps/controller/src/drivers/sandbox/openshell-service-access.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
@@ -155,10 +157,42 @@ async function selectedV5(t: TestContext) {
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext) {
+async function heldGit(t: TestContext, publicReader = false) {
   const selected = await selectedV5(t);
   const { f, store, revision, executionId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
+  if (publicReader) {
+    const tls = await harnessTlsFixture(t);
+    const services = [
+      {
+        id: "public-github-read",
+        driverId: "kubernetes",
+        implementation: "kubernetes",
+        endpoint: "https://10.96.0.55:8080",
+        configuration: {
+          policy: { mode: "all" },
+          peer: { namespace: "reader", podLabels: { app: "public-reader" } },
+          authorizationConfigMapName: "reader-authorizations",
+          installationId: "ins_reader",
+          caBundle: tls.caBundle,
+        },
+      },
+    ];
+    Object.assign(revision, {
+      compute: { id: "kubernetes", implementation: "kubernetes", serviceAccess: services },
+      sandboxDriverId: "sandbox",
+      sandboxPolicy: {
+        version: 1,
+        driverId: "sandbox",
+        implementation: "openshell",
+        defaults: {},
+        additions: [],
+        serviceAccess: services,
+      },
+    });
+    (revision.egressPlan!.execution as { installationId: string }).installationId = "ins_reader";
+  }
+  const publicReadPolicy = openShellRevisionServiceRules(revision);
   const prepared = await prepare();
   const lookup = () => f.runtime.lookup({ ...f.identity, bindingId: executionId }, t.signal);
   const entry = await f.runtime["entries"].get(revision.id);
@@ -175,10 +209,12 @@ async function heldGit(t: TestContext) {
   assert.ok(gitRule);
   const gitEndpoint = gitRule.endpoints.find((endpoint) => endpoint.host === "github.com");
   assert.ok(gitEndpoint);
-  const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
-  const sourcePolicy = { network_policies: {} };
+  const runtimeFilesProvider =
+    "oce-runtime-" + createHash("sha256").update(revision.id).digest("hex").slice(0, 16);
+  const sourcePolicy = { network_policies: publicReadPolicy };
   const effectivePolicy = {
     network_policies: {
+      ...publicReadPolicy,
       [gitRule.name]: gitRule,
       _provider_openai: {
         name: "_provider_openai",
@@ -1464,6 +1500,43 @@ test("selected released v5 periodic read crosses admission expiry without grant 
   assert.deepEqual(f.errors(), []);
 });
 
+test("selected Git observation accepts only its exact admitted public-reader service rule", async (t) => {
+  for (const mutation of ["host", "path", "unadmitted IP"]) {
+    await t.test(mutation, async (t) => {
+      const { f, revision, sandbox, client } = await releaseHeldGit(await heldGit(t, true), t);
+      assert.ok(await f.runtime.verifyExecution(revision, t.signal));
+      const source = structuredClone(sandbox.spec.policy) as {
+        network_policies: Record<string, unknown>;
+      };
+      Object.assign(sandbox.spec, { policy: source });
+      const config = structuredClone(
+        await client.getSandboxConfig!(sandbox.workspace, sandbox.name, t.signal),
+      );
+      const applied = config!.policy as { network_policies: Record<string, unknown> };
+      client.getSandboxConfig = async () => config;
+      if (mutation === "unadmitted IP") {
+        // Matching source/effective policy is insufficient authority for another IP route.
+        const rule = { name: "unadmitted", endpoints: [{ host: "10.96.0.56", ports: [8080] }] };
+        source.network_policies.unadmitted = rule;
+        applied.network_policies.unadmitted = rule;
+      } else {
+        // The controlled peer agrees on the changed rule; only the frozen descriptor differs.
+        const rule = source.network_policies["public-github-read"] as {
+          endpoints: { host: string; rules: { allow: { path: string } }[] }[];
+        };
+        const endpoint = rule.endpoints[0]!;
+        if (mutation === "host") {
+          endpoint.host = "10.96.0.56";
+        } else {
+          endpoint.rules[0]!.allow.path = "/**";
+        }
+        applied.network_policies["public-github-read"] = structuredClone(rule);
+      }
+      assert.equal(await f.runtime.verifyExecution(revision, t.signal), undefined);
+    });
+  }
+});
+
 test("finite v5 Git expiry refuses resolver substitution and never replays an uncertain detach", async (t) => {
   async function exercise(
     t: TestContext,
@@ -1484,7 +1557,8 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       client,
       runtimeFilesProvider,
       replacement,
-    } = await heldReleased(t);
+    } = await releaseHeldGit(await heldGit(t, true), t);
+    const publicReadPolicy = structuredClone(expiryBox.spec.policy);
     // Controlled persistence/peer extension, NOT a real DB, wire, or provider test.
     // Everything below descends from the runtime's actual fresh preparation and witness.
     const events: Readonly<Record<string, unknown>>[] = [];
@@ -1642,6 +1716,11 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
         assert.equal(ledger.get(requestId)?.applied, true);
         assert.equal(epoch, "reduced-epoch");
         assert.deepEqual(expiryBox.spec.providers, ["openai", runtimeFilesProvider]);
+        assert.deepEqual(
+          expiryBox.spec.policy,
+          publicReadPolicy,
+          "Git retirement preserves the independently selected public-reader policy and runtime provider",
+        );
         detach!.epoch = epoch;
         confirmations++;
         return true;

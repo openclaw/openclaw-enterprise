@@ -1,8 +1,13 @@
+import { createHash } from "node:crypto";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { KubernetesPublicGithubReadAuthorizationStore } from "../../apps/controller/src/drivers/compute/kubernetes/public-github-read-authorizations.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { publicReaderTls } from "../helpers/public-github-read-fixture.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { fileURLToPath } from "node:url";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
@@ -50,6 +55,131 @@ function standingDrivers({ driver, sender }: Pick<StandingAuthority, "driver" | 
   };
 }
 
+// The admission producer is shipping Kubernetes Compute. Workload/Git observation
+// remains the existing controlled boundary; lease writes use the real public Store
+// over a controlled Kubernetes API. No installed Kubernetes or API deployment proof.
+function publicLeaseOwner(
+  f: Awaited<ReturnType<typeof setupStandingWorkerDatabase>>,
+  caBundle: string,
+) {
+  const resources = {
+    requests: { cpu: "100m", memory: "64Mi" },
+    limits: { cpu: "250m", memory: "128Mi" },
+  };
+  const peer = {
+    namespace: "reader",
+    podLabels: { app: "reader" },
+    address: "10.43.0.200",
+    authorizationConfigMapName: "authorizations",
+    caBundle,
+  };
+  const admissionCompute = new KubernetesComputeDriver({
+    authentication: { mode: "inCluster" },
+    images: { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
+    resources: {
+      gateway: resources,
+      agent: resources,
+      namespace: { quota: { pods: "10" }, containerDefaults: resources },
+    },
+    network: {
+      dns: { namespace: "kube-system", podLabels: { app: "dns" } },
+      gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+      gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
+      publicGithubRead: peer,
+    },
+    servicePrincipalCredentials: { mode: "disabled" },
+    runtime: {
+      transportSecretPrefix: "transport",
+      gatewayStorageClassName: "local-path",
+      gatewayNodeSelector: { "oce-role": "control-plane" },
+    },
+  });
+  const harness = { id: "codex", version: "1.0.0", mode: "dedicated" as const };
+  const authored = createHarnessConfiguration("codex", "gpt-5");
+  const configuration = {
+    ...authored,
+    plugins: {
+      ...authored.plugins,
+      entries: {
+        ...authored.plugins!.entries,
+        codex: {
+          ...authored.plugins!.entries.codex,
+          config: {
+            ...authored.plugins!.entries.codex.config,
+            appServer: {
+              ...authored.plugins!.entries.codex.config.appServer,
+              networkProxy: {
+                enabled: true,
+                domains: { [peer.address]: "allow", "credentials.example.test": "allow" },
+              },
+            },
+            publicGithubRead: { mode: "all" },
+          },
+        },
+      },
+    },
+  };
+  type Core = ConstructorParameters<typeof KubernetesPublicGithubReadAuthorizationStore>[0]["core"];
+  type Secret = Awaited<ReturnType<Core["readNamespacedSecret"]>>;
+  type ConfigMap = Awaited<ReturnType<Core["readNamespacedConfigMap"]>>;
+  const secrets = new Map<string, Secret>();
+  let registry: ConfigMap = {
+    metadata: {
+      name: peer.authorizationConfigMapName,
+      namespace: peer.namespace,
+      resourceVersion: "1",
+      labels: {
+        "openclaw.dev/public-read-installation": createHash("sha256")
+          .update(f.installation.id)
+          .digest("hex")
+          .slice(0, 32),
+      },
+    },
+    data: { "authorizations.json": "{}\n" },
+  };
+  const core = {
+    async readNamespacedConfigMap() {
+      return structuredClone(registry);
+    },
+    async replaceNamespacedConfigMap({ body }: Parameters<Core["replaceNamespacedConfigMap"]>[0]) {
+      assert.equal(body.metadata?.resourceVersion, registry.metadata?.resourceVersion);
+      registry = structuredClone(body);
+      registry.metadata!.resourceVersion = String(Number(body.metadata!.resourceVersion) + 1);
+      return structuredClone(registry);
+    },
+    async readNamespacedSecret({ namespace, name }: Parameters<Core["readNamespacedSecret"]>[0]) {
+      const value = secrets.get(`${namespace}/${name}`);
+      if (!value) {
+        throw Object.assign(new Error("HTTP404"), { statusCode: 404 });
+      }
+      return structuredClone(value);
+    },
+    async createNamespacedSecret({
+      namespace,
+      body,
+    }: Parameters<Core["createNamespacedSecret"]>[0]) {
+      const key = `${namespace}/${body.metadata!.name}`;
+      if (secrets.has(key)) {
+        throw Object.assign(new Error("HTTP409"), { statusCode: 409 });
+      }
+      const value = structuredClone(body);
+      value.metadata = { ...value.metadata, namespace, uid: key, resourceVersion: "1" };
+      secrets.set(key, value);
+      return structuredClone(value);
+    },
+  } as unknown as Core;
+  const store = new KubernetesPublicGithubReadAuthorizationStore({
+    core,
+    namespace: peer.namespace,
+    configMapName: peer.authorizationConfigMapName,
+    installationId: f.installation.id,
+    driverId: admissionCompute.id,
+  });
+  const lease = (id: string) => JSON.parse(registry.data!["authorizations.json"]!)[id];
+  return { admissionCompute, harness, configuration, store, lease };
+}
+
 // Real queue, worker, State and prepared native sender; Compute is a controlled
 // observation adapter. This does not prove an OpenShell process or actual chat.
 test(
@@ -58,14 +188,29 @@ test(
   async (t) => {
     const f = await setupStandingWorkerDatabase(t, import.meta.url);
     try {
-      const plugin = new OCCPluginDriver();
+      const plugin = new CodexPluginDriver();
+      const publicOwner = publicLeaseOwner(f, (await publicReaderTls("10.43.0.200")).ca);
       const { credentials, driver, sender, owner, modelSourceId, revision, execution } =
         await setupStandingWorkerAuthority(t, f, {
+          harness: publicOwner.harness,
+          configuration: publicOwner.configuration,
+          admissionCompute: publicOwner.admissionCompute,
           plugins: {
             driver: { id: plugin.id, implementation: plugin.implementation },
-            plugins: { "occ-plugin:diffs": { enabled: true } },
+            plugins: {},
           },
         });
+      assert.equal(revision.compute.serviceAccess?.length, 1);
+      assert.equal(revision.compute.serviceAccess![0]!.driverId, publicOwner.admissionCompute.id);
+      // The selected model and public-reader grants share one immutable Compute admission.
+      assert.match(
+        revision.compute.admission!,
+        /^model-provider:v1:[a-f0-9]{64}:public-github-read:v2:[a-f0-9]{64}$/,
+      );
+      const persisted = await f.state.read((view) =>
+        view.revisions.findRevision(f.namespace.id, owner.id, revision.id),
+      );
+      assert.deepEqual(persisted!.compute, revision.compute);
       type Delivered = Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>;
       const deliveries: Delivered[] = [];
       type WorkerEvent = {
@@ -87,12 +232,27 @@ test(
       let harness: SandboxHarnessObservation = { state: "running" };
       const compute = {
         ...f.compute,
+        id: publicOwner.admissionCompute.id,
+        implementation: publicOwner.admissionCompute.implementation,
+        validateExecutionAdmission: publicOwner.admissionCompute.validateExecutionAdmission.bind(
+          publicOwner.admissionCompute,
+        ),
         validateRepositoryCredentials() {},
+        async maintainServiceAccess(
+          r: Parameters<ComputeDriver["prepareRevision"]>[0],
+          signal: AbortSignal,
+        ) {
+          signal.throwIfAborted();
+          assert.deepEqual(r.compute.serviceAccess, revision.compute.serviceAccess);
+          await publicOwner.store.prepare(r, "public-worker-runtime", { mode: "all" });
+          signal.throwIfAborted();
+        },
         async prepareRevision(
           r: Parameters<ComputeDriver["prepareRevision"]>[0],
           context?: ComputeRevisionContext,
         ) {
           prepares++;
+          await publicOwner.store.prepare(r, "public-worker-runtime", { mode: "all" });
           if (!created) {
             created = true;
             executionCreates++;
@@ -186,6 +346,11 @@ test(
         // The Driver may return fields outside its declared type; they must not enter logs.
         harness = { state, ...{ diagnostic: "driver-only-observation-data" } };
         events.length = 0;
+        // Expire through the real Store's suspend operation; authority and immutable
+        // revision stay unchanged. Renewal must produce a new persisted lease/digest.
+        await publicOwner.store.suspend(revision);
+        const expiredDigest = await publicOwner.store.digest(revision);
+        assert.equal(Date.parse(publicOwner.lease(revision.id).validUntil), 0);
         // Only advance queue due time. Keep the real approval, session, execution and
         // model source unchanged; restart creates a fresh worker and database pool.
         await f.advanceMaintenance(revision);
@@ -200,7 +365,11 @@ test(
         const pending = await queue.findWork(key);
         assert.equal(pending?.state, "queued");
         assert.equal(pending?.attemptCount, 0, "missing evidence does not spend retry budget");
-        assert.ok(pending!.availableAt.getTime() <= Date.now() + 5_000);
+        // Queue availability uses the database clock, which may differ from the host.
+        const { rows: clockRows } = await f.observerPool.query<{ now: Date }>(
+          "SELECT clock_timestamp() AS now",
+        );
+        assert.ok(pending!.availableAt.getTime() <= clockRows[0]!.now.getTime() + 5_000);
         assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
         assert.deepEqual({ prepares, activations, deliveries: deliveries.length }, before);
         assert.equal(provider.issuesOfTokens.length, 0);
@@ -208,6 +377,20 @@ test(
         assert.ok(events.some((e) => e.outcome === "pending" && e.harnessState === state));
         assert.ok(!JSON.stringify(events).includes("driver-only-observation-data"));
         assert.ok(!events.some((e) => e.code === "REVISION_ALREADY_ACTIVE"));
+        if (state === "running") {
+          assert.ok(
+            Date.parse(publicOwner.lease(revision.id).validUntil) > Date.now() + 480_000,
+            "Git recipient uncertainty must not expire independently authorized public reads",
+          );
+          assert.notEqual(await publicOwner.store.digest(revision), expiredDigest);
+        } else {
+          assert.equal(
+            Date.parse(publicOwner.lease(revision.id).validUntil),
+            0,
+            "missing admitted plugin must not renew public authority",
+          );
+          assert.equal(await publicOwner.store.digest(revision), expiredDigest);
+        }
       }
       assert.equal(observations, 2);
       // Genuine evidence recovery may enter ordinary preparation again. It must not be
@@ -221,11 +404,54 @@ test(
       await f.stop();
       assert.ok(prepares > before.prepares);
       assert.equal(executionCreates, 1);
+      // A real session may close while its disposal reply remains uncertain. Keep
+      // that conservative Driver observation; no replacement Git session may open.
+      const [attempt] = await f.state.read((view) =>
+        view.repositorySessions.listRevisionAttempts(ownerRef),
+      );
+      assert.ok(attempt?.sessionId);
+      assert.notEqual(attempt.brokerProtocol, 2);
+      await f.state.transact((unit) =>
+        unit.repositorySessions.advanceAttempt({
+          admissionId: attempt.admissionId,
+          expectedPhase: "open",
+          phase: "closing",
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+      const settledClose = sender.close.bind(sender);
+      sender.close = async (sessionId, signal) => {
+        const result = await settledClose(sessionId, signal);
+        return result === undefined ? result : { ...result, state: "CLOSED" };
+      };
+      await publicOwner.store.suspend(revision);
+      const disposalDigest = await publicOwner.store.digest(revision);
+      const beforeDisposal = { prepares, activations, deliveries: deliveries.length };
+      events.length = 0;
+      await f.advanceMaintenance(revision);
+      await start();
+      await waitFor("Git disposal uncertainty deferred", async () =>
+        events.find(
+          (e) => e.revisionId === revision.id && e.code === "REPOSITORY_SESSION_SUCCESSION_PENDING",
+        ),
+      );
+      await f.stop();
+      assert.deepEqual({ prepares, activations, deliveries: deliveries.length }, beforeDisposal);
+      assert.ok(
+        Date.parse(publicOwner.lease(revision.id).validUntil) > Date.now() + 480_000,
+        "Git disposal uncertainty must not expire independently authorized public reads",
+      );
+      assert.notEqual(await publicOwner.store.digest(revision), disposalDigest);
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      assert.equal(stopped, 0);
+      sender.close = settledClose;
       evidenceMissing = true;
       const recoveredPrepares = prepares;
       const recoveredActivations = activations;
       // The normal API records model withdrawal while Git evidence is missing. The next
       // worker must deliver that withdrawal, never prepare the Agent to observe it.
+      await publicOwner.store.suspend(revision);
+      const withdrawnLeaseDigest = await publicOwner.store.digest(revision);
       await f.controller.withdrawAgentCredentialSource(f.actor.id, {
         namespaceId: f.namespace.id,
         agentId: owner.id,
@@ -244,6 +470,12 @@ test(
       assert.equal(prepares, recoveredPrepares);
       assert.equal(activations, recoveredActivations);
       assert.equal(provider.issuesOfTokens.length, 0);
+      assert.equal(
+        Date.parse(publicOwner.lease(revision.id).validUntil),
+        0,
+        "withdrawn model authority cannot renew the public lease",
+      );
+      assert.equal(await publicOwner.store.digest(revision), withdrawnLeaseDigest);
     } catch (error) {
       t.diagnostic("registered standing session proof stopped before all assertions completed");
       throw error;

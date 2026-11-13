@@ -1,3 +1,4 @@
+import type { ComputeServiceAccess } from "../compute/index.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
@@ -16,6 +17,7 @@ import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
 import type {
   ProtectedCodexArtifactPolicyAdmission,
+  ProtectedNetworkPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
@@ -76,6 +78,11 @@ export interface HarnessWorkloadRequirements {
   };
   readonly environment: readonly SandboxEnvironmentVariable[];
   readonly files: readonly SandboxWorkloadFile[];
+  /** Transient Compute-owned service credentials; never persisted in revision files or policy. */
+  readonly serviceAccessMaterials?: readonly {
+    readonly serviceId: string;
+    readonly values: Readonly<Record<string, string>>;
+  }[];
   /** Credential Gateway attachments the paired Sandbox must consume in full. */
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
   readonly proxyWiring?: ProxyWiring;
@@ -217,7 +224,10 @@ export interface SandboxDriver extends Driver {
     additions: readonly SandboxNetworkGrant[],
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials?: boolean },
+    scope?: {
+      readonly repositoryCredentials?: boolean;
+      readonly serviceAccess?: readonly ComputeServiceAccess[];
+    },
   ): SandboxPolicySnapshot;
   /**
    * Side-effect-free admission for protected, dedicated Codex repository execution.
@@ -226,6 +236,11 @@ export interface SandboxDriver extends Driver {
    * Absence refuses this composition; it never imports ordinary defaults.
    */
   admitProtectedCodexArtifactPolicy?(version: number): ProtectedCodexArtifactPolicyAdmission;
+  /** Acknowledge the complete protected policy and exact nonsecret Compute contributions. */
+  admitProtectedNetworkPolicy?(
+    version: number,
+    serviceAccess: readonly ComputeServiceAccess[],
+  ): ProtectedNetworkPolicyAdmission;
   observeNetworkPolicy?(
     context: SandboxLogContext,
     snapshot: SandboxPolicySnapshot,

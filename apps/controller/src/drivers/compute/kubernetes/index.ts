@@ -1,4 +1,12 @@
 import {
+  PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+  PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+} from "../../repo/github/public-read/runtime-source.ts";
+import { KubernetesPublicGithubReadAuthorizationStore } from "./public-github-read-authorizations.ts";
+import { get as publicReadHttpsGet } from "node:https";
+import { publicGithubReadPolicy } from "../../repo/github/public-read/access.ts";
+import type { ComputeServiceAccess } from "@openclaw-enterprise/contracts";
+import {
   observeWorkspaceNodeRead,
   recordWorkspaceNodeObservation,
 } from "../../../gateway/workspace-node-observation.ts";
@@ -583,7 +591,11 @@ export interface KubernetesComputeDriverOptions {
     readonly pluginStatusProxySourceCidrs?: readonly string[];
     readonly repositoryCredentials?: KubernetesWorkloadPeer & { readonly port: number };
     /** Private ClusterIP of the credential-free reader in this execution cluster. */
-    readonly publicGithubRead?: KubernetesWorkloadPeer & { readonly address: string };
+    readonly publicGithubRead?: KubernetesWorkloadPeer & {
+      readonly address: string;
+      readonly authorizationConfigMapName?: string;
+      readonly caBundle?: string;
+    };
     /** Exact provider ingress used only when the selected Sandbox owns Harness transport. */
     readonly providerHarness?: KubernetesWorkloadPeer & {
       readonly address: string;
@@ -3234,6 +3246,11 @@ function gatewayConfigurationDocument(
     // The Gateway owns a local logical workspace. Codex and file transfer map it to
     // the Harness workspace through remoteWorkspaceRoot; that mount is not in this Pod.
     const document = structuredClone(configuration);
+    const codex = asRecord(asRecord(asRecord(document.plugins)?.entries)?.codex);
+    const codexConfig = asRecord(codex?.config);
+    if (codexConfig) {
+      delete codexConfig.publicGithubRead;
+    }
     const agents = asRecord(document.agents) ?? {};
     agents.defaults = { ...asRecord(agents.defaults), workspace: HARNESS_WORKSPACE };
     for (const [id, entry] of Object.entries(asRecord(agents.entries) ?? {})) {
@@ -3449,6 +3466,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
             properties: {
               ...WORKLOAD_PEER_SCHEMA.properties,
               address: { type: "string", minLength: 1 },
+              authorizationConfigMapName: { type: "string", minLength: 1 },
+              caBundle: { type: "string", minLength: 1, maxLength: 65536 },
             },
           },
           providerHarness: {
@@ -3570,6 +3589,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly id: string;
   readonly capability = "compute" as const;
   readonly implementation: string;
+  readonly maintenanceIntervalMs?: number;
   // Declared only with a Gateway runtime, which managed revisions require (validateGatewayManagedMode).
   readonly supportsGatewayManagedMode?: true;
   readonly supportsWorkspaceSetup = true as const;
@@ -4187,6 +4207,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     } = {},
   ) {
     options = requireConfiguration(KubernetesComputeDriver, options);
+    if (options.network.publicGithubRead?.authorizationConfigMapName) {
+      this.maintenanceIntervalMs = 30_000;
+    }
     this.id = required(selection.id ?? "compute-kubernetes-local", "Kubernetes Compute Driver ID");
     this.implementation = required(
       selection.implementation ?? "kubernetes-local",
@@ -6843,6 +6866,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return { ...result, repositoryCredentialMaterialMissing: material.missing };
     }
     const repositoryMaterial = material?.spec;
+    const publicReadAuthorization = await this.preparePublicGithubRead(revision, namespace);
+    if (publicReadAuthorization && !publicReadAuthorization.observed) {
+      return result;
+    }
     const pluginRuntime = this.pluginRuntimeSnapshot(
       admittedRevision,
       this.codexRepositoryBrokerNetworkPolicy(
@@ -6850,6 +6877,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
+      repositoryMaterial?.bindings.map((binding) => binding.client.repository),
     );
     if (repositoryMaterial !== undefined) {
       await this.prepareRevisionStage("repository_material", () =>
@@ -7378,6 +7406,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
         const requirements = {
           ...renderedRequirements,
+          ...(publicReadAuthorization === undefined
+            ? {}
+            : {
+                serviceAccessMaterials: [
+                  {
+                    serviceId: "public-github-read",
+                    values: { capability: publicReadAuthorization.capability },
+                  },
+                ],
+              }),
           ...(proxyWiring === undefined ? {} : { proxyWiring }),
           environment: [
             ...renderedRequirements.environment,
@@ -7468,6 +7506,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (this.options.runtime !== undefined) {
           // The Sandbox, and with it the supervisor's exact peer labels, exists only
           // now: admit that supervisor before waiting for its workspace node.
+          await this.reconcilePublicGithubReadNetworkPolicy(revision, namespace, pluginRuntime);
           await this.reconcileWorkspaceNodePolicy(
             revision,
             namespace,
@@ -8046,6 +8085,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       namespace,
       materialInput,
     );
+    const publicReadAuthorization = await this.preparePublicGithubRead(revision, namespace);
+    if (publicReadAuthorization && !publicReadAuthorization.observed) {
+      throw new DependencyUnavailableError(
+        "The public reader has not acknowledged revision authorization.",
+      );
+    }
     const pluginRuntime = this.pluginRuntimeSnapshot(
       admittedRevision,
       this.codexRepositoryBrokerNetworkPolicy(
@@ -8053,6 +8098,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
+      repositoryMaterial?.bindings.map((binding) => binding.client.repository),
     );
     if (repositoryMaterial !== undefined) {
       await this.reconcileRepositoryIngress(
@@ -8733,8 +8779,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const existingNamespace = await this.getNamespace(namespace);
     if (existingNamespace === undefined) {
+      const waitForPublicReadWithdrawal = await this.beginPublicGithubReadWithdrawal(
+        revision,
+        false,
+      );
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
+      await waitForPublicReadWithdrawal();
       return;
     }
     this.verifyNamespaceOwnership(
@@ -8748,6 +8799,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
     }
+    const waitForPublicReadWithdrawal = await this.beginPublicGithubReadWithdrawal(revision, false);
     await this.lifecycle.beforeWorkloadStop(revision);
     // Stop removes the serving path first so no new traffic reaches a runtime while
     // its exact Harness is being shut down.
@@ -8772,6 +8824,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (this.projectsRepositoryMaterial(revision)) {
       await this.removeRepositoryMaterial(revision, namespace);
     }
+    await waitForPublicReadWithdrawal();
   }
 
   async retireRevision(revision: AgentRevision): Promise<void> {
@@ -8795,8 +8848,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const existingNamespace = await this.getNamespace(namespace);
     if (existingNamespace === undefined) {
+      const waitForPublicReadWithdrawal = await this.beginPublicGithubReadWithdrawal(
+        revision,
+        true,
+      );
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeRetiredGateway(revision, namespace);
+      await waitForPublicReadWithdrawal();
       return;
     }
     this.verifyNamespaceOwnership(
@@ -8810,6 +8868,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
     }
+    const waitForPublicReadWithdrawal = await this.beginPublicGithubReadWithdrawal(revision, true);
     await this.lifecycle.beforeWorkloadStop(revision);
     await this.shutdownRevisionRuntime(revision, namespace);
     await this.retireLegacyWorkspaceNode(revision, namespace);
@@ -8822,6 +8881,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       await this.removeRepositoryMaterial(revision, namespace);
     }
+    await waitForPublicReadWithdrawal();
   }
 
   private async shutdownRevisionRuntime(
@@ -8872,6 +8932,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (!admittedReader && !computeOwnsWorkload) {
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
+    }
+    if (revision.compute.serviceAccess?.some(({ id }) => id === "public-github-read")) {
+      // The saved service descriptor owns this policy even after its peer or
+      // registry disappears. Remove it only after the owning Harness is stopped.
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        this.publicGithubReadNetworkPolicyName(revision),
+        this.pluginRuntimeOwnership(revision),
+        namespace,
+      );
     }
   }
 
@@ -9114,7 +9184,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     unknownPredecessor = false,
   ): Promise<void> {
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
-    if (unknownPredecessor || this.hasPublicGithubReadAdmission(revision)) {
+    if (
+      unknownPredecessor ||
+      this.hasPublicGithubReadAdmission(revision) ||
+      revision.compute.serviceAccess?.some(({ id }) => id === "public-github-read")
+    ) {
       await this.deleteOwnedNamespacedResource(
         "NetworkPolicy",
         this.publicGithubReadNetworkPolicyName(revision),
@@ -11745,6 +11819,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const environment = new Map([
       [PLUGIN_RUNTIME_MANIFEST, PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT],
       [PLUGIN_RUNTIME_CODEX_CONFIG, PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT],
+      ["public-github-read.json", "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE"],
+      [PUBLIC_GITHUB_READ_TRANSPORT_FILE, PUBLIC_GITHUB_READ_TRANSPORT_ENV],
+      [PUBLIC_GITHUB_READ_SKILL, "OCE_PUBLIC_GITHUB_READ_SKILL_FILE"],
     ]);
     return Object.freeze(
       Object.entries(data).map(([name, content]) => {
@@ -14535,6 +14612,274 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return { host, domains: proxy.domains };
   }
 
+  admitServiceAccess(input: {
+    readonly installationId: string;
+    readonly configuration: Readonly<OpenClawConfigurationDocument>;
+    readonly harness: Readonly<RevisionHarnessDescriptor>;
+  }): readonly ComputeServiceAccess[] {
+    const reader = this.options.network.publicGithubRead;
+    if (
+      !reader?.authorizationConfigMapName ||
+      typeof input.installationId !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(input.installationId) ||
+      !reader.caBundle ||
+      !this.options.runtime ||
+      input.harness.id !== "codex" ||
+      input.harness.mode !== "dedicated"
+    ) {
+      return [];
+    }
+    const config = asRecord(
+      asRecord(asRecord(input.configuration.plugins)?.entries)?.codex,
+    )?.config;
+    const requested = asRecord(config)?.publicGithubRead;
+    if (requested === undefined) {
+      return [];
+    }
+    const policy = publicGithubReadPolicy(requested);
+    if (policy.mode === "repositories" && policy.repositories.length === 0) {
+      return [];
+    }
+    const proxy = asRecord(asRecord(asRecord(config)?.appServer)?.networkProxy);
+    const domains = asRecord(proxy?.domains);
+    if (
+      domains !== undefined &&
+      codexPublicGithubRead(reader.address, {
+        enabled: true,
+        domains: Object.hasOwn(domains, reader.address)
+          ? domains
+          : { ...domains, [reader.address]: "allow" },
+      }) === undefined
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: "public-github-read",
+        driverId: this.id,
+        implementation: this.implementation,
+        endpoint: `https://${reader.address}:${PUBLIC_GITHUB_READ_PORT}`,
+        configuration: {
+          policy: structuredClone(policy),
+          peer: { namespace: reader.namespace, podLabels: { ...reader.podLabels } },
+          authorizationConfigMapName: reader.authorizationConfigMapName,
+          installationId: input.installationId,
+          caBundle: reader.caBundle,
+        },
+      },
+    ];
+  }
+
+  private publicGithubReadService(
+    revision: Readonly<AgentRevision>,
+  ): ComputeServiceAccess | undefined {
+    const services = revision.compute.serviceAccess ?? [];
+    const selected = services.filter((service) => service.id === "public-github-read");
+    if (selected.length === 0) {
+      return undefined;
+    }
+    const service = selected[0]!;
+    const reader = this.options.network.publicGithubRead;
+    if (
+      selected.length !== 1 ||
+      !reader?.authorizationConfigMapName ||
+      !reader.caBundle ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      service.driverId !== this.id ||
+      service.implementation !== this.implementation ||
+      service.endpoint !== `https://${reader.address}:${PUBLIC_GITHUB_READ_PORT}` ||
+      !isDeepStrictEqual(service.configuration.peer, {
+        namespace: reader.namespace,
+        podLabels: reader.podLabels,
+      }) ||
+      service.configuration.authorizationConfigMapName !== reader.authorizationConfigMapName ||
+      typeof service.configuration.installationId !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(service.configuration.installationId) ||
+      service.configuration.caBundle !== reader.caBundle
+    ) {
+      throw new ConfigurationFailure("The admitted public GitHub reader service is unavailable.");
+    }
+    if (
+      revision.executionAdmission.mode === "protected" &&
+      !isDeepStrictEqual(revision.sandboxPolicy?.serviceAccess, services)
+    ) {
+      throw new ConfigurationFailure("The protected public reader service was not acknowledged.");
+    }
+    publicGithubReadPolicy(service.configuration.policy);
+    return service;
+  }
+
+  private publicGithubReadServiceAdmission(service: ComputeServiceAccess): string {
+    const configuration = service.configuration;
+    const peer = asRecord(configuration.peer)!;
+    const policy = publicGithubReadPolicy(configuration.policy);
+    // JSONB may reorder object keys. Hash canonical values, including every
+    // qualified service field, rather than insertion-ordered object bytes.
+    const labels = Object.entries(asRecord(peer.podLabels)!).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    );
+    return `public-github-read:v2:${sha256Hex(
+      JSON.stringify([
+        service.id,
+        service.driverId,
+        service.implementation,
+        service.endpoint,
+        configuration.installationId,
+        configuration.authorizationConfigMapName,
+        configuration.caBundle,
+        peer.namespace,
+        labels,
+        policy.mode,
+        policy.mode === "repositories" ? policy.repositories : [],
+      ]),
+    )}`;
+  }
+
+  private async publicGithubReadStore(service: ComputeServiceAccess) {
+    const configuration = service.configuration;
+    const peer = asRecord(configuration.peer)!;
+    const { core } = await this.clients("control");
+    return new KubernetesPublicGithubReadAuthorizationStore({
+      core,
+      namespace: peer.namespace as string,
+      configMapName: configuration.authorizationConfigMapName as string,
+      installationId: configuration.installationId as string,
+      driverId: service.driverId,
+    });
+  }
+
+  private async preparePublicGithubRead(
+    revision: Readonly<AgentRevision>,
+    namespace: KubernetesNamespaceAddress,
+  ) {
+    const service = this.publicGithubReadService(revision);
+    if (!service) {
+      return undefined;
+    }
+    const store = await this.publicGithubReadStore(service);
+    const material = await store.prepare(
+      revision,
+      namespace.name,
+      publicGithubReadPolicy(service.configuration.policy),
+    );
+    return {
+      ...material,
+      observed: await this.observePublicGithubRead(
+        service,
+        revision.id,
+        await store.digest(revision),
+      ),
+    };
+  }
+
+  async maintainServiceAccess(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await withComputeAbortSignal(signal, async () => {
+      signal.throwIfAborted();
+      if (!revision.compute.serviceAccess?.some(({ id }) => id === "public-github-read")) {
+        return;
+      }
+      const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
+      await this.revokeUnavailablePublicGithubRead(revision, namespace);
+      await this.preparePublicGithubRead(revision, namespace);
+      signal.throwIfAborted();
+    });
+  }
+
+  private async observePublicGithubRead(
+    service: ComputeServiceAccess,
+    revisionId: string,
+    expected: string,
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const request = publicReadHttpsGet(
+        service.endpoint + "/healthz?revision=" + encodeURIComponent(revisionId),
+        {
+          ca: service.configuration.caBundle as string,
+          rejectUnauthorized: true,
+          agent: false,
+          timeout: 5000,
+          signal: currentComputeAbortSignal(),
+        },
+        (response) => {
+          let bytes = "";
+          response.setEncoding("utf8");
+          response.on("data", (part) => {
+            bytes += part;
+            if (bytes.length > 4096) {
+              response.destroy();
+            }
+          });
+          response.once("end", () => {
+            try {
+              resolve(
+                response.statusCode === 200 &&
+                  JSON.parse(bytes).revisionAuthorizationDigest === expected,
+              );
+            } catch {
+              resolve(false);
+            }
+          });
+          response.once("error", () => resolve(false));
+        },
+      );
+      request.once("timeout", () => request.destroy());
+      request.once("error", () => resolve(false));
+    });
+  }
+
+  private async beginPublicGithubReadWithdrawal(
+    revision: Readonly<AgentRevision>,
+    permanent: boolean,
+  ): Promise<() => Promise<void>> {
+    const service = revision.compute.serviceAccess?.find(
+      (value) => value.id === "public-github-read",
+    );
+    if (!service) {
+      return async () => {};
+    }
+    let store: KubernetesPublicGithubReadAuthorizationStore;
+    try {
+      store = await this.publicGithubReadStore(service);
+      if (permanent) {
+        await store.withdraw(revision);
+      } else {
+        await store.suspend(revision);
+      }
+    } catch (error) {
+      // A failed authorization write must not prevent the owning lifecycle from
+      // fencing the runtime. Report it after shutdown; the caller will retry it.
+      return async () => {
+        throw error;
+      };
+    }
+    return async () => {
+      const signal = currentComputeAbortSignal();
+      const deadline = Date.now() + 180_000;
+      while (Date.now() < deadline) {
+        signal?.throwIfAborted();
+        const expected = await store.digest(revision);
+        if (
+          (await this.observePublicGithubRead(service, revision.id, expected)) &&
+          expected === (await store.digest(revision))
+        ) {
+          if (permanent) {
+            const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
+            await store.retireCapability(revision, namespace.name);
+          }
+          return;
+        }
+        await delay(1000, undefined, signal ? { signal } : undefined);
+      }
+      throw new DependencyUnavailableError(
+        "The public reader has not acknowledged authorization withdrawal.",
+      );
+    };
+  }
+
   private publicGithubReadCandidate(revision: AgentRevision) {
     const reader = this.options.network.publicGithubRead;
     if (
@@ -14827,9 +15172,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const auth = revision.harnessAuth;
+    const publicGithubRead = this.publicGithubReadForRevision(revision)?.endpoint !== undefined;
     return {
       providerOwned: sandbox?.provisionHarness !== undefined,
-      protected: this.hasProtectedCodexAdmission(revision),
+      protected:
+        this.hasProtectedCodexAdmission(revision) ||
+        (publicGithubRead && revision.executionAdmission.mode === "protected"),
+      ...(publicGithubRead && {
+        publicGithubRead: true,
+      }),
       ...(updated && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
@@ -14843,8 +15194,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     this.validateGatewayManagedMode(revision);
+    const publicService = this.publicGithubReadService(revision);
+    // Runtime launch facts remain inside the selected model-provider admission.
     let runtime: string | undefined;
-    if (this.protectedCodexInference(revision)) {
+    if (publicService) {
+      runtime = this.publicGithubReadServiceAdmission(publicService);
+    } else if (this.protectedCodexInference(revision)) {
       runtime = PROTECTED_CODEX_NO_CONNECTION_RETRY;
     } else if (this.publicGithubReadCandidate(revision) !== undefined) {
       runtime = this.publicGithubReadAdmission();
@@ -14878,6 +15233,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private publicGithubReadForRevision(revision: AgentRevision) {
+    const service = this.publicGithubReadService(revision);
+    if (service) {
+      if (this.runtimeAdmission(revision) !== this.publicGithubReadServiceAdmission(service)) {
+        throw new ConfigurationFailure("The public reader service has no exact Compute admission.");
+      }
+      return {
+        address: new URL(service.endpoint).hostname,
+        skillPath: "/home/node/.openclaw/skills/public-github-read/SKILL.md",
+        endpoint: service.endpoint,
+        materialPath: `${PLUGIN_RUNTIME_DIRECTORY}/public-github-read.json`,
+        caBundle: service.configuration.caBundle as string,
+        authenticatedRepositories: [] as string[],
+      };
+    }
     if (
       this.runtimeAdmission(revision) !== undefined &&
       !this.hasProtectedCodexAdmission(revision) &&
@@ -14899,6 +15268,21 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
+    if (revision.compute.serviceAccess?.some(({ id }) => id === "public-github-read")) {
+      try {
+        this.publicGithubReadService(revision);
+      } catch (error) {
+        const waitForWithdrawal = await this.beginPublicGithubReadWithdrawal(revision, true);
+        await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
+        await this.shutdownRevisionRuntime(revision, namespace);
+        await waitForWithdrawal();
+        throw new ConfigurationFailure(
+          "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.",
+          { cause: error },
+        );
+      }
+      return;
+    }
     if (
       this.hasPublicGithubReadAdmission(revision) &&
       this.publicGithubReadForRevision(revision) === undefined
@@ -14971,6 +15355,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // The serving and preparing revisions can make opposite choices. Give the
     // revision that mounted the skill its own grant, removed only with its artifacts.
     const ownership = this.pluginRuntimeOwnership(revision);
+    let selector = this.agentServiceSelector(revision);
+    if (revision.executionAdmission.mode === "protected") {
+      const sandbox = this.sandboxDriverForRevision(revision);
+      if (!sandbox?.workspaceNodePeerLabels) {
+        throw new ConfigurationFailure("The protected reader requires a trusted supervisor peer.");
+      }
+      const context = await this.sandboxNamespaceContext(
+        this.sandboxNamespaceForRevision(revision, namespace),
+        namespace,
+      );
+      const labels = await sandbox.workspaceNodePeerLabels({ ...context, revision });
+      if (!labels) {
+        return;
+      }
+      selector = { ...labels };
+    }
     await this.reconcile(
       {
         ...this.manifest(
@@ -14981,7 +15381,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           namespace,
         ),
         spec: {
-          podSelector: { matchLabels: this.agentServiceSelector(revision) },
+          podSelector: { matchLabels: selector },
           policyTypes: ["Egress"],
           egress: [
             {
@@ -14999,6 +15399,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private pluginRuntimeSnapshot(
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+    authenticatedRepositories: readonly string[] = [],
   ): PluginRuntimeSnapshot | undefined {
     const provider = savedModelProvider(revision.harness.configuration);
     let openaiBaseUrl: string | undefined;
@@ -15031,7 +15432,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         revision,
         repositoryBrokerNetworkPolicy,
         openaiBaseUrl,
-        this.publicGithubReadForRevision(revision),
+        (() => {
+          const reader = this.publicGithubReadForRevision(revision);
+          return reader?.endpoint ? { ...reader, authenticatedRepositories } : reader;
+        })(),
       );
       if (
         standaloneWebSearch &&
@@ -16696,6 +17100,40 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       pluginRuntime?.runtime.kind === "codex" && !embedded
         ? pluginRuntime.runtime.publicGithubRead
         : undefined;
+    if (publicGithubRead?.endpoint && role === "agent") {
+      variables.push(
+        {
+          name: "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE",
+          value: `${PLUGIN_RUNTIME_DIRECTORY}/public-github-read.json`,
+        },
+        {
+          name: PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+          value: `${PLUGIN_RUNTIME_DIRECTORY}/${PUBLIC_GITHUB_READ_TRANSPORT_FILE}`,
+        },
+      );
+      if (!providerOwnsHarness) {
+        if (!ownership.revisionId) {
+          throw new ConfigurationFailure("Public reader material requires revision ownership.");
+        }
+        volumes.push({
+          name: "public-github-capability",
+          secret: {
+            secretName: `public-github-read-${sha256Hex(ownership.revisionId).slice(0, 24)}`,
+            items: [{ key: "capability", path: "capability" }],
+            optional: false,
+          },
+        });
+        volumeMounts.push({
+          name: "public-github-capability",
+          mountPath: "/run/oce/public-github-read",
+          readOnly: true,
+        });
+        variables.push({
+          name: "OCE_PUBLIC_GITHUB_READ_CAPABILITY_FILE",
+          value: "/run/oce/public-github-read/capability",
+        });
+      }
+    }
     if (providerEndpoint?.tls !== undefined) {
       if (role !== "gateway" || !dedicated || configuration === undefined) {
         throw new ConfigurationFailure(
@@ -16866,7 +17304,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             { key: PLUGIN_RUNTIME_MANIFEST, path: PLUGIN_RUNTIME_MANIFEST },
             ...(publicGithubRead === undefined
               ? []
-              : [{ key: PUBLIC_GITHUB_READ_SKILL, path: PUBLIC_GITHUB_READ_SKILL }]),
+              : [
+                  { key: PUBLIC_GITHUB_READ_SKILL, path: PUBLIC_GITHUB_READ_SKILL },
+                  ...(publicGithubRead.endpoint
+                    ? [
+                        { key: "public-github-read.json", path: "public-github-read.json" },
+                        {
+                          key: PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+                          path: PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+                        },
+                      ]
+                    : []),
+                ]),
             ...(pluginRuntime.runtime.kind === "codex" && role === "agent"
               ? [{ key: PLUGIN_RUNTIME_CODEX_CONFIG, path: PLUGIN_RUNTIME_CODEX_CONFIG }]
               : []),

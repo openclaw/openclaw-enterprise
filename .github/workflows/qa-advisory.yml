@@ -257,6 +257,56 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  public-github-git:
+    name: QA advisory (public Git OpenShell)
+    needs: eligibility
+    if: needs.eligibility.outputs.focused == 'false'
+    # The stock OpenShell supervisor requires Landlock on its host kernel.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: integration-qa-pr
+    env:
+      CI: "1"
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      OCC_TEST_QA_INSTALLATION: compose
+      OCC_TEST_QA_PRESET: Codex
+      OCC_TEST_QA_SCENARIOS: public-github-git
+      OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
+      OCC_TEST_QA_CODEX_MODEL_BASE_URL: https://api.openai.com/v1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Materialize selected QA model credential
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node scripts/ci/qa-matrix-credentials.mjs
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: qa-matrix
+          test-file: tests/integration/qa-matrix-real.test.mjs
+          profile: full
+          node-version: "24.22.1"
+          artifact-prefix: qa-advisory-public-git
+          job-timeout-minutes: 120
+      - name: Summarize selected scenarios
+        if: always()
+        run: node scripts/ci/qa-matrix-summary.ts
+      - name: Retain QA outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: qa-advisory-public-git-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qa-matrix-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove workflow credential inputs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"
+
   openshell:
     name: QA advisory (OpenShell / ${{ matrix.shard }})
     needs: eligibility

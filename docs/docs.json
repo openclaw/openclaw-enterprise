@@ -987,6 +987,7 @@
               "testing/openshell-permission-diagnostics",
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
+              "testing/public-github-reads",
               "testing/static-egress",
               "testing/static-egress-upgrade",
               "testing/protected-repository-custody"

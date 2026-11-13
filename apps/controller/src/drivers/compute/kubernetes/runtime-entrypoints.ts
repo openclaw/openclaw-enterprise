@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // A relative import, like the others here: CI image builds and the in-image supervisor proof
 // load this file from a checkout or copy with no workspace packages installed.
 import {
@@ -6,13 +7,19 @@ import {
   RUNTIME_FAILURE_CHECKS,
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
-import { readFileSync } from "node:fs";
+import {
+  PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+  PUBLIC_GITHUB_READ_TRANSPORT_SHA256,
+} from "../../repo/github/public-read/runtime-source.ts";
 import {
   MANAGED_PLUGIN_CREDENTIAL_HELPER,
   managedCredentialEnvironment,
 } from "../../sandbox/openshell-plugin-runtime.ts";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
-import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
+import {
+  PLUGIN_RUNTIME_TRANSLATOR_SOURCE,
+  PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE,
+} from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
@@ -645,9 +652,9 @@ function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
 
 `;
 
-function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+function pluginRuntimeHelpers(includeOpenClawInstaller: boolean, publicGithubRead = false): string {
   return String.raw`
-const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
+const pluginRuntimeTranslator = (${publicGithubRead ? PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE : PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
   dirname: pluginDirname,
   resolve: pluginResolve,
@@ -2247,7 +2254,7 @@ function codexPluginStartupFailureCode(error) {
 `;
 }
 
-export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(true);
+export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(true, true);
 
 // Holds unready until an explicit restart; readiness polls never submit model calls.
 // A failed probe's cause is a closed kind and a fixed token, never native output,
@@ -5335,6 +5342,7 @@ export interface CodexLaunch {
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
+  readonly publicGithubRead?: boolean;
 }
 
 export function codexLaunchEntrypoint(
@@ -5344,8 +5352,25 @@ export function codexLaunchEntrypoint(
     openShellProgram,
     withNode,
     workspaceSetup,
+    publicGithubRead,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
+  if (publicGithubRead) {
+    const child = publicGithubReadEntrypoint(
+      agentRuntimeEntrypoint({
+        protected: protectedLaunch,
+        computeOwned: !providerOwned,
+        withNode: withNode === true,
+        patRecovery: providerOwned && !protectedLaunch && openShellProgram === "pat",
+      }),
+    );
+    if (!withNode) {
+      return child;
+    }
+    return providerOwned
+      ? compactWorkspaceNodeLaunch(child)
+      : agentWithNodeEntrypoint(nodeProgramArguments(child));
+  }
   if (!providerOwned) {
     if (protectedLaunch) {
       return withNode
@@ -5838,3 +5863,102 @@ if (
   checkPluginStatus((status) => checkWebSocket(derivedToken(status.startupId)));
 }
 `;
+
+// New admitted launches get the public transport; preserve legacy command bytes.
+function publicGithubReadEntrypoint(entrypoint: string): string {
+  const setup = `
+if (pluginRuntime?.manifest?.publicGithubRead?.endpoint) {
+  const publicFs = require("node:fs");
+  const publicPath = require("node:path");
+  const publicHome = process.env.HOME;
+  if (!publicPath.isAbsolute(publicHome || "")) throw new Error("Public Git requires a private runtime home.");
+  const publicHomeStat = publicFs.lstatSync(publicHome);
+  if (!publicHomeStat.isDirectory() || publicHomeStat.uid !== process.getuid() || (publicHomeStat.mode & 0o022) !== 0) throw new Error("Public Git requires an owned runtime home.");
+  const publicRoot = publicPath.join(publicHome, ".oce-public-git");
+  try { publicFs.mkdirSync(publicRoot, {mode:0o700}); } catch (error) { if (error.code !== "EEXIST") throw error; }
+  const publicStat = publicFs.lstatSync(publicRoot);
+  if (!publicStat.isDirectory() || publicStat.uid !== process.getuid() || (publicStat.mode & 0o777) !== 0o700) throw new Error("Public Git material must have a private owned directory.");
+  const publicDirectory = publicFs.mkdtempSync(publicPath.join(publicRoot, "bootstrap-"));
+  publicFs.chmodSync(publicDirectory, 0o700);
+  const publicHelper = publicDirectory + "/transport.mjs";
+  try {
+    let descriptor;
+    let source;
+    try {
+      descriptor = publicFs.openSync(process.env[${JSON.stringify(PUBLIC_GITHUB_READ_TRANSPORT_ENV)}], publicFs.constants.O_RDONLY | publicFs.constants.O_NONBLOCK);
+      const stat = publicFs.fstatSync(descriptor);
+      if (!stat.isFile() || stat.size > 65_536) throw new Error();
+      const buffer = Buffer.alloc(65_537);
+      let length = 0;
+      while (length < buffer.length) {
+        const count = publicFs.readSync(descriptor, buffer, length, buffer.length - length, null);
+        if (count === 0) break;
+        length += count;
+      }
+      source = buffer.subarray(0, length);
+      if (length > 65_536 || require("node:crypto").createHash("sha256").update(source).digest("hex") !== ${JSON.stringify(PUBLIC_GITHUB_READ_TRANSPORT_SHA256)}) throw new Error();
+    } catch {
+      throw new Error("Public Git runtime source is missing or does not match its launch command.");
+    } finally {
+      if (descriptor !== undefined) publicFs.closeSync(descriptor);
+    }
+    publicFs.writeFileSync(publicHelper, source, {mode:0o400});
+    const publicSetup = spawnSync(process.execPath, [publicHelper, "--install-material", process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE], {encoding:"utf8"});
+    if (publicSetup.status !== 0) throw new Error("Public Git transport initialization failed.");
+    Object.assign(process.env, JSON.parse(publicSetup.stdout));
+  } finally {
+    publicFs.rmSync(publicDirectory, {recursive:true, force:true});
+  }
+}
+`;
+  return entrypoint
+    .replace(PLUGIN_RUNTIME_TRANSLATOR_SOURCE, PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE)
+    .replace(
+      'const pluginRuntime = readPluginRuntime("codex");',
+      'const pluginRuntime = readPluginRuntime("codex");' + setup,
+    );
+}
+export const PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: false,
+  publicGithubRead: true,
+});
+export const PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: true,
+  publicGithubRead: true,
+});
+export const PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: false,
+  publicGithubRead: true,
+  withNode: true,
+});
+export const PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: true,
+  protected: true,
+  publicGithubRead: true,
+  withNode: true,
+});
+export const COMPUTE_PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: false,
+  publicGithubRead: true,
+});
+export const COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: true,
+  publicGithubRead: true,
+});
+export const COMPUTE_PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: false,
+  publicGithubRead: true,
+  withNode: true,
+});
+export const COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
+  providerOwned: false,
+  protected: true,
+  publicGithubRead: true,
+  withNode: true,
+});

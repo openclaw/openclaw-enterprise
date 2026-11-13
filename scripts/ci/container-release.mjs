@@ -28,6 +28,7 @@ export function isReleaseVersion(version) {
 export const runtimeImageSmokeTests = Object.freeze([
   "tests/helpers/workspace-gateway-relay-container.test.ts",
   "tests/integration/codex-plugin-stdio-real.test.ts",
+  "tests/integration/qa-compose-reload-real.test.ts",
   "tests/integration/runtime-image-startup.test.mjs",
   "tests/integration/runtime-image-gateway-workspace.test.ts",
   "tests/integration/runtime-image-public-github-read.test.mjs",

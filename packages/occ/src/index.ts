@@ -132,6 +132,7 @@ import type {
   SandboxFacet,
   SandboxNetworkGrant,
   SandboxPolicySnapshot,
+  ComputeServiceAccess,
   SandboxPolicyRecommendations,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -11605,7 +11606,10 @@ export class OpenClawController {
     input: unknown,
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials: boolean },
+    scope?: {
+      readonly repositoryCredentials: boolean;
+      readonly serviceAccess?: readonly ComputeServiceAccess[];
+    },
   ): SandboxPolicySnapshot {
     const driver = this.sandboxDriver();
     if (driver?.networkPolicy === undefined || driver.admitNetworkPolicy === undefined) {
@@ -11678,7 +11682,10 @@ export class OpenClawController {
     additions: readonly SandboxNetworkGrant[],
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials: boolean },
+    scope?: {
+      readonly repositoryCredentials: boolean;
+      readonly serviceAccess?: readonly ComputeServiceAccess[];
+    },
     producer?: () => SandboxPolicySnapshot,
   ): SandboxPolicySnapshot {
     const refused = () =>
@@ -11718,7 +11725,8 @@ export class OpenClawController {
         snapshot.defaults === null ||
         typeof snapshot.defaults !== "object" ||
         Array.isArray(snapshot.defaults) ||
-        !isDeepStrictEqual(snapshot.additions, additions)
+        !isDeepStrictEqual(snapshot.additions, additions) ||
+        !isDeepStrictEqual(snapshot.serviceAccess, scope?.serviceAccess)
       ) {
         throw refused();
       }
@@ -11727,6 +11735,114 @@ export class OpenClawController {
       // Never include unknown Driver-returned values or exceptions in diagnostics.
       throw refused();
     }
+  }
+
+  private checkedComputeServiceAccess(
+    compute: ComputeDriver,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    harness: Readonly<RevisionHarnessDescriptor>,
+  ): readonly ComputeServiceAccess[] {
+    try {
+      const services = immutableCopy(
+        compute.admitServiceAccess?.({
+          installationId: this.installation.id,
+          configuration,
+          harness,
+        }) ?? [],
+      );
+      if (
+        !Array.isArray(services) ||
+        new Set(services.map((service) => service?.id)).size !== services.length
+      ) {
+        throw new Error();
+      }
+      for (const service of services) {
+        if (
+          !isDeepStrictEqual(Object.keys(service).sort(), [
+            "configuration",
+            "driverId",
+            "endpoint",
+            "id",
+            "implementation",
+          ]) ||
+          typeof service.id !== "string" ||
+          !/^[a-z][a-z0-9-]{0,63}$/.test(service.id) ||
+          service.driverId !== compute.id ||
+          service.implementation !== compute.implementation ||
+          typeof service.endpoint !== "string" ||
+          service.endpoint.length === 0 ||
+          service.configuration === null ||
+          typeof service.configuration !== "object" ||
+          Array.isArray(service.configuration)
+        ) {
+          throw new Error();
+        }
+      }
+      return services;
+    } catch (error) {
+      if (error instanceof ConfigurationValidationError) {
+        throw error;
+      }
+      throw new ResourceStateConflictError(
+        "The selected Compute Driver cannot admit its service access.",
+      );
+    }
+  }
+
+  private checkedProtectedNetworkPolicy(
+    driver: SandboxDriver | undefined,
+    version: number,
+    services: readonly ComputeServiceAccess[],
+  ): SandboxPolicySnapshot {
+    if (driver?.admitProtectedNetworkPolicy === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected Sandbox Driver cannot qualify protected service access.",
+      );
+    }
+    return this.checkedSandboxPolicySnapshot(
+      driver,
+      [],
+      version,
+      undefined,
+      { repositoryCredentials: true, serviceAccess: services },
+      () => {
+        const result = immutableCopy(
+          driver.admitProtectedNetworkPolicy!(version, immutableCopy(services)),
+        );
+        const names = result?.declaredRuleNames;
+        if (
+          result?.purpose !== "protected-network" ||
+          !isDeepStrictEqual(Object.keys(result).sort(), [
+            "declaredRuleNames",
+            "purpose",
+            "snapshot",
+          ]) ||
+          !Array.isArray(names) ||
+          names.some((name) => typeof name !== "string" || name.length === 0) ||
+          new Set(names).size !== names.length ||
+          !isDeepStrictEqual(Object.keys(result.snapshot).sort(), [
+            "additions",
+            "defaults",
+            "driverId",
+            "implementation",
+            "serviceAccess",
+            "version",
+          ]) ||
+          !isDeepStrictEqual(
+            [...names].sort(),
+            [
+              ...Object.keys(result.snapshot.defaults),
+              ...services.map((service) => service.id),
+            ].sort(),
+          )
+        ) {
+          throw new ResourceStateConflictError(
+            "The Sandbox Driver did not acknowledge the exact protected network declaration.",
+          );
+        }
+        return result.snapshot;
+      },
+    );
   }
 
   private checkedProtectedCodexArtifactPolicy(
@@ -11942,7 +12058,12 @@ export class OpenClawController {
         desired.additions,
         desired.version,
         revision.sandboxPolicy.defaults,
-        { repositoryCredentials: revision.repositoryCredentials !== undefined },
+        {
+          repositoryCredentials: revision.repositoryCredentials !== undefined,
+          ...(revision.sandboxPolicy.serviceAccess === undefined
+            ? {}
+            : { serviceAccess: revision.sandboxPolicy.serviceAccess }),
+        },
       );
       const id = crypto.randomUUID();
       const updated = await state.sandboxPolicies.save(
@@ -13529,6 +13650,11 @@ export class OpenClawController {
           throw new DependencyUnavailableError("The Secret backend identity changed.");
         }
       }
+      const serviceAccess = this.checkedComputeServiceAccess(
+        compute,
+        configuration.values,
+        revisionHarness,
+      );
       const admittedConfiguration = this.agentRuntimeConfiguration(
         configuration.values,
         revisionHarness,
@@ -13702,7 +13828,10 @@ export class OpenClawController {
         );
       }
       const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
-      const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
+      const policyScope = {
+        repositoryCredentials: repositoryCredentials !== undefined,
+        ...(serviceAccess.length === 0 ? {} : { serviceAccess }),
+      };
       // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
       // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
       // execution. The caller learns of saved additions only with SandboxPolicy read access.
@@ -13724,9 +13853,12 @@ export class OpenClawController {
         if (
           revisionHarness.id === "codex" &&
           revisionHarness.mode === "dedicated" &&
-          repositoryCredentials !== undefined
+          (repositoryCredentials !== undefined || serviceAccess.length > 0)
         ) {
-          sandboxPolicy = this.checkedProtectedCodexArtifactPolicy(sandbox, policy?.version ?? 1);
+          sandboxPolicy =
+            serviceAccess.length === 0
+              ? this.checkedProtectedCodexArtifactPolicy(sandbox, policy?.version ?? 1)
+              : this.checkedProtectedNetworkPolicy(sandbox, policy?.version ?? 1, serviceAccess);
         }
       } else if ((policy?.additions.length ?? 0) > 0) {
         sandboxPolicy = this.admitAgentNetworkPolicy(
@@ -13742,6 +13874,15 @@ export class OpenClawController {
           policy?.version ?? 1,
           undefined,
           policyScope,
+        );
+      }
+      if (
+        serviceAccess.length > 0 &&
+        sandboxPolicy === undefined &&
+        (sandbox !== undefined || protectedExecution)
+      ) {
+        throw new ResourceStateConflictError(
+          "The selected Sandbox Driver cannot enforce Compute service access.",
         );
       }
       if ((policy?.additions.length ?? 0) > 0 && sandboxPolicy === undefined) {
@@ -13805,7 +13946,11 @@ export class OpenClawController {
         configuration: frozenValues(withAgentIdentityName(admittedConfiguration, lockedAgent.name)),
         gatewayManagedMode: lockedAgent.gatewayManagedMode,
         harness: revisionHarness,
-        compute: { id: compute.id, implementation: compute.implementation },
+        compute: {
+          id: compute.id,
+          implementation: compute.implementation,
+          ...(serviceAccess.length === 0 ? {} : { serviceAccess }),
+        },
         ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
         ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
         ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),

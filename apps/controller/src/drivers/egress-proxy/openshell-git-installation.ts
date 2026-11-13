@@ -363,6 +363,7 @@ export async function observeOpenShellGitInstallation(
         const recipient =
           entry.continuity &&
           (await previewPolicyAndRecipient({
+            revision: entry.revision,
             ...(entry.preview.mandatory && { mandatory: true }),
             client: entry.client,
             sandbox,
@@ -411,6 +412,7 @@ export async function observeOpenShellGitInstallation(
       return;
     }
     const recipient = await previewPolicyAndRecipient({
+      revision: entry.revision,
       ...(preview.mandatory && { mandatory: true }),
       client: entry.client,
       sandbox,

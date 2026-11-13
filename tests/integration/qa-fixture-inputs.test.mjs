@@ -15,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -79,6 +79,98 @@ test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   });
 });
 
+test("QA preset preparation explicitly seeds defaults and reloads the selected Namespace", async (t) => {
+  const { prepareQaPluginCatalogs, createQaAgent } = await import("../helpers/qa-installation.mjs");
+  for (const outcome of ["available", "missing", "foreign", "save denied"]) {
+    await t.test(outcome, async () => {
+      const calls = [];
+      const stopped = new Error("stop before credential reads");
+      const f = {
+        retained: false,
+        pendingRepositories: new Set(),
+        agents: [],
+        namespace: { id: "ns-selected" },
+        defaultNamespace: { id: "ns-default" },
+        presets: [],
+        configuration: { drivers: { plugin: [{ id: "codex-plugin", configuration: {} }] } },
+        async saveInstallation(configuration) {
+          calls.push("save");
+          assert.equal(configuration.presets.includeDefaults, true);
+          assert.deepEqual(
+            configuration.drivers.plugin.map(({ id }) => id),
+            ["occ-plugin", "codex-plugin"],
+          );
+          if (outcome === "save denied") {
+            throw stopped;
+          }
+        },
+        async record() {},
+        async api(method, path, body) {
+          if (path === "/installation") {
+            assert.equal(method, "GET");
+            return {
+              capabilities: {
+                pluginCatalogs: [
+                  { harnessId: "openclaw", pluginPolicies: { driver: { id: "occ-plugin" } } },
+                  { harnessId: "codex", pluginPolicies: { driver: { id: "codex-plugin" } } },
+                ],
+              },
+            };
+          }
+          if (path === "/namespaces/ns-selected/agents/plugins") {
+            assert.equal(method, "POST");
+            return {
+              plugins: [
+                {
+                  id:
+                    body.harnessId === "codex"
+                      ? "codex-plugin:linear@openai-curated-remote"
+                      : "occ-plugin:google@1.0.0",
+                },
+              ],
+            };
+          }
+          assert.equal(method, "GET", "bootstrap must not create Agents or Secrets");
+          calls.push(path);
+          if (path === "/namespaces/ns-selected/presets") {
+            return outcome === "missing"
+              ? []
+              : [
+                  {
+                    id: "pre-codex",
+                    name: "Standard Codex",
+                    namespaceId: outcome === "foreign" ? "ns-foreign" : "ns-selected",
+                  },
+                ];
+          }
+          throw stopped;
+        },
+      };
+      if (outcome === "save denied") {
+        await assert.rejects(
+          prepareQaPluginCatalogs(f, { includeDefaults: true }),
+          (error) => error === stopped,
+        );
+        assert.deepEqual(calls, ["save"]);
+        return;
+      }
+      await prepareQaPluginCatalogs(f, { includeDefaults: true });
+      assert.deepEqual(calls, ["save", "/namespaces/ns-selected/presets"]);
+      await assert.rejects(createQaAgent(f, "Codex"), (error) =>
+        outcome === "available"
+          ? error === stopped
+          : outcome === "missing"
+            ? /Standard Codex Preset must be available/.test(error.message)
+            : /Preset must belong to the QA Namespace/.test(error.message),
+      );
+      assert.deepEqual(
+        calls.slice(2),
+        outcome === "available" ? ["/namespaces/ns-selected/presets/pre-codex"] : [],
+      );
+    });
+  }
+});
+
 test("QA credentials require a private regular file and reject symlink substitution", async (t) => {
   const directory = await temporaryDirectory(t, "qa-credential-");
   const credential = join(directory, "credential");
@@ -120,6 +212,7 @@ test("API-key QA injection stays in the consumer and its errors are redacted", a
     console.log(JSON.stringify({
       modelKey: Object.hasOwn(env, "OCC_TEST_QA_MODEL_API_KEY"),
       subnet: env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR,
+      forwarder: env.OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR,
     }));
   `,
     ],
@@ -128,11 +221,16 @@ test("API-key QA injection stays in the consumer and its errors are redacted", a
       env: {
         ...process.env,
         OCC_TEST_QA_MODEL_API_KEY: secret,
+        OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR: "192.168.127.1/32",
         OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: "10.253.4.0/24",
       },
     },
   );
-  assert.deepEqual(JSON.parse(result), { modelKey: false, subnet: "10.253.4.0/24" });
+  assert.deepEqual(JSON.parse(result), {
+    modelKey: false,
+    subnet: "10.253.4.0/24",
+    forwarder: "192.168.127.1/32",
+  });
 });
 
 test(
@@ -446,6 +544,24 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       selectQaMatrix({
         OCC_TEST_QA_SCENARIOS: "codex-search-config,model-ui",
       }),
+    /exclusive QA selection/,
+  );
+  const publicGit = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "public-github-git",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "compose",
+    OCC_TEST_QA_MODEL_API_KEY: "synthetic-key",
+  });
+  assert.equal(publicGit.publicGithubGit, true);
+  assert.equal(publicGit.repository, false);
+  assert.ok(publicGit.cells.every((cell) => cell.scenarios.length === 0));
+  assert.deepEqual(publicGit.requiredEnv, [
+    "OCC_TEST_QA_MODEL_API_KEY",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+    "OCC_TEST_QA_CODEX_MODEL",
+  ]);
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "public-github-git,model-ui" }),
     /exclusive QA selection/,
   );
   const namespaceLifecycle = selectQaMatrix({
@@ -768,6 +884,245 @@ test("the QA command runner records a failed image build step as redacted eviden
     (await readdir(artifacts)).filter((file) => file.includes("image-build-failure")),
     files,
   );
+});
+
+test(
+  "QA API refusals preserve HTTP errors with bounded private redacted diagnostics",
+  { timeout: 20_000 },
+  async (t) => {
+    const { requestQaApi } = await import("../helpers/qa-installation.mjs");
+    const { listen } = await import("../helpers/listen.mjs");
+    const directory = await temporaryDirectory(t, "qa-api-refusal-");
+    const secret = "registered-private-api-diagnostic";
+    registerQaSecret(secret);
+    const requests = [];
+    let oversizedClosed = false;
+    let stalledClosed = false;
+    const server = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) {
+        body += chunk;
+      }
+      requests.push({
+        method: request.method,
+        url: request.url,
+        key: request.headers["x-api-key"],
+        contentType: request.headers["content-type"],
+        body,
+      });
+      if (request.url === "/success") {
+        response.writeHead(201, { "content-type": "application/json" });
+        response.end(JSON.stringify({ data: { accepted: true } }));
+      } else if (request.url === "/empty") {
+        response.writeHead(204);
+        response.end();
+      } else if (request.url === "/malformed") {
+        response.writeHead(409);
+        response.end("not JSON; refusal body is still private");
+      } else if (request.url === "/oversized") {
+        response.writeHead(409);
+        response.write("safe-prefix\n");
+        const timer = setInterval(() => response.write("x".repeat(4096)), 2);
+        response.once("close", () => {
+          clearInterval(timer);
+          oversizedClosed = true;
+        });
+      } else if (request.url === "/stalled") {
+        response.writeHead(409);
+        response.write("partial");
+        response.once("close", () => {
+          stalledClosed = true;
+        });
+      } else {
+        response.writeHead(409, {
+          "content-type": "application/json",
+          "x-private-response": "response-header-must-not-be-captured",
+        });
+        response.end(
+          JSON.stringify({
+            error: {
+              code: "FIXTURE_REFUSAL",
+              message: `refused ${secret} environment-private-api-diagnostic`,
+              details: [{ path: "/configuration", code: "INVALID_VALUE" }],
+            },
+            authorization: "Bearer token-private-123456789",
+          }),
+        );
+      }
+    });
+    const port = await listen(t, server);
+    const f = {
+      apiUrl: `http://127.0.0.1:${port}`,
+      serviceKey: "synthetic-api-auth",
+      env: { QA_PRIVATE_INPUT: "environment-private-api-diagnostic" },
+      async write(name, value) {
+        await writeFile(join(directory, name), value, { mode: 0o600 });
+      },
+      async record() {
+        assert.fail("API refusal bodies must stay outside public evidence");
+      },
+    };
+    const refused = (path) =>
+      assert.rejects(
+        requestQaApi(f, "POST", path, { requestOnly: "request-body-must-not-be-captured" }),
+        (error) => {
+          assert.equal(error.code, "ERR_ASSERTION");
+          assert.equal(
+            error.message,
+            `OCC POST ${path}: HTTP 409 (${path === "/refused" ? "FIXTURE_REFUSAL" : "unknown"})`,
+          );
+          assert.equal(error.actual, false);
+          assert.equal(error.expected, true);
+          assert.doesNotMatch(error.stack, /registered-private|environment-private|token-private/);
+          return true;
+        },
+      );
+    await refused("/refused");
+    let files = await readdir(directory);
+    assert.equal(files.length, 1);
+    const capture = await readFile(join(directory, files[0]), "utf8");
+    assert.match(capture, /FIXTURE_REFUSAL/);
+    assert.match(capture, /\/configuration/);
+    assert.doesNotMatch(
+      capture,
+      /registered-private-api-diagnostic|environment-private-api-diagnostic|token-private-123456789|request-body-must-not-be-captured|response-header-must-not-be-captured|synthetic-api-auth/,
+    );
+    assert.equal((await stat(join(directory, files[0]))).mode & 0o777, 0o600);
+    assert.deepEqual(requests[0], {
+      method: "POST",
+      url: "/refused",
+      key: f.serviceKey,
+      contentType: "application/json",
+      body: JSON.stringify({ requestOnly: "request-body-must-not-be-captured" }),
+    });
+    await refused("/oversized");
+    files = await readdir(directory);
+    assert.equal(files.length, 2);
+    const capped = await Promise.all(files.map((name) => readFile(join(directory, name), "utf8")));
+    assert.ok(capped.some((text) => text.includes("safe-prefix") && text.includes("truncated")));
+    assert.ok(capped.every((text) => Buffer.byteLength(text) < 66_000));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(oversizedClosed, true, "the oversized response must be canceled");
+    await refused("/malformed");
+    const before = performance.now();
+    await refused("/stalled");
+    assert.ok(
+      performance.now() - before < 5000,
+      "diagnostics must not wait for the request's 30s timeout",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(stalledClosed, true, "the stalled body reader must be canceled");
+    f.write = async () => {
+      throw new Error(secret);
+    };
+    await refused("/write-fails");
+    f.write = async () => new Promise(() => {});
+    const writeStarted = performance.now();
+    await refused("/write-stalls");
+    assert.ok(
+      performance.now() - writeStarted < 5000,
+      "private writes cannot stall the original refusal",
+    );
+    f.env = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error(secret);
+        },
+      },
+    );
+    await refused("/redaction-fails");
+    assert.equal(
+      (await readdir(directory)).length,
+      3,
+      "failed diagnostics must not publish anything",
+    );
+    f.write = async () => {
+      assert.fail("successful API calls must not capture diagnostics");
+    };
+    assert.deepEqual(await requestQaApi(f, "POST", "/success", { normal: true }), {
+      accepted: true,
+    });
+    assert.equal(await requestQaApi(f, "GET", "/empty"), undefined);
+    assert.equal(requests.length, 9, "diagnostics must not retry API requests");
+  },
+);
+
+test("QA Compose recreation preserves private bounded startup diagnostics and original failure", async (t) => {
+  const { recreateQaComposeServices } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-startup-diagnostics-");
+  const original = new Error("controller health dependency failed");
+  const secret = "synthetic-private-startup-secret";
+  registerQaSecret(secret);
+  const calls = [];
+  const f = {
+    cluster: "occ-dev-qa-c-diagnostic",
+    stateDirectory: join(directory, "state"),
+    env: { OCC_TEST_PRIVATE_INPUT: "environment-private-startup-secret" },
+    async compose(...args) {
+      calls.push(args);
+      throw original;
+    },
+    async run(command, args, options) {
+      calls.push({ command, args, options });
+      if (args.at(-1) === "worker-kubernetes") {
+        throw new Error(secret);
+      }
+      return `startup-error CONFIGURATION_INVALID ${secret} environment-private-startup-secret\n`;
+    },
+    async write(name, value) {
+      await writeFile(join(directory, name), value, { mode: 0o600 });
+    },
+    async record() {
+      assert.fail("startup logs must stay outside public artifacts");
+    },
+  };
+  await assert.rejects(recreateQaComposeServices(f), (error) => error === original);
+  assert.deepEqual(calls[0], [
+    "up",
+    "-d",
+    "--no-deps",
+    "--force-recreate",
+    "controller",
+    "worker-kubernetes",
+  ]);
+  const probes = calls.slice(1);
+  assert.deepEqual(
+    probes.map(({ args }) => args.at(-1)),
+    ["controller", "worker-kubernetes"],
+  );
+  for (const { command, args, options } of probes) {
+    assert.equal(command, "docker");
+    assert.deepEqual(args.slice(0, 6), [
+      "compose",
+      "-p",
+      f.cluster,
+      "-f",
+      join(f.stateDirectory, "compose.yaml"),
+      "logs",
+    ]);
+    assert.ok(args.includes("--no-color") && args.includes("--tail") && args.includes("120"));
+    assert.equal(options.timeout, 15000);
+    assert.equal(options.maxBuffer, 256 * 1024);
+    assert.equal(options.privateFailureOutput, true);
+  }
+  const files = await readdir(directory);
+  assert.equal(files.length, 1);
+  const path = join(directory, files[0]);
+  const log = await readFile(path, "utf8");
+  assert.match(log, /startup-error CONFIGURATION_INVALID/);
+  assert.doesNotMatch(log, /synthetic-private-startup-secret|environment-private-startup-secret/);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  f.write = async () => {
+    throw new Error("private directory unavailable");
+  };
+  await assert.rejects(recreateQaComposeServices(f), (error) => error === original);
+  calls.length = 0;
+  f.compose = async (...args) => {
+    calls.push(args);
+  };
+  await recreateQaComposeServices(f);
+  assert.equal(calls.length, 1, "healthy recreation must not collect logs");
 });
 
 // Real children distinguish an elapsed command deadline from an ordinary signal exit.
@@ -3049,6 +3404,259 @@ test("a failed reviewed read names the review outcome before the evidence", asyn
       },
     );
   }
+});
+
+test("public Git QA uses the provider-prepared OpenShell base token and execution contract", async (t) => {
+  const { createRequire } = await import("node:module");
+  const controllerRequire = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  );
+  const gatewayRequire = createRequire(controllerRequire.resolve("@openclaw/gateway-client"));
+  const { WebSocketServer } = gatewayRequire("ws");
+  const { publicGithubNativeCommandScript } = await import("../helpers/qa-public-github-git.mjs");
+  const server = createServer();
+  const token = `qa-base-${randomUUID()}`;
+  let connections = 0;
+  const commands = [];
+  const sockets = new WebSocketServer({
+    server,
+    verifyClient: ({ req }) => req.headers.authorization === `Bearer ${token}`,
+  });
+  sockets.on("connection", (socket) => {
+    connections++;
+    socket.on("message", (data) => {
+      const request = JSON.parse(data.toString());
+      if (request.method === "initialize") {
+        socket.send(JSON.stringify({ id: request.id, result: {} }));
+      } else if (request.method === "command/exec") {
+        commands.push(request.params);
+        socket.send(
+          JSON.stringify({
+            id: request.id,
+            result: { exitCode: 0, stdout: "protocol receipt", stderr: "" },
+          }),
+        );
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    for (const socket of sockets.clients) {
+      socket.terminate();
+    }
+    await new Promise((resolve) => sockets.close(resolve));
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const env = {
+    ...process.env,
+    NODE_PATH: dirname(dirname(gatewayRequire.resolve("ws/package.json"))),
+    OPENCLAW_CODEX_PLUGINS_PREPARED: "true",
+    APP_SERVER_TOKEN: token,
+    APP_SERVER_URL: `ws://127.0.0.1:${server.address().port}`,
+    OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE: ":danger-full-access",
+    OPENCLAW_REMOTE_WORKSPACE_ROOT: "/sandbox/workspace",
+  };
+  // No plugin-status port is configured: prepared OpenShell must authenticate
+  // with its base token rather than attempting the other topology's derivation.
+  delete env.OPENCLAW_PLUGIN_STATUS_PORT;
+  delete env.OPENCLAW_PEER_PLUGIN_STATUS_URL;
+  async function client(environment) {
+    const child = spawn(process.execPath, ["-", JSON.stringify(["git", "--version"])], {
+      env: environment,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const output = [];
+    const error = [];
+    child.stdout.on("data", (data) => output.push(data));
+    child.stderr.on("data", (data) => error.push(data));
+    child.stdin.end(publicGithubNativeCommandScript);
+    const [code] = await once(child, "close");
+    return {
+      code,
+      stdout: Buffer.concat(output).toString(),
+      stderr: Buffer.concat(error).toString(),
+    };
+  }
+  const result = await client(env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).exitCode, 0);
+  assert.deepEqual(commands, [
+    {
+      command: ["git", "--version"],
+      cwd: "/sandbox/workspace",
+      timeoutMs: 45000,
+      permissionProfile: ":danger-full-access",
+    },
+  ]);
+  assert.equal(connections, 1);
+  const unsupported = await client({ ...env, OPENCLAW_CODEX_PLUGINS_PREPARED: "false" });
+  assert.notEqual(unsupported.code, 0);
+  assert.equal(
+    connections,
+    1,
+    "unsupported topology must fail before trying another authentication contract",
+  );
+});
+
+test("public Git QA discovers its managed skill beneath native HOME or state directory", async (t) => {
+  const { mkdir } = await import("node:fs/promises");
+  const { publicGithubManagedSkillScript } = await import("../helpers/qa-public-github-git.mjs");
+  const { publicGithubReadSkill } =
+    await import("../../apps/controller/src/drivers/repo/github/public-read/codex.ts");
+  const directory = await temporaryDirectory(t, "qa-openshell-home-");
+  const home = join(directory, "sandbox", ".openclaw-runtime", "home");
+  for (const state of [join(home, ".openclaw"), join(directory, "configured-state")]) {
+    const skill = join(state, "skills", "public-github-read", "SKILL.md");
+    await mkdir(join(state, "skills", "public-github-read"), { recursive: true });
+    await writeFile(
+      skill,
+      publicGithubReadSkill({
+        address: "127.0.0.1",
+        endpoint: "https://127.0.0.1:8080",
+        skillPath: skill,
+      }),
+    );
+    const env = { ...process.env, HOME: home };
+    delete env.OPENCLAW_STATE_DIR;
+    if (state !== join(home, ".openclaw")) {
+      env.OPENCLAW_STATE_DIR = state;
+      delete env.HOME;
+    }
+    const observed = JSON.parse(
+      execFileSync(process.execPath, ["-e", publicGithubManagedSkillScript], {
+        env,
+        encoding: "utf8",
+      }),
+    );
+    assert.equal(observed.skillPath, skill);
+    assert.equal(observed.managedSkill, true);
+  }
+});
+
+test("public Git admission QA uses the public policy view and revision registry", async () => {
+  const { assertOrdinaryPublicGithubAdmission: observe } =
+    await import("../helpers/qa-public-github-git.mjs");
+  // The public revision DTO deliberately omits executionAdmission, sandboxPolicy
+  // and Compute service snapshots; the policy API supplies revision-bound facts.
+  const agent = {
+    namespaceId: "namespace-one",
+    id: "agent-one",
+    revision: {
+      id: "revision-one",
+      sandboxDriverId: "openshell",
+      harness: { id: "codex", mode: "dedicated" },
+    },
+  };
+  const view = {
+    protectedExecution: false,
+    defaultsRevisionId: agent.revision.id,
+    deployedPolicyVersion: 1,
+    defaults: { "source-control": { endpoints: [], binaries: [{ path: "/usr/bin/git" }] } },
+    policy: { version: 1, additions: [] },
+  };
+  const peer = { namespace: "reader", authorizationConfigMapName: "reader-grants" };
+  const entries = {};
+  const f = {
+    installation: { id: "installation-one" },
+    configuration: { drivers: { sandbox: { id: "openshell" } } },
+    async api(method, path) {
+      assert.equal(method, "GET");
+      assert.equal(path, "/namespaces/namespace-one/agents/agent-one/sandbox-policy/networking");
+      return view;
+    },
+    async resource(kind, name, namespace) {
+      assert.deepEqual([kind, name, namespace], ["configmap", "reader-grants", "reader"]);
+      return { data: { "authorizations.json": JSON.stringify(entries) } };
+    },
+  };
+  const absent = await observe(f, agent, peer);
+  assert.equal(absent.publicReadAuthorization, null);
+  const policy = { mode: "all" };
+  const row = {
+    installationId: f.installation.id,
+    namespaceId: agent.namespaceId,
+    agentId: agent.id,
+    revisionId: agent.revision.id,
+    policy,
+    validUntil: new Date(Date.now() + 60_000).toISOString(),
+    tokenSha256: "f".repeat(64),
+  };
+  entries[agent.revision.id] = row;
+  const selected = await observe(f, agent, peer, policy);
+  assert.equal(selected.protectedExecution, false);
+  assert.deepEqual(selected.publicReadAuthorization.policy, policy);
+  assert.equal(JSON.stringify(selected).includes(row.tokenSha256), false);
+  await assert.rejects(observe(f, agent, peer), /unselected revision/);
+  view.defaultsRevisionId = "another-revision";
+  await assert.rejects(observe(f, agent, peer, policy), /revision/);
+  view.defaultsRevisionId = agent.revision.id;
+  view.protectedExecution = true;
+  await assert.rejects(observe(f, agent, peer, policy), /unprotected/);
+  view.protectedExecution = false;
+  view.defaults["source-control"].endpoints = [{ host: "github.com", ports: [443] }];
+  await assert.rejects(observe(f, agent, peer, policy), /GitHub/);
+  view.defaults["source-control"].endpoints = [];
+  row.agentId = "another-agent";
+  await assert.rejects(observe(f, agent, peer, policy), /authorization identity/);
+  row.agentId = agent.id;
+  row.validUntil = "1970-01-01T00:00:00.000Z";
+  await assert.rejects(observe(f, agent, peer, policy), /live reader authorization/);
+  delete entries[agent.revision.id];
+  await assert.rejects(observe(f, agent, peer, policy), /selected revision/);
+});
+
+test("public Git provisioning evidence retains only fixed categories for the failed revision", async (t) => {
+  const { recordPublicGithubProvisionFailure } =
+    await import("../helpers/qa-public-github-git.mjs");
+  assert.equal(typeof recordPublicGithubProvisionFailure, "function");
+  const directory = await temporaryDirectory(t, "qa-public-git-failure-");
+  const artifact = join(directory, "failure.json");
+  const secret = `unregistered-private-text-${randomUUID()}`;
+  const row = {
+    event: "worker.completed",
+    revisionId: "revision-one",
+    cause: "OpenShellWorkspaceInitializationFailure",
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: secret,
+    private: { token: secret },
+  };
+  const f = {
+    cluster: "qa-owned",
+    stateDirectory: directory,
+    agents: [{ revision: { id: "revision-one" } }],
+    async run() {
+      return [
+        secret,
+        ...Array.from({ length: 30 }, () => "worker | " + JSON.stringify(row)),
+        JSON.stringify({ ...row, revisionId: "other-revision", cause: secret }),
+        JSON.stringify({ ...row, cause: secret, code: secret }),
+      ].join("\n");
+    },
+    async record(_name, value) {
+      await writeFile(artifact, JSON.stringify(value));
+    },
+  };
+  await recordPublicGithubProvisionFailure(f);
+  const bytes = await readFile(artifact, "utf8");
+  const evidence = JSON.parse(bytes);
+  assert.equal(
+    bytes.includes(secret),
+    false,
+    "unregistered private text must never reach evidence",
+  );
+  assert.equal(evidence.failures.length, 20);
+  assert.deepEqual(evidence.failures.at(-1), {
+    event: "worker.completed",
+    cause: "other",
+    code: "other",
+  });
+  assert.ok(
+    evidence.failures.some(({ cause }) => cause === "OpenShellWorkspaceInitializationFailure"),
+  );
+  f.run = async () => {
+    throw new Error(secret);
+  };
+  await recordPublicGithubProvisionFailure(f);
 });
 
 test("QA model failure evidence preserves the failure and its admitted revision", async () => {
