@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import { chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -148,11 +148,9 @@ async function fixture(
       }
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ message: "not found" }));
-    } catch (error) {
+    } catch {
       response.writeHead(500, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({ message: error instanceof Error ? error.message : String(error) }),
-      );
+      response.end(JSON.stringify({ message: "fixture request failed" }));
     }
   });
   const origin = `http://127.0.0.1:${await listen(t, server)}`;
@@ -252,6 +250,24 @@ test("GitHub App observer can close pull requests with the scoped runner token",
   assert.ok(result.data !== null && typeof result.data === "object" && "state" in result.data);
   assert.equal(result.data.state, "closed");
   assert.equal(f.issuedTokens.length, 1);
+
+  // A malformed close request must not echo its contents, even with a valid token.
+  const [token] = f.issuedTokens;
+  assert.ok(token, "expected an installation token");
+  const marker = `invalid-close-state-${randomUUID()}`;
+  const rejected = await fetch(`${f.origin}/repos/${repository}/pulls/42`, {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ state: `${marker} ${token}` }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  assert.equal(rejected.status, 500);
+  assert.equal(rejected.headers.get("content-type"), "application/json");
+  const responseBody = await rejected.text();
+  assert.ok(
+    responseBody === JSON.stringify({ message: "fixture request failed" }),
+    "expected only the fixed error message without request data or a stack trace",
+  );
 });
 
 test("GitHub App observer deleteBranch uses a credential helper and leased Git push", async (t) => {
