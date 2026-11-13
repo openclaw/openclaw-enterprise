@@ -12,7 +12,7 @@ import {
   createGitHubAppRepositoryObserver,
   loadGitHubAppObserverInput,
 } from "../helpers/github-app-observer.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = "fixture-owner/fixture-repo";

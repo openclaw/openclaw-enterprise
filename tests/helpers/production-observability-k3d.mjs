@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
 import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
 import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import {
+  createHarnessConfiguration,
+  withStubbedProviderEndpoint,
+} from "./harness-configuration.mjs";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
@@ -167,6 +170,13 @@ export async function installObservabilityControlPlane(
       : {}),
     cluster: `observability-${suffix}`,
   });
+  if (!modelTurns) {
+    // The Installation's resolved provider and the fixture Agent's native configuration must agree.
+    configuration.drivers.compute.configuration.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: "https://model.stub.invalid/v1",
+    };
+  }
   const repositoryCredentials = nativeRepository
     ? await prepareObservabilityNativeRepository({
         configuration,
@@ -190,6 +200,7 @@ export async function installObservabilityControlPlane(
     suffix,
     configuration,
     authBaseURL: "https://observability.example.invalid",
+    agentNativeAdminDomain: "agents.example.invalid",
     installationName: "Observability acceptance",
     repositoryCredentials,
     databaseName: `openclaw_k8s_observability_${suffix}`,
@@ -382,8 +393,7 @@ export async function installObservabilityControlPlane(
     scraperNamespaceLabels: { "kubernetes.io/metadata.name": monitoring },
     scraperPodLabels: { app: "scraper" },
   };
-  async function createAgent(executionMode = "embedded") {
-    const namespace = await api("POST", "/namespaces", { name: `Observability ${suffix}` }, 201);
+  async function readyNamespace(namespace) {
     const placements = [];
     // Namespace readiness now requires scoped grants in both managed targets,
     // even when this scenario uses an embedded runtime in the data namespace.
@@ -417,12 +427,16 @@ export async function installObservabilityControlPlane(
         });
       }
     }
-    const [tenant, gatewayRuntimeNamespace] = placements;
-    const gatewayPlacement = executionMode === "dedicated" ? gatewayRuntimeNamespace : tenant;
     await waitFor(
       "Namespace ready",
       async () => (await api("GET", `/namespaces/${namespace.id}`)).status === "ready",
     );
+    return placements;
+  }
+  async function createAgent(executionMode = "embedded") {
+    const namespace = await api("POST", "/namespaces", { name: `Observability ${suffix}` }, 201);
+    const [tenant, gatewayRuntimeNamespace] = await readyNamespace(namespace);
+    const gatewayPlacement = executionMode === "dedicated" ? gatewayRuntimeNamespace : tenant;
     const sentinel = modelTurns ? process.env.OPENAI_API_KEY : `fixture-only-${secret()}`;
     secrets.push(sentinel);
     const credential = await api(
@@ -431,10 +445,12 @@ export async function installObservabilityControlPlane(
       { name: "Fixture credential", value: sentinel },
       201,
     );
-    const native = createHarnessConfiguration(
+    const configuration = createHarnessConfiguration(
       executionMode === "dedicated" ? "codex" : "openclaw",
       modelTurns ? process.env.OCC_TEST_OPENAI_MODEL.replace(/^(?:openai|codex)\//, "") : "gpt-4.1",
     );
+    // The fixture answers model probes locally; its synthetic key must never target OpenAI.
+    const native = modelTurns ? configuration : withStubbedProviderEndpoint(configuration);
     native.agents.defaults.skipBootstrap = true;
     const config = await api(
       "POST",
@@ -675,6 +691,7 @@ service:
     probePod,
     selectors,
     createAgent,
+    readyNamespace,
     createSecret,
     configureCollector,
     installLogReceiver,

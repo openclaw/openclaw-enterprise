@@ -8,7 +8,7 @@ import {
   sessionEvidenceScript,
 } from "./normal-agent-tools.mjs";
 import { submitRepositoryTaskScript } from "./repository-credentials-installed.mjs";
-import { parseNativeRolloutProvenance } from "./native-rollout-provenance.mjs";
+import { parseNativeRolloutProvenance } from "./native-rollout-provenance.ts";
 
 // Read only the rollout named by the exact owned thread/read response. Raw
 // rollout data stays inside this process; only the parser's fixed

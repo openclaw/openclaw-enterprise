@@ -385,7 +385,10 @@ test("a trusted development CIDR admits its own range and nothing else", async (
     app.inject({
       url: "/namespaces",
       remoteAddress,
-      headers: authenticatedHeaders(fixture.app.defaultSession),
+      headers: {
+        host: new URL(fixture.app.defaultSession.origin).host,
+        ...authenticatedHeaders(fixture.app.defaultSession),
+      },
     });
   for (const admitted of ["127.0.0.1", "10.89.0.1", "10.89.255.254", "::ffff:10.89.3.4"]) {
     assert.equal((await list(admitted)).statusCode, 200, admitted);
@@ -409,7 +412,7 @@ test("an exact development browser origin admits only its trusted proxy", async 
     browserOrigin,
     trustedCidrs: ["10.89.0.0/16"],
   };
-  const fixture = await createFixture({ development });
+  const fixture = await createFixture();
   await bootstrap(fixture);
   const app = fixture.createApp(fixture.administrator, { development }, createFastifyApp);
   t.after(() => app.close());
@@ -693,7 +696,7 @@ test("concurrent streaming bootstrap creates one audited Installation", async ()
       },
     });
 
-    return new Request("http://127.0.0.1/installation/bootstrap", {
+    return new Request(new URL("/installation/bootstrap", fixture.app.defaultSession.origin), {
       method: "POST",
       duplex: "half",
       headers: authenticatedHeaders(fixture.app.defaultSession, {
@@ -1074,7 +1077,9 @@ test("account creation preserves hashed passwords through HTTP sign-in and sessi
     }),
   );
   t.after(() => app.close());
-  const headers = authenticatedHeaders(fixture.app.defaultSession);
+  const origin = fixture.app.defaultSession.origin;
+  const host = new URL(origin).host;
+  const headers = { host, ...authenticatedHeaders(fixture.app.defaultSession) };
   const email = "http-password-compatible@example.test";
   const password = "account-password-\u0000-\ud800-\ufffd";
   const create = (body, suppliedHeaders = headers) =>
@@ -1084,7 +1089,7 @@ test("account creation preserves hashed passwords through HTTP sign-in and sessi
       headers: suppliedHeaders,
       payload: body,
     });
-  assert.equal((await create({ email, password }, { origin: "http://127.0.0.1" })).statusCode, 401);
+  assert.equal((await create({ email, password }, { host, origin })).statusCode, 401);
   assert.equal(
     (await create({ email, password }, { ...headers, origin: "https://foreign.example" }))
       .statusCode,
@@ -1098,13 +1103,13 @@ test("account creation preserves hashed passwords through HTTP sign-in and sessi
   const signedIn = await app.inject({
     method: "POST",
     url: "/api/auth/sign-in/email",
-    headers: { origin: "http://127.0.0.1" },
+    headers: { host, origin },
     payload: { email, password },
   });
   assert.equal(signedIn.statusCode, 200, signedIn.body);
   const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
   assert.ok(cookie);
-  const session = await app.inject({ url: "/api/auth/session", headers: { cookie } });
+  const session = await app.inject({ url: "/api/auth/session", headers: { host, cookie } });
   assert.equal(session.statusCode, 200, session.body);
   assert.equal(session.json().data.user.id, created.json().data.id);
 });
@@ -1752,6 +1757,11 @@ test("an Agent-level read_logs grant covers every revision, including later depl
   const secondPath = `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${redeployed.data.id}/runtime/logs?source=gateway`;
   const second = await fixture.request("GET", secondPath, { session: delegate.session });
   assert.equal(second.status, 200, second.text);
+  const download = await fixture.request("GET", `${secondPath}&download=true`, {
+    session: delegate.session,
+  });
+  assert.equal(download.status, 200, download.text);
+  assert.match(download.text, /gateway output 1/);
 
   // Runtime status keeps its revision requirement, and a revision of another Agent is
   // never reachable through this Agent's path.
@@ -1760,17 +1770,35 @@ test("an Agent-level read_logs grant covers every revision, including later depl
   const sibling = await fixture.deployAgent("runtime-log-agent-only-sibling", {
     namespace: target.namespace,
   });
-  const crossed = await fixture.request(
-    "GET",
-    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${sibling.revisionId}/runtime/logs?source=gateway`,
-    { session: delegate.session },
-  );
-  assert.notEqual(crossed.status, 200);
-  const reads = driverReads(fixture).length;
+  const accessCount = (action) =>
+    fixture.auditSink.events.filter(
+      ({ kind, action: eventAction }) => kind === "access" && eventAction === action,
+    ).length;
+  const callsBeforeCrossed = fixture.computeDriver.calls.length;
+  const viewsBeforeCrossed = accessCount("openclaw.agents.runtime_logs.view");
+  const downloadsBeforeCrossed = accessCount("openclaw.agents.runtime_logs.download");
+  // Reject the mismatched existing revision before any Compute call or access admission.
+  for (const query of ["source=gateway", "source=gateway&download=true"]) {
+    const crossed = await fixture.request(
+      "GET",
+      `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${sibling.revisionId}/runtime/logs?${query}`,
+      { session: delegate.session },
+    );
+    assertApiError(crossed, 404, "NOT_FOUND", query);
+    assert.equal(fixture.computeDriver.calls.length, callsBeforeCrossed, query);
+    assert.equal(accessCount("openclaw.agents.runtime_logs.view"), viewsBeforeCrossed, query);
+    assert.equal(
+      accessCount("openclaw.agents.runtime_logs.download"),
+      downloadsBeforeCrossed,
+      query,
+    );
+  }
+
+  const readsBeforeRevocation = driverReads(fixture).length;
   delegate.revoke("read_logs", "agent");
   const revoked = await fixture.request("GET", secondPath, { session: delegate.session });
   assert.equal(revoked.status, 403);
-  assert.equal(driverReads(fixture).length, reads);
+  assert.equal(driverReads(fixture).length, readsBeforeRevocation);
 });
 
 test("runtime log cursors bind one principal and view and are re-authorized on every poll", async () => {

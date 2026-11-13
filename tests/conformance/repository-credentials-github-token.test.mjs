@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync } from "node:crypto";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
-import { createCustody } from "../../apps/controller/src/drivers/repo/credentials/custody.ts";
-import { admitSession } from "../../apps/controller/src/drivers/repo/credentials/sessions.ts";
-import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/credentials/config.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
+import { createCustody } from "../../apps/controller/src/drivers/repo/access/custody.ts";
+import { admitSession } from "../../apps/controller/src/drivers/repo/access/sessions.ts";
+import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/access/config.ts";
 import {
   classifyGitHubToken,
   createGitHubStaticTokenOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/static-token.ts";
-import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/credentials/factory.ts";
-import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/static-token.ts";
+import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/access/factory.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   githubConfigurationData,
@@ -136,6 +136,20 @@ test("token backend configuration requires both scope controls and rejects every
       .pushRefAllowlist,
     [],
   );
+  for (const repositoryId of ["1", "73", "9007199254740991"]) {
+    assert.equal(
+      validateGitHubConfiguration(githubTokenConfigurationData({ repositoryId })).repositoryId,
+      repositoryId,
+    );
+  }
+  let repositoryIdReads = 0;
+  const changingRepositoryId = {
+    ...githubTokenConfigurationData(),
+    // Programmatic configuration can change type after the initial field check.
+    get repositoryId() {
+      return repositoryIdReads++ === 0 ? "73" : 73;
+    },
+  };
   const { developmentOnly: _d, ...noLiteral } = githubTokenConfigurationData();
   const { pushRefAllowlist: _p, ...noAllowlist } = githubTokenConfigurationData();
   for (const [name, input] of [
@@ -158,6 +172,13 @@ test("token backend configuration requires both scope controls and rejects every
     ["unknown key", githubTokenConfigurationData({ token: "inline" })],
     ["App kind with a token field", githubConfigurationData({ tokenFile: "/protected/token" })],
     ["unknown kind", githubTokenConfigurationData({ kind: "github-pat" })],
+    ...["0", "01", "-1", "+1", "1.0", "1e2", " 73", "73 ", "9007199254740992", 73].map(
+      (repositoryId) => [
+        "noncanonical repository ID",
+        githubTokenConfigurationData({ repositoryId }),
+      ],
+    ),
+    ["repository ID changes from string to number", changingRepositoryId],
   ]) {
     assert.throws(() => validateGitHubConfiguration(input), { message: "invalid-backend" }, name);
   }

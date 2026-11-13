@@ -20,19 +20,17 @@ import { withMutationDeadline } from "../../apps/controller/src/admission/mutati
 import {
   FakeConfigurationCoreV1Api,
   FlakyConfigurationCoreV1Api,
-} from "../helpers/kubernetes-configuration-core.mjs";
+} from "../helpers/kubernetes-configuration-core.ts";
 import {
+  MINIMUM_SEND_BUDGET_MS,
+  READ_RETRY_PAUSES_MS,
   controlledRequestTimeouts,
   frozenClock,
   nextTurns,
   settlement,
   untilSent,
-} from "../helpers/kubernetes-core-api.mjs";
-import {
-  MINIMUM_SEND_BUDGET_MS,
-  READ_RETRY_PAUSES_MS,
   withRetryTimers,
-} from "../helpers/kubernetes-request-retry.mjs";
+} from "../helpers/kubernetes-core-api.ts";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { within } from "../helpers/wait-for.mjs";

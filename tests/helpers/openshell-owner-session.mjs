@@ -2,16 +2,58 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.mjs";
 import { chromium } from "playwright";
-import { launchTrustingBrowser } from "./dev-up-keycloak.mjs";
+import { publishedJSON } from "./dev-up-keycloak.mjs";
+import { launchTrustingBrowser, preflightTrustingBrowser } from "./trusted-chromium.ts";
+import { enableInstalledOidcNativeAdmin } from "./native-admin-oidc-k3d.mjs";
+import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
 const execute = promisify(execFile);
+
+export function assertOpenShellOwnerModelSelection(environment) {
+  const endpoint = environment.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+  assert.ok(
+    !endpoint || URL.parse(endpoint)?.href.replace(/\/$/u, "") === "https://api.openai.com/v1",
+    "The browser Agent requires the public OpenAI endpoint",
+  );
+  assert.ok(
+    !environment.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE,
+    "The browser Agent does not accept native provider overrides",
+  );
+}
+
+function ownerBrowserRouting(cluster) {
+  const consoleHost = `console.${cluster}.oce.localhost`;
+  const agentDomain = `agents.${cluster}.oce.localhost`;
+  return {
+    consoleHost,
+    agentDomain,
+    hosts: [
+      { host: consoleHost, address: "127.0.0.1" },
+      { host: `*.${agentDomain}`, address: "127.0.0.1" },
+      { host: "*", address: "~NOTFOUND" },
+    ],
+  };
+}
+
+export async function preflightOpenShellOwnerBrowser(root, cluster) {
+  try {
+    await preflightTrustingBrowser(chromium, root, ownerBrowserRouting(cluster).hosts);
+  } catch (error) {
+    throw new Error(
+      "OpenShell browser preflight failed before dev-up. Check certutil, sandbox support for " +
+        "OCC_TEST_BROWSER_EXECUTABLE, and use a short TMPDIR for Chromium sockets.",
+      { cause: error },
+    );
+  }
+}
 
 export async function verifyOpenShellOwnerSession({
   t,
@@ -22,19 +64,15 @@ export async function verifyOpenShellOwnerSession({
   kubectl,
   environment,
 }) {
-  const consoleHost = `console.${cluster}.oce.localhost`;
+  assertOpenShellOwnerModelSelection(environment);
+  const { consoleHost, agentDomain, hosts } = ownerBrowserRouting(cluster);
   const consoleOrigin = `https://${consoleHost}:${browserPort}`;
-  const agentDomain = `agents.${cluster}.oce.localhost`;
   const scope = `/namespaces/${namespaceId}`;
   // Install the public CA in the fixture browser's private trust database before
   // startup. Chromium verifies both hostnames and manages the HttpOnly cookies.
   const browser = await launchTrustingBrowser(chromium, dirname(stateDirectory), {
     caFiles: [join(stateDirectory, "browser-ca.crt")],
-    hosts: [
-      { host: consoleHost, address: "127.0.0.1" },
-      { host: "*." + agentDomain, address: "127.0.0.1" },
-      { host: "*", address: "~NOTFOUND" },
-    ],
+    hosts,
   });
   t.after(() => browser.close());
   const origins = new Set([consoleOrigin]);
@@ -61,7 +99,7 @@ export async function verifyOpenShellOwnerSession({
     );
   }
 
-  async function signIn(email, password) {
+  async function signIn(email, password, recovery = false) {
     const context = await browser.newContext({ serviceWorkers: "block" });
     await context.route("**/*", (route) =>
       origins.has(new URL(route.request().url()).origin) ? route.continue() : route.abort(),
@@ -70,6 +108,9 @@ export async function verifyOpenShellOwnerSession({
     const loaded = await page.goto(consoleOrigin + "/console/");
     assert.ok(loaded);
     assert.equal((await loaded.serverAddr())?.ipAddress, "127.0.0.1");
+    if (recovery) {
+      await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
+    }
     await page.getByLabel("Email", { exact: true }).waitFor();
     assert.equal(new URL(page.url()).origin, consoleOrigin);
     const signedOut = await consoleRequest(page, "GET", "/api/auth/session");
@@ -93,7 +134,7 @@ export async function verifyOpenShellOwnerSession({
     return page;
   }
 
-  const owner = await signIn(
+  let owner = await signIn(
     "admin@development.openclaw.invalid",
     (await readFile(join(stateDirectory, "initial-admin-password"), "utf8")).trim(),
   );
@@ -111,27 +152,31 @@ export async function verifyOpenShellOwnerSession({
     ...environment,
     OPENCLAW_FIRST_AGENT_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
   };
-  delete modelEnvironment.OPENAI_API_KEY;
-  delete modelEnvironment.OPENAI_API_KEY_FILE;
+  // General browser proof uses the API-key path even when CI also supplies a PAT.
+  // Dedicated PAT cases retain their account-policy checks separately.
+  delete modelEnvironment.CODEX_ACCESS_TOKEN;
+  delete modelEnvironment.CODEX_ACCESS_TOKEN_FILE;
   assert.ok(
-    modelEnvironment.CODEX_ACCESS_TOKEN || modelEnvironment.CODEX_ACCESS_TOKEN_FILE,
-    "Set the existing Codex service-account token or its private file for the real browser Agent",
+    modelEnvironment.OPENAI_API_KEY || modelEnvironment.OPENAI_API_KEY_FILE,
+    "Set OPENAI_API_KEY or OPENAI_API_KEY_FILE for the real browser Agent",
   );
   assert.ok(
     modelEnvironment.OPENCLAW_FIRST_AGENT_MODEL,
     "Set OCC_TEST_OPENAI_MODEL for the selected account",
   );
-  await execute(
-    process.execPath,
-    [
-      fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url)),
-      name,
-      "--harness",
-      "codex",
-      "--control-ui",
-    ],
-    { env: modelEnvironment, timeout: 600_000, maxBuffer: 1024 * 1024 },
-  );
+  const runFirstAgent = () =>
+    execute(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url)),
+        name,
+        "--harness",
+        "codex",
+        "--control-ui",
+      ],
+      { env: modelEnvironment, timeout: 600_000, maxBuffer: 1024 * 1024 },
+    );
+  await runFirstAgent();
   const agents = (await api("GET", scope + "/agents")).filter((a) => a.name === name);
   assert.equal(agents.length, 1, "the helper created one Agent in its own default Namespace");
   const agent = agents[0];
@@ -164,6 +209,18 @@ export async function verifyOpenShellOwnerSession({
   const access = await api("GET", agentPath + "/native-admin");
   assert.equal(access.origin, origin);
   assert.equal(access.status, "available");
+  // A second invocation must recognize the current saved template and frozen
+  // revision, complete its real model check, and leave their configuration intact.
+  const configurationPath = scope + "/configurations/" + agent.configurationId;
+  const beforeRepeat = await api("GET", configurationPath);
+  await runFirstAgent();
+  const repeatedAgents = (await api("GET", scope + "/agents")).filter((a) => a.name === name);
+  assert.equal(repeatedAgents.length, 1);
+  assert.equal(repeatedAgents[0].id, agent.id);
+  assert.equal(repeatedAgents[0].activeRevisionId, rev.id);
+  const afterRepeat = await api("GET", configurationPath);
+  assert.equal(afterRepeat.generation, beforeRepeat.generation);
+  assert.deepEqual(afterRepeat.values, beforeRepeat.values);
   const instructions = await api("GET", agentPath + "/workspace/files/AGENTS.md");
   assert.ok(instructions.content.trim(), "fresh workspace has its real bootstrap instructions");
   const { stdout: pods } = await execute(
@@ -395,5 +452,242 @@ export async function verifyOpenShellOwnerSession({
   assert.ok(reached, "both authorized requests must be observable at the private Gateway route");
   t.diagnostic(
     `Agent ${agent.id} revision ${rev.id}: workspace bootstrapped, native UI 200; same reader session 403 -> 200 -> 403, owner 200; Envoy markers denied=0 granted=present revoked=0 owner=present. Authenticated socket closed after ${elapsed} ms (authorization_denied); reconnect refused before Envoy; owner socket stayed connected.`,
+  );
+
+  // The earlier phase proves the shared-cookie/password path. Switch only this
+  // disposable installation to guarded OIDC; all native runtime I/O stays real.
+  const recoverySession = await api("GET", "/api/auth/session");
+  const oidc = await enableInstalledOidcNativeAdmin({
+    t,
+    cluster,
+    stateDirectory,
+    kubectl,
+    environment,
+    recoveryUserId: recoverySession.user.id,
+    consoleOrigin,
+    agentDomain,
+  });
+  owner = await signIn(
+    "admin@development.openclaw.invalid",
+    (await readFile(join(stateDirectory, "initial-admin-password"), "utf8")).trim(),
+    true,
+  );
+  // Account GET requires Origin, which browser fetch cannot set. Dial the
+  // owned listener with its CA and hostname; Chromium's trust does not apply to Node.
+  const accountResponse = await publishedJSON(
+    {
+      hostname: consoleHost,
+      port: browserPort,
+      ca: await readFile(join(stateDirectory, "browser-ca.crt")),
+    },
+    `/api/auth/accounts/${account.id}`,
+    {
+      headers: {
+        origin: consoleOrigin,
+        cookie: (await owner.context().cookies(consoleOrigin))
+          .map(({ name, value }) => `${name}=${value}`)
+          .join("; "),
+      },
+    },
+  );
+  const currentAccount = accountResponse.data;
+  await api("POST", `/api/auth/accounts/${account.id}/providers/oidc`, {
+    subject: oidc.subject,
+    expectedVersion: currentAccount.version,
+  });
+  await grant(account.principalId, "agent", agent.id, ["administer"]);
+  await grant(account.principalId, "namespace", namespaceId, ["read"]);
+  const guardedAccess = await api("GET", agentPath + "/native-admin");
+  assert.equal(guardedAccess.status, "available");
+  assert.equal(guardedAccess.sessionMode, "host-only-exchange");
+  assert.equal(guardedAccess.origin, origin);
+
+  const receiptPath =
+    process.env.OCC_TEST_NATIVE_BROWSER_RECEIPT ||
+    join(await mkdtemp(join(tmpdir(), "oce-native-host-only-real-")), "receipt.json");
+  const guarded = await browser.newContext({ serviceWorkers: "block" });
+  t.after(() => guarded.close());
+  await guarded.route("**/*", (route) =>
+    origins.has(new URL(route.request().url()).origin) ? route.continue() : route.abort(),
+  );
+  const received = [];
+  const sends = [];
+  guarded.on("page", (page) => {
+    page.on("websocket", (socket) => {
+      if (new URL(socket.url()).origin !== origin.replace("https:", "wss:")) {
+        return;
+      }
+      socket.on("framereceived", (frame) => received.push({ ...frame, page, socket }));
+      socket.on("framesent", ({ payload }) => {
+        const frame = JSON.parse(String(payload));
+        // Starting a session can submit its first turn in sessions.create;
+        // creating an empty session must not count as a submitted turn.
+        if (
+          frame.type === "req" &&
+          (frame.method === "chat.send" ||
+            (frame.method === "sessions.create" &&
+              typeof frame.params?.message === "string" &&
+              frame.params.message.trim().length > 0))
+        ) {
+          sends.push({ page, socket });
+        }
+      });
+    });
+  });
+  const consolePage = await guarded.newPage();
+  await consolePage.route("https://idp.example.test/authorize*", oidc.authorizeRoute);
+  await consolePage.goto(consoleOrigin + "/console/");
+  const callback = consolePage.waitForResponse(
+    (res) => new URL(res.url()).pathname === "/api/auth/providers/oidc/callback",
+  );
+  await consolePage.getByRole("button", { name: "Continue with Test SSO", exact: true }).click();
+  assert.equal((await callback).status(), 302);
+  await consolePage.waitForURL(consoleOrigin + "/console/");
+  const session = await consoleRequest(consolePage, "GET", "/api/auth/session");
+  assert.equal(session.data.user.id, account.id, "OIDC authenticated the attached collaborator");
+  const parent = (await guarded.cookies(consoleOrigin)).find(
+    (cookie) => cookie.name === oidc.parentCookieName,
+  );
+  assert.ok(parent?.secure && parent.httpOnly);
+  assert.equal(parent.domain, consoleHost, "the guarded parent cookie is host-only");
+  await consolePage.goto(
+    `${consoleOrigin}/console/agents/${agent.id}?namespace=${namespaceId}&revision=${rev.id}`,
+  );
+
+  async function waitFor(description, observe) {
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      const value = await observe();
+      if (value) {
+        return value;
+      }
+      await delay(100);
+    }
+    assert.fail(description);
+  }
+  async function hello(page, firstFrame = 0) {
+    return waitFor("the opened stock Gateway returns hello-ok", () =>
+      received.slice(firstFrame).find((frame) => {
+        const data = JSON.parse(String(frame.payload));
+        return (
+          frame.page === page &&
+          !frame.socket.isClosed() &&
+          data.type === "res" &&
+          data.ok === true &&
+          data.payload?.type === "hello-ok"
+        );
+      }),
+    );
+  }
+  async function launch() {
+    const popup = consolePage.waitForEvent("popup");
+    await consolePage.getByRole("link", { name: "Open Agent UI", exact: true }).click();
+    const page = await popup;
+    await hello(page);
+    await waitForStockUi(page);
+    assert.equal(new URL(page.url()).origin, origin);
+    assert.equal(await page.evaluate(() => globalThis.opener === null), true);
+    return page;
+  }
+  const first = await launch();
+  assert.ok(!(await guarded.cookies(origin)).some((cookie) => cookie.name === parent.name));
+  const handle = (await guarded.cookies(origin)).find(
+    (cookie) => cookie.name === "__Host-occ_agent_access",
+  );
+  assert.ok(handle?.secure && handle.httpOnly && handle.sameSite === "Strict");
+  assert.equal(handle.domain, host);
+  const marker = "host-only-" + randomUUID();
+  const terminal = await submitChatTurnWithAssistantProof(first, marker, received, waitFor);
+  assert.equal(terminal.page, first);
+  assert.ok(!terminal.socket.isClosed());
+  const replySelector = `.chat-group.assistant [data-message-text="${marker}"]`;
+  await first.locator(replySelector).waitFor({ state: "visible" });
+  const sessionKey = JSON.parse(String(terminal.payload)).payload.sessionKey;
+  assert.equal(typeof sessionKey, "string");
+  assert.ok(sessionKey.length > 0);
+  const conversation = first.url();
+  assert.match(new URL(conversation).pathname, /^\/chat\//);
+  assert.equal(sends.length, 1, "one real turn was submitted");
+
+  // A repeated exchange for the same binding must preserve the first tab's
+  // already-authorized socket through its next renewal.
+  const second = await launch();
+  const beforeReopen = received.length;
+  await second.goto(conversation);
+  await waitForStockUi(second);
+  const secondHello = await hello(second, beforeReopen);
+  assert.notEqual(secondHello.socket, terminal.socket, "each tab owns its Gateway socket");
+  await second.locator(replySelector).waitFor({ state: "visible" });
+  // The UI can add a display-name slug when it resolves the saved URL. Verify
+  // the committed conversation identity, not that mutable presentation text.
+  await second.waitForFunction((key) => {
+    const snapshot = globalThis.openclawControlUi?.snapshot();
+    return snapshot?.routeReady === true && snapshot.sessionKey === key;
+  }, sessionKey);
+  assert.equal(new URL(second.url()).origin, origin);
+  assert.match(new URL(second.url()).pathname, /^\/chat\//);
+  // The production native proxy renews every 25 seconds. Keep both exact
+  // sockets untouched for two intervals; reconnects cannot satisfy this check.
+  await delay(55_000);
+  assert.ok(
+    !terminal.socket.isClosed(),
+    "the original reply socket survived repeat launch and renewal",
+  );
+  assert.ok(!secondHello.socket.isClosed(), "the reopened conversation stayed connected");
+  assert.equal(sends.length, 1, "reopening never submitted another turn");
+
+  // Sign out through the same Console that launched both windows. Neither
+  // native page is navigated or manually closed until both streams are revoked.
+  await consolePage.locator(".account-toggle").click();
+  const signedOut = consolePage.waitForResponse(
+    (res) =>
+      res.url() === consoleOrigin + "/api/auth/sign-out" && res.request().method() === "POST",
+  );
+  const closed = Promise.all([
+    terminal.socket.waitForEvent("close", { timeout: 45_000 }),
+    secondHello.socket.waitForEvent("close", { timeout: 45_000 }),
+  ]);
+  await consolePage.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  assert.ok((await signedOut).ok());
+  await closed;
+  const refused = await second.goto(origin + "/settings/advanced");
+  assert.equal(refused.status(), 403, "a revoked parent cannot reuse its native handle");
+  assert.equal(sends.length, 1);
+  await guarded.close();
+  const source = await execute("git", ["rev-parse", "HEAD"], { cwd: import.meta.dirname });
+  const changes = await execute("git", ["diff", "--name-only", "HEAD"], {
+    cwd: import.meta.dirname,
+  });
+  await writeFile(
+    receiptPath,
+    JSON.stringify(
+      {
+        observedAt: new Date().toISOString(),
+        source: source.stdout.trim(),
+        trackedChanges: changes.stdout.trim().length > 0,
+        releaseRevision: oidc.releaseRevision,
+        controllerImage: oidc.controllerImage,
+        agentId: agent.id,
+        revisionId: rev.id,
+        runtimeImagesBeforeUpgrade: native[0].status.containerStatuses.map(({ name, imageID }) => ({
+          name,
+          imageID,
+        })),
+        provider: "OIDC protocol fixture; runtime and model are real",
+        reopenedSameConversation: true,
+        chatSubmissions: sends.length,
+        originalReplySocketSurvivedRepeatLaunchAndRenewals: true,
+        renewalObservationMs: 55_000,
+        distinctSocketsClosedOnParentSignOut: true,
+        revokedNativeRequestStatus: refused.status(),
+      },
+      null,
+      2,
+    ) + "\n",
+    { mode: 0o600, flag: "wx" },
+  );
+  t.diagnostic(`Guarded native browser receipt: ${receiptPath}`);
+  t.diagnostic(
+    "Guarded OIDC provider fixture: real host-only browser exchange, Gateway hello and model reply; repeated launch reopened the same conversation without a turn, the original socket survived two renewals, and parent sign-out closed both sockets.",
   );
 }

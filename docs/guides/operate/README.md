@@ -31,7 +31,8 @@ which resources Helm leaves behind when you uninstall it.
 Start with the [upgrade checklist](../deploy/upgrade-checklist.md), then follow
 [production image upgrades](../deploy/production-upgrade.md) or
 [Installation configuration changes](../deploy/production-installation-changes.md).
-If an upgrade fails, use [upgrade recovery](../deploy/production-upgrade-recovery.md).
+If an upgrade fails, use [upgrade recovery](../deploy/production-upgrade-recovery.md),
+including [cleanup after an interrupted preflight](../deploy/production-preflight-cleanup.md).
 
 ## Run the platform
 

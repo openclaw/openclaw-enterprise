@@ -1077,8 +1077,12 @@ test("a refused Request Stop again stays reachable with its reason", async (t) =
   assert.equal(await page.getByRole("dialog", { name: "Stop this Agent?" }).count(), 0);
 });
 
-for (const reply of ["an incomplete preview", "a save with different rules"] as const) {
-  test(`Agent policy does not apply after ${reply}`, async (t) => {
+for (const reply of [
+  "an incomplete preview",
+  "a mismatched application receipt",
+  "a lost application receipt",
+] as const) {
+  test(`Agent policy handles ${reply} without repeating a mutation`, async (t) => {
     const grant = {
       id: "python-docs",
       binary: "/usr/bin/python3.11",
@@ -1101,22 +1105,25 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
     await page.getByRole("button", { name: "Remove rule", exact: true }).click();
     const refresh = page.getByRole("button", { name: "Refresh policy", exact: true });
 
-    // The operator removes the grant. Let the controller validate or commit that removal, then
-    // deliver an incomplete preview, or a well-formed save response still listing the old grant.
-    await page.route(fixture.origin + base + (preview ? "/validate" : ""), async (route) => {
-      if (route.request().method() !== (preview ? "POST" : "PUT")) {
-        return route.continue();
-      }
+    // Allow the controller to complete the request before corrupting or losing its receipt.
+    await page.route(fixture.origin + base + (preview ? "/validate" : "/apply"), async (route) => {
       const response = await route.fetch();
-      assert.equal(response.status(), 200);
+      assert.equal(response.status(), preview ? 200 : 202);
       const { data, meta } = await response.json();
-      const actual = preview ? data.data : data;
-      assert.deepEqual(actual.additions, []);
-      if (!preview) {
-        assert.equal(await refresh.isDisabled(), true, "cannot start a refresh during the save");
+      if (preview) {
+        assert.deepEqual(data.data.additions, []);
+        await route.fulfill({ response, json: { data: { success: true, data: {} }, meta } });
+        return;
       }
-      const changed = preview ? { success: true, data: {} } : { ...actual, additions: [grant] };
-      await route.fulfill({ response, json: { data: changed, meta } });
+      assert.equal(await refresh.isDisabled(), true);
+      assert.deepEqual(data.additions, []);
+      assert.equal(data.application.revisionId, revision.id);
+      if (reply === "a lost application receipt") {
+        await route.abort("failed");
+      } else {
+        const application = { ...data.application, policyVersion: 2 };
+        await route.fulfill({ response, json: { data: { ...data, application }, meta } });
+      }
     });
     const review = page.getByRole("button", { name: "Review changes", exact: true });
     await review.click();
@@ -1132,8 +1139,7 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       assert.equal(pathRequests(requests, "PUT", base).length, 0);
       assert.equal(await review.isEnabled(), true);
     } else {
-      // A refresh started before Save can still be delivering the previous version when Save
-      // finishes. Only the operator's subsequent refresh can resolve the uncertain outcome.
+      // A pre-mutation read arrives while the Console is reconciling the committed change.
       const policyUrl = fixture.origin + base;
       const stale = await holdRequests(t, page, policyUrl, {
         once: true,
@@ -1142,32 +1148,51 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       });
       await refresh.click();
       await stale.requested;
+      const lostReceipt = reply === "a lost application receipt";
+      const reconcile = await holdRequests(t, page, policyUrl, {
+        once: true,
+        method: "GET",
+        afterServer: true,
+        loseResponse: lostReceipt,
+      });
       await page.getByRole("button", { name: "Save and apply to current revision" }).click();
-      const alert = page
-        .getByRole("alert")
-        .filter({ hasText: "could not confirm the saved rules" });
-      await alert.waitFor();
-
+      await reconcile.requested;
       const delivered = page.waitForResponse(policyUrl);
       stale.release();
-      const response = await delivered;
-      assert.equal(response.status(), 200);
-      assert.equal((await response.json()).data.policy.version, 2);
+      assert.equal((await (await delivered).json()).data.policy.version, 2);
       await nextFrames(page);
-      assert.equal(await alert.isVisible(), true, "a pre-save policy read cannot resolve the save");
-      assert.equal(await review.count(), 0);
-      assert.equal(
-        await page.getByRole("button", { name: /^(Apply saved rules|Retry application)$/ }).count(),
-        0,
-      );
-      await refresh.click();
+      assert.equal(await refresh.isDisabled(), true);
+      reconcile.release();
+      if (lostReceipt) {
+        const dialog = page.getByRole("dialog");
+        // The failed reconciliation keeps the summary's retry action behind the open dialog.
+        await page.getByText("Retry policy read", { exact: true }).waitFor();
+        assert.equal(
+          await dialog.getByRole("button", { name: "Done", exact: true }).isEnabled(),
+          true,
+        );
+        assert.equal(await refresh.isEnabled(), true);
+        const reads = pathRequests(requests, "GET", base).length;
+        await refresh.click();
+        await dialog.getByText(/Policy v3 reloaded/).waitFor();
+        assert.equal(pathRequests(requests, "GET", base).length, reads + 1);
+      }
       await page.getByText(/Policy v3 reloaded/).waitFor();
-      assert.equal(pathRequests(requests, "PUT", base).length, 1);
+      await page.getByRole("dialog").getByText("Applying…", { exact: true }).waitFor();
     }
 
     const { policy } = (await fixture.request("GET", base)).data;
-    assert.equal(pathRequests(requests, "POST", base + "/apply").length, 0);
-    assert.equal(policy.application, undefined);
+    assert.equal(pathRequests(requests, "PUT", base).length, 0);
+    assert.deepEqual(
+      pathRequests(requests, "POST", base + "/apply").map(({ body }) => body),
+      preview ? [] : [{ expectedVersion: 2, revisionId: revision.id, additions: [] }],
+    );
+    assert.equal(
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`)
+        .length,
+      0,
+    );
+    assert.equal(policy.application?.state, preview ? undefined : "pending");
     assert.equal(policy.version, preview ? 2 : 3);
     assert.deepEqual(policy.additions, preview ? [grant] : []);
   });

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { verifySingleSlackDelivery } from "../helpers/slack-delivery.mjs";
+import {
+  assertSlackChannelDestination,
+  verifySingleSlackDelivery,
+} from "../helpers/slack-delivery.mjs";
 import { sessionEvidenceScript } from "../helpers/normal-agent-tools.mjs";
 import {
   arrangeProductionTopology,
@@ -81,6 +84,7 @@ test(
       const { role, userId } = members[index];
       let status = "unverified";
       if (result.status === "fulfilled") {
+        assertSlackChannelDestination(result.value, slack.channelId);
         status = result.value.channel?.is_member === true ? "member" : "not-member";
       }
       testContext.diagnostic(

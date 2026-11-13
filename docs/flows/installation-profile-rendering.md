@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-03
-last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
+updated: 2026-11-13
+last_updated_session: authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9
 ---
 
 # Installation Profile Rendering Flow
@@ -143,7 +143,11 @@ characters total, without a per-segment cap. Namespace names and unqualified
 label names/values retain their 63 limit. The chart and
 `scripts/prepare-bootstrap-volume:is_dns_subdomain` share this prefix/claim
 rule; the chart checks peers only for nonempty maps. Repository Backend IDs
-follow their rule within 200 UTF-16 code units, as in the chart.
+follow their rule within 200 UTF-16 code units, as in the chart. After composing
+all Backends, preflight also checks the startup rule that their IDs are unique.
+A repository Backend cannot use `chatgpt-primary` when managed ChatGPT accounts
+are enabled; that ID remains valid without the ChatGPT Backend. A collision
+produces failed preflight without either deployment file.
 
 ### 4. Build Helm values
 
@@ -264,7 +268,10 @@ Input-loading failures exit without a preflight report.
 The preflight report lists warnings, external prerequisites, and the next
 operator steps. It tells the operator to update the Installation startup Secret
 before the Helm upgrade, so API and worker pod-template annotations roll when
-startup-only configuration changes. The report does not claim live readiness:
+startup-only configuration changes. The Slack proxy reads its configuration from its
+Pod template. Removing the checksum annotation from a previously annotated proxy
+triggers one rollout. Later Installation checksum changes preserve its Pod template.
+The report does not claim live readiness:
 Helm rendering, Secret creation, runtime proof, hosted discovery, Slack consumer
 activation, and repository registry creation need separate evidence.
 
@@ -306,11 +313,17 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-11-13: Document how Installation checksum changes affect the Slack proxy during chart upgrades. (authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9, accompanying change)
+
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
 - 2026-10-28 20:25: Refuse input/output file collisions before cleanup in the accompanying change. (authoring-run/ebaa9b91-58b3-47dc-97d9-ad103250247d - 420d76bcbd15dcd3644e474d413484c35ce22797)
 
+- 2026-10-19 04:34: Preserve Backend ID checks and upstream CA mount alias rules in the ordinary main merge. (authoring-run/4a78d437-454c-4401-81af-914631ec80fd - 839abfa1235847cdd0b2a9a31ae9212f560fe985)
+
 - 2026-10-18 14:40: Compare database CA mount destinations with Helm. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
+
+- 2026-10-17 17:55: Refuse composed Backend ID collisions before deployment files are written. (authoring-run/e4102058-8f0c-46a5-9b80-14c6ba6d7801 - 7b3a70b371fd914540fbc05e3a8080b2bbb1dd6d)
 
 - 2026-10-13 16:26: Merge current profile validation while retaining hosted discovery DNS snapshots and explicit network policy inputs. (authoring-run/1e1d633d-329d-462f-b077-6cb27c43a6e4 - da72ecf45a0989b857fd7f05d8238a38a979eb64)
 

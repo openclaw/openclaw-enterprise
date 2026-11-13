@@ -1,51 +1,15 @@
+import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
+import {
+  boundedProgressLines,
+  openShellProgress,
+  openShellProgressPrefix,
+} from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.mjs";
-
-const safeOccErrorCodes = new Set([
-  "INVALID_REQUEST",
-  "UNAUTHENTICATED",
-  "FORBIDDEN",
-  "NOT_FOUND",
-  "METHOD_NOT_ALLOWED",
-  "INSTALLATION_EXISTS",
-  "RESOURCE_CONFLICT",
-  "NAMESPACE_NOT_READY",
-  "NAMESPACE_NOT_EMPTY",
-  "PAYLOAD_TOO_LARGE",
-  "UNSUPPORTED_MEDIA_TYPE",
-  "UNKNOWN_OUTCOME",
-  "INTERNAL_ERROR",
-  "DEPENDENCY_UNAVAILABLE",
-]);
-
-const safeChatGptOperations = new Set([
-  "create-service-account",
-  "delete-service-account",
-  "create-credential",
-  "delete-credential",
-]);
-
-const safeRepositoryPlatformSetupStages = new Set([
-  "selection",
-  "kubernetes-setup",
-  "database-bootstrap",
-  "controller-startup",
-  "namespace-create",
-  "namespace-provisioning",
-  "namespace-reconciliation",
-  "controller-stop",
-  "credential-service-startup",
-  "control-relay-startup",
-  "relay-creation",
-  "relay-readiness",
-  "controller-restart",
-]);
-
-const safeCredentialServiceFailures = new Set([
-  "gateway-listener",
-  "child-exited",
-  "child-deadline",
-  "other",
-]);
+import { recordsCoverage } from "./full-integration-coverage.ts";
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "./openshell-git-retention.mjs";
 
 const postTestAsyncActivityPrefix =
   "Error: A resource generated asynchronous activity after the test ended.";
@@ -57,7 +21,9 @@ const openShellStageMeasurementKind = "openshell-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellPolicyCheckKind = "openshell-network-policy-check";
 const openShellFixtureTeardownKind = "openshell-fixture-teardown";
+const openShellGatewayTurnFailureKind = "openshell-gateway-turn-failure";
 const openShellNativePolicyCheckKind = "openshell-native-policy-check";
+const openShellInitialTurnoverKind = "openshell-initial-turnover";
 const nativePolicyPrimaryChecks = new Set([
   "agent.get",
   "agent.status-200",
@@ -106,13 +72,6 @@ const nativePolicyCleanupChecks = new Set([
   "cleanup.remove-directory",
   "cleanup.resume-worker",
 ]);
-const openShellMeasurementKinds = new Set([
-  openShellStageMeasurementKind,
-  openShellSandboxMeasurementKind,
-  openShellPolicyCheckKind,
-  openShellFixtureTeardownKind,
-  openShellNativePolicyCheckKind,
-]);
 const openShellPolicyChecks = new Set([
   "installation-discovery",
   "cluster-target-reachability",
@@ -132,9 +91,21 @@ const openShellPolicyChecks = new Set([
   "provider-allow-observed",
   "revision-unchanged",
   "second-agent-isolation",
+  "second-agent-control-request",
+  "second-agent-denied-request",
   "second-agent-cleanup",
   "editing-state-enforcement",
   "grant-revocation",
+]);
+const firstAgentStages = new Set([
+  "setup",
+  "cleanup",
+  "initial-deploy-and-model",
+  "reuse-model",
+  "native-deploy",
+  "native-model",
+  "native-redeploy",
+  "native-resumed-model",
 ]);
 const openShellSandboxStages = new Set([
   "installation",
@@ -168,61 +139,115 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === "keycloak-enrollment-interrupted") {
+    const { kind, row, operation } = value;
+    return Number.isSafeInteger(row) &&
+      row >= 0 &&
+      row <= 33 &&
+      [
+        "close-console",
+        "close-ingress",
+        "close-context",
+        "prepare-installation",
+        "delete-realm-resource",
+        "configure-realm",
+        "query-users",
+        "serve-console",
+        "open-page",
+        "sign-in",
+        "wait-for-callback",
+        "wait-for-console",
+      ].includes(operation)
+      ? { kind, row, operation }
+      : undefined;
+  }
+  if (isRecord(value) && value.kind === openShellGitRetentionKind) {
+    return projectOpenShellGitRetention(value);
+  }
+  if (isRecord(value) && value.kind === openShellInitialTurnoverKind) {
+    return safeOpenShellInitialTurnoverMeasurement(value);
+  }
+  if (isRecord(value) && value.kind === openShellGatewayTurnFailureKind) {
+    const { kind, checkpoint, turn, status } = value;
+    const outsideTurn = checkpoint === "gateway-setup" || checkpoint === "native-evidence";
+    const validTurn = outsideTurn
+      ? turn === 0
+      : [
+          "turn-request",
+          "response-read",
+          "credential-absence",
+          "http-status",
+          "response-nonce",
+        ].includes(checkpoint) &&
+        (turn === 1 || turn === 2);
+    const validStatus =
+      status === null ||
+      (checkpoint === "http-status" && Number.isInteger(status) && status >= 100 && status <= 599);
+    return validTurn && validStatus ? { kind, checkpoint, turn, status } : undefined;
+  }
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
-    if (
-      ![
-        "installation",
-        "initial-model",
-        "filesystem-network",
-        "network-policy",
-        "credential-route",
-        "replacement",
-        "untrusted-upstream",
-        "tool-outage",
-        "model-outage",
-        "gateway-outage",
-        "oauth-refresh",
-        "non-model-source",
-        "credential-absence",
-        "credential-withdrawal",
-        "embedded-refusal",
-        "native-policy",
-      ].includes(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 7_200_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    const { kind, stage, outcome } = value;
+    const allowedStage =
+      stage !== "exposure-auth" && Boolean(openShellProgress({ kind, stage, outcome }));
+    return safeStageMeasurement(value, allowedStage, 7_200_000);
   }
   if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
-    if (
-      !openShellSandboxStages.has(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 2_400_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, openShellSandboxStages.has(value.stage), 2_400_000);
   }
   if (isRecord(value) && value.kind === openShellPolicyCheckKind) {
     return openShellPolicyChecks.has(value.check)
       ? { kind: value.kind, check: value.check }
       : undefined;
+  }
+  if (isRecord(value) && value.kind === "openshell-policy-probe") {
+    const count = (number) => Number.isSafeInteger(number) && number >= 0;
+    const hash = (text) => typeof text === "string" && /^[a-f0-9]{64}$/.test(text);
+    if (
+      !(
+        (value.role === "control" && value.port === 8082) ||
+        (value.role === "policy" && value.port === 8083)
+      ) ||
+      !hash(value.targetHash) ||
+      !count(value.commandCount) ||
+      !count(value.candidateCount) ||
+      value.candidateCount > value.commandCount ||
+      !(value.selectedIndex === null
+        ? value.candidateCount === 0
+        : count(value.selectedIndex) &&
+          value.selectedIndex < value.commandCount &&
+          value.candidateCount > 0) ||
+      !count(value.laterUriMatches) ||
+      value.laterUriMatches >
+        (value.selectedIndex === null ? 0 : value.commandCount - value.selectedIndex - 1) ||
+      !Array.isArray(value.commands) ||
+      value.commands.length !== Math.min(8, value.commandCount - (value.selectedIndex ?? 0)) ||
+      !value.commands.every(
+        (command) =>
+          isRecord(command) &&
+          hash(command.hash) &&
+          [command.hasUrllib, command.hasInterpreter, command.hasExpectedUri].every(
+            (flag) => typeof flag === "boolean",
+          ),
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      role: value.role,
+      port: value.port,
+      targetHash: value.targetHash,
+      commandCount: value.commandCount,
+      candidateCount: value.candidateCount,
+      selectedIndex: value.selectedIndex,
+      laterUriMatches: value.laterUriMatches,
+      commands: value.commands.map(({ hash, hasUrllib, hasInterpreter, hasExpectedUri }) => ({
+        hash,
+        hasUrllib,
+        hasInterpreter,
+        hasExpectedUri,
+      })),
+    };
   }
   if (isRecord(value) && value.kind === openShellNativePolicyCheckKind) {
     const { kind, stage, primaryCheck, cleanupCheck } = value;
@@ -240,6 +265,55 @@ function safeMeasurement(value) {
     return ["passed", "failed", "incomplete"].includes(value.outcome)
       ? { kind: value.kind, outcome: value.outcome }
       : undefined;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-startup-failure") {
+    if (
+      ![
+        "unknown",
+        "canceled",
+        "deadline",
+        "controller-image-import",
+        "routing",
+        "network-verification",
+        "network-cleanup",
+        "registry-detach",
+        "platform-namespace",
+        "openshell-preparation",
+        "rollback",
+      ].includes(value.primaryStage) ||
+      typeof value.cleanupFailed !== "boolean" ||
+      typeof value.parentContextDone !== "boolean" ||
+      (value.routingOperation !== undefined &&
+        (value.primaryStage !== "routing" ||
+          ![
+            "manifest-download",
+            "gateway-api-readiness",
+            "manifest-filter",
+            "manifest-write",
+            "manifest-apply",
+            "controller-crd-readiness",
+            "controller-rollout",
+            "gateway-class-apply",
+            "gateway-class-readiness",
+            "node-pod-cidr",
+          ].includes(value.routingOperation))) ||
+      (value.routingController !== undefined &&
+        (value.routingOperation === undefined ||
+          value.routingOperation === "node-pod-cidr" ||
+          !["cert-manager", "envoy-gateway"].includes(value.routingController)))
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      primaryStage: value.primaryStage,
+      cleanupFailed: value.cleanupFailed,
+      parentContextDone: value.parentContextDone,
+      ...(value.routingOperation !== undefined ? { routingOperation: value.routingOperation } : {}),
+      ...(value.routingController !== undefined
+        ? { routingController: value.routingController }
+        : {}),
+    };
   }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
@@ -274,6 +348,22 @@ function safeMeasurement(value) {
     }
     return result;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-manifest-failure") {
+    if (
+      ![
+        "selected-input",
+        "http-status",
+        "transport",
+        "deadline",
+        "canceled",
+        "integrity",
+        "local-io",
+      ].includes(value.reason)
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, reason: value.reason };
+  }
   if (isRecord(value) && value.kind === "local-first-agent-command") {
     if (
       !["setup", "cleanup"].includes(value.phase) ||
@@ -290,6 +380,20 @@ function safeMeasurement(value) {
         "k3d-image-import",
         "kubernetes-readiness",
         "helm-install",
+        "openshell-image-selection",
+        "openshell-image-validation",
+        "openshell-assets-directory",
+        "openshell-charts",
+        "openshell-agent-sandbox-manifest",
+        "openshell-agent-sandbox-image",
+        "openshell-runtime-class",
+        "openshell-agent-sandbox-apply",
+        "openshell-agent-sandbox-rollout",
+        "openshell-workspace-render",
+        "openshell-gateway-import",
+        "openshell-sandbox-import",
+        "openshell-supervisor-import",
+        "openshell-prepare",
       ].includes(value.stage) ||
       !Number.isInteger(value.count) ||
       value.count < 1 ||
@@ -365,30 +469,7 @@ function safeMeasurement(value) {
     return result;
   }
   if (isRecord(value) && value.kind === "local-first-agent") {
-    if (
-      ![
-        "setup",
-        "cleanup",
-        "initial-deploy-and-model",
-        "reuse-model",
-        "native-deploy",
-        "native-model",
-        "native-redeploy",
-        "native-resumed-model",
-      ].includes(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 7_200_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, firstAgentStages.has(value.stage), 7_200_000);
   }
   if (isRecord(value) && value.kind === "runtime-model-probe") {
     return safeModelProbeMeasurement(value);
@@ -418,6 +499,167 @@ function safeMeasurement(value) {
     sample: value.sample,
     seconds: Math.round(value.seconds * 10) / 10,
   };
+}
+
+// Shared by the real refresh observer and receipt admission. This establishes
+// original-turn continuity only; it cannot identify an interrupted workspace read.
+export function openShellTurnoverQualification(value) {
+  if (value.requestOutcome === "failed") {
+    return "failed";
+  }
+  if (
+    value.observation !== "complete" ||
+    !value.stableRuntime ||
+    !value.settingsConsistent ||
+    value.httpStatus !== 200 ||
+    !value.nonceMatched ||
+    !value.nodeIdSha256 ||
+    !value.configUnchanged ||
+    !value.policyUnchanged ||
+    !value.configBeforeSha256 ||
+    value.configBeforeSha256 !== value.configAfterSha256 ||
+    !value.policyBeforeSha256 ||
+    value.policyBeforeSha256 !== value.policyAfterSha256 ||
+    !value.providerEnvBeforeSha256 ||
+    !value.providerEnvAfterSha256 ||
+    !Number.isSafeInteger(value.clockOffsetMinMs) ||
+    !Number.isSafeInteger(value.clockOffsetMaxMs) ||
+    value.clockOffsetMinMs > value.clockOffsetMaxMs ||
+    value.startedAtMs > value.finishedAtMs
+  ) {
+    return "incomplete";
+  }
+  const events = [value.turnoverAtMs, value.staleTunnelAtMs];
+  const providerChanged = value.providerEnvBeforeSha256 !== value.providerEnvAfterSha256;
+  if (
+    !providerChanged &&
+    !value.providerEnvChanged &&
+    !value.harness1006LogObserved &&
+    events.every((time) => time === null) &&
+    value.capturedGeneration === null &&
+    value.currentGeneration === null &&
+    Number.isSafeInteger(value.connectedBeforeMs) &&
+    value.connectedBeforeMs === value.connectedAfterMs
+  ) {
+    return "unexercised";
+  }
+  const inRequest = (time) =>
+    Number.isSafeInteger(time) &&
+    time >= value.startedAtMs + value.clockOffsetMaxMs &&
+    time <= value.finishedAtMs + value.clockOffsetMinMs;
+  if (
+    providerChanged &&
+    value.providerEnvChanged &&
+    value.harness1006LogObserved &&
+    events.every(inRequest) &&
+    Number.isSafeInteger(value.connectedBeforeMs) &&
+    value.connectedBeforeMs <= value.startedAtMs + value.clockOffsetMinMs &&
+    value.connectedAfterMs > value.connectedBeforeMs &&
+    inRequest(value.connectedAfterMs) &&
+    value.turnoverAtMs <= value.staleTunnelAtMs &&
+    value.staleTunnelAtMs <= value.connectedAfterMs &&
+    Number.isSafeInteger(value.capturedGeneration) &&
+    value.capturedGeneration >= 0 &&
+    value.currentGeneration === value.capturedGeneration + 1
+  ) {
+    return "turn-continuity";
+  }
+  return "incomplete";
+}
+
+function safeOpenShellInitialTurnoverMeasurement(value) {
+  if (
+    ![1, 2].includes(value.request) ||
+    !["passed", "failed"].includes(value.requestOutcome) ||
+    !["complete", "unavailable"].includes(value.observation) ||
+    !["turn-continuity", "unexercised", "incomplete", "failed"].includes(value.qualification) ||
+    (value.httpStatus !== null &&
+      !(Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599))
+  ) {
+    return undefined;
+  }
+  const measurement = {
+    kind: value.kind,
+    request: value.request,
+    requestOutcome: value.requestOutcome,
+    httpStatus: value.httpStatus,
+    observation: value.observation,
+    qualification: value.qualification,
+  };
+  for (const key of ["startedAtMs", "finishedAtMs"]) {
+    if (!(Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of ["clockOffsetMinMs", "clockOffsetMaxMs"]) {
+    if (value[key] !== null && !Number.isSafeInteger(value[key])) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "connectedBeforeMs",
+    "connectedAfterMs",
+    "turnoverAtMs",
+    "staleTunnelAtMs",
+    "capturedGeneration",
+    "currentGeneration",
+  ]) {
+    if (value[key] !== null && !(Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "nodeIdSha256",
+    "providerEnvBeforeSha256",
+    "providerEnvAfterSha256",
+    "configBeforeSha256",
+    "configAfterSha256",
+    "policyBeforeSha256",
+    "policyAfterSha256",
+  ]) {
+    if (
+      value[key] !== null &&
+      !(typeof value[key] === "string" && /^[a-f0-9]{64}$/.test(value[key]))
+    ) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "nonceMatched",
+    "harness1006LogObserved",
+    "durableCommands",
+    "configUnchanged",
+    "policyUnchanged",
+    "providerEnvChanged",
+    "settingsConsistent",
+    "stableRuntime",
+  ]) {
+    if (typeof value[key] !== "boolean") {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  return measurement.qualification === openShellTurnoverQualification(measurement)
+    ? measurement
+    : undefined;
+}
+
+function safeStageMeasurement(value, allowedStage, maxElapsedMs) {
+  const { kind, stage, outcome, elapsedMs } = value;
+  if (
+    !allowedStage ||
+    (outcome !== "passed" && outcome !== "failed") ||
+    !Number.isInteger(elapsedMs) ||
+    elapsedMs < 0 ||
+    elapsedMs > maxElapsedMs
+  ) {
+    return undefined;
+  }
+  return { kind, stage, outcome, elapsedMs };
 }
 
 const modelProbeMeasurementCases = new Set([
@@ -495,249 +737,6 @@ function safeSigtermMeasurement(value) {
     stopped: value.stopped,
     elapsedMs: value.elapsedMs,
     budgetMs: value.budgetMs,
-  };
-}
-
-const safeRuntimeImageStockBrokerStages = new Set([
-  "material-init",
-  "native-git-init",
-  "config-patch",
-  "fixture-reachability",
-  "initialize",
-  "bundled-system-skill",
-  "proxy-env",
-  "broker-denial",
-  "outside-home-read",
-  "outside-home-shadow-write",
-  "outside-home-read-after-shadow-write",
-  "git-proof",
-  "explicit-deny",
-  "unrelated-private-host",
-  "direct-private-host",
-]);
-
-function isRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function safeStatus(value) {
-  return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
-}
-
-function pluginStatusPods(value) {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const phases = ["Pending", "Running", "Succeeded", "Failed", "Unknown"];
-  const reasons = [
-    "ContainerCreating",
-    "PodInitializing",
-    "CrashLoopBackOff",
-    "ErrImagePull",
-    "ImagePullBackOff",
-    "CreateContainerConfigError",
-    "CreateContainerError",
-    "RunContainerError",
-    "Error",
-    "Completed",
-    "OOMKilled",
-    "ContainerCannotRun",
-    "StartError",
-  ];
-  return value
-    .slice(0, 3)
-    .filter((pod) => isRecord(pod) && phases.includes(pod.phase))
-    .map((pod) => ({
-      phase: pod.phase,
-      ready: typeof pod.ready === "boolean" ? pod.ready : undefined,
-      scheduled: typeof pod.scheduled === "boolean" ? pod.scheduled : undefined,
-      containers: Array.isArray(pod.containers)
-        ? pod.containers
-            .slice(0, 2)
-            .filter(
-              (container) =>
-                isRecord(container) &&
-                ["gateway", "prepare-private-state"].includes(container.name),
-            )
-            .map((container) => ({
-              name: container.name,
-              restartCount:
-                Number.isInteger(container.restartCount) &&
-                container.restartCount >= 0 &&
-                container.restartCount <= 2147483647
-                  ? container.restartCount
-                  : undefined,
-              exitCode:
-                Number.isInteger(container.exitCode) &&
-                container.exitCode >= 0 &&
-                container.exitCode <= 255
-                  ? container.exitCode
-                  : undefined,
-              waitingReason: reasons.includes(container.waitingReason)
-                ? container.waitingReason
-                : undefined,
-              terminatedReason: reasons.includes(container.terminatedReason)
-                ? container.terminatedReason
-                : undefined,
-            }))
-        : undefined,
-    }));
-}
-
-function schedulingFailureClasses(value) {
-  if (value === undefined) {
-    return undefined;
-  }
-  const allowed = [
-    "disk-pressure",
-    "memory-pressure",
-    "pid-pressure",
-    "not-ready",
-    "unreachable",
-    "cordoned",
-    "control-plane",
-    "insufficient-cpu",
-    "insufficient-memory",
-    "insufficient-ephemeral-storage",
-    "insufficient-pods",
-    "untolerated-taint",
-    "other",
-  ];
-  if (!Array.isArray(value) || value.length > allowed.length) {
-    return ["other"];
-  }
-  const unknown = value.some((entry) => !allowed.includes(entry));
-  const classes = allowed.filter(
-    (entry) => value.includes(entry) || (entry === "other" && unknown),
-  );
-  return classes.length > 0 ? classes : ["other"];
-}
-
-function relayPodDiagnostic(value) {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  if (value.lookup !== "found") {
-    return { lookup: value.lookup === "unavailable" ? "unavailable" : "other" };
-  }
-  const closed = (field, allowed) => (allowed.includes(field) ? field : "other");
-  const integer = (field, maximum) =>
-    Number.isSafeInteger(field) && field >= 0 && field <= maximum ? field : undefined;
-  const boolean = (field) => (typeof field === "boolean" ? field : undefined);
-  return {
-    lookup: "found",
-    phase: closed(value.phase, ["Pending", "Running", "Succeeded", "Failed", "Unknown"]),
-    scheduled: closed(value.scheduled, ["True", "False", "Unknown"]),
-    scheduledReason:
-      value.scheduledReason === undefined
-        ? undefined
-        : closed(value.scheduledReason, ["Unschedulable", "SchedulingGated"]),
-    schedulingFailures: schedulingFailureClasses(value.schedulingFailures),
-    ready: closed(value.ready, ["True", "False", "Unknown"]),
-    containerState: closed(value.containerState, ["waiting", "running", "terminated"]),
-    waitingReason: closed(value.waitingReason, [
-      "ContainerCreating",
-      "PodInitializing",
-      "ImagePullBackOff",
-      "ErrImagePull",
-      "InvalidImageName",
-      "CreateContainerConfigError",
-      "CreateContainerError",
-      "RunContainerError",
-      "CrashLoopBackOff",
-    ]),
-    terminationReason: closed(value.terminationReason, [
-      "Completed",
-      "Error",
-      "OOMKilled",
-      "ContainerCannotRun",
-    ]),
-    exitCode: integer(value.exitCode, 255),
-    restartCount: integer(value.restartCount, 2 ** 31 - 1),
-    nodeAssigned: boolean(value.nodeAssigned),
-    imageIdPresent: boolean(value.imageIdPresent),
-    containerIdPresent: boolean(value.containerIdPresent),
-  };
-}
-
-function filesystemCounters(value) {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const integer = (field) => (Number.isSafeInteger(field) && field >= 0 ? field : undefined);
-  return {
-    availableBytes: integer(value.availableBytes),
-    capacityBytes: integer(value.capacityBytes),
-    inodesFree: integer(value.inodesFree),
-    inodes: integer(value.inodes),
-  };
-}
-
-function nodeFilesystemDiagnostic(value) {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  return value.lookup === "found"
-    ? {
-        lookup: "found",
-        nodeFs: filesystemCounters(value.nodeFs),
-        imageFs: filesystemCounters(value.imageFs),
-      }
-    : { lookup: value.lookup === "unavailable" ? "unavailable" : "other" };
-}
-
-function nodeTaintDiagnostics(value) {
-  if (!Array.isArray(value) || value.length > 64) {
-    return [{ category: "other", effect: "other" }];
-  }
-  const categories = [
-    "disk-pressure",
-    "memory-pressure",
-    "pid-pressure",
-    "not-ready",
-    "unreachable",
-    "cordoned",
-    "network-unavailable",
-    "control-plane",
-    "cloud-provider-uninitialized",
-    "out-of-service",
-    "critical-addons",
-    "other",
-  ];
-  const effects = ["NoSchedule", "NoExecute", "PreferNoSchedule", "other"];
-  const taints = new Map();
-  for (const entry of value) {
-    const category = categories.includes(entry?.category) ? entry.category : "other";
-    const effect = effects.includes(entry?.effect) ? entry.effect : "other";
-    taints.set(`${category}/${effect}`, { category, effect });
-  }
-  return [...taints.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, entry]) => entry);
-}
-
-function relayNodeDiagnostic(value) {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  if (value.lookup !== "found") {
-    return { lookup: value.lookup === "unavailable" ? "unavailable" : "other" };
-  }
-  const condition = (field) => (["True", "False", "Unknown"].includes(field) ? field : "other");
-  const count = (field) =>
-    Number.isSafeInteger(field) && field >= 0 && field <= 2 ** 31 - 1 ? field : undefined;
-  return {
-    lookup: "found",
-    conditions: {
-      ready: condition(value.conditions?.ready),
-      diskPressure: condition(value.conditions?.diskPressure),
-      memoryPressure: condition(value.conditions?.memoryPressure),
-      pidPressure: condition(value.conditions?.pidPressure),
-      networkUnavailable: condition(value.conditions?.networkUnavailable),
-    },
-    unschedulable: typeof value.unschedulable === "boolean" ? value.unschedulable : undefined,
-    taints: nodeTaintDiagnostics(value.taints),
-    taintCount: count(value.taintCount),
-    unrecognizedTaintCount: count(value.unrecognizedTaintCount),
-    filesystems: nodeFilesystemDiagnostic(value.filesystems),
   };
 }
 
@@ -848,7 +847,30 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
   ];
   const vocabularies = {
     proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
+    placementReadFailure: ["request-start-timeout", "session-model-catalog-unavailable"],
     historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
+    historyExecOuterStatus: ["completed", "failed", "waiting"],
+    historyExecOuterCode: [
+      "aborted",
+      "invalid_input",
+      "runtime_unavailable",
+      "timeout",
+      "output_limit_exceeded",
+      "snapshot_limit_exceeded",
+      "internal_error",
+    ],
+    historyExecOuterFailurePhase: ["input", "guest", "bridge", "host"],
+    historyExecNestedStatus: ["completed", "failed"],
+    historyExecNestedFailureKind: [
+      "shell-command-not-found",
+      "shell-not-executable",
+      "overall-timeout",
+      "no-output-timeout",
+      "memory-limit",
+      "signal",
+      "aborted",
+      "runtime-error",
+    ],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
     proofError: turnErrors,
@@ -904,6 +926,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "historyToolProofPresent",
     "historyFinalProofPresent",
     "historySettleExpired",
+    "historyExecBridgeDispatchStarted",
+    "historyExecProofProgramEntryPresent",
     "workspaceReferencePresent",
     "attachedSessionMatches",
     "expectedNodeIdPresent",
@@ -959,264 +983,40 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
       safe[field] = worker[field];
     }
   }
+  if (
+    Number.isInteger(worker.historyExecNestedExitCode) &&
+    worker.historyExecNestedExitCode >= 0 &&
+    worker.historyExecNestedExitCode <= 255
+  ) {
+    safe.historyExecNestedExitCode = worker.historyExecNestedExitCode;
+  }
+  if (
+    safe.historyExecNestedExitCode > 0 &&
+    ["write-session-file", "read-session-file", "read-workspace-file", "emit-proof"].includes(
+      worker.historyExecFailureOperation,
+    ) &&
+    [
+      "EACCES",
+      "EPERM",
+      "ENOENT",
+      "EEXIST",
+      "EISDIR",
+      "ENOTDIR",
+      "ENOSPC",
+      "EROFS",
+      "EMFILE",
+      "EIO",
+      "other",
+    ].includes(worker.historyExecFailureCode)
+  ) {
+    safe.historyExecFailureOperation = worker.historyExecFailureOperation;
+    safe.historyExecFailureCode = worker.historyExecFailureCode;
+  }
   return { ...diagnostic, worker: safe };
 }
 
 function failureDiagnostic(error) {
-  const diagnostic = error?.openclawCiDiagnostic;
-  if (!isRecord(diagnostic)) {
-    return undefined;
-  }
-  if (diagnostic.kind === "openshell-startup-process") {
-    const keys = Reflect.ownKeys(diagnostic);
-    if (!keys.includes("kind") || !keys.includes("outcome")) {
-      return undefined;
-    }
-    const { kind, outcome, exitCode, signal, code } = diagnostic;
-    if (outcome === "output-limit" && keys.length === 2) {
-      return { kind, outcome };
-    }
-    if (keys.length !== 3) {
-      return undefined;
-    }
-    if (
-      outcome === "exit" &&
-      keys.includes("exitCode") &&
-      Number.isInteger(exitCode) &&
-      exitCode > 0 &&
-      exitCode <= 255
-    ) {
-      return { kind, outcome, exitCode };
-    }
-    if (
-      outcome === "signal" &&
-      keys.includes("signal") &&
-      typeof signal === "string" &&
-      Object.hasOwn(process.getBuiltinModule("node:os").constants.signals, signal)
-    ) {
-      return { kind, outcome, signal };
-    }
-    if (
-      outcome === "launch-error" &&
-      keys.includes("code") &&
-      [
-        "E2BIG",
-        "EACCES",
-        "EAGAIN",
-        "EMFILE",
-        "ENFILE",
-        "ENOENT",
-        "ENOEXEC",
-        "ENOMEM",
-        "ENOTDIR",
-        "EPERM",
-      ].includes(code)
-    ) {
-      return { kind, outcome, code };
-    }
-    return undefined;
-  }
-  if (diagnostic.kind === "native-first-agent-proof") {
-    return nativeFirstAgentProofDiagnostic(diagnostic.failureStage, diagnostic.worker);
-  }
-  if (diagnostic.kind === "runtime-model-probe") {
-    if (
-      !["outer-timeout", "wrapper-exited", "classification"].includes(diagnostic.reason) ||
-      ![
-        "not-observed",
-        "READY",
-        "AUTHENTICATION_FAILED",
-        "MODEL_PROBE_CPU_STARVED",
-        "MODEL_PROBE_FAILED",
-        "MODEL_PROBE_TIMEOUT",
-        "UNAVAILABLE",
-        "other",
-      ].includes(diagnostic.probe) ||
-      !["not-observed", "ok", "failed", "other"].includes(diagnostic.modelPhase)
-    ) {
-      return undefined;
-    }
-    const result = {
-      kind: "runtime-model-probe",
-      reason: diagnostic.reason,
-      probe: diagnostic.probe,
-      modelPhase: diagnostic.modelPhase,
-    };
-    for (const key of [
-      "running",
-      "readyObserved",
-      "pluginReadyObserved",
-      "nativeSpawnPhaseObserved",
-      "failureObserved",
-    ]) {
-      if (typeof diagnostic[key] !== "boolean") {
-        return undefined;
-      }
-      result[key] = diagnostic[key];
-    }
-    for (const key of [
-      "loadClientsSubmitted",
-      "loadClientsStarted",
-      "loadClientsSettled",
-      "loadClientsRejected",
-    ]) {
-      if (!Number.isInteger(diagnostic[key]) || diagnostic[key] < 0 || diagnostic[key] > 8) {
-        return undefined;
-      }
-      result[key] = diagnostic[key];
-    }
-    if (
-      result.loadClientsSettled > result.loadClientsSubmitted ||
-      result.loadClientsStarted > result.loadClientsSubmitted ||
-      result.loadClientsRejected > result.loadClientsSettled
-    ) {
-      return undefined;
-    }
-    for (const key of ["capMs", "elapsedMs", "cpuWaitMs"]) {
-      if (diagnostic[key] === undefined || (key === "cpuWaitMs" && diagnostic[key] === null)) {
-        result[key] = diagnostic[key];
-      } else if (
-        Number.isSafeInteger(diagnostic[key]) &&
-        diagnostic[key] >= 0 &&
-        diagnostic[key] <= 3_600_000
-      ) {
-        result[key] = diagnostic[key];
-      } else {
-        return undefined;
-      }
-    }
-    result.probeStage = [
-      "prepare",
-      "preflight",
-      "spawn",
-      "returned",
-      "cleanup",
-      "complete",
-    ].includes(diagnostic.probeStage)
-      ? diagnostic.probeStage
-      : "not-observed";
-    return result;
-  }
-  if (diagnostic.kind === "network-policy") {
-    return [
-      "Agent outbound platform traffic",
-      "Agent outbound Kubernetes API traffic",
-      "Agent outbound cloud metadata traffic",
-      "cross-tenant Agent traffic",
-      "same-tenant Agent-to-Agent traffic",
-      "gateway-to-candidate Agent traffic",
-      "same-tenant gateway-to-Agent traffic",
-      "cross-tenant gateway-to-Agent traffic",
-    ].includes(diagnostic.stage)
-      ? { kind: "network-policy", stage: diagnostic.stage }
-      : undefined;
-  }
-  if (diagnostic.kind === "kubernetes-plugin-status") {
-    return ["ready-status", "warning-status", "initial-rollout", "warning-rollout"].includes(
-      diagnostic.stage,
-    )
-      ? {
-          kind: "kubernetes-plugin-status",
-          stage: diagnostic.stage,
-          pods: pluginStatusPods(diagnostic.pods),
-        }
-      : undefined;
-  }
-  if (diagnostic.kind === "repository-platform-setup") {
-    const stage = diagnostic.stage;
-    return typeof stage === "string" && safeRepositoryPlatformSetupStages.has(stage)
-      ? {
-          kind: "repository-platform-setup",
-          stage,
-          relayPod:
-            stage === "relay-readiness" ? relayPodDiagnostic(diagnostic.relayPod) : undefined,
-          relayNode:
-            stage === "relay-readiness" ? relayNodeDiagnostic(diagnostic.relayNode) : undefined,
-          credentialService:
-            stage === "credential-service-startup" &&
-            safeCredentialServiceFailures.has(diagnostic.credentialService)
-              ? diagnostic.credentialService
-              : undefined,
-        }
-      : undefined;
-  }
-  if (diagnostic.kind === "runtime-image-stock-broker") {
-    const stage = diagnostic.stage;
-    return typeof stage === "string" && safeRuntimeImageStockBrokerStages.has(stage)
-      ? { kind: "runtime-image-stock-broker", stage }
-      : undefined;
-  }
-  if (diagnostic.kind === "metrics-monitoring") {
-    const stages = ["prometheus-up", "occ-request", "grafana-health", "grafana-datasource"];
-    const reasons = ["timeout", "container-exited", "query-error"];
-    if (!stages.includes(diagnostic.stage) || !reasons.includes(diagnostic.reason)) {
-      return undefined;
-    }
-    return {
-      kind: "metrics-monitoring",
-      stage: diagnostic.stage,
-      reason: diagnostic.reason,
-      container: ["server", "agent", "grafana"].includes(diagnostic.container)
-        ? diagnostic.container
-        : undefined,
-      exitCode:
-        Number.isInteger(diagnostic.exitCode) &&
-        diagnostic.exitCode >= 0 &&
-        diagnostic.exitCode <= 255
-          ? diagnostic.exitCode
-          : undefined,
-      lastHttpStatus: safeStatus(diagnostic.lastHttpStatus),
-    };
-  }
-  if (diagnostic.kind === "observability-installation-status") {
-    const status = safeStatus(diagnostic.status);
-    return status === undefined
-      ? undefined
-      : { kind: "observability-installation-status", status, expectedStatus: 401 };
-  }
-  if (diagnostic.kind === "observability-log-export") {
-    // Which attributed source never reached the OTLP receiver; no record content.
-    return typeof diagnostic.api === "boolean" && typeof diagnostic.worker === "boolean"
-      ? { kind: "observability-log-export", api: diagnostic.api, worker: diagnostic.worker }
-      : undefined;
-  }
-  if (diagnostic.kind !== "controller-http") {
-    return undefined;
-  }
-  const status = safeStatus(diagnostic.status);
-  const expectedStatus = safeStatus(diagnostic.expectedStatus);
-  const occErrorCode = diagnostic.occErrorCode;
-  if (
-    status === undefined ||
-    expectedStatus === undefined ||
-    typeof occErrorCode !== "string" ||
-    !safeOccErrorCodes.has(occErrorCode)
-  ) {
-    return undefined;
-  }
-  return {
-    kind: "controller-http",
-    status,
-    expectedStatus,
-    occErrorCode,
-    upstream: upstreamDiagnostic(diagnostic.upstream),
-  };
-}
-
-function upstreamDiagnostic(value) {
-  if (!isRecord(value) || value.kind !== "chatgpt-admin-http") {
-    return undefined;
-  }
-  const status = safeStatus(value.status);
-  const operation = value.operation;
-  if (
-    status === undefined ||
-    typeof operation !== "string" ||
-    !safeChatGptOperations.has(operation)
-  ) {
-    return undefined;
-  }
-  return { kind: "chatgpt-admin-http", operation, status };
+  return projectFailureDiagnostic(error, nativeFirstAgentProofDiagnostic);
 }
 
 // Stack lines before the first frame: the "Name: message" header.
@@ -1285,14 +1085,43 @@ function outputTail() {
   const partial = { stdout: "", stderr: "" };
   const dropping = { stdout: false, stderr: false };
   let omitted = 0;
+  // A blank before a marker is its separator, even across chunks or stderr.
+  // Keep its position, but do not let it evict an ordinary line until classified.
+  let pendingStdoutBlank;
+  const settleStdoutBlank = () => {
+    if (pendingStdoutBlank?.index < 0) {
+      omitted += 1;
+    }
+    pendingStdoutBlank = undefined;
+  };
   // Trim in batches so a chatty passing file costs amortized constant time per line.
   const trim = (limit) => {
-    if (lines.length > limit) {
-      omitted += lines.length - outputTailLines;
-      lines.splice(0, lines.length - outputTailLines);
+    const pendingIndex = pendingStdoutBlank?.index ?? -1;
+    const count = lines.length - Number(pendingIndex >= 0);
+    if (count > limit) {
+      const excess = count - outputTailLines;
+      const removed = excess + Number(pendingIndex >= 0 && pendingIndex < excess);
+      omitted += excess;
+      lines.splice(0, removed);
+      if (pendingStdoutBlank) {
+        pendingStdoutBlank.index -= removed;
+      }
     }
   };
   const push = (line) => {
+    if (line.startsWith(`stdout: ${openShellProgressPrefix}`)) {
+      if (pendingStdoutBlank?.index >= 0) {
+        lines.splice(pendingStdoutBlank.index, 1);
+      }
+      pendingStdoutBlank = undefined;
+      return;
+    }
+    if (line.startsWith("stdout: ")) {
+      settleStdoutBlank();
+      if (line === "stdout: ") {
+        pendingStdoutBlank = { index: lines.length };
+      }
+    }
     lines.push(line.slice(0, failureInputLimit));
     trim(2 * outputTailLines);
   };
@@ -1328,6 +1157,7 @@ function outputTail() {
           push(`${stream}: ${partial[stream]}`);
         }
       }
+      settleStdoutBlank();
       trim(outputTailLines);
       return { lines, omitted };
     },
@@ -1361,7 +1191,7 @@ function* interruptedOutput({ lines, omitted }) {
   }
 }
 
-function location(data = {}) {
+function location(data = {}, recordCoverage = false) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
@@ -1387,6 +1217,22 @@ function location(data = {}) {
     type: data.type,
     testId: data.testId,
     parentId: data.parentId,
+    caseAssertionFailure:
+      recordCoverage &&
+      !fileFailure &&
+      data.details?.type === "test" &&
+      error?.failureType === "testCodeFailure" &&
+      cause?.code === "ERR_ASSERTION" &&
+      cause?.name === "AssertionError"
+        ? true
+        : undefined,
+    caseSubtestsFailed:
+      recordCoverage &&
+      !fileFailure &&
+      (data.details?.type === "test" || data.details?.type === "suite") &&
+      error?.failureType === "subtestsFailed"
+        ? true
+        : undefined,
     error: error
       ? {
           code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
@@ -1422,7 +1268,22 @@ function location(data = {}) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
+  const progress = [];
+  const readProgress = boundedProgressLines((line) => {
+    if (!line.startsWith(openShellProgressPrefix)) {
+      return;
+    }
+    try {
+      const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
+      if (value) {
+        progress.push(value);
+      }
+    } catch {
+      // Invalid progress never becomes raw failure output.
+    }
+  });
   let failed = false;
   let outputSent = false;
   // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
@@ -1466,6 +1327,12 @@ export default async function* jsonLinesReporter(source) {
     }
     if (event.type === "test:stdout" || event.type === "test:stderr") {
       if (typeof event.data?.message === "string") {
+        if (event.type === "test:stdout") {
+          readProgress(event.data.message);
+          for (const value of progress.splice(0)) {
+            yield `${JSON.stringify({ type: "test:progress", data: value })}\n`;
+          }
+        }
         output.add(event.type.slice(5), event.data.message);
       }
       continue;
@@ -1473,15 +1340,28 @@ export default async function* jsonLinesReporter(source) {
     if (event.type === "test:fail") {
       failed = true;
     }
+    if (
+      recordCoverage &&
+      event.type === "test:summary" &&
+      typeof event.data?.file === "string" &&
+      event.data.counts
+    ) {
+      const { tests, passed, failed, cancelled, skipped, todo, suites } = event.data.counts;
+      yield `${JSON.stringify({
+        type: "test:summary",
+        data: { tests, passed, failed, cancelled, skipped, todo, suites },
+      })}\n`;
+      continue;
+    }
     if (event.type === "test:diagnostic") {
       const message = event.data?.message;
       if (typeof message !== "string") {
         continue;
       }
       const value = parseMeasurement(message);
-      // Per-test diagnostics name their file; the run summary counts do not.
-      // OpenShell measurements belong only in the projected record, even on failure.
-      if (typeof event.data.file === "string" && !openShellMeasurementKinds.has(value?.kind)) {
+      // Structured receipts, including malformed or unknown kinds, belong only
+      // to safeMeasurement. Never duplicate their raw text into failure output.
+      if (typeof event.data.file === "string" && !message.startsWith(measurementPrefix)) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
@@ -1504,7 +1384,7 @@ export default async function* jsonLinesReporter(source) {
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data),
+      data: location(event.data, recordCoverage),
     })}\n`;
   }
   // Passing files send nothing extra.

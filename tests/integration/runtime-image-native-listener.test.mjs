@@ -4,6 +4,7 @@
 // cannot serve Pod-IP traffic.
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import assert from "node:assert/strict";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -210,6 +211,7 @@ test(
           waitUntilReady: false,
           withAppServer: false,
           extraEnvironment: [
+            "OPENCLAW_GATEWAY_PASSWORD=synthetic-owned-native-password",
             "OPENCLAW_RUNTIME_STATUS_PORT=18791",
             "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
             "OPENCLAW_AGENT_REVISION_ID=owned-native-bind",
@@ -274,6 +276,7 @@ test(
 // or a WebSocket connect as an operator without a device.
 const trustedProxyProbe = String.raw`
 import WebSocket from "/app/node_modules/ws/index.js";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 const [address, encoded] = process.argv.slice(2);
 const proxyHeaders = ({ identity, scopes }) => ({
   "x-real-ip": "192.0.2.10",
@@ -293,7 +296,10 @@ async function http(request) {
 }
 function ws(request) {
   return new Promise((resolve) => {
-    const socket = new WebSocket("ws://" + address + ":8080", { headers: proxyHeaders(request) });
+    const socket = new WebSocket("ws://" + address + ":8080", { headers: {
+      ...proxyHeaders(request),
+      ...(request.device ? { origin: "https://agent.example.test" } : {}),
+    } });
     const timer = setTimeout(() => { socket.terminate(); resolve({ status: "timeout" }); }, 15000);
     const done = (value) => { clearTimeout(timer); socket.close(); resolve(value); };
     socket.on("unexpected-response", (_request, response) => done({ status: "handshake-refused", http: response.statusCode }));
@@ -302,33 +308,66 @@ function ws(request) {
     socket.on("message", (data) => {
       const message = JSON.parse(String(data));
       if (message.type === "event" && message.event === "connect.challenge") {
+        const client = request.device
+          ? { id: "openclaw-control-ui", version: "1.0.0", platform: "linux", mode: "ui" }
+          : { id: "gateway-client", version: "1.0.0", platform: "linux", mode: "backend" };
+        const scopes = request.requestedScopes ?? [];
+        let device;
+        if (request.device) {
+          const signedAt = Date.now();
+          const nonce = message.payload.nonce;
+          const publicKey = request.device.publicKey.export({ format: "jwk" }).x;
+          const id = createHash("sha256").update(Buffer.from(publicKey, "base64url")).digest("hex");
+          const payload = ["v3", id, client.id, client.mode, "operator", scopes.join(","), String(signedAt), request.password ?? "", nonce, "linux", ""].join("|");
+          device = { id, publicKey, signedAt, nonce, signature: sign(null, Buffer.from(payload), request.device.privateKey).toString("base64url") };
+        }
         socket.send(JSON.stringify({ type: "req", id: "connect", method: "connect", params: {
-          minProtocol: 4, maxProtocol: 4,
-          client: { id: "gateway-client", version: "1.0.0", platform: "linux", mode: "backend" },
-          caps: [], commands: [], role: "operator", scopes: [],
+          minProtocol: 4, maxProtocol: 4, client,
+          caps: [], commands: [], role: "operator", scopes,
+          ...(device ? { device } : {}),
+          ...(request.password ? { auth: { password: request.password } } : {}),
         } }));
       } else if (message.type === "res" && message.id === "connect") {
-        done(message.ok
-          ? { status: "hello", scopes: message.payload?.auth?.scopes, deviceToken: message.payload?.auth?.deviceToken }
-          : { status: "connect-error", body: JSON.stringify(message.error) });
+        if (message.ok && request.method) {
+          socket.send(JSON.stringify({ type: "req", id: "operation", method: request.method, params: request.params ?? {} }));
+        } else {
+          done(message.ok
+            ? { status: "hello", scopes: message.payload?.auth?.scopes, deviceToken: message.payload?.auth?.deviceToken }
+            : { status: "connect-error", body: JSON.stringify(message.error) });
+        }
+      } else if (message.type === "res" && message.id === "operation") {
+        done({ status: message.ok ? "operation-ok" : "operation-denied", body: JSON.stringify(message.error ?? message.payload) });
       }
     });
   });
 }
 const requests = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-const outcomes = await Promise.all(requests.map((request) => (request.kind === "ws" ? ws(request) : http(request))));
+const outcomes = await Promise.all(requests.map(async (request) => {
+  if (request.kind !== "ws") return http(request);
+  if (!request.paired) return ws(request);
+  // Pair through the existing admin route, then reuse that privileged device on chat.
+  // This proves an already privileged device cannot widen the chat connection's ceiling.
+  const device = generateKeyPairSync("ed25519");
+  const paired = await ws({ ...request, device, method: undefined, scopes: "operator.admin", requestedScopes: ["operator.admin"] });
+  if (paired.status !== "hello" || paired.deviceToken !== undefined || !paired.scopes.includes("operator.admin")) {
+    return { status: "pairing-failed", body: JSON.stringify({ status: paired.status, scopes: paired.scopes, body: paired.body }) };
+  }
+  return ws({ ...request, device, requestedScopes: ["operator.admin"] });
+}));
 console.log(JSON.stringify(outcomes));
 `;
 
 // Native HTTP APIs ignore identityScopes: a trusted-proxy request without
 // x-openclaw-scopes receives the pinned Gateway's default operator scopes, admin
-// included. Compute therefore requires the header once a human is admitted, and the
-// operator HTTPRoute sends operator.admin for the machine identity (finding 2183).
+// included. Compute requires it for human ingress and private routed access. The admin
+// route sends operator.admin; chat sends operator.sessions.write for the same identity.
 test(
-  "runtime image Gateway refuses trusted-proxy requests without x-openclaw-scopes once Compute admits a human",
+  "runtime image Gateway enforces routed scope ceilings for HTTP and WebSocket",
   imageTestOptions,
   async (t) => {
-    const driver = plaintextGatewayComputeDrivers()[0][1];
+    const driver = createTestKubernetesComputeDriver("native-chat-scopes", {
+      gatewayRuntime: true,
+    });
     const network = `oce-native-scopes-${randomBytes(6).toString("hex")}`;
     await runDocker(["network", "create", "--internal", network]);
     const runtimeCleanups = [];
@@ -448,10 +487,86 @@ test(
       ],
       [
         "machine only",
-        undefined,
-        undefined,
+        {
+          mode: "trusted-proxy",
+          password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+          trustedProxy: {
+            userHeader: "x-occ-identity",
+            allowUsers: ["occ-workspace-files"],
+            deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+          },
+          identityScopes: { "occ-workspace-files": ["operator.admin"] },
+        },
+        (configuration) => {
+          configuration.gateway.controlUi = {
+            enabled: true,
+            allowedOrigins: ["https://agent.example.test"],
+          };
+        },
         [
-          [{ identity: "occ-workspace-files" }, { status: 404, body: /Session not found/ }],
+          [
+            {
+              kind: "ws",
+              paired: true,
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "config.get",
+            },
+            { status: "operation-denied", body: /missing scope/ },
+          ],
+          [
+            {
+              kind: "ws",
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              password: "synthetic-owned-native-password",
+              requestedScopes: ["operator.admin"],
+              method: "config.get",
+            },
+            { status: "operation-denied", body: /missing scope/ },
+          ],
+          // The chat route uses the existing admin identity, but the scope header must cap
+          // its authority even when a client asks for admin in its connect frame.
+          [
+            {
+              kind: "ws",
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              requestedScopes: ["operator.admin"],
+            },
+            { status: "hello", scopes: ["operator.sessions.write"] },
+          ],
+          [
+            {
+              kind: "ws",
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "sessions.list",
+            },
+            { status: "operation-ok" },
+          ],
+          [
+            {
+              kind: "ws",
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "config.get",
+            },
+            { status: "operation-denied", body: /missing scope/ },
+          ],
+          [
+            { identity: "occ-workspace-files", scopes: "operator.sessions.write" },
+            { status: 403, body: /missing scope: operator\.admin/ },
+          ],
+          [
+            {
+              operation: "sessions_list",
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+            },
+            { status: 403, body: /missing scope: operator\.write/ },
+          ],
+          [{ identity: "occ-workspace-files" }, { status: 401, body: /Unauthorized/ }],
           [
             { identity: "occ-workspace-files", scopes: "operator.admin" },
             { status: 404, body: /Session not found/ },
@@ -462,7 +577,7 @@ test(
           ],
           [
             { kind: "ws", identity: "occ-workspace-files" },
-            { status: "hello", scopes: ["operator.admin"] },
+            { status: "connect-error", body: /DEVICE_IDENTITY_REQUIRED/ },
           ],
         ],
       ],
@@ -474,10 +589,9 @@ test(
         input.gateway = { ...input.gateway, auth: structuredClone(auth) };
       }
       const configuration = driver.kubernetesGatewayConfigurationDocument(input);
-      assert.deepEqual(
-        configuration.gateway.auth.trustedProxy.requiredHeaders,
-        auth === undefined ? undefined : ["x-openclaw-scopes"],
-      );
+      assert.deepEqual(configuration.gateway.auth.trustedProxy.requiredHeaders, [
+        "x-openclaw-scopes",
+      ]);
       // The probe container stands in for the proxy; Compute renders the Installation's
       // CIDRs, which cannot name this test network.
       configuration.gateway.trustedProxies = [subnet];
@@ -497,6 +611,7 @@ test(
           waitUntilReady: false,
           withAppServer: false,
           extraEnvironment: [
+            "OPENCLAW_GATEWAY_PASSWORD=synthetic-owned-native-password",
             "OPENCLAW_RUNTIME_STATUS_PORT=18791",
             "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
             "OPENCLAW_AGENT_REVISION_ID=owned-native-scopes",

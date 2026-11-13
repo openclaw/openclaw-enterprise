@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
+
+import { loadTestSuites } from "./test-suites.mjs";
 
 const oid = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
@@ -123,7 +125,121 @@ function property(value: unknown, key: string): unknown {
   return Reflect.get(Object(value), key);
 }
 
-function inspect() {
+// Only this asset reader has a reviewed set of consumers. The package graph
+// cannot see the standalone Storybook install or externally owned test suites.
+const assetReader = "apps/controller/src/console-assets.ts";
+const controller = "@openclaw-enterprise/controller";
+const assetTests = [
+  "tests/integration/console-api.test.ts",
+  "tests/integration/console-build-metadata.test.ts",
+  "tests/integration/console-theme.test.ts",
+  "tests/browser/console-shell.test.ts",
+  "tests/browser/console-agents.test.ts",
+  "tests/integration/production-image-startup.test.mjs",
+];
+
+type Identity = { base: string; tested: string; head: string };
+type Prediction = { reason: string; lanes: string[]; companionJobs: string[] };
+
+function broad(reason: string): Prediction {
+  return { reason, lanes: [], companionJobs: [] };
+}
+
+function hasPackageScript(tested: string, path: string, name: string, command: string) {
+  try {
+    if (!git("ls-tree", tested, "--", path).toString("utf8").startsWith("100644 blob ")) {
+      return false;
+    }
+    const manifest: unknown = JSON.parse(
+      decoder.decode(git("cat-file", "blob", tested + ":" + path)),
+    );
+    return property(property(manifest, "scripts"), name) === command;
+  } catch {
+    return false;
+  }
+}
+
+// These regular-file blobs were verified together: the PR trigger includes the
+// reader, build runs Storybook, and its preparer imports the reader. Recheck
+// those edges before updating either pin. Other revisions keep broad coverage.
+function verifiedStorybook(tested: string) {
+  const workflow = ".github/workflows/console-storybook.yml";
+  const preparer = "scripts/console-storybook/prepare-assets.ts";
+  const entries = git("ls-tree", tested, "--", workflow, preparer).toString("utf8");
+  return (
+    entries ===
+      `100644 blob 08676f57d84dcdec23bb01aae2ebed6c1882f9f2\t${workflow}\n` +
+        `100644 blob 47cc6129264ecdfb5271be15c51441e48e990323\t${preparer}\n` &&
+    hasPackageScript(
+      tested,
+      "package.json",
+      "storybook:build",
+      "pnpm --dir scripts/console-storybook build",
+    ) &&
+    hasPackageScript(
+      tested,
+      "scripts/console-storybook/package.json",
+      "build",
+      "pnpm typecheck && node prepare-assets.ts && storybook build --output-dir dist/site --disable-telemetry",
+    )
+  );
+}
+
+function assetPrediction({ base, tested }: Identity): Prediction {
+  try {
+    git("cat-file", "-e", base + ":" + assetReader);
+    git("ls-files", "--error-unmatch", "--", assetReader, ...assetTests);
+  } catch {
+    return broad("incomplete_checkout");
+  }
+  try {
+    const manifest = loadTestSuites("scripts/ci/test-suites.json");
+    const ci: unknown = manifest.groups.ci;
+    if (manifest.version !== 1 || !Array.isArray(ci) || !ci.length) {
+      return broad("incomplete_manifest");
+    }
+    const found = new Set<string>();
+    const lanes: string[] = [];
+    for (const [name, lane] of Object.entries(manifest.lanes)) {
+      const files: unknown = property(lane, "files");
+      if (!Array.isArray(files)) {
+        return broad("incomplete_manifest");
+      }
+      for (const file of files) {
+        const path = property(file, "path");
+        if (typeof path !== "string") {
+          return broad("incomplete_manifest");
+        }
+        if (assetTests.includes(path)) {
+          if (!ci.includes(name) || !/^[a-z0-9-]{1,64}$/.test(name)) {
+            return broad("incomplete_manifest");
+          }
+          found.add(path);
+          if (!lanes.includes(name)) {
+            lanes.push(name);
+          }
+        }
+      }
+    }
+    if (
+      found.size !== assetTests.length ||
+      lanes.length > 32 ||
+      !ci.every((name) => Object.hasOwn(manifest.lanes, name))
+    ) {
+      return broad("incomplete_manifest");
+    }
+    const storybook = verifiedStorybook(tested);
+    return {
+      reason: storybook ? "console_asset_reader" : "unverified_storybook",
+      lanes: lanes.sort(),
+      companionJobs: storybook ? ["console-storybook.yml/build"] : [],
+    };
+  } catch {
+    return broad("incomplete_manifest");
+  }
+}
+
+function inspectIdentity() {
   if (process.env.GITHUB_EVENT_NAME !== "pull_request") {
     return unavailable("not_pull_request");
   }
@@ -150,9 +266,12 @@ function inspect() {
   // than the event's base.sha. The tested merge's first parent is the base of
   // the checked-out tree, so compare against it.
 
-  const paths = changedPaths(base, tested);
-  if (!cleanCheckout()) {
-    return unavailable("dirty_checkout");
+  return { base, tested, head };
+}
+
+function inspectGraph(base: string, paths: string[]) {
+  if (paths.some((path) => !/\.tsx?$/.test(path))) {
+    return unavailable("outside_typescript_workspace");
   }
   const root = realpathSync(".");
   const inventory = new Map<string, string>();
@@ -176,9 +295,6 @@ function inspect() {
   for (const path of paths) {
     // Start with TypeScript files owned by a workspace project. Root tooling,
     // manifests, Go and unknown paths keep full CI and receive no prediction.
-    if (!/\.tsx?$/.test(path)) {
-      return unavailable("outside_typescript_workspace");
-    }
     const matches = [...inventory].filter(
       ([, directory]) => directory && path.startsWith(`${directory}/`),
     );
@@ -213,17 +329,91 @@ function inspect() {
   if (!selected.size || [...owners].some((owner) => !selected.has(owner))) {
     throw new Error("incomplete affected projects");
   }
-  return { status: "affected", reason: "workspace_typescript", packages: [...selected].sort() };
+  const assetOnly =
+    paths.length === 1 &&
+    paths[0] === assetReader &&
+    inventory.get(controller) === "apps/controller" &&
+    owners.has(controller) &&
+    selected.size === 1 &&
+    selected.has(controller);
+  return {
+    status: "affected",
+    reason: "workspace_typescript",
+    packages: [...selected].sort(),
+    assetOnly,
+  };
 }
 
-let result;
-try {
-  result = inspect();
-} catch {
-  result = unavailable("inspection_failed");
+function inspect() {
+  let identity: Identity | null = null;
+  try {
+    const checked = inspectIdentity();
+    if ("status" in checked) {
+      return { identity, result: checked };
+    }
+    identity = checked;
+    const paths = changedPaths(checked.base, checked.tested);
+    if (!cleanCheckout()) {
+      return { identity, result: unavailable("dirty_checkout") };
+    }
+    let result;
+    try {
+      result = inspectGraph(checked.base, paths);
+    } catch {
+      result = unavailable(cleanCheckout() ? "inspection_failed" : "dirty_checkout");
+    }
+    if (!paths.includes(assetReader) || result.reason === "dirty_checkout") {
+      return { identity, result };
+    }
+    const evidence = assetPrediction(checked);
+    if (evidence.reason !== "console_asset_reader") {
+      return { identity, result, evidence };
+    }
+    // Known consumers stay visible for mixed changes. They describe only the
+    // asset reader; they cannot bound the impact of the rest of the change.
+    if (paths.length > 1) {
+      return { identity, result, evidence: { ...evidence, reason: "mixed_scope" } };
+    }
+    if (!("assetOnly" in result && result.assetOnly)) {
+      return { identity, result, evidence: { ...evidence, reason: "unverified_package_scope" } };
+    }
+    if (
+      git("ls-files", "-t", "-z")
+        .toString("binary")
+        .split("\0")
+        .some((row) => row.startsWith("S "))
+    ) {
+      return { identity, result, evidence: { ...evidence, reason: "incomplete_checkout" } };
+    }
+    return { identity, result, evidence };
+  } catch {
+    return { identity, result: unavailable("inspection_failed") };
+  }
 }
+
+const { identity, result, evidence } = inspect();
+const runId = process.env.GITHUB_RUN_ID ?? "";
+const attempt = process.env.GITHUB_RUN_ATTEMPT ?? "";
+const workflowSha = process.env.SHADOW_WORKFLOW_SHA ?? "";
+const runIdentity =
+  /^[1-9][0-9]{0,19}$/.test(runId) && /^[1-9][0-9]{0,9}$/.test(attempt) && oid.test(workflowSha)
+    ? { runId, attempt, workflowSha }
+    : null;
+const prediction = !runIdentity
+  ? broad("missing_run_identity")
+  : (evidence ?? broad(result.status === "affected" ? "unmapped_scope" : result.reason));
+const shadow = {
+  version: 1,
+  run: runIdentity,
+  identity,
+  mode: prediction.reason === "console_asset_reader" ? "candidate" : "broad",
+  ...prediction,
+};
 
 if (process.argv[2] === "--summary") {
+  if (process.argv[3]) {
+    writeFileSync(process.argv[3], JSON.stringify(shadow) + "\n", { flag: "wx" });
+  }
   console.log("### Affected workspace packages (advisory)\n");
   if (result.status === "affected") {
     console.log(result.packages.map((name) => `- \`${name}\``).join("\n"));
@@ -233,6 +423,10 @@ if (process.argv[2] === "--summary") {
   console.log(
     "\nThis report uses declared workspace dependencies; it does not select tests or change CI checks.",
   );
+  console.log(`\nShadow lane prediction: ${shadow.mode} (${shadow.reason}).`);
+} else if (process.argv[2] === "--shadow") {
+  console.log(JSON.stringify(shadow));
 } else {
-  console.log(JSON.stringify(result));
+  const { status, reason, packages } = result;
+  console.log(JSON.stringify({ status, reason, packages }));
 }

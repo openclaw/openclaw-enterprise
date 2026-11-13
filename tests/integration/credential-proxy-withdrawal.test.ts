@@ -32,7 +32,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
 
 test(
@@ -94,16 +94,25 @@ test(
         // The reduction protocol needs distinct upstreams. Only the primary source is a Harness
         // model source; a separate fixture provider owns the auxiliary API destination.
         const auxiliaryOrigin = origin.replace("provider.example.test", "second.example.test");
-        const auxiliary = createOpenAiStaticProvider({
-          protocol: "openai-responses",
-          baseUrl: `${auxiliaryOrigin}/v1`,
-        });
+        const auxiliary = createOpenAiStaticProvider();
         const auxiliaryType = { ...auxiliary.sourceType, type: "auxiliary-inference" };
         delete auxiliaryType.harnessAuth;
         const auxiliaryProvider = {
           ...auxiliary,
           ref: { ...auxiliary.ref, id: "auxiliary-inference" },
           sourceType: auxiliaryType,
+          routes(
+            source: Parameters<typeof auxiliary.routes>[0],
+            binding: Parameters<typeof auxiliary.routes>[1],
+          ) {
+            return auxiliary.routes(source, binding, {
+              modelProvider: {
+                protocol: "openai-responses",
+                baseUrl: `${auxiliaryOrigin}/v1`,
+                supportsStandaloneWebSearch: false,
+              },
+            });
+          },
         };
         // This test-owned catalogue adapter delegates validation and routing to the real provider.
         // Registration remains live through the Proxy; no Gateway copy is invented for this type.
@@ -159,7 +168,15 @@ test(
         };
         owner = new InstalledDriver(
           { id: proxy.id, implementation: proxy.implementation, configuration: {} },
-          { capabilities: { sandbox, credential_proxy: proxy } },
+          {
+            capabilities: { sandbox, credential_proxy: proxy },
+            namespaceLifecycleHooks: {
+              // The replacement exercises policy reduction on an already-provisioned execution.
+              async ensureNamespace() {
+                assert.fail("Policy reduction must not reinitialize Namespace infrastructure.");
+              },
+            },
+          },
         );
         app.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
         compute = createTestKubernetesComputeDriver("policy-reduction-compute", {
