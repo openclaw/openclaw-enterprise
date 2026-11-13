@@ -18,37 +18,63 @@ const contractPath = fileURLToPath(
   new URL("../../packages/contracts/openapi/occ-api.openapi.json", import.meta.url),
 );
 
-function escapeRegExp(value) {
+function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function readContract(): Promise<unknown> {
+  const document: unknown = JSON.parse(await readFile(contractPath, "utf8"));
+  return document;
+}
+
+function record(value: unknown, context: string): Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value), context);
+  return value as Record<string, unknown>;
+}
+
+function contractPaths(document: unknown) {
+  return record(record(document, "OpenAPI document").paths, "OpenAPI paths");
+}
+
+function permissionsFor(operation: Record<string, unknown>): unknown[] {
+  const permissions = operation["x-openclaw-permissions"];
+  assert.ok(Array.isArray(permissions), `${String(operation.operationId)} permissions are missing`);
+  return permissions;
 }
 
 // A path item also holds path-level keys (`parameters`, `summary`); only HTTP
 // methods are operations, as in the generator.
-function contractOperations(document) {
-  return Object.values(document.paths).flatMap((pathItem) =>
-    Object.entries(pathItem)
+function contractOperations(document: unknown) {
+  return Object.entries(contractPaths(document)).flatMap(([path, pathItem]) =>
+    Object.entries(record(pathItem, path))
       .filter(([method]) => httpMethods.has(method))
-      .map(([, operation]) => operation),
+      .map(([method, operation]) => record(operation, `${method} ${path}`)),
   );
 }
 
 test("example enrichment preserves the generated contract and rejects duplicate operations", async () => {
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const document = await readContract();
   const original = structuredClone(document);
   assert.equal(documentApiExamples(document), document);
   assert.deepEqual(document, original);
 
   const operations = contractOperations(document);
-  operations[1].operationId = operations[0].operationId;
+  const [first, second] = operations;
+  assert.ok(first && second);
+  second.operationId = first.operationId;
   assert.throws(() => documentApiExamples(document), /Missing or duplicate operationId/);
 });
 
 test("generated API reference stays on the approved single page", async () => {
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const document = await readContract();
   const outputs = generateApiReferenceOutputs(document);
   // Legal path-level keys are not operations and must not change the reference.
-  const [firstPath] = Object.keys(document.paths);
-  Object.assign(document.paths[firstPath], { summary: "Path-level summary", parameters: [] });
+  const [firstPath] = Object.entries(contractPaths(document));
+  assert.ok(firstPath);
+  Object.assign(record(firstPath[1], firstPath[0]), {
+    summary: "Path-level summary",
+    parameters: [],
+  });
   assert.deepEqual(generateApiReferenceOutputs(document), outputs);
 
   assert.deepEqual(
@@ -58,12 +84,15 @@ test("generated API reference stays on the approved single page", async () => {
 
   const page = outputs[0].content;
   // The Resources table counts each tag's operations from the contract, singular for one.
-  const operationsByTag = new Map();
+  const operationsByTag = new Map<string, number>();
   for (const operation of contractOperations(document)) {
-    const tag = operation.tags?.[0] ?? "Untagged";
+    const { tags } = operation;
+    assert.ok(tags === undefined || Array.isArray(tags));
+    const tag: unknown = tags?.[0] ?? "Untagged";
+    assert.ok(typeof tag === "string");
     operationsByTag.set(tag, (operationsByTag.get(tag) ?? 0) + 1);
   }
-  assert.ok(operationsByTag.get("Agents") > 1);
+  assert.ok((operationsByTag.get("Agents") ?? 0) > 1);
   assert.ok(
     [...operationsByTag.values()].includes(1),
     "No tag has exactly one operation, so the singular label is untested",
@@ -91,6 +120,7 @@ test("generated API reference stays on the approved single page", async () => {
 
   const operationIds = contractOperations(document).map((operation) => operation.operationId);
   for (const operationId of operationIds) {
+    assert.ok(typeof operationId === "string");
     const matches =
       page.match(new RegExp(`\\*\\*Operation ID:\\*\\* \`${escapeRegExp(operationId)}\``, "g")) ??
       [];
@@ -102,19 +132,22 @@ test("every operation with a request body documents 413 and 415", async () => {
   // The controller answers an oversized body 413 and a non-JSON media type 415 on every
   // route that reads a body; updateCredentialSource and the /api/auth/* operations
   // documented neither.
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const document = await readContract();
   const missing = contractOperations(document)
     .filter((operation) => operation.requestBody !== undefined)
-    .filter((operation) => !("413" in operation.responses && "415" in operation.responses))
+    .filter((operation) => {
+      const responses = record(operation.responses, "operation responses");
+      return !("413" in responses && "415" in responses);
+    })
     .map((operation) => operation.operationId);
   assert.deepEqual(missing, []);
 });
 
 test("AccessBinding creation documents request body target read permissions", async () => {
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
-  const operation =
-    document.paths["/namespaces/{namespaceId}/iam/access-bindings"]?.post ?? undefined;
-  assert.ok(operation, "createIAMAccessBinding OpenAPI operation is missing");
+  const document = await readContract();
+  const path = "/namespaces/{namespaceId}/iam/access-bindings";
+  const pathItem = record(contractPaths(document)[path], path);
+  const operation = record(pathItem.post, "createIAMAccessBinding OpenAPI operation is missing");
 
   // Every bindable target kind requires read on the exact request body target.
   const targets = [
@@ -140,13 +173,18 @@ test("AccessBinding creation documents request body target read permissions", as
 });
 
 test("Agent plugin and first deployment operations document conditional grants", async () => {
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const document = await readContract();
   const agentPath = "/namespaces/{namespaceId}/agents/{agentId}";
-  const capabilities =
-    document.paths[`${agentPath}/plugins/capabilities`]?.get?.["x-openclaw-permissions"];
-  const discovery = document.paths[`${agentPath}/plugins`]?.post?.["x-openclaw-permissions"];
-  const details = document.paths[`${agentPath}/plugins/details`]?.post?.["x-openclaw-permissions"];
-  const deploy = document.paths[`${agentPath}/deploy`]?.post?.["x-openclaw-permissions"];
+  const paths = contractPaths(document);
+  const permissions = (suffix: string, method: string) => {
+    const path = `${agentPath}${suffix}`;
+    const pathItem = record(paths[path], path);
+    return permissionsFor(record(pathItem[method], `${method} ${path}`));
+  };
+  const capabilities = permissions("/plugins/capabilities", "get");
+  const discovery = permissions("/plugins", "post");
+  const details = permissions("/plugins/details", "post");
+  const deploy = permissions("/deploy", "post");
 
   const agentRead = { action: "read", resourceKind: "agent", scope: "requested" };
   const hostedSecret = {
@@ -155,7 +193,9 @@ test("Agent plugin and first deployment operations document conditional grants",
     scope: "requested",
     condition: "authenticated_plugin_discovery",
   };
-  assert.ok(capabilities.some((permission) => permission.action === "update"));
+  assert.ok(
+    capabilities.some((permission) => record(permission, "permission").action === "update"),
+  );
   assert.ok(capabilities.some((permission) => isDeepStrictEqual(permission, agentRead)));
   for (const permissions of [discovery, details]) {
     assert.ok(permissions.some((permission) => isDeepStrictEqual(permission, agentRead)));
@@ -176,22 +216,24 @@ test("Agent plugin and first deployment operations document conditional grants",
 });
 
 test("Agent and CredentialSource operations document the permissions they check", async () => {
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const document = await readContract();
   const operations = new Map(
     contractOperations(document).map((operation) => [operation.operationId, operation]),
   );
-  const permissions = (operationId) => {
+  const permissions = (operationId: string) => {
     const operation = operations.get(operationId);
     assert.ok(operation, `${operationId} OpenAPI operation is missing`);
-    return operation["x-openclaw-permissions"];
+    return permissionsFor(operation);
   };
-  const installationGrants = (operationId) =>
-    permissions(operationId).filter((permission) => permission.resourceKind === "installation");
+  const installationGrants = (operationId: string) =>
+    permissions(operationId).filter(
+      (permission) => record(permission, "permission").resourceKind === "installation",
+    );
   for (const [operationId, condition] of [
     ["createAgent", "gateway_managed_mode_disabled"],
     ["validateAgentCreate", "gateway_managed_mode_disabled"],
     ["updateAgent", "gateway_managed_mode_changed"],
-  ]) {
+  ] as const) {
     assert.deepEqual(
       installationGrants(operationId),
       [{ action: "administer", resourceKind: "installation", scope: "installation", condition }],
@@ -201,7 +243,7 @@ test("Agent and CredentialSource operations document the permissions they check"
   // Deploy applies the mode already authorized on the saved draft.
   assert.deepEqual(installationGrants("deployAgent"), []);
 
-  const sourceOperate = (scope) => ({
+  const sourceOperate = (scope: string) => ({
     action: "operate",
     resourceKind: "credential_source",
     scope,
@@ -224,7 +266,7 @@ test("Agent and CredentialSource operations document the permissions they check"
   // Guided provisioning refuses credential sources outright.
   assert.ok(
     !permissions("provisionAgent").some(
-      (permission) => permission.resourceKind === "credential_source",
+      (permission) => record(permission, "permission").resourceKind === "credential_source",
     ),
   );
   // Registration and update read each referenced Secret's value for the gateway.
@@ -292,10 +334,13 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
 test("operations without a request body do not list 413 or 415", async () => {
   // The reference introduction says when any request answers 413 or 415; an operation
   // lists them only when it takes a body. Three bodiless operations listed them.
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const document = await readContract();
   const listed = contractOperations(document)
     .filter((operation) => operation.requestBody === undefined)
-    .filter((operation) => "413" in operation.responses || "415" in operation.responses)
+    .filter((operation) => {
+      const responses = record(operation.responses, "operation responses");
+      return "413" in responses || "415" in responses;
+    })
     .map((operation) => operation.operationId);
   assert.deepEqual(listed, []);
 });
@@ -304,10 +349,10 @@ test("every operation with a request body documents 400", async () => {
   // Every body is validated against its operation's schema before the handler runs. Eleven
   // /api/auth/* operations, whose schemas are inline rather than in the shared route
   // contract, once omitted the 400 that validation answers.
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const document = await readContract();
   const missing = contractOperations(document)
     .filter((operation) => operation.requestBody !== undefined)
-    .filter((operation) => !("400" in operation.responses))
+    .filter((operation) => !("400" in record(operation.responses, "operation responses")))
     .map((operation) => operation.operationId);
   assert.deepEqual(missing, []);
 });
@@ -316,7 +361,7 @@ test("the error envelope table documents the shared ErrorResponse, not an inline
   // Inline /api/auth/* error schemas also carry `details` so schema 400s keep their field
   // pointers. The reference introduction must still describe the shared envelope's codes
   // and limits, which those inline copies do not repeat.
-  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const document = await readContract();
   const page = generateApiReferenceOutputs(document)[0].content;
   const section = page.slice(page.indexOf("## Error responses"), page.indexOf("## Resources"));
   assert.match(section, /^\| `error\.code` \| `"INVALID_REQUEST" or /m);

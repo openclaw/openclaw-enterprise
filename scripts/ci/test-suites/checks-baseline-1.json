@@ -9,7 +9,7 @@
     "tests/integration/occ-api.test.mjs",
     "tests/integration/occ-api-joint-plugin-deployment.test.ts",
     "tests/integration/stored-document-serialization.test.mjs",
-    "tests/integration/precompiled-route-compilers.test.mjs",
+    "tests/integration/precompiled-route-compilers.test.ts",
     "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
@@ -56,7 +56,7 @@
     "tests/conformance/runtime-logs-container-wire.test.ts",
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
-    "tests/docs/generated-api-reference.test.mjs",
+    "tests/docs/generated-api-reference.test.ts",
     "tests/integration/service-api-keys.test.ts",
     "tests/integration/driver-plugin-installation.test.ts",
     "tests/conformance/workspace-files-configuration.test.mjs",
@@ -204,7 +204,7 @@
       "path": "tests/docs/docs-site.test.mjs"
     },
     {
-      "path": "tests/docs/generated-api-reference.test.mjs"
+      "path": "tests/docs/generated-api-reference.test.ts"
     },
     {
       "path": "tests/conformance/http-errors.test.mjs"
@@ -460,7 +460,7 @@
       "path": "tests/integration/stored-document-serialization.test.mjs"
     },
     {
-      "path": "tests/integration/precompiled-route-compilers.test.mjs"
+      "path": "tests/integration/precompiled-route-compilers.test.ts"
     },
     {
       "path": "tests/integration/route-header-names.test.ts"
