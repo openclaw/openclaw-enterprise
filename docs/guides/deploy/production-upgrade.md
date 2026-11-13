@@ -76,7 +76,7 @@ or `linux/arm64`. Freeze those nodes and labels. The helper lists Nodes and
 release namespace ReplicaSets and runs a read-only worker exec check. Local preflight checks protocol compatibility. Check image availability,
 admission, image trust, database durability and session disposal separately.
 
-The serving API must return a complete deployment inventory, even for an empty fleet.
+Check [operator access before the freeze](upgrade-checklist.md#check-operator-access).
 Use an Installation-scoped OCC service key with Installation `read` and
 `administer` and `read` on every Namespace and Agent. Active, desired-running
 Agents with a selected revision and no pending deployment also require Agent
@@ -106,14 +106,6 @@ sessions the worker cannot replace. Plan the interruption and authorized
 replacements. Review affected drafts and deploy grants. Stop if recovery is
 unsafe. Follow the
 [broker recovery procedure](../repository-credentials/installation.md#install-and-verify).
-
-Freeze other Helm changes and disable automation that restarts or scales OCC
-Deployments, including autoscalers. Stop other writers to this Installation’s OCC
-database, including independent APIs, workers and maintenance processes. Confirm nodes are reachable.
-Do not force-delete OCC Pods. Verify that a partitioned process stopped even if
-its Pod is gone. The helper stops only the selected release's API and worker.
-Freeze Agent deployments and settle queued or running work. Freeze draft edits
-for runtime upgrades. Keep these restrictions through recovery.
 
 In the reviewed checkout, use a dedicated Bash shell. Set `OCC_CA_BUNDLE` only
 for a private certificate authority.
@@ -235,9 +227,16 @@ Pods to disappear, then Secrets and NetworkPolicies.
 With an immutable Installation Secret, keep the live configuration or
 [stage an immutable successor](immutable-installation-upgrade.md) before preflight.
 
-After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
-omit `--preflight-only` and use unused `"$UPGRADE_EVIDENCE"`. Checks repeat.
-Keep writer and draft freezes through recovery.
+After [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources), begin the maintenance window.
+Freeze other Helm changes and disable automation that restarts or scales OCC
+Deployments, including autoscalers. Stop other writers to this Installation’s OCC
+database, including independent APIs, workers and maintenance processes. Confirm nodes are reachable.
+Do not force-delete OCC Pods. Verify that a partitioned process stopped even if
+its Pod is gone. The helper stops only the selected release's API and worker.
+Freeze Agent deployments and settle queued or running work. Freeze draft edits
+for runtime upgrades. Keep these restrictions through recovery.
+
+Omit `--preflight-only` and use unused `"$UPGRADE_EVIDENCE"`. Checks repeat.
 
 Time both interruptions on an isolated, populated installation using separate
 endpoints, the same command, a [protected baseline](upgrade-baseline.md), and

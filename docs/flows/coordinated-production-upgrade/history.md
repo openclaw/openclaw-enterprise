@@ -8,6 +8,8 @@ This record preserves the dated changes to the production image upgrade flow. Se
 
 ## Changelog
 
+- 2026-11-11 12:02: Confirm preflight dependency deletion and accept verified absence after failed DELETE. (authoring-run/ecf34abe-0b63-4cb7-bcf5-8333a11c89b2 - ae6cdc2dbe4aed966567ecb642129f3fb96e593b)
+
 - 2026-11-11 11:42: Reuse the final preflight observation before reading logs; retain the post-read identity check. (authoring-run/d7b92a2e-e167-4140-b75a-6f1410267881 - 486a9d4ddfea4bfbab6aefd0cef300a1556149b7)
 
 - 2026-11-10 12:41: Validate the preprovisioned Namespace boolean before access. (authoring-run/f66b42c3-90f1-4ca7-9805-a68727232c1e - 9c59ab71b8dfe3ea2816e3cee25182aeb4bcf172)

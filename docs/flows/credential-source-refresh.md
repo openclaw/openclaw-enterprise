@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-12
-last_updated_session: authoring-run/82f9923d-f09a-4fe3-af54-b6393a5587f3
+updated: 2026-11-13
+last_updated_session: authoring-run/6366a138-6e59-492d-8eae-730c7c10e323
 ---
 
 # Credential source refresh Flow
@@ -107,15 +107,12 @@ OpenShell resolves the credential at runtime.
 `packages/occ/src/index.ts:mintFirstRefreshToken`
 
 OCC calls `configureRefresh` with the source config and resolved Secret values,
-then `rotate`. Both request IDs are name-based UUIDs derived from the source ID
-and step, so a replay is not applied twice. The OpenShell Driver sends
-`ConfigureProviderRefresh` with `client_id`, `scope`, and the secrets as
-material, and `RotateProviderCredential`; OpenShell calls the issuer and stores
-the access token on the provider. A thrown call leaves the outcome unknown, and
-OCC keeps the record `deleting` after cleanup. A definite non-`ready` mint is
-terminal: OCC removes the refresh material and provider, deletes the record, and
-returns `503` with the Driver's failure code. Otherwise the second transaction
-marks the source `ready` with its audit event.
+then `rotate`. Request UUIDs derived from source ID and step prevent duplicate effects. The OpenShell Driver sends `ConfigureProviderRefresh`
+(`client_id`, `scope`, and Secret material) and `RotateProviderCredential`;
+OpenShell calls the issuer and stores the token on the provider. A thrown call leaves the outcome unknown;
+after cleanup, OCC retains the `deleting` record. A definite non-`ready` result
+removes refresh material, provider, and record, returning `503` with the Driver's
+failure code. Otherwise OCC commits `ready` with audit.
 
 ### Device authorization and configuration
 
@@ -123,55 +120,56 @@ marks the source `ready` with its audit event.
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
 `deviceAuthorization.harnessId` sources register before login.
-`source_registering` and `source_ready` audit events commit with state, identifying
-actor, request, and source. Audit failure blocks login; failed starts retain audited sources.
+`source_registering` and `source_ready` commit with state and identify actor,
+request, and source. Audit failure blocks login; failed starts retain audited sources.
 
 OCC commits the session Secret's handle, actor, source, and Driver IDs with
 `session_pending`. Known commit failure deletes metadata and private Driver value;
 unknown outcomes skip compensation. Session events identify Agent or Namespace
-and source ID. Audit excludes handles, credentials, and user codes.
+and source ID, excluding handles, credentials, and user codes.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
-`start_unconfirmed` before a start; both authentication forms retain it across
-navigation. Agent detail keeps its Credentials tab during a start; its draft
-records a later reply unless a newer tab owns it. Before the page is left, a
-usable reply supplies the challenge; a `501`, or no Codex device-login type
-(`deviceLoginOffered`), disables Sign in; other refusals permit retry.
-Unconfirmed attempts cannot start again, poll, or cancel. See
-[interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
-Compare-and-swap serializes known-session polls. OCC rechecks scope and both
-Driver selections before completion. Uncertain exchanges close the handle but
+`start_unconfirmed` before start; both authentication forms retain it across navigation.
+Agent detail keeps Credentials open during start and records late replies unless
+a newer tab owns the draft. A usable reply before navigation supplies the challenge.
+A `501`, or no offered Codex device-login type (`deviceLoginOffered`), disables
+Sign in; other refusals permit retry. Unconfirmed attempts cannot restart, poll,
+or cancel. See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
+
+Compare-and-swap serializes known-session polls. `readAgentDeviceAuthorization`
+checks actor, Namespace, and saved-Agent bindings before session writes or provider I/O. Poll/cancel
+mismatches raise `DeviceAuthorizationScopeMismatchError`; the Controller records
+one `authorization_denial` with request/route attribution and
+`DEVICE_AUTHORIZATION_SCOPE_MISMATCH`. Responses remain generic `404`, or `503`
+on audit failure, without private binding or source details. After polling, OCC rechecks permissions and both Driver selections. Uncertain exchanges close the handle but
 keep the source.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
-uses fixed `auth.openai.com` endpoints from API Pods for start, poll, and exchange.
-Redirects are refused. `DeviceAuthorizationStartError` reports connection failure
-or timeout as `unreachable`; HTTP rejection, malformed replies, and `AbortError`
-as `unavailable`. HTTP returns `503 DEPENDENCY_UNAVAILABLE`, naming the host and
-API Pod egress only for `unreachable`. The `device_authorization.start_failed`
-warning includes the Refresh boundary and failure class, never provider messages,
-response bodies, or nested causes.
+sends start, poll, and exchange requests from API Pods to fixed `auth.openai.com`
+endpoints, refusing redirects. `DeviceAuthorizationStartError` classifies connection
+failures and timeouts as `unreachable`; HTTP rejection, malformed replies, and
+`AbortError` as `unavailable`. Both return `503 DEPENDENCY_UNAVAILABLE`; only
+`unreachable` names the host and API Pod egress. The `device_authorization.start_failed`
+warning records the Refresh boundary and failure class, excluding provider messages,
+response bodies, and nested causes.
 
 `apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
-performs the Codex exchange, configures OpenShell with refresh material, and
-stores trusted account metadata. Before acquiring a code, its issuer polling
-returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC keeps
-the handle and interval. An aborted initial poll, including OCC's internal
-timeout, is not pending: it and any failure from code acquisition onward close
-the session without replay. OpenShell owns
-future refresh and successor persistence. After handoff, polls read existing state:
-unfinished refresh stays pending; a persistent uncertain marker needs operator inspection.
-Ready confirms a usable token. Later versions attach the existing provider
-without reseeding credentials; account metadata changes require a new login and
-version.
+performs the Codex exchange, configures OpenShell refresh material, and stores
+trusted account metadata. Before code acquisition, issuer `429`, `5xx`, or fetch
+connection failures return pending, retaining the handle and interval. An aborted
+initial poll, including OCC's internal timeout, or failure from code acquisition
+onward closes the session without replay. OpenShell owns future refresh and
+successor persistence. After handoff, polls read state: unfinished refresh
+stays pending; a persistent uncertain marker needs operator inspection. Ready confirms
+a usable token. Later versions attach the provider without reseeding credentials;
+account metadata changes require a new login and version.
 
 For plugin configuration, the Gateway reads ownership/account metadata with its
-Backend identity, then calls `GetProviderCredentials` through the
-operator-TLS channel. OpenShell may refresh to keep five minutes of lifetime.
-Only access credentials enter the callback; it
-rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
-Closing or expiring the login session leaves source-based discovery enabled.
-Cancellation or a failed recheck cannot undo a started gateway refresh.
+Backend identity, then calls `GetProviderCredentials` over operator-TLS.
+OpenShell may refresh to keep five minutes remaining. Only access credentials enter
+the callback, which rechecks caller authority and saved-Agent binding/grant before
+provider I/O. Session closure or expiry keeps source-based discovery enabled.
+Cancellation or failed recheck cannot undo a started gateway refresh.
 
 ### 3. Background refresh
 
@@ -321,9 +319,13 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 
 ## Changelog
 
+- 2026-11-13 01:14: Reconcile device-login auditing. (authoring-run/6366a138-6e59-492d-8eae-730c7c10e323 - 2f1d2561161dd49cad47dafa9710df55dddbb18e)
+
 - 2026-11-12 13:28: Clarify ownership. (authoring-run/82f9923d-f09a-4fe3-af54-b6393a5587f3 - 64c0ffdc2910e1cb7748c28c9101b734ef840522)
 
 - 2026-11-12 12:59: Clarify synchronous response ownership, close-gated release and uncertain receipt readback. (authoring-run/3ec57f4f-e274-4d8a-84d6-52f1fa5e45d4 - 6305fa1709fb21c3ba83dfc38469a296ff87ab80)
+
+- 2026-11-12 03:30: Trace attributable device-login binding denials. (authoring-run/648ee44b-b66c-4584-89ab-53728ee4862e - b8fe106ea9ee5ba7a94aae5ea60abdd7ecf28217)
 
 - 2026-11-10 00:50: Trace the shared GitHub issuance and response-validation scope. (authoring-run/d19f4b0f-f17b-4488-8388-c3004c8e747d - 006fca93dbcd899734c830146edcf17df1aeb084)
 
