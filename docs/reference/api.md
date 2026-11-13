@@ -8109,11 +8109,12 @@ Preview Agent network policy admission without saving or applying
 
 **Operation ID:** `validateAgentSandboxPolicy`
 
-**Permissions:** Requires manage_policy permission on the requested Agent.
+**Permissions:** Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `manage_policy` | `agent` | `requested` |
+| `update` | `sandbox_policy` | `requested` |
 
 ##### Parameters
 

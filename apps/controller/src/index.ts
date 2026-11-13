@@ -605,6 +605,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     [
       "getAgentSandboxPolicy",
       "getAgentSandboxRecommendations",
+      "validateAgentSandboxPolicy",
       "updateAgentSandboxPolicy",
       "applyAgentSandboxPolicy",
     ].includes(operation.operationId)
