@@ -15,10 +15,10 @@
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.ts",
     "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
-    "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+    "tests/integration/postgres-native-iam-policy-barrier.test.ts",
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
-    "tests/integration/postgres-worker-harness-exposure.test.mjs",
-    "tests/integration/auth-maintain.test.mjs",
+    "tests/integration/postgres-worker-harness-exposure.test.ts",
+    "tests/integration/auth-maintain.test.ts",
     "tests/integration/occ-metrics.test.mjs"
   ],
   "files": [
@@ -32,7 +32,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+      "path": "tests/integration/postgres-native-iam-policy-barrier.test.ts",
       "expectedTests": [
         "xid8 comparison preserves the tuple transaction ID across epochs",
         "native IAM barrier fixture rejects unsafe connection targets before connecting",
@@ -186,7 +186,7 @@
       ]
     },
     {
-      "path": "tests/integration/auth-maintain.test.mjs",
+      "path": "tests/integration/auth-maintain.test.ts",
       "expectedTests": [
         "auth:maintain requires an explicit writers-stopped claim for every change",
         "auth:maintain rejects undeclared commands before configuration",
@@ -194,7 +194,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-harness-exposure.test.mjs",
+      "path": "tests/integration/postgres-worker-harness-exposure.test.ts",
       "expectedTests": [
         "the worker withdraws native Harness exposures of revisions that get no preparation pass",
         "a native candidate that fails for good has its Harness exposure withdrawn by the sweep"

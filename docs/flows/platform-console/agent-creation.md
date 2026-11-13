@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-10
-last_updated_session: authoring-run/f0decdaf-c71f-47f9-b2e5-c5bd6b1dfee1
+updated: 2026-11-12
+last_updated_session: authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98
 ---
 
 # Console Agent creation
@@ -175,13 +175,22 @@ same-Namespace `env` bindings. Failure retains the Agent; **Retry credential acc
 rereads grants without duplication. A session known not to administer the Installation sends
 no IAM request and opens the saved draft: the member's
 [deploy writes these grants](../namespace-iam-policy.md#6-default-users-owners-and-deploy-time-grants).
-After a refused Installation read, the "Your access" status block above the form gives the
-permission answer: create allowed, refused, or not checked. When create is allowed,
-`create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`
-and applies it as `applyCapabilities` applies the Installation's. Its credential source types let
-the form register a model Secret with a Credential Gateway, as step 4 does. It omits
-`agentProvisioning` and `nativeAdmin`, so the form saves a draft and disables
-**Enable Native admin UI**. A failed permission read adds **Retry permission check**, which
+After a refused Installation read, **Your access** shows whether Agent `create`
+is allowed, refused, or unchecked. When allowed,
+`create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`.
+`packages/occ/src/index.ts:getNamespaceAgentCapabilities` checks
+[Agent `create` on the requested collection](../../reference/authorization.md#authorization-decisions)
+before resolving that Namespace by ID. The API returns `403` on denial and `404`
+if an authorized request names a missing Namespace. The lookup needs no
+Namespace `read` grant.
+
+The form applies these capabilities as it applies the Installation's. The
+Namespace response gives the form the credential source types to register a
+model Secret with a Credential Gateway as in step 4. It omits
+`agentProvisioning`, so the form saves a draft. When browser access is enabled,
+the response includes `nativeAdmin` and the form offers **Enable browser chat**.
+[Agent browser access](../../reference/agent-native-admin.md) owns the later
+access checks. A failed permission read adds **Retry permission check**, which
 rereads only that answer. A retry that refuses create shows the refusal a fresh load shows,
 without the form. Failed Agent writes retain Configuration ID
 and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
@@ -211,6 +220,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 16:13: Trace Agent create authorization, Namespace lookup, and browser-access capability discovery. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
 
 - 2026-11-10 13:36: Show a confirmed repository-only Credential Proxy requirement before provisioning. (authoring-run/f0decdaf-c71f-47f9-b2e5-c5bd6b1dfee1 - 07c2a00c82e8a10635533eb1a27b110b52b90f14)
 - 2026-11-05: A member reads the Namespace's Agent capabilities after a refused Installation read, registers a model Secret with a Credential Gateway, and opens the draft without an IAM request. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)

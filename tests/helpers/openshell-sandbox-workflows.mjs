@@ -1,3 +1,4 @@
+import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.mjs";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
@@ -130,7 +131,6 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.5";
 const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
 const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
@@ -235,7 +235,7 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion,
+  openShellChartVersion: process.env.OCC_TEST_OPENSHELL_CHART_VERSION,
   codexCommandGraceMs,
 });
 const {
@@ -2019,6 +2019,7 @@ async function prepareProductionInstallation(
     controlUiOrigin,
     gatewayManagedMode,
     withOAuthToolSources = true,
+    observeReplacementNode = false,
     withScratch = false,
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
@@ -2286,6 +2287,7 @@ async function prepareProductionInstallation(
     sandboxOperator: { kubeconfigContext: kubernetesContext, kind: "test operator kubeconfig" },
     teardownStarted: teardownStarted(),
   });
+  const replacementNode = observeReplacementNode ? createReplacementNodeObservation() : undefined;
   const loadWorkerDrivers = async () => {
     const loaded = await loadInstallationConfiguration({
       mode: "production",
@@ -2301,7 +2303,10 @@ async function prepareProductionInstallation(
       diagnosticWorkerDrivers: {
         ...loaded,
         computeDriver: withUnauthorizedTokenSourceDiagnostic(
-          withFirstPrepareRevisionFailureDiagnostic(loaded.computeDriver, observeScratchEffect),
+          withFirstPrepareRevisionFailureDiagnostic(
+            replacementNode?.wrap(loaded.computeDriver) ?? loaded.computeDriver,
+            observeScratchEffect,
+          ),
           tokenSources,
         ),
       },
@@ -3131,6 +3136,7 @@ async function prepareProductionInstallation(
     policyFixturePool,
     pauseWorker,
     resumeWorker,
+    replacementNode,
     workerEvents: events,
     provisioningFailure: (revisionId) => createSandboxDriver.provisioningFailures.get(revisionId),
     diagnoseAgentRevision: (agentId, revisionId) =>
@@ -8284,7 +8290,70 @@ async function assertOpenShellGatewayOutage(topology) {
   }
 }
 
-async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) {
+export async function waitForReplacementActivation(
+  topology,
+  redeployed,
+  testContext,
+  poll = waitFor,
+  diagnose = replacementActivationDiagnostic,
+) {
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
+  topology.replacementNode?.begin(redeployed.data.id);
+  try {
+    await poll(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
+      const observed = await topology.request("GET", agentPath);
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      if (observed.data.activeRevisionId === redeployed.data.id) {
+        return observed.data;
+      }
+      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
+      // good on its first attempt. Stop then: the error names the probe's classified cause, and
+      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
+      const deployment = await topology.request("GET", deploymentPath);
+      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
+      // original activation deadline; only the Agent naming this revision can satisfy the wait.
+      const { status } = deployment;
+      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
+        return undefined;
+      }
+      assert.equal(status, 200, JSON.stringify(deployment.error));
+      assert.notEqual(
+        deployment.data.status,
+        "failed",
+        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
+      );
+      return undefined;
+    });
+  } catch (error) {
+    const observation = topology.replacementNode?.finish();
+    if (observation !== undefined) {
+      testContext.diagnostic(
+        `Last completed pending replacement Compute decision: ${observation}.`,
+      );
+    }
+    const worker = await topology.diagnoseRevision(redeployed.data.id);
+    // A diagnostic that fails or stalls itself must not replace the timeout it explains.
+    const detail = await withinDiagnosticDeadline(
+      () =>
+        diagnose(topology, redeployed.data, worker).catch(
+          (diagnosticError) =>
+            `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
+        ),
+      { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
+    );
+    // Keep the timeout's own stack, which names this wait, and add the evidence to its message.
+    if (error instanceof Error) {
+      error.message = `${error.message}${detail}`;
+      throw error;
+    }
+    assert.fail(`${String(error)}${detail}`);
+  } finally {
+    topology.replacementNode?.finish();
+  }
+}
+
+async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext) {
   // Suspending the upstream Sandbox removes its Pod while retaining the provider resource.
   // Replacement must still discover and retire that Sandbox without relying on Pod observation.
   await kubectl(
@@ -8321,51 +8390,7 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   );
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
   assert.notEqual(redeployed.data.id, topology.revision.id);
-  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
-  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
-  try {
-    await waitFor(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request("GET", agentPath);
-      assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      if (observed.data.activeRevisionId === redeployed.data.id) {
-        return observed.data;
-      }
-      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
-      // good on its first attempt. Stop then: the error names the probe's classified cause, and
-      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
-      const deployment = await topology.request("GET", deploymentPath);
-      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
-      // original activation deadline; only the Agent naming this revision can satisfy the wait.
-      const { status } = deployment;
-      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
-        return undefined;
-      }
-      assert.equal(status, 200, JSON.stringify(deployment.error));
-      assert.notEqual(
-        deployment.data.status,
-        "failed",
-        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
-      );
-      return undefined;
-    });
-  } catch (error) {
-    const worker = await topology.diagnoseRevision(redeployed.data.id);
-    // A diagnostic that fails or stalls itself must not replace the timeout it explains.
-    const detail = await withinDiagnosticDeadline(
-      () =>
-        replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
-          (diagnosticError) =>
-            `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
-        ),
-      { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
-    );
-    // Keep the timeout's own stack, which names this wait, and add the evidence to its message.
-    if (error instanceof Error) {
-      error.message = `${error.message}${detail}`;
-      throw error;
-    }
-    assert.fail(`${String(error)}${detail}`);
-  }
+  await waitForReplacementActivation(topology, redeployed, testContext);
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
   await waitForProviderHarnessPod(topology.placement, redeployed.data);
@@ -9442,6 +9467,7 @@ export function registerGatewayToolPolicyTest() {
           revisionId: redeployed.data.id,
           workerEvents: topology.workerEvents,
           checkDeploymentBeforeActivation: true,
+          reportDeploymentStatusOnTimeout: true,
         });
       } catch (error) {
         // Read the replacement's worker state before teardown removes its workloads.
@@ -9653,6 +9679,7 @@ export function registerProviderLifecycleTest(workflow) {
         const topology = await measureOpenShellStage(testContext, "installation", () =>
           prepareProductionInstallation(context, {
             harnessId: selectedHarness,
+            observeReplacementNode: workflow === "upstream" && selectedScenario === "full",
             ...(workflow === "scratch" ? { withScratch: true, withOAuthToolSources: false } : {}),
             ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
             ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
@@ -9866,7 +9893,7 @@ export function registerProviderLifecycleTest(workflow) {
           // Retire the Harness used by the positive turns before changing DNS. A fresh
           // lookup alone cannot redirect its already established model connection.
           await measureOpenShellStage(testContext, "replacement", () =>
-            assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology),
+            assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext),
           );
         }
         if (workflow === "upstream") {

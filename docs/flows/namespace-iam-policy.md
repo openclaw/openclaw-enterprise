@@ -1,22 +1,20 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-04
-last_updated_session: "claude/session_01HzmRt1DGB79VEnEWHt7PRy"
+updated: 2026-11-12
+last_updated_session: "authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63"
 ---
 
 # Namespace IAM Policy Flow
 
 ## Overview
 
-Namespace IAM policy management begins when an authenticated caller uses the OCC
-API or CLI to list, create, read, or delete a Namespace Role or exact
-AccessBinding, or to list, create, or read a Namespace ServicePrincipal. OCC authorizes the administrator, validates that the policy entry
-belongs to the requested Namespace, and delegates the policy mutation to the
-selected IAM Driver. The flow stops after the policy and audit event commit
-together in the platform state transaction. Phase 6 covers the other policy
-writes: the configured Roles, Groups, and Group bindings, Group membership at
-account creation, the Owner binding that each create writes, and the Agent
-grants that a deploy writes.
+Authenticated callers use the OCC API or CLI to list, create, or read Namespace
+Roles, exact AccessBindings, and ServicePrincipals. They can also delete Roles
+and AccessBindings. OCC checks authority and Namespace ownership before the
+selected IAM Driver writes policy. The flow ends when policy and audit commit
+in the same platform state transaction. Phase 6 traces configured policy,
+Group membership at account creation, Owner bindings on create, and deploy-time
+Agent grants.
 
 ## Entry Points
 
@@ -39,9 +37,10 @@ graph TD
   C -->|read| D["Controller asks selected IAM Driver to read Namespace policy"]
   C -->|create/delete| S{"Human-session caller?"}
   S -->|yes| L{"Assigning session current?"}
-  L -->|yes, held through transaction| E["Controller validates Role, subject, and exact target"]
+  L -->|yes, held through transaction| CFI["Hold shared IAM configuration lock"]
   L -->|revoked or expired| X["Roll back and deny"]
-  S -->|no| E
+  S -->|no| CFI
+  CFI --> E["Controller validates Role, subject, and exact target"]
   E --> T{"IAM Driver joins transaction?"}
   T -->|yes| F["Selected IAM Driver mutates platform IAM policy"]
   T -->|no| U["Reject with 503 before policy write"]
@@ -61,12 +60,10 @@ graph TD
 
 `apps/controller/src/index.ts:requiredPermissions`
 
-The API route declares IAM operations as Installation administration plus exact
-Namespace read. Admission and identity resolution remain in
-`apps/controller/src/index.ts`; they resolve the caller before dispatching to
-the IAM handler. The OCC controller uses the selected IAM Driver for both
-permission checks. Ordinary access to the target resource does not authorize
-policy delegation.
+`apps/controller/src/index.ts` admits and resolves the caller before dispatch.
+OCC uses the selected IAM Driver to check Installation `administer` and exact
+Namespace `read`. Delegation requires both checks even when the caller can
+access the target.
 
 ### 2. Role and AccessBinding commands reach the controller
 
@@ -77,8 +74,8 @@ and return policy metadata. Create and delete operations use the handler's `tran
 only after the transaction commits. For human sessions, authentication wraps
 `controller.transact` and retains the admitted session before the IAM command and
 checks its expiry again after the command and audit append. PostgreSQL locks the
-user before the session, then the controller takes its existing Namespace and
-account locks. Guarded profiles first reuse
+user before the session, then the controller takes the shared IAM configuration
+lock before its existing Namespace and account locks. Guarded profiles first reuse
 `packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.holdSession`,
 which validates the bound account and sign-in method through the existing actor guard.
 Session retention takes shared user locks and preserves the policy transaction's
@@ -90,21 +87,31 @@ write to finish; revocation that completes first makes the write fail. Expiry
 during the write or before server-side COMMIT validation rolls back policy and its success audit. The memory auth adapter
 serializes policy writes with local logout and rechecks the session inside the
 transaction. Non-session credentials keep their existing admission behavior.
-The event's authorization records the
-Installation `administer` check. Role events carry the Namespace as resource and
-`roleId` plus `permissions` in details. AccessBinding create and delete events
-carry the bound target as resource (the Namespace for a Namespace binding) and
-`bindingId`, `subjectKind`, `subjectId`, and `roleId` in details. Deletion reads
-the removed Role or AccessBinding in the same transaction to record it.
-ServicePrincipal creation takes an empty body; its event carries the Namespace
-as resource and `servicePrincipalId` in details. The new non-Agent identity is
-fixed to the Namespace, holds no grant until an AccessBinding names it, and is
-listed only in that Namespace. No route deletes it yet; the [service key flow](service-api-keys.md)
-issues and revokes its keys.
+
+The mutation event records the Installation `administer` check in its
+`authorization` field.
+Role events use the Namespace as the resource and include `roleId` and
+`permissions` in details. AccessBinding create and delete events use the bound
+target as the resource (the Namespace for a Namespace binding) and include `bindingId`,
+`subjectKind`, `subjectId`, and `roleId` in details. Deletion reads the removed
+Role or AccessBinding in the same transaction for the audit event.
+ServicePrincipal creation takes an empty body. Its event uses the Namespace
+as the resource and includes `servicePrincipalId` in details. The new
+non-Agent identity belongs to and is listed only in that Namespace. It starts
+with no grant and gains access through an AccessBinding. The
+[service key flow](service-api-keys.md) issues and revokes its keys. These
+identities have no delete route.
 
 ### 3. OCC validates policy ownership
 
+`packages/occ/src/index.ts:holdIAMPolicyAuthority`
 `packages/occ/src/index.ts:createIAMAccessBinding`
+
+Each Role and AccessBinding mutation calls `holdIAMPolicyAuthority`, which takes
+the shared configuration fence before the Namespace lock and final checks.
+A configured-read withdrawal therefore commits before authorization or after
+the policy write. A denied write saves no policy change or success audit.
+Configured Roles still cannot grant Installation permissions.
 
 Role creation accepts only nonempty, duplicate-free permissions for Namespace
 resource kinds; `namespace` permissions support only `read`. `iamRolePermissions`
@@ -137,29 +144,23 @@ Referenced Role deletion raises `IAMRoleInUseError` (`409 RESOURCE_CONFLICT`).
 Existing human Principals can receive bindings without a Namespace service
 identity. ServicePrincipal subjects must belong to that exact Namespace.
 
-When the selected native Driver reloads policy during a PostgreSQL State callback,
-`PostgresPlatformState.loadNativeIAMState` reads through that State instance's
-original transaction. Authorization therefore sees that unit's pending grants
-and removals. Outside a callback, the loader opens its ordinary read transaction.
-Work that escapes the callback retains its original closed lifetime and fails;
-it cannot obtain another client after commit, rollback, or an unknown outcome.
-This transaction binding alone does not fence concurrent policy invalidation.
-Human HTTP policy writers additionally retain their session through the original
-unit's `holdAuthenticationSession` operation, implemented by PostgreSQL State.
+When the native IAM Driver reloads policy inside a PostgreSQL State callback,
+`PostgresPlatformState.loadNativeIAMState` uses the original transaction.
+Authorization sees its pending grants and removals. Outside a callback, it opens a read transaction. Escaped work fails
+on the closed transaction after commit, rollback, or an unknown outcome. It
+cannot obtain another client. Policy writes use the locks in phases 2 and 3
+to order concurrent changes. Human HTTP writers retain their session through
+the original PostgreSQL unit's `holdAuthenticationSession` operation.
 
-A unit reads the policy once, not once per decision. `readNativeIAMState` keeps
-the policy it read on that unit's transaction context. A read-only unit is one
-REPEATABLE READ snapshot that writes nothing, so it reuses the policy for every
-lookup and decision; a list route therefore reads the policy once for all its
-items. A writing unit reuses it only until it issues any other statement, so its
-own IAM writes and any locks it takes come before the next read. Two
-back-to-back decisions in a writing unit do not see a commit another unit makes
-between them, as if it had committed just after; the read was never a fence.
-The policy is built fresh from that read's rows and frozen in place as an
-immutable snapshot (`freezeSnapshot`), and the native Driver validates and
-indexes each snapshot once (identities by id, issuer and subject; bindings by
-subject; Restrictions by action and kind). Nothing outlives the
-unit: the next request reads the policy again.
+`readNativeIAMState` builds a snapshot from the policy rows and caches it on
+the transaction. A read-only REPEATABLE READ unit reuses it for every decision
+and lookup, including all items on a list route. A writing unit reuses it until
+its next statement, so its IAM writes and lock acquisitions precede the next
+read. A concurrent commit stays invisible to two decisions that reuse the
+snapshot across that commit. `freezeSnapshot` makes the policy immutable. The native Driver validates and indexes each
+snapshot once, by ID and issuer/subject for identities, by subject for
+bindings, and by action and kind for Restrictions. The next unit reads policy
+afresh.
 
 `packages/occ/src/index.ts:OpenClawController.updateAgent` checks Agent `update`
 again after locking the Namespace. Namespace IAM writes take the same lock.
@@ -226,8 +227,9 @@ behavior.
   `groupIds`. `insertNativeIAMPrincipal` takes the IAM configuration lock shared
   and inserts each membership with the account.
 - **Authority fence.** `performFenced` runs each session request inside
-  `controller.withAuthorityFence`. The create paths below and
-  `deployAgentWithAuthorization` call `holdAuthority` first, which holds the
+  `controller.withAuthorityFence`. The four Namespace Role and AccessBinding
+  mutations, the create paths below, and `deployAgentWithAuthorization` call
+  `holdAuthority` first, which holds the
   session through COMMIT and takes the IAM configuration lock shared. Each
   create in a Namespace and the deploy authorize again after `lockNamespace`,
   which AccessBinding deletes also take.
@@ -272,18 +274,19 @@ behavior.
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
   `tests/integration/postgres-production-wireup.test.ts` checks revocation after
-  real HTTP admission, cross-replica logout ordering, expiry during policy work,
-  and expiry after the final client check with COMMIT paused at the transport. It uses
+  real HTTP admission, both commit orders for configured Namespace and target-read
+  withdrawal, cross-replica logout ordering, expiry during policy work, and expiry
+  after the final client check with COMMIT paused at the transport. It uses
   real authentication, IAM and PostgreSQL; its passive Compute does not prove a native Gateway.
 - The guarded activation case in
   `tests/integration/postgres-password-default-activation.test.ts` checks a
   Namespace wait beyond five seconds, an independent session's write, and
   subsequent account revocation. These cases emit credential-free execution
   diagnostics for review evidence.
-- A `403` can also mean the admitted assigning session was revoked or expired
-  before its protected transaction completed. A `403` means the caller lacks Installation administration, exact Namespace
-  read, or target read for binding creation. A `400` names the invalid
-  field in its detail path. A `409` on Role deletion means a binding still
+- A `403` signals missing Installation administration, exact Namespace read,
+  or target read for binding creation. It can also signal session revocation
+  or expiry before the protected transaction completed. A `400` names the
+  invalid field in its detail path. A `409` on Role deletion means a binding still
   references the Role.
 
 ## Related docs
@@ -299,6 +302,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)
 - 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)
 - 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)

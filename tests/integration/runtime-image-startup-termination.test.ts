@@ -27,10 +27,9 @@ import {
 // Gateway's 330 seconds: a wrapper that ignores SIGTERM never meets it.
 const promptTerminationMs = 15_000;
 
-type TerminationSnapshot = Pick<
-  ProbeSnapshot,
-  "events" | "phases" | "output" | "running" | "exitCode"
->;
+type TerminationSnapshot = Pick<ProbeSnapshot, "events" | "output" | "running" | "exitCode"> & {
+  phases: readonly Record<string, unknown>[];
+};
 type TerminationScenario = {
   containerName: string;
   collect: () => Promise<TerminationSnapshot>;
