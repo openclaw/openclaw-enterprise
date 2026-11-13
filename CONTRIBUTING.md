@@ -189,7 +189,7 @@ separately. After the applicable checks and review, set `PR_NUMBER` and `HEAD_SH
 PR number and final head, then merge from this checkout:
 
 ```sh
-gh pr merge "$PR_NUMBER" --squash --match-head-commit "$HEAD_SHA"
+gh pr merge "$PR_NUMBER" --repo openclaw/openclaw-enterprise --squash --match-head-commit "$HEAD_SHA"
 ```
 
 If the review rule prevents an authorized core team author from merging their
