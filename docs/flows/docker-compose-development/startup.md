@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-10
-last_updated_session: authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6
+updated: 2026-11-12
+last_updated_session: authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291
 ---
 
 # Compose development startup
@@ -211,12 +211,12 @@ Probe Pods use short grace periods and UID-preconditioned deletes. Cleanup waits
 for selector-matching Pods before removing their egress policy; probe or cleanup
 failure fails startup. Checks are point-in-time and single-node.
 
-Before writing the Installation, `scripts/prepare-development-codex-seccomp.mjs`
-probes the runtime in a credential-free Pod. If `RuntimeDefault` blocks it, the
-reviewed generator derives and verifies a content-addressed Localhost profile
-for dedicated Codex; failure rolls back the cluster. The
-[local Kubernetes guide](../../guides/deploy/local-kubernetes-development.md#start-the-profile)
-owns the verified boundaries and provenance.
+Before Installation, `scripts/prepare-development-codex-seccomp.mjs` probes
+`RuntimeDefault` in a credential-free Pod. Confirmed denial triggers
+[verified, content-addressed Localhost profile derivation](../../guides/deploy/local-kubernetes-development.md#start-the-profile).
+Failure triggers cluster rollback. On readiness failure, writable stderr receives
+`OCE_CODEX_SECCOMP_READINESS_FAILURE` before cleanup with operation
+`runtime-default-pod-readiness` and a recognized waiting reason or `null`.
 
 Startup waits for the Gateway, certificate, and proxy Pods before reporting
 success. Envoy source addresses must fall inside the selected node's Pod CIDR;
@@ -235,35 +235,33 @@ beside the URL and public CA path. Stack readiness does not establish browser tr
 `internal/occdev/command.go:podmanEndpoint`,
 `internal/occdev/up.go:Up`.
 
-Without a Sandbox Driver, Kubernetes startup selects Docker or Podman and
-resolves its host socket from Docker's active context or `podman machine inspect`.
-Private state records the socket, Compose project, and `occ-dev-*` cluster for
-validated cleanup despite later context changes.
+Without a Sandbox Driver, startup resolves Docker's context or `podman machine inspect`.
+Private state pins the socket, Compose project, and `occ-dev-*` cluster for cleanup.
 
-Startup refuses existing cluster or project resources.
-`internal/occdev/compose.go:AnalyzeCompose` validates publications;
-`internal/occdev/up.go:validateResourceOwnership` rejects external or unscoped
-networks and volumes. Exclusive `0700` state creation precedes resources.
-`setKubernetesBridgeGateway` preserves an explicit gateway or selects the subnet's
-first usable address for k3d. Startup and cleanup use the privately saved Compose
-snapshot, unaffected by later `.env` edits.
+Startup refuses existing resources. `internal/occdev/compose.go:AnalyzeCompose`
+validates publications; `internal/occdev/up.go:validateResourceOwnership` rejects
+external or unscoped networks and volumes. Exclusive `0700` state creation
+precedes resources. `setKubernetesBridgeGateway` preserves an explicit gateway
+or selects the subnet's first usable address. A private Compose snapshot pins
+startup and cleanup against later `.env` edits.
 
-With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Compute enters
-`internal/occdev/openshell_k3d.go:upK3d` before Compose rendering and uses the
-engine only for k3d and images. Without OpenShell, the Installation selects the
-bundled Presets and Codex Plugin Driver and copies bootstrap credentials privately.
+`internal/occdev/compose.go:prepareComposeBootstrapSQL` snapshots default SQL as
+`0644` for PostgreSQL. Only the default read-only bind, including checkout aliases,
+is redirected; custom and writable mounts and original permissions stay unchanged.
+State remains `0700`. Cleanup removes the copy. Pre-start failures remove incomplete
+state despite `OCC_DEVELOPMENT_KEEP_ON_FAILURE`; retention requires a recoverable
+snapshot and resource startup.
 
-`internal/occdev/repository_k3d.go` validates selected inputs and waits for
-authenticated bootstrap and Namespace readiness. It binds the server-assigned
-Namespace ID, generates a CA and exact-host broker certificate, creates Kubernetes
-inputs, and upgrades Helm with the Repo Driver and worker sidecar. Discovery must
-match approved references and profiles; it proves no model turn, native sandbox,
-or Git operation. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
+Kubernetes-only mode enters `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering.
+
+`internal/occdev/repository_k3d.go` validates inputs. After `upK3d` completes
+authenticated bootstrap and Namespace readiness, repository setup binds the
+server-assigned Namespace ID, generates CA and exact-host certificates, and upgrades
+Helm with Kubernetes inputs, Repo Driver and worker sidecar. Discovery only checks
+approved references and profiles. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
 `OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` for Docker Compute, else
-`kubernetes`; unsupported values fail before resource creation. The
-[OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
-owns both OpenShell control-plane sequences.
+`kubernetes`; unsupported values fail before resource creation.
 
 ### 13. Bootstrap OCC, create k3d, and prepare runtime configuration
 
@@ -359,10 +357,9 @@ generated CA and console name.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
-`internal/occdev/state.go:exclusiveWrite` removes a newly created output when
-permission setting, writing, or closing fails, including a partial external key
-before startup records a successful copy. Existing targets stay untouched; a
-removal failure is returned with the original file-operation error.
+`internal/occdev/state.go:exclusiveWrite` removes new outputs, including partial
+external keys, when chmod, writing or closing fails. Existing targets stay untouched;
+errors include failed removal.
 
 Failure triggers cleanup. Shutdown validates the marker, state and Compose
 snapshot, then stops API/worker and deletes owned k3d and Compose resources through
@@ -419,6 +416,14 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 00:24: Correct readiness ownership. (authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291 - 6b44940d40419e4cd9889cf4b0316d95a798be56)
+
+- 2026-11-12 00:18: Handle checkout aliases and clean incomplete pre-start state. (authoring-run/40b08b7d-d158-4f4d-8a93-1e53f45a5999 - 2d5cf2bf7138c2d7bd40b3fa630a4c9d8b9dafe4)
+
+- 2026-11-12 00:05: Copy default bootstrap SQL into private owned state with container-readable permissions. (authoring-run/bd5e5418-5167-4b5f-b5bc-b9047ed8b68b - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
+
+- 2026-11-11 23:56: Report probe readiness. (authoring-run/1189518e-cadf-4a8f-aabe-bcdbff4d434e - c6aad5bf134ae15bb9abea127b978756f843769f)
 
 - 2026-11-10 17:50: Prepare private browser TLS file ownership for Compose without OpenShell. (authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6 - c40baead7e51977b832d0036518b4f613a68935d)
 

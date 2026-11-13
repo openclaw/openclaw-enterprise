@@ -8,9 +8,10 @@ import {
   GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
   validateGitHubRepositoryRegistry,
 } from "../../drivers/repo/github/access/registry.ts";
-import type {
-  GitHubStaticTokenOwner,
-  GitHubDriverFactory,
+import {
+  isGitHubProfile,
+  type GitHubStaticTokenOwner,
+  type GitHubDriverFactory,
 } from "../../drivers/repo/github/access/types.ts";
 import { loadPublicCa } from "./public-ca.ts";
 import { readProtectedFile } from "./protected-file.ts";
@@ -60,7 +61,7 @@ export async function loadConfiguration(
     function validateGateway() {
       const gateway = record(root.gateway);
       for (const profile of config.sessionPolicy.allowedProfiles) {
-        if (profile !== "git-read" && profile !== "git-write" && profile !== "git-full") {
+        if (!isGitHubProfile(profile)) {
           throw new Error("invalid-configuration");
         }
       }

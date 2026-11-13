@@ -38,6 +38,7 @@ import {
   assertInstallationSecretRetained,
   assertInstallationVolume,
   assertLocalRehearsalSelection,
+  measureUpgradeAvailability,
   readImmutableInstallationSecret,
   rehearsePopulatedReturn,
   selectRehearsalControllers,
@@ -866,7 +867,14 @@ test(
         const result = await request(method, path, body, expected);
         return result.data;
       };
-      return { api, baseURL, externalRequest, occEnv, runGuideOcc };
+      return {
+        api,
+        baseURL,
+        externalRequest,
+        installationId: installation.data.id,
+        occEnv,
+        runGuideOcc,
+      };
     }
 
     async function provisionNamespace({ api, externalRequest, runGuideOcc }) {
@@ -1564,41 +1572,44 @@ test(
         }
       };
       const controllerEvidence = join(directory, "controller-upgrade");
-      const controllerOutput = await run(
-        "scripts/upgrade-production-images",
-        [
-          "--kubeconfig",
-          selection.kubeconfigPath,
-          "--context",
-          selection.kubernetesContext,
-          "--namespace",
-          system,
-          "--release",
-          release,
-          "--values",
-          valuesPath,
-          "--installation",
-          installationPath,
-          "--controller-image",
-          upgradeImages.controller,
-          "--source-revision",
-          sourceRevision,
-          "--evidence-dir",
-          controllerEvidence,
-          "--occ",
-          occCli,
-          "--timeout-seconds",
-          "600",
-        ],
-        {
-          timeout: 900_000,
-          env: {
-            OCC_URL: baseURL,
-            OCC_SERVICE_KEY_FILE: localServiceKeyFile,
-            OCC_CA_BUNDLE: join(directory, "tls.crt"),
-            OPENAI_API_KEY: undefined,
-          },
-        },
+      context.diagnostic(
+        `Controller upgrade observations: ${join(directory, "forward-api-availability.json")}`,
+      );
+      const controllerOutput = await measureUpgradeAvailability(
+        externalRequest,
+        installationId,
+        directory,
+        () =>
+          run(
+            "scripts/upgrade-production-images",
+            [
+              "--kubeconfig",
+              selection.kubeconfigPath,
+              "--context",
+              selection.kubernetesContext,
+              "--namespace",
+              system,
+              "--release",
+              release,
+              "--values",
+              valuesPath,
+              "--installation",
+              installationPath,
+              "--controller-image",
+              upgradeImages.controller,
+              "--source-revision",
+              sourceRevision,
+              "--evidence-dir",
+              controllerEvidence,
+              "--occ",
+              occCli,
+              "--timeout-seconds",
+              "600",
+            ],
+            { timeout: 900_000, env: occEnv },
+          ),
+        (details) =>
+          record("Independent controller upgrade API availability observations", details),
       );
       assert.match(controllerOutput, /no Agent deployments were requested/u);
       for (const component of ["api", "worker"]) {
@@ -2029,7 +2040,7 @@ test(
       });
     }
 
-    const { api, baseURL, externalRequest, occEnv, runGuideOcc } =
+    const { api, baseURL, externalRequest, installationId, occEnv, runGuideOcc } =
       await installProductionControlPlane();
     if (rehearsal) {
       await custody.assertPostgres();

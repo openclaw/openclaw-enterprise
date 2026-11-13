@@ -18,7 +18,7 @@ import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { stopProcess } from "./stop-process.mjs";
 import { waitFor } from "./wait-for.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
-import { reservedPortArgs } from "./available-port.mjs";
+import { reservedPortArgs } from "./available-port.ts";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 

@@ -1,5 +1,6 @@
 import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
+import { readPrivateJsonResponse } from "../../drivers/repo/access/private-json-response.ts";
 import { admissionIdTimestamp } from "../../drivers/repo/access/admission-id.ts";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
@@ -266,7 +267,6 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     signal: AbortSignal,
     input?: RepositoryCredentialBoundSessionInput,
     admissionId?: string,
-    maximumResponseBytes = 16 * 1024,
   ): Promise<Reply> {
     const body = input === undefined ? "" : JSON.stringify(input);
     const bodyBytes = Buffer.byteLength(body);
@@ -275,8 +275,6 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     }
     try {
       return await new Promise<Reply>((resolveReply, reject) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
         const outgoing = request(
           {
             socketPath: this.#socket,
@@ -293,38 +291,23 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
             },
           },
           (incoming) => {
-            incoming.on("data", (chunk: Buffer) => {
-              size += chunk.length;
-              if (size > maximumResponseBytes) {
-                incoming.destroy();
-                outgoing.destroy();
-                reject(new RepositoryCredentialControlError(true));
-                return;
-              }
-              chunks.push(chunk);
-            });
-            incoming.once("error", reject);
-            incoming.once("end", () => {
-              try {
-                if (
-                  !incoming.complete ||
-                  incoming.statusCode === undefined ||
-                  incoming.headers["content-type"] !== "application/json"
-                ) {
-                  unavailable();
+            readPrivateJsonResponse(
+              incoming,
+              (bytes) => {
+                try {
+                  if (bytes === undefined || incoming.statusCode === undefined) {
+                    unavailable();
+                  }
+                  resolveReply({
+                    status: incoming.statusCode,
+                    body: JSON.parse(bytes.toString("utf8")),
+                  });
+                } catch {
+                  reject(new RepositoryCredentialControlError(true));
                 }
-                resolveReply({
-                  status: incoming.statusCode,
-                  body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-                });
-              } catch {
-                reject(new RepositoryCredentialControlError(true));
-              } finally {
-                for (const chunk of chunks) {
-                  chunk.fill(0);
-                }
-              }
-            });
+              },
+              reject,
+            );
           },
         );
         outgoing.once("error", reject);

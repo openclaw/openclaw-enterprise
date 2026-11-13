@@ -38,6 +38,8 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.ts";
 import { listen } from "../helpers/listen.ts";
+import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import {
@@ -49,15 +51,16 @@ import {
   continuityPodReference,
   continuityRevision,
 } from "../helpers/production-upgrade-continuity-fixture.ts";
-import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
+import {
+  registerAcceptedAgentDeployNoticeTest,
+  registerDispatchRestoreTests,
+  registerUnknownAgentDeploymentResumeTest,
+} from "../helpers/production-upgrade-dispatch-restore.ts";
 import {
   preflightIdentities,
   registerPreflightCleanupTests,
 } from "../helpers/production-upgrade-preflight-cleanup.ts";
-import {
-  registerRetainedFleetPreflightTests,
-  restartInventory,
-} from "../helpers/production-upgrade-retained-fleet-preflight.ts";
+import { registerRetainedFleetPreflightTests } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
 
 // Every case owns its command server, state, and evidence directory. Two sibling
 // cases can overlap while the existing nested groups keep their own limits.
@@ -190,6 +193,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
               {
                 name: component,
                 image,
+                args: [`apps/controller/src/${component === "api" ? "server" : "worker"}.mjs`],
                 env: [
                   {
                     name: "OCC_CONFIG_PATH",
@@ -339,12 +343,12 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   }
 
   // Starts the preflight Pod's container once with its Secret/ConfigMap volumes and literal
-  // environment. Other cluster inputs (Secret-backed env, CA and token volumes) are
+  // environment and fixture database Secret. Other cluster inputs (CA and token volumes) are
   // not provided; chart cases point Compute at the test's Kubernetes API through an
   // explicit kubeconfig instead of the Pod's service account. The container runs in
   // OCC_TEST_PRODUCTION_IMAGE when set, otherwise as this checkout's source (the
   // command's working directory) with /app mapped to it. Stand-in cases only record it.
-  async function runPreflight(root, cwd, state, pod) {
+  async function runPreflight(root, cwd, state, pod, database) {
     const scripted = state.preflightResults?.[pod.spec.containers[0].name];
     if (scripted) {
       return scripted;
@@ -439,6 +443,15 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // Kubernetes expands $(VAR) in literal values from earlier variables and turns $$ into $.
     const expanded = {};
     const env = (container.env ?? [])
+      .map((item) => {
+        const ref = item.valueFrom?.secretKeyRef;
+        // Resolve only the fixture-owned application Secret, through the actual
+        // rendered reference. The generated program and pool remain unchanged.
+        if (database && ref?.name === database.secretName && ref.key === database.appUrlKey) {
+          return { name: item.name, value: database.url };
+        }
+        return item;
+      })
       .filter((item) => typeof item.value === "string")
       .map((item) => {
         const value = item.value.replace(/\$\$|\$\(([A-Za-z_][A-Za-z0-9_]*)\)/g, (match, name) =>
@@ -493,7 +506,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   // One command of one fixture. `io` (fixture-command-server.ts) writes its output and
   // ends it; returning without an exit ends it with status 0.
-  async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) {
+  async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy, database) {
     const stateFile = join(root, "state.json");
     const state = JSON.parse(readFileSync(stateFile, "utf8"));
     const save = () => writeFileSync(stateFile, JSON.stringify(state));
@@ -747,6 +760,26 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       if (args.includes("create") && args.includes("--raw")) {
         assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
         const review = JSON.parse(await io.readInput());
+        if (review.spec.resourceAttributes.resource === "deployments") {
+          assert.equal(review.apiVersion, "authorization.k8s.io/v1");
+          assert.equal(review.kind, "SelfSubjectAccessReview");
+          assert.deepEqual(review.spec.resourceAttributes, {
+            namespace: "system",
+            verb: "patch",
+            group: "apps",
+            version: "v1",
+            resource: "deployments",
+            name: "openclaw-enterprise-worker",
+          });
+          if (state.reviewUnavailable) {
+            return fail(1, "private self-review diagnostic");
+          }
+          if (state.wrongWorkerReview) {
+            review.spec.resourceAttributes.name = "openclaw-enterprise-api";
+          }
+          out({ ...review, status: { allowed: !state.denyWorkerPatch } });
+          return io.exit(0);
+        }
         assert.deepEqual(review, {
           apiVersion: "authorization.k8s.io/v1",
           kind: "SelfSubjectAccessReview",
@@ -755,6 +788,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
               namespace: "system",
               verb: "update",
               group: "",
+              version: "v1",
               resource: "secrets",
               name: state.secret.metadata.name,
             },
@@ -799,11 +833,17 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         const requested = JSON.parse(await io.readInput());
         const key = `${requested.kind}/${requested.metadata.name}`;
         if (args.includes("--ignore-not-found")) {
-          state.retiredResourceReads = (state.retiredResourceReads ?? 0) + 1;
-          if (state.retiredResourceAppearsAt === state.retiredResourceReads) {
-            state.recoveryResources[key] = state.recoveryBaselineResources[0];
+          const recreation = state.retiredResourceRecreation;
+          if (
+            recreation?.key === key &&
+            (recreation.stage === "before dispatch"
+              ? existsSync(join(root, "evidence", "helm-recovery", "intent.json"))
+              : state.rollbackSubmissions > 0)
+          ) {
+            state.recoveryResources[key] = recreation.resource;
+            delete state.retiredResourceRecreation;
+            save();
           }
-          save();
           if (state.retiredResourceReadError) {
             return fail(1, "Forbidden: cannot read selected retired resource");
           }
@@ -825,7 +865,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         state.recoveryPod &&
         args.includes("get") &&
         args.includes("--selector") &&
-        fileArg("--selector").startsWith("batch.kubernetes.io/controller-uid=")
+        fileArg("--selector") ===
+          `batch.kubernetes.io/controller-uid=${state.recoveryResources[`Job/${state.release}-initialization`]?.metadata.uid}`
       ) {
         out({ items: [state.recoveryPod] });
         return io.exit(0);
@@ -937,7 +978,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             },
             spec: object.spec.template.spec,
           };
-          const result = await runPreflight(root, cwd, state, child);
+          const result = await runPreflight(root, cwd, state, child, database);
           state.preflight.pods[child.metadata.name] = { ...child, ...result };
           const phase = result.status?.phase ?? result.phase;
           if (phase === "Succeeded") {
@@ -1174,6 +1215,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             object.log = "installation-startup-ready\nunbound-log-sentinel\n";
           }
           save();
+          const selected = fileArg("--container");
+          if (selected !== component) {
+            if (!object.spec.initContainers?.some(({ name }) => name === selected)) {
+              return fail(1, "unknown container");
+            }
+            out(object.initLogs?.[selected] ?? "");
+            return io.exit(0);
+          }
         }
         if (args.includes("logs") && object.log === undefined) {
           return fail(1, "container is waiting to start");
@@ -1241,6 +1290,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           .find((a) => a.startsWith("deployment/"))
           .split("-")
           .at(-1);
+        if (args.includes("patch") && component === "worker" && state.denyWorkerPatch) {
+          return fail(1, "Forbidden: cannot patch the worker Deployment");
+        }
         if (take("fail-scale-" + component)) {
           if (take("block-failure-receipt")) {
             mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
@@ -2068,6 +2120,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       candidatePluginDrivers,
       olderDraftRules = false,
       unavailableDraftResolver = false,
+      databaseAnswer = () => ({ rows: [{ id: "ins_test" }] }),
       afterDeploy,
       environment = {},
     } = {},
@@ -2078,6 +2131,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const commands = [];
     let upgradeProcess;
     let interrupted = false;
+    let database;
     const server = await startCommandServer({
       forwardedEnv: [],
       handle: ({ command, args, cwd, io }) => {
@@ -2092,7 +2146,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           interrupted = true;
           upgradeProcess.kill(preflightFault.mode === "interrupt-hard" ? "SIGKILL" : "SIGTERM");
         }
-        return fakeCommand(directory, { command, args, cwd }, io, afterDeploy);
+        return fakeCommand(directory, { command, args, cwd }, io, afterDeploy, database);
       },
     });
     t.after(() => server.close());
@@ -2245,6 +2299,26 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       // Apply case-specific changes after constructing a consistent release baseline.
       values = JSON.stringify(chart.values ? chart.values(exampleValues) : exampleValues);
       installation = JSON.stringify(chart.installation(exampleInstallation));
+      // Protocol-only dependency: it supplies rows, never decides identity or
+      // enforces SQL. Real PostgreSQL and packaged-image qualification are separate.
+      const postgres = await startFakePostgres({
+        onQuery: (query, session) =>
+          /^SELECT\b/i.test(query) ? databaseAnswer(query, session) : undefined,
+      });
+      t.after(() => postgres.close());
+      database = {
+        ...postgres,
+        secretName: JSON.parse(values).database.secretName ?? "occ-database",
+        appUrlKey: JSON.parse(values).database.appUrlKey ?? "application-url",
+        url: syntheticCredentialUrl({
+          protocol: "postgresql",
+          username: "candidate_app",
+          password: "fixture-only",
+          host: "127.0.0.1",
+          port: postgres.port,
+          pathname: "/candidate",
+        }),
+      };
     }
     const state = {
       release,
@@ -2311,7 +2385,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     }
     if (candidates) {
       const candidateValues = JSON.parse(values);
-      candidateValues.api = { channelDirectoryProxyUrl: "http://198.51.100.25:3128" };
+      candidateValues.api = {
+        ...candidateValues.api,
+        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
+      };
       const candidateInstallation = JSON.parse(installation);
       candidateInstallation.drivers.plugin = candidatePluginDrivers ?? [
         ...(candidateInstallation.drivers.plugin ?? []),
@@ -2374,6 +2451,36 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       directory,
       evidence,
       commands,
+      databaseSessions: database?.sessions ?? [],
+      runIdentityCheck: async (component, action = "identity-job", protocol) => {
+        const { stdout } = await execute(
+          process.execPath,
+          [
+            "scripts/upgrade-startup-preflight.mjs",
+            action,
+            join(evidence, "preflight-rendered.jsonl"),
+            component,
+            "identity-check",
+            "system",
+            release,
+            "occ-installation-startup",
+            "candidate-installation",
+            newController,
+            "30",
+            join(evidence, "installation.json"),
+            "none",
+          ],
+          { cwd: repository },
+        );
+        const job = JSON.parse(stdout);
+        const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+        state.preflight.secrets["candidate-installation"] = state.secret;
+        const connection = { ...database };
+        if (protocol) {
+          connection.url = database.url.replace(/^[^:]+:/, protocol);
+        }
+        return runPreflight(directory, repository, state, job.spec.template, connection);
+      },
       deploy: (namespaceId, agentId) =>
         execute(
           join(bin, "occ"),
@@ -2998,6 +3105,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     const result = await f.run();
     assert.match(result.stderr, /Could not verify update access to the Installation Secret/);
+    assert.match(result.stderr, /Could not verify patch access to the worker Deployment/);
     assert.doesNotMatch(result.stderr, /private self-review diagnostic/);
     assert.deepEqual(await f.events(), [
       "scale-api",
@@ -3648,6 +3756,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         assert.equal(state.worker, 1);
         await assertHelmIntent(f, 1, 2);
         await f.run("--resume");
+        assert.equal(
+          (await f.state()).preflight.created.length,
+          state.preflight.created.length,
+          "a committed Helm release must not create new preflight consumers",
+        );
         await assertPrivateReceipt(path, receipt);
         assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
       });
@@ -3849,7 +3962,18 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   });
 
   test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
-    const f = await fixture(t, { controllerOnly: true, candidates: true });
+    let databaseId = "ins_test";
+    const f = await fixture(t, {
+      controllerOnly: true,
+      candidates: true,
+      chart: { installation: (installation) => installation },
+      databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
+    });
+    // This handoff changes migration ownership, not the example's Plugin Drivers.
+    await writeFile(
+      join(f.directory, "candidate-installation.json"),
+      await readFile(join(f.directory, "installation.json")),
+    );
     const path = join(f.directory, "candidate-values.json");
     const values = JSON.parse(await readFile(path, "utf8"));
     values.database = { ...values.database, upgradeMigration: "separate" };
@@ -3881,7 +4005,19 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       /worker Deployment changed/,
     );
     assert.equal((await f.state()).helmSubmissions ?? 0, 0);
-    await writeFile(stateFile, JSON.stringify(stopped));
+    // Both writers stopped, but the application Secret/route can have changed.
+    // A valid migration check must not authorize replacing services on another DB.
+    await writeFile(stateFile, JSON.stringify({ ...stopped, denyWorkerPatch: true }));
+    databaseId = "ins_other";
+    await assert.rejects(f.run("--resume", "--migration-history-checked"), (error) => {
+      assert.match(error.stderr, /does not identify the incumbent Installation/);
+      assert.doesNotMatch(error.stderr, /old release keeps serving/);
+      return true;
+    });
+    assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+    assert.deepEqual([(await f.state()).api, (await f.state()).worker], [0, 0]);
+    databaseId = "ins_test";
+    // Completing the handoff requires no further patch.
     await f.run("--resume", "--migration-history-checked");
     assert.equal((await f.state()).helmSubmissions, 1);
   });
@@ -3918,8 +4054,55 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.state()).worker, 1);
   });
 
-  test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
+  test("a named worker patch denial keeps the incumbent API serving", async (t) => {
+    if (!realHelm) {
+      t.skip("helm is unavailable to render the real chart");
+      return;
+    }
+    const f = await fixture(t, {
+      controllerOnly: true,
+      chart: { installation: (installation) => installation },
+    });
+    const initial = await f.state();
+    initial.denyWorkerPatch = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
+    const failure = await f.run().catch((error) => error);
+    const { api, worker, version } = await f.state();
+    const events = await f.events();
+    t.diagnostic(JSON.stringify({ api, worker, version, events }));
+    assert.deepEqual(
+      { api, worker, version, events },
+      { api: 1, worker: 1, version: 1, events: [] },
+    );
+    assert.match(
+      failure.stderr,
+      /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker/,
+    );
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("a mismatched worker review leaves the live patch authoritative", async (t) => {
     const f = await fixture(t);
+    const state = await f.state();
+    state.denyWorkerPatch = true;
+    state.wrongWorkerReview = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(), (error) => {
+      assert.match(error.stderr, /Could not verify patch access to the worker Deployment/);
+      assert.match(error.stderr, /Forbidden: cannot patch the worker Deployment/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.equal((await f.state()).worker, 1);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
+    let databaseId = "ins_test";
+    const f = await fixture(t, {
+      chart: { installation: (installation) => installation },
+      databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
+    });
     await f.failNext("fail-scale-worker");
     await assert.rejects(f.run(), injectedFault);
     const path = join(f.evidence, "native-command-failures.tsv");
@@ -3947,7 +4130,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       originalCheck,
     );
     const [retry] = (await readdir(f.evidence)).filter((name) =>
-      name.startsWith("migration-preflight-resume."),
+      name.startsWith("upgrade-preflight-resume."),
     );
     assert.ok(retry);
     assert.equal(
@@ -3957,6 +4140,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const retryState = await f.state();
     delete retryState.preflightResults.migration;
     await writeFile(join(f.directory, "state.json"), JSON.stringify(retryState));
+    // The API is already down. Resume must use the frozen ID and recheck the
+    // application connection before it can stop the worker, independent of migration.
+    databaseId = "ins_other";
+    await assert.rejects(f.run("--resume"), /does not identify the incumbent Installation/);
+    assert.equal((await f.state()).worker, 1);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    databaseId = "ins_test";
     // A later failed attempt appends its observation instead of erasing the first.
     await f.failNext("fail-scale-worker");
     await assert.rejects(f.run("--resume"), injectedFault);
@@ -3965,9 +4155,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal(await readFile(path, "utf8"), receipt + receipt);
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
     assert.equal(
-      (await readdir(f.evidence)).filter((name) => name.startsWith("migration-preflight-resume."))
+      (await readdir(f.evidence)).filter((name) => name.startsWith("upgrade-preflight-resume."))
         .length,
-      3,
+      4,
     );
     assert.deepEqual((await f.state()).preflight.jobs, {});
   });
@@ -3987,7 +4177,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.match(failure.stderr, /upgrade interrupted/);
     assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
     const [retry] = (await readdir(f.evidence)).filter((name) =>
-      name.startsWith("migration-preflight-resume."),
+      name.startsWith("upgrade-preflight-resume."),
     );
     assert.ok(retry);
     const state = await f.state();
@@ -3997,10 +4187,19 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       "interruption must not delete the resumed migration Job or Pod",
     );
     const records = await preflightIdentities({ evidence: join(f.evidence, retry) });
-    assert.equal(records.length, 1, "the migration Job was acknowledged before observation");
-    assert.deepEqual(records, state.preflight.created.slice(before.preflight.created.length));
-    assert.equal(Object.keys(state.preflight.jobs).length, 1);
-    assert.equal(Object.keys(state.preflight.pods).length, 1);
+    assert.equal(
+      records.length,
+      4,
+      "the Secret and all three Jobs were acknowledged before observation",
+    );
+    assert.deepEqual(
+      records.toSorted((a, b) => a.name.localeCompare(b.name)),
+      state.preflight.created
+        .slice(before.preflight.created.length)
+        .toSorted((a, b) => a.name.localeCompare(b.name)),
+    );
+    assert.equal(Object.keys(state.preflight.jobs).length, 3);
+    assert.equal(Object.keys(state.preflight.pods).length, 3);
     assert.equal(state.api, 0);
     assert.equal(state.worker, 1);
     assert.deepEqual(await f.events(), ["scale-api"]);
@@ -4036,7 +4235,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.doesNotMatch(failure.stderr, /fresh evidence directory|This run stopped no OCC writer/);
     assert.match(failure.stderr, /reconcil[ei].*--resume.*original evidence directory/i);
     const [retry] = (await readdir(f.evidence)).filter((name) =>
-      name.startsWith("migration-preflight-resume."),
+      name.startsWith("upgrade-preflight-resume."),
     );
     assert.ok(retry);
     assert.ok(failure.stderr.includes(join(f.evidence, retry)));
@@ -4055,7 +4254,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       "unknown Job must not be deleted by name",
     );
     assert.equal(Object.keys(state.preflight.pods).length, 1);
-    assert.deepEqual(await preflightIdentities({ evidence: join(f.evidence, retry) }), []);
+    assert.equal(
+      (await preflightIdentities({ evidence: join(f.evidence, retry) })).length,
+      1,
+      "the Secret was acknowledged before the lost migration Job response",
+    );
     assert.deepEqual(state.preflight.deleted, before.preflight.deleted);
     assert.equal(state.api, 0);
     assert.equal(state.worker, 1);
@@ -4191,31 +4394,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
   });
 
-  test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
-    // A normal runtime upgrade can replace a worker-bound revision, but a lost
-    // response must never turn that planned replacement into a second deployment.
-    const inventory = restartInventory("original-worker-required");
-    const f = await fixture(t, { agent: true, inventoryResponses: [inventory, inventory] });
-    await f.failNext("lost-agent-response");
-    await assert.rejects(f.run(), /deployment outcome is unknown/);
-    const calls = f.commands.length;
-    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
-    assert.equal(f.commands.length, calls);
-    assert.equal((await f.state()).dispatches, 1);
-    const receipt = join(f.evidence, "dispatch/ns_test--agt_test.json");
-    // An arbitrary or baseline revision cannot resolve the pending dispatch.
-    for (const id of ["rev_missing", "rev_old"]) {
-      await writeFile(receipt, JSON.stringify({ id }), { mode: 0o600 });
-      await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
-      assert.equal((await f.state()).dispatches, 1);
-    }
-    // Simulate the operator confirming this revision in durable history and
-    // recording the accepted request before resuming the readiness checks.
-    await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
-    await f.run("--resume");
-    assert.equal((await f.state()).dispatches, 1);
-    assert.equal((await f.state()).inventoryReadCount, 2);
-  });
+  registerUnknownAgentDeploymentResumeTest(fixture);
 
   describe("resume evidence directory ownership", { concurrency: 2 }, () => {
     test("resume binds stale prepared copies to the original evidence directory before live access", async (t) => {
@@ -4496,28 +4675,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     });
   }
 
-  // occ's notices about an accepted deploy, such as a revision with no Harness overrides to
-  // retain, must reach the operator in the run output and not only the evidence directory.
-  // A control character in a notice must not reach the terminal.
-  test("an accepted Agent deploy shows occ's notices in the run output", async (t) => {
-    const f = await fixture(t, { agent: true });
-    const notice =
-      "revision rev_old has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: configuration) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.";
-    const state = await f.state();
-    state.deployNotices = { agt_test: `notice: ${notice}\u001b[2J` };
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-    const result = await f.run();
-    assert.ok(
-      result.stderr
-        .split("\n")
-        .includes(`upgrade-production-images: Agent agt_test in Namespace ns_test: ${notice}?[2J`),
-      result.stderr,
-    );
-    assert.equal(
-      await readFile(join(f.evidence, "dispatch/ns_test--agt_test.error"), "utf8"),
-      `notice: ${notice}\u001b[2J\n`,
-    );
-  });
+  registerAcceptedAgentDeployNoticeTest(fixture);
 
   // Doctor shares the serving gateway container's memory limit, and an out-of-memory
   // kill there stops the gateway too (finding 2697). Doctor, with a 384 MiB heap cap,
@@ -4742,6 +4900,82 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       ...reads.map((free) => `gateway-memory ${free}`),
       doctorCommand(384),
     ]);
+  });
+
+  test("candidate database identity refuses an upgrade before writer shutdown", async (t) => {
+    assert.ok(realHelm, "helm is required to exercise the stock chart");
+    let answer = { rows: [{ id: "ins_other" }] };
+    const f = await fixture(t, {
+      controllerOnly: true,
+      chart: {
+        values: (values) => ({
+          ...values,
+          database: {
+            ...values.database,
+            secretName: "candidate-database",
+            appUrlKey: "writer-connection",
+          },
+        }),
+        installation: (installation) => installation,
+      },
+      databaseAnswer: () => answer,
+    });
+    // The incumbent name and administrator are unchanged. Only the candidate
+    // database's singleton ID differs. Real bootstrap/SQL proof is separate.
+    await assert.rejects(f.run(), (error) => {
+      assert.match(error.stderr, /does not identify the incumbent Installation/);
+      assert.doesNotMatch(error.stderr, /ins_other|fixture-only|postgresql:\/\//);
+      return true;
+    });
+    await assertStoppedBeforeWriters(f);
+    assert.equal(f.databaseSessions.length, 2);
+    for (const session of f.databaseSessions) {
+      assert.equal(session.user, "candidate_app");
+      assert.equal(session.database, "candidate");
+      assert.equal(session.queries[0], "BEGIN READ ONLY");
+    }
+    // Exercise the same generated identity-only command used on resume, with
+    // the real rendered environment. Do not replay the shell for SQL permutations.
+    for (const [name, response, component, diagnostic] of [
+      ["matching API", { rows: [{ id: "ins_test" }] }, "api", null],
+      ["matching worker", { rows: [{ id: "ins_test" }] }, "worker", null],
+      ["worker mismatch", { rows: [{ id: "ins_other" }] }, "worker", /does not identify/],
+      ["empty", { rows: [] }, "api", /does not identify/],
+      [
+        "ambiguous",
+        { rows: [{ id: "ins_test" }, { id: "ins_other" }] },
+        "api",
+        /does not identify/,
+      ],
+      ["denied", { error: "private database diagnostic" }, "api", /could not be verified/],
+      ["stalled", { hang: true }, "api", /could not be verified/],
+    ]) {
+      await t.test(name, { timeout: 25_000 }, async () => {
+        answer = response;
+        const result = await f.runIdentityCheck(component);
+        assert.equal(result.phase, diagnostic ? "Failed" : "Succeeded");
+        if (diagnostic) {
+          assert.match(result.log, diagnostic);
+        }
+        assert.doesNotMatch(
+          result.log,
+          /ins_other|private database diagnostic|fixture-only|postgresql:\/\//,
+        );
+      });
+    }
+    // pg parses other schemes as connection strings, but stock startup refuses
+    // them. Neither generated entrypoint may open that otherwise reachable DB.
+    answer = { rows: [{ id: "ins_test" }] };
+    for (const action of ["job", "identity-job"]) {
+      for (const component of ["api", "worker"]) {
+        const before = f.databaseSessions.length;
+        const result = await f.runIdentityCheck(component, action, "https:");
+        assert.equal(result.phase, "Failed");
+        assert.match(result.log, /Installation identity could not be verified/);
+        assert.doesNotMatch(result.log, /fixture-only|https:\/\/|candidate_app/);
+        assert.equal(f.databaseSessions.length, before);
+      }
+    }
   });
 
   test(
@@ -6114,7 +6348,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       }
       return true;
     });
-    // Each Pod read the Namespaces itself; nothing was stopped or migrated.
+    // Each Pod refused the layout during Compute preflight, before the database identity check.
+    assert.equal(f.databaseSessions.length, 0);
     assert.equal(f.kubernetesReads.filter((path) => path === "/api/v1/namespaces").length, 2);
     const state = await f.state();
     assert.equal(state.api, 1);
@@ -6436,6 +6671,55 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     ]);
   });
 
+  test("startup preflight retains the failed API CA assembler's guidance", async (t) => {
+    if (!realHelm) {
+      t.skip("helm is unavailable to render the real chart");
+      return;
+    }
+    const guidance =
+      'assemble-api-ca: auth.oidc.caSecretName Secret "idp-ca" key "ca.crt": certificate 1 of 1 has invalid base64';
+    const f = await fixture(t, {
+      controllerOnly: true,
+      chart: {
+        installation: (installation) => installation,
+        values: (values) => ({
+          ...values,
+          auth: {
+            ...values.auth,
+            recoveryUserId: "existing-administrator",
+            oidc: {
+              enabled: true,
+              issuer: "https://sso.example.test",
+              authorizationUrl: "https://sso.example.test/authorize",
+              tokenUrl: "https://sso.example.test/token",
+              jwksUrl: "https://sso.example.test/jwks",
+              caSecretName: "idp-ca",
+              caSecretKey: "ca.crt",
+            },
+          },
+        }),
+      },
+      preflightResults: {
+        api: {
+          status: {
+            phase: "Failed",
+            initContainerStatuses: [
+              { name: "assemble-api-ca", state: { terminated: { exitCode: 1 } } },
+            ],
+          },
+          initLogs: { "assemble-api-ca": guidance + "\n" },
+        },
+        worker: { phase: "Succeeded", log: "installation-startup-ready\n" },
+      },
+    });
+    const failure = await f.run("--preflight-only").catch((error) => error);
+    assert.equal(failure.code, 1);
+    assert.ok(failure.stderr.includes(guidance), failure.stderr);
+    assert.equal(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), guidance + "\n");
+    assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+    await assertStoppedBeforeWriters(f);
+  });
+
   // Bash must not remove a NUL and turn malformed output into the literal ready marker.
   test("startup preflight rejects a ready marker containing a NUL byte", async (t) => {
     const f = await fixture(t, {
@@ -6608,6 +6892,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       assert.match(log, /^kubernetes-compute-preflight-passed$/m);
       assert.match(log, /^installation-startup-ready$/m);
     }
+    assert.equal(f.databaseSessions.length, 2);
+    for (const session of f.databaseSessions) {
+      assert.equal(session.user, "candidate_app");
+      assert.equal(session.queries[0], "BEGIN READ ONLY");
+    }
     assert.equal(f.kubernetesReads.filter((path) => path === "/api/v1/namespaces").length, 2);
     // The chart's default-deny policy selects the preflight Pods too. The temporary
     // policy selects exactly them and grants the candidate's dependency egress.
@@ -6697,6 +6986,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       agent: true,
       chart: { installation: (installation) => installation },
     });
+    const state = await f.state();
+    state.denyWorkerPatch = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     await assert.rejects(f.run("--resume", "--preflight-only"), /cannot be combined/);
     assert.equal(existsSync(f.evidence), false);
     assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
@@ -7205,7 +7497,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   async function assertRecoveryRefusedBeforeRollback(f, state, refusal, run = f.run) {
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const preflightCount = state.preflight.created.length;
     await assert.rejects(run(...recoverHelm), refusal);
+    assert.equal((await f.state()).preflight.created.length, preflightCount);
     assert.equal((await f.state()).rollbackSubmissions, undefined);
     assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
   }
@@ -7324,16 +7618,19 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
   });
 
-  for (const [stage, read, rollbacks] of [
-    ["before dispatch", 2, 0],
-    ["after rollback", 3, 1],
+  for (const [stage, rollbacks] of [
+    ["before dispatch", 0],
+    ["after rollback", 1],
   ]) {
     test(`same-candidate recovery refuses a predecessor resource recreated ${stage}`, async (t) => {
-      const { f, run, pending } = await interruptedProxyRemoval(t);
-      pending.retiredResourceAppearsAt = read;
+      const { f, run, pending, key, policy } = await interruptedProxyRemoval(t);
+      const originalIntent = await readFile(join(f.evidence, "helm-started"), "utf8");
+      pending.retiredResourceRecreation = { stage, key, resource: policy };
       await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
       await assert.rejects(run(...recoverHelm), /predecessor-only resource still exists/);
       assert.equal((await f.state()).rollbackSubmissions ?? 0, rollbacks);
+      assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+      assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), originalIntent);
       assert.ok(existsSync(join(f.evidence, "helm-recovery", "intent.json")));
       assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
       assert.equal(existsSync(join(f.evidence, "completed")), false);
@@ -7442,12 +7739,30 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.deepEqual(await f.events(), []);
     await loseHelmResponseWithCompletedHook(f);
     const original = await readFile(join(f.evidence, "helm-started"), "utf8");
+    // A new rollback can restart the candidate writers. A refused application
+    // observation must block dispatch, even though the hook already completed.
+    const pending = await f.state();
+    pending.preflightResults = {
+      api: {
+        phase: "Failed",
+        log: "Candidate application database does not identify the incumbent Installation.\n",
+      },
+    };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+    await assert.rejects(f.run(...recoverHelm), /does not identify the incumbent Installation/);
+    assert.equal((await f.state()).rollbackSubmissions, undefined);
+    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), original);
+    const corrected = await f.state();
+    delete corrected.preflightResults;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(corrected));
     // Rollback is acknowledged but ordinary acceptance is interrupted. Resume
     // must finish acceptance without rerunning migration or rollback.
     await f.failNext("fail-rollout-api");
     await assert.rejects(f.run(...recoverHelm), injectedFault);
     assert.equal((await f.state()).version, 3);
     const acknowledged = await f.state();
+    const preflightCount = acknowledged.preflight.created.length;
     for (const resource of [
       "Deployment/openclaw-enterprise-api",
       "Deployment/openclaw-enterprise-worker",
@@ -7474,6 +7789,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.state()).rollbackSubmissions, 1);
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
     assert.ok(existsSync(join(f.evidence, "completed")));
+    assert.equal((await f.state()).preflight.created.length, preflightCount);
   });
 
   test("recovery refuses stale hooks, wrong Pod ownership and changed execution without submitting Helm", async (t) => {
@@ -7526,18 +7842,31 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   });
 
   test("a staged retry cannot replace the published Helm attempt and an actual retry gets a fresh nonce", async (t) => {
-    const f = await fixture(t);
+    const f = await fixture(t, { controllerOnly: true });
+    const valuesPath = join(f.directory, "values.json");
+    async function assertProtectedValues(evidence, intent, image) {
+      const bytes = await readFile(valuesPath);
+      const values = JSON.parse(bytes.toString("utf8"));
+      assert.equal(values.images.controller, image);
+      assert.equal(values.installation.upgradeAttemptId, intent.attempt.nonce);
+      assert.deepEqual(
+        await readFile(join(evidence, "helm-attempts", intent.attempt.nonce, "values.yaml")),
+        bytes,
+      );
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), intent.attempt.valuesSha256);
+      return bytes;
+    }
     await f.failNext("fail-migration");
     await assert.rejects(f.run(), injectedFault);
     const original = await assertHelmIntent(f, 1, 2);
+    const originalValues = await assertProtectedValues(f.evidence, original, newController);
     const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
-    const values = await readFile(join(f.directory, "values.json"), "utf8");
     // The retry's dry-run fails after staging values, before replacing the local
     // values or publishing a new intent. The failed submission stays authoritative.
     await f.failNext("fail-server-dry-run");
     await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
     assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
-    assert.equal(await readFile(join(f.directory, "values.json"), "utf8"), values);
+    assert.deepEqual(await readFile(valuesPath), originalValues);
     await assert.rejects(f.run("--resume"), /migration --check/);
     assert.equal((await f.state()).helmSubmissions, 1);
     await f.failNext("lost-helm-response");
@@ -7555,6 +7884,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     );
     assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
     await f.run("--resume");
+    await assertProtectedValues(f.evidence, retry, newController);
+
+    const nextEvidence = join(f.directory, "next-evidence");
+    await f.run("--controller-image", controller, "--evidence-dir", nextEvidence);
+    const next = await assertHelmIntent({ evidence: nextEvidence }, 3, 4);
+    assert.notEqual(next.attempt.nonce, retry.attempt.nonce);
+    await assertProtectedValues(nextEvidence, next, controller);
   });
 
   test("a retry published before Helm accepts it can resume from its exact predecessor", async (t) => {
@@ -7678,7 +8014,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // it. A healthy successor alone must not authorize replay or adoption.
     assert.equal((await f.state()).version, 3);
     const intent = await readFile(join(f.evidence, "helm-recovery", "intent.json"), "utf8");
+    const preflightCount = (await f.state()).preflight.created.length;
     await assert.rejects(f.run(...recoverHelm), /Do not replay recovery/);
+    assert.equal((await f.state()).preflight.created.length, preflightCount);
     assert.equal((await f.state()).rollbackSubmissions, 1);
     assert.equal(await readFile(join(f.evidence, "helm-recovery", "intent.json"), "utf8"), intent);
     assert.equal(existsSync(join(f.evidence, "completed")), false);

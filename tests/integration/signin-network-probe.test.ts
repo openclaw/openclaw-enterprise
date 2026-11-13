@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import test from "node:test";
 import { createInterface } from "node:readline";
-import { tcpControlCommand, tcpProbeCommand } from "../helpers/signin/network-probe.mjs";
+import { tcpControlCommand, tcpProbeCommand } from "../helpers/signin/network-probe.ts";
 
 type ProbeTarget = { label: string; host: string; port: number; expect: string };
 type ProbeReport = {

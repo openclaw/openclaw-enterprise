@@ -9,45 +9,92 @@ import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
-for (const [name, response] of [
-  ["malformed response", "private-invalid-json"],
+const container = "a".repeat(64);
+const malformedPortResponse = "private-invalid-json";
+
+for (const [name, response, podmanIds] of [
+  ["malformed response", malformedPortResponse],
   [
     "non-loopback binding",
     JSON.stringify({ "5432/tcp": [{ HostIp: "0.0.0.0", HostPort: "45000" }] }),
   ],
   ["developer port", JSON.stringify({ "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "55432" }] })],
   ["missing binding", JSON.stringify({ "5432/tcp": null })],
+  ["malformed response after Podman discovery", malformedPortResponse, container],
+  ["no Podman container", undefined, ""],
+  ["ambiguous Podman containers", undefined, [container, "b".repeat(64)].join("\n")],
+  ["short Podman container ID", undefined, "a".repeat(12)],
 ] as const) {
   test(`PostgreSQL rejects ${name} and cleans the pending project`, async (t) => {
     const root = await temporaryDirectory(t, "ci-postgres-discovery-");
     const statePath = join(root, "state.json");
-    const log = join(root, "docker.log");
-    const container = "a".repeat(64);
-    const docker = await writeCommand(
+    const log = join(root, "engine.log");
+    const githubEnv = join(root, "owner.env");
+    const engine = await writeCommand(
       root,
-      "docker",
+      podmanIds === undefined ? "docker" : "podman",
       `case "$1:$6" in
   version:|compose:up|compose:down) exit 0 ;;
-  compose:ps) printf '%s\\n' '${container}'; exit 0 ;;
+  compose:ps)
+    if [ "$TEST_PODMAN_IDS_SET" = 1 ]; then
+      printf '%s\\n' 'unrecognized arguments: postgres' >&2
+      exit 2
+    fi
+    [ "$OCC_POSTGRES_PORT" = 0 ] && [ "$OPENCLAW_CI_POSTGRES_INIT_SQL" = "$TEST_BOOTSTRAP_ROOT/$5-bootstrap/init-local.sql" ] || exit 98
+    printf '%s\\n' '${container}'; exit 0 ;;
+  ps:*) printf '%s\\n' "$TEST_PODMAN_IDS"; exit 0 ;;
   inspect:) printf '%s\\n' "$TEST_PORT_RESPONSE"; exit 0 ;;
   *) exit 99 ;;
 esac`,
       { log },
     );
-    const env = { ...process.env, OCC_DOCKER_BIN: docker, TEST_PORT_RESPONSE: response };
+    const env = {
+      ...process.env,
+      OCC_DOCKER_BIN: engine,
+      TEST_BOOTSTRAP_ROOT: root,
+      TEST_PODMAN_IDS_SET: podmanIds === undefined ? "0" : "1",
+      TEST_PODMAN_IDS: podmanIds,
+      TEST_PORT_RESPONSE: response,
+    };
     const prepared = spawnSync(
       process.execPath,
-      ["scripts/ci/prepare.mjs", "--lane", "postgres-auth", "--state", statePath],
+      [
+        "scripts/ci/prepare.mjs",
+        "--lane",
+        "postgres-auth",
+        "--state",
+        statePath,
+        "--github-env",
+        githubEnv,
+      ],
       { cwd: repositoryRoot, encoding: "utf8", env, timeout: 30_000 },
     );
     assert.equal(prepared.status, 1);
+    // A single full ID must reach the port guard. Ambiguous or short results
+    // must stop before the engine inspects a container or preparation exports state.
     assert.match(
       prepared.stderr,
-      /Invalid PostgreSQL port discovery|Expected one loopback PostgreSQL port/,
+      response === undefined
+        ? /Expected one owned PostgreSQL container/
+        : /Invalid PostgreSQL port discovery|Expected one loopback PostgreSQL port/,
     );
+    await assert.rejects(stat(githubEnv), { code: "ENOENT" });
     assert.doesNotMatch(prepared.stderr, /private-invalid-json/);
     const state = JSON.parse(await readFile(statePath, "utf8"));
     const [server] = state.resources;
+    const compose = `compose -f ${server.composeFile} -p ${server.name}`;
+    const lookup =
+      podmanIds === undefined
+        ? `${compose} ps -q postgres`
+        : `ps --no-trunc --filter label=com.docker.compose.project=${server.name} --filter label=com.docker.compose.service=postgres --format {{.ID}}`;
+    assert.deepEqual(await commandCalls(log), [
+      "version --format {{.Server.Version}}",
+      `${compose} up -d --wait`,
+      lookup,
+      ...(response === undefined
+        ? []
+        : [`inspect --format {{json .NetworkSettings.Ports}} ${container}`]),
+    ]);
     assert.equal(server.status, "planned");
     assert.equal(server.port, 0, "discovery did not publish an unverified port");
     // A retained pending server cannot become a template's port-zero dependency.

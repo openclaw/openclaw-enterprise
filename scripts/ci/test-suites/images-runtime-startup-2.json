@@ -6,12 +6,13 @@
   "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/runtime-image-workspace-setup-lock.test.ts",
-    "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
+    "tests/integration/runtime-image-gateway-unclean-restart.test.ts",
     "tests/integration/runtime-image-gateway-peer.test.mjs",
     "tests/integration/runtime-image-model-probe-outcomes.test.ts",
     "tests/integration/runtime-image-startup-probe.test.mjs",
     "tests/integration/runtime-image-startup-termination.test.ts",
     "tests/integration/sandbox-driver-startup.test.mjs",
+    "tests/integration/sandbox-driver-startup-validation.test.ts",
     "tests/integration/sandbox-driver-installation-configuration.test.ts",
     "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
     "tests/integration/sandbox-driver-codex-app-server.test.ts",
@@ -37,7 +38,7 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
+      "path": "tests/integration/runtime-image-gateway-unclean-restart.test.ts",
       "expectedTests": [
         "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns",
         "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner"
@@ -70,6 +71,16 @@
         "native initializer serializes retries and preserves later edits",
         "configured protected OpenShell Git admits only the selected execution and network policy",
         "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence"
+      ]
+    },
+    {
+      "path": "tests/integration/sandbox-driver-startup-validation.test.ts",
+      "expectedTests": [
+        "startup rejects invalid bundled OpenShell configuration before invoking an injected factory",
+        "startup refuses unknown OpenShell settings and invalid Agent resource quantities",
+        "startup refuses invalid or conflicting exact-Agent resource overrides",
+        "startup refuses OpenShell endpoint protocols the gateway refuses",
+        "startup refuses OpenShell settings its schema leaves open"
       ]
     },
     {

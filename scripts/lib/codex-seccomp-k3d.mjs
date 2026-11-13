@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, posix, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -478,7 +479,7 @@ async function listOwnedK3dNodes(selection, cluster, options) {
   return names;
 }
 
-async function waitForPodReady(selection, namespace, name, options) {
+async function waitForPodReady(selection, namespace, name, options, observe) {
   return waitFor(
     `Pod ${namespace}/${name} to become ready`,
     async () => {
@@ -487,6 +488,7 @@ async function waitForPodReady(selection, namespace, name, options) {
         ["get", "pod", name, "--namespace", namespace],
         options,
       );
+      observe?.(pod);
       if (
         pod.status?.containerStatuses?.some(
           (status) => status.name === "probe" && status.ready === true,
@@ -544,7 +546,43 @@ async function runtimeDefaultProfileForNode(selection, namespace, nodeName, imag
     restrictedProbePod({ name: podName, namespace, nodeName, image }),
     options,
   );
-  const pod = await waitForPodReady(selection, namespace, podName, options);
+  let pod;
+  let lastPod;
+  try {
+    pod = await waitForPodReady(selection, namespace, podName, options, (observed) => {
+      lastPod = observed;
+    });
+  } catch (error) {
+    if (options.reportRuntimeDefaultReadinessFailure) {
+      try {
+        const statuses = lastPod?.status?.containerStatuses;
+        const waitingReason = Array.isArray(statuses)
+          ? statuses.find((status) => status?.name === "probe")?.state?.waiting?.reason
+          : null;
+        const reason = [
+          "ErrImageNeverPull",
+          "ErrImagePull",
+          "ImagePullBackOff",
+          "CreateContainerConfigError",
+          "CreateContainerError",
+          "ContainerCreating",
+        ].includes(waitingReason)
+          ? waitingReason
+          : null;
+        // A stream write can emit EPIPE after this catch, interrupting cleanup.
+        writeSync(
+          2,
+          `OCE_CODEX_SECCOMP_READINESS_FAILURE ${JSON.stringify({
+            operation: "runtime-default-pod-readiness",
+            reason,
+          })}\n`,
+        );
+      } catch {
+        // Diagnostic failure must not replace the original readiness error.
+      }
+    }
+    throw error;
+  }
   return withProbeFailureReport(pod, "RuntimeDefault", image, options, async () => {
     if (await verifyRuntimeDefaultDeniesCodexSandbox(selection, namespace, podName, options)) {
       if (options.allowRuntimeDefault) {
@@ -990,6 +1028,7 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
     directory: temporaryDirectory,
     codexVersion,
     allowRuntimeDefault: true,
+    reportRuntimeDefaultReadinessFailure: true,
   };
   let namespaceCreated = false;
   return withProbeCleanup(

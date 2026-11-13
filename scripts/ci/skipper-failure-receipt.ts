@@ -37,6 +37,10 @@ type Checkpoint =
   | ["skipper_test_operation", (typeof skipperOperations)[number] | "unknown"]
   | ["skipper_last_test_checkpoint", string]
   | ["skipper_gateway_chat_phase", (typeof skipperGatewayChatPhases)[number]]
+  | ["skipper_http_status", number]
+  | ["skipper_gateway_category", string]
+  | ["skipper_runtime_signal", string]
+  | ["skipper_model_request_observation", string]
   | ["skipper_stage", (typeof stages)[number] | `${typeof installerPrefix}${string}`]
   | ["skipper_installed_cleanup", (typeof cleanups)[number]];
 
@@ -96,20 +100,36 @@ export async function recordSkipperTestFailure(
   ledgerPath: string,
   teamReview: boolean,
 ) {
-  let operation: (typeof skipperOperations)[number] | "unknown" = "unknown";
-  let gatewayChatPhase: (typeof skipperGatewayChatPhases)[number] | undefined;
+  let diagnostic: ReturnType<typeof skipperOperationDiagnostic>;
   try {
-    const diagnostic = skipperOperationDiagnostic(
-      skipperSelectedFailure(resultText).error.diagnostic,
-    );
-    operation = diagnostic?.operation ?? "unknown";
-    gatewayChatPhase = diagnostic?.gatewayChatPhase;
+    diagnostic = skipperOperationDiagnostic(skipperSelectedFailure(resultText).error.diagnostic);
   } catch {
     // Missing or malformed runner evidence does not establish an operation.
   }
-  await recordSkipperCheckpoint("skipper_test_operation", operation);
-  if (gatewayChatPhase) {
-    await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
+  await recordSkipperCheckpoint("skipper_test_operation", diagnostic?.operation ?? "unknown");
+  if (diagnostic?.operation === "gateway-chat") {
+    const {
+      gatewayChatPhase,
+      httpStatus,
+      gatewayCategory,
+      runtimeSignal,
+      modelRequestObservation,
+    } = diagnostic;
+    if (gatewayChatPhase) {
+      await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
+    }
+    if (httpStatus !== undefined) {
+      await recordSkipperCheckpoint("skipper_http_status", httpStatus);
+    }
+    if (runtimeSignal !== undefined) {
+      await recordSkipperCheckpoint("skipper_runtime_signal", runtimeSignal);
+    }
+    if (modelRequestObservation !== undefined) {
+      await recordSkipperCheckpoint("skipper_model_request_observation", modelRequestObservation);
+    }
+    if (gatewayCategory !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_category", gatewayCategory);
+    }
   }
   const entries = await readSkipperJourney(ledgerPath, true);
   const known = skipperTestCheckpoints(teamReview);
@@ -119,7 +139,11 @@ export async function recordSkipperTestFailure(
       .filter((phase): phase is string => typeof phase === "string" && known.includes(phase))
       .at(-1) ?? "unknown";
   await recordSkipperCheckpoint("skipper_last_test_checkpoint", last);
-  return { entries, last };
+  return {
+    entries,
+    last,
+    gatewayChat: diagnostic?.operation === "gateway-chat" ? diagnostic : undefined,
+  };
 }
 
 function selected<T extends string>(
@@ -150,9 +174,21 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
       : undefined;
     const lastStage = installer ? "install" : selected(stages, stage);
     const testOperation = selected(skipperOperations, process.env.SKIPPER_TEST_OPERATION);
-    const gatewayChatPhase = skipperGatewayChatPhases.find(
-      (phase) => phase === process.env.SKIPPER_GATEWAY_CHAT_PHASE,
-    );
+    const statusText = process.env.SKIPPER_HTTP_STATUS;
+    const status = Number(statusText);
+    const gatewayChat =
+      lastStage === "selected-test" && testOperation === "gateway-chat"
+        ? skipperOperationDiagnostic({
+            kind: "skipper-operation",
+            operation: testOperation,
+            gatewayChatPhase: process.env.SKIPPER_GATEWAY_CHAT_PHASE,
+            // Accept only the canonical text emitted by the recorder.
+            httpStatus: String(status) === statusText ? status : undefined,
+            gatewayCategory: process.env.SKIPPER_GATEWAY_CATEGORY,
+            runtimeSignal: process.env.SKIPPER_RUNTIME_SIGNAL,
+            modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
+          })
+        : undefined;
     const receipt = {
       version: 1,
       runId,
@@ -164,7 +200,19 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
       ...(lastStage === "selected-test"
         ? {
             testOperation,
-            ...(testOperation === "gateway-chat" && gatewayChatPhase ? { gatewayChatPhase } : {}),
+            ...(gatewayChat?.gatewayChatPhase
+              ? { gatewayChatPhase: gatewayChat.gatewayChatPhase }
+              : {}),
+            ...(gatewayChat?.httpStatus !== undefined
+              ? { httpStatus: gatewayChat.httpStatus }
+              : {}),
+            ...(gatewayChat?.gatewayCategory !== undefined
+              ? { gatewayCategory: gatewayChat.gatewayCategory }
+              : {}),
+            ...(gatewayChat?.runtimeSignal ? { runtimeSignal: gatewayChat.runtimeSignal } : {}),
+            ...(gatewayChat?.modelRequestObservation
+              ? { modelRequestObservation: gatewayChat.modelRequestObservation }
+              : {}),
             lastTestCheckpoint: selected(
               [...skipperTestCheckpoints(false), ...skipperTestCheckpoints(true)],
               process.env.SKIPPER_LAST_TEST_CHECKPOINT,

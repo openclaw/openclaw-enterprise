@@ -1004,6 +1004,21 @@ p {
   padding-block: var(--space-3);
   color: var(--muted);
 }
+.checking-status--mounted {
+  position: fixed;
+  z-index: 1;
+  inset-block-end: var(--space-4);
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 2 * var(--space-4));
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-inverse);
+  color: var(--color-on-inverse);
+  box-shadow: var(--shadow-1);
+  pointer-events: none;
+}
 .namespace-selector {
   display: grid;
   gap: var(--space-2);

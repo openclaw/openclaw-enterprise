@@ -56,13 +56,21 @@ function isPreparationMetric(value: unknown): value is PreparationMetric {
   );
 }
 
-export function fixturePreparationMetrics(stderr: string): PreparationMetric[] {
+export function fixturePreparationMetrics(
+  stderr: string,
+  lane = "k3d-fixture-configuration",
+): PreparationMetric[] {
+  const prefix = `[prepare:${lane}] `;
   return stderr.split("\n").flatMap((line) => {
-    const match = line.match(/^\[prepare:k3d-fixture-configuration\] (\{.*\})$/);
-    if (!match?.[1]) {
+    if (!line.startsWith(`${prefix}{`)) {
       return [];
     }
-    const metric: unknown = JSON.parse(match[1]);
+    let metric: unknown;
+    try {
+      metric = JSON.parse(line.slice(prefix.length));
+    } catch {
+      throw new Error("invalid CI preparation metric");
+    }
     assert.ok(isPreparationMetric(metric), "invalid CI preparation metric");
     return [metric];
   });
@@ -277,7 +285,7 @@ export async function fixtureImageCommands(
   const run = (script: string, args: string[], options?: SpawnOptions) =>
     spawnResult(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
       ...options,
-      env,
+      env: { ...env, ...options?.env },
     });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
   const cleanup = () => run("cleanup.mjs", ["--state", statePath]);

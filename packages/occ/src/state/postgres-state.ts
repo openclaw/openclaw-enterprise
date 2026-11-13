@@ -16,6 +16,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
 
+import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
@@ -95,6 +96,7 @@ import {
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
   RepositorySessionWithdrawnError,
+  WorkClaimLostError,
 } from "../errors.ts";
 import type {
   AgentRepository,
@@ -144,18 +146,13 @@ import {
 } from "./platform-state.ts";
 import {
   asWork,
-  WorkClaimLostError,
   PostgresWorkQueue,
   repositoryCleanupSql,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
 } from "./postgres-work-queue.ts";
 import { beginProvisioningEffectProgress } from "../provisioning-effects.ts";
-import {
-  CREDENTIAL_WITHDRAWAL_TARGET,
-  credentialWithdrawalOperationId,
-  credentialWithdrawalWorkKey,
-} from "./controller-work.ts";
+import { credentialWithdrawalOperationId, credentialWithdrawalWorkKey } from "./controller-work.ts";
 
 type PostgresRow = Record<string, unknown>;
 

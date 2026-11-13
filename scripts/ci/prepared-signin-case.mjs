@@ -6,7 +6,7 @@ import {
   readPreparedSigninCluster,
   readStagedSignin,
 } from "../../tests/helpers/signin/staged.mjs";
-import { restrictStagingProcess } from "./prepare-staged-signin.mjs";
+import { restrictStagingProcess } from "./prepare-staged-signin.ts";
 
 const relativePath = "tests/integration/production-tui-k3d-real.test.mjs";
 export const caseName =
