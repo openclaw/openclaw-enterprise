@@ -6858,13 +6858,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return { ...result, repositoryCredentialMaterialMissing: material.missing };
     }
     const repositoryMaterial = material?.spec;
-    const pluginRuntime = this.pluginRuntimeSnapshot(
-      admittedRevision,
-      this.codexRepositoryBrokerNetworkPolicy(
+    const pluginRuntime = await this.withImportedPluginMaterial(
+      this.pluginRuntimeSnapshot(
         admittedRevision,
-        repositoryConsumer,
-        repositoryMaterial,
+        this.codexRepositoryBrokerNetworkPolicy(
+          admittedRevision,
+          repositoryConsumer,
+          repositoryMaterial,
+        ),
       ),
+      context,
     );
     if (repositoryMaterial !== undefined) {
       await this.prepareRevisionStage("repository_material", () =>
@@ -7999,7 +8002,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
         materialInput,
       );
-      const pluginRuntime = this.pluginRuntimeSnapshot(
+      const snapshot = this.pluginRuntimeSnapshot(
         admittedRevision,
         this.codexRepositoryBrokerNetworkPolicy(
           admittedRevision,
@@ -8011,6 +8014,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         currentRevisionId !== revision.id ||
         annotations[REPOSITORY_MATERIAL_GENERATION] !== repositoryMaterial?.generation
       ) {
+        const pluginRuntime = await this.withImportedPluginMaterial(snapshot, context);
         const deliveredHarnessAuth = await this.deliverHarnessAuth(
           admittedRevision,
           context,
@@ -8104,13 +8108,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       namespace,
       materialInput,
     );
-    const pluginRuntime = this.pluginRuntimeSnapshot(
-      admittedRevision,
-      this.codexRepositoryBrokerNetworkPolicy(
+    const pluginRuntime = await this.withImportedPluginMaterial(
+      this.pluginRuntimeSnapshot(
         admittedRevision,
-        repositoryConsumer,
-        repositoryMaterial,
+        this.codexRepositoryBrokerNetworkPolicy(
+          admittedRevision,
+          repositoryConsumer,
+          repositoryMaterial,
+        ),
       ),
+      context,
     );
     if (repositoryMaterial !== undefined) {
       await this.reconcileRepositoryIngress(
@@ -15116,28 +15123,47 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return undefined;
     }
     const name = `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
-    let importedMaterial: ImportedPluginMaterial | undefined;
     if (
       runtime.kind === "openclaw" &&
       runtime.importedReleases &&
-      Object.keys(runtime.importedReleases).length
+      Object.keys(runtime.importedReleases).length &&
+      (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated")
     ) {
-      if (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated") {
-        throw new ConfigurationFailure("Imported plugins require a dedicated OpenClaw Harness.");
-      }
-      try {
-        importedMaterial = importedPluginMaterial(name, runtime.importedReleases);
-      } catch (error) {
-        throw new ConfigurationFailure(
-          error instanceof Error ? error.message : "Invalid imported plugin release.",
-        );
-      }
+      throw new ConfigurationFailure("Imported plugins require a dedicated OpenClaw Harness.");
     }
-    return {
-      name,
-      ...(importedMaterial && { importedMaterial }),
-      runtime,
-    };
+    return { name, runtime };
+  }
+
+  private async withImportedPluginMaterial(
+    snapshot: PluginRuntimeSnapshot | undefined,
+    context: ComputeRevisionContext | undefined,
+  ): Promise<PluginRuntimeSnapshot | undefined> {
+    const pins =
+      snapshot?.runtime.kind === "openclaw" ? snapshot.runtime.importedReleases : undefined;
+    if (!snapshot || !pins || Object.keys(pins).length === 0) {
+      return snapshot;
+    }
+    const releases = await context?.loadImportedPluginReleases?.();
+    if (
+      !releases ||
+      Object.keys(releases).length !== Object.keys(pins).length ||
+      !Object.entries(pins).every(
+        ([id, pin]) =>
+          releases[id]?.digest === pin.digest &&
+          isDeepStrictEqual(releases[id]?.mcpServers, pin.mcpServers),
+      )
+    ) {
+      throw new ConfigurationFailure(
+        "The imported plugin material does not match the admitted release pins.",
+      );
+    }
+    try {
+      return { ...snapshot, importedMaterial: importedPluginMaterial(snapshot.name, releases) };
+    } catch (error) {
+      throw new ConfigurationFailure(
+        error instanceof Error ? error.message : "Invalid imported plugin release.",
+      );
+    }
   }
 
   private pluginRuntimeOwnership(revision: AgentRevision): Ownership {

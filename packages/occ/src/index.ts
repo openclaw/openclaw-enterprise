@@ -10475,14 +10475,21 @@ export class OpenClawController {
     }
   }
 
+  async authorizePluginPublication(principalId: string, namespaceId: string): Promise<void> {
+    await this.authorize(principalId, "publish_plugins", {
+      kind: "namespace",
+      id: namespaceId,
+      namespaceId,
+    });
+  }
+
   async importPluginRelease(
     principalId: string,
     namespaceId: string,
     input: { archiveBase64: string; marketplaceEntry?: string },
     publication?: { digest: string; archiveSha256: string; audit: (digest: string) => AuditEvent },
   ) {
-    const resource = { kind: "namespace" as const, id: namespaceId, namespaceId };
-    await this.authorize(principalId, "publish_plugins", resource);
+    await this.authorizePluginPublication(principalId, namespaceId);
     await this.read((state) => this.exactNamespace(state, namespaceId));
     const driver = this.pluginDriver("openclaw");
     if (driver.inspectPackage === undefined) {
@@ -10516,7 +10523,7 @@ export class OpenClawController {
       await this.mutate(async (state) => {
         await this.holdAuthority(state);
         const namespace = await this.lockNamespace(state, namespaceId);
-        await this.authorize(principalId, "publish_plugins", resource);
+        await this.authorizePluginPublication(principalId, namespaceId);
         if (namespace.status !== "ready" && namespace.status !== "provisioning") {
           throw new ResourceStateConflictError(
             "The Namespace is unavailable for plugin publication.",
@@ -13730,9 +13737,10 @@ export class OpenClawController {
           ? this.pluginDriver(revisionHarness.id, true)
           : undefined;
       let pluginState: PluginRevisionState | undefined;
+      let releases: Readonly<Record<string, InspectedPluginPackage>> | undefined;
       if (driver && lockedAgent.plugins) {
         const owner = this.pluginOwner(driver, lockedAgent);
-        const importedReleases = await this.selectedNamespacePluginReleases(
+        releases = await this.selectedNamespacePluginReleases(
           state,
           namespace.id,
           principalId,
@@ -13742,7 +13750,14 @@ export class OpenClawController {
         pluginState = immutableCopy({
           driver: owner,
           plugins: lockedAgent.plugins,
-          ...(Object.keys(importedReleases).length > 0 && { importedReleases }),
+          ...(Object.keys(releases).length > 0 && {
+            importedReleases: Object.fromEntries(
+              Object.entries(releases).map(([id, { digest, mcpServers }]) => [
+                id,
+                { digest, mcpServers },
+              ]),
+            ),
+          }),
         });
       }
       const credentialSources = await this.admitCredentialSources(
@@ -13753,7 +13768,7 @@ export class OpenClawController {
         driver,
         revisionHarness,
         compute,
-        pluginState?.importedReleases,
+        releases,
       );
       const secretBindings = this.bindings(metadata.secretBindings);
       const sources = await this.authorizeBindings(
@@ -13848,7 +13863,7 @@ export class OpenClawController {
           lockedAgent.pluginApprovers,
           admittedConfiguration,
           "stored",
-          pluginState.importedReleases,
+          releases,
         );
         this.validatePluginPlacement(driver, pluginState.plugins, revisionHarness);
       }
@@ -15580,7 +15595,7 @@ export class OpenClawController {
     plugins: PluginDesiredState | undefined,
     sources: readonly CredentialSource[],
     harnessAuth: HarnessAuthBinding | null | undefined,
-    releases: PluginRevisionState["importedReleases"],
+    releases: Readonly<Record<string, InspectedPluginPackage>> | undefined,
   ): void {
     if (plugins && Object.keys(plugins).length) {
       driver?.credentials?.validate(
@@ -15604,7 +15619,7 @@ export class OpenClawController {
     driver: PluginDriver | undefined,
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
-    releases?: PluginRevisionState["importedReleases"],
+    releases?: Readonly<Record<string, InspectedPluginPackage>>,
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
@@ -18222,7 +18237,7 @@ export class OpenClawController {
     approvers: PluginApprovers | undefined,
     values: Readonly<OpenClawConfigurationDocument>,
     source: "request" | "stored",
-    releases: PluginRevisionState["importedReleases"],
+    releases: Readonly<Record<string, InspectedPluginPackage>> | undefined,
   ): void {
     try {
       driver.validatePolicies(plugins ?? {}, approvers, releases);

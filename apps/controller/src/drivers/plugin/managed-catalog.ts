@@ -7,6 +7,7 @@ import {
   type ImportedMcpServer,
   type ImportedPluginConnectionTemplate,
   type InspectedPluginPackage,
+  type ImportedPluginReleasePin,
   type PluginDesiredSelection,
   type PluginConnectionRelease,
   type PluginCatalogEntry,
@@ -480,7 +481,7 @@ export function importedMcpSourceConfig(
 }
 
 export function managedMcpInstallsForReleases(
-  releases: Readonly<Record<string, InspectedPluginPackage>> = {},
+  releases: Readonly<Record<string, ImportedPluginReleasePin>> = {},
 ): readonly ManagedMcpInstall[] {
   return [
     ...managedMcpInstalls,
@@ -499,7 +500,7 @@ export function managedMcpInstallsForRevision(
 /** Resolve each imported selection to the reviewed runtime policy. Keep its separate release identity on the revision. */
 export function managedSelectionsForImportedReleases(
   selections: PluginDesiredState,
-  releases: Readonly<Record<string, InspectedPluginPackage>>,
+  releases: Readonly<Record<string, ImportedPluginReleasePin>>,
 ): PluginDesiredState {
   const effective: Record<string, PluginDesiredSelection> = { ...selections };
   for (const [id, selection] of Object.entries(selections)) {

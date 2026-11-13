@@ -248,6 +248,7 @@ interface RequiredPermission {
     | "associated_service_account"
     | "existing_namespace"
     | "bound_secret"
+    | "imported_plugin_release"
     | "directory_lookup"
     | "selected_secret"
     | "iam_binding_target"
@@ -473,7 +474,9 @@ function authorizesBeforeBody(operation: OccApiRoute): boolean {
     operation.operationId === "createPreset" ||
     operation.operationId === "updatePreset" ||
     operation.operationId === "createConfiguration" ||
-    operation.operationId === "updateConfiguration"
+    operation.operationId === "updateConfiguration" ||
+    operation.operationId === "previewPluginRelease" ||
+    operation.operationId === "publishPluginRelease"
   );
 }
 
@@ -685,12 +688,19 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  const readImportedRelease: RequiredPermission = {
+    action: "read",
+    resourceKind: "namespace",
+    scope: "requested",
+    condition: "imported_plugin_release",
+  };
   if (
     operation.operationId === "discoverAgentPlugins" ||
     operation.operationId === "discoverAgentPluginDetails"
   ) {
     return [
       { ...permission, scope: "namespace" },
+      ...(operation.operationId === "discoverAgentPluginDetails" ? [readImportedRelease] : []),
       {
         action: "operate",
         resourceKind: "secret",
@@ -713,6 +723,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     const create = operation.operationId === "createCredentialSource";
     return [
       { ...permission, scope: create ? "namespace" : "requested" },
+      ...(create ? [readImportedRelease] : []),
       {
         action: "operate",
         resourceKind: "secret",
@@ -838,6 +849,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope:
           creatingAgent || operation.operationId === "provisionAgent" ? "namespace" : "requested",
       },
+      readImportedRelease,
     ];
     if (creatingAgent || operation.operationId === "updateAgent") {
       permissions.push({
@@ -939,6 +951,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       { action: "create", resourceKind: "agent", scope: "namespace" },
       { action: "create", resourceKind: "configuration", scope: "namespace" },
       { action: "administer", resourceKind: "installation", scope: "requested" },
+      ...(operation.operationId === "retryAgentProvisioning" ? [readImportedRelease] : []),
       ...(["read", "operate", "deploy"] as const).map((action) => ({
         action,
         resourceKind: "agent" as const,
@@ -981,6 +994,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { ...permission, scope: "requested" },
       { action: "read", resourceKind: "agent", scope: "requested" },
+      ...(operation.operationId === "discoverSavedAgentPluginDetails" ? [readImportedRelease] : []),
       ...(operation.operationId === "getSavedAgentPluginPolicyCapabilities"
         ? []
         : [
@@ -1073,7 +1087,7 @@ function permissionDescription(
   ) {
     const verb = operation.operationId === "getAgentProvisioning" ? "read" : "retry";
     // The provisioning_work rows are described here, not per row.
-    return `Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can ${verb} it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.`;
+    return `Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can ${verb} it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.${verb === "retry" ? " Retrying a plan that uses an imported plugin release also requires read permission on the Namespace." : ""}`;
   }
   const names: Record<ResourceKind, string> = {
     installation: "Installation",
@@ -1096,6 +1110,9 @@ function permissionDescription(
       }
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
+      }
+      if (condition === "imported_plugin_release") {
+        return "Requires read permission on the requested Namespace when using an imported plugin release.";
       }
       if (condition === "directory_lookup") {
         if (resourceKind === "secret") {
@@ -2153,12 +2170,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /**
-   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
-   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
-   * path and the caller, so it runs here, in onRequest, before the body is read: a caller
-   * without the grant gets the same 403 or 404 and audit row as when the check ran in the
-   * handler, and the controller never buffers the body. The handler repeats the check in its
-   * transaction, with the Secret binding checks that need the body.
+   * Plugin imports and Preset and Configuration writes allow large bodies. Their grant
+   * checks need only the caller and path, so onRequest can refuse an unauthorized upload
+   * before buffering it. Mutations recheck authority in their transaction.
    */
   async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
     const context = contexts.get(request);
@@ -2169,6 +2183,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
+    if (
+      operation.operationId === "previewPluginRelease" ||
+      operation.operationId === "publishPluginRelease"
+    ) {
+      await controller.authorizePluginPublication(context.actorId, params.namespaceId as string);
+      return;
+    }
     if (
       operation.operationId === "createConfiguration" ||
       operation.operationId === "updateConfiguration"

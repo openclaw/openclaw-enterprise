@@ -54,10 +54,7 @@ import {
   admitLoggingConfiguration,
   canonicalPluginPackageContent,
 } from "../../packages/contracts/src/index.ts";
-import {
-  importedPluginMaterial,
-  importedPluginDeployment,
-} from "../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts";
+import { importedPluginDeployment } from "../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts";
 import { validateConfigurationSettings } from "../../packages/occ/src/configuration-settings.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
@@ -3737,7 +3734,7 @@ test("Kubernetes reuses an immutable plugin chunk only for the same parent and c
   await assert.rejects(reconcile(), /Refusing invalid immutable Kubernetes ConfigMap/);
 });
 
-test("Gateway init verifies every projected chunk before publishing the selected skill files", (t) => {
+test("Gateway init verifies every projected chunk before publishing the selected skill files", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "oce-imported-plugin-init-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const input = join(root, "input");
@@ -3770,7 +3767,28 @@ test("Gateway init verifies every projected chunk before publishing the selected
   const digest = createHash("sha256").update(canonicalPluginPackageContent(content)).digest("hex");
   const id = "occ-import:" + digest;
   const release = { ...content, digest, archiveSha256: "0".repeat(64) };
-  const material = importedPluginMaterial("snapshot", { [id]: release });
+  const driver = dedicatedPluginDriver();
+  const candidate = revision({
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+    plugins: {
+      driver: openClawPluginState().driver,
+      plugins: { [id]: { enabled: true } },
+      importedReleases: { [id]: { digest, mcpServers: release.mcpServers } },
+    },
+  });
+  admitRevisionHarness(driver, candidate);
+  const snapshot = driver.pluginRuntimeSnapshot(candidate);
+  const project = (releases) =>
+    driver.withImportedPluginMaterial(snapshot, {
+      loadImportedPluginReleases: async () => releases,
+    });
+  // A missing release or different content under its ID must fail before any files are projected.
+  await assert.rejects(project(undefined), /does not match the admitted release pins/);
+  await assert.rejects(
+    project({ [id]: { ...release, digest: "1".repeat(64) } }),
+    /does not match the admitted release pins/,
+  );
+  const { importedMaterial: material } = await project({ [id]: release });
   assert.ok(material.chunks.length > 1);
   for (const [index, chunk] of material.chunks.entries()) {
     writeFileSync(join(input, "chunk-" + index), chunk.content);
@@ -3807,7 +3825,7 @@ test("Gateway init verifies every projected chunk before publishing the selected
 });
 
 test("the selected template owns a single credentialed route even when its host matches a bundled MCP server", () => {
-  const server = { name: "inventory.v2", url: "https://mcp.slack.com/mcp" };
+  const server = { name: "inventory-v2", url: "https://mcp.slack.com/mcp" };
   const content = {
     format: "agent-plugins",
     name: "inventory",
@@ -3842,7 +3860,7 @@ test("the selected template owns a single credentialed route even when its host 
     plugins: {
       driver: { implementation: "occ/openclaw-plugin" },
       plugins: { [pluginId]: selection },
-      importedReleases: { [pluginId]: release },
+      importedReleases: { [pluginId]: { digest, mcpServers: release.mcpServers } },
     },
   };
   const access = (requestScope, activeRevision = revision) =>
@@ -3892,12 +3910,9 @@ test("the selected template owns a single credentialed route even when its host 
   );
   assert.throws(
     () =>
-      managedPluginCredentials.validate(
-        revision.plugins.plugins,
-        [other],
-        undefined,
-        revision.plugins.importedReleases,
-      ),
+      managedPluginCredentials.validate(revision.plugins.plugins, [other], undefined, {
+        [pluginId]: release,
+      }),
     /created from this release/,
   );
 });

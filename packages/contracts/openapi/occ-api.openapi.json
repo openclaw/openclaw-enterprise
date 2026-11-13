@@ -15291,7 +15291,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.",
         "operationId": "createAgent",
         "parameters": [
           {
@@ -16000,6 +16000,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "administer",
             "condition": "gateway_managed_mode_disabled",
@@ -17277,7 +17283,7 @@
     },
     "/namespaces/{namespaceId}/agents/plugins/details": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.",
         "operationId": "discoverAgentPluginDetails",
         "parameters": [
           {
@@ -17620,6 +17626,12 @@
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
           {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
+          {
             "action": "operate",
             "condition": "selected_secret",
             "resourceKind": "secret",
@@ -17630,7 +17642,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
         "operationId": "provisionAgent",
         "parameters": [
           {
@@ -18251,6 +18263,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           {
@@ -18558,7 +18576,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision/{workId}/retry": {
       "post": {
-        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.",
+        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs. Retrying a plan that uses an imported plugin release also requires read permission on the Namespace.",
         "operationId": "retryAgentProvisioning",
         "parameters": [
           {
@@ -18801,6 +18819,12 @@
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           {
             "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
             "condition": "provisioning_work",
             "resourceKind": "agent",
             "scope": "requested"
@@ -19029,7 +19053,7 @@
     },
     "/namespaces/{namespaceId}/agents/validate": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when gatewayManagedMode is set to false.",
         "operationId": "validateAgentCreate",
         "parameters": [
           {
@@ -19432,6 +19456,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "administer",
             "condition": "gateway_managed_mode_disabled",
@@ -20414,7 +20444,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.",
         "operationId": "updateAgent",
         "parameters": [
           {
@@ -21176,6 +21206,12 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
+          {
             "action": "administer",
             "condition": "gateway_managed_mode_changed",
             "resourceKind": "installation",
@@ -21654,7 +21690,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -22227,6 +22263,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "deploy", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           { "action": "read", "resourceKind": "configuration", "scope": "requested" },
           {
             "action": "read",
@@ -22269,7 +22311,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy-first": {
       "post": {
-        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgentFirst",
         "parameters": [
           {
@@ -22519,6 +22561,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "deploy", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "phase": "fresh_admission",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           { "action": "read", "resourceKind": "configuration", "scope": "requested" },
           {
             "action": "read",
@@ -27623,7 +27672,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/plugins/details": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.",
         "operationId": "discoverSavedAgentPluginDetails",
         "parameters": [
           {
@@ -27921,6 +27970,12 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "operate",
             "condition": "authenticated_plugin_discovery",
@@ -35851,7 +35906,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for CredentialSource resources in the requested Namespace. Requires operate permission on each Secret named in the request body secrets.",
+        "description": "Requires create permission for CredentialSource resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on each Secret named in the request body secrets.",
         "operationId": "createCredentialSource",
         "parameters": [
           {
@@ -36079,6 +36134,12 @@
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "operate",
             "condition": "bound_secret",

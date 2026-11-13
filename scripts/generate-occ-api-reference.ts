@@ -239,6 +239,7 @@ const permissionScopeQualifiers: Record<string, string> = {
   associated_service_account: " (when associated)",
   existing_namespace: " (when selecting an existing namespace)",
   bound_secret: " (when bound)",
+  imported_plugin_release: " (when using an imported plugin release)",
   bound_credential_source: " (when bound)",
   native_chat: " (chat access)",
   native_admin_alternative: " (full native administration, instead of `operate`)",

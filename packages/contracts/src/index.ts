@@ -840,9 +840,11 @@ export function importedPluginDigest(id: string): string | undefined {
   return /^occ-import:([a-f0-9]{64})$/u.exec(id)?.[1];
 }
 
+export type ImportedPluginReleasePin = Pick<InspectedPluginPackage, "digest" | "mcpServers">;
+
 export interface PluginRevisionState {
-  /** Internal material for the immutable release IDs admitted by OCC in this Agent's Namespace. */
-  readonly importedReleases?: Readonly<Record<string, InspectedPluginPackage>>;
+  /** Release IDs are scoped to the revision's Namespace. Keep only MCP routing data here. */
+  readonly importedReleases?: Readonly<Record<string, ImportedPluginReleasePin>>;
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
 }
@@ -923,7 +925,15 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
     if (
       (record.importedReleases !== undefined && !imported) ||
       Object.keys(imported ?? {}).length !== ids.length ||
-      !ids.every((id) => asRecord(imported?.[id])?.digest === importedPluginDigest(id))
+      !ids.every((id) => {
+        const pin = asRecord(imported?.[id]);
+        return (
+          pin !== undefined &&
+          pin.digest === importedPluginDigest(id) &&
+          Array.isArray(pin.mcpServers) &&
+          Object.keys(pin).length === 2
+        );
+      })
     ) {
       return false;
     }

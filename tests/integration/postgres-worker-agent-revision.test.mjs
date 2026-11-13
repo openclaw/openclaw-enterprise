@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -3584,6 +3585,55 @@ revisionTest(
       "REVISION_ALREADY_ACTIVE",
     );
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, previous.id);
+  },
+);
+
+revisionTest(
+  "the worker resolves only the revision's pinned imported release for projection",
+  async (fixture, t) => {
+    const driver = new OCCPluginDriver();
+    const inspect = async (marker) =>
+      driver.inspectPackage(Buffer.from(await importedPluginPackage(t, marker), "base64"));
+    const selected = await inspect("selected revision");
+    const newer = await inspect("published later");
+    const pluginId = `occ-import:${selected.digest}`;
+    const pins = { [pluginId]: { digest: selected.digest, mcpServers: selected.mcpServers } };
+    await fixture.state.transact((unit) =>
+      unit.pluginReleases.publish(fixture.namespace.id, fixture.actor.id, selected),
+    );
+    const { candidate } = await fixture.admitInitialRevision("imported-files", {
+      agent: { executionMode: "dedicated" },
+      revision: {
+        harness: { id: "openclaw", mode: "dedicated", version: "1.0.0" },
+        plugins: {
+          driver: { id: driver.id, implementation: driver.implementation },
+          plugins: { [pluginId]: { enabled: true } },
+          importedReleases: pins,
+        },
+      },
+    });
+    // A later release of the same package is present when the worker prepares this revision.
+    await fixture.state.transact((unit) =>
+      unit.pluginReleases.publish(fixture.namespace.id, fixture.actor.id, newer),
+    );
+    let projected;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, context) {
+          assert.deepEqual(revision.plugins.importedReleases, pins);
+          projected = await context.loadImportedPluginReleases();
+          return fixture.compute.prepareRevision(revision, context);
+        },
+        async activateRevision(revision, context) {
+          assert.deepEqual(await context.loadImportedPluginReleases(), projected);
+          return fixture.compute.activateRevision?.(revision, context);
+        },
+      },
+      { transformDrivers: withBothPluginDrivers },
+    );
+    await fixture.work(candidate, "succeeded");
+    assert.deepEqual(projected, { [pluginId]: selected });
   },
 );
 

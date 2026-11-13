@@ -3831,6 +3831,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
+    // Refuse unsupported inline skill files before PostgreSQL sends them to the revision decoder.
+    const admittedSpec = `CASE WHEN r.admitted_spec @? '$.plugins.importedReleases.*.skills'
+      THEN NULL ELSE r.admitted_spec END AS admitted_spec`;
     const findRevisionRow = async (
       namespaceId: string,
       agentId: string,
@@ -3840,7 +3843,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode,
+                      ${admittedSpec}, r.gateway_managed_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -3861,7 +3864,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode,
+                      ${admittedSpec}, r.gateway_managed_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id

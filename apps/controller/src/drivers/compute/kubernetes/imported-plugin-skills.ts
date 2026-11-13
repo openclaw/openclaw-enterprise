@@ -4,11 +4,11 @@ import {
   canonicalPluginPackageContent,
   type InspectedPluginPackage,
 } from "@openclaw-enterprise/contracts";
+import { validateImportedSkillSize } from "../../plugin/imported-skill-size.ts";
 
 export const IMPORTED_PLUGIN_DIRECTORY = "/run/oce/imported-plugins";
 const SOURCE_DIRECTORY = "/run/oce/imported-plugin-input";
 const CHUNK_BYTES = 576 * 1024;
-const MAX_SKILL_BYTES = 8 * 1024 * 1024;
 
 export interface ImportedPluginMaterial {
   readonly ids: readonly string[];
@@ -22,7 +22,6 @@ export function importedPluginMaterial(
 ): ImportedPluginMaterial {
   const ids = Object.keys(releases).sort();
   const names = new Map<string, string>();
-  let skillBytes = 0;
   const payload = ids.map((id) => {
     const release = releases[id]!;
     const content = canonicalPluginPackageContent(release);
@@ -36,17 +35,10 @@ export function importedPluginMaterial(
         throw new Error(`Skill ${skill.name} is selected from both ${previous} and ${id}.`);
       }
       names.set(skill.name, id);
-      for (const file of skill.files) {
-        skillBytes += Buffer.byteLength(file.contentBase64, "base64");
-        if (skillBytes > MAX_SKILL_BYTES) {
-          throw new Error(
-            "Selected imported skills exceed OpenClaw's combined 8 MiB turn resource limit.",
-          );
-        }
-      }
     }
     return release;
   });
+  validateImportedSkillSize(payload.flatMap((release) => release.skills));
   const bytes = Buffer.from(JSON.stringify(payload));
   const chunks = [];
   for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {

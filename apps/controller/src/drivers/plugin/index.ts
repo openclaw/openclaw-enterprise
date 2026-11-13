@@ -1,4 +1,5 @@
 import { inspectPluginPackage } from "./import-package.ts";
+import { validateImportedSkillSize } from "./imported-skill-size.ts";
 import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
 import {
   importedPluginDigest,
@@ -455,6 +456,9 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
         }
       }
     }
+    validateImportedSkillSize(
+      imported.flatMap((id) => (selections[id]!.enabled ? (releases?.[id]?.skills ?? []) : [])),
+    );
     this.validate("openclaw", native, defaultApprovers);
     for (const pkg of managed) {
       const policy = selections[pkg.id]!;

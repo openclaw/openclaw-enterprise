@@ -5886,10 +5886,24 @@ test("a Namespace publisher admits an immutable plugin release only for Agents i
   const v1 = await importedPluginPackage(t, "marker-before-upgrade", { skillName: "oce-google" });
   const v2 = await importedPluginPackage(t, "marker-after-upgrade", { skillName: "oce-google" });
   assert.equal((await preview(otherPath, v1)).status, 200);
+  // A publisher reaches JSON parsing. A reader must be refused before the API reads the upload.
+  const invalidUpload = { rawBody: "{", headers: { "content-type": "application/json" } };
+  for (const route of ["plugin-releases/preview", "plugin-releases"]) {
+    assert.equal(
+      (await controller.request("POST", `${nsPath}/${route}`, invalidUpload)).status,
+      400,
+    );
+  }
   // Switch this fixture's caller from the Installation-wide grant to an exact Namespace role.
   const admin = controller.fixture.state.roles[0];
   admin.permissions = admin.permissions.filter(({ action }) => action !== "publish_plugins");
   assert.equal((await preview(nsPath, v1)).status, 403);
+  for (const route of ["plugin-releases/preview", "plugin-releases"]) {
+    assert.equal(
+      (await controller.request("POST", `${nsPath}/${route}`, invalidUpload)).status,
+      403,
+    );
+  }
   const role = await controller.request("POST", `${nsPath}/iam/roles`, {
     body: {
       name: "Plugin publisher",
@@ -5910,6 +5924,18 @@ test("a Namespace publisher admits an immutable plugin release only for Agents i
   // The HTTP fixture's IAM reader takes an in-memory policy. Production loads these saved rows from PostgreSQL.
   controller.fixture.state.roles.push(role.data);
   controller.fixture.state.bindings.push(binding.data);
+  // The publisher can inspect omissions, but cannot publish a release with no deployable component.
+  const unfinished = await importedPluginPackage(t, "unfinished", {
+    skillName: "unfinished--skill",
+  });
+  const omitted = await preview(nsPath, unfinished);
+  assert.equal(omitted.status, 200, JSON.stringify(omitted.body));
+  assert.deepEqual(omitted.data.skills, []);
+  assert.deepEqual(omitted.data.mcpServers, []);
+  assert.equal(omitted.data.unsupported.length, 1);
+  const empty = await publish(nsPath, unfinished, omitted.data);
+  assert.equal(empty.status, 422, JSON.stringify(empty.body));
+  assert.match(empty.body.error.message, /no supported skills or hosted MCP servers/u);
   const reviewed = await preview(nsPath, v1);
   assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
   assert.deepEqual(reviewed.data.skills, ["oce-google"]);
@@ -6001,7 +6027,19 @@ test("a Namespace publisher admits an immutable plugin release only for Agents i
   const revision = await controller.fixture.platformState.read((view) =>
     view.revisions.findRevision(ns.id, agent.data.id, deployed.data.id),
   );
-  const files = revision.plugins.importedReleases[pluginId].skills[0].files;
+  const pin = revision.plugins.importedReleases[pluginId];
+  assert.deepEqual(pin, { digest: saved.data.digest, mcpServers: [] });
+  const history = await controller.fixture.platformState.read((view) =>
+    view.revisions.listRevisions(ns.id, agent.data.id),
+  );
+  assert.deepEqual(
+    history.map((entry) => entry.plugins.importedReleases[pluginId]),
+    [pin],
+  );
+  const release = await controller.fixture.platformState.read((view) =>
+    view.pluginReleases.find(revision.namespaceId, pin.digest),
+  );
+  const files = release.skills[0].files;
   assert.equal(
     Buffer.from(
       files.find((file) => file.path === "references/marker.txt").contentBase64,

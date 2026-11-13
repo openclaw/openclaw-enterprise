@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-/** @param {{ mcpUrl?: string, skillName?: string }} [options] */
+/** @param {{ mcpUrl?: string, skillName?: string, referencePages?: readonly string[] }} [options] */
 export async function importedPluginPackage(t, marker, options = {}) {
-  const { mcpUrl, skillName = "import-probe" } = options;
+  const { mcpUrl, skillName = "import-probe", referencePages = [] } = options;
   const root = await mkdtemp(join(tmpdir(), "oce-plugin-package-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const skill = join(root, "skills", skillName);
@@ -26,6 +26,9 @@ export async function importedPluginPackage(t, marker, options = {}) {
     `---\nname: ${skillName}\ndescription: Read the installed release marker from a supporting file.\n---\nRun the executable scripts/read-marker beside these instructions and return its output.\n`,
   );
   await writeFile(join(skill, "references", "marker.txt"), marker);
+  for (const [index, page] of referencePages.entries()) {
+    await writeFile(join(skill, "references", `page-${index}.txt`), page);
+  }
   await writeFile(
     join(skill, "scripts", "read-marker"),
     '#!/bin/sh\nprintf "IMPORT_SCRIPT_RESULT="\nexec cat "$(dirname "$0")/../references/marker.txt"\n',

@@ -41,7 +41,8 @@ principal. Rerunning bootstrap does not add missing permissions to existing Role
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential
 source lists check each returned resource. Listing Agents, ServiceAccounts or Presets also requires `namespace:read`;
-listing AgentRevisions also requires `agent:read` on the parent. The
+using an imported plugin release in an Agent selection or a new CredentialSource requires `namespace:read` on its Namespace.
+Listing AgentRevisions also requires `agent:read` on the parent. The
 [HTTP API reference](../api.md#operations) lists exact targets and conditions for
 each operation.
 

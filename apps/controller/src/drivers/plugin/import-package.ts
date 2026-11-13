@@ -102,13 +102,23 @@ async function readArchive(archive: Uint8Array): Promise<Files> {
   return files;
 }
 
-function json(files: Files, path: string): Fields {
+function jsonObject(files: Files, path: string): Fields | undefined {
   const file = files.get(path);
   if (!file || file.bytes.length > MiB) {
     invalid("A declared JSON file is missing or exceeds 1 MiB.");
   }
-  const value = asRecord(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(file.bytes)));
-  return value ?? invalid("A package manifest or MCP descriptor must be a JSON object.");
+  try {
+    return asRecord(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(file.bytes)));
+  } catch {
+    return undefined;
+  }
+}
+
+function json(files: Files, path: string): Fields {
+  return (
+    jsonObject(files, path) ??
+    invalid("A package manifest or MCP descriptor must be a JSON object.")
+  );
 }
 
 function schemaRoot(files: Files): string {
@@ -186,12 +196,7 @@ function skillDirs(files: Files, root: string, roots: string[], portable: boolea
   return [...result].sort();
 }
 
-function readSkill(
-  files: Files,
-  dir: string,
-  portable: boolean,
-  fallbackName = posix.basename(dir),
-): ImportedPluginSkill {
+function readSkillFiles(files: Files, dir: string): ImportedPluginSkill["files"] {
   const children = [...files].filter(([path]) => path.startsWith(dir));
   if (
     children.length > 256 ||
@@ -201,31 +206,6 @@ function readSkill(
     invalid(
       "A skill exceeds the dedicated worker limit of 256 files, 1 MiB per file or 8 MiB in total.",
     );
-  }
-  const instructions = new TextDecoder("utf-8", { fatal: true }).decode(
-    files.get(dir + "SKILL.md")!.bytes,
-  );
-  const header = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(instructions);
-  let fields: Fields = {};
-  if (header) {
-    const doc = parseDocument(header[1]!, { schema: "core", strict: true });
-    if (doc.errors.length || doc.warnings.length) {
-      invalid("Invalid skill frontmatter.");
-    }
-    fields = asRecord(doc.toJS({ maxAliasCount: 0 })) ?? invalid("Invalid skill frontmatter.");
-  }
-  const basename = posix.basename(dir);
-  const name = fields.name ?? fallbackName;
-  if (
-    typeof name !== "string" ||
-    !skillName.test(name) ||
-    name.includes("--") ||
-    (portable &&
-      (fields.name !== basename ||
-        typeof fields.description !== "string" ||
-        !fields.description.trim()))
-  ) {
-    invalid("The skill needs valid metadata and a portable name.");
   }
   const seen = new Set<string>();
   const skillFiles = children.map(([path, file]) => {
@@ -255,7 +235,44 @@ function readSkill(
     };
   });
   skillFiles.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
-  return { name, files: skillFiles };
+  return skillFiles;
+}
+
+function readSkillName(
+  bytes: Buffer,
+  basename: string,
+  portable: boolean,
+  fallbackName = basename,
+): string | undefined {
+  let fields: Fields = {};
+  try {
+    const instructions = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const header = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(instructions);
+    if (header) {
+      const doc = parseDocument(header[1]!, { schema: "core", strict: true });
+      const object =
+        !doc.errors.length && !doc.warnings.length && asRecord(doc.toJS({ maxAliasCount: 0 }));
+      if (!object) {
+        return undefined;
+      }
+      fields = object;
+    }
+  } catch {
+    return undefined;
+  }
+  const name = fields.name ?? fallbackName;
+  if (
+    typeof name !== "string" ||
+    !skillName.test(name) ||
+    name.includes("--") ||
+    (portable &&
+      (fields.name !== basename ||
+        typeof fields.description !== "string" ||
+        !fields.description.trim()))
+  ) {
+    return undefined;
+  }
+  return name;
 }
 
 function hostedServer(name: string, value: unknown, portable: boolean): ImportedMcpServer | string {
@@ -416,14 +433,36 @@ function inspectContents(files: Files, marketplaceEntry?: string) {
           path.startsWith(root) && !components.has(path.slice(root.length).split("/")[0]!),
       ),
     );
-    skills.push(readSkill(skillFiles, root, false, name));
+    skills.push({
+      name:
+        readSkillName(
+          skillFiles.get(root + "SKILL.md")!.bytes,
+          posix.basename(root),
+          false,
+          name,
+        ) ?? invalid("The skill needs valid metadata and a portable name."),
+      files: readSkillFiles(skillFiles, root),
+    });
   }
-  for (const dir of skillDirs(files, root, roots, portable)) {
-    const skill = readSkill(files, dir, portable);
-    if (skills.some((item) => item.name === skill.name)) {
+  for (const [index, dir] of skillDirs(files, root, roots, portable).entries()) {
+    // Check every file's materialization bounds before omitting invalid optional metadata.
+    const material = readSkillFiles(files, dir);
+    const basename = posix.basename(dir);
+    const name = readSkillName(files.get(dir + "SKILL.md")!.bytes, basename, portable);
+    if (!name) {
+      if (!portable) {
+        invalid("The skill needs valid metadata and a portable name.");
+      }
+      omit(
+        skillName.test(basename) ? "skill:" + basename : `skills[${index}]`,
+        "The skill has invalid metadata. Its name must match its directory and it needs a description.",
+      );
+      continue;
+    }
+    if (skills.some((item) => item.name === name)) {
       invalid("Package includes two skills with the same effective name.");
     }
-    skills.push(skill);
+    skills.push({ name, files: material });
   }
   const servers = new Map<string, unknown>();
   function addDescriptor(descriptor: unknown) {
@@ -432,15 +471,16 @@ function inspectContents(files: Files, marketplaceEntry?: string) {
       invalid("An MCP declaration must be a map of server names.");
     }
     for (const [key, value] of Object.entries(map)) {
-      if (!identifier.test(key)) {
+      if (!portable && !identifier.test(key)) {
         invalid("Invalid MCP server name.");
       }
       servers.set(key, value);
     }
   }
   if (portable && files.has(root + "mcp.json")) {
-    const mcp = json(files, root + "mcp.json");
+    const mcp = jsonObject(files, root + "mcp.json");
     if (
+      !mcp ||
       mcp.$schema !== schema + "mcp.schema.json" ||
       !asRecord(mcp.mcpServers) ||
       Object.keys(mcp).some((k) => !["$schema", "mcpServers"].includes(k))
@@ -467,12 +507,13 @@ function inspectContents(files: Files, marketplaceEntry?: string) {
     }
   }
   const mcpServers: ImportedMcpServer[] = [];
-  for (const [key, value] of [...servers].sort(([a], [b]) =>
+  const sortedServers = [...servers].sort(([a], [b]) =>
     Buffer.compare(Buffer.from(a), Buffer.from(b)),
-  )) {
+  );
+  for (const [index, [key, value]] of sortedServers.entries()) {
     const hosted = hostedServer(key, value, portable);
     if (typeof hosted === "string") {
-      omit("mcp:" + key, hosted);
+      omit(identifier.test(key) ? "mcp:" + key : `mcpServers[${index}]`, hosted);
     } else {
       mcpServers.push(hosted);
     }

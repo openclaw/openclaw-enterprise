@@ -2033,6 +2033,45 @@ test("dedicated package inspection retains skill resources and reports omitted M
   assert.notEqual((await driver.inspectPackage(await packagedFiles(files))).digest, result.digest);
 });
 
+test("portable inspection keeps independent valid components and reports invalid optional declarations", async () => {
+  const driver = new OCCPluginDriver();
+  const schema = "https://agent-plugins.org/schemas/1.0.0/";
+  const manifest = JSON.stringify({ $schema: schema + "plugin.schema.json", name: "mixed" });
+  const files = [
+    ["plugin.json", manifest],
+    ["skills/notes/SKILL.md", "---\nname: notes\ndescription: Read notes\n---\nRead notes."],
+    ["skills/draft/SKILL.md", "---\nname: draft\n---\nMissing description."],
+    ["skills/draft/example.txt", "Only part of the omitted skill."],
+  ];
+  const server = { type: "streamable-http", url: "https://notes.example.com/mcp" };
+  const descriptor = JSON.stringify({
+    $schema: schema + "mcp.schema.json",
+    mcpServers: { notes: server, "invalid label": server },
+  });
+  for (const [mcp, expectedServers, omittedServer] of [
+    ["{", [], "mcp.json"],
+    [descriptor, [{ name: "notes", url: server.url }], "mcpServers[0]"],
+  ]) {
+    const release = await driver.inspectPackage(await packagedFiles([...files, ["mcp.json", mcp]]));
+    assert.deepEqual(
+      release.skills.map(({ name, files }) => [name, files.map(({ path }) => path)]),
+      [["notes", ["SKILL.md"]]],
+    );
+    assert.deepEqual(release.mcpServers, expectedServers);
+    assert.deepEqual(
+      release.unsupported.map(({ component }) => component),
+      ["skill:draft", omittedServer],
+    );
+  }
+  // Worker filename rules still apply to the resources of an omitted skill.
+  await assert.rejects(
+    driver.inspectPackage(
+      await packagedFiles([...files, ["skills/draft/example.", "A nonportable file name."]]),
+    ),
+    /cannot materialize/u,
+  );
+});
+
 test("a Claude root skill includes its supporting files and reports sibling executables", async () => {
   const driver = new OCCPluginDriver();
   for (const skills of [undefined, "."]) {

@@ -9036,7 +9036,37 @@ async function assertImportedNativeSkill(context, topology) {
   const second = `PLUGIN_SECOND_${randomUUID()}`;
   const v2 = await publish(second);
   assert.notEqual(v2, v1);
-  // Publishing v2 leaves v1 active until the Agent owner selects and deploys the new digest.
+  // Each release fits on its own. The combined skill files cannot be sent in one worker turn.
+  const oversized = {};
+  for (const skillName of ["field-guide", "reference-manual"]) {
+    const archive = await importedPluginPackage(context, skillName, {
+      skillName,
+      referencePages: Array(4).fill("a".repeat(1024 * 1024)),
+    });
+    const release = await workflow.publish(archive);
+    oversized["occ-import:" + release.digest] = { enabled: true };
+  }
+  const agentPath = `${namespace}/agents/${topology.agent.id}`;
+  const draft = { configurationId: topology.agent.configurationId, plugins: oversized };
+  const save = await topology.request("PATCH", agentPath, draft);
+  assert.equal(save.status, 400);
+  assert.match(save.error.message, /combined 8 MiB turn resource limit/u);
+  assert.deepEqual((await request("GET", agentPath)).plugins, { [v1]: { enabled: true } });
+  // Restore an oversized draft that an earlier controller could save. Only the draft changes.
+  const seeded = await topology.observerPool.query(
+    "UPDATE occ.agents SET plugins = $3::jsonb WHERE namespace_id = $1 AND id = $2",
+    [topology.namespaceId, topology.agent.id, JSON.stringify(oversized)],
+  );
+  assert.equal(seeded.rowCount, 1);
+  const refused = await topology.request("POST", `${agentPath}/deploy`);
+  assert.equal(refused.status, 400);
+  assert.match(refused.error.message, /combined 8 MiB turn resource limit/u);
+  assert.equal((await request("GET", agentPath)).activeRevisionId, topology.revision.id);
+  assert.deepEqual(
+    (await request("GET", `${agentPath}/revisions`)).map(({ id }) => id),
+    [topology.revision.id],
+  );
+  // The original Gateway and worker still serve the admitted skill after the refusal.
   await proveMarker(first);
   await deploy({ [v2]: { enabled: true } });
   await proveMarker(second);

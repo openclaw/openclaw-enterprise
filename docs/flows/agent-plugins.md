@@ -1,14 +1,14 @@
 ---
 created: 2026-09-08
-updated: 2026-11-12
-last_updated_session: authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97
+updated: 2026-11-13
+last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-OCC checks the Harness catalog and snapshots Driver and policy at deployment. A Namespace administrator [publishes packages](../../apps/controller/src/drivers/plugin/import-package.ts). Agent owners select releases by digest. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
+OCC checks Namespace publication authority before reading an upload. The [Plugin Driver](../../apps/controller/src/drivers/plugin/import-package.ts) reports omitted components. Revisions pin the release digest, Driver and policy. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
 
 ## Entry Points
 
@@ -93,7 +93,7 @@ Closing cancels; account changes clear results; Harness changes clear selections
 bound size/time, reject redirects and credential echoes, and return safe metadata
 with `Cache-Control: no-store`.
 For hosted Codex entries, `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts
-an omitted `requires_local_executor`. An explicit `true` requires skills.
+an omitted `requires_local_executor`. Explicit `true` requires skills.
 Details reject unmatched MCP/scheduled tasks. Optional stdio
 `NativeCodexPluginCatalogReader` rejects invalid `plugin/list` results and stops its child.
 
@@ -159,7 +159,7 @@ PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
 check cannot see. Configuration save and Compute Drivers refuse policies the
 Gateway refuses at load, such as `untrusted`.
 
-[Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) mounts verified files read-only in the dedicated Gateway. Before delivery, the [Gateway](../../deploy/runtime/openclaw-pinned-skill-sources.patch) checks the advertised skill’s pinned source and rejects a same-name workspace skill. The worker preserves executable permissions and points the model to its local `SKILL.md`.
+Agent save and deploy check the combined 8 MiB skill limit. [Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) loads the pinned Namespace files and mounts them read-only. The [Gateway](../../deploy/runtime/openclaw-pinned-skill-sources.patch) rejects same-name workspace substitutions. Workers retain executable modes and use their local `SKILL.md`.
 
 The Kubernetes ConfigMap is immutable and per version. A version prepared
 by an earlier controller keeps its earlier `config.toml` (without
@@ -316,14 +316,11 @@ for container recovery.
 
 `apps/controller/src/worker.ts:finalizeRevision`
 
-Before the worker commits `activeRevisionId`, preparation failure leaves the
-prior pointer unchanged. After commit, activation/finalization failure retains
-the candidate pointer and records `REVISION_FINALIZATION_INCOMPLETE` for retry.
+Preparation failure preserves the prior `activeRevisionId`. After commit, activation or finalization failure retains the candidate pointer and records `REVISION_FINALIZATION_INCOMPLETE` for retry.
 Embedded Kubernetes replacement runs after commit; the old gateway may already
-be stopped. The previous version remains stored, without pointer rollback or
-an availability guarantee during cutover. See the [controller worker flow](controller-worker.md).
+be stopped. The previous version stays stored. Cutover has no availability or rollback guarantee. See the [controller worker flow](controller-worker.md).
 
-Successful completion reports `REVISION_ACTIVATED` or `REVISION_ALREADY_ACTIVE`.
+Success reports `REVISION_ACTIVATED` or `REVISION_ALREADY_ACTIVE`.
 A candidate pointer alone is not readiness evidence. Agent turns use native
 policy; the workspace and gateway database remain Agent-owned.
 
@@ -360,6 +357,8 @@ over 25% CPU wait in its final 15 s and no idle 5 s interval to qualify as starv
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 23:00: Trace Namespace release admission and projection. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - f253066ab39d0225a230f0547c4c7d4169f386a3)
 
 - 2026-11-12 11:28: Accept omitted hosted executor metadata. (authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
 

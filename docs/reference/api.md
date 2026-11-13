@@ -4135,11 +4135,12 @@ Create a Namespace-owned Agent
 
 **Operation ID:** `createAgent`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `administer` | `installation` | `installation` (when `gatewayManagedMode` is `false`) |
 | `read` | `configuration` | `requested` |
 | `read` | `service_account` | `requested` (when associated) |
@@ -4725,11 +4726,12 @@ Read plugin details using the selected Driver
 
 **Operation ID:** `discoverAgentPluginDetails`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `operate` | `secret` | `request_body` |
 
 ##### Parameters
@@ -4823,11 +4825,12 @@ Create a new Agent and queue first-time provisioning
 
 **Operation ID:** `provisionAgent`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `create` | `configuration` | `namespace` |
 | `administer` | `installation` | `requested` |
 | `read` | `service_account` | `requested` (when associated) |
@@ -5119,13 +5122,14 @@ Retry failed first-time provisioning for one exact work item
 
 **Operation ID:** `retryAgentProvisioning`
 
-**Permissions:** Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.
+**Permissions:** Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs. Retrying a plan that uses an imported plugin release also requires read permission on the Namespace.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `create` | `configuration` | `namespace` |
 | `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `read` | `agent` | `requested` (once created) |
 | `operate` | `agent` | `requested` (once created) |
 | `deploy` | `agent` | `requested` (once created) |
@@ -5278,11 +5282,12 @@ Check an unsaved Agent Configuration, plugin selections, initial workspace files
 
 **Operation ID:** `validateAgentCreate`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when gatewayManagedMode is set to false.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `administer` | `installation` | `installation` (when `gatewayManagedMode` is `false`) |
 
 ##### Parameters
@@ -5602,11 +5607,12 @@ Replace an exact Namespace-owned Agent's editable draft
 
 **Operation ID:** `updateAgent`
 
-**Permissions:** Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `administer` | `installation` | `installation` (when the request changes `gatewayManagedMode`) |
 | `read` | `configuration` | `requested` |
 | `read` | `service_account` | `requested` (when associated) |
@@ -5903,11 +5909,12 @@ Save an Agent revision from the Agent's saved settings
 
 **Operation ID:** `deployAgent`
 
-**Permissions:** Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.
+**Permissions:** Requires deploy permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `deploy` | `agent` | `requested` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `read` | `configuration` | `requested` |
 | `read` | `agent` | `requested` |
 | `operate` | `agent` | `requested` |
@@ -6126,11 +6133,12 @@ Admit the first deployment of an exact reviewed Configuration; requires Configur
 
 **Operation ID:** `deployAgentFirst`
 
-**Permissions:** Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.
+**Permissions:** Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `deploy` | `agent` | `requested` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `read` | `configuration` | `requested` |
 | `read` | `agent` | `requested` |
 | `operate` | `agent` | `requested` |
@@ -7226,12 +7234,13 @@ Read plugin details for an active Agent with Agent read/update access. Hosted di
 
 **Operation ID:** `discoverSavedAgentPluginDetails`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `operate` | `secret` | `requested` |
 
 ##### Parameters
@@ -10171,11 +10180,12 @@ Register a credential source with the selected Credential Gateway
 
 **Operation ID:** `createCredentialSource`
 
-**Permissions:** Requires create permission for CredentialSource resources in the requested Namespace. Requires operate permission on each Secret named in the request body secrets.
+**Permissions:** Requires create permission for CredentialSource resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on each Secret named in the request body secrets.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `credential_source` | `namespace` |
+| `read` | `namespace` | `requested` (when using an imported plugin release) |
 | `operate` | `secret` | `request_body` (when bound) |
 
 ##### Parameters
