@@ -11862,6 +11862,7 @@ export class OpenClawController {
     facet: SandboxFacet,
     expectedVersion: number,
     revisionId: string,
+    additions?: readonly SandboxNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
@@ -11914,27 +11915,38 @@ export class OpenClawController {
           "Live policy application is unavailable for this revision. Deploy explicitly to apply the saved policy.",
         );
       }
+      const desired =
+        additions === undefined
+          ? policy
+          : await this.updateAgentSandboxPolicy(
+              principalId,
+              namespaceId,
+              agentId,
+              facet,
+              expectedVersion,
+              additions,
+            );
       const snapshot = this.admitAgentNetworkPolicy(
-        policy.additions,
-        policy.version,
+        desired.additions,
+        desired.version,
         revision.sandboxPolicy.defaults,
         { repositoryCredentials: revision.repositoryCredentials !== undefined },
       );
       const id = crypto.randomUUID();
       const updated = await state.sandboxPolicies.save(
         {
-          ...policy,
+          ...desired,
           application: {
             id,
             revisionId,
-            policyVersion: policy.version,
+            policyVersion: desired.version,
             snapshot,
             state: "pending",
             requestedBy: principalId,
             requestedAt: this.timestamp(),
           },
         },
-        policy.version,
+        desired.version,
       );
       if (updated === undefined) {
         throw new ResourceStateConflictError("The policy changed.");

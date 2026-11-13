@@ -1847,7 +1847,8 @@ export const occApiRoutes = [
     iamAction: "manage_policy",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Apply the saved policy to the running Agent revision",
+    summary:
+      "Queue policy application to the running Agent revision, optionally replacing saved additions",
     tags: ["Agents"],
     schema: {
       params: SandboxPolicyParams,
