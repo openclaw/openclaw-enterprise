@@ -62,9 +62,9 @@ import {
 } from "../helpers/production-upgrade-preflight-cleanup.ts";
 import { registerRetainedFleetPreflightTests } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
 
-// Every case owns its command server, state, and evidence directory. Two sibling
+// Every case owns its command server, state, and evidence directory. Three sibling
 // cases can overlap while the existing nested groups keep their own limits.
-await describe("production image upgrade recovery", { concurrency: 2 }, async () => {
+await describe("production image upgrade recovery", { concurrency: 3 }, async () => {
   const executeFile = promisify(execFile);
   const execute = (command, args, options = {}) =>
     executeFile(command, args, {
