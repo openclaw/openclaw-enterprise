@@ -5571,6 +5571,115 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     }
   });
 
+  test("legacy preparation preserves a stopped Agent and accepted work before refusing shutdown", async (t) => {
+    const names = [
+      {
+        id: "ns_test",
+        status: "ready",
+        agents: [
+          {
+            id: "agt_running",
+            status: "active",
+            desiredRuntimeState: "running",
+            executionMode: "embedded",
+            activeRevisionId: "rev_old",
+            deploymentInProgress: true,
+          },
+          {
+            id: "agt_stopped",
+            status: "active",
+            desiredRuntimeState: "stopped",
+            executionMode: "dedicated",
+            deploymentInProgress: false,
+          },
+        ],
+      },
+    ];
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+      inventoryNamespaces: names,
+    });
+    // The predecessor omitted repositoryWorkerRestart. An accepted deployment is
+    // evidence to retain while its original owner is serving.
+    await assert.rejects(f.run(), /Recorded the pre-stop Agent desired states/u);
+    const observed = JSON.parse(await f.readEvidence("inventory", "repository-fleet.json"));
+    assert.deepEqual(observed.fleet, {
+      installationId: "ins_test",
+      namespaces: names.map((ns) => ({
+        ...ns,
+        agents: ns.agents.map((agent) => ({
+          activeRevisionId: null,
+          ...agent,
+          repositoryWorkerRestart: null,
+        })),
+      })),
+    });
+    assert.equal(observed.helmRevision, 1);
+    assert.equal(existsSync(join(f.evidence, "prepared")), false);
+    await assert.rejects(f.run("--resume"), /not a prepared deployment/u);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("legacy preparation refuses wrong fleet identity before publishing desired state", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+      inventoryResponses: [{ installationId: "ins_other", namespaces: [] }],
+    });
+    await assert.rejects(f.run(), /belongs to another Installation/u);
+    assert.equal(existsSync(join(f.evidence, "inventory", "repository-fleet.json")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("legacy database inspection failure preserves the fleet and never publishes partial custody", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+      environment: { PGSERVICEFILE: "/dev/null", PGSYSCONFDIR: "/dev/null" },
+    });
+    await assert.rejects(
+      f.run("--inspect-repository-service", "absent"),
+      /custody inspection is incomplete/u,
+    );
+    assert.equal(existsSync(join(f.evidence, "inventory", "repository-fleet.json")), true);
+    assert.equal(existsSync(join(f.evidence, "inventory", "repository-custody.jsonl")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("custom GitHub repository policy is refused before reading the fleet", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+    });
+    const file = join(f.directory, "installation.json");
+    const installed = JSON.parse(await readFile(file, "utf8"));
+    installed.backend[0].drivers.repo = "other-owner";
+    const bytes = JSON.stringify(installed);
+    await writeFile(file, bytes);
+    const state = await f.state();
+    state.secret.data["installation.yaml"] = Buffer.from(bytes).toString("base64");
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(), /Unrecognized repository Driver or GitHub Backend policy/u);
+    assert.equal((await f.state()).inventoryReadCount ?? 0, 0);
+    assert.equal(existsSync(join(f.evidence, "inventory", "repository-fleet.json")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("an inspection request for a canonical installation cannot start an upgrade", async (t) => {
+    const f = await fixture(t, { controllerOnly: true });
+    await assert.rejects(
+      f.run("--inspect-repository-service", "reader"),
+      /no upgrade was attempted/u,
+    );
+    assert.equal(existsSync(join(f.evidence, "prepared")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+
   test("a refreshed Secret cannot stand in for a serving Worker's earlier repository policy", async (t) => {
     const f = await fixture(t, {
       controllerOnly: true,

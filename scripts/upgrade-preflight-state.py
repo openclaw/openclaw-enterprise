@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 
@@ -272,6 +273,57 @@ def valid_uid(value):
         character.isspace() for character in value)
 
 
+def inspect_repository(root, service, installation, timeout):
+    require(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", service), "invalid database service")
+    seconds = int(timeout)
+    require(1 <= seconds <= 86400, "invalid database inspection timeout")
+    output, _ = directory(root / "inventory")
+    sql = Path(__file__).with_name("upgrade-repository-inventory.sql")
+    expected = parameters(root)
+    require(hashlib.sha256(sql.read_bytes()).hexdigest() == expected["repositoryInventorySha256"],
+            "repository inventory query changed")
+    # The named service selects a dedicated installation database. Give libpq no
+    # ambient database/user/role selection. The service and passfile stay private.
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("PG") or key in ("PGSERVICEFILE", "PGPASSFILE", "PGSYSCONFDIR")}
+    environment.update(PGSERVICE=service, PGAPPNAME="occ-upgrade-inventory",
+                       PGCONNECT_TIMEOUT=str(seconds), PGCLIENTENCODING="UTF8")
+    fd, staging = tempfile.mkstemp(prefix=".repository-custody.", dir=output)
+    try:
+        with os.fdopen(fd, "w+b") as stream:
+            try:
+                status = subprocess.run(
+                    ["psql", "-X", "-qAtw", "-v", "ON_ERROR_STOP=1",
+                     "-v", "installation=" + installation, "-f", str(sql)],
+                    stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.DEVNULL,
+                    env=environment, timeout=seconds, check=False).returncode
+            except subprocess.TimeoutExpired:
+                raise InvalidEvidence(f"repository database observation timed out after {seconds}s")
+            require(status == 0, f"database inspection failed (psql exit {status}); check service, access and schema")
+            stream.seek(0)
+            first = stream.readline(4096)
+            require(first != b"ordinary-role-on-primary-required\n",
+                    "inspection requires an ordinary database role on the primary")
+            require(first != b"installation-mismatch\n",
+                    "database Installation differs from the selected OCC Installation")
+            header = json.loads(first)
+            require(header.get("record") == "snapshot" and header.get("installationId") == installation,
+                    "missing repository database identity")
+            # psql emits this line only after the read-only transaction commits.
+            # A killed or refused observation never publishes a partial inventory.
+            marker = b"inventory-complete\n"
+            stream.seek(-len(marker), os.SEEK_END)
+            end = stream.tell()
+            require(stream.read() == marker, "repository database snapshot is incomplete")
+            stream.truncate(end)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(staging, output / "repository-custody.jsonl")
+        sync_directory(output)
+    finally:
+        os.unlink(staging)
+
+
 def main():
     action, root_name, *args = sys.argv[1:]
     root, physical = directory(root_name)
@@ -282,6 +334,15 @@ def main():
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     elif action == "init" and not args:
         write(root / JOURNAL, {"format": FORMAT, "parametersSha256": digest(parameters(root)), "attempts": {}})
+    elif action == "record-repository-fleet" and len(args) == 1:
+        inventory, _ = directory(root / "inventory")
+        fleet = json.load(sys.stdin, object_pairs_hook=unique_keys)
+        require(args[0].isascii() and args[0].isdigit() and int(args[0]) > 0, "invalid Helm revision")
+        write(inventory / "repository-fleet.json",
+              {"format": "repository-maintenance-observation-v1", "parametersSha256": digest(parameters(root)),
+               "helmRevision": int(args[0]), "fleet": fleet})
+    elif action == "inspect-repository" and len(args) == 3:
+        inspect_repository(root, *args)
     elif action == "register" and len(args) == 3:
         name, suffix, policy = args
         require(policy in ("true", "false"), "invalid network-policy selection")

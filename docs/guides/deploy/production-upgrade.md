@@ -28,8 +28,8 @@ Configure kubeconfig endpoints and TLS. Unset `HELM_KUBEAPISERVER`, `HELM_KUBECA
 For the experimental two-cluster profile, first
 [upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart).
 
-Legacy repository selections block upgrades. Keep the original sender running and
-[reconcile cleanup](../repository-credentials/standalone-service.md#drain-an-existing-signing-gateway), including deleted Agents.
+Legacy repository selections block upgrades. Keep the original sender running.
+[Inspect the fleet and Git custody](credential-proxy-upgrade.md#inspect-legacy-git-custody), including deleted Agents.
 Allow Pod exec in both writers. Changed or unverifiable startup projections block shutdown.
 
 ## Prepare the release

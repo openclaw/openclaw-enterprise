@@ -93,7 +93,8 @@ and array-wrapping one registration.
 Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
 live comparison stays exact. Immutable reference switches require string keys.
 Startup validates controllers; broker checks only references.
-Legacy repository selections block upgrades. Before preflight and shutdown, both serving containers must mount baseline bytes from a generation older than container startup.
+Both serving containers must mount baseline bytes from a generation older than container startup.
+Matching legacy GitHub Backends record [fleet and custody evidence](../guides/deploy/credential-proxy-upgrade.md#inspect-legacy-git-custody) before refusal. Other legacy selections block shutdown.
 
 `read_restart_inventory` validates authorized fleet IDs, states and running revisions’
 [restart dispositions](../reference/repository-credentials/worker-replacement.md).

@@ -1,5 +1,8 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -606,6 +609,55 @@ test(
         opened,
         [attempts[0]!.sessionId],
         "the original sender opened the persisted session",
+      );
+      // Read the same original-owner database as the operator. The immutable
+      // admission joins the selected revision, broker receipt and standing grant.
+      const connection = new URL(f.database.url);
+      const inventory = await promisify(execFile)(
+        "psql",
+        [
+          "-XqAtw",
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-v",
+          `installation=${f.installation.id}`,
+          "-f",
+          fileURLToPath(new URL("../../scripts/upgrade-repository-inventory.sql", import.meta.url)),
+        ],
+        {
+          env: {
+            ...process.env,
+            PGHOST: connection.searchParams.get("host") ?? connection.hostname,
+            PGPORT: connection.port || "5432",
+            PGDATABASE: decodeURIComponent(connection.pathname.slice(1)),
+            PGUSER: decodeURIComponent(connection.username),
+            PGPASSWORD: decodeURIComponent(connection.password),
+          },
+        },
+      );
+      const lines = inventory.stdout.trimEnd().split("\n");
+      assert.equal(lines.pop(), "inventory-complete");
+      const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+      assert.ok(
+        records.some(
+          (row) =>
+            row.record === "agent" &&
+            row.agentId === owner.id &&
+            row.revisionId === revision.id &&
+            row.desiredRuntimeState === "running" &&
+            row.approvalId === approval.id,
+        ),
+      );
+      assert.ok(
+        records.some(
+          (row) =>
+            row.record === "session" &&
+            row.admissionId === attempts[0]!.admissionId &&
+            row.revisionId === revision.id &&
+            row.detached === false &&
+            row.phase === "open" &&
+            row.brokerReceipt === "active",
+        ),
       );
       assert.equal(alternateOpens, 0, "replacement sender cannot deliver authority");
       assert.equal(deliveries.length, 1);
