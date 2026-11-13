@@ -36,7 +36,7 @@ import { waitFor } from "./wait-for.mjs";
 type Configuration = ConfigurationResponse["data"];
 type Agent = AgentResponse["data"];
 type AgentOptions = Partial<CreateAgentBody>;
-type Session = Awaited<ReturnType<typeof signInWithEmailPassword>>;
+type Session = { response: Response; setCookie: string[]; cookie: string; origin: string };
 type Worker = Awaited<ReturnType<typeof spawnWorker>>;
 type Controller = Awaited<ReturnType<typeof startController>>;
 type RequestOptions = {
