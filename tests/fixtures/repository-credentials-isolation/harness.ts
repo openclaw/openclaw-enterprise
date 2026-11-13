@@ -3,18 +3,61 @@ import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { run as runCommand } from "../repository-credentials/process.mjs";
-import { forwardWork, ownedNetwork } from "./ownership.mjs";
+import type {
+  SessionStatus,
+  ShutdownSummary,
+} from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import type { ClientCommand } from "../repository-credentials/clients.ts";
+import { run as runProcess } from "../repository-credentials/process.mjs";
+import { forwardWork, ownedNetwork } from "./ownership.ts";
 
+type CommandOptions = Parameters<ClientCommand>[2];
+
+type DockerMount = { Type: string; Source: string; Destination: string; RW: boolean };
+type DockerContainer = {
+  Image: string;
+  Mounts: DockerMount[];
+  Path: string;
+  Args: string[];
+  State: { Running: boolean };
+};
+type DockerState = {
+  Status: string;
+  StartedAt: string;
+  FinishedAt: string;
+  ExitCode: number;
+  OOMKilled: boolean;
+};
+
+type ProviderReport = {
+  ready: boolean;
+  pushedRef: string | null;
+  errors: string[];
+  issues: unknown[];
+  tokens: { static: boolean; revoked: boolean }[];
+  apiTrace: { method: string; target: string; tokenIndex?: number }[];
+  gitTrace: { path: string; gitProtocol?: string | string[] }[];
+};
+
+type AgentSnapshot = {
+  present: string[];
+  environment: Record<string, string>;
+  surfaces: string[];
+  bytes: number;
+};
+type ServiceOutput = { event: "shutdown" } & ShutdownSummary;
+
+const runCommand = runProcess as ClientCommand;
 const fixtureRoot = fileURLToPath(new URL("../", import.meta.url));
 const gateway = "https://credentials.example.test";
 const repository = "fixture/repository";
-const mount = (source, target, readonly = true) => [
+const mount = (source: string, target: string, readonly = true) => [
   "--mount",
   `type=bind,src=${source},dst=${target}${readonly ? ",readonly" : ""}`,
 ];
-function assertNoSecrets(surface, secrets) {
+function assertNoSecrets(surface: string, secrets: string[]) {
   // Never put either the inspected surface or a secret in an assertion value.
   assert.ok(
     secrets.every((secret) => !surface.includes(secret)),
@@ -22,8 +65,10 @@ function assertNoSecrets(surface, secrets) {
   );
 }
 
-async function pushFeatureBranch(client) {
-  const git = (args) => client("git", ["-C", "/workspace/repository", ...args]);
+async function pushFeatureBranch(
+  client: (command: string, args: string[]) => ReturnType<ClientCommand>,
+) {
+  const git = (args: string[]) => client("git", ["-C", "/workspace/repository", ...args]);
   await git(["fetch", "origin"]);
   await git(["switch", "existing-branch"]);
   await git(["switch", "-c", "isolation-feature"]);
@@ -42,36 +87,43 @@ async function pushFeatureBranch(client) {
   return head;
 }
 
-export async function qualifyIsolation(t, { serviceImage, clientImage }) {
+export async function qualifyIsolation(
+  t: TestContext,
+  { serviceImage, clientImage }: { serviceImage: string; clientImage: string },
+) {
   // Exercise the explicit development profile without an App signing capability.
   const work = forwardWork(t.signal);
   const run = work.command;
-  const docker = (args, options) => run("docker", args, options);
+  const docker = (args: string[], options?: CommandOptions) => run("docker", args, options);
   const eventually = work.eventually;
-  const waitForPath = (path) =>
+  const waitForPath = (path: string) =>
     eventually(async () => {
       try {
         return await lstat(path);
       } catch (error) {
-        if (error.code === "ENOENT") {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           return false;
         }
         throw error;
       }
     });
-  async function inspect(name) {
-    return JSON.parse((await docker(["inspect", name])).stdout)[0];
+  async function inspect(name: string) {
+    const [container] = JSON.parse((await docker(["inspect", name])).stdout) as DockerContainer[];
+    assert.ok(container, "container inspection must return the named container");
+    return container;
   }
-  async function imageId(reference) {
+  async function imageId(reference: string) {
     if (reference.startsWith("-")) {
       throw new Error("invalid image reference");
     }
-    const image = JSON.parse((await docker(["image", "inspect", reference])).stdout)[0];
+    const [image] = JSON.parse((await docker(["image", "inspect", reference])).stdout) as {
+      Id: string;
+    }[];
+    assert.ok(image, "image inspection must return the selected image");
     assert.match(image.Id, /^sha256:[a-f0-9]{64}$/);
     return image.Id;
   }
-  let cleanup = async () => {};
-  let body;
+  let cleanup: () => Promise<void> = async () => {};
   t.after(async () => {
     // Node's timeout runs hooks while the async body can still be awaiting I/O.
     // Stop admission, cancel subprocess groups, and join before removing inputs.
@@ -79,7 +131,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     await Promise.allSettled([body]);
     await cleanup();
   });
-  body = (async () => {
+  const body = (async () => {
     const serviceId = await imageId(serviceImage);
     const clientId = await imageId(clientImage);
     assert.notEqual(serviceId, clientId, "qualification requires separate delivered images");
@@ -99,22 +151,22 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     const workspace = join(directory, "workspace");
     const session = join(sessions, "selected");
     const owned = ownedNetwork(network, prefix, docker);
-    const created = new Set();
+    const created = new Set<string>();
     let serviceStopped = false;
-    const failures = [];
-    const clientOutputs = [];
+    const failures: string[] = [];
+    const clientOutputs: string[] = [];
 
     // One teardown owner keeps the provider alive through service retirement,
     // including failures before the explicit close/shutdown assertions below.
     cleanup = async () => {
       const cleanupSignal = AbortSignal.timeout(60000);
-      const docker = (args, options) =>
+      const docker = (args: string[], options?: CommandOptions) =>
         runCommand("docker", args, {
           ...options,
           timeout: options?.timeout ?? 5000,
           signal: cleanupSignal,
         });
-      async function remove(name, grace) {
+      async function remove(name: string, grace: number) {
         if (!created.has(name)) {
           return;
         }
@@ -166,6 +218,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     ]);
     await chmod(join(inputs, "tls.key"), 0o600);
     await chmod(join(inputs, "tls.crt"), 0o644);
+    assert.ok(process.getuid && process.getgid, "isolation requires a POSIX user");
     const user = `${process.getuid()}:${process.getgid()}`;
     const common = [
       "--user",
@@ -180,11 +233,11 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     ];
     const listener = ["--sysctl", "net.ipv4.ip_unprivileged_port_start=0"];
     await owned.create();
-    assert.equal(
-      JSON.parse((await docker(["network", "inspect", network])).stdout)[0].Internal,
-      true,
-    );
-    async function start(name, args) {
+    const [networkDetails] = JSON.parse((await docker(["network", "inspect", network])).stdout) as {
+      Internal: boolean;
+    }[];
+    assert.equal(networkDetails?.Internal, true);
+    async function start(name: string, args: string[]) {
       work.check();
       created.add(name);
       await docker(["run", "--detach", "--name", name, ...common, ...args]);
@@ -209,11 +262,11 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
       clientId,
       "/fixtures/repository-credentials-isolation/provider.mjs",
     ]);
-    async function report() {
+    async function report(): Promise<ProviderReport | undefined> {
       try {
-        return JSON.parse(await readFile(join(state, "report.json"), "utf8"));
+        return JSON.parse(await readFile(join(state, "report.json"), "utf8")) as ProviderReport;
       } catch (error) {
-        if (error.code === "ENOENT") {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           return undefined;
         }
         throw error;
@@ -266,9 +319,9 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     ]);
     await waitForPath(join(control, "control.sock"));
 
-    async function containerState(name, since) {
+    async function containerState(name: string, since: number) {
       // Docker state only: never the container's output or arguments, which can carry credentials.
-      const offset = (time) =>
+      const offset = (time: string | undefined) =>
         time && !time.startsWith("0001-") ? `+${Date.parse(time) - since} ms` : "never";
       try {
         const inspected = await runCommand("docker", [
@@ -279,13 +332,13 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
           "{{json .State}}",
           name,
         ]);
-        const state = JSON.parse(inspected.stdout);
+        const state = JSON.parse(inspected.stdout) as DockerState;
         return `container ${state.Status}, started ${offset(state.StartedAt)}, finished ${offset(state.FinishedAt)}, exit ${state.ExitCode}, oom ${state.OOMKilled}`;
       } catch {
         return "container state unavailable";
       }
     }
-    async function operator(operation, args) {
+    async function operator(operation: "open" | "close" | "status", args: string[]) {
       // Only the trusted operator mounts the parent holding all sessions.
       work.check();
       created.add(names.operator);
@@ -308,19 +361,19 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
         "--socket",
         "/run/repository-control/control.sock",
         ...args,
-      ]).catch(async (error) => {
+      ]).catch(async (error: unknown) => {
         // Finding 2655: one CI run timed out here after 30 s; the step normally takes under 2 s. Name the step
         // and the container's Docker state, so the next failure shows whether the container
         // never started, kept running or exited while `docker run` stayed attached.
         throw new Error(
-          `operator ${operation} ${error.message} after ${Date.now() - called} ms; ${await containerState(names.operator, called)}`,
+          `operator ${operation} ${error instanceof Error ? error.message : "command failed"} after ${Date.now() - called} ms; ${await containerState(names.operator, called)}`,
           { cause: error },
         );
       });
       clientOutputs.push(result.stdout, result.stderr);
       await docker(["rm", names.operator]);
       created.delete(names.operator);
-      return JSON.parse(result.stdout);
+      return JSON.parse(result.stdout) as SessionStatus;
     }
     const opened = await operator("open", [
       "--duration-seconds",
@@ -357,14 +410,10 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
       "-e",
       "setInterval(() => {}, 1000)",
     ]);
-    const containers = {};
-    for (const [role, name] of Object.entries(names)) {
-      if (role === "operator") {
-        continue;
-      }
-      const metadata = await inspect(name);
+    async function observeContainer(role: "provider" | "service" | "agent") {
+      const metadata = await inspect(names[role]);
       assert.equal(metadata.Image, role === "service" ? serviceId : clientId);
-      containers[role] = {
+      return {
         image: metadata.Image,
         mounts: metadata.Mounts.map(({ Type, Source, Destination, RW }) => ({
           Type,
@@ -376,6 +425,11 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
         args: metadata.Args,
       };
     }
+    const containers = {
+      provider: await observeContainer("provider"),
+      service: await observeContainer("service"),
+      agent: await observeContainer("agent"),
+    };
     assert.deepEqual(
       containers.agent.mounts
         .filter((item) => item.Type === "bind")
@@ -413,7 +467,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
         ["exec", "--interactive", names.agent, "node", "--input-type=module"],
         { input: probeSource },
       );
-      const snapshot = JSON.parse(result.stdout);
+      const snapshot = JSON.parse(result.stdout) as AgentSnapshot;
       assert.deepEqual(snapshot.present, []);
       assert.ok(
         !Object.keys(snapshot.environment).some((name) =>
@@ -421,7 +475,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
         ),
         "no ambient provider token environment",
       );
-      const secrets = JSON.parse(await readFile(join(state, "secrets.json"), "utf8"));
+      const secrets = JSON.parse(await readFile(join(state, "secrets.json"), "utf8")) as string[];
       {
         // Positive control on the host only: the compared patterns include the token
         // the service actually read, so an empty result is not a vacuous pass.
@@ -457,7 +511,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
       return snapshot.bytes;
     }
     await scan();
-    async function client(command, args, allowFailure = false) {
+    async function client(command: string, args: string[], allowFailure = false) {
       const result = await docker(
         [
           "exec",
@@ -504,14 +558,16 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     ]);
     clientOutputs.push(plainConfig.stdout, plainConfig.stderr);
     const api = await client("gh", ["api", `repos/${repository}`]);
-    assert.equal(JSON.parse(api.stdout).full_name, repository);
+    const metadata = JSON.parse(api.stdout) as { full_name?: string };
+    assert.equal(metadata.full_name, repository);
     const beforeClose = await eventually(async () => {
       const value = await report();
-      return (
+      if (
         value?.pushedRef === head &&
-        value.apiTrace.some((entry) => entry.target === `/repos/${repository}`) &&
-        value
-      );
+        value.apiTrace.some((entry) => entry.target === `/repos/${repository}`)
+      ) {
+        return value;
+      }
     });
     assert.deepEqual(beforeClose.errors, []);
     {
@@ -536,7 +592,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     assert.notEqual(denied.code, 0, "closed session must reject new client use");
     const disposed = await eventually(async () => {
       const value = await operator("status", ["--session", opened.sessionId]);
-      return value.state === "DISPOSED" && value;
+      return value.state === "DISPOSED" ? value : undefined;
     });
     assert.equal(disposed.cleanup.pending, 0);
     assert.equal(disposed.cleanup.uncertain, 0);
@@ -554,7 +610,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     const summary = logs.stdout
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line))
+      .map((line) => JSON.parse(line) as ServiceOutput)
       .find((event) => event.event === "shutdown");
     assert.ok(summary, "production main must report its shutdown outcome");
     assert.equal(summary.graceExpired, false);
@@ -565,11 +621,9 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     // The owner's static token is never revoked.
     const finalReport = await eventually(async () => {
       const value = await report();
-      return (
-        value?.tokens.length === 1 &&
-        value.tokens.every((token) => token.revoked === false) &&
-        value
-      );
+      if (value?.tokens.length === 1 && value.tokens.every((token) => token.revoked === false)) {
+        return value;
+      }
     });
     assert.deepEqual(finalReport.errors, []);
     {

@@ -10,7 +10,7 @@ import { removeRemoteBranches } from "../fixtures/repository-credentials/workflo
 import {
   closeAndDispose,
   registerResourceCleanup,
-} from "../fixtures/repository-credentials/cleanup.mjs";
+} from "../fixtures/repository-credentials/cleanup.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import {
   cleanEnvironment,
