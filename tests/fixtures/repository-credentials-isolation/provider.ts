@@ -95,14 +95,28 @@ const git = await startGitSmartHttpFixture(context, {
   tls: tls as GitFixtureTls,
   authorize: github.authorize,
 });
+const githubOrigin = new URL(github.origin);
+const gitOrigin = new URL(git.origin);
 const relayErrors: string[] = [];
 const sockets = new Set<Socket>();
 const relay = createServer(tls, (incoming, outgoing) => {
   const host = incoming.headers.host;
   const origin =
-    host === "api.github.com" ? github.origin : host === "github.com" ? git.origin : undefined;
+    host === "api.github.com" ? githubOrigin : host === "github.com" ? gitOrigin : undefined;
   if (!origin) {
     outgoing.writeHead(421).end();
+    return;
+  }
+  const target = incoming.url ?? "";
+  const [pathname = ""] = target.split("?", 1);
+  // Both peers parse the path again. Refuse targets that could change meaning there.
+  if (
+    !/^\/[\x21-\x7e]*$/.test(target) ||
+    target.startsWith("//") ||
+    /[\\#]/.test(target) ||
+    URL.parse(pathname, origin)?.pathname !== pathname
+  ) {
+    outgoing.writeHead(400).end();
     return;
   }
   // Include actual JWT and encoded Git authorization in the trusted comparison,
@@ -121,7 +135,7 @@ const relay = createServer(tls, (incoming, outgoing) => {
     incoming.once("close", () => (gone = !incoming.complete));
     incoming.pause();
     holdOnce().then(
-      () => (gone ? outgoing.destroy() : forward(incoming, outgoing, origin)),
+      () => (gone ? outgoing.destroy() : forward(incoming, outgoing, origin, target)),
       () => {
         relayErrors.push("hold-failed");
         outgoing.destroy();
@@ -129,14 +143,15 @@ const relay = createServer(tls, (incoming, outgoing) => {
     );
     return;
   }
-  forward(incoming, outgoing, origin);
+  forward(incoming, outgoing, origin, target);
 });
-function forward(incoming: IncomingMessage, outgoing: ServerResponse, origin: string) {
+function forward(incoming: IncomingMessage, outgoing: ServerResponse, origin: URL, target: string) {
   const upstream = request(
-    new URL(incoming.url!, origin),
+    origin,
     {
+      path: target,
       method: incoming.method,
-      headers: incoming.headers,
+      headers: { ...incoming.headers, host: origin.host },
       ca: tls.ca,
       rejectUnauthorized: true,
       agent: false,
