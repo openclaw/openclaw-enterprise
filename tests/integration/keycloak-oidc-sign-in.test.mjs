@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
+import { enrollmentWait } from "../helpers/keycloak-enrollment-wait.ts";
 import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.mjs";
 import pg from "pg";
 import { chromium } from "playwright";
@@ -219,12 +220,14 @@ async function prepareInstallation(t) {
   return installation;
 }
 
+const unmeasured = (_operation, promise) => promise;
+
 /**
  * Composes the production API with `tokenAuth` and listens on loopback behind the lane's
  * HTTPS origin. One composition serves every page a test opens, so a flow that spans two
  * sign-ins runs against one controller, never a restarted one.
  */
-async function serveConsole(t, tokenAuth, overrides = {}) {
+async function serveConsole(t, tokenAuth, overrides = {}, wait = unmeasured) {
   const prepared = await prepareInstallation(t);
   const app = await composeProductionSignIn(t, {
     ...prepared.composition,
@@ -233,7 +236,7 @@ async function serveConsole(t, tokenAuth, overrides = {}) {
       ? { secrets: { ...prepared.composition.secrets, ...overrides.secrets } }
       : {}),
   });
-  t.after(() => app.close());
+  t.after(() => wait("close-console", app.close()));
   await app.listen({ host: "127.0.0.1", port: 0 });
   const tls = {
     key: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY),
@@ -244,7 +247,7 @@ async function serveConsole(t, tokenAuth, overrides = {}) {
     upstreamPort: app.server.address().port,
     tls,
   });
-  t.after(ingress.close);
+  t.after(() => wait("close-ingress", ingress.close()));
   if (browser === undefined) {
     browser = await chromium.launch({
       headless: true,
@@ -274,9 +277,9 @@ function nextResponse(page, pathname) {
  * authorization request and the status Keycloak answered it with: 200 is its login form,
  * 302 a redirect from a live Keycloak session.
  */
-async function openPage(t, prepared) {
+async function openPage(t, prepared, wait = unmeasured) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  t.after(() => wait("close-context", context.close()));
   const page = await context.newPage();
   const authorizations = [];
   const authorizationStatuses = [];
@@ -315,12 +318,12 @@ const callbackPath = "/api/auth/providers/oidc/callback";
 const resultPath = "/api/auth/providers/oidc/result";
 
 /** Starts sign-in from the Console and fills Keycloak's real login form as `user`. */
-async function signInThroughKeycloak({ prepared, page }, user) {
+async function signInThroughKeycloak({ prepared, page }, user, password) {
   await page.goto(`${origin}/console/`);
   await page.getByRole("button", { name: "Continue with Keycloak" }).click();
   await page.waitForURL((url) => url.origin === new URL(issuer).origin);
   await page.locator("#username").fill(user);
-  await page.locator("#password").fill(prepared.secrets.users[user].password);
+  await page.locator("#password").fill(password ?? prepared.secrets.users[user].password);
   await page.locator("#kc-login").click();
 }
 
@@ -574,21 +577,28 @@ test(
   "real Keycloak enrollment enforces groups and email policy without inventing verification",
   { skip: requiresKeycloak, timeout: 300_000 },
   async (t) => {
-    const prepared = await prepareInstallation(t);
+    const waitForRow = enrollmentWait(t);
+    const setup = waitForRow(0);
+    const prepared = await setup("prepare-installation", prepareInstallation(t));
+    const admin = (wait, method, path, body) =>
+      wait(
+        method === "DELETE" ? "delete-realm-resource" : "configure-realm",
+        keycloakAdmin(prepared, method, path, body),
+      );
     // This lane owns the disposable realm. Temporarily suppress its standard
     // email mappings so per-client mappings can exercise absent claims. Restore
     // them before any later lane file uses the realm.
-    const scopes = await keycloakAdmin(prepared, "GET", "/client-scopes");
+    const scopes = await admin(setup, "GET", "/client-scopes");
     const emailScope = scopes.find((scope) => scope.name === "email");
     assert.ok(emailScope);
-    const emailMappers = await keycloakAdmin(
-      prepared,
+    const emailMappers = await admin(
+      setup,
       "GET",
       `/client-scopes/${emailScope.id}/protocol-mappers/models`,
     );
     for (const mapper of emailMappers) {
-      await keycloakAdmin(
-        prepared,
+      await admin(
+        setup,
         "PUT",
         `/client-scopes/${emailScope.id}/protocol-mappers/models/${mapper.id}`,
         {
@@ -669,8 +679,9 @@ test(
       signingAlgorithm: "HS256",
       allowed: false,
     });
-    for (const scenario of cases) {
+    for (const [index, scenario] of cases.entries()) {
       await t.test(scenario.name, async (subtest) => {
+        const wait = waitForRow(index + 1);
         const username = `enrollment-${randomUUID()}`;
         const password = randomBytes(24).toString("base64url");
         const email = scenario.email === undefined ? `${username}@example.test` : scenario.email;
@@ -690,7 +701,7 @@ test(
           },
         });
         // The IdP emits exactly this client's profile claims in its signed token.
-        await keycloakAdmin(prepared, "POST", "/clients", {
+        await admin(wait, "POST", "/clients", {
           clientId,
           secret: clientSecret,
           enabled: true,
@@ -709,9 +720,9 @@ test(
               : [mapper("email_verified", scenario.verification)]),
           ],
         });
-        const [client] = await keycloakAdmin(prepared, "GET", `/clients?clientId=${clientId}`);
-        subtest.after(() => keycloakAdmin(prepared, "DELETE", `/clients/${client.id}`));
-        await keycloakAdmin(prepared, "POST", "/users", {
+        const [client] = await admin(wait, "GET", `/clients?clientId=${clientId}`);
+        subtest.after(() => admin(wait, "DELETE", `/clients/${client.id}`));
+        await admin(wait, "POST", "/users", {
           username,
           enabled: true,
           firstName: "Enrollment",
@@ -720,41 +731,41 @@ test(
           emailVerified: true,
           credentials: [{ type: "password", value: password, temporary: false }],
         });
-        const [user] = await keycloakAdmin(
-          prepared,
-          "GET",
-          `/users?username=${username}&exact=true`,
-        );
-        subtest.after(() => keycloakAdmin(prepared, "DELETE", `/users/${user.id}`));
+        const [user] = await admin(wait, "GET", `/users?username=${username}&exact=true`);
+        subtest.after(() => admin(wait, "DELETE", `/users/${user.id}`));
+        const query = (sql, values) => wait("query-users", prepared.pool.query(sql, values));
         const count = async () =>
-          (await prepared.pool.query('SELECT count(*)::int AS n FROM occ."user"')).rows[0].n;
+          (await query('SELECT count(*)::int AS n FROM occ."user"')).rows[0].n;
         const before = await count();
-        await serveConsole(subtest, "client_secret_post", {
-          secrets: {
-            "occ-oidc-login/client-id": clientId,
-            "occ-oidc-login/client-secret": clientSecret,
-          },
-          settings: {
-            OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify({
-              admission: { groupsClaim: "groups", anyOf: ["members"] },
-              createAccount: {
-                enabled: true,
-                role: null,
-                requireVerifiedEmail: scenario.requireVerifiedEmail,
+        await wait(
+          "serve-console",
+          serveConsole(
+            subtest,
+            "client_secret_post",
+            {
+              secrets: {
+                "occ-oidc-login/client-id": clientId,
+                "occ-oidc-login/client-secret": clientSecret,
               },
-              groupIds: [],
-            }),
-          },
-        });
+              settings: {
+                OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify({
+                  admission: { groupsClaim: "groups", anyOf: ["members"] },
+                  createAccount: {
+                    enabled: true,
+                    role: null,
+                    requireVerifiedEmail: scenario.requireVerifiedEmail,
+                  },
+                  groupIds: [],
+                }),
+              },
+            },
+            wait,
+          ),
+        );
         const open = async () => {
-          const flow = await openPage(subtest, prepared);
-          await flow.page.goto(`${origin}/console/`);
-          await flow.page.getByRole("button", { name: "Continue with Keycloak" }).click();
-          await flow.page.waitForURL((url) => url.origin === new URL(issuer).origin);
-          await flow.page.locator("#username").fill(username);
-          await flow.page.locator("#password").fill(password);
-          await flow.page.locator("#kc-login").click();
-          const callback = await flow.callback;
+          const flow = await wait("open-page", openPage(subtest, prepared, wait));
+          await wait("sign-in", signInThroughKeycloak(flow, username, password));
+          const callback = await wait("wait-for-callback", flow.callback);
           return { flow, callback };
         };
         const { flow, callback } = await open();
@@ -764,11 +775,13 @@ test(
           return;
         }
         assert.equal(callback.headers().location, "/console/");
-        await flow.page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
-        const { rows } = await prepared.pool.query(
-          'SELECT id, email_verified FROM occ."user" WHERE email = $1',
-          [email],
+        await wait(
+          "wait-for-console",
+          flow.page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/),
         );
+        const { rows } = await query('SELECT id, email_verified FROM occ."user" WHERE email = $1', [
+          email,
+        ]);
         assert.equal(rows.length, 1);
         assert.equal(rows[0].email_verified, scenario.verification === true);
         assert.equal(await count(), before + 1);
@@ -776,8 +789,7 @@ test(
         assert.equal(returning.headers().location, "/console/");
         assert.equal(await count(), before + 1, "returning login reuses the account");
         assert.equal(
-          (await prepared.pool.query('SELECT id FROM occ."user" WHERE email = $1', [email])).rows[0]
-            .id,
+          (await query('SELECT id FROM occ."user" WHERE email = $1', [email])).rows[0].id,
           rows[0].id,
         );
       });
