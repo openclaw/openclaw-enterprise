@@ -1111,18 +1111,19 @@ function upstreamUnfinishedStage(events, measurements) {
   if (!started || (stage !== "installation" && stage !== "replacement")) {
     return undefined;
   }
-  for (const [kind, names] of [
-    ["openshell-stage", stages],
-    ["openshell-sandbox-phase", phases],
-  ]) {
-    let last = -1;
-    for (const row of measurements.filter((row) => row.kind === kind)) {
-      const position = names.indexOf(row.stage);
-      if (row.outcome !== "passed" || position <= last || position >= index) {
-        return undefined;
-      }
-      last = position;
+  const previous = new Map();
+  for (const { kind, stage: measuredStage, outcome } of measurements) {
+    // Only these two streams establish completion of earlier operations. A
+    // gateway failure or another diagnostic cannot corroborate this prefix.
+    if (kind !== "openshell-stage" && kind !== "openshell-sandbox-phase") {
+      return undefined;
     }
+    const names = kind === "openshell-stage" ? stages : phases;
+    const position = names.indexOf(measuredStage);
+    if (outcome !== "passed" || position <= (previous.get(kind) ?? -1) || position >= index) {
+      return undefined;
+    }
+    previous.set(kind, position);
   }
   return stage;
 }
