@@ -22,6 +22,7 @@ import {
   killRecordedProcessGroupMembers,
   laneArgs,
   procStat,
+  requireTestResult,
   runnerArtifactPaths,
   runnerEnv,
   runRunnerAsync,
@@ -2470,9 +2471,10 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   assert.ok(!cliAndArtifact.includes(nativePrivate));
   assert.ok(JSON.parse(details).failures[0].tests.length > 0);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-  assert.equal(summary.files[0].tests[0].name, "redacted failure locator");
-  assert.equal(summary.files[0].tests[0].line, 3);
-  const failure = summary.files[0].tests[0].error;
+  const tests = summary.files[0].tests;
+  assert.equal(tests[0].name, "redacted failure locator");
+  assert.equal(tests[0].line, 3);
+  const failure = tests[0].error;
   assert.equal(failure.code, "ERR_TEST_FAILURE");
   assert.equal(failure.name, "Error");
   assert.equal(failure.cause.code, "ERR_ASSERTION");
@@ -2491,20 +2493,16 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     result.stderr,
     /run-tests: failed tests\/integration\/redacted\.test\.mjs:6 "redacted failure locator": Expected values/,
   );
-  const customFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "redacted custom error",
-  );
+  const customFailure = requireTestResult(tests, "redacted custom error");
   assert.equal(customFailure.status, "failed");
   assert.equal(customFailure.error.cause, undefined);
   assert.equal(customFailure.error.location.line, 14);
   assert.equal(customFailure.error.message, "[env:CI_RUNNER_FIXTURE_CREDENTIAL]-message");
   assert.equal(
-    summary.files[0].tests.find((entry) => entry.name === "job env redaction").error.message,
+    requireTestResult(tests, "job env redaction").error.message,
     "owner openclaw-public-owner [env:OCC_TEST_STRIPPED_VALUE]",
   );
-  const httpFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "allowlisted controller HTTP diagnostic",
-  );
+  const httpFailure = requireTestResult(tests, "allowlisted controller HTTP diagnostic");
   assert.deepEqual(httpFailure.error.diagnostic, {
     kind: "controller-http",
     status: 503,
@@ -2512,40 +2510,42 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     occErrorCode: "DEPENDENCY_UNAVAILABLE",
     upstream: { kind: "chatgpt-admin-http", operation: "create-service-account", status: 403 },
   });
-  const unsafeFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "rejects unsafe controller HTTP diagnostic",
-  );
+  const unsafeFailure = requireTestResult(tests, "rejects unsafe controller HTTP diagnostic");
   assert.equal(unsafeFailure.error.diagnostic, undefined);
-  const installationStatusFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "allowlisted observability installation status diagnostic",
+  const installationStatusFailure = requireTestResult(
+    tests,
+    "allowlisted observability installation status diagnostic",
   );
   assert.deepEqual(installationStatusFailure.error.diagnostic, {
     kind: "observability-installation-status",
     status: 503,
     expectedStatus: 401,
   });
-  const unsafeInstallationStatusFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "rejects unsafe observability installation status diagnostic",
+  const unsafeInstallationStatusFailure = requireTestResult(
+    tests,
+    "rejects unsafe observability installation status diagnostic",
   );
   assert.equal(unsafeInstallationStatusFailure.error.diagnostic, undefined);
-  const logExportFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "allowlisted observability log export diagnostic",
+  const logExportFailure = requireTestResult(
+    tests,
+    "allowlisted observability log export diagnostic",
   );
   assert.deepEqual(logExportFailure.error.diagnostic, {
     kind: "observability-log-export",
     api: true,
     worker: false,
   });
-  const unsafeLogExportFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "rejects unsafe observability log export diagnostic",
+  const unsafeLogExportFailure = requireTestResult(
+    tests,
+    "rejects unsafe observability log export diagnostic",
   );
   assert.equal(unsafeLogExportFailure.error.diagnostic, undefined);
   // Keep the failed wait identifiable without exposing arbitrary runtime output.
   for (const stage of ["ready-status", "warning-status", "initial-rollout"]) {
-    const failure = summary.files[0].tests.find((entry) => entry.name === stage);
+    const failure = requireTestResult(tests, stage);
     assert.deepEqual(failure.error.diagnostic, { kind: "kubernetes-plugin-status", stage });
   }
-  const rolloutFailure = summary.files[0].tests.find((entry) => entry.name === "warning-rollout");
+  const rolloutFailure = requireTestResult(tests, "warning-rollout");
   assert.deepEqual(rolloutFailure.error.diagnostic, {
     kind: "kubernetes-plugin-status",
     stage: "warning-rollout",
@@ -2567,47 +2567,42 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       { phase: "Running", containers: [{ name: "prepare-private-state" }] },
     ],
   });
-  const unsafeStage = summary.files[0].tests.find((entry) => entry.name === "unsafe plugin stage");
+  const unsafeStage = requireTestResult(tests, "unsafe plugin stage");
   assert.equal(unsafeStage.error.diagnostic, undefined);
-  const deniedTraffic = summary.files[0].tests.find(
-    (entry) => entry.name === "allowlisted denied traffic diagnostic",
-  );
+  const deniedTraffic = requireTestResult(tests, "allowlisted denied traffic diagnostic");
   assert.deepEqual(deniedTraffic.error.diagnostic, {
     kind: "network-policy",
     stage: "Agent outbound platform traffic",
   });
-  const unsafeTraffic = summary.files[0].tests.find(
-    (entry) => entry.name === "rejects unsafe denied traffic diagnostic",
-  );
+  const unsafeTraffic = requireTestResult(tests, "rejects unsafe denied traffic diagnostic");
   assert.equal(unsafeTraffic.error.diagnostic, undefined);
-  const stockBrokerFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "allowlisted runtime stock broker diagnostic",
+  const stockBrokerFailure = requireTestResult(
+    tests,
+    "allowlisted runtime stock broker diagnostic",
   );
   assert.deepEqual(stockBrokerFailure.error.diagnostic, {
     kind: "runtime-image-stock-broker",
     stage: "broker-denial",
   });
-  const unsafeStockBroker = summary.files[0].tests.find(
-    (entry) => entry.name === "rejects unsafe runtime stock broker stage",
-  );
+  const unsafeStockBroker = requireTestResult(tests, "rejects unsafe runtime stock broker stage");
   assert.equal(unsafeStockBroker.error.diagnostic, undefined);
-  const nativeProof = summary.files[0].tests.find(
-    (entry) => entry.name === "retains native first-Agent proof failure stage",
-  );
+  const nativeProof = requireTestResult(tests, "retains native first-Agent proof failure stage");
   assert.equal(nativeProof.status, "failed");
   assert.deepEqual(nativeProof.error.diagnostic, {
     kind: "native-first-agent-proof",
     failureStage: "required-placement",
   });
-  const terminalPlacement = summary.files[0].tests.find(
-    (entry) => entry.name === "retains a terminal native first-Agent placement stage",
+  const terminalPlacement = requireTestResult(
+    tests,
+    "retains a terminal native first-Agent placement stage",
   );
   assert.deepEqual(terminalPlacement.error.diagnostic, {
     kind: "native-first-agent-proof",
     failureStage: "required-placement-terminal-reclaimed",
   });
-  const retainedNative = summary.files[0].tests.find(
-    (entry) => entry.name === "retains native worker placement observations through CI",
+  const retainedNative = requireTestResult(
+    tests,
+    "retains native worker placement observations through CI",
   ).error.diagnostic;
   assert.deepEqual(retainedNative, {
     kind: "native-first-agent-proof",
@@ -2638,23 +2633,20 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     },
   });
   assert.deepEqual(
-    summary.files[0].tests.find(
-      (entry) => entry.name === "retains value-free native history observations through CI",
-    ).error.diagnostic.worker,
+    requireTestResult(tests, "retains value-free native history observations through CI").error
+      .diagnostic.worker,
     nativeHistory,
   );
   for (const [index, [exitCode]] of inconsistentNativeFailures.entries()) {
     assert.deepEqual(
-      summary.files[0].tests.find(
-        (entry) => entry.name === `rejects inconsistent native failure ${index}`,
-      ).error.diagnostic.worker,
+      requireTestResult(tests, `rejects inconsistent native failure ${index}`).error.diagnostic
+        .worker,
       exitCode === undefined ? {} : { historyExecNestedExitCode: exitCode },
     );
   }
   assert.deepEqual(
-    summary.files[0].tests.find(
-      (entry) => entry.name === "rejects hostile native worker diagnostic fields",
-    ).error.diagnostic.worker,
+    requireTestResult(tests, "rejects hostile native worker diagnostic fields").error.diagnostic
+      .worker,
     {
       placementState: "other",
       recoveryError: "other",
@@ -2667,8 +2659,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     },
   );
   for (const [, category] of turnCases) {
-    const turn = summary.files[0].tests.find((entry) => entry.name === `native turn ${category}`)
-      .error.diagnostic.worker;
+    const turn = requireTestResult(tests, `native turn ${category}`).error.diagnostic.worker;
     assert.equal(turn.turnStatus, "error");
     assert.equal(turn.turnError, category);
     assert.equal(turn.assistantError, category);
@@ -2677,20 +2668,21 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     assert.equal(turn.execResultCount, 1);
     assert.equal(turn.execFailureCount, 1);
   }
-  const collected = summary.files[0].tests.find(
-    (entry) => entry.name === "collects native turn failure within the shared read budget",
+  const collected = requireTestResult(
+    tests,
+    "collects native turn failure within the shared read budget",
   ).error.diagnostic.worker;
   assert.equal(collected.turnError, "network-connection");
   assert.equal(collected.historyLookup, "found");
-  const wrapped = summary.files[0].tests.find(
-    (entry) => entry.name === "retains wrapped native worker bootstrap causes through CI",
+  const wrapped = requireTestResult(
+    tests,
+    "retains wrapped native worker bootstrap causes through CI",
   ).error.diagnostic.worker;
   assert.equal(wrapped.recoveryError, "worker-deploy-artifact-missing");
   assert.equal(wrapped.terminalReason, "bundle-install-failed");
   assert.equal(wrapped.environmentError, "node-installer-disconnected");
-  const fresh = summary.files[0].tests.find(
-    (entry) => entry.name === "refreshes retained native placement",
-  ).error.diagnostic.worker;
+  const fresh = requireTestResult(tests, "refreshes retained native placement").error.diagnostic
+    .worker;
   assert.equal(fresh.placementLookup, "fresh");
   assert.equal(fresh.placementState, "failed");
   assert.equal(fresh.environmentState, "failed");
@@ -2699,21 +2691,16 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     "labels fallback after failed native placement refresh",
     "rejects another session during native placement refresh",
   ]) {
-    const fallback = summary.files[0].tests.find((entry) => entry.name === name).error.diagnostic
-      .worker;
+    const fallback = requireTestResult(tests, name).error.diagnostic.worker;
     assert.equal(fallback.placementLookup, "fallback");
     assert.equal(fallback.placementState, "active");
     assert.equal(fallback.environmentState, "attached");
   }
   for (const [, category] of nativeLeafCases) {
-    const leaf = summary.files[0].tests.find(
-      (entry) => entry.name === `native installer ${category}`,
-    );
+    const leaf = requireTestResult(tests, `native installer ${category}`);
     assert.equal(leaf.error.diagnostic.worker.recoveryError, category);
   }
-  const monitoringFailure = summary.files[0].tests.find(
-    (entry) => entry.name === "retains safe monitoring readiness evidence",
-  );
+  const monitoringFailure = requireTestResult(tests, "retains safe monitoring readiness evidence");
   assert.deepEqual(monitoringFailure.error.diagnostic, {
     kind: "metrics-monitoring",
     stage: "prometheus-up",
@@ -2722,14 +2709,13 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     exitCode: 2,
     lastHttpStatus: 503,
   });
-  const unsafeMonitoring = summary.files[0].tests.find(
-    (entry) => entry.name === "rejects unsafe monitoring stage",
-  );
+  const unsafeMonitoring = requireTestResult(tests, "rejects unsafe monitoring stage");
   assert.equal(unsafeMonitoring.error.diagnostic, undefined);
   assertRepositorySetupDiagnostics(summary, repositorySetupCases);
 
-  const unsafeNativeProof = summary.files[0].tests.find(
-    (entry) => entry.name === "rejects unknown native first-Agent proof stage",
+  const unsafeNativeProof = requireTestResult(
+    tests,
+    "rejects unknown native first-Agent proof stage",
   );
   assert.equal(unsafeNativeProof.status, "failed");
   assert.equal(unsafeNativeProof.error.diagnostic, undefined);
@@ -2864,18 +2850,15 @@ test("run names DOMException and empty-message failures", async (t) => {
   const result = run(root, laneArgs(root, "errors", "state/errors.jsonl", resultsPath));
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-  const failure = (name) => summary.files[0].tests.find((entry) => entry.name === name).error;
   // The stack header names the exception, and the frame skips Node's DOMException constructor.
   for (const [name, message, line] of [
     ["timeout", "TimeoutError: The operation was aborted due to timeout", 2],
     ["abort", "AbortError: This operation was aborted", 3],
     ["empty", "Error", 4],
   ]) {
-    assert.equal(failure(name).message, message);
-    assert.match(
-      failure(name).frame,
-      new RegExp(`\\(${file.replaceAll(".", "\\.")}:${line}:\\d+\\)$`),
-    );
+    const { error } = requireTestResult(summary.files[0].tests, name);
+    assert.equal(error.message, message);
+    assert.match(error.frame, new RegExp(`\\(${file.replaceAll(".", "\\.")}:${line}:\\d+\\)$`));
   }
   // The job log names the failure too.
   assert.match(
@@ -3050,8 +3033,8 @@ test("run retains redacted Skill exercise and restoration failures within its me
     "multiline nested failures",
     "key-tail nested failures",
   ]) {
-    const failure = summary.files[0].tests.find((entry) => entry.name === name);
-    const detail = details.find((entry) => entry.name === name);
+    const failure = requireTestResult(summary.files[0].tests, name);
+    const detail = requireTestResult(details, name);
     for (const message of [failure.error.message, detail.message]) {
       assert.match(message, /original operation failed/);
       assert.match(message, /enabled restoration failed/);

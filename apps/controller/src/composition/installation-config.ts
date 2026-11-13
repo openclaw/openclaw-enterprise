@@ -1501,6 +1501,7 @@ export async function loadInstallationConfiguration(options: {
       {
         ...sandbox,
         retiredStaticProviderRefs: [openAiStaticProviderRef],
+        repositoryOnly: repositoryTransport !== undefined && egressAuthority === undefined,
         configuration: {
           sandbox: sandbox.configuration,
           backend: openShellBackend,

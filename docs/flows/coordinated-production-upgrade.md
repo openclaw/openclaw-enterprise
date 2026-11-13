@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-13"
-last_updated_session: "authoring-run/a7f1373b-e0ab-4c0e-a622-91d8d3169950"
+last_updated_session: "authoring-run/01a1d5fb-c244-7162-a7e2-17b48732f5c4"
 ---
 
 # Production image upgrade flow
@@ -147,7 +147,10 @@ lock without applying migrations. Pending canonical history is allowed. Helm rec
 
 API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects invalid
 bundles; workers skip themes. Both use `loadStartupConfigurationSnapshot` and
-`loadInstallationConfiguration` without database access.
+`loadInstallationConfiguration` without database access. If the selected OpenShell
+Backend uses `bearerTokenFile`, each Job checks that its process can read the
+configured regular file. The check uses file metadata and permissions and leaves
+the token contents unread.
 `connectionPlan` preserves only recognized chart entrypoints. For private OIDC CA
 trust it retains the chart-owned database preload, CA argv position and CA
 assembler/mounts; unknown plans refuse. Both entrypoints require a PostgreSQL URL.
@@ -390,15 +393,10 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-13 17:42: Trace the OpenShell bearer token file check in each writer Job. (authoring-run/01a1d5fb-c244-7162-a7e2-17b48732f5c4 - 1f0bf5cd0a208f362971accbb1850db193f9d4d9)
+
 - 2026-11-13 14:29: Document optional Console entry verification. (authoring-run/a7f1373b-e0ab-4c0e-a622-91d8d3169950 - ef69b58a9e60e68af17f54bb2750fffe28804b9b)
 
 - 2026-11-13 05:08: Exclude terminating Pods when selecting Doctor targets. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - ca6bfc2f0376ee3fd9c5a9a255f7e5f37a454131)
-- 2026-11-12 20:49: Preserve status after polling errors. (authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b - a627e44694987459dbbf9aa59a3d76b9a97f48a7)
-- 2026-11-12 07:07: Check candidate writer database identity, connection prerequisites and rollback recovery. (authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057 - c7da19f78a8125fe0a7dec649b5417a23ded1d8e)
-- 2026-11-12 03:35: Preserve JSON values. (authoring-run/9680374b-51c1-4f5e-a3d5-a7c0c1006b92 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
-
-- 2026-11-12 00:11: Precheck worker patch access. (authoring-run/db7ef311-7726-453b-b06c-e048bc6054ac - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
-
-- 2026-11-11 12:30: Record preflight creation plans and link the separate cleanup-only recovery path. (authoring-run/9239da57-dcad-427a-82aa-c7d64376fdc5 - e961361d56537b17f361347b097d075f5e608fb1)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.

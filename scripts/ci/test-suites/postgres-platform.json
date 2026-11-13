@@ -33,7 +33,7 @@
     "tests/integration/postgres-service-account-compensation.test.ts",
     "tests/integration/postgres-presets.test.mjs",
     "tests/integration/postgres-workspace-setup.test.ts",
-    "tests/integration/postgres-connection-auth.test.mjs",
+    "tests/integration/postgres-connection-auth.test.ts",
     "tests/integration/postgres-pool-options.test.ts",
     "tests/integration/postgres-repository-transactions.test.mjs",
     "tests/integration/postgres-controller-work-targets.test.mjs",
@@ -77,7 +77,7 @@
   ],
   "files": [
     {
-      "path": "tests/integration/postgres-connection-auth.test.mjs",
+      "path": "tests/integration/postgres-connection-auth.test.ts",
       "expectedTests": [
         "password authentication preserves the existing pg connection configuration",
         "the password pool authenticates to the selected real PostgreSQL database",

@@ -34,6 +34,7 @@ import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.ts";
@@ -343,7 +344,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
   // explicit kubeconfig instead of the Pod's service account. The container runs in
   // OCC_TEST_PRODUCTION_IMAGE when set, otherwise as this checkout's source (the
   // command's working directory) with /app mapped to it. Stand-in cases only record it.
-  async function runPreflight(root, cwd, state, pod, database) {
+  async function runPreflight(root, cwd, state, pod, database, fixtureFiles = []) {
     const scripted = state.preflightResults?.[pod.spec.containers[0].name];
     if (scripted) {
       return scripted;
@@ -369,7 +370,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     const container = pod.spec.containers[0];
     const work = mkdtempSync(join(root, "preflight-"));
     chmodSync(work, 0o755);
-    const mounts = [];
+    const mounts = fixtureFiles.map((file) => [file, file]);
     for (const mount of container.volumeMounts ?? []) {
       const volume = pod.spec.volumes.find((item) => item.name === mount.name);
       const secret = volume?.secret && state.preflight.secrets[volume.secret.secretName];
@@ -2460,7 +2461,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       ...evidenceFiles(evidence),
       commands,
       databaseSessions: database?.sessions ?? [],
-      runIdentityCheck: async (component, action = "identity-job", protocol) => {
+      runIdentityCheck: async (component, action = "identity-job", protocol, fixtureFiles) => {
         const { stdout } = await execute(
           process.execPath,
           [
@@ -2487,7 +2488,14 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         if (protocol) {
           connection.url = database.url.replace(/^[^:]+:/, protocol);
         }
-        return runPreflight(directory, repository, state, job.spec.template, connection);
+        return runPreflight(
+          directory,
+          repository,
+          state,
+          job.spec.template,
+          connection,
+          fixtureFiles,
+        );
       },
       deploy: (namespaceId, agentId) =>
         execute(
@@ -5830,6 +5838,62 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     ]);
   });
 
+  test("startup preflight checks the OpenShell bearer file in each writer Pod", async (t) => {
+    assert.ok(realHelm, "helm is required to exercise the stock chart");
+    const directory = await temporaryDirectory(t, "openshell-bearer-");
+    const token = join(directory, "synthetic-bearer");
+    const f = await fixture(t, {
+      controllerOnly: true,
+      chart: {
+        installation: (installation) => {
+          const selected = createCredentialProxyInstallationConfiguration();
+          selected.backend[0].configuration.auth.path = token;
+          delete selected.backend[0].drivers.credential_proxy;
+          installation.backend = selected.backend;
+          installation.drivers.sandbox = selected.drivers.sandbox;
+          installation.drivers.credential_gateway = selected.drivers.credential_gateway;
+          return installation;
+        },
+      },
+    });
+    await assert.rejects(f.run("--preflight-only"), (error) => {
+      assert.match(error.stderr, /OpenShell bearer token file must be readable in this Pod/);
+      return true;
+    });
+    for (const component of ["api", "worker"]) {
+      const log = await f.readEvidence(`preflight-${component}.log`);
+      assert.match(log, /OpenShell bearer token file must be readable/);
+      assert.ok(!log.includes(token));
+    }
+    await assertStoppedBeforeWriters(f);
+
+    // Run the emitted commands with a synthetic file visible to the API only.
+    await writeFile(token, "synthetic-file-content", { mode: 0o644 });
+    const api = await f.runIdentityCheck("api", "job", undefined, [token]);
+    assert.equal(api.phase, "Succeeded", api.log);
+    assert.match(api.log, /^installation-startup-ready$/m);
+    assert.ok(!api.log.includes("synthetic-file-content"));
+    await rm(token);
+    const worker = await f.runIdentityCheck("worker", "job");
+    assert.equal(worker.phase, "Failed", worker.log);
+    assert.match(worker.log, /OpenShell bearer token file must be readable/);
+
+    // mTLS has separate certificate projections and does not select a bearer file.
+    const state = await f.state();
+    const installation = JSON.parse(Buffer.from(state.secret.data["installation.yaml"], "base64"));
+    installation.backend[0].configuration.auth = {
+      mode: "mtls",
+      certificatePath: "/synthetic/tls.crt",
+      privateKeyPath: "/synthetic/tls.key",
+    };
+    state.secret.data["installation.yaml"] = Buffer.from(JSON.stringify(installation)).toString(
+      "base64",
+    );
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const mtls = await f.runIdentityCheck("worker", "job");
+    assert.equal(mtls.phase, "Succeeded", mtls.log);
+  });
+
   // Releases with the shared tenant namespace refuse to start on a single-cluster
   // Installation that still has split-layout Gateway storage. The startup preflight
   // runs that Compute check with the selected image before quiescence, so the old
@@ -5866,15 +5930,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     // Each Pod refused the layout during Compute preflight, before the database identity check.
     assert.equal(f.databaseSessions.length, 0);
     assert.equal(f.kubernetesReads.filter((path) => path === "/api/v1/namespaces").length, 2);
-    const state = await f.state();
-    assert.equal(state.api, 1);
-    assert.equal(state.worker, 1);
-    assert.equal(state.version, 1);
-    assert.deepEqual(await f.events(), []);
-    assert.deepEqual(state.preflight.secrets, {});
-    assert.deepEqual(state.preflight.pods, {});
-    assert.deepEqual(state.preflight.jobs, {});
-    assert.deepEqual(state.preflight.networkpolicies, {});
+    await assertStoppedBeforeWriters(f);
   });
 
   // A Kubernetes API the preflight Pod cannot use is not a refusal of the release:
@@ -5901,12 +5957,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       assert.doesNotMatch(error.stderr, /refused the candidate release|split-layout/);
       return true;
     });
-    const state = await f.state();
-    assert.equal(state.version, 1);
-    assert.deepEqual(await f.events(), []);
-    assert.deepEqual(state.preflight.pods, {});
-    assert.deepEqual(state.preflight.jobs, {});
-    assert.deepEqual(state.preflight.networkpolicies, {});
+    await assertStoppedBeforeWriters(f);
   });
 
   // Two-cluster tenant grants in the execution stand-in. Both preflight Pods share
@@ -6163,14 +6214,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       JSON.parse(await f.readEvidence("preflight-migration-status.json")).status.phase,
       "Failed",
     );
-    const state = await f.state();
-    assert.equal(state.api, 1);
-    assert.equal(state.worker, 1);
-    assert.equal(state.version, 1);
-    assert.deepEqual(await f.events(), []);
-    assert.deepEqual(state.preflight.secrets, {});
-    assert.deepEqual(state.preflight.pods, {});
-    assert.deepEqual(state.preflight.jobs, {});
+    const state = await assertStoppedBeforeWriters(f);
     assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
       "job.batch",
       "job.batch",
@@ -6253,10 +6297,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     assert.equal(await f.readEvidence("preflight-migration.log"), log);
     assert.equal(await f.readEvidence("preflight-migration-logs.err"), warning);
     assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
-    assert.equal((await f.state()).api, 1);
-    assert.equal((await f.state()).worker, 1);
-    assert.deepEqual((await f.state()).preflight.jobs, {});
-    assert.deepEqual(await f.events(), []);
+    await assertStoppedBeforeWriters(f);
   });
 
   test("a failed kubectl log read cannot authorize migration from partial stdout", async (t) => {
@@ -6280,7 +6321,6 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     assert.match(await f.readEvidence("preflight-migration-logs.err"), /log stream interrupted/);
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
     await assertStoppedBeforeWriters(f);
-    assert.deepEqual((await f.state()).preflight.jobs, {});
   });
 
   test("a completed migration preflight without a valid check result leaves writers running", async (t) => {
@@ -6298,7 +6338,6 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       );
       assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
       await assertStoppedBeforeWriters(f);
-      assert.deepEqual((await f.state()).preflight.jobs, {});
     }
   });
 
@@ -6334,11 +6373,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       await f.readEvidence("preflight-worker.log"),
       "worker cannot load the Installation\n",
     );
-    const state = await f.state();
-    assert.deepEqual(await f.events(), []);
-    assert.deepEqual(state.preflight.secrets, {});
-    assert.deepEqual(state.preflight.pods, {});
-    assert.deepEqual(state.preflight.jobs, {});
+    await assertStoppedBeforeWriters(f);
   });
 
   test("an Installation the selected controller image loads passes the preflight and upgrades", async (t) => {
