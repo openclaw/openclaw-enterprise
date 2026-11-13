@@ -108,6 +108,7 @@ import {
 import {
   verifyRevisionProviderRetention,
   verifyForeignSandboxAnnotations,
+  verifyPreparedGitCleanupRefusals,
 } from "./sandbox-driver-revision-observation-cases.ts";
 import {
   buildOperatorIngressManifests,
@@ -3605,30 +3606,11 @@ test(
           // Finding 2206: the revision's Git provider and its profile go with its Sandbox. Left
           // behind, they kept the Namespace's Workspace forever: OpenShell refuses DeleteWorkspace
           // while a Sandbox, provider or provider profile remains (the fake gateway does too).
-          const gitProvider = spec.providers.find((p) => p.startsWith("oce-git-"));
-          const leftBehind = {
-            provider: structuredClone(gateway.providers.get(gitProvider)),
-            profile: structuredClone(gateway.profiles.get(gitProvider)),
-          };
-          assert.ok(leftBehind.provider && leftBehind.profile);
-          // A same-name provider without the revision's owner fingerprint is refused, not deleted.
-          gateway.providers.get(gitProvider).labels = {
-            "openclaw.dev/prepared-git-binding": "0".repeat(48),
-          };
-          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
-            name: "OpenShellPreparedGitProviderError",
+          const { gitProvider, leftBehind } = await verifyPreparedGitCleanupRefusals({
+            providerNames: spec.providers,
+            gateway,
+            cleanupRevision: () => sandbox.cleanup({ ...ctx, revision: rev }),
           });
-          assert.ok(gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
-          gateway.providers.set(gitProvider, structuredClone(leftBehind.provider));
-          // The same for its profile: the provider goes, the profile stays.
-          gateway.profiles.get(gitProvider).annotations = {
-            "openclaw.dev/prepared-git-binding": "0".repeat(48),
-          };
-          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
-            name: "OpenShellPreparedGitProviderError",
-          });
-          assert.ok(!gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
-          gateway.profiles.set(gitProvider, structuredClone(leftBehind.profile));
           await sandbox.cleanup({ ...ctx, revision: rev });
           assert.equal(gateway.sandboxes.has(created.name), false);
           assert.equal(gateway.providers.has(gitProvider), false, "Git provider deleted");
