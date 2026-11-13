@@ -1,9 +1,16 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { run } from "../repository-credentials/process.mjs";
+import type { ClientCommand } from "../repository-credentials/clients.ts";
+import { run as runCommand } from "../repository-credentials/process.mjs";
 
-export function forwardWork(signal) {
+const run = runCommand as ClientCommand;
+
+type DockerNetworkCommand = (args: string[]) => Promise<{ stdout: string }>;
+type DockerNetworkListEntry = { Name: string; ID: string };
+type DockerNetworkDetails = { Name: string; Id: string; Labels?: Record<string, string> };
+
+export function forwardWork(signal: AbortSignal) {
   const controller = new AbortController();
-  const pending = new Set();
+  const pending = new Set<ReturnType<ClientCommand>>();
   const cancel = () => controller.abort();
   signal.addEventListener("abort", cancel, { once: true });
   if (signal.aborted) {
@@ -12,7 +19,7 @@ export function forwardWork(signal) {
   const check = () => controller.signal.throwIfAborted();
   return {
     check,
-    async command(command, args, options) {
+    async command(command: string, args: string[], options?: Parameters<ClientCommand>[2]) {
       check();
       const operation = run(command, args, { ...options, signal: controller.signal });
       pending.add(operation);
@@ -24,7 +31,7 @@ export function forwardWork(signal) {
         pending.delete(operation);
       }
     },
-    async eventually(checkState, timeout = 10000) {
+    async eventually<T>(checkState: () => T | Promise<T>, timeout = 10000) {
       const deadline = Date.now() + timeout;
       // The deadline is checked after each read, so the last read happens at or past it.
       for (;;) {
@@ -49,7 +56,7 @@ export function forwardWork(signal) {
   };
 }
 
-export function ownedNetwork(name, owner, docker) {
+export function ownedNetwork(name: string, owner: string, docker: DockerNetworkCommand) {
   let attempted = false;
   let uncertain = false;
   const label = "repository-credentials-isolation.owner";
@@ -61,7 +68,7 @@ export function ownedNetwork(name, owner, docker) {
       await docker(["network", "create", "--internal", "--label", `${label}=${owner}`, name]);
       uncertain = false;
     },
-    async remove(cleanupDocker, signal = AbortSignal.timeout(60000)) {
+    async remove(cleanupDocker: DockerNetworkCommand, signal = AbortSignal.timeout(60000)) {
       if (!attempted) {
         return;
       }
@@ -83,18 +90,18 @@ export function ownedNetwork(name, owner, docker) {
           .trim()
           .split("\n")
           .filter(Boolean)
-          .map((line) => JSON.parse(line))
+          .map((line) => JSON.parse(line) as DockerNetworkListEntry)
           .filter((network) => network.Name === name);
         signal.throwIfAborted();
         if (!networks.length && !uncertain) {
           return;
         }
         for (const network of networks) {
-          const details = JSON.parse(
+          const [details] = JSON.parse(
             (await cleanupDocker(["network", "inspect", network.ID])).stdout,
-          )[0];
+          ) as DockerNetworkDetails[];
           if (
-            details.Name !== name ||
+            details?.Name !== name ||
             details.Labels?.[label] !== owner ||
             details.Id !== network.ID
           ) {

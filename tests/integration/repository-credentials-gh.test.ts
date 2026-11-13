@@ -25,7 +25,10 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.mjs";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
-import { registerResourceCleanup as registerCleanup } from "../fixtures/repository-credentials/cleanup.mjs";
+import {
+  registerResourceCleanup,
+  type ResourceCleanup,
+} from "../fixtures/repository-credentials/cleanup.ts";
 
 const startCredentialServiceFixture = startService as StartCredentialClientFixture;
 type GatewayOptions = {
@@ -39,19 +42,6 @@ const gatewayRequest: (
   options?: GatewayOptions,
 ) => Promise<{ status: number; body: string }> = requestGateway;
 const run = runProcess as ClientCommand;
-type Cleanup = (signal: AbortSignal) => Promise<void>;
-type CleanupRequest = { method: string; path: string; body?: JsonValue };
-const registerResourceCleanup = registerCleanup as (
-  cleanups: Cleanup[],
-  options: {
-    request: (request: CleanupRequest) => Promise<unknown>;
-    repository: string;
-    kind: string;
-    marker: string;
-    head: string;
-  },
-) => void;
-
 function jsonObject(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Record<string, unknown>;
@@ -133,9 +123,9 @@ test("pinned gh uses selected development token routing for repository, issue an
   // Reconcile the exact marker through the same admitted session without replaying creation.
   const marker = "<!-- regression-run:gh-uncertain -->";
   const pullPath = "repos/fixture/repository/pulls";
-  const cleanups: Cleanup[] = [];
+  const cleanups: ResourceCleanup[] = [];
   registerResourceCleanup(cleanups, {
-    request: async ({ method, path, body }: CleanupRequest): Promise<unknown> => {
+    request: async ({ method, path, body }) => {
       const response = await gatewayRequest(fixture, `/${path}`, { method, body });
       assert.ok(response.status < 400);
       if (!response.body) {
