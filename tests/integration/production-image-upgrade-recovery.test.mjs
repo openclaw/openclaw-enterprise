@@ -5866,15 +5866,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     // Each Pod refused the layout during Compute preflight, before the database identity check.
     assert.equal(f.databaseSessions.length, 0);
     assert.equal(f.kubernetesReads.filter((path) => path === "/api/v1/namespaces").length, 2);
-    const state = await f.state();
-    assert.equal(state.api, 1);
-    assert.equal(state.worker, 1);
-    assert.equal(state.version, 1);
-    assert.deepEqual(await f.events(), []);
-    assert.deepEqual(state.preflight.secrets, {});
-    assert.deepEqual(state.preflight.pods, {});
-    assert.deepEqual(state.preflight.jobs, {});
-    assert.deepEqual(state.preflight.networkpolicies, {});
+    await assertStoppedBeforeWriters(f);
   });
 
   // A Kubernetes API the preflight Pod cannot use is not a refusal of the release:
@@ -5901,12 +5893,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       assert.doesNotMatch(error.stderr, /refused the candidate release|split-layout/);
       return true;
     });
-    const state = await f.state();
-    assert.equal(state.version, 1);
-    assert.deepEqual(await f.events(), []);
-    assert.deepEqual(state.preflight.pods, {});
-    assert.deepEqual(state.preflight.jobs, {});
-    assert.deepEqual(state.preflight.networkpolicies, {});
+    await assertStoppedBeforeWriters(f);
   });
 
   // Two-cluster tenant grants in the execution stand-in. Both preflight Pods share
@@ -6163,14 +6150,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       JSON.parse(await f.readEvidence("preflight-migration-status.json")).status.phase,
       "Failed",
     );
-    const state = await f.state();
-    assert.equal(state.api, 1);
-    assert.equal(state.worker, 1);
-    assert.equal(state.version, 1);
-    assert.deepEqual(await f.events(), []);
-    assert.deepEqual(state.preflight.secrets, {});
-    assert.deepEqual(state.preflight.pods, {});
-    assert.deepEqual(state.preflight.jobs, {});
+    const state = await assertStoppedBeforeWriters(f);
     assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
       "job.batch",
       "job.batch",
@@ -6253,10 +6233,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     assert.equal(await f.readEvidence("preflight-migration.log"), log);
     assert.equal(await f.readEvidence("preflight-migration-logs.err"), warning);
     assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
-    assert.equal((await f.state()).api, 1);
-    assert.equal((await f.state()).worker, 1);
-    assert.deepEqual((await f.state()).preflight.jobs, {});
-    assert.deepEqual(await f.events(), []);
+    await assertStoppedBeforeWriters(f);
   });
 
   test("a failed kubectl log read cannot authorize migration from partial stdout", async (t) => {
@@ -6280,7 +6257,6 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     assert.match(await f.readEvidence("preflight-migration-logs.err"), /log stream interrupted/);
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
     await assertStoppedBeforeWriters(f);
-    assert.deepEqual((await f.state()).preflight.jobs, {});
   });
 
   test("a completed migration preflight without a valid check result leaves writers running", async (t) => {
@@ -6298,7 +6274,6 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       );
       assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
       await assertStoppedBeforeWriters(f);
-      assert.deepEqual((await f.state()).preflight.jobs, {});
     }
   });
 
@@ -6334,11 +6309,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       await f.readEvidence("preflight-worker.log"),
       "worker cannot load the Installation\n",
     );
-    const state = await f.state();
-    assert.deepEqual(await f.events(), []);
-    assert.deepEqual(state.preflight.secrets, {});
-    assert.deepEqual(state.preflight.pods, {});
-    assert.deepEqual(state.preflight.jobs, {});
+    await assertStoppedBeforeWriters(f);
   });
 
   test("an Installation the selected controller image loads passes the preflight and upgrades", async (t) => {
