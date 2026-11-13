@@ -22,7 +22,7 @@ import {
   writePrecompiledRouteCompilers,
 } from "../../apps/controller/src/http/route-compilers.ts";
 import { createFastifyApp, type ControllerAppOptions } from "../../apps/controller/src/index.ts";
-import { perturbValue, sampleValue, seededRandom } from "../helpers/json-schema-samples.mjs";
+import { perturbValue, sampleValue, seededRandom } from "../helpers/json-schema-samples.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const VALID_SAMPLES = 40;
@@ -117,6 +117,7 @@ function asRequestStrings(value: unknown): unknown {
 function corpus(entry: RecordedCompile, seed: number) {
   const random = seededRandom(seed);
   const shared = entry.externalSchemas ?? {};
+  assert.ok(isRecord(shared), "recorded shared schemas form a schema map");
   const nonJson = entry.kind === "serializer";
   const values: unknown[] = [];
   for (let index = 0; index < VALID_SAMPLES; index += 1) {

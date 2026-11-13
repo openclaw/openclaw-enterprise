@@ -3,7 +3,34 @@
 // validators or serializers. Samples aim to be valid (patterns, formats, lengths, ranges,
 // required fields); perturbations break one thing at a random depth.
 
-export function seededRandom(seed) {
+type Random = () => number;
+type Schema = boolean | Record<string, unknown>;
+type JsonSample = null | boolean | number | string | JsonSample[] | { [key: string]: JsonSample };
+type SharedSchemas = Readonly<Record<string, unknown>>;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function readSchema(value: unknown): Schema | undefined {
+  if (value === undefined || typeof value === "boolean") {
+    return value;
+  }
+  if (!isObject(value) || isArray(value)) {
+    throw new TypeError("Expected a boolean or an object schema");
+  }
+  return value;
+}
+
+function numberKeyword(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+export function seededRandom(seed: number): Random {
   let state = seed >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) >>> 0;
@@ -14,8 +41,10 @@ export function seededRandom(seed) {
   };
 }
 
-const pick = (random, values) => values[Math.floor(random() * values.length)];
-const integer = (random, low, high) => low + Math.floor(random() * (high - low + 1));
+const pick = <T>(random: Random, values: readonly T[]): T | undefined =>
+  values[Math.floor(random() * values.length)];
+const integer = (random: Random, low: number, high: number) =>
+  low + Math.floor(random() * (high - low + 1));
 
 // Printable ASCII plus a few characters patterns commonly refuse or special-case.
 const ALPHABET = [
@@ -30,10 +59,10 @@ const ALPHABET = [
 // One string the regular expression source may match: literals, classes, groups,
 // alternation and quantifiers. Lookarounds and backreferences are skipped; callers check
 // the result against the real expression.
-function synthesize(random, source) {
+function synthesize(random: Random, source: string): string {
   let position = 0;
   const atEnd = () => position >= source.length;
-  function escapeClass(character) {
+  function escapeClass(character: string | undefined): string[] | undefined {
     switch (character) {
       case "d":
         return [..."0123456789"];
@@ -51,7 +80,7 @@ function synthesize(random, source) {
         return undefined;
     }
   }
-  function escaped() {
+  function escaped(): (string | undefined)[] {
     const character = source[position++];
     const set = escapeClass(character);
     if (set !== undefined) {
@@ -67,17 +96,24 @@ function synthesize(random, source) {
       position += 4;
       return [String.fromCharCode(Number.parseInt(code, 16))];
     }
-    const controls = { n: "\n", t: "\t", r: "\r", f: "\f", v: "\v", 0: "\0" };
-    return [controls[character] ?? character];
+    const controls: Record<string, string> = {
+      n: "\n",
+      t: "\t",
+      r: "\r",
+      f: "\f",
+      v: "\v",
+      0: "\0",
+    };
+    return [character === undefined ? undefined : (controls[character] ?? character)];
   }
   function characterClass() {
     const negated = source[position] === "^";
     if (negated) {
       position += 1;
     }
-    const members = new Set();
+    const members = new Set<string | undefined>();
     while (!atEnd() && source[position] !== "]") {
-      let from;
+      let from: string | undefined;
       if (source[position] === "\\") {
         position += 1;
         const set = escaped();
@@ -91,15 +127,16 @@ function synthesize(random, source) {
       }
       if (source[position] === "-" && source[position + 1] !== "]") {
         position += 1;
-        let to;
+        let to: string | undefined;
         if (source[position] === "\\") {
           position += 1;
           [to] = escaped();
         } else {
           to = source[position++];
         }
-        const start = from.codePointAt(0);
-        const end = to.codePointAt(0);
+        // A range in a compiled pattern has both endpoints.
+        const start = from!.codePointAt(0)!;
+        const end = to!.codePointAt(0)!;
         const step = Math.max(1, Math.floor((end - start) / 24));
         for (let code = start; code <= end; code += step) {
           members.add(String.fromCodePoint(code));
@@ -116,7 +153,7 @@ function synthesize(random, source) {
     const others = ALPHABET.filter((character) => !members.has(character));
     return others.length > 0 ? others : ["a"];
   }
-  function quantifier() {
+  function quantifier(): [number, number] {
     const character = source[position];
     if (character === "?") {
       position += 1;
@@ -141,11 +178,11 @@ function synthesize(random, source) {
     }
     return [1, 1];
   }
-  function sequence() {
+  function sequence(): string {
     let text = "";
     while (!atEnd() && source[position] !== "|" && source[position] !== ")") {
       const character = source[position++];
-      let produce;
+      let produce: () => string | undefined;
       if (character === "^" || character === "$") {
         continue;
       } else if (character === "(") {
@@ -179,39 +216,35 @@ function synthesize(random, source) {
     }
     return text;
   }
-  function alternation() {
-    const start = position;
-    const branches = [];
+  function alternation(): () => string {
+    const branches: number[] = [];
     for (;;) {
       const branchStart = position;
+      // Scanning each branch consumes random draws before the chosen branch is replayed.
       sequence();
-      branches.push([branchStart, position]);
+      branches.push(branchStart);
       if (source[position] !== "|") {
         break;
       }
       position += 1;
     }
-    const end = position;
     return () => {
-      const [from, to] = pick(random, branches);
+      const from = pick(random, branches)!;
       const saved = position;
       position = from;
       const text = sequence();
       position = saved;
-      void to;
-      void start;
-      void end;
       return text;
     };
   }
   return alternation()();
 }
 
-function ucs2Length(text) {
+function ucs2Length(text: string) {
   return [...text].length;
 }
 
-const FORMAT_SAMPLES = {
+const FORMAT_SAMPLES: Record<string, readonly string[]> = {
   "date-time": ["2026-10-14T00:00:00.000Z", "2026-10-14T12:34:56Z", "2026-10-14T12:34:56+02:00"],
   date: ["2026-10-14"],
   time: ["12:34:56Z"],
@@ -222,19 +255,18 @@ const FORMAT_SAMPLES = {
   ipv4: ["192.0.2.10"],
 };
 
-function resolveReference(reference, root, shared) {
-  const [id, fragment = ""] = reference.split("#");
+function resolveReference(reference: string, root: unknown, shared: SharedSchemas): unknown {
+  const [id = "", fragment = ""] = reference.split("#");
   let target = id === "" ? root : shared[id];
-  if (target === undefined) {
-    return undefined;
-  }
   for (const segment of fragment.split("/").filter(Boolean)) {
-    target = target?.[segment.replaceAll("~1", "/").replaceAll("~0", "~")];
+    target = isObject(target)
+      ? target[segment.replaceAll("~1", "/").replaceAll("~0", "~")]
+      : undefined;
   }
   return target;
 }
 
-function randomJson(random, depth) {
+function randomJson(random: Random, depth: number): JsonSample {
   const kind = depth > 2 ? integer(random, 0, 3) : integer(random, 0, 5);
   switch (kind) {
     case 0:
@@ -242,38 +274,44 @@ function randomJson(random, depth) {
     case 1:
       return random() < 0.5;
     case 2:
-      return pick(random, [0, 1, -1, 2.5, 1e21, 2 ** 53, -0.000001]);
+      return pick(random, [0, 1, -1, 2.5, 1e21, 2 ** 53, -0.000001])!;
     case 3:
-      return pick(random, ["", "text", "ns_x", "😀", "\u0000", " lead", "a".repeat(300)]);
+      return pick(random, ["", "text", "ns_x", "😀", "\u0000", " lead", "a".repeat(300)])!;
     case 4:
       return Array.from({ length: integer(random, 0, 3) }, () => randomJson(random, depth + 1));
     default:
       return Object.fromEntries(
-        Array.from({ length: integer(random, 0, 3) }, (_, index) => [
-          pick(random, ["a", "name", "kind", "__proto__x", `k${index}`]),
-          randomJson(random, depth + 1),
-        ]),
+        Array.from(
+          { length: integer(random, 0, 3) },
+          (_, index) =>
+            [
+              pick(random, ["a", "name", "kind", "__proto__x", `k${index}`])!,
+              randomJson(random, depth + 1),
+            ] as const,
+        ),
       );
   }
 }
 
-function sampleString(random, schema) {
-  const minLength = schema.minLength ?? 0;
-  const maxLength = schema.maxLength ?? Infinity;
+function sampleString(random: Random, schema: Record<string, unknown>): string {
+  const minLength = numberKeyword(schema.minLength) ?? 0;
+  const maxLength = numberKeyword(schema.maxLength) ?? Infinity;
   const pattern = typeof schema.pattern === "string" ? new RegExp(schema.pattern, "u") : undefined;
-  const fits = (text) =>
+  const fits = (text: string) =>
     ucs2Length(text) >= minLength &&
     ucs2Length(text) <= maxLength &&
     (pattern === undefined || pattern.test(text));
-  if (typeof schema.format === "string" && FORMAT_SAMPLES[schema.format]) {
-    const candidates = FORMAT_SAMPLES[schema.format].filter(fits);
+  const formatSamples =
+    typeof schema.format === "string" ? FORMAT_SAMPLES[schema.format] : undefined;
+  if (formatSamples !== undefined) {
+    const candidates = formatSamples.filter(fits);
     if (candidates.length > 0) {
-      return pick(random, candidates);
+      return pick(random, candidates)!;
     }
   }
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    let text;
-    if (pattern !== undefined) {
+    let text: string;
+    if (typeof schema.pattern === "string") {
       text = synthesize(random, schema.pattern);
     } else {
       const length = integer(random, minLength, Math.min(maxLength, minLength + 12));
@@ -286,9 +324,13 @@ function sampleString(random, schema) {
   return "a".repeat(minLength);
 }
 
-function sampleNumber(random, schema, integral) {
-  let low = schema.minimum ?? (schema.exclusiveMinimum ?? -1000) + (integral ? 1 : 0.5);
-  let high = schema.maximum ?? (schema.exclusiveMaximum ?? 1000) - (integral ? 1 : 0.5);
+function sampleNumber(random: Random, schema: Record<string, unknown>, integral: boolean): number {
+  const low =
+    numberKeyword(schema.minimum) ??
+    (numberKeyword(schema.exclusiveMinimum) ?? -1000) + (integral ? 1 : 0.5);
+  let high =
+    numberKeyword(schema.maximum) ??
+    (numberKeyword(schema.exclusiveMaximum) ?? 1000) - (integral ? 1 : 0.5);
   if (low > high) {
     high = low;
   }
@@ -299,11 +341,18 @@ function sampleNumber(random, schema, integral) {
   if (low <= 0 && high >= 0) {
     candidates.push(0);
   }
-  return pick(random, candidates);
+  return pick(random, candidates)!;
 }
 
-/** A value meant to satisfy `schema`; `shared` resolves `$ref`s by schema $id. */
-export function sampleValue(random, schema, shared, root = schema, depth = 0) {
+/** A value meant to satisfy the input schema. Shared schemas resolve references by $id. */
+export function sampleValue(
+  random: Random,
+  input: unknown,
+  shared: SharedSchemas,
+  root = input,
+  depth = 0,
+): unknown {
+  const schema = readSchema(input);
   if (schema === true || schema === undefined) {
     return randomJson(random, depth);
   }
@@ -312,7 +361,7 @@ export function sampleValue(random, schema, shared, root = schema, depth = 0) {
   }
   if (typeof schema.$ref === "string") {
     const target = resolveReference(schema.$ref, root, shared);
-    const nextRoot = schema.$ref.startsWith("#") ? root : shared[schema.$ref.split("#")[0]];
+    const nextRoot = schema.$ref.startsWith("#") ? root : shared[schema.$ref.split("#")[0] ?? ""];
     return target === undefined
       ? randomJson(random, depth)
       : sampleValue(random, target, shared, nextRoot, depth + 1);
@@ -320,79 +369,82 @@ export function sampleValue(random, schema, shared, root = schema, depth = 0) {
   if (Object.hasOwn(schema, "const")) {
     return structuredClone(schema.const);
   }
-  if (Array.isArray(schema.enum)) {
+  if (isArray(schema.enum)) {
     return structuredClone(pick(random, schema.enum));
   }
-  const unionKey = Array.isArray(schema.anyOf) ? "anyOf" : "oneOf";
+  const unionKey = isArray(schema.anyOf) ? "anyOf" : "oneOf";
   const union = schema[unionKey];
-  if (Array.isArray(union)) {
+  if (isArray(union)) {
     // Deep recursive values (SafeJsonValue) lean towards the leaves.
     const branches =
       depth > 5
-        ? union.filter((branch) => branch.type !== "object" && branch.type !== "array")
+        ? union.filter(
+            (branch) => !isObject(branch) || (branch.type !== "object" && branch.type !== "array"),
+          )
         : union;
     const branch = pick(random, branches.length > 0 ? branches : union);
     const { [unionKey]: _union, ...siblings } = schema;
     // Union branches add constraints to the surrounding schema.
-    const selected = branch === false ? false : { ...siblings, ...branch };
-    if (siblings.properties && branch?.properties) {
-      selected.properties = { ...siblings.properties, ...branch.properties };
+    if (branch === false) {
+      return sampleValue(random, branch, shared, root, depth + 1);
     }
-    if (siblings.required && branch?.required) {
-      selected.required = [...new Set([...siblings.required, ...branch.required])];
+    const keywords = isObject(branch) ? branch : {};
+    const selected = { ...siblings, ...keywords };
+    if (isObject(siblings.properties) && isObject(keywords.properties)) {
+      selected.properties = { ...siblings.properties, ...keywords.properties };
+    }
+    if (isArray(siblings.required) && isArray(keywords.required)) {
+      selected.required = [...new Set([...siblings.required, ...keywords.required])];
     }
     return sampleValue(random, selected, shared, root, depth + 1);
   }
-  if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
+  if (isArray(schema.allOf) && schema.allOf.length > 0) {
     return sampleValue(random, schema.allOf[0], shared, root, depth + 1);
   }
-  const type = Array.isArray(schema.type) ? pick(random, schema.type) : schema.type;
+  const type = isArray(schema.type) ? pick(random, schema.type) : schema.type;
   switch (type) {
     case "object": {
-      const value = {};
-      const properties = schema.properties ?? {};
-      const required = new Set(schema.required ?? []);
-      for (const [name, property] of Object.entries(properties)) {
+      const value: Record<string, unknown> = {};
+      const properties = isObject(schema.properties) ? Object.entries(schema.properties) : [];
+      const required = new Set(isArray(schema.required) ? schema.required : []);
+      const patterns = isObject(schema.patternProperties) ? schema.patternProperties : undefined;
+      const minProperties = numberKeyword(schema.minProperties) ?? 0;
+      for (const [name, property] of properties) {
         if (required.has(name) || (depth < 6 && random() < 0.5)) {
           value[name] = sampleValue(random, property, shared, root, depth + 1);
         }
       }
       for (const name of required) {
-        if (!Object.hasOwn(value, name)) {
+        if (typeof name === "string" && !Object.hasOwn(value, name)) {
           value[name] = randomJson(random, depth + 1);
         }
       }
       // minProperties: fill from the declared properties first, then the pattern ones.
-      for (const [name, property] of Object.entries(properties)) {
-        if (Object.keys(value).length >= (schema.minProperties ?? 0)) {
+      for (const [name, property] of properties) {
+        if (Object.keys(value).length >= minProperties) {
           break;
         }
         value[name] ??= sampleValue(random, property, shared, root, depth + 1);
       }
-      for (const [pattern, property] of Object.entries(schema.patternProperties ?? {})) {
+      for (const [pattern, property] of Object.entries(patterns ?? {})) {
         for (
           let attempt = 0;
-          Object.keys(value).length < (schema.minProperties ?? 0) && attempt < 8;
+          Object.keys(value).length < minProperties && attempt < 8;
           attempt += 1
         ) {
           const name = sampleString(random, { pattern, maxLength: 40 });
           value[name] = sampleValue(random, property, shared, root, depth + 1);
         }
       }
-      const room = (schema.maxProperties ?? Infinity) - Object.keys(value).length;
-      if (schema.patternProperties && room > 0 && depth < 6) {
-        for (const [pattern, property] of Object.entries(schema.patternProperties)) {
+      const room = (numberKeyword(schema.maxProperties) ?? Infinity) - Object.keys(value).length;
+      if (patterns && room > 0 && depth < 6) {
+        for (const [pattern, property] of Object.entries(patterns)) {
           if (random() < 0.6) {
             const name = sampleString(random, { pattern, maxLength: 40 });
             value[name] = sampleValue(random, property, shared, root, depth + 1);
           }
         }
-      } else if (
-        typeof schema.additionalProperties === "object" &&
-        room > 0 &&
-        depth < 6 &&
-        random() < 0.5
-      ) {
+      } else if (isObject(schema.additionalProperties) && room > 0 && depth < 6 && random() < 0.5) {
         value[`extra${integer(random, 0, 9)}`] = sampleValue(
           random,
           schema.additionalProperties,
@@ -404,10 +456,13 @@ export function sampleValue(random, schema, shared, root = schema, depth = 0) {
       return value;
     }
     case "array": {
-      const minItems = schema.minItems ?? 0;
-      const maxItems = Math.min(schema.maxItems ?? minItems + 3, minItems + (depth > 4 ? 0 : 3));
-      const items = [];
-      const seen = new Set();
+      const minItems = numberKeyword(schema.minItems) ?? 0;
+      const maxItems = Math.min(
+        numberKeyword(schema.maxItems) ?? minItems + 3,
+        minItems + (depth > 4 ? 0 : 3),
+      );
+      const items: unknown[] = [];
+      const seen = new Set<string | undefined>();
       const count = integer(random, minItems, Math.max(minItems, maxItems));
       for (let attempt = 0; items.length < count && attempt < count * 4 + 4; attempt += 1) {
         const item = sampleValue(random, schema.items, shared, root, depth + 1);
@@ -435,9 +490,9 @@ export function sampleValue(random, schema, shared, root = schema, depth = 0) {
   }
 }
 
-function paths(value, prefix = [], found = []) {
+function paths(value: unknown, prefix: string[] = [], found: string[][] = []): string[][] {
   found.push(prefix);
-  if (value !== null && typeof value === "object" && prefix.length < 8) {
+  if (isObject(value) && prefix.length < 8) {
     for (const key of Object.keys(value)) {
       paths(value[key], [...prefix, key], found);
     }
@@ -445,7 +500,7 @@ function paths(value, prefix = [], found = []) {
   return found;
 }
 
-const REPLACEMENTS = [
+const REPLACEMENTS: readonly unknown[] = [
   null,
   true,
   0,
@@ -476,7 +531,7 @@ const REPLACEMENTS = [
 ];
 
 // Strings just outside each format, for values sampleString took from FORMAT_SAMPLES.
-const FORMAT_NEAR_MISSES = {
+const FORMAT_NEAR_MISSES: Record<string, readonly string[]> = {
   "date-time": [
     "2026-02-30T00:00:00Z",
     "2026-10-14T25:00:00Z",
@@ -494,10 +549,11 @@ const FORMAT_NEAR_MISSES = {
 };
 
 // A string one edit away from `text`, which a pattern, length or format check usually decides.
-function nearMiss(random, text) {
-  const format = Object.keys(FORMAT_SAMPLES).find((name) => FORMAT_SAMPLES[name].includes(text));
-  if (format !== undefined && random() < 0.75) {
-    return pick(random, FORMAT_NEAR_MISSES[format]);
+function nearMiss(random: Random, text: string): string {
+  const format = Object.entries(FORMAT_SAMPLES).find(([, samples]) => samples.includes(text))?.[0];
+  const misses = format === undefined ? undefined : FORMAT_NEAR_MISSES[format];
+  if (misses !== undefined && random() < 0.75) {
+    return pick(random, misses)!;
   }
   switch (integer(random, 0, 4)) {
     case 0:
@@ -518,7 +574,11 @@ function nearMiss(random, text) {
  * string one edit away), an unknown field added, or an array item repeated. `nonJson` also allows values only a
  * handler can return (Dates, toJSON objects, undefined, NaN, BigInt), for serializers.
  */
-export function perturbValue(random, value, { nonJson = false } = {}) {
+export function perturbValue(
+  random: Random,
+  value: unknown,
+  { nonJson = false }: { nonJson?: boolean } = {},
+): unknown {
   const copy = structuredClone(value);
   const replacements = nonJson
     ? [
@@ -534,25 +594,29 @@ export function perturbValue(random, value, { nonJson = false } = {}) {
       ]
     : REPLACEMENTS;
   const all = paths(copy);
-  const path = pick(random, all);
-  if (path.length === 0) {
+  const path = pick(random, all)!;
+  const key = path.at(-1);
+  if (key === undefined) {
     return pick(random, replacements);
   }
-  let parent = copy;
-  for (const key of path.slice(0, -1)) {
-    parent = parent[key];
+  let parent: unknown = copy;
+  for (const segment of path.slice(0, -1)) {
+    parent = isObject(parent) ? parent[segment] : undefined;
   }
-  const key = path.at(-1);
+  if (!isObject(parent)) {
+    throw new TypeError("A sampled path must have an object parent");
+  }
   const action = integer(random, 0, 4);
-  if (action === 4 && typeof parent[key] === "string") {
-    parent[key] = nearMiss(random, parent[key]);
-  } else if (action === 0 && !Array.isArray(parent)) {
+  const current = parent[key];
+  if (action === 4 && typeof current === "string") {
+    parent[key] = nearMiss(random, current);
+  } else if (action === 0 && !isArray(parent)) {
     delete parent[key];
-  } else if (action === 1 && parent[key] !== null && typeof parent[key] === "object") {
-    if (Array.isArray(parent[key])) {
-      parent[key].push(parent[key][0] ?? null);
+  } else if (action === 1 && isObject(current)) {
+    if (isArray(current)) {
+      current.push(current[0] ?? null);
     } else {
-      parent[key][pick(random, ["unexpected", "__proto__", "constructor", "Name"])] = pick(
+      current[pick(random, ["unexpected", "__proto__", "constructor", "Name"])!] = pick(
         random,
         replacements,
       );
