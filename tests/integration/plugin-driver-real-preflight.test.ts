@@ -12,15 +12,39 @@ type UserMessageMetadata = {
 };
 type TranscriptRow = string | { role: string; content: string | readonly object[] };
 type EvidenceOptions = { sessionKey: string; turnMarker: string; toolName: string };
-type ReadEvidence = (agent: object, options: EvidenceOptions) => Promise<unknown>;
+type AgentSelection = {
+  id?: string | undefined;
+  namespaceId?: string | undefined;
+  revision?: { id?: string | undefined } | undefined;
+};
+type TranscriptAssertion<Result> = (
+  agent: AgentSelection,
+  options: EvidenceOptions,
+) => Promise<Result>;
 type TranscriptAssertions = {
-  assertSessionToolCallEvidence: ReadEvidence;
-  assertNoSessionToolCallEvidence: ReadEvidence;
-  assertSessionToolDeniedEvidence: ReadEvidence;
+  assertSessionToolCallEvidence: TranscriptAssertion<{ codexMirrorTurnVerified?: boolean }>;
+  assertNoSessionToolCallEvidence: TranscriptAssertion<void>;
+  assertSessionToolDeniedEvidence: TranscriptAssertion<void>;
+};
+type TranscriptAssertionOptions = {
+  proofMode: "codex";
+  gatewayUrl: undefined;
+  execCodex: undefined;
+  waitFor: undefined;
+  readRuntimeLogs: undefined;
+  recordRuntimeLogs: undefined;
+  execGateway: (
+    agent: AgentSelection,
+    argv: [node: "node", evalFlag: "-e", script: string, ...args: string[]],
+  ) => Promise<{ label: string; stdout: string }>;
 };
 
 async function transcriptWriter(t: TestContext, prefix: string) {
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const {
+    createNativePluginAssertions,
+  }: {
+    createNativePluginAssertions: (options: TranscriptAssertionOptions) => TranscriptAssertions;
+  } = await import("../helpers/plugin-driver-real.mjs");
   const directory = await temporaryDirectory(t, prefix);
 
   return (name: string, rows: readonly TranscriptRow[]) => {
@@ -46,17 +70,14 @@ async function transcriptWriter(t: TestContext, prefix: string) {
       db.close();
     }
 
-    const assertions: TranscriptAssertions = createNativePluginAssertions({
+    const assertions = createNativePluginAssertions({
       proofMode: "codex",
       gatewayUrl: undefined,
       execCodex: undefined,
       waitFor: undefined,
       readRuntimeLogs: undefined,
       recordRuntimeLogs: undefined,
-      async execGateway(
-        _agent: unknown,
-        [, , script, ...args]: [string, string, string, ...string[]],
-      ) {
+      async execGateway(_agent, [, , script, ...args]) {
         const run = spawnSync(
           process.execPath,
           [

@@ -1,11 +1,35 @@
 import assert from "node:assert/strict";
-import { syntheticCredentialUrl } from "./synthetic-credential-url.mjs";
+import * as credentialFixtures from "./synthetic-credential-url.mjs";
+
+type Scenario = (typeof scenarios)[number];
+type CreateDatabasePreflightFixture = (
+  context: Record<string, never>,
+  options: {
+    scenario: Scenario;
+    pluginDriverId: "occ-plugin" | "codex-plugin";
+    databaseUrl: string | undefined;
+    codexCredential: undefined;
+  },
+) => Promise<unknown>;
+type SyntheticDatabaseUrl = (options: {
+  protocol: "postgresql";
+  username: string;
+  password: string;
+  host: string;
+  port: number;
+  pathname: string;
+}) => string;
+
+const syntheticCredentialUrl: SyntheticDatabaseUrl = credentialFixtures.syntheticCredentialUrl;
 
 // The parent selects the full proof in the child environment before this import.
-const { createPluginDriverRealFixture } = await import("../helpers/plugin-driver-real.mjs");
-const scenarios = ["openclaw", "codex_linear", "codex_failure"] as const;
-type Scenario = (typeof scenarios)[number];
+// Database selection rejects before the fixture needs the Node test context.
+const {
+  createPluginDriverRealFixture,
+}: { createPluginDriverRealFixture: CreateDatabasePreflightFixture } =
+  await import("../helpers/plugin-driver-real.mjs");
 
+const scenarios = ["openclaw", "codex_linear", "codex_failure"] as const;
 const credential = "database-fixture-password";
 const credentialMaterial = /database-fixture-password|fixture-(?:other-)?user|postgresql:\/\//;
 const key = (scenario: Scenario) => `OCC_TEST_PLUGIN_DRIVER_${scenario.toUpperCase()}_DATABASE_URL`;
