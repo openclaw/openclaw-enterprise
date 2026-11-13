@@ -5,19 +5,163 @@ import test from "node:test";
 import { composeConfiguration } from "../helpers/compose.mjs";
 import {
   chartTooling,
-  parseProductionChart as objects,
+  parseProductionChart,
   productionCollectorValues as loggingValues,
-  renderProductionChart as render,
+  renderProductionChart,
 } from "../helpers/production-chart.mjs";
 
-function composeLoggingConfiguration(environment = {}) {
+type ComposePort =
+  | string
+  | {
+      mode?: string;
+      protocol?: string;
+      target: number;
+      published: string | number;
+      host_ip?: string;
+    };
+
+interface ComposeLogging {
+  driver: string;
+  options: Record<string, string>;
+}
+
+interface ComposeLoggingConfiguration {
+  services: {
+    bootstrap: { logging: ComposeLogging };
+    controller: { logging: ComposeLogging; environment: NodeJS.ProcessEnv };
+    migrate: { logging: ComposeLogging };
+    worker: { logging: ComposeLogging; environment: NodeJS.ProcessEnv };
+    postgres: { logging?: ComposeLogging };
+    collector: {
+      ports: ComposePort[];
+      image: string;
+      logging: { driver: string };
+      mem_limit: string | number;
+      user: string;
+      read_only: boolean;
+      cap_drop: string[];
+      security_opt: string[];
+    };
+  };
+  volumes: Record<string, unknown>;
+}
+
+interface ChartResource {
+  kind: string;
+  metadata: { name: string; labels?: Record<string, string> };
+}
+
+interface ServiceAccount extends ChartResource {
+  kind: "ServiceAccount";
+  automountServiceAccountToken?: boolean;
+}
+
+interface CollectorDaemonSet extends ChartResource {
+  kind: "DaemonSet";
+  spec: {
+    template: {
+      spec: {
+        containers: Array<{
+          image: string;
+          envFrom?: unknown[];
+          env?: unknown[];
+          ports?: unknown[];
+          securityContext: {
+            allowPrivilegeEscalation?: boolean;
+            readOnlyRootFilesystem?: boolean;
+            capabilities: { drop?: string[] };
+          };
+          resources?: unknown;
+          volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>;
+        }>;
+        securityContext: { runAsNonRoot?: boolean; supplementalGroups?: number[] };
+        volumes: Array<{
+          name: string;
+          hostPath?: { path: string; type?: string };
+          emptyDir?: { sizeLimit?: string };
+          secret?: { secretName: string };
+        }>;
+      };
+    };
+  };
+}
+
+interface InitializationJob extends ChartResource {
+  kind: "Job";
+  spec: {
+    template: {
+      spec: { initContainers: Array<{ name: string }>; containers: Array<{ name: string }> };
+    };
+  };
+}
+
+interface ClusterRole extends ChartResource {
+  kind: "ClusterRole";
+  rules: Array<{ apiGroups?: string[]; resources?: string[]; verbs: string[] }>;
+}
+
+interface NetworkPolicy extends ChartResource {
+  kind: "NetworkPolicy";
+  spec: {
+    egress?: Array<{ to?: Array<{ ipBlock?: { cidr: string } }>; ports?: unknown[] }>;
+    ingress?: unknown[];
+  };
+}
+
+type ChartResources = {
+  ServiceAccount: ServiceAccount;
+  DaemonSet: CollectorDaemonSet;
+  Job: InitializationJob;
+  ClusterRole: ClusterRole;
+  NetworkPolicy: NetworkPolicy;
+};
+
+interface CollectorConfig {
+  receivers: { filelog: { include: string[]; exclude: string[] } };
+}
+
+type HelmOverrides = Record<string, string | null>;
+const render: (
+  overrides?: HelmOverrides,
+  options?: { release?: string },
+) => Promise<{ stdout: string }> = renderProductionChart;
+
+async function chartResources(manifests: string): Promise<ChartResource[]> {
+  return parseProductionChart(manifests);
+}
+
+function findResource<Kind extends keyof ChartResources>(
+  resources: readonly ChartResource[],
+  kind: Kind,
+  matches: (object: ChartResource) => boolean,
+): ChartResources[Kind] {
+  const resource = resources.find(
+    (object): object is ChartResources[Kind] => object.kind === kind && matches(object),
+  );
+  assert.ok(resource, `Expected chart to render a ${kind}`);
+  return resource;
+}
+
+function helmRefusal(error: unknown): error is Error & { code: unknown; stderr: string } {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code !== 0 &&
+    "stderr" in error &&
+    typeof error.stderr === "string"
+  );
+}
+
+function composeLoggingConfiguration(
+  environment: NodeJS.ProcessEnv = {},
+): ComposeLoggingConfiguration {
   return composeConfiguration(["compose.yaml", "compose.logging.yaml"], {
     OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://127.0.0.1:4318/v1/logs",
     ...environment,
   });
 }
 
-function hasLoopbackPort(service, target, published) {
+function hasLoopbackPort(service: { ports: ComposePort[] }, target: number, published: number) {
   // Compare the same TCP binding in either provider's resolved representation.
   return service.ports.some((port) => {
     if (typeof port === "string") {
@@ -36,7 +180,7 @@ function hasLoopbackPort(service, target, published) {
   });
 }
 
-function globExpression(pattern) {
+function globExpression(pattern: string) {
   // filelog's `*` never crosses a path separator.
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*");
   return new RegExp(`^${escaped}$`);
@@ -44,7 +188,7 @@ function globExpression(pattern) {
 
 // A Job's Pod gets `generateName: <job>-`; the API server cuts that prefix to
 // 58 characters (names.MaxGeneratedNameLength) before adding 5 random ones.
-function jobPodName(jobName) {
+function jobPodName(jobName: string) {
   return `${`${jobName}-`.slice(0, 58)}x7k2q`;
 }
 
@@ -84,9 +228,11 @@ test("development logging override routes only OCC-owned services through the pr
     assert.equal(service.logging.options["cache-max-size"], "10m");
     assert.equal(service.logging.options["cache-max-file"], "2");
     assert.equal(service.logging.options["cache-compress"], "true");
-    assert.match(service.logging.options.labels, /org\.openclaw\.enterprise\.managed/);
-    assert.match(service.logging.options.labels, /org\.openclaw\.enterprise\.version/);
-    assert.match(service.logging.options.labels, /com\.docker\.compose\.service/);
+    const { labels } = service.logging.options;
+    assert.ok(labels);
+    assert.match(labels, /org\.openclaw\.enterprise\.managed/);
+    assert.match(labels, /org\.openclaw\.enterprise\.version/);
+    assert.match(labels, /com\.docker\.compose\.service/);
   }
   assert.equal(controller.environment.OCC_DOCKER_LOGGING_ADDRESS, "127.0.0.1:24224");
   assert.equal(worker.environment.OCC_DOCKER_LOGGING_ADDRESS, "127.0.0.1:24224");
@@ -110,18 +256,19 @@ test(
     assert.equal(disabled.stdout.includes("openclaw-enterprise-collector"), false);
 
     const { stdout } = await render(loggingValues);
-    const rendered = await objects(stdout);
-    const byKindAndComponent = (kind, component) =>
-      rendered.find(
-        (object) =>
-          object.kind === kind &&
-          object.metadata.labels?.["app.kubernetes.io/component"] === component,
+    const rendered = await chartResources(stdout);
+    const byKindAndComponent = <Kind extends keyof ChartResources>(kind: Kind, component: string) =>
+      findResource(
+        rendered,
+        kind,
+        ({ metadata }) => metadata.labels?.["app.kubernetes.io/component"] === component,
       );
     const serviceAccount = byKindAndComponent("ServiceAccount", "collector");
     const daemonSet = byKindAndComponent("DaemonSet", "collector");
     const initialization = byKindAndComponent("Job", "initialization");
     const pod = daemonSet.spec.template.spec;
     const container = pod.containers[0];
+    assert.ok(container);
 
     assert.equal(serviceAccount.automountServiceAccountToken, true);
     assert.equal(container.image, loggingValues["logging.collector.image"]);
@@ -160,25 +307,27 @@ test(
         return name === "collector-state" && mountPath === "/var/lib/otelcol";
       }),
     );
-    assert.deepEqual(pod.volumes.find(({ name }) => name === "pod-logs").hostPath, {
+    assert.deepEqual(pod.volumes.find(({ name }) => name === "pod-logs")?.hostPath, {
       path: "/var/log/pods",
       type: "Directory",
     });
-    assert.deepEqual(pod.volumes.find(({ name }) => name === "collector-state").emptyDir, {
+    assert.deepEqual(pod.volumes.find(({ name }) => name === "collector-state")?.emptyDir, {
       sizeLimit: "128Mi",
     });
 
     const configVolume = pod.volumes.find(({ name }) => name === "collector-config");
-    assert.equal(configVolume.secret.secretName, "occ-otel-collector-config");
+    assert.equal(configVolume?.secret?.secretName, "occ-otel-collector-config");
     const kubernetesCollectorConfig = await readFile(
       new URL("../../deploy/logging/kubernetes.yaml", import.meta.url),
       "utf8",
     );
     assert.match(kubernetesCollectorConfig, /occ\.component.+initialization/);
-    const [{ receivers }] = await objects(kubernetesCollectorConfig);
+    const [config]: CollectorConfig[] = await parseProductionChart(kubernetesCollectorConfig);
+    assert.ok(config);
+    const { receivers } = config;
     const includes = receivers.filelog.include.map(globExpression);
     const excludes = receivers.filelog.exclude.map(globExpression);
-    const collected = (path) =>
+    const collected = (path: string) =>
       includes.some((include) => include.test(path)) &&
       !excludes.some((exclude) => exclude.test(path));
     const initializationContainers = [
@@ -186,7 +335,7 @@ test(
       ...initialization.spec.template.spec.containers,
     ].map(({ name }) => name);
     assert.deepEqual(initializationContainers, ["migration", "bootstrap"]);
-    const initializationLogs = (jobName) =>
+    const initializationLogs = (jobName: string) =>
       initializationContainers.map(
         (container) =>
           `/var/log/pods/openclaw-system_${jobPodName(jobName)}_0b5c7e1e-2f4a-4c1e-9d8b-3a6f5e4d2c10/${container}/0.log`,
@@ -206,10 +355,10 @@ test(
       }
     }
     const longRelease = await render(loggingValues, { release: "r".repeat(53) });
-    const longInitialization = (await objects(longRelease.stdout)).find(
-      (object) =>
-        object.kind === "Job" &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+    const longInitialization = findResource(
+      await chartResources(longRelease.stdout),
+      "Job",
+      ({ metadata }) => metadata.labels?.["app.kubernetes.io/component"] === "initialization",
     );
     for (const path of initializationLogs(longInitialization.metadata.name.slice(0, 63))) {
       assert.ok(collected(path), path);
@@ -223,9 +372,10 @@ test(
       assert.equal(collected(path), false, path);
     }
 
-    const metadataRole = rendered.find(
-      ({ kind, metadata }) =>
-        kind === "ClusterRole" && metadata.name === "oce-openclaw-log-metadata",
+    const metadataRole = findResource(
+      rendered,
+      "ClusterRole",
+      ({ metadata }) => metadata.name === "oce-openclaw-log-metadata",
     );
     assert.deepEqual(metadataRole.rules, [
       {
@@ -234,21 +384,22 @@ test(
         verbs: ["get", "list", "watch"],
       },
     ]);
-    assert.ok(!metadataRole.rules.some(({ resources }) => resources.includes("pods/log")));
+    assert.ok(!metadataRole.rules.some(({ resources }) => resources?.includes("pods/log")));
 
-    const egress = rendered.find(
-      ({ kind, metadata }) =>
-        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-collector-egress",
+    const egress = findResource(
+      rendered,
+      "NetworkPolicy",
+      ({ metadata }) => metadata.name === "openclaw-enterprise-collector-egress",
     );
     assert.deepEqual(
-      egress.spec.egress.find((rule) => rule.to?.[0]?.ipBlock?.cidr === "10.43.0.1/32"),
+      egress.spec.egress?.find((rule) => rule.to?.[0]?.ipBlock?.cidr === "10.43.0.1/32"),
       {
         to: [{ ipBlock: { cidr: "10.43.0.1/32" } }],
         ports: [{ protocol: "TCP", port: 443 }],
       },
     );
     assert.deepEqual(
-      egress.spec.egress.find((rule) => rule.to?.[0]?.ipBlock?.cidr === "203.0.113.10/32"),
+      egress.spec.egress?.find((rule) => rule.to?.[0]?.ipBlock?.cidr === "203.0.113.10/32"),
       {
         to: [{ ipBlock: { cidr: "203.0.113.10/32" } }],
         ports: [{ protocol: "TCP", port: 443 }],
@@ -261,7 +412,7 @@ test(
   "production Helm logging rejects mutable images, broad egress, and shared application Secrets",
   helmTooling,
   async () => {
-    for (const [description, override] of [
+    const refusals: Array<[string, HelmOverrides]> = [
       [
         "mutable Collector image",
         {
@@ -299,10 +450,11 @@ test(
           "logging.collector.envSecretName": "occ-google-login",
         },
       ],
-    ]) {
+    ];
+    for (const [description, override] of refusals) {
       await assert.rejects(
         render(override),
-        ({ code, stderr }) => code !== 0 && stderr.length > 0,
+        (error: unknown) => helmRefusal(error) && error.stderr.length > 0,
         description,
       );
     }
@@ -312,9 +464,9 @@ test(
         ...loggingValues,
         "logging.collector.image": `docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:${"C".repeat(64)}`,
       }),
-      ({ code, stderr }) =>
-        code !== 0 &&
-        stderr.includes(
+      (error: unknown) =>
+        helmRefusal(error) &&
+        error.stderr.includes(
           "logging.collector.image must be an approved immutable SHA-256 image reference",
         ),
       "uppercase Collector image digest",
@@ -325,9 +477,9 @@ test(
         ...loggingValues,
         "logging.collector.image": `docker.io/Otel/opentelemetry-collector-contrib:0.159.0@sha256:${"c".repeat(64)}`,
       }),
-      ({ code, stderr }) =>
-        code !== 0 &&
-        stderr.includes(
+      (error: unknown) =>
+        helmRefusal(error) &&
+        error.stderr.includes(
           "logging.collector.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one",
         ),
       "uppercase Collector repository path",
@@ -364,7 +516,7 @@ test(
       "executionCluster.workerKubeconfigSecretName": "execution-worker",
       "executionCluster.apiCidrs[0]": "10.44.0.2/32",
     };
-    for (const [feature, secrets] of [
+    const enabledFeatures: Array<[HelmOverrides, string[]]> = [
       [oidc, ["occ-oidc-login"]],
       [gatewayRouting, ["occ-gateway-api-key"]],
       [
@@ -378,14 +530,18 @@ test(
         ],
       ],
       [executionCluster, ["execution-api", "execution-worker"]],
-    ]) {
+    ];
+    for (const [feature, secrets] of enabledFeatures) {
       await render({ ...loggingValues, ...feature });
       for (const secret of secrets) {
         for (const field of ["configSecretName", "envSecretName"]) {
           await assert.rejects(
             render({ ...loggingValues, ...feature, [`logging.collector.${field}`]: secret }),
-            ({ stderr }) =>
-              stderr.includes(`logging.collector.${field} must name a dedicated Secret; ${secret}`),
+            (error: unknown) =>
+              helmRefusal(error) &&
+              error.stderr.includes(
+                `logging.collector.${field} must name a dedicated Secret; ${secret}`,
+              ),
             `${field}=${secret}`,
           );
         }
@@ -408,10 +564,10 @@ test(
         "monitoring",
       "logging.collector.metrics.scraperPodLabels.app": "prometheus",
     };
-    const rendered = await objects((await render(selected)).stdout);
-    const policy = (name) =>
-      rendered.find((object) => object.kind === "NetworkPolicy" && object.metadata.name === name);
-    assert.deepEqual(policy("openclaw-enterprise-collector-egress").spec.egress.at(-1), {
+    const rendered = await chartResources((await render(selected)).stdout);
+    const policy = (name: string) =>
+      findResource(rendered, "NetworkPolicy", ({ metadata }) => metadata.name === name);
+    assert.deepEqual(policy("openclaw-enterprise-collector-egress").spec.egress?.at(-1), {
       to: [
         {
           namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "monitoring" } },
@@ -431,24 +587,27 @@ test(
         ports: [{ protocol: "TCP", port: 8888 }],
       },
     ]);
-    const closed = await objects((await render(loggingValues)).stdout);
+    const closed = await chartResources((await render(loggingValues)).stdout);
     assert.ok(
       !closed.some((object) => object.metadata.name === "openclaw-enterprise-collector-metrics"),
     );
-    const disabled = await objects(
+    const disabled = await chartResources(
       (await render({ ...selected, "logging.collector.metrics.enabled": "false" })).stdout,
     );
     assert.ok(
       !disabled.some((object) => object.metadata.name === "openclaw-enterprise-collector-metrics"),
     );
-    for (const override of [
+    const overrides: HelmOverrides[] = [
       { "logging.collector.exporter.namespaceLabels": null },
       { "logging.collector.exporter.podLabels": null },
       { "logging.collector.exporter.cidr": "203.0.113.10/32" },
       { "logging.collector.metrics.scraperNamespaceLabels": null },
       { "logging.collector.metrics.scraperPodLabels": null },
-      ...["0", "65536", "9.5"].map((port) => ({ "logging.collector.exporter.port": port })),
-    ]) {
+      ...["0", "65536", "9.5"].map((port): HelmOverrides => ({
+        "logging.collector.exporter.port": port,
+      })),
+    ];
+    for (const override of overrides) {
       await assert.rejects(render({ ...selected, ...override }), /logging.collector/);
     }
   },
