@@ -82,20 +82,18 @@ Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.
 mismatched `HEAD`/`--source-revision`, chart edits/symlinks and internal evidence/baseline
 aliases before access. Other edits/image provenance are unchecked.
 
-`yq -r` tests for nonempty `preprovisionedNamespace`. Continue on success
-with one `false`; otherwise refuse before access (`preprovisioned-namespace.err`).
+Before access, require one `false` from the `preprovisionedNamespace` check.
 
 Resume locks physical evidence and runtime dispatch journals.
 
 `matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings and validates candidates.
-Invalid inputs or writes cause `Cannot compare upgrade YAML`.
+Invalid comparisons stop the upgrade.
 Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
 and array-wrapping one registration.
 Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
 live comparison stays exact. Immutable reference switches require string keys.
 Startup validates controllers; broker checks only references.
-Live legacy repository Driver selections block preflight, including runtime replacements.
-Deleted revisions can still own credential cleanup.
+Legacy repository selections block upgrades. Before preflight and shutdown, both serving containers must mount baseline bytes from a generation older than container startup.
 
 `read_restart_inventory` validates authorized fleet IDs, states and running revisions’
 [restart dispositions](../reference/repository-credentials/worker-replacement.md).

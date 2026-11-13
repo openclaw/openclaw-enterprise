@@ -5,13 +5,12 @@ Upgrade [Kubernetes Compute releases](production-installation.md) using
 [Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
 lack the required chart-owned initializer.
 
-1. [Select and prepare the release](#prepare-the-release). Record the live
-   baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
+1. [Select and prepare the release](#prepare-the-release). Record the baseline and follow the [upgrade checklist](upgrade-checklist.md).
 2. [Preflight the target](#rehearse-before-the-maintenance-window).
    [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
-3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
-   [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
-4. [Verify the release](#verify-the-release) with a real workload.
+3. Freeze writers before the [control plane](#upgrade-the-control-plane) or
+   [runtime](#upgrade-agent-runtimes) upgrade. Use fresh evidence.
+4. [Verify the release](#verify-the-release) with a workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
 
 Use `--controller-image` for API and worker. Repository credentials also require
@@ -20,19 +19,18 @@ Use `--controller-image` for API and worker. Repository credentials also require
 concurrently. Allow capacity for overlapping versions. API and worker stop during
 migration and rollout.
 
-Keep the checkout exclusive and unchanged. Store evidence outside the chart.
+Reserve the unchanged checkout. Store evidence outside the chart.
 
-Configure endpoints and TLS in kubeconfig.
-Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
+Configure kubeconfig endpoints and TLS. Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
 `HELM_KUBEINSECURE_SKIP_TLS_VERIFY` before starting or resuming.
-These override kubeconfig/context flags.
 
 [Prepare candidates](#include-reviewed-settings) for settings changes.
 For the experimental two-cluster profile, first
 [upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart).
 
-A live `drivers.repo` or GitHub Backend `drivers` blocks direct upgrades. Keep the
-original sender running and [reconcile its cleanup](../repository-credentials/standalone-service.md#drain-an-existing-signing-gateway), including deleted Agents.
+Legacy repository selections block upgrades. Keep the original sender running and
+[reconcile cleanup](../repository-credentials/standalone-service.md#drain-an-existing-signing-gateway), including deleted Agents.
+Allow Pod exec in both writers. Changed or unverifiable startup projections block shutdown.
 
 ## Prepare the release
 

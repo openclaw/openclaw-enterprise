@@ -1518,6 +1518,59 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
             },
           ],
         });
+      } else if (args.includes("get") && args.includes("pod") && args.includes("--selector")) {
+        const component = fileArg("--selector").endsWith("component=worker") ? "worker" : "api";
+        const values = await yamlFile(join(root, "live-values"));
+        const mounted = "/etc/openclaw/installation";
+        // Pod start and the projected directory generation are independent observations.
+        const started = state.startupContainerStart?.[component] ?? state.fixtureContainerStart;
+        out({
+          items: Array.from({ length: state[component] }, (_, replica) => ({
+            metadata: {
+              name: component + "-pod-" + replica,
+              uid: component + "-pod-uid-" + replica,
+              ownerReferences: [
+                {
+                  kind: "ReplicaSet",
+                  name: component + "-rs",
+                  uid: component + "-rs-uid",
+                  controller: true,
+                },
+              ],
+            },
+            spec: {
+              containers: [
+                {
+                  name: component,
+                  env: [{ name: "OCC_CONFIG_PATH", value: mounted + "/installation.yaml" }],
+                  volumeMounts: [
+                    { name: "installation-startup", mountPath: mounted, readOnly: true },
+                  ],
+                },
+              ],
+              volumes: [
+                {
+                  name: "installation-startup",
+                  secret: {
+                    secretName: values.installation.secretName,
+                    items: [{ key: values.installation.key, path: "installation.yaml" }],
+                  },
+                },
+              ],
+            },
+            status: {
+              phase: "Running",
+              containerStatuses: [
+                {
+                  name: component,
+                  ready: true,
+                  containerID: component + "-container",
+                  state: { running: { startedAt: new Date(started).toISOString() } },
+                },
+              ],
+            },
+          })),
+        });
       } else if (args.includes("get") && args.includes("pods")) {
         const initialization = args.some((a) => a.includes("component=initialization"));
         const revision = args.some((a) => a === `openclaw.dev/revision=${state.activeRevision}`);
@@ -1635,6 +1688,21 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         }
       } else if (args.includes("get")) {
         out({ items: [] });
+      } else if (
+        args.includes("exec") &&
+        args.includes("sh") &&
+        args.at(-1).includes("readlink installation.yaml")
+      ) {
+        const mounted = join(root, "startup-projection");
+        const probe = args.at(-1).replaceAll("/etc/openclaw/installation", mounted);
+        try {
+          const result = await execute("sh", ["-ec", probe], {
+            env: { ...process.env, OCC_CONFIG_PATH: join(mounted, "installation.yaml") },
+          });
+          out(result.stdout);
+        } catch {
+          return fail(1, "startup projection read failed");
+        }
       } else if (args.includes("exec") && args.includes("/sys/fs/cgroup/memory.max")) {
         // The gateway container's cgroup v2 files: a 3 GiB limit, with free memory taken
         // from the case's script (ample by default) and 100 MiB of reclaimable file cache.
@@ -2347,6 +2415,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       preflightPolicy,
       preflightFault,
       installationName,
+      fixtureContainerStart: Date.now() + 60_000,
       inventoryNamespaces,
       inventoryResponses,
       inventoryRequiresApi,
@@ -2387,6 +2456,13 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       },
     };
     await writeFile(join(directory, "state.json"), JSON.stringify(state));
+    // Model kubelet's read-only projection with real symlinks, so the exec probe reads
+    // the file and its generation independently of the Secret returned by the API.
+    const projection = join(directory, "startup-projection");
+    await mkdir(join(projection, "generation"), { recursive: true });
+    await writeFile(join(projection, "generation", "installation.yaml"), installation);
+    symlinkSync("generation", join(projection, "..data"));
+    symlinkSync("..data/installation.yaml", join(projection, "installation.yaml"));
     await writeFile(join(directory, "live-values"), values);
     await writeFile(join(directory, "events"), "");
     for (const [name, content] of Object.entries({
@@ -5480,6 +5556,40 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         assert.deepEqual(await f.events(), []);
       });
     }
+  });
+
+  test("a refreshed Secret cannot stand in for a serving Worker's earlier repository policy", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      repositoryCredentials: true,
+      legacyRepositoryBackend: true,
+      simulatePair: true,
+    });
+    const state = await f.state();
+    // Both the operator baseline and the current Secret now name the canonical policy.
+    // The Worker started before that projection and can still own deleted-revision work.
+    const file = join(f.directory, "installation.json");
+    const edited = JSON.parse(await readFile(file, "utf8"));
+    delete edited.backend[0].drivers;
+    const bytes = JSON.stringify(edited);
+    await writeFile(file, bytes);
+    state.secret.data["installation.yaml"] = Buffer.from(bytes).toString("base64");
+    state.startupContainerStart = { worker: Date.now() - 60_000 };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const projection = join(f.directory, "startup-projection");
+    await mkdir(join(projection, "normalized"));
+    await writeFile(join(projection, "normalized", "installation.yaml"), bytes);
+    symlinkSync("normalized", join(projection, "..data_tmp"));
+    await rename(join(projection, "..data_tmp"), join(projection, "..data"));
+
+    await assert.rejects(
+      f.run(),
+      /mounted startup generation does not predate the serving container[\s\S]*configuration loaded by the serving worker/u,
+    );
+    const after = await f.state();
+    assert.deepEqual([after.api, after.worker, after.version, after.dispatches], [1, 1, 1, 0]);
+    assert.deepEqual(after.preflight?.created ?? [], []);
+    assert.deepEqual(await f.events(), []);
   });
 
   test("reviewed settings survive an interrupted controller upgrade without losing unrelated Secret data", async (t) => {

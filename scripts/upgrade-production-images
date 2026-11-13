@@ -1396,6 +1396,12 @@ normalize_restart_inventory() {
       | sort_by(.id))}] | sort_by(.id)}' "$1"
 }
 
+verify_startup_projection() {
+  python3 scripts/upgrade-helm-state.py startup-projection "$evidence_dir" "$release" "$kubeconfig" \
+    "$context" "$namespace" "$1" "$installation_key" ||
+    die "Cannot establish the Installation configuration loaded by the serving $1. Keep the original writers and credential sender available; reconcile the startup configuration before upgrading."
+}
+
 prepare_upgrade() {
 mkdir -m 700 "$evidence_dir/inventory"
 if [[ -n "$runtime_image" ]]; then
@@ -1461,13 +1467,17 @@ matches_yaml "$evidence_dir/before-installation.yaml" "$evidence_dir/before-live
 # candidate is supplied. Deleted revisions can still own provider cleanup.
 yaml_json "$evidence_dir/before-live-installation.yaml" ||
   die "cannot inspect the installed repository policy before upgrade."
-if ! jq -e '
-  type == "object" and
+if ! jq -es '
+  length == 1 and (.[0] | type == "object" and
   ((.drivers // {}) | has("repo") | not) and
-  all((.backend // [])[]; .type != "github" or (has("drivers") | not))
+  all((.backend // [])[]; .type != "github" or (has("drivers") | not)))
 ' <<<"$yaml_text" >/dev/null; then
   die "This installation still selects a legacy repository Driver or has unreadable repository ownership. Keep the original API, worker and credential sender running. The deployment inventory cannot certify settlement of deleted-revision cleanup or pause renewals on the original worker. A direct upgrade is unsupported. Preserve the live policy and reconcile outstanding work with its owner before planning a supported transition."
 fi
+
+for component in api worker; do
+  verify_startup_projection "$component"
+done
 
 # The bundled Collector reads an operator-created Secret that Helm never
 # updates. Stop before mutation when it still holds another revision's shared
@@ -2081,6 +2091,9 @@ if ((helm_complete == 0)); then
         .spec.replicas == 0 and (.metadata | {uid, generation}) == $handoff[0][$component]
       ' "$evidence_dir/current-$component-deployment.json" >/dev/null ||
         die "The $component Deployment changed during the separate database deployment. Preserve the database and reconcile the writer before resuming."
+    fi
+    if jq -e '.spec.replicas == 1' "$evidence_dir/current-$component-deployment.json" >/dev/null; then
+      verify_startup_projection "$component"
     fi
     # Test and scale atomically: a replacement or concurrent edit must not be stopped.
     jq '[
