@@ -17,7 +17,7 @@ import {
   preparedRepositoryInstallation,
 } from "../../scripts/lib/prepared-repository-installation.mjs";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
-import { createGitHubAppRepositoryObserver } from "./github-app-observer.mjs";
+import { createGitHubAppRepositoryObserver } from "./github-app-observer.ts";
 import {
   createRepositoryObserver,
   readInstalledCredentialSession,

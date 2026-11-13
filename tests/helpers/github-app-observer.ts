@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { constants as cryptoConstants, createPrivateKey, sign } from "node:crypto";
+import { constants as cryptoConstants, createPrivateKey, sign, type KeyObject } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { open } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -11,14 +11,50 @@ const numericIdPattern = /^[1-9][0-9]{0,15}$/;
 const refreshSkewMs = 5 * 60 * 1000;
 const githubFetchTimeoutMs = 30_000;
 
-function assertNumericId(value, label) {
-  assert.equal(typeof value, "string", `${label} must be a string`);
-  assert.match(value, numericIdPattern, `${label} must be a GitHub numeric id`);
-  assert.ok(Number.isSafeInteger(Number(value)), `${label} must be a safe integer`);
-  return value;
+type ObserverRegistry = {
+  appId: string;
+  installationId: string;
+  repositoryId: string;
+  repository: string;
+};
+
+type ObserverInput = ObserverRegistry & { privateKey: KeyObject };
+
+type TokenOptions = {
+  githubApiOrigin?: string | undefined;
+  now?: () => number;
+  fetchTimeoutMs?: number;
+};
+
+type ObserverToken = { token: string; expiresAt: number };
+
+type GitOptions = {
+  timeout: number;
+  env: NodeJS.ProcessEnv;
+  privateFailureOutput: boolean;
+};
+
+type ObserverOptions = TokenOptions & {
+  inputDirectory: string;
+  repository: string;
+  run: (command: "git", args: string[], options?: GitOptions) => Promise<unknown>;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-async function readPrivateFile(path, label) {
+function assertString(value: unknown, message: string): asserts value is string {
+  assert.equal(typeof value, "string", message);
+}
+
+function assertNumericId(value: unknown, label: string): asserts value is string {
+  assertString(value, `${label} must be a string`);
+  assert.match(value, numericIdPattern, `${label} must be a GitHub numeric id`);
+  assert.ok(Number.isSafeInteger(Number(value)), `${label} must be a safe integer`);
+}
+
+async function readPrivateFile(path: string, label: string) {
   assert.ok(path && isAbsolute(path), `${label} requires an absolute path`);
   const file = await open(
     path,
@@ -35,20 +71,20 @@ async function readPrivateFile(path, label) {
   }
 }
 
-function validateRegistry(raw, repository) {
-  let registry;
+function validateRegistry(raw: string, repository: string): ObserverRegistry {
+  let registry: unknown;
   try {
     registry = JSON.parse(raw);
   } catch {
     throw new Error("observer repository registry must be valid JSON");
   }
-  assert.ok(registry && typeof registry === "object" && !Array.isArray(registry));
+  assert.ok(isRecord(registry));
   assertNumericId(registry.appId, "observer registry appId");
   assertNumericId(registry.githubInstallationId, "observer registry githubInstallationId");
   assert.ok(Array.isArray(registry.repositories), "observer registry must contain repositories");
   assert.equal(registry.repositories.length, 1, "observer registry must contain one repository");
-  const entry = registry.repositories[0];
-  assert.ok(entry && typeof entry === "object" && !Array.isArray(entry));
+  const [entry]: readonly unknown[] = registry.repositories;
+  assert.ok(isRecord(entry));
   assertNumericId(entry.repositoryId, "observer registry repositoryId");
   assert.equal(
     String(entry.repository).toLowerCase(),
@@ -63,7 +99,10 @@ function validateRegistry(raw, repository) {
   };
 }
 
-export async function loadGitHubAppObserverInput(inputDirectory, repository) {
+export async function loadGitHubAppObserverInput(
+  inputDirectory: string,
+  repository: string,
+): Promise<ObserverInput> {
   assert.ok(
     inputDirectory && isAbsolute(inputDirectory),
     "observer App input directory is required",
@@ -74,7 +113,7 @@ export async function loadGitHubAppObserverInput(inputDirectory, repository) {
     readPrivateFile(join(inputDirectory, "private-key.pem"), "observer GitHub App key"),
   ]);
   const registry = validateRegistry(registryRaw, repository);
-  let privateKey;
+  let privateKey: KeyObject;
   try {
     privateKey = createPrivateKey(privateKeyRaw);
   } finally {
@@ -87,7 +126,7 @@ export async function loadGitHubAppObserverInput(inputDirectory, repository) {
   return { ...registry, privateKey };
 }
 
-function createJwt(input, now) {
+function createJwt(input: ObserverInput, now: number) {
   const seconds = Math.floor(now / 1000);
   const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(
@@ -100,7 +139,7 @@ function createJwt(input, now) {
   }).toString("base64url")}`;
 }
 
-async function readJsonResponse(response) {
+async function readJsonResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text.trim()) {
     return undefined;
@@ -112,8 +151,8 @@ async function readJsonResponse(response) {
   }
 }
 
-function validatePermissions(permissions) {
-  assert.ok(permissions && typeof permissions === "object" && !Array.isArray(permissions));
+function validatePermissions(permissions: unknown) {
+  assert.ok(isRecord(permissions));
   const allowed = new Set(["contents", "pull_requests", "metadata"]);
   assert.equal(permissions.contents, "write", "observer token must have contents write");
   assert.equal(permissions.pull_requests, "write", "observer token must have pull requests write");
@@ -126,28 +165,29 @@ function validatePermissions(permissions) {
   }
 }
 
-async function githubFetch(url, init = {}, timeoutMs = githubFetchTimeoutMs) {
+async function githubFetch(url: string, init: RequestInit = {}, timeoutMs = githubFetchTimeoutMs) {
   return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
 }
 
-function validateRepositoryScope(data, input) {
-  assert.ok(Array.isArray(data.repositories), "observer token response must include repositories");
-  assert.equal(data.repositories.length, 1, "observer token must be scoped to one repository");
-  const [repository] = data.repositories;
-  assert.equal(String(repository.id), input.repositoryId, "observer token repository id mismatch");
+function validateRepositoryScope(repositories: unknown, input: ObserverInput) {
+  assert.ok(Array.isArray(repositories), "observer token response must include repositories");
+  assert.equal(repositories.length, 1, "observer token must be scoped to one repository");
+  // Keep ordinary property access for malformed entries and validate the fields below.
+  const [repository]: readonly unknown[] = repositories;
+  const fields = repository as { id?: unknown; full_name?: unknown };
+  assert.equal(String(fields.id), input.repositoryId, "observer token repository id mismatch");
+  assertString(fields.full_name, "observer token response must include repository full_name");
   assert.equal(
-    typeof repository.full_name,
-    "string",
-    "observer token response must include repository full_name",
-  );
-  assert.equal(
-    repository.full_name.toLowerCase(),
+    fields.full_name.toLowerCase(),
     input.repository,
     "observer token repository name mismatch",
   );
 }
 
-export async function mintGitHubAppObserverToken(input, options = {}) {
+export async function mintGitHubAppObserverToken(
+  input: ObserverInput,
+  options: TokenOptions = {},
+): Promise<ObserverToken> {
   const now = options.now?.() ?? Date.now();
   const origin = options.githubApiOrigin ?? "https://api.github.com";
   const response = await githubFetch(
@@ -170,17 +210,18 @@ export async function mintGitHubAppObserverToken(input, options = {}) {
   );
   const data = await readJsonResponse(response);
   assert.equal(response.status, 201, `GitHub observer token mint returned ${response.status}`);
-  assert.equal(typeof data?.token, "string", "GitHub observer token response is missing token");
-  const expiresAt = Date.parse(data.expires_at);
+  const fields = isRecord(data) ? data : {};
+  assertString(fields.token, "GitHub observer token response is missing token");
+  const expiresAt = Date.parse(String(fields.expires_at));
   assert.ok(Number.isFinite(expiresAt), "GitHub observer token response is missing expiry");
   assert.ok(expiresAt > now + 60_000, "GitHub observer token expires too soon");
-  validatePermissions(data.permissions);
-  validateRepositoryScope(data, input);
-  registerQaSecret(data.token);
-  return { token: data.token, expiresAt };
+  validatePermissions(fields.permissions);
+  validateRepositoryScope(fields.repositories, input);
+  registerQaSecret(fields.token);
+  return { token: fields.token, expiresAt };
 }
 
-function shellQuote(value) {
+function shellQuote(value: string) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
@@ -191,11 +232,11 @@ export async function createGitHubAppRepositoryObserver({
   githubApiOrigin,
   now = () => Date.now(),
   fetchTimeoutMs = githubFetchTimeoutMs,
-}) {
+}: ObserverOptions) {
   const input = await loadGitHubAppObserverInput(inputDirectory, repository);
   const prefix = `repos/${repository}`;
-  let current;
-  let refreshing;
+  let current: ObserverToken | undefined;
+  let refreshing: Promise<ObserverToken> | undefined;
   const currentToken = async () => {
     if (current && current.expiresAt > now() + refreshSkewMs) {
       return current.token;
@@ -210,7 +251,12 @@ export async function createGitHubAppRepositoryObserver({
     current = await refreshing;
     return current.token;
   };
-  const observe = async (method, suffix = "", body, expected = 200) => {
+  const observe = async (
+    method: string,
+    suffix = "",
+    body?: unknown,
+    expected: number | readonly number[] = 200,
+  ) => {
     assert.ok(!suffix.includes("..") && !suffix.startsWith("/"));
     const token = await currentToken();
     const response = await githubFetch(
@@ -229,16 +275,16 @@ export async function createGitHubAppRepositoryObserver({
       fetchTimeoutMs,
     );
     assert.ok(
-      [].concat(expected).includes(response.status),
+      Array<number>().concat(expected).includes(response.status),
       `GitHub ${method} returned ${response.status}`,
     );
     return { status: response.status, data: await readJsonResponse(response) };
   };
-  observe.deleteBranch = async (branch, sha) => {
+  observe.deleteBranch = async (branch: string, sha: string) => {
     assert.match(sha, /^[a-f0-9]{40}$/);
     await run("git", ["check-ref-format", `refs/heads/${branch}`]);
     const helper = fileURLToPath(
-      new URL("../../scripts/ci/github-app-observer-credential-helper.mjs", import.meta.url),
+      new URL("../../scripts/ci/github-app-observer-credential-helper.ts", import.meta.url),
     );
     const credentialHelper = `!${shellQuote(process.execPath)} ${shellQuote(helper)} ${shellQuote(inputDirectory)} ${shellQuote(repository)}`;
     await run(

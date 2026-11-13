@@ -3,21 +3,27 @@ import assert from "node:assert/strict";
 import {
   loadGitHubAppObserverInput,
   mintGitHubAppObserverToken,
-} from "../../tests/helpers/github-app-observer.mjs";
+} from "../../tests/helpers/github-app-observer.ts";
 
 const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-async function readStdin() {
+type CredentialRequest = {
+  protocol?: string;
+  host?: string;
+  path?: string;
+};
+
+async function readStdin(): Promise<string> {
   let input = "";
   process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) {
+  for await (const chunk of process.stdin as AsyncIterable<string>) {
     input += chunk;
   }
   return input;
 }
 
-function parseCredentialRequest(input) {
-  return Object.fromEntries(
+function parseCredentialRequest(input: string): CredentialRequest {
+  return Object.fromEntries<string>(
     input
       .split(/\r?\n/)
       .filter(Boolean)
@@ -29,14 +35,14 @@ function parseCredentialRequest(input) {
   );
 }
 
-function normalizePath(path) {
+function normalizePath(path: string | undefined) {
   return String(path ?? "")
     .replace(/^\/+/, "")
     .replace(/\.git$/, "")
     .toLowerCase();
 }
 
-function assertCredentialRequest(request, repository) {
+function assertCredentialRequest(request: CredentialRequest, repository: string) {
   assert.equal(request.protocol, "https", "observer credential helper requires HTTPS");
   assert.equal(
     String(request.host ?? "").toLowerCase(),
