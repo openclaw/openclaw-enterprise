@@ -2,6 +2,7 @@ import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
   isDevelopmentBrowserOrigin,
+  validateAuthSecret,
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
 } from "./auth/configuration.ts";
@@ -274,10 +275,19 @@ function configuration(env) {
   // { google?, oidc? }: each configured provider carries the recovery user ID.
   const humanLogin = humanLoginConfiguration(env);
   const clientAddress = clientAddressConfiguration(env);
+  const authSecret =
+    mode === "production"
+      ? requiredEnvironment(env, "OCC_AUTH_SECRET")
+      : optionalEnvironment(
+          env,
+          "OCC_AUTH_SECRET",
+          "openclaw-development-auth-secret-minimum-32-bytes",
+        );
+  validateAuthSecret(authSecret);
   if (mode === "production") {
     return Object.freeze({
       ...settings,
-      authSecret: requiredEnvironment(env, "OCC_AUTH_SECRET"),
+      authSecret,
       authBaseURL,
       ...humanLogin,
       ...(clientAddress === undefined ? {} : { clientAddress }),
@@ -295,14 +305,6 @@ function configuration(env) {
 
   if (clientAddress !== undefined) {
     throw new Error("OCC_AUTH_TRUSTED_PROXY_* settings are production-only.");
-  }
-  const authSecret = optionalEnvironment(
-    env,
-    "OCC_AUTH_SECRET",
-    "openclaw-development-auth-secret-minimum-32-bytes",
-  );
-  if (authSecret.length < 32) {
-    throw new Error("OCC_AUTH_SECRET must be at least 32 characters.");
   }
   return Object.freeze({
     ...settings,

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-13"
-last_updated_session: "authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94"
+last_updated_session: "authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c"
 ---
 
 # Production Startup Flow
@@ -216,9 +216,9 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to that CA.
 
-Startup validates the listener, Better Auth, database, Installation YAML,
-Drivers, Backend membership, and Compute preflight. The operator-managed endpoint
-serves private routes, `/healthz`, and `/readyz`.
+`apps/controller/src/auth/configuration.ts:validateAuthSecret` rejects short
+secrets before Driver construction or PostgreSQL access. `composeProduction` and
+the auth factory repeat it. Endpoints include `/healthz` and `/readyz`.
 `apps/controller/src/composition/postgres-readiness.ts:createPostgresReadinessCheck`
 shares one application-pool `SELECT 1` per instance across overlapping `GET` and
 implicit `HEAD` probes until PostgreSQL settles. Disconnects cannot release it;
@@ -393,6 +393,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
 
 - 2026-11-13: Document the opt-in check of an existing Installation and its bootstrap administrator. (authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94 - 3c8ee8b97066d1e82a4ba9f95ad6d6f6afea5df8)
 
