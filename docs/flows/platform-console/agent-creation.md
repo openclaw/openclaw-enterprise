@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-12
-last_updated_session: authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98
+updated: 2026-11-13
+last_updated_session: authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4
 ---
 
 # Console Agent creation
@@ -148,9 +148,14 @@ is refused before any write. It then checks the Agent name, draft values with th
 `secretBindings`, plugins and the planned `harnessAuth`
 (only the method for a Secret it saves next or registers with a Credential Gateway; none for
 ChatGPT sign-in) with
-`POST /namespaces/:namespaceId/agents/validate`, which refuses a name another Agent has with
-Agent create's `409` and a channel token reference without a binding with Configuration
-create's `400`. `list.mts:channelBindingRefusal` shows that refusal, and the same one from
+`POST /namespaces/:namespaceId/agents/validate`. After Agent create authorization,
+OCC rejects Configuration Secret bindings that name another Namespace, then applies
+Configuration create's size, content, and required Configuration Driver admission checks
+to the unsaved Configuration. It next checks the Agent's plugins and topology, then refuses
+a name another Agent has with Agent create's `409`. A channel token reference without a
+binding receives Configuration create's `400`. Preflight writes nothing; Secret existence
+and `operate` checks stay with the actual writes. `list.mts:channelBindingRefusal` shows
+the channel refusal, and the same one from
 provisioning, only under the Configuration JSON;
 the Slack drawer requires both token Secrets while Slack is enabled. It then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
@@ -220,6 +225,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 
 - 2026-11-12 16:13: Trace Agent create authorization, Namespace lookup, and browser-access capability discovery. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
 

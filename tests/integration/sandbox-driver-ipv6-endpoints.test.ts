@@ -1,41 +1,24 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
-import {
-  loadPackageDefinition,
-  Server,
-  ServerCredentials,
-  type GrpcObject,
-  type ServerUnaryCall,
-  type sendUnaryData,
-} from "../../apps/controller/node_modules/@grpc/grpc-js/build/src/index.js";
-import { load } from "../../apps/controller/node_modules/@grpc/proto-loader/build/src/index.js";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
+import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { buildEndpointInstallation } from "./sandbox-driver-installation-fixture.ts";
 
 type HealthResponse = { status: string };
 
-function packageNamespace(value: GrpcObject[string] | undefined): GrpcObject {
-  assert.ok(value !== undefined && typeof value === "object" && !("format" in value));
-  return value;
-}
-
 test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer can reach", async (t) => {
-  const proto = await load(join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"), {
-    keepCase: true,
-    enums: String,
-  });
-  const openshell = packageNamespace(loadPackageDefinition(proto).openshell);
-  const version = packageNamespace(openshell.v1);
-  const OpenShell = version.OpenShell;
-  assert.ok(typeof OpenShell === "function");
-  const server = new Server();
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, enums: String },
+  );
+  const server = new grpc.Server();
   let healthCalls = 0;
-  server.addService(OpenShell.service, {
+  server.addService(openShellService(grpc.loadPackageDefinition(proto)), {
     Health(
-      _call: ServerUnaryCall<Record<string, never>, HealthResponse>,
-      callback: sendUnaryData<HealthResponse>,
+      _call: Grpc.ServerUnaryCall<Record<string, never>, HealthResponse>,
+      callback: Grpc.sendUnaryData<HealthResponse>,
     ) {
       healthCalls += 1;
       callback(null, { status: "SERVICE_STATUS_HEALTHY" });
@@ -43,7 +26,7 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
   });
   // A real IPv6 listener and the native SDK establish address compatibility, not live OpenShell.
   const port = await new Promise<number>((resolve, reject) =>
-    server.bindAsync("[::1]:0", ServerCredentials.createInsecure(), (error, value) =>
+    server.bindAsync("[::1]:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
       error ? reject(error) : resolve(value),
     ),
   );

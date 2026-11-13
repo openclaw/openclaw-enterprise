@@ -208,7 +208,7 @@ jobs:
           job-timeout-minutes: 120
       - name: Summarize selected scenarios
         if: always()
-        run: node scripts/ci/qa-matrix-summary.mjs
+        run: node scripts/ci/qa-matrix-summary.ts
       - name: Retain QA outcomes
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

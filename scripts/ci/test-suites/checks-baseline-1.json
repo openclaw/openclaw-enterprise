@@ -88,7 +88,7 @@
     "tests/conformance/docker-compute.test.mjs",
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
-    "tests/conformance/codex-seccomp-profile.test.mjs",
+    "tests/conformance/codex-seccomp-profile.test.ts",
     "tests/conformance/kubernetes-ownership.test.mjs",
     "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
@@ -131,7 +131,7 @@
     "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
-    "tests/conformance/openshell-git-denial.test.mjs",
+    "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
@@ -158,7 +158,7 @@
       "path": "tests/conformance/model-discovery.test.mjs"
     },
     {
-      "path": "tests/conformance/codex-seccomp-profile.test.mjs"
+      "path": "tests/conformance/codex-seccomp-profile.test.ts"
     },
     {
       "path": "tests/conformance/configuration-occ.test.mjs"
@@ -764,7 +764,7 @@
       ]
     },
     {
-      "path": "tests/conformance/openshell-git-denial.test.mjs",
+      "path": "tests/conformance/openshell-git-denial.test.ts",
       "expectedTests": [
         "Git denial receipt requires fresh evidence and retains the final millisecond bucket",
         "Git denial receipt requires the adjacent endpoint-not-admitted warning",

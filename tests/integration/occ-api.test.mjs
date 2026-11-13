@@ -5942,6 +5942,18 @@ test("a Namespace publisher admits an immutable plugin release only for Agents i
     [nsPath, true],
     [otherPath, false],
   ]) {
+    // The create form validates the unsaved Configuration against this Namespace's release.
+    const preflight = await controller.request("POST", `${path}/agents/validate`, {
+      body: {
+        configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-5.1") },
+        executionMode: "dedicated",
+        plugins,
+      },
+    });
+    assert.equal(preflight.status, expected ? 204 : 400, JSON.stringify(preflight.body));
+    if (!expected) {
+      assert.match(preflight.body.error.message, /imported plugin release is unavailable/);
+    }
     const catalog = await controller.request("POST", `${path}/agents/plugins`, {
       body: { harnessId: "openclaw", q: "import-probe" },
     });
