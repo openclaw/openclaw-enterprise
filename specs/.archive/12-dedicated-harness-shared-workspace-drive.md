@@ -67,7 +67,7 @@ deletes only the owning Agent's PVC. Embedded execution creates no shared PVC.
 3. Configure disposable k3d fixtures so their existing storage provisioner can
    bind `ReadWriteMany` claims. Keep storage-bootstrap mechanics in the fixture
    and [operator documentation](../../docs/reference/drivers/kubernetes-compute.md).
-4. Extend the existing [real Kubernetes integration](../../tests/integration/kubernetes-compute-real.test.mjs)
+4. Extend the existing [real Kubernetes integration](../../tests/integration/kubernetes-compute-real.test.ts)
    and [real gateway/Codex k3d integration](../../tests/integration/harness-topology-k3d-real.test.mjs);
    run the existing [real Docker Compute integration](../../tests/integration/docker-compute-real.test.mjs)
    as dedicated gateway/Codex regression coverage.
