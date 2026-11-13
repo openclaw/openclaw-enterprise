@@ -1,28 +1,39 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import type {
+  Agent,
+  InitialWorkspaceFiles,
+  Namespace,
+} from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  InMemoryPlatformState,
+  OpenClawController,
+  type PlatformStateStore,
+  type PlatformUnitOfWork,
+} from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const identifier = (prefix) => `${prefix}_${randomUUID()}`;
+const identifier = (prefix: string) => `${prefix}_${randomUUID()}`;
 
-async function exerciseSetup(store, reopened = store) {
+async function exerciseSetup(store: PlatformStateStore, reopened = store) {
   const createdAt = new Date().toISOString();
-  const namespace = {
+  const namespace: Namespace = {
     id: identifier("ns"),
     name: `Workspace ${randomUUID()}`,
     status: "ready",
     createdAt,
   };
   const otherNamespace = { ...namespace, id: identifier("ns"), name: `${namespace.name} other` };
-  const configuration = {
-    id: identifier("cfg"),
-    namespaceId: namespace.id,
-    kind: "agent",
-    generation: 1,
-    createdAt,
-  };
+  const configuration: Parameters<PlatformUnitOfWork["configurations"]["createConfiguration"]>[0] =
+    {
+      id: identifier("cfg"),
+      namespaceId: namespace.id,
+      kind: "agent",
+      generation: 1,
+      createdAt,
+    };
   const installation = await store.transact(async (state) => {
     const installation =
       (await state.installations.getInstallation()) ??
@@ -95,6 +106,7 @@ async function exerciseSetup(store, reopened = store) {
     workspaceDefaultsId: defaultsId,
   });
   const setup = await reopened.read((state) => state.workspaceSetups.find(namespace.id, agent.id));
+  assert.ok(setup);
   assert.deepEqual(setup.files, files);
   assert.equal(setup.defaultsId, defaultsId);
   assert.equal(setup.completed, false);
@@ -129,15 +141,15 @@ async function exerciseSetup(store, reopened = store) {
     store.transact((state) => state.workspaceSetups.create({ ...setup, id: randomUUID() })),
     { name: "ResourceConflictError" },
   );
-  let withoutSetup;
-  for (const [name, initialWorkspaceFiles] of [
-    ["Omitted", undefined],
-    ["Empty map", {}],
-  ]) {
+  let withoutSetup: Readonly<Agent> | undefined;
+  for (const [name, workspaceInput] of [
+    ["Omitted", {}],
+    ["Empty map", { initialWorkspaceFiles: {} }],
+  ] as const) {
     const omitted = await controller.createAgent("creator", {
       ...input,
       name,
-      initialWorkspaceFiles,
+      ...workspaceInput,
     });
     withoutSetup = omitted;
     assert.equal(
@@ -145,6 +157,7 @@ async function exerciseSetup(store, reopened = store) {
       undefined,
     );
   }
+  assert.ok(withoutSetup);
   const before = await reopened.read((state) => state.agents.listAgents(namespace.id));
   for (const bad of [
     null,
@@ -156,7 +169,12 @@ async function exerciseSetup(store, reopened = store) {
     { "SOUL.md": "🦀".repeat(4097) },
   ]) {
     await assert.rejects(
-      controller.createAgent("creator", { ...input, name: "Rejected", initialWorkspaceFiles: bad }),
+      controller.createAgent("creator", {
+        ...input,
+        name: "Rejected",
+        // @ts-expect-error Deliberately exercise OCC's validation of malformed workspace files.
+        initialWorkspaceFiles: bad,
+      }),
       { name: "ScopeViolationError" },
     );
   }
@@ -175,24 +193,27 @@ async function exerciseSetup(store, reopened = store) {
   );
   assert.deepEqual(await reopened.read((state) => state.agents.listAgents(namespace.id)), before);
   // An enclosing transaction failure rolls back both Agent and staged private contents.
-  let rolledBackAgent;
+  const rollback: { agentId?: string } = {};
   await assert.rejects(
     controller.transact(async () => {
-      rolledBackAgent = await controller.createAgent("creator", {
+      const rolledBackAgent = await controller.createAgent("creator", {
         ...input,
         name: "Rolled back",
         initialWorkspaceFiles: { "USER.md": "transaction private" },
       });
+      rollback.agentId = rolledBackAgent.id;
       throw new Error("abort setup transaction");
     }),
     /abort setup transaction/,
   );
+  const rolledBackAgentId = rollback.agentId;
+  assert.ok(rolledBackAgentId);
   assert.equal(
-    await reopened.read((state) => state.agents.findAgent(namespace.id, rolledBackAgent.id)),
+    await reopened.read((state) => state.agents.findAgent(namespace.id, rolledBackAgentId)),
     undefined,
   );
   assert.equal(
-    await reopened.read((state) => state.workspaceSetups.find(namespace.id, rolledBackAgent.id)),
+    await reopened.read((state) => state.workspaceSetups.find(namespace.id, rolledBackAgentId)),
     undefined,
   );
   const completed = await store.transact((state) =>
@@ -300,10 +321,13 @@ test(
       ]),
       { code: "23514" },
     );
-    assert.equal(
-      (await pool.query("SELECT files FROM occ.workspace_setups WHERE agent_id = $1", [agent.id]))
-        .rows[0].files,
-      null,
+    const {
+      rows: [row],
+    } = await pool.query<{ files: InitialWorkspaceFiles | null }>(
+      "SELECT files FROM occ.workspace_setups WHERE agent_id = $1",
+      [agent.id],
     );
+    assert.ok(row);
+    assert.equal(row.files, null);
   },
 );

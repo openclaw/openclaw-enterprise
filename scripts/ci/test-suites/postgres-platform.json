@@ -25,14 +25,14 @@
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
-    "tests/integration/workspace-setup-worker.test.mjs",
+    "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
     "tests/integration/postgres-service-account-deletion.test.mjs",
     "tests/integration/postgres-service-account-issuance-recovery.test.mjs",
     "tests/integration/postgres-service-account-compensation.test.ts",
     "tests/integration/postgres-presets.test.mjs",
-    "tests/integration/postgres-workspace-setup.test.mjs",
+    "tests/integration/postgres-workspace-setup.test.ts",
     "tests/integration/postgres-connection-auth.test.mjs",
     "tests/integration/postgres-pool-options.test.ts",
     "tests/integration/postgres-repository-transactions.test.mjs",
@@ -350,14 +350,14 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-workspace-setup.test.mjs",
+      "path": "tests/integration/postgres-workspace-setup.test.ts",
       "expectedTests": [
         "OCC stages workspace input atomically, isolates it, and clears bytes on completion or deletion",
         "PostgreSQL workspace setup survives reopen and enforces immutable input and completed state"
       ]
     },
     {
-      "path": "tests/integration/workspace-setup-worker.test.mjs",
+      "path": "tests/integration/workspace-setup-worker.test.ts",
       "expectedTests": [
         "worker retains exact-Agent workspace input through activation failure and purges it only after success",
         "worker rejects unsupported workspace setup before Compute preparation and retains pending files"
