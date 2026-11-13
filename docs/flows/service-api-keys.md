@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-10
-last_updated_session: authoring-run/edc4984b-d876-4ddc-af2b-42f3d3b0a4c4
+updated: 2026-11-12
+last_updated_session: authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98
 ---
 
 # Service API Keys Flow
@@ -148,12 +148,16 @@ deletion returns `503 DEPENDENCY_UNAVAILABLE`, even if Better Auth reports an
 invalid key. Each concurrent verification retains its own failure state. Better
 Auth still owns key hashing, validity, expiry, and revocation decisions.
 
-Successful verification supplies the service-principal ID and stored scope to
-`resolveIdentity`. The selected IAM Driver looks up the current identity by ID.
-The controller rejects a missing identity, Agent ownership, changed scope, or
-another requested Namespace with `403`. A Namespace key cannot enter an
-Installation-level resource operation. Better Auth neither creates a human
-session nor authorizes this request.
+`resolveIdentity` looks up the verified service-principal ID through the selected
+IAM Driver. The controller returns `403` for a missing identity, Agent ownership,
+changed scope, or a request outside the key's stored scope. A Namespace key
+cannot enter an Installation-level resource operation. Better Auth verifies
+the key without creating a human session or authorizing the resource request.
+
+If a Namespace key calls `GET /namespaces/:namespaceId/agent-capabilities`
+in another Namespace, the controller returns `403` before OCC authorization.
+The audit records `create` on the requested Agent collection with
+`details.actorServiceKeyId`.
 
 ### 4. Authorize the exact read with current IAM policy
 
@@ -247,6 +251,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 16:13: Trace the audit target for a cross-Namespace Agent capability denial. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
 
 - 2026-11-10 15:43: Preserve key-store operation failures through verification and trace concurrent-request isolation. (authoring-run/edc4984b-d876-4ddc-af2b-42f3d3b0a4c4 - a8742611463ea306e85a543b11887ea038d9cfb0)
 

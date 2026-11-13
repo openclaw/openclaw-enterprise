@@ -103,6 +103,10 @@ function receiptFromRow(value: unknown): Readonly<RepositoryBrokerReceipt> {
   });
 }
 
+function decodeOptionalRow<T>(row: unknown, decode: (value: unknown) => T): T | undefined {
+  return row === undefined ? undefined : decode(row);
+}
+
 /** Uses the enclosing State transaction; database constraints own persisted invariants. */
 export function postgresRepositorySessions(
   client: PostgresQueryClient,
@@ -170,21 +174,21 @@ export function postgresRepositorySessions(
         `SELECT ${columns} FROM occ.repository_session_attempts WHERE admission_id = $1 FOR UPDATE`,
         [admissionId],
       );
-      return result.rows[0] === undefined ? undefined : attemptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], attemptFromRow);
     },
     findBrokerReceipt: async (admissionId) => {
       const result = await client.query(
         `SELECT ${receiptColumns} FROM occ.repository_broker_receipts WHERE admission_id = $1`,
         [admissionId],
       );
-      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], receiptFromRow);
     },
     findBrokerReceiptBySession: async (sessionId) => {
       const result = await client.query(
         `SELECT ${receiptColumns} FROM occ.repository_broker_receipts WHERE session_id = $1`,
         [sessionId],
       );
-      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], receiptFromRow);
     },
     createBrokerReceipt: async (input) => {
       const result = await client.query(
@@ -207,21 +211,21 @@ export function postgresRepositorySessions(
           input.expired ?? null,
         ],
       );
-      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], receiptFromRow);
     },
     fenceBrokerReceipt: async (input) => {
       const result = await client.query(
         `UPDATE occ.repository_broker_receipts SET state = 'fenced' WHERE admission_id = $1 AND state = 'reserved' AND generation = $2 RETURNING ${receiptColumns}`,
         [input.admissionId, input.generation],
       );
-      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], receiptFromRow);
     },
     findAttempt: async (admissionId) => {
       const result = await client.query(
         `SELECT ${columns} FROM occ.repository_session_attempts WHERE admission_id = $1`,
         [admissionId],
       );
-      return result.rows[0] === undefined ? undefined : attemptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], attemptFromRow);
     },
     listRevisionAttempts: async (owner) => {
       const result = await client.query(
@@ -279,7 +283,7 @@ export function postgresRepositorySessions(
           input.updatedAt,
         ],
       );
-      return result.rows[0] === undefined ? undefined : attemptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], attemptFromRow);
     },
   };
 }

@@ -818,6 +818,128 @@ test(
 );
 
 test(
+  "live apply saves edits and enqueues their exact snapshot atomically",
+  requiresPostgres,
+  async (t) => {
+    const { state, pool, inject, deployAgent, grant, principal } = await createPolicyApp(t, true);
+    for (const { name, additions, incompatibleDefaults } of [
+      { name: "add a grant", additions: [grant] },
+      { name: "clear saved grants", additions: [] },
+      {
+        name: "roll back edits refused by frozen defaults",
+        additions: [],
+        incompatibleDefaults: true,
+      },
+    ]) {
+      await t.test(name, async () => {
+        const { namespace, agent, revision } = await deployAgent("Atomic policy application");
+        const targetRevision = await state.transact(async (unit) => {
+          await unit.namespaces.lockNamespace(namespace.id);
+          // Model a persisted revision whose frozen rule name the current OpenShell Driver reserves.
+          const target = incompatibleDefaults
+            ? await unit.revisions.createRevision({
+                ...revision,
+                id: `rev_${randomUUID()}`,
+                revision: revision.revision + 1,
+                sandboxPolicy: {
+                  ...revision.sandboxPolicy,
+                  defaults: {
+                    "oce-agent-legacy": revision.sandboxPolicy.defaults["python-default"],
+                  },
+                },
+              })
+            : revision;
+          const active = await unit.agents.compareAndSetActiveRevision(
+            namespace.id,
+            agent.id,
+            undefined,
+            target.id,
+          );
+          assert.equal(active?.activeRevisionId, target.id);
+          return target;
+        });
+        const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+        const enabled = await inject("PATCH", `${path}/editing`, { enabled: true });
+        assert.equal(enabled.statusCode, 200, enabled.body);
+        if (additions.length === 0) {
+          const saved = await inject("PUT", path, { expectedVersion: 1, additions: [grant] });
+          assert.equal(saved.statusCode, 200, saved.body);
+        }
+        const readPolicy = () =>
+          state.read((view) => view.sandboxPolicies.find(namespace.id, agent.id));
+        const before = await readPolicy();
+        const work = () =>
+          pool.query(
+            "SELECT state, actor_id FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND agent_target='sandbox_policy'",
+            [namespace.id, agent.id],
+          );
+        const audits = () =>
+          pool.query(
+            "SELECT id FROM occ.audit_events WHERE kind='mutation' AND outcome='success' AND resource_id=$1 ORDER BY id",
+            [before.id],
+          );
+        const auditBefore = (await audits()).rows;
+        if (incompatibleDefaults) {
+          const body = { expectedVersion: before.version, additions };
+          const refused = await inject("POST", `${path}/apply`, {
+            ...body,
+            revisionId: targetRevision.id,
+          });
+          assert.equal(refused.statusCode, 409, refused.body);
+          assert.equal(
+            refused.json().error.message,
+            "The Sandbox Driver cannot enforce the complete requested policy.",
+          );
+          assert.deepEqual(await readPolicy(), before);
+          assert.deepEqual((await work()).rows, []);
+          assert.deepEqual((await audits()).rows, auditBefore);
+          // The same edit commits through ordinary save, which admits against current defaults.
+          const saved = await inject("PUT", path, body);
+          assert.equal(saved.statusCode, 200, saved.body);
+          assert.equal(saved.json().data.version, before.version + 1);
+          assert.deepEqual(saved.json().data.additions, additions);
+          return;
+        }
+        for (const target of [
+          { expectedVersion: before.version, revisionId: `rev_${randomUUID()}` },
+          { expectedVersion: before.version + 1, revisionId: revision.id },
+        ]) {
+          const refused = await inject("POST", `${path}/apply`, { ...target, additions });
+          assert.equal(refused.statusCode, 409, refused.body);
+          assert.deepEqual(await readPolicy(), before);
+          assert.deepEqual((await work()).rows, []);
+          assert.deepEqual((await audits()).rows, auditBefore);
+        }
+        const accepted = await inject("POST", `${path}/apply`, {
+          expectedVersion: before.version,
+          revisionId: revision.id,
+          additions,
+        });
+        assert.equal(accepted.statusCode, 202, accepted.body);
+        const returned = accepted.json().data;
+        const version = before.version + 1;
+        assert.equal(returned.version, version);
+        assert.deepEqual(returned.additions, additions);
+        assert.equal(returned.application.state, "pending");
+        assert.equal(returned.application.revisionId, revision.id);
+        assert.equal(returned.application.policyVersion, version);
+        assert.equal(returned.application.requestedBy, principal.id);
+        const stored = await readPolicy();
+        assert.equal(stored.application.id, returned.application.id);
+        assert.equal(stored.version, version);
+        assert.deepEqual(stored.additions, additions);
+        assert.deepEqual(stored.application.snapshot, {
+          ...revision.sandboxPolicy,
+          version,
+          additions,
+        });
+        assert.deepEqual((await work()).rows, [{ state: "queued", actor_id: principal.id }]);
+      });
+    }
+  },
+);
+
+test(
   "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it",
   requiresPostgres,
   async (t) => {
@@ -1092,6 +1214,20 @@ test(
     assert.equal(
       unreadableApply.json().error.message,
       callerDenied("SandboxPolicy read", `SandboxPolicy ${previous.id}`),
+    );
+    const unreadableEdits = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 2, revisionId: revision.id, additions: [] },
+      app,
+    );
+    assert.equal(unreadableEdits.statusCode, 403, unreadableEdits.body);
+    assert.equal(unreadableEdits.json().error.message, unreadableApply.json().error.message);
+    assert.equal(Object.hasOwn(unreadableEdits.json().error, "details"), false);
+    assert.equal(Object.hasOwn(unreadableEdits.json(), "data"), false);
+    assert.deepEqual(
+      await state.read((view) => view.sandboxPolicies.find(namespace.id, agent.id)),
+      previous,
     );
     // Update alone still saves. Apply returns the saved policy, so read is required even when
     // the saved version has no additions to admit.

@@ -136,6 +136,20 @@ test("token backend configuration requires both scope controls and rejects every
       .pushRefAllowlist,
     [],
   );
+  for (const repositoryId of ["1", "73", "9007199254740991"]) {
+    assert.equal(
+      validateGitHubConfiguration(githubTokenConfigurationData({ repositoryId })).repositoryId,
+      repositoryId,
+    );
+  }
+  let repositoryIdReads = 0;
+  const changingRepositoryId = {
+    ...githubTokenConfigurationData(),
+    // Programmatic configuration can change type after the initial field check.
+    get repositoryId() {
+      return repositoryIdReads++ === 0 ? "73" : 73;
+    },
+  };
   const { developmentOnly: _d, ...noLiteral } = githubTokenConfigurationData();
   const { pushRefAllowlist: _p, ...noAllowlist } = githubTokenConfigurationData();
   for (const [name, input] of [
@@ -158,6 +172,13 @@ test("token backend configuration requires both scope controls and rejects every
     ["unknown key", githubTokenConfigurationData({ token: "inline" })],
     ["App kind with a token field", githubConfigurationData({ tokenFile: "/protected/token" })],
     ["unknown kind", githubTokenConfigurationData({ kind: "github-pat" })],
+    ...["0", "01", "-1", "+1", "1.0", "1e2", " 73", "73 ", "9007199254740992", 73].map(
+      (repositoryId) => [
+        "noncanonical repository ID",
+        githubTokenConfigurationData({ repositoryId }),
+      ],
+    ),
+    ["repository ID changes from string to number", changingRepositoryId],
   ]) {
     assert.throws(() => validateGitHubConfiguration(input), { message: "invalid-backend" }, name);
   }

@@ -63,9 +63,13 @@ throughout attachment, target installation, and verification. Keep it restricted
 until the reopening step below, even if a linked procedure says to reopen it.
 The old release's OIDC path does not enforce admission claims.
 
-On a release supporting both current sign-in methods, enable OIDC alongside the
-existing provider through the documented stopped-maintenance procedure. Keep one
-serving controller; this does not authorize mixed-version serving.
+On a release supporting both providers, enable OIDC alongside GitHub during
+[stopped maintenance](auth-maintenance.md#stop-every-writer). If the previous
+chart requires GitHub alone for `agentNativeAdmin.sessionMode: host-only-exchange`,
+set `agentNativeAdmin.enabled: false` and remove the session-mode override for
+this step. Disabling native admin alone leaves that chart guard active. Agent
+browser access is unavailable while native admin is disabled. Run the checks through the
+restricted Console on one serving controller of the previous release.
 
 For each eligible account, use the administrator
 [OIDC attachment procedure](oidc-sign-in.md#attach-and-detach). Read the current
@@ -91,7 +95,15 @@ that Group supplies all required grants. Otherwise select an existing Role and
 its explicit scope. Initial Roles apply only to newly created accounts; they do
 not replace existing users' grants. Review direct and Group grants together.
 
-Apply these target-release changes in the stopped upgrade window:
+Apply the changes below during stopped maintenance after existing users prove
+OIDC access. If you use `scripts/upgrade-production-images`, prepare one OIDC-only
+values file for both charts. Remove the entire `auth.github` block, including
+`enabled: false`. Keep the selected password policy and, for the transition
+above, leave native admin disabled. Render both charts with these values and the
+target enrollment rule. Apply the values on the previous release during stopped
+maintenance and verify restricted OIDC access. Use those same values for the
+image upgrade. The image helper protects auth and native admin settings even
+with `--candidate-values`.
 
 | Existing input or behavior                                                                                | Target release                                                                                                       |
 | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -121,6 +133,9 @@ After OIDC access is verified, detach old GitHub methods by `methodId` through
 the existing account controls. Read a fresh account version for each mutation;
 detachment ends the account's sessions again. Verify a fresh OIDC login afterward.
 Disabled accounts must remain disabled throughout preparation and cutover.
+If the installation uses Agent browser access, restore the target chart's supported
+native-admin settings in separate stopped maintenance, then verify a fresh
+Agent launch through restricted ingress.
 Reopen general ingress only after these checks pass.
 
 ## Recover from a failed verification

@@ -7,7 +7,10 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { json } from "node:stream/consumers";
 import test from "node:test";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  codexLaunchEntrypoint,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_PATH,
   COMPUTE_RELEASE_PUBLIC_KEY,
@@ -145,7 +148,9 @@ test(
       /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
     );
     const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
-    assert.equal(compute.pluginRuntimeSnapshot(legacy).entrypoint, AGENT_RUNTIME_ENTRYPOINT);
+    const program = (revision) =>
+      codexLaunchEntrypoint(compute.codexLaunch(revision, f.sandboxDriver));
+    assert.equal(program(legacy), AGENT_RUNTIME_ENTRYPOINT);
     const ordinary = {
       ...legacy,
       executionAdmission: { version: 2, mode: "unprotected" },
@@ -159,7 +164,7 @@ test(
     ]) {
       assert.throws(() => compute.pluginRuntimeSnapshot(revision), /Compute admission is invalid/);
     }
-    await writeFile(script, compute.pluginRuntimeSnapshot(f.revision).entrypoint);
+    await writeFile(script, program(f.revision));
     await writeFile(callsPath, "");
     await writeCommand(
       directory,

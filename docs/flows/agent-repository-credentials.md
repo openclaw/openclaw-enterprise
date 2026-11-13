@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-12"
-last_updated_session: "authoring-run/93133b1c-f1c2-4bf8-859a-a8594e012fca"
+last_updated_session: "authoring-run/8318a8cc-bd10-4d1f-8290-56ee2f90a929"
 ---
 
 # Agent repository credential flow
@@ -91,95 +91,103 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`listRepositoryOptions` checks Namespace create or exact Agent update permission
-and Compute availability. Bundled listings use the bound GitHub catalog. Programmatic
-listings use the registered Repo Driver. Both reject stale owner results. Deploy checks the exact Harness. Empty Namespace catalogs return `[]`.
+`listRepositoryOptions` checks Agent `create` in the Namespace or `update` on the
+exact Agent, plus Compute availability. Bundled listings use the bound GitHub
+catalog. Programmatic listings use the registered Repo Driver. Both reject stale
+owner results. Deploy checks the exact Harness. Empty catalogs return `[]`.
 Absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
 Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
-`createRepositoryFields` searches up to 1,000 choices with 16 attachments.
-`repositorySettings` rejects explicit or inherited saves that mismatch bound
-Installation policy. Unbound saves use the registered Repo Driver. The database
-checks bindings. Only fresh, empty drafts tolerate classified outages. Catalogs
-omit sender metadata, credentials and provider descriptions.
+OCC allows 1,000 ordinary repositories plus the separate Installation option
+(1,001 choices). OCC rejects overflow with `503 DEPENDENCY_UNAVAILABLE`.
+`createRepositoryFields` searches choices and caps attachments at 16.
+`repositorySettings` enforces bound Installation policy for explicit and
+inherited saves. Unbound saves use the registered Repo Driver. The database
+checks bindings. Only fresh, empty drafts tolerate classified outages.
+Catalogs omit sender metadata, credentials and provider descriptions.
 
-Save Configuration first. Known Agent rejection permits reuse. Retry only after
-successful reload and nonempty repository selection. Resolve unknown outcomes by
-reading stored Agent and Configuration.
+Save Configuration first. Known Agent rejection permits reuse. Repository-scoped
+retries require a successful reload and explicit selection of at least one
+repository and profile. Read stored Agent and Configuration after unknown outcomes.
 
 Requests carry refs and optional profiles, never tokens or grant IDs.
-Without bound built-in policy or a selected Repo Driver, nonempty selections return
-`409 RESOURCE_CONFLICT`. OCC preserves order. GitHub defaults legacy profiles
+Nonempty selections without bound built-in policy or a selected Repo Driver
+return `409 RESOURCE_CONFLICT`. OCC preserves order. GitHub defaults legacy profiles
 to `git-write` without provider or control-socket calls.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
-requires an exact Namespace/ref/profile. Its fingerprint binds provider, App,
-installation, repository, duration, full Namespace profile policy, exact permissions
-and optional normalized push-ref allowlist. Each binding gets one grant. Installations
-can supply several repositories. Omission preserves selections. `[]` clears them.
+requires an exact Namespace/ref/profile. Each binding gets one grant with a
+fingerprint covering provider, App, installation, repository, duration, full
+Namespace profile policy, exact permissions and optional normalized push-ref
+allowlist. Omitted selections persist. `[]` clears them.
 
 <a id="2-freeze-a-deployable-revision" class="anchor-alias"></a>
 
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-matches GitHub Backend and registry IDs. It snapshots policy before loading packages
-or registries, preserving the protected Driver identity.
+matches GitHub Backend and registry IDs. It snapshots policy before loading
+packages or registries, preserving protected Driver identity.
 `packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner.
-File-based `repository` selects the built-in policy. Optional `repository.policyMode: built-in`
-leaves identity unchanged. Startup rejects other modes, `drivers.repo`, and separate public
-Repo Drivers. Programmatic registration remains available.
+File-based `repository` selects built-in policy. Optional `repository.policyMode: built-in`
+preserves identity. Startup rejects other modes, `drivers.repo` and separate
+public Repo Drivers. Programmatic registration remains available.
+`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts` owns
+OpenShell parsing and chart constraints.
 
-`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`
-owns OpenShell parsing and chart constraints.
-
-`OpenClawController.admitRepositoryCredentials` calls `resolveBindings` when bound and
-`RepositoryPolicyDriver.resolve` otherwise. OCC checks Compute topology
-and freezes Driver identity, grants and deadline across renewals and recovery.
-`validateRepositoryBrokerNetworkProxy` rejects broker-blocking Codex settings.
+`OpenClawController.admitRepositoryCredentials` calls `resolveBindings` for
+bound policy and `RepositoryPolicyDriver.resolve` otherwise. OCC checks
+Compute topology and freezes Driver identity, grants and deadline across
+renewal and recovery. `validateRepositoryBrokerNetworkProxy` rejects
+broker-blocking Codex settings.
 
 After approval lookup, changed bound ownership returns 503 before invocation.
-Unbound deploys recheck their Driver. Denial or binding/scope changes block revision creation.
+Unbound deploys recheck their Driver. Denial or changes to binding or scope
+block revision creation.
 
-Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
-Driver. Finite sessions need no native sender, control socket, broker CA or session files.
+Protected `repository.preparedGitHub` uses the installed Sandbox/Credential
+Proxy Driver. Finite sessions need no native sender, control socket, broker CA
+or session files.
 
-`repository.nativeSender` selects `GitHubNativeRepositorySender`, which owns native
-sessions and files without an App key. Before cutover, drain accepted work on its original owner. Cleanup uses recorded identity without policy resolution or reauthorization. The worker's prepared provider issues and holds credentials.
+`repository.nativeSender` selects `GitHubNativeRepositorySender` to own native
+sessions and files without an App key. The worker's prepared provider issues
+and holds credentials. Cleanup uses recorded identity without policy resolution
+or reauthorization.
 
 ### 3. Record ownership before opening a session
 
 `apps/controller/src/worker/repository-credentials.ts:RepositoryCredentialLifecycle.prepare`
 rechecks actor, Namespace, Agent, revision, Driver, grant and deadline.
-`GitHubNativeRepositorySender.checkAdmissionReady` checks broker capability with a
-two-second timeout. Failure blocks only fresh admission. Fresh OPEN includes `preparedOnly: true`. After socket replacement, old parsers reject it. Current control requires a prepared backend.
-With a live claim and Namespace/Agent locks, State records immutable cleanup context before Driver invocation. It rejects stopped or deleting owners.
-State stores identifiers and phases, never bearers or files.
+`GitHubNativeRepositorySender.checkAdmissionReady` checks broker capability for
+fresh admission with a two-second timeout. Fresh OPEN sends `preparedOnly: true`.
+Old parsers reject it after socket replacement. Control requires a prepared
+backend. Before Driver invocation, State
+uses a live claim and Namespace/Agent locks to reject stopped or deleting owners
+and save immutable cleanup context. State keeps identifiers and phases, never
+bearers or files.
 
 `apps/controller/src/backends/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
 sends the bound request over the private socket.
 `apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
-resolves and compares its grant. Client status validation permits historical
-revoked/expired counts for `DISPOSED`, but no outstanding obligations. Only created responses contain bearers.
+resolves and compares the grant. The client accepts `DISPOSED` with historical
+revoked or expired counts and zero outstanding obligations.
 `apps/controller/src/drivers/repo/github/access/client/config.ts:encodeRepositoryCredentialSessionFiles`
-encodes files; the worker records the session ID before passing them to Compute.
+encodes files. The worker records the session ID before delivery to Compute.
 
-Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or fences
-unfinished admissions and closes recovered sessions. Fresh material requires
-confirmed disposal or a missing opening with no recorded session. Invalidated
-sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING` under Work
-bounds and the revision deadline. Closing cleanup uses the configured interval;
-otherwise obligations keep their code and retry at `age / 40`, bounded by that
-interval and ten minutes.
-`apps/controller/src/worker.ts:processRepositoryCleanup` logs
-`worker.repository-cleanup-warning` with `cause` once per worker.
+Confirmed open sessions yield `retained` bindings without files. `recoverOnly`
+finds or fences unfinished admissions and closes recovered sessions. Fresh
+material requires confirmed disposal or a missing opening with no recorded
+session. Invalidation blocks replacement. Closing raises
+`REPOSITORY_CLEANUP_PENDING` within Work bounds and the revision deadline.
+Closing cleanup uses the configured interval. Other obligations retain their
+code and retry at `age / 40`, bounded by that interval and ten minutes.
 
 `apps/controller/src/drivers/repo/access/control.ts:createControlAdmission`
 reserves before release.
 `apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore`
 retains fences and original-broker disposal evidence after pruning.
-Transport failure cannot establish absence. `preparedOnly` requires protocol 3;
-unmarked v1 requests can recover and close original IDs but cannot reserve.
+Transport failure cannot establish absence. `preparedOnly` requires protocol 3.
+Unmarked v1 requests can only recover and close original IDs.
 `RepositoryCredentialLifecycle.verifyRelease` and
 `apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts:sessionQuery`
 require protocol 3 for native release and material selection.
@@ -197,24 +205,23 @@ withdrawal. Frozen identities reject session replacement. Transaction locks rema
 validates `new | retained` bindings against the version and hashes sorted
 reference/session pairs.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-store.ts:RepositoryMaterialStore.prepare`
-validates ownership, contents and deadlines before creating immutable Agent/version-owned
-Secrets. It rechecks deadlines after requests and before creation or return; expiry
-leaves Secrets for owned cleanup. For missing retained bindings,
-`RepositoryCredentialLifecycle.repair` closes that subset, requires disposal and
-retries Compute once. Missing inventory fails; pending closure blocks replacement
-until disposal is confirmed.
+checks ownership, contents and deadlines before creating immutable Agent/version-owned
+Secrets. It rechecks deadlines after requests and before creation or return.
+Expiry leaves Secrets for owned cleanup. `RepositoryCredentialLifecycle.repair`
+closes missing retained bindings and retries Compute once after confirmed disposal.
+Missing inventory fails.
 
 `apps/controller/src/drivers/compute/kubernetes/repository-material.ts:repositoryMaterialDeployment`
-mounts Secrets only in the first initializer. Sorted projections prevent key-order rollouts;
-session replacement still rolls.
+mounts Secrets only in the first initializer. Sorted projections prevent
+key-order rollouts. Session replacement still rolls.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts:REPOSITORY_MATERIAL_INIT_ENTRYPOINT`
-validates the complete projection, then writes in-memory mode-0700 directories and
-mode-0600 files. `REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts the
-private subPath at `/run/oce/repository-credentials`, avoiding the fsGroup-writable root. It calls
+validates the full projection before writing in-memory mode-0700 directories
+and mode-0600 files. `REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts the private
+subPath at `/run/oce/repository-credentials` outside the fsGroup-writable root and calls
 `apps/controller/src/drivers/repo/github/access/client/native-git.ts:prepareNativeGitConfiguration`
-with private-file checks. Retry removes only a validated private `gitconfig`.
-Both gate startup; the consumer mount is read-only. Metadata and gateway
-bearers remain separate.
+to check private files and write `gitconfig`. Retry removes only validated
+private `gitconfig`. Both initializers gate startup. The consumer mount is
+read-only. Metadata and gateway bearers stay separate.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.activateRevision`
 replaces consumers whenever material changes, including within a version. Readiness requires
@@ -230,25 +237,25 @@ Compute grants consumer egress; Helm admits consumers through
 [credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
 For [prepared native Git](../reference/repository-credentials/prepared-native-git.md),
 `apps/controller/src/drivers/compute/kubernetes/repository-compute-ingress.ts:reconcilePreparedRepositoryIngress`
-requires the peer’s hostname, TLS port and worker selector to match the broker
-Service recorded by Helm. Native preparation writes `gitconfig` without reading
-bearers. System Git includes `/run/oce/repository-credentials/gitconfig` and
-preserves global settings.
-Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
+requires the peer’s hostname, TLS port and worker selector to match Helm’s
+broker Service. System Git includes `/run/oce/repository-credentials/gitconfig`
+and preserves global settings.
+Embedded `repositoryNativeConfiguration` puts the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
-`allow_login_shell=false` and `shell_environment_policy.set.PATH`, and keeps the Pod's
-`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication persists.
-App keys, JWTs, installation tokens and the control socket never enter consumer material.
-The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
-defines Codex plugin and repository-bound filesystem and proxy access, explicit denies,
-and dedicated/embedded eligibility. Unbound policy, broker authorization and TLS
-verification stay in force. Codex verifies the named network profile on thread start, resume, fork and turns.
+`allow_login_shell=false` and `shell_environment_policy.set.PATH` and retains
+the Pod's `NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication
+persists. Consumer material excludes App keys, JWTs, installation tokens and
+the control socket. The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+defines Codex plugin and repository-bound filesystem and proxy access, explicit
+denies and dedicated/embedded eligibility. Unbound policy, broker authorization
+and TLS verification still apply. Codex checks the named profile at thread start,
+resume, fork and turns.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-Stock Git keeps commands, remotes, settings and hooks. Configuration routes
-canonical HTTPS hosts to the gateway. The helper checks host, path, generation and
-deadline before returning a bearer. `OCE_REPOSITORY_REF` selects bindings.
+Configuration routes canonical HTTPS hosts to the gateway. Before returning a
+bearer, the helper checks host, path, generation and deadline.
+`OCE_REPOSITORY_REF` selects bindings.
 [Routing limits](../reference/repository-credentials.md#client-routing-and-limits) describe command preflight and egress.
 `pushRefAllowlist` selects image-owned hooks. `scripts/build-repository-credentials.ts:stage`
 builds launchers that resolve the dispatcher by module URL through symlinks and relocations.
@@ -341,7 +348,8 @@ Compute waits for owned Pods to stop before removing material, preserving Secret
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
-Pending cleanup logs `worker.repository-cleanup-warning` and `cause` once.
+`apps/controller/src/worker.ts:processRepositoryCleanup` logs
+`worker.repository-cleanup-warning` with `cause` once per worker.
 
 `repository-not-admitted` identifies unselected targets; `name-one-repository-target`
 and `name-one-repository-ref` require explicit selection. Inspect metadata
@@ -365,6 +373,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 11:35: Keep the separately registered Installation option in a maximum-size catalog. (authoring-run/8318a8cc-bd10-4d1f-8290-56ee2f90a929 - bd0b21f805f8f2e76654c933a15bc31e0d4d44e1)
 
 - 2026-11-12 00:58: Document worker binding startup and retry. (authoring-run/93133b1c-f1c2-4bf8-859a-a8594e012fca - 63a65bbca29f4aac3bbd9e86c734947e4cc31943)
 

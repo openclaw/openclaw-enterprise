@@ -1298,6 +1298,153 @@ test(
 );
 
 test(
+  "retained repository cleanup refuses a different sender after Agent deletion and recovers with its owner",
+  requiresPostgres,
+  async (context) => {
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const { owner, candidate } = await fixture.admitInitialRevision("retained-sender", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    const events: WorkerEvent[] = [];
+    const emit = (event: Readonly<Record<string, unknown>>) =>
+      events.push(checkedWorkerEvent(event));
+    await fixture.start(fixture.compute, { emit });
+    await fixture.work(candidate, "succeeded");
+    const opened = await repositoryAttempts(fixture, candidate);
+    assert.equal(opened.length, 1);
+    const original = required(opened[0]);
+    assert.equal(original.phase, "open");
+    assert.equal(original.brokerProtocol, 3);
+    assert.ok(original.sessionId);
+    assert.deepEqual(original.cleanupContext, {
+      driver: repository.snapshot.driver,
+      binding: repository.snapshot.bindings[0],
+    });
+    assert.deepEqual(
+      repository.calls.map(({ operation }) => operation),
+      ["open"],
+    );
+
+    // Fail before disposal: this is a definite close failure, not a lost response.
+    const close = repository.driver.close.bind(repository.driver);
+    repository.driver.close = async (sessionId) => {
+      repository.calls.push({ operation: "close", sessionId });
+      throw new Error("REPOSITORY_BROKER_UNAVAILABLE");
+    };
+    await fixture.requestStop(owner);
+    const pending = await completion(
+      events,
+      "failed close to leave a queued repository cleanup",
+      (event) =>
+        event.event === "worker.completed" &&
+        event.revisionId === candidate.id &&
+        event.code === "REPOSITORY_CLEANUP_PENDING" &&
+        event.workId?.includes(":repository_cleanup:"),
+    );
+    const cleanupKey = required(pending.workId);
+    await fixture.stop();
+    assert.ok(repository.calls.some(({ operation }) => operation === "close"));
+    await fixture.requestDeletion(owner);
+    await fixture.start(fixture.compute, { emit });
+    await waitFor("normal Agent deletion to remove the owner", async () =>
+      (await fixture.currentAgent(owner)) === undefined ? true : undefined,
+    );
+    await fixture.stop();
+
+    const assertRevisionAbsent = async () => {
+      const rows = await fixture.observerPool.query(
+        "SELECT id FROM occ.agent_revisions WHERE id = $1",
+        [candidate.id],
+      );
+      assert.deepEqual(rows.rows, [], "the revision must remain physically deleted");
+    };
+    await assertRevisionAbsent();
+    const baseline = await repositoryAttempts(fixture, candidate);
+    assert.deepEqual(baseline, [
+      {
+        ...original,
+        liveRevisionId: null,
+        phase: "closing",
+        updatedAt: required(baseline[0]).updatedAt,
+      },
+    ]);
+    const retained = await fixture.observerPool.query<
+      Pick<CleanupWorkRow, "agent_id" | "revision_id" | "state"> & { idempotency_key: string }
+    >(
+      `SELECT idempotency_key, agent_id, revision_id, state
+       FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2
+       ORDER BY idempotency_key`,
+      [fixture.namespace.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
+    );
+    // Stop and deletion coalesce session cleanup under this same key. No second
+    // retained item can race the selected claim after the worker has joined.
+    assert.deepEqual(retained.rows, [
+      {
+        idempotency_key: cleanupKey,
+        agent_id: null,
+        revision_id: null,
+        state: "queued",
+      },
+    ]);
+    const callsBeforeRefusal = [...repository.calls];
+    repository.driver.close = close;
+    events.length = 0;
+    await fixture.start(fixture.compute, {
+      emit,
+      transformDrivers(drivers) {
+        assert.ok(drivers.nativeRepositorySender);
+        return {
+          ...drivers,
+          nativeRepositorySender: {
+            ...drivers.nativeRepositorySender,
+            implementation: "different-repository-sender",
+          },
+        };
+      },
+    });
+    await makeWorkDue(fixture.observerPool, cleanupKey);
+    await completion(
+      events,
+      "retained cleanup to report the sender mismatch",
+      (event) =>
+        event.event === "worker.repository-cleanup-warning" &&
+        event.workId === cleanupKey &&
+        event.cause === "REPOSITORY_DRIVER_MISMATCH",
+    );
+    await completion(
+      events,
+      "the exact refused cleanup to remain pending",
+      (event) =>
+        event.event === "worker.completed" &&
+        event.workId === cleanupKey &&
+        event.outcome === "pending" &&
+        event.code === "REPOSITORY_CLEANUP_PENDING",
+    );
+    await fixture.stop();
+    await fixture.work({ id: candidate.id, idempotencyKey: cleanupKey }, "queued");
+    assert.deepEqual(await repositoryAttempts(fixture, candidate), baseline);
+    assert.deepEqual(
+      repository.calls,
+      callsBeforeRefusal,
+      "wrong sender must have no boundary effects",
+    );
+    await fixture.start(fixture.compute);
+    await makeWorkDue(fixture.observerPool, cleanupKey);
+    await fixture.work({ id: candidate.id, idempotencyKey: cleanupKey }, "succeeded");
+    await fixture.stop();
+    const settled = await repositoryAttempts(fixture, candidate);
+    assert.deepEqual(settled, [
+      { ...required(baseline[0]), phase: "disposed", updatedAt: required(settled[0]).updatedAt },
+    ]);
+    assert.deepEqual(repository.calls.slice(callsBeforeRefusal.length), [
+      { operation: "close", sessionId: original.sessionId },
+    ]);
+    await assertRevisionAbsent();
+  },
+);
+
+test(
   "deployment inventory allows a no-repository revision only while Compute owns its Namespace",
   requiresPostgres,
   async (context) => {
