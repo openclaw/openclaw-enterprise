@@ -72,7 +72,8 @@
     "tests/integration/postgres-worker-process-shutdown.test.ts",
     "tests/integration/postgres-harness-overrides.test.ts",
     "tests/integration/postgres-preset-template-validation.test.ts",
-    "tests/integration/postgres-readiness-capacity.test.ts"
+    "tests/integration/postgres-readiness-capacity.test.ts",
+    "tests/integration/postgres-private-secret-create.test.ts"
   ],
   "files": [
     {
@@ -731,6 +732,15 @@
     {
       "path": "tests/integration/postgres-readiness-capacity.test.ts",
       "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
+    },
+    {
+      "path": "tests/integration/postgres-private-secret-create.test.ts",
+      "expectedTests": [
+        "a refused Installation-private create removes only its exact Kubernetes object",
+        "Installation-private refused-create compensation preserves replacements and unknown outcomes",
+        "OAuth registration and cleanup retain custody across unknown PostgreSQL commits",
+        "ordinary Installation-private OAuth registration, rotation and retirement remain usable"
+      ]
     }
   ]
 }
