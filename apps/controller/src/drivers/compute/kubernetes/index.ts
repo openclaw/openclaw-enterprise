@@ -18,6 +18,9 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   harnessEgressEnrollment,
+  NativeEnrollmentPending,
+  NATIVE_MODEL_ENROLLMENT_ENV,
+  NATIVE_MODEL_ORIGIN_ENV,
   COMPUTE_RELEASE_PUBLIC_KEY,
   computeReleasePublicKey,
   signComputeExecutionRelease,
@@ -296,6 +299,7 @@ import {
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
+  PROTECTED_NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_READINESS_PATH,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
@@ -1091,6 +1095,7 @@ interface PreparedHarnessAuth {
 }
 
 interface NativeRuntimeSnapshot {
+  readonly entrypoint: string;
   readonly configuration: string;
 }
 
@@ -3143,11 +3148,57 @@ function nativeRuntimeConfiguration(
   };
 }
 
+/** The native worker implements only the request-authorized Responses route. */
+function protectedNativeModelOrigin(revision: Readonly<AgentRevision>): string | undefined {
+  const plan = revision.egressPlan;
+  const route = plan?.routes[0];
+  const auth = revision.harnessAuth;
+  if (
+    revision.executionAdmission.version !== 8 ||
+    revision.harness.id !== "openclaw" ||
+    revision.harness.mode !== "dedicated" ||
+    auth.method !== "credential_source" ||
+    auth.sourceType !== "openai" ||
+    auth.loginMode !== "api_key" ||
+    plan?.authorization !== "online-request" ||
+    plan.repositoryGit !== undefined ||
+    plan.harnessCredentialSource !== undefined ||
+    plan.routes.length !== 1 ||
+    route?.binding.grant.kind !== "inference" ||
+    route.binding.grant.providerTools !== "none" ||
+    route.binding.grant.models.length !== 1 ||
+    route.binding.source.source.id !== auth.sourceId ||
+    route.method !== "POST" ||
+    route.path !== "/v1/responses"
+  ) {
+    return undefined;
+  }
+  const provider = savedModelProvider(revision.harness.configuration);
+  if (provider?.protocol !== "openai-responses" || provider.supportsStandaloneWebSearch) {
+    return undefined;
+  }
+  const upstream = new URL(modelProviderBaseUrl(provider));
+  const selected = nativeOpenAiModelSelections(revision.configuration);
+  if (
+    upstream.pathname !== "/v1" ||
+    upstream.origin !== route.origin ||
+    !selected?.length ||
+    !isDeepStrictEqual(selected.map(({ id }) => id).sort(), [...route.binding.grant.models].sort())
+  ) {
+    return undefined;
+  }
+  return route.origin;
+}
+
 function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot | undefined {
   if (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated") {
     return undefined;
   }
   return {
+    entrypoint:
+      revision.egressPlan === undefined
+        ? NATIVE_WORKER_ENTRYPOINT
+        : PROTECTED_NATIVE_WORKER_ENTRYPOINT,
     configuration: JSON.stringify(
       nativeRuntimeConfiguration(
         revision.configuration,
@@ -6320,8 +6371,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return;
     }
     const execution = plan.execution;
+    const native = protectedNativeModelOrigin(revision);
     if (
-      revision.harness.id !== "codex" ||
+      (revision.harness.id !== "codex" &&
+        (native === undefined ||
+          this.nodeEnrollment === undefined ||
+          this.getGatewayEndpoint(revision) === undefined ||
+          this.protectedExecution?.sandbox.withdrawHarnessExposure === undefined ||
+          !provisionsDedicatedOpenClaw(this.protectedExecution.sandbox))) ||
       revision.harness.mode !== "dedicated" ||
       revision.sandboxDriverId !== plan.sandboxDriverId ||
       !context?.currentEgressInstallation ||
@@ -7267,7 +7324,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (nativeRuntime === undefined) {
           this.addWorkspaceNode(agentDeployment, node.name, node.ca, revision, nodeSetupFile);
         } else {
-          this.addNativeWorker(agentDeployment, node.name, node.ca, workspaceSetup);
+          this.addNativeWorker(
+            agentDeployment,
+            node.name,
+            node.ca,
+            workspaceSetup,
+            nativeRuntime.entrypoint,
+          );
         }
       }
       if (
@@ -7363,6 +7426,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 revision,
                 await this.controlNamespace(revision.namespaceId),
               );
+        const nativeModelOrigin =
+          nativeRuntime === undefined ? undefined : protectedNativeModelOrigin(revision);
+        const requireCurrentNativeInstallation = () =>
+          this.protectedExecution!.current(egressContext!, context!, () =>
+            this.preparedEgressReady(egressContext!),
+          );
         const requirements = {
           ...renderedRequirements,
           ...(proxyWiring === undefined ? {} : { proxyWiring }),
@@ -7373,6 +7442,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
               attachments,
               harnessAuth.credentialSource,
             ),
+            ...(nativeModelOrigin === undefined
+              ? []
+              : [
+                  { name: NATIVE_MODEL_ORIGIN_ENV, value: nativeModelOrigin },
+                  {
+                    name: NATIVE_MODEL_ENROLLMENT_ENV,
+                    value: JSON.stringify(harnessEgressEnrollment(egressContext!.plan)),
+                  },
+                ]),
             ...(proxyWiring === undefined
               ? []
               : [
@@ -7386,6 +7464,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // worker's exposure serves only Compute's status read before its first enrollment,
         // and the provider withdraws it from a Sandbox adopted after that (finding 1657).
         const nodeEnrolled = await this.workspaceNodeEnrolled(revision, namespace);
+        if (nativeModelOrigin !== undefined && nodeEnrolled) {
+          // Once the exposure is withdrawn, this revision can only adopt its original installation.
+          await requireCurrentNativeInstallation();
+        }
         const harnessContext = {
           ...sandboxContext,
           revision,
@@ -7426,27 +7508,40 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
         let heldForRepositoryGitMaterial = false;
-        if (egressContext !== undefined) {
-          const enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
-            this.protectedExecution!.enroll(
-              egressContext,
-              sandbox.proxyWiring,
-              context!,
-              () => this.preparedEgressReady(egressContext),
-              async () => ({
-                ...sandboxContext,
-                revision,
-                requirements,
-                transportToken: await this.prepareRevisionStage("harness_auth", () =>
-                  this.sandboxTransportTokenText(revision),
-                ),
-              }),
-              (startupId, committed) => {
-                this.operationSignal().throwIfAborted();
-                return signComputeExecutionRelease(releaseKey!, startupId, committed);
-              },
-            ),
-          );
+        if (egressContext !== undefined && !(nativeModelOrigin !== undefined && nodeEnrolled)) {
+          let enrolled;
+          try {
+            enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
+              this.protectedExecution!.enroll(
+                egressContext,
+                sandbox.proxyWiring,
+                context!,
+                () => this.preparedEgressReady(egressContext),
+                async () => ({
+                  ...sandboxContext,
+                  revision,
+                  requirements,
+                  transportToken: await this.prepareRevisionStage("harness_auth", () =>
+                    this.sandboxTransportTokenText(revision),
+                  ),
+                }),
+                (startupId, committed) => {
+                  this.operationSignal().throwIfAborted();
+                  return signComputeExecutionRelease(releaseKey!, startupId, committed);
+                },
+              ),
+            );
+          } catch (error) {
+            if (nativeModelOrigin === undefined || !(error instanceof NativeEnrollmentPending)) {
+              throw error;
+            }
+            const runtimeFailure = this.runtimeFailureEvidence(error.runtimeFailure);
+            if (runtimeFailure === undefined) {
+              return incomplete();
+            }
+            await requireCurrentNativeInstallation();
+            return { ...result, runtimeFailure };
+          }
           if (!enrolled) {
             return incomplete();
           }
@@ -7561,6 +7656,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
             // Only a connection attributes the Agent's device to this revision.
             // A disconnected setup receipt must keep startup diagnostics available.
             if (await this.workspaceNodeEnrolled(revision, namespace)) {
+              if (nativeModelOrigin !== undefined) {
+                await requireCurrentNativeInstallation();
+              }
               await withdrawProviderExposure();
             } else if (sandboxDriver.harnessStatus !== undefined) {
               // A dedicated OpenClaw worker holding a failed model check never connects
@@ -7594,6 +7692,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ))
             ? incomplete("WORKSPACE_NODE_PENDING")
             : incomplete();
+        }
+        if (nativeModelOrigin !== undefined) {
+          // An actually connected node and the same admitted live installation must
+          // both hold before we remove the startup channel or report readiness.
+          await requireCurrentNativeInstallation();
         }
         if (!nodeEnrolled) {
           // The node enrolled this pass.
@@ -8123,7 +8226,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
             if (nativeRuntime === undefined) {
               this.addWorkspaceNode(replacement, node.name, node.ca, revision, nodeSetupFile);
             } else {
-              this.addNativeWorker(replacement, node.name, node.ca, workspaceSetup);
+              this.addNativeWorker(
+                replacement,
+                node.name,
+                node.ca,
+                workspaceSetup,
+                nativeRuntime.entrypoint,
+              );
             }
           }
           if (nodeSetupFile) {
@@ -8220,6 +8329,31 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayOwnership,
       gatewayNamespace,
     );
+    const nativeEgress =
+      nativeRuntime !== undefined && revision.egressPlan !== undefined
+        ? {
+            ...(await this.sandboxNamespaceContext(
+              this.sandboxNamespaceForRevision(revision, namespace),
+              namespace,
+            )),
+            revision,
+            plan: revision.egressPlan,
+          }
+        : undefined;
+    if (nativeEgress !== undefined) {
+      if (
+        !(await this.workspaceNodeEnrolled(revision, namespace)) ||
+        !(await this.workspaceNodeReady(revision, namespace))
+      ) {
+        throw new ActivationPendingError(
+          "WORKSPACE_NODE_PENDING",
+          "The exact protected OpenClaw node is not enrolled and connected.",
+        );
+      }
+      await this.protectedExecution!.current(nativeEgress, context!, () =>
+        this.preparedEgressReady(nativeEgress),
+      );
+    }
     // Written before the Deployment so a replacement Gateway starts with its node,
     // and a running one of this revision applies it without a restart.
     await this.deliverWorkspaceNodeBinding(
@@ -8229,6 +8363,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayOwnership,
     );
     await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace);
+    if (nativeEgress !== undefined) {
+      await this.protectedExecution!.current(nativeEgress, context!, () =>
+        this.preparedEgressReady(nativeEgress),
+      );
+    }
     await this.reconcile(
       this.deployment(
         gatewayName,
@@ -8306,6 +8445,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new ActivationPendingError(
         "WORKSPACE_NODE_PENDING",
         "The exact AgentRevision Harness node is not ready.",
+      );
+    }
+    if (nativeEgress !== undefined) {
+      await this.protectedExecution!.current(nativeEgress, context!, () =>
+        this.preparedEgressReady(nativeEgress),
       );
     }
     if (gitSettledAt !== undefined) {
@@ -12389,6 +12533,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     name: string,
     ca: string | undefined,
     workspaceSetup: WorkspaceSetup | undefined,
+    entrypoint: string,
   ): void {
     const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, false);
     variables.push(
@@ -12409,7 +12554,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       (workspaceSetup === undefined
         ? ""
         : workspaceSetupVerifier(workspaceSetup, { environment: "OPENCLAW_WORKSPACE_DIR" })) +
-        NATIVE_WORKER_ENTRYPOINT,
+        entrypoint,
     );
   }
 
@@ -14814,6 +14959,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     this.validateGatewayManagedMode(revision);
+    if (
+      revision.harness.id === "openclaw" &&
+      revision.egressPlan !== undefined &&
+      protectedNativeModelOrigin(revision) === undefined
+    ) {
+      throw new ConfigurationHarnessError(
+        "Protected Dedicated OpenClaw requires one request-authorized OpenAI Responses model and its exact admitted HTTPS endpoint.",
+      );
+    }
     let runtime: string | undefined;
     if (this.protectedCodexInference(revision)) {
       runtime = PROTECTED_CODEX_NO_CONNECTION_RETRY;
@@ -16028,7 +16182,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         source.id !== snapshot.sourceId ||
         source.namespaceId !== revision.namespaceId ||
         !credentialSourceMatchesSnapshot(source, snapshot) ||
-        source.state !== "ready"
+        source.state !== "ready" ||
+        (revision.harness.id === "openclaw" &&
+          revision.egressPlan !== undefined &&
+          !isDeepStrictEqual(source.egress?.key, revision.egressPlan.routes[0]?.binding.source))
       ) {
         throw new OwnershipFailure("Harness credential source does not match the admitted source.");
       }
@@ -17295,7 +17452,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         runtimeEntrypoint =
           nativeRuntime === undefined
             ? codexLaunchEntrypoint(codexLaunch)
-            : NATIVE_WORKER_ENTRYPOINT;
+            : nativeRuntime.entrypoint;
       }
     }
     return {

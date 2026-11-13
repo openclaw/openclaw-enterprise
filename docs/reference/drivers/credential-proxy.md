@@ -83,10 +83,11 @@ this support; they do not qualify stock OpenShell or any installed deployment.
 
 ### Online model requests
 
-Eligible static sources default to strict admission. Explicit `authorization: "online-request"`
-selects an offered provider; updates retain its ID and generation. Bundled
-`openai-online-request` generation 1 requires same-state native IAM and one dedicated
-Codex HTTPS Responses route, an explicit model and no provider-hosted tools.
+Static sources default to strict admission. `authorization: "online-request"`
+selects a provider whose ID and generation persist across updates.
+`openai-online-request` generation 1 requires same-state native IAM, one dedicated
+HTTPS Responses route, one model and no provider-hosted tools. Native OpenClaw
+supports version 8 with signed enrollment. Installed qualification is pending.
 
 `ProxyPlan.authorization` records the profile. Version 8 admits the model route;
 version 9 adds independently authorized mandatory Git delivery. Strict admissions

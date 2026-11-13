@@ -32,6 +32,35 @@ RUN --mount=type=secret,id=build-ca,required=false \
     sh /tmp/curl/build.sh
 RUN --network=none sh /tmp/curl/verify.sh
 
+FROM node-build-base AS model-sender-toolchain
+ARG TARGETARCH
+COPY scripts/ci/download-pinned.sh /tmp/download-pinned.sh
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    case "${TARGETARCH}" in \
+      amd64) sha256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;; \
+      arm64) sha256=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 ;; \
+      *) echo "Unsupported model sender architecture" >&2; exit 1 ;; \
+    esac; \
+    archive="go1.27.3.linux-${TARGETARCH}.tar.gz"; \
+    bash /tmp/download-pinned.sh "https://dl.google.com/go/$archive" /tmp/go.tar.gz "$sha256"; \
+    tar -xzf /tmp/go.tar.gz -C /usr/local; \
+    rm /tmp/go.tar.gz; \
+    test "$(/usr/local/go/bin/go env GOVERSION)" = go1.27.3; \
+    test "$(/usr/local/go/bin/go env GOHOSTARCH)" = "${TARGETARCH}"
+
+FROM model-sender-toolchain AS model-sender-build
+COPY go.mod /build/go.mod
+WORKDIR /build/deploy/runtime/model-sender
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
+COPY deploy/runtime/model-sender/ ./
+RUN --network=none set -eu; \
+    /usr/local/go/bin/go test -trimpath .; \
+    mkdir -p /out; \
+    /usr/local/go/bin/go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/openclaw-model-sender .; \
+    touch -d @0 /out/openclaw-model-sender
+
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -480,6 +509,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
 COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
+COPY --from=model-sender-build --chown=0:0 --chmod=0555 /out/openclaw-model-sender /opt/oce/bin/openclaw-model-sender
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
 RUN mkdir -p node_modules/.bin \

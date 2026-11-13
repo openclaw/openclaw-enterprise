@@ -583,6 +583,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       !sandbox ||
       sandbox.id !== expectedSandboxId ||
       sandbox.workspace !== workspace ||
+      (revision.harness.id === "openclaw" &&
+        sandbox.spec?.restart_policy !== 1 &&
+        sandbox.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER") ||
       ![2, "SANDBOX_PHASE_READY"].includes(sandbox.phase as string | number)
     ) {
       return undefined;

@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { buffer } from "node:stream/consumers";
 import { createConsoleAppFixture } from "./console-app.mjs";
 import { createDevelopmentComputeDriver } from "./development.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
@@ -105,6 +106,7 @@ async function buildStaticEgressFixture(
     serviceTransport,
     admitRevision = true,
     requestCredentials = false,
+    harnessId = "codex",
     resolutionFinished,
     preparedGitHub,
     createPreparedGitHub,
@@ -518,6 +520,9 @@ async function buildStaticEgressFixture(
   if (admissionOnly || requestCredentials) {
     // Exercise startup's retirement selection, not a policy recreated by the fixture.
     const base = createCredentialProxyInstallationConfiguration();
+    if (harnessId === "openclaw") {
+      base.drivers.sandbox.configuration.kubernetes.userNamespaces = false;
+    }
     if (requestCredentials) {
       const proxy = base.drivers.credential_proxy.configuration;
       Object.assign(proxy.authority, {
@@ -790,14 +795,19 @@ async function buildStaticEgressFixture(
         config: { authorized_base_url: `https://provider.example.test:${providerPort}/v1` },
         secrets: { api_key: secret.ref },
       });
-  const config = await app.createConfiguration(namespace.id, {
-    agents: {
-      defaults: {
-        model: { primary: "codex/fixture-model" },
-        models: { "codex/fixture-model": { agentRuntime: { id: "codex" } } },
-      },
-    },
-  });
+  const config = await app.createConfiguration(
+    namespace.id,
+    harnessId === "openclaw"
+      ? createHarnessConfiguration(harnessId, "fixture-model")
+      : {
+          agents: {
+            defaults: {
+              model: { primary: "codex/fixture-model" },
+              models: { "codex/fixture-model": { agentRuntime: { id: "codex" } } },
+            },
+          },
+        },
+  );
   let agent = await post("agents", {
     name: "inference-agent",
     configurationId: config.id,

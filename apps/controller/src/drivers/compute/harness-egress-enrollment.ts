@@ -1,3 +1,6 @@
+export const NATIVE_MODEL_ENROLLMENT_ENV = "OPENCLAW_NATIVE_MODEL_ENROLLMENT";
+export const NATIVE_MODEL_ORIGIN_ENV = "OPENCLAW_NATIVE_MODEL_ORIGIN";
+
 export const HARNESS_EGRESS_ENROLLMENT_PATH = "/openclaw/runtime/egress-enrollment";
 // Reserve the whole probe subtree for denials. Only the exact discovery path may leave the launcher.
 export const HARNESS_GIT_PROBE_PREFIX =
@@ -6,14 +9,15 @@ const gitProbePath = new RegExp(
   HARNESS_GIT_PROBE_PREFIX.source + /[0-9a-f]{32}\.git\/info\/refs$/.source,
 );
 
-// This runs in the generated Harness, before Codex, login or its first model probe. The transport
+// This runs in the generated Harness before starting a native process or model probe. The transport
 // bearer may read this challenge; only Compute can sign its release.
 export const HARNESS_EGRESS_ENROLLMENT_HELPER = renderEnrollmentHelper(true);
+export const NATIVE_HARNESS_EGRESS_ENROLLMENT_HELPER = renderEnrollmentHelper(true, true);
 export const LEGACY_HARNESS_EGRESS_ENROLLMENT_HELPER = renderEnrollmentHelper(false);
 
 // These programs are embedded in immutable Sandbox commands. Choose the admitted
 // protocol before rendering, so earlier commands keep their original bytes.
-function renderEnrollmentHelper(modelRequests: boolean): string {
+function renderEnrollmentHelper(modelRequests: boolean, native = false): string {
   const gitMode = modelRequests ? "onlineGit" : "online";
   const enrollmentModes = modelRequests
     ? `const onlineGit = preview || enrollment?.repositoryGitAuthorization === "online-request";
@@ -100,7 +104,21 @@ function waitForHarnessEgressEnrollment(enrollment) {
         answer(401, { error: "unauthorized" });
         return;
       }
-      if (settled || released || performance.now() >= deadline) {
+      ${
+        native
+          ? `if (released) {
+        if (request.method === "GET" && request.url === ${JSON.stringify(HARNESS_EGRESS_ENROLLMENT_PATH)}) {
+          answer(200, { acceptedRelease: nativeAcceptedRelease });
+        } else if (request.method === "GET" && request.url === RUNTIME_STATUS_PATH && nativeHeldStatus) {
+          answer(200, nativeHeldStatus);
+        } else {
+          answer(410, { error: "expired" });
+        }
+        return;
+      }
+      `
+          : ""
+      }if (settled || released || performance.now() >= deadline) {
         answer(410, { error: "expired" });
         return;
       }
@@ -192,7 +210,15 @@ function waitForHarnessEgressEnrollment(enrollment) {
         // A release is only startup coordination. Both per-request authority
         // checks still run before any material access or business send.
         released = true;
-        response.on("finish", () => finish(true));
+        ${
+          native
+            ? `nativeAcceptedRelease = release;
+        clearTimeout(timer);
+        // Compute withdraws the scoped Bootstrap service. Keep its authenticated witness
+        // on this port until process exit, including while a startup failure is held.
+        resolve();`
+            : 'response.on("finish", () => finish(true));'
+        }
         answer(200, { enrolled: true, startupId: challenge.startupId });
       } catch {
         if (!response.destroyed) {

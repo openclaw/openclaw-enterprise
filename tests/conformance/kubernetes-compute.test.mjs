@@ -1,3 +1,4 @@
+import { exerciseProtectedNativeWorkerStartup } from "../fixtures/native-protected-worker-startup.mjs";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
 import {
   openShellPolicyOptions,
@@ -1086,6 +1087,7 @@ function dedicatedFirstDeployFixture({
   modelProtocol = "openai-responses",
   standaloneWebSearch,
   sandboxDriver,
+  protectedDriver,
   openShellGit,
   credentialGatewayDriver,
   context,
@@ -1140,6 +1142,7 @@ function dedicatedFirstDeployFixture({
     }),
     {
       sandboxDriver,
+      protectedDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
       nodeEnrollment: {
@@ -1900,6 +1903,318 @@ test("provider-owned Harness preparation waits to renew expired setup until its 
       assert.equal(provisions.length, provisionCalls);
     });
   }
+});
+
+test(
+  "the native worker probes and connects only after its exact signed release",
+  { timeout: 15_000 },
+  exerciseProtectedNativeWorkerStartup,
+);
+
+test("native Compute resumes signed startup across preparation passes", async (t) => {
+  const { InstalledDriver } = await import("../../packages/occ/src/index.ts");
+  const { createOpenAiRequestProvider } =
+    await import("../../apps/controller/src/drivers/egress-proxy/openai-provider.ts");
+  const { OpenShellSandboxDriver } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell.ts");
+  const model = createOpenAiRequestProvider();
+  const revision = {
+    id: "ar_00000000-0000-4000-8000-000000000547",
+    namespaceId: tenant.id,
+    agentId: "agent-routed",
+    servicePrincipalId: "service-principal-routed",
+    createdAt: tenant.createdAt,
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+    configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+    executionAdmission: { version: 8, mode: "protected" },
+    plugins: undefined,
+  };
+  const execution = {
+    installationId: "ins_00000000-0000-4000-8000-000000000001",
+    namespaceId: tenant.id,
+    agentId: revision.agentId,
+    servicePrincipalId: revision.servicePrincipalId,
+    revisionId: revision.id,
+    executionId: "00000000-0000-4000-8000-000000000547",
+  };
+  const key = {
+    installationId: execution.installationId,
+    namespaceId: tenant.id,
+    source: { id: "cs_00000000-0000-4000-8000-000000000547", generation: 1 },
+    backend: { id: "static-input", generation: 1 },
+    provider: model.ref,
+  };
+  const source = {
+    id: key.source.id,
+    namespaceId: tenant.id,
+    ownerCapability: "credential_gateway",
+    driverId: "credential-gateway",
+    type: "openai",
+    config: model.normalizeConfig({}),
+    name: "model",
+    state: "ready",
+    secrets: {},
+    createdAt: tenant.createdAt,
+    egress: {
+      key,
+      schemaVersion: 1,
+      adoption: "live",
+      retention: "none",
+      materialRefId: "material-model",
+      secret: {
+        kind: "secret",
+        id: "sec_00000000-0000-4000-8000-000000000550",
+        namespaceId: tenant.id,
+      },
+      secretDriver: { id: "secrets", generation: 1 },
+      sender: { id: "supervisor", generation: 1 },
+      resolver: { id: "resolver", generation: 1 },
+    },
+  };
+  revision.harnessAuth = {
+    method: "credential_source",
+    sourceId: source.id,
+    sourceType: source.type,
+    credentialGatewayId: source.driverId,
+    loginMode: "api_key",
+  };
+  revision.credentialSources = [
+    { sourceId: source.id, sourceType: source.type, credentialGatewayId: source.driverId },
+  ];
+  const grant = model.normalizeGrant(["gpt-5"]);
+  const plan = {
+    authorization: "online-request",
+    id: "00000000-0000-4000-8000-000000000548",
+    generation: 1,
+    execution,
+    sandboxDriverId: "native-sandbox",
+    egressDriverId: "native-sandbox",
+    routes: model.routes(
+      source,
+      {
+        binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
+        execution,
+        source: key,
+        grant,
+        grantHash: digest(JSON.stringify(grant)),
+        isolationId: revision.agentId,
+      },
+      {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    ),
+  };
+  revision.egressPlan = plan;
+  revision.sandboxDriverId = plan.sandboxDriverId;
+  const { harnessEgressEnrollment, COMPUTE_RELEASE_PROFILE } =
+    await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
+  const startupId = "00000000-0000-4000-8000-000000000001";
+  const challenge = {
+    profile: COMPUTE_RELEASE_PROFILE,
+    ...harnessEgressEnrollment(plan),
+    startupId,
+  };
+  const installed = {
+    plan,
+    sandboxId: "original",
+    sender: source.egress.sender,
+    installedAt: revision.createdAt,
+    enforcement: {
+      authorityScope: "execution",
+      instanceId: "process",
+      configurationId: "configuration",
+      policyHash: "a".repeat(64),
+    },
+  };
+  let recorded;
+  let receipt;
+  let liveProcess = installed.enforcement.instanceId;
+  let status = 502;
+  let statusReads = 0;
+  let held;
+  let provisions;
+  let posts = 0;
+  const client = {
+    getSandbox: async () => ({
+      id: installed.sandboxId,
+      mainProcessInstanceId: liveProcess,
+    }),
+    getServiceDocument: async (_url, path, token) => {
+      assert.equal(token, "test-transport");
+      if (path === "/openclaw/runtime/status") {
+        statusReads++;
+        return { status: 200, json: { runtimeFailure: held } };
+      }
+      return { status, json: receipt ? { acceptedRelease: receipt } : challenge };
+    },
+    postServiceDocument: async (_url, _path, _token, body) => {
+      posts++;
+      receipt = body;
+      return { status: 200, json: { enrolled: true, startupId } };
+    },
+  };
+  const sandboxDriver = {
+    ...nativeSandboxIdentity(),
+    id: plan.sandboxDriverId,
+    async workspaceNodePeerLabels() {
+      return provisions && supervisorPeerLabels(revision.id);
+    },
+    async provisionHarness(ctx) {
+      provisions = ctx;
+      return { ...nativeHarnessResource(ctx), proxyWiring: ctx.requirements.proxyWiring };
+    },
+    async harnessEndpoint() {
+      assert.fail();
+    },
+    async withdrawHarnessExposure() {},
+    async harnessStatus() {
+      return held ? { state: "failed", runtimeFailure: held } : { state: "starting" };
+    },
+    cleanup: assert.fail,
+    enrollHarness: OpenShellSandboxDriver.prototype.enrollHarness,
+    sandboxRef: () => ({ resourceName: "original" }),
+    exactHarnessService: async () => ({ client, service: { url: "http://synthetic.invalid" } }),
+  };
+  const proxy = {
+    id: plan.egressDriverId,
+    implementation: "openshell",
+    capability: "credential_proxy",
+    sourceControl: {
+      sender: source.egress.sender,
+      resolver: source.egress.resolver,
+      providers: [model],
+      assertAvailable: assert.fail,
+    },
+    withdrawBinding: assert.fail,
+    removeRevision: assert.fail,
+    configureRevision: async () => ({ plan, configuration: {} }),
+    wiringStatus: async () => installed,
+    verifyInstallation: async () => true,
+  };
+  const owner = new InstalledDriver(
+    { id: sandboxDriver.id, implementation: sandboxDriver.implementation, configuration: {} },
+    { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+    { sandbox: sandboxDriver.id, credential_proxy: proxy.id },
+  );
+  plan.driver = owner.ref;
+  const scenario = dedicatedFirstDeployFixture({
+    namespace: kubernetesNamespaceName(revision.namespaceId),
+    modelEndpoint: plan.routes[0].origin + "/v1",
+    sandboxDriver,
+    protectedDriver: owner,
+    credentialGatewayDriver: {
+      id: source.driverId,
+      capability: "credential_gateway",
+      listSourceTypes: async () => [model.sourceType],
+    },
+    context: {
+      harnessAuth: { ...revision.harnessAuth, source },
+      credentialSources: [source],
+      currentEgressInstallation: async () => recorded,
+      recordEgressInstallation: async (value) => {
+        if (recorded) {
+          assert.deepEqual(recorded, value);
+        }
+        recorded = value;
+      },
+    },
+    revision: {
+      ...revision,
+      compute: { id: "compute-kubernetes-local", implementation: "kubernetes-local" },
+    },
+  });
+  const { prepare, markReady, gatewayName, state, namespace } = scenario;
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  await t.test("a starting listener waits without spending a worker attempt", async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const waiting = await prepare();
+      assert.equal(waiting.ready, false);
+      assert.equal(waiting.runtimeFailure, undefined);
+    }
+  });
+  assert.ok(recorded);
+  state.providerPod = readyNativeHarnessPod(namespace, provisions.requirements.labels);
+  state.connected = true;
+  const nodeName = scenario.driver.workspaceNodeName(revision);
+  const assertNoNodeAccepted = () => {
+    assert.equal(scenario.read("Secret", nodeName).data.deviceId, undefined);
+    assert.equal(posts, 0);
+  };
+  await t.test("a pre-release hold returns only authenticated runtime evidence", async () => {
+    status = 503;
+    const failure = {
+      component: "agent",
+      check: "egress-enrollment",
+      code: "UNAVAILABLE",
+      checkedAt: revision.createdAt,
+    };
+    held = { ...failure, detail: "private diagnostic fixture" };
+    const waiting = await prepare();
+    assert.equal(waiting.ready, false);
+    assert.deepEqual(waiting.runtimeFailure, failure);
+    assert.equal(statusReads, 1);
+    assertNoNodeAccepted();
+    held = undefined;
+    assert.equal((await prepare()).ready, false);
+    assertNoNodeAccepted();
+  });
+  held = undefined;
+  status = 404;
+  await assert.rejects(prepare(), /native model startup challenge is unavailable/);
+  assertNoNodeAccepted();
+  status = 200;
+  liveProcess = "replacement";
+  await assert.rejects(prepare(), /does not match this execution/);
+  assertNoNodeAccepted();
+  liveProcess = installed.enforcement.instanceId;
+  const originalStartupId = challenge.startupId;
+  challenge.startupId = "malformed";
+  await assert.rejects(prepare(), /challenge does not match the admitted execution/);
+  assertNoNodeAccepted();
+  challenge.startupId = originalStartupId;
+  assert.equal((await prepare()).ready, false);
+  assert.equal(scenario.read("Secret", nodeName).data.deviceId, undefined);
+  assert.equal(posts, 1);
+  liveProcess = "replacement";
+  await assert.rejects(prepare(), /startup process does not match this execution/);
+  liveProcess = installed.enforcement.instanceId;
+  state.connected = true;
+  status = 404;
+  await assert.rejects(prepare(), /native model startup challenge is unavailable/);
+  assert.equal(scenario.read("Secret", nodeName).data.deviceId, undefined);
+  state.connected = false;
+  status = 200;
+  const acceptedReceipt = receipt;
+  for (const override of [
+    { installation: { ...receipt.installation, configurationId: "replaced" } },
+    { installation: { ...receipt.installation, sandboxId: "replaced" } },
+    { signature: "A".repeat(86) },
+  ]) {
+    receipt = { ...acceptedReceipt, ...override };
+    await assert.rejects(prepare(), /release receipt does not match this execution/);
+  }
+  receipt = acceptedReceipt;
+  state.providerPod = readyNativeHarnessPod(namespace, provisions.requirements.labels);
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  held = {
+    component: "agent",
+    check: "model-probe",
+    code: "AUTHENTICATION_FAILED",
+    checkedAt: revision.createdAt,
+  };
+  assert.deepEqual((await prepare()).runtimeFailure, held);
+  held = undefined;
+  state.connected = true;
+  await prepare();
+  await prepare();
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, true);
+  assert.equal(posts, 1);
 });
 
 test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {

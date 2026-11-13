@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 import {
   modelRequestProviderName,
+  nativeOpenShellModelRequest,
   openShellModelRequestPolicy,
   verifyModelRequestPolicy,
   verifyModelRequestProfile,
@@ -178,7 +179,12 @@ import {
 } from "../compute/workspace-setup-runtime.ts";
 import {
   COMPUTE_RELEASE_PROFILE,
+  COMPUTE_RELEASE_PUBLIC_KEY,
+  NativeEnrollmentPending,
+  verifyNativeReleaseReceipt,
   HARNESS_EGRESS_ENROLLMENT_PATH,
+  NATIVE_MODEL_ENROLLMENT_ENV,
+  NATIVE_MODEL_ORIGIN_ENV,
   harnessEgressEnrollment,
 } from "../compute/egress-enrollment.ts";
 
@@ -647,6 +653,24 @@ function environment(
 
 // Served by a Codex Harness wrapper that holds a startup failure (runtime-entrypoints.ts).
 const HARNESS_RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
+
+async function readHarnessFailure(
+  client: OpenShellGatewayClient,
+  url: string,
+  context: SandboxHarnessStatusContext,
+): Promise<SandboxHarnessStatus> {
+  const document = await client.getServiceDocument(
+    url,
+    HARNESS_RUNTIME_STATUS_PATH,
+    context.transportToken,
+    context.signal,
+  );
+  context.signal.throwIfAborted();
+  const runtimeFailure = asRecord(document.json)?.runtimeFailure;
+  return document.status === 200 && runtimeFailure !== undefined
+    ? Object.freeze({ state: "failed", runtimeFailure })
+    : Object.freeze({ state: "starting" });
+}
 
 function harnessPort(requirements: HarnessWorkloadRequirements): number {
   const entry = requirements.environment.find(
@@ -3413,10 +3437,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     const egressPolicy =
       plan && protectedEgressPolicy(this.options, context.requirements, context.revision);
-    if (plan !== undefined && context.revision.harness.id !== "codex") {
+    const nativeModel = plan !== undefined && nativeOpenShellModelRequest(context.revision, plan);
+    if (plan !== undefined && context.revision.harness.id !== "codex" && !nativeModel) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "Protected inference startup enrollment requires the dedicated Codex Harness.",
+        "The selected Harness does not support this protected inference plan.",
       );
     }
     if (
@@ -3435,6 +3460,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new OpenShellSandboxConfigurationFailure(
         "Refusing an AgentRevision pinned to another Sandbox Driver.",
       );
+    }
+    if (nativeModel) {
+      const expected = {
+        [NATIVE_MODEL_ENROLLMENT_ENV]: JSON.stringify(harnessEgressEnrollment(plan)),
+        [NATIVE_MODEL_ORIGIN_ENV]: plan.routes[0]!.origin,
+      };
+      for (const [name, value] of Object.entries(expected)) {
+        const entries = context.requirements.environment.filter((entry) => entry.name === name);
+        if (entries.length !== 1 || !("value" in entries[0]!) || entries[0]!.value !== value) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "Native startup must match the admitted model binding.",
+          );
+        }
+      }
     }
     if (context.requirements.workloadIdentity !== undefined) {
       throw new SandboxRevisionUnsupportedError(
@@ -3606,6 +3645,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ),
       serviceExposures,
     };
+    if (nativeModel) {
+      // The bootstrap service is withdrawn after node enrollment. A replacement process
+      // needs a new revision and signed release before it can use this model.
+      create.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
+    }
     if (modelRequest) {
       create.spec.providers.unshift(modelRequest.provider.name);
       Object.assign(create.spec.environment, modelRequest.environment);
@@ -3772,6 +3816,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
     // environment and policy. A replacement is created above without either plugin setting.
+    if (
+      nativeModel &&
+      existing.spec?.restart_policy !== 1 &&
+      existing.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER"
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Protected native model execution cannot adopt a restartable Sandbox.",
+      );
+    }
     let expectedSpec = create.spec;
     if (
       !plugin &&
@@ -4041,6 +4094,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Harness enrollment must match the installed Sandbox.",
       );
     }
+    const native = context.revision.harness.id === "openclaw";
+    if (native && sandbox.mainProcessInstanceId !== installation.enforcement.instanceId) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The native model startup process does not match this execution.",
+      );
+    }
     const document = await client.getServiceDocument(
       service.url,
       HARNESS_EGRESS_ENROLLMENT_PATH,
@@ -4053,6 +4112,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       installation.plan.repositoryGitAuthorization === "request-hook-observed" ||
       installation.plan.repositoryGitAuthorization === "online-request";
     if (document.status !== 200) {
+      if (native) {
+        if (document.status === 502) {
+          throw new NativeEnrollmentPending();
+        }
+        if (document.status === 503) {
+          const held = await readHarnessFailure(client, service.url, context);
+          throw new NativeEnrollmentPending(
+            held.state === "failed" ? held.runtimeFailure : undefined,
+          );
+        }
+        throw new OpenShellSandboxConfigurationFailure(
+          "The native model startup challenge is unavailable.",
+        );
+      }
       if (
         preview &&
         !(
@@ -4072,6 +4145,23 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       return;
     }
     const challenge = asRecord(document.json);
+    if (native && challenge?.acceptedRelease !== undefined) {
+      const receipt = asRecord(challenge.acceptedRelease);
+      const key = context.requirements.environment.find(
+        ({ name }) => name === COMPUTE_RELEASE_PUBLIC_KEY,
+      );
+      if (
+        !receipt ||
+        !key ||
+        !("value" in key) ||
+        !verifyNativeReleaseReceipt(receipt, installation, key.value)
+      ) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "The native model release receipt does not match this execution.",
+        );
+      }
+      return;
+    }
     const { profile, startupId, ...binding } = challenge ?? {};
     if (
       !challenge ||
@@ -4108,15 +4198,25 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (preview) {
       await this.openShellGit!.releasePreview(context.revision.id, startupId, deliver);
     } else {
-      await deliver();
+      const acknowledged = await deliver();
+      if (native) {
+        if (!acknowledged) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "The native model startup release requires a fresh challenge.",
+          );
+        }
+        // The next pass must observe the original process serving the signed receipt
+        // before a node connection can complete this revision's enrollment.
+        throw new NativeEnrollmentPending();
+      }
     }
   }
 
   /**
    * Drops the dedicated OpenClaw worker's bearer-passthrough exposure once its node has
    * enrolled. OpenShell routes the exposure to the Sandbox without authenticating the caller,
-   * and nothing of Compute's listens on the worker's transport port after enrollment, so the
-   * exposure would otherwise hand agent-run code an inbound channel for the Sandbox's lifetime
+   * so a retained exposure could hand agent-run code an inbound channel if it later acquired
+   * the worker's transport port
    * (finding 1657). Fails closed: resolves only once OpenShell confirms the service gone.
    */
   async withdrawHarnessExposure(context: SandboxHarnessWithdrawalContext): Promise<void> {
@@ -4307,7 +4407,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
     context.signal.throwIfAborted();
     if (context.revision.harness.id === "openclaw" && context.workspaceNodeEnrolled === true) {
-      // The exposure is withdrawn with enrollment, and nothing of Compute's listens there.
+      // Compute withdraws the provider exposure with enrollment.
       throw new OpenShellSandboxConfigurationFailure(
         "Refusing to observe a dedicated OpenClaw worker whose node has enrolled; its Harness exposure is withdrawn.",
       );
@@ -4354,17 +4454,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           return Object.freeze({ state: "serving" });
         }
       }
-      const document = await client.getServiceDocument(
-        service.url,
-        HARNESS_RUNTIME_STATUS_PATH,
-        context.transportToken,
-        context.signal,
-      );
-      context.signal.throwIfAborted();
-      const runtimeFailure = asRecord(document.json)?.runtimeFailure;
-      return document.status === 200 && runtimeFailure !== undefined
-        ? Object.freeze({ state: "failed", runtimeFailure })
-        : Object.freeze({ state: "starting" });
+      return await readHarnessFailure(client, service.url, context);
     } catch (error) {
       context.signal.throwIfAborted();
       // A gateway that does not answer, over gRPC or its service listener, is no evidence

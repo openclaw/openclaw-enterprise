@@ -97,6 +97,8 @@ function jsonSchema(value: unknown, depth = 0, localTool = false): boolean {
   return optionalFields({
     type: (item) => type(item) || array(type, 7)(item),
     properties: definitions,
+    // Native OpenClaw local tool dictionaries use TypeBox's string-record form.
+    ...(localTool && { patternProperties: object({ "^.*$": nested }) }),
     required: array(text, 256),
     additionalProperties: (item) => bool(item) || nested(item),
     items: nested,

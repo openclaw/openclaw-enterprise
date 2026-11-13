@@ -18,7 +18,10 @@ import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
+  NATIVE_MODEL_ENROLLMENT_ENV,
+  NATIVE_MODEL_ORIGIN_ENV,
   LEGACY_HARNESS_EGRESS_ENROLLMENT_HELPER,
+  NATIVE_HARNESS_EGRESS_ENROLLMENT_HELPER,
 } from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
@@ -194,7 +197,8 @@ const RUNTIME_DIAGNOSTIC_CHECKS = new Set(${JSON.stringify(RUNTIME_DIAGNOSTIC_CH
 // bearer-passthrough exposure, to a caller presenting the token the verifier names.
 // Compute reads it and fails the revision with the code the status port would have
 // reported. The response carries codes and fixed text only, never provider output.
-const HELD_RUNTIME_FAILURE_TRANSPORT_HELPER = String.raw`
+function heldRuntimeFailureTransportHelper(native = false): string {
+  return String.raw`
 function requireNonEmptyString(value, description) {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(description + " is missing.");
@@ -239,7 +243,15 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
       ...(cause === undefined ? {} : { cause }),
     },
   });
-  const unavailable = JSON.stringify({ error: "runtime_failure_held", code });
+  ${
+    native
+      ? `if (nativeAcceptedRelease) {
+    nativeHeldStatus = JSON.parse(body);
+    return;
+  }
+  `
+      : ""
+  }const unavailable = JSON.stringify({ error: "runtime_failure_held", code });
   const server = require("node:http").createServer((request, response) => {
     const authorization = typeof request.headers.authorization === "string"
       ? /^Bearer ([!-~]+)$/i.exec(request.headers.authorization)
@@ -271,6 +283,7 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
   server.listen(port, "0.0.0.0");
 }
 `;
+}
 
 // Reserve every bundled credential alias even when no package is selected. Independent
 // attachments may supply an issued placeholder; ordinary environment values must not.
@@ -355,10 +368,11 @@ function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, s
 // port. Both carry the check and code; the worker's model check adds its cause from a
 // closed vocabulary. Any other cause, such as setup's message, stays in the container
 // log (finding 2686).
-const SUPERVISOR_HELD_FAILURE_HELPER = String.raw`
+function supervisorHeldFailureHelper(native = false): string {
+  return String.raw`
 ${RUNTIME_READINESS_SERVER_HELPER}
 ${RUNTIME_STATUS_CONSTANTS_HELPER}
-${HELD_RUNTIME_FAILURE_TRANSPORT_HELPER}
+${heldRuntimeFailureTransportHelper(native)}
 function publishRuntimeFailure(check, code, cause) {
   if (runtimeStatusPort() === undefined) return;
   if (!RUNTIME_FAILURE_CHECKS.has(check)) {
@@ -392,6 +406,7 @@ function holdStartupFailure(check, code) {
   setInterval(() => {}, 3600000);
 }
 `;
+}
 
 const OPENCLAW_PLUGIN_INSTALL_HELPERS = String.raw`
 function openClawPluginPackageSpec(plugin) {
@@ -693,7 +708,7 @@ const pluginBaseAppServerToken = process.env.APP_SERVER_TOKEN;
 
 ${PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER}
 ${RUNTIME_READINESS_RESPONSE_HELPER}
-${HELD_RUNTIME_FAILURE_TRANSPORT_HELPER}
+${heldRuntimeFailureTransportHelper()}
 
 class PluginTerminalDiagnosticError extends Error {
   constructor(diagnostic, message) {
@@ -2323,15 +2338,16 @@ function probeExitFailure({ error, status, signal }) {
 // retries briefly, then the event reports only the error code as cleanupError
 // and the probe result stands: a failed cleanup must not lose it (finding 2610).
 // Generated code stays compact: the Gateway program is near the exec limit.
-const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
+function openClawAuthProbeHelpers(protectedNative = false): string {
+  return String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
-function probeOpenClawAuthenticationFailure() {
+${protectedNative ? "async " : ""}function probeOpenClawAuthenticationFailure() {
   const fs = require("node:fs");
   const [quota, period] = cpuCgroupFile(fs, "cpu.max").split(" ");
   const capMs = Math.min(600000, OPENCLAW_PROBE_TIMEOUT_MS + 5000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
   const before = cpuWaitSample(fs);
   const cleanup = {};
-  let code = runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;
+  let code = ${protectedNative ? "await " : ""}runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;
   if (typeof code === "object") ({ code, cause, ...provider } = code);
   const { elapsedMs, cpuWaitMs, pressureWaitMs, throttledWaitMs } = cpuWaitBetween(before, cpuWaitSample(fs));
   if (code === "CAP") code = cpuStarved(elapsedMs, cpuWaitMs);
@@ -2437,12 +2453,11 @@ function cpuWindowFailure(samples) {
   return { code: idleMs < 5000 ? cpuStarved(window.elapsedMs, window.cpuWaitMs) : "MODEL_PROBE_TIMEOUT", timeoutWindowMs: window.elapsedMs, timeoutWindowCpuWaitMs: window.cpuWaitMs, timeoutWindowIdleMs: idleMs };
 }
 
-function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
+${protectedNative ? "async " : ""}function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();
   const stage = (stage) => console.error(JSON.stringify({ event: "openclaw.model_probe_stage", stage, elapsedMs: Date.now() - stageStartedAt, capMs }));
   stage("prepare");
-  const { spawnSync } = require("node:child_process");
-  const temporary = (process.env.TMPDIR || "/tmp").replace(/\/+$/, "");
+${protectedNative ? "" : '  const { spawnSync } = require("node:child_process");\n'}  const temporary = ${protectedNative ? "workerConfigDirectory" : '(process.env.TMPDIR || "/tmp")'}.replace(/\/+$/, "");
   const directory = fs.mkdtempSync(temporary + "/openclaw-auth-probe-");
   try {
     const model = process.env.OPENCLAW_HARNESS_MODEL;
@@ -2462,7 +2477,7 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     const windowPath = directory + "/cpu-window.json";
     fs.writeFileSync(directory + "/cpu-window.cjs", OPENCLAW_PROBE_CPU_WINDOW(windowPath), { mode: 0o600 });
     stage("spawn");
-    const result = spawnSync("node", [
+    const result = ${protectedNative ? "await runNativeProbe" : "spawnSync"}("node", [
       "--require", directory + "/cpu-window.cjs",
       "/app/openclaw.mjs", "models", "status", "--json", "--probe",
       "--probe-provider", provider, "--probe-concurrency", "1",
@@ -2512,6 +2527,7 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   }
 }
 `;
+}
 
 const WORKSPACE_ASSET_HELPERS = String.raw`
 const { cpSync, existsSync, lstatSync, readdirSync, symlinkSync } = require("node:fs");
@@ -2630,7 +2646,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
-${OPENCLAW_AUTH_PROBE_HELPERS}
+${openClawAuthProbeHelpers()}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "restart the Pod")}
 ${OPENCLAW_CONFIG_ISSUE_HELPER}
@@ -4861,7 +4877,7 @@ ${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
 // The Codex child serves this container's runtime status, and it starts only after the
 // node state is current and the workspace is initialized. A failure before then is held
 // here with the named step in the log and its check served in Codex's place.
-${SUPERVISOR_HELD_FAILURE_HELPER}
+${supervisorHeldFailureHelper()}
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupEnvironment = process.env.OPENCLAW_NODE_SETUP_CODE;
 const setupPath = process.env.OPENCLAW_NODE_SETUP_PATH;
@@ -5389,7 +5405,155 @@ export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoin
   withNode: true,
 });
 
-export const NATIVE_WORKER_ENTRYPOINT = String.raw`
+const NATIVE_MODEL_STARTUP_HELPER = String.raw`
+function isPlainObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
+${NATIVE_HARNESS_EGRESS_ENROLLMENT_HELPER}
+let nativeAcceptedRelease;
+let nativeHeldStatus;
+let modelSender;
+let workerConfigDirectory;
+let nativeProbe;
+
+// Keep serving the accepted release while the CLI runs. Match the synchronous
+// probe result consumed by the shared deadline and failure classification.
+function runNativeProbe(executable, args, { timeout, ...options }) {
+  return new Promise((resolve) => {
+    let timedOut = false;
+    const child = execFile(executable, args, options, (error, stdout) => {
+      clearTimeout(timer);
+      nativeProbe = undefined;
+      if (timedOut) error = { code: "ETIMEDOUT" };
+      else if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") error = { code: "ENOBUFS" };
+      resolve({ stdout, error, status: child.exitCode, signal: child.signalCode });
+    });
+    nativeProbe = child;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill(options.killSignal);
+    }, timeout);
+  });
+}
+
+function stopBeforeWorker() {
+  process.exit(0);
+}
+
+function stopModelSender() {
+  const sender = modelSender;
+  modelSender = undefined;
+  sender?.kill("SIGKILL");
+}
+
+function startModelSender(origin) {
+  const sender = spawn("/opt/oce/bin/openclaw-model-sender", ["--origin", origin], {
+    env: {
+      SSL_CERT_FILE: process.env.SSL_CERT_FILE,
+      SSL_CERT_DIR: process.env.SSL_CERT_DIR,
+    },
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  modelSender = sender;
+  return new Promise((resolve, reject) => {
+    let announced = false;
+    let line = "";
+    const timeout = setTimeout(fail, 10_000);
+    function fail() {
+      clearTimeout(timeout);
+      stopModelSender();
+      reject(new Error("The protected model sender did not start."));
+    }
+    function stopped() {
+      if (modelSender !== sender) return;
+      if (!announced) {
+        fail();
+        return;
+      }
+      console.error("The protected model sender stopped.");
+      process.exit(1);
+    }
+    sender.once("error", stopped);
+    sender.once("exit", stopped);
+    sender.stdout.on("data", (chunk) => {
+      if (announced || modelSender !== sender) return;
+      if (line.length + chunk.length > 128) return fail();
+      line += chunk.toString("utf8");
+      if (!line.endsWith("\n")) return;
+      let port;
+      try { ({ port } = JSON.parse(line)); } catch { return fail(); }
+      if (!Number.isSafeInteger(port) || port < 1 || port > 65535) return fail();
+      announced = true;
+      clearTimeout(timeout);
+      resolve("http://127.0.0.1:" + port + "/v1");
+    });
+  });
+}
+
+async function prepareProtectedNativeModel(configuration) {
+  const origin = process.env[${JSON.stringify(NATIVE_MODEL_ORIGIN_ENV)}];
+  const enrollment = JSON.parse(process.env[${JSON.stringify(NATIVE_MODEL_ENROLLMENT_ENV)}] ?? "null");
+  const upstream = new URL(origin);
+  const upstreamBase = origin + "/v1";
+  const worker = configuration.models?.providers?.openai;
+  const probeConfig = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG);
+  const probe = probeConfig.models?.providers?.openai;
+  if (upstream.protocol !== "https:" || upstream.origin !== origin ||
+      !enrollment || enrollment.authorization !== "online-request" ||
+      enrollment.inference !== true || enrollment.routeCount !== 1 ||
+      Object.hasOwn(enrollment, "repositoryGitAuthorization") ||
+      process.env.OPENCLAW_HARNESS_PROVIDER !== "openai" ||
+      process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV !== "OPENAI_API_KEY" ||
+      process.env.OPENAI_API_KEY !== "oce:request-authorized:model" ||
+      worker?.baseUrl !== upstreamBase || !Array.isArray(worker.models) ||
+      worker.models.length !== 1 ||
+      worker.models[0]?.baseUrl !== upstreamBase || worker.models[0].api !== "openai-responses" ||
+      probe?.baseUrl !== upstreamBase || probe.api !== "openai-responses" ||
+      probe.models?.length !== 1 || probe.models[0]?.id !== worker.models[0].id ||
+      process.env.OPENCLAW_HARNESS_MODEL !== "openai/" + worker.models[0].id) {
+    throw new Error("Protected OpenClaw worker configuration is invalid.");
+  }
+  await waitForHarnessEgressEnrollment(enrollment);
+  const transport = await startModelSender(origin);
+  worker.baseUrl = transport;
+  worker.request = { allowPrivateNetwork: true };
+  for (const row of worker.models) row.baseUrl = transport;
+  probe.baseUrl = transport;
+  probe.request = { allowPrivateNetwork: true };
+  process.env.OPENCLAW_HARNESS_PROBE_CONFIG = JSON.stringify(probeConfig);
+}
+`;
+
+const NATIVE_MODEL_ENROLL_AND_START = String.raw`
+(async () => {
+const workerConfiguration = JSON.parse(inferenceConfig);
+process.once("exit", () => {
+  nativeProbe?.kill("SIGKILL");
+  stopModelSender();
+  if (workerConfigDirectory) rmSync(workerConfigDirectory, {recursive: true, force: true});
+});
+process.on("SIGTERM", stopBeforeWorker);
+process.on("SIGINT", stopBeforeWorker);
+const enrollmentStartedAt = Date.now();
+try {
+  await prepareProtectedNativeModel(workerConfiguration);
+  workerConfigDirectory = require("node:fs").mkdtempSync(join(temporary, "model-"));
+  logStartupPhase("egress-enrollment", enrollmentStartedAt);
+} catch {
+  stopModelSender();
+  logStartupPhase("egress-enrollment", enrollmentStartedAt, "failed");
+  holdStartupFailure("egress-enrollment", "UNAVAILABLE");
+  return;
+}
+`;
+
+const NATIVE_MODEL_ENVIRONMENT_CLEANUP = String.raw`
+delete process.env[${JSON.stringify(NATIVE_MODEL_ORIGIN_ENV)}];
+delete process.env[${JSON.stringify(NATIVE_MODEL_ENROLLMENT_ENV)}];
+delete process.env.OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID;
+delete process.env.OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY;`;
+
+// Existing Sandboxes compare their immutable launch command during adoption.
+function nativeWorkerEntrypoint(protectedModel: boolean): string {
+  return String.raw`
 const { join } = require("node:path");
 const { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
@@ -5405,8 +5569,8 @@ ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
 // and APP_SERVER_PORT, no status port), on the Harness port as the provider-owned
 // Codex Harness does, so the revision fails with that code instead of waiting for a
 // node that never connects.
-${SUPERVISOR_HELD_FAILURE_HELPER}
-${OPENCLAW_AUTH_PROBE_HELPERS}
+${supervisorHeldFailureHelper(protectedModel)}
+${openClawAuthProbeHelpers(protectedModel)}${protectedModel ? NATIVE_MODEL_STARTUP_HELPER : ""}
 
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
@@ -5527,16 +5691,16 @@ if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
-const authenticationFailure = probeOpenClawAuthenticationFailure();
+${protectedModel ? NATIVE_MODEL_ENROLL_AND_START : ""}const authenticationFailure = ${protectedModel ? "await " : ""}probeOpenClawAuthenticationFailure();
 if (authenticationFailure !== undefined) {
-  holdFailedAuthentication("model-probe", authenticationFailure.code, authenticationFailure.cause);
+${protectedModel ? "  stopModelSender();\n" : ""}  holdFailedAuthentication("model-probe", authenticationFailure.code, authenticationFailure.cause);
 } else {
 mkdirSync(state, { recursive: true, mode: 0o700 });
 // Match the Harness's private node-state preparation on fsGroup-backed storage.
 chmodSync(state, 0o700);
-const workerConfigPath = join(state, "openclaw.json");
+const workerConfigPath = join(${protectedModel ? "workerConfigDirectory" : "state"}, "openclaw.json");
 writeFileSync(workerConfigPath, JSON.stringify({
-  ...JSON.parse(inferenceConfig),
+  ...${protectedModel ? "workerConfiguration" : "JSON.parse(inferenceConfig)"},
   agents: { defaults: { workspace } },
   plugins: {
     allow: ["file-transfer"],
@@ -5552,7 +5716,7 @@ writeFileSync(workerConfigPath, JSON.stringify({
     },
     skills: { enabled: false },
   },
-}), { mode: 0o600 });
+}), { mode: ${protectedModel ? "0o400" : "0o600"} });${protectedModel ? NATIVE_MODEL_ENVIRONMENT_CLEANUP : ""}
 delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
@@ -5592,7 +5756,7 @@ const doctorEnv = {
 };
 (async () => {
 if (!nodeStateCurrent && !(await migrateOpenClawState(state, outdatedNodeDatabases, doctorEnv))) {
-  holdStartupFailure("state-migration", "UNAVAILABLE");
+${protectedModel ? "  stopModelSender();\n" : ""}  holdStartupFailure("state-migration", "UNAVAILABLE");
   return;
 }
 nodeStateCurrent = true;
@@ -5625,7 +5789,7 @@ function killWorkerGroup(worker, signal) {
     else if (error.code !== "ESRCH") throw error;
   }
 }
-function startWorker(target) {
+${protectedModel ? 'process.once("exit", () => killWorkerGroup(child, "SIGKILL"));\n' : ""}function startWorker(target) {
   if (terminating) return;
   runningSetupCode = target;
   pendingSetupCode = undefined;
@@ -5685,7 +5849,7 @@ const setupRefreshTimer = setupEnvelopePath ? setInterval(() => {
 }, 1_000) : undefined;
 const stop = (signal) => {
   if (terminating) return;
-  terminating = true;
+  terminating = true;${protectedModel ? "\n  stopModelSender();" : ""}
   clearInterval(setupRefreshTimer);
   clearTimeout(retirementTimer);
   pendingSetupCode = undefined;
@@ -5700,14 +5864,18 @@ const stop = (signal) => {
 };
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
-const initialSetupCode = readWorkerSetupCode();
+${protectedModel ? 'process.off("SIGTERM", stopBeforeWorker);\nprocess.off("SIGINT", stopBeforeWorker);\n' : ""}const initialSetupCode = readWorkerSetupCode();
 if (initialSetupCode !== undefined) startWorker(initialSetupCode);
 })().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-}
+}${protectedModel ? '\n})().catch(() => { console.error("Protected native worker startup failed."); process.exit(1); });' : ""}
 `;
+}
+
+export const NATIVE_WORKER_ENTRYPOINT = nativeWorkerEntrypoint(false);
+export const PROTECTED_NATIVE_WORKER_ENTRYPOINT = nativeWorkerEntrypoint(true);
 
 // Docker Compute runs the remaining Codex readiness program as a healthcheck.
 // It emits only a fixed-vocabulary reason when the container is unready.

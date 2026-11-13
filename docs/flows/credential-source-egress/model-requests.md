@@ -1,18 +1,18 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-10
-last_updated_session: authoring-run/18b830fb-bbb7-4b75-b14c-a01437b51c41
+updated: 2026-11-13
+last_updated_session: authoring-run/d5a55373-0598-451b-b42f-06f7ad4f0fb2
 ---
 
 # Authorize model credentials per request
 
 ## Overview
 
-A dedicated Codex Agent receives a placeholder instead of an OpenAI key.
+Dedicated Codex and native OpenClaw Agents receive a placeholder for an OpenAI key.
 For each admitted HTTPS Responses request, the OpenShell supervisor obtains
 one approval from OpenClaw Control Plane (OCC), redeems it once, and injects the
 current key outside the guest. This flow describes the implementation; it does
-not establish qualification of an installed OpenShell and Codex pair.
+not establish qualification of an installed runtime pair.
 The [Driver contract](../../reference/drivers/credential-proxy.md#online-model-requests)
 defines the guarantee. Existing strict exchanges retain their
 [separate flow](../credential-source-egress.md).
@@ -68,7 +68,7 @@ refuses policy reduction for this profile. Binding removal may stop or redeploy
 the execution through the existing lifecycle.
 
 `apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts:openShellModelRequestPolicy`
-requires one dedicated Codex route at `/v1/responses`. It creates a provider with
+requires one dedicated Responses route at `/v1/responses`. Native OpenClaw uses model-only admission version 8. It creates a provider with
 no stored key, no credential environment mapping and an explicit zero-cache token
 grant. The guest receives a placeholder. The existing Gateway source owner
 remains metadata; it receives no model-key copy or attachment for this path.
@@ -93,6 +93,26 @@ and configuration hashing: it is an aggregate material/profile digest across
 providers. This avoids invalidating the witness for normal Git material rotation. All remaining fields, including configuration and
 process identities, stay in the hash. It is opaque to core and contains no Git
 credential material.
+
+The native worker waits for Compute’s signed release before it probes the
+selected model or connects its node. Compute keeps the revision pending while
+the bootstrap listener starts. It reads an early failure from the authenticated
+status endpoint and records the bounded diagnostic. Acknowledging the release
+leaves the revision pending until a later preparation pass verifies the
+signed receipt against the current Sandbox, process, configuration and key.
+
+The launcher can serve the receipt while the model probe runs. It rejects
+repeat releases and serves the accepted receipt and any held startup failure
+until the process exits. The signature expiry applies to the original POST.
+Compute withdraws the temporary bootstrap service after node enrollment and
+verifies the installed recipient again before activation.
+
+The native runtime uses the loopback port announced by
+`deploy/runtime/model-sender/main.go`. Processes in that execution can use its
+single model grant. The supervisor authorizes each request. Only the sender
+executable is admitted to the model route. It posts to the fixed HTTPS
+destination, refuses redirects and relays the response stream. The saved
+upstream destination remains authoritative when the worker uses the loopback URL.
 
 ### 2. Approve the captured request
 
@@ -227,6 +247,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-13 20:05: Document the signed native startup, its observable status, and the execution-scoped Responses sender. (authoring-run/d5a55373-0598-451b-b42f-06f7ad4f0fb2 - 7e7cb6005e6fe7f94463524ad36ae93fa8e2097a)
 
 - 2026-11-10 05:07: Align initial policy versions, carry the database release budget through monotonic timing and order authorization against configured-role changes. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - cf0f7b52125917f76d3ff93c4e99e6b1a6c5dcd9)
 

@@ -1,10 +1,10 @@
 # Set up per-request model credential authorization
 
-Use this path to give a dedicated Codex Agent access to one admitted OpenAI
+Use this path to give a dedicated Agent access to one admitted OpenAI
 Responses model while keeping the API key outside the guest. It requires an
 explicit `online-request` source and a qualified OpenShell installation.
 The source implementation is available; it does not establish qualification of
-an installed OpenShell and Codex pair. Complete the checks below before rollout.
+an installed OpenShell and Harness pair. Complete the checks below before rollout.
 
 This profile checks permission before releasing a credential for each request.
 A request whose credential was already released may finish after withdrawal.
@@ -171,12 +171,26 @@ match; changing only the Agent endpoint is refused. Keep the Gateway's
 Check the requested deployment and runtime status. A ready source does not prove
 that the workload passed installation checks or can answer a model turn.
 
+### Dedicated native OpenClaw
+
+The source implementation supports model-only admission version 8. Installed
+qualification is pending. Use one OpenAI Responses model with the same HTTPS
+origin in the saved provider and source. Compute verifies the installation and
+signs the execution release before the first model probe. Processes within that
+enrolled execution can use its loopback sender under the same model grant.
+Each request requires current IAM permission and supervisor credential injection.
+A replacement execution needs fresh enrollment. During installed qualification,
+confirm that a later preparation pass reports a held model failure while the
+bootstrap service is exposed. On a successful launch, confirm that Compute
+withdraws the service after node enrollment. A missing response or a receipt
+from another launch cannot establish startup eligibility.
+
 ## Verify the installed path
 
 Run these checks against the exact images and configuration selected for rollout:
 
 1. Using the controlled origin selected in both source and Harness settings
-   before deployment, send an actual Codex model turn and inspect its streamed
+   before deployment, send an actual turn from the selected Harness and inspect its streamed
    response. Prove that the expected key reaches the allowed
    request while the guest has only a placeholder. Keep keys and SVIDs out of logs.
 2. Attempt another model, an unapproved path, a direct route and credential
@@ -189,7 +203,7 @@ Run these checks against the exact images and configuration selected for rollout
 4. Rotate the Secret during a held material read. The interrupted selection must
    fail; a subsequent authorized request must use the new version. The short
    token-grant `expires_in` is a release lease, not the API key's provider expiry.
-5. In the same Sandbox, verify both inference and native Git. Revoke only the
+5. For combined Codex and Git admission version 9, verify both inference and native Git in the same Sandbox. Revoke only the
    model source's IAM grant and confirm that model requests cannot reach their
    origin while authorized Git still works. Restore that grant, then remove
    Git [standing approval](../repository-credentials.md#keep-git-access-on-the-same-running-agent)
