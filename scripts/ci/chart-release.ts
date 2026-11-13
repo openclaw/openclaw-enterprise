@@ -12,6 +12,7 @@ import {
   github,
   githubPages,
   inspectDigest,
+  isReleaseVersion,
   remoteTagDigest,
   skopeo,
   skopeoLogin,
@@ -25,7 +26,6 @@ import {
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const shaPattern = /^[a-f0-9]{40}$/;
-const versionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 const integerPattern = /^[1-9][0-9]*$/;
 const helm = process.env.OCC_HELM_BIN ?? "helm";
 
@@ -102,7 +102,7 @@ export async function stageReleaseChart(
   { sourceSha, version, images }: { sourceSha: string; version: string; images: ImageReceipt[] },
 ) {
   assert.match(sourceSha, shaPattern);
-  assert.match(version, versionPattern);
+  assert.ok(isReleaseVersion(version), "Expected an OCE release version.");
   const packageJson: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   assert.ok(record(packageJson));
   assert.equal(packageJson.version, version, "OCE release version must match root package.json.");
@@ -274,7 +274,7 @@ async function publish(directory: string, env: NodeJS.ProcessEnv) {
   assert.ok(record(packageJson));
   const version = packageJson.version;
   assert.ok(typeof version === "string");
-  assert.match(version, versionPattern);
+  assert.ok(isReleaseVersion(version), "Expected an OCE release version.");
   const temporary = await mkdtemp(join(tmpdir(), "enterprise-chart-release-"));
   const authfile = join(temporary, "auth.json");
   try {

@@ -108,6 +108,7 @@ import {
 import {
   verifyRevisionProviderRetention,
   verifyForeignSandboxAnnotations,
+  verifyPreparedGitCleanupRefusals,
 } from "./sandbox-driver-revision-observation-cases.ts";
 import {
   buildOperatorIngressManifests,
@@ -2186,68 +2187,12 @@ function credentialGatewayOverProviders({
   };
 }
 
-const providerProfileChecks = createSandboxProviderProfileChecks({
-  credentialGatewayOverProviders,
-  ready,
-  ScopeViolationError,
-});
 const credentialContractChecks = createSandboxCredentialContractChecks({
   credentialGatewayOverProviders,
-  ready,
   structuralRefusal,
 });
 
-async function ready(operation) {
-  assert.deepEqual(await operation, { state: "ready" });
-}
-
-test("Codex PAT profiles restrict native startup and plugin routes", async () => {
-  await providerProfileChecks.restrictCodexPatNativeStartupAndPluginRoutes();
-});
-
-test("each Codex PAT source gets its own provider profile, stable across replays", async () => {
-  await providerProfileChecks.keepCodexPatProviderProfilesDistinctAcrossReplays();
-});
-
-test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
-  await providerProfileChecks.restrictGatewayToItsOwnedProvider();
-});
-
-test("OpenShell preserves the main-era owned profile lifecycle without a migration", async () => {
-  await providerProfileChecks.preserveOwnedProfileLifecycle();
-});
-
-test("OpenShell main-era interrupted registration survives restart without replaying credentials", async () => {
-  await providerProfileChecks.resumeInterruptedRegistrationWithoutCredentialReplay();
-});
-
-test("OpenShell main-era cleanup resumes after provider deletion without losing another source", async () => {
-  await providerProfileChecks.resumeCleanupWithoutLosingAnotherSource();
-});
-
-test("OpenShell concurrent registrations preserve the first provider's credentials", async () => {
-  await providerProfileChecks.preserveFirstProviderCredentialsDuringConcurrentRegistration();
-});
-
-test("OpenShell rejects a foreign provider appearing after preflight without erasing the profile", async () => {
-  await providerProfileChecks.rejectForeignProviderAfterPreflight();
-});
-
-test("OpenShell registration does not adopt an unknown provider create outcome", async () => {
-  await providerProfileChecks.rejectUnknownProviderCreateOutcome();
-});
-
-test("the OpenShell Credential Gateway never attaches a source of another Namespace", async () => {
-  await providerProfileChecks.rejectCrossNamespaceAttachment();
-});
-
-test("the OpenShell Credential Gateway refuses an empty secret before creating a provider", async () => {
-  await providerProfileChecks.rejectEmptySecretBeforeProviderCreation();
-});
-
-test("OpenShell credential source removal fails while the provider survives deletion", async () => {
-  await providerProfileChecks.failRemovalWhenProviderSurvivesDeletion();
-});
+createSandboxProviderProfileChecks({ credentialGatewayOverProviders, ScopeViolationError });
 
 test("Google requires an OAuth source whose effective binary list is exactly the pinned executable", async () => {
   const pinned = managedGoogleInstall.binaryPath;
@@ -3605,30 +3550,11 @@ test(
           // Finding 2206: the revision's Git provider and its profile go with its Sandbox. Left
           // behind, they kept the Namespace's Workspace forever: OpenShell refuses DeleteWorkspace
           // while a Sandbox, provider or provider profile remains (the fake gateway does too).
-          const gitProvider = spec.providers.find((p) => p.startsWith("oce-git-"));
-          const leftBehind = {
-            provider: structuredClone(gateway.providers.get(gitProvider)),
-            profile: structuredClone(gateway.profiles.get(gitProvider)),
-          };
-          assert.ok(leftBehind.provider && leftBehind.profile);
-          // A same-name provider without the revision's owner fingerprint is refused, not deleted.
-          gateway.providers.get(gitProvider).labels = {
-            "openclaw.dev/prepared-git-binding": "0".repeat(48),
-          };
-          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
-            name: "OpenShellPreparedGitProviderError",
+          const { gitProvider, leftBehind } = await verifyPreparedGitCleanupRefusals({
+            providerNames: spec.providers,
+            gateway,
+            cleanupRevision: () => sandbox.cleanup({ ...ctx, revision: rev }),
           });
-          assert.ok(gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
-          gateway.providers.set(gitProvider, structuredClone(leftBehind.provider));
-          // The same for its profile: the provider goes, the profile stays.
-          gateway.profiles.get(gitProvider).annotations = {
-            "openclaw.dev/prepared-git-binding": "0".repeat(48),
-          };
-          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
-            name: "OpenShellPreparedGitProviderError",
-          });
-          assert.ok(!gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
-          gateway.profiles.set(gitProvider, structuredClone(leftBehind.profile));
           await sandbox.cleanup({ ...ctx, revision: rev });
           assert.equal(gateway.sandboxes.has(created.name), false);
           assert.equal(gateway.providers.has(gitProvider), false, "Git provider deleted");

@@ -52,7 +52,7 @@ export const { kubernetesGatewayNamespaceName } =
 export const driverPath = "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 const configurationIds = new Map();
 export const probeSource = await readFile(
-  new URL("../fixtures/kubernetes/probe.mjs", import.meta.url),
+  new URL("../fixtures/kubernetes/probe.mts", import.meta.url),
   "utf8",
 );
 const harnessAuthentication = new Map();

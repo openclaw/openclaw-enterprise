@@ -75,7 +75,7 @@ modelSource=$(request GET "$base/credential-sources" |
     '[.data[]|select(.name==$n and .type==$t and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
 ```
 
-Otherwise, store the credential in a Namespace Secret and register its reference before enabling the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
+Otherwise, store the credential in a Namespace Secret and register its reference with Credential Gateway. This works with or without the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
 
 ```bash
 # POST $base/secrets: read the credential from its file.

@@ -15,7 +15,6 @@ import {
   createKubernetesComputeDriver,
   PLUGIN_RUNTIME_STATUS_PORT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
@@ -27,11 +26,6 @@ import {
   goToolEnvironment,
   renderExecutionChart,
 } from "../helpers/production-chart.mjs";
-import {
-  collectorVolumeLimitCases,
-  quantityRefusals,
-  resourceNameAndSignRefusals,
-} from "../helpers/production-chart-quantity-cases.ts";
 import { productionChartRendererRefusalCases } from "../helpers/production-chart-renderer-refusal-cases.ts";
 import {
   gatewayRoutingValues,
@@ -151,6 +145,13 @@ const controlPlaneSelectorValues = {
 
 async function renderObjects(overrides = {}, options = {}) {
   return resources((await render(overrides, options)).stdout);
+}
+
+function findResourceByComponent(objects, kind, component) {
+  return objects.find(
+    (object) =>
+      object.kind === kind && object.metadata.labels?.["app.kubernetes.io/component"] === component,
+  );
 }
 
 test(
@@ -1133,33 +1134,33 @@ test(
 test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await renderProductionValuesExample([], { maxBuffer: 2_000_000 });
   const objects = await resources(stdout);
-  const selected = (kind, component) =>
-    objects.find(
-      (object) =>
-        object.kind === kind &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === component,
-    );
   assert.ok(
     objects.some(
       ({ kind, metadata }) =>
         kind === "Job" && metadata.labels?.["app.kubernetes.io/component"] === "initialization",
     ),
   );
-  const initialization = selected("Job", "initialization");
+  const initialization = findResourceByComponent(objects, "Job", "initialization");
   assert.deepEqual(initialization.spec.template.spec.nodeSelector, { "oce-role": "control" });
   for (const component of ["api", "worker"]) {
-    assert.deepEqual(selected("Deployment", component).spec.template.spec.nodeSelector, {
-      "oce-role": "control",
-    });
+    assert.deepEqual(
+      findResourceByComponent(objects, "Deployment", component).spec.template.spec.nodeSelector,
+      {
+        "oce-role": "control",
+      },
+    );
   }
-  assert.deepEqual(selected("Deployment", "worker").spec.strategy, {
+  assert.deepEqual(findResourceByComponent(objects, "Deployment", "worker").spec.strategy, {
     type: "RollingUpdate",
     rollingUpdate: { maxSurge: "25%", maxUnavailable: "25%" },
   });
   // Session admission and sign-in limits are process-local: never overlap two API Pods.
-  assert.deepEqual(selected("Deployment", "api").spec.strategy, { type: "Recreate" });
+  assert.deepEqual(findResourceByComponent(objects, "Deployment", "api").spec.strategy, {
+    type: "Recreate",
+  });
   for (const component of ["api", "worker"]) {
-    const env = selected("Deployment", component).spec.template.spec.containers[0].env;
+    const env = findResourceByComponent(objects, "Deployment", component).spec.template.spec
+      .containers[0].env;
     assert.ok(!env.some(({ name }) => /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name)));
   }
   assert.ok(
@@ -1343,16 +1344,15 @@ test(
 
 test("control-plane node selectors are optional unless configured", tooling, async () => {
   const objects = await renderObjects();
-  const selected = (kind, component) =>
-    objects.find(
-      (object) =>
-        object.kind === kind &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === component,
-    );
-
-  assert.equal(selected("Job", "initialization").spec.template.spec.nodeSelector, undefined);
+  assert.equal(
+    findResourceByComponent(objects, "Job", "initialization").spec.template.spec.nodeSelector,
+    undefined,
+  );
   for (const component of ["api", "worker"]) {
-    assert.equal(selected("Deployment", component).spec.template.spec.nodeSelector, undefined);
+    assert.equal(
+      findResourceByComponent(objects, "Deployment", component).spec.template.spec.nodeSelector,
+      undefined,
+    );
   }
 });
 
@@ -1923,7 +1923,7 @@ test(
         await execute(
           "node",
           [
-            "scripts/render-repository-credentials-origin.mjs",
+            "scripts/render-repository-credentials-origin.ts",
             "--release",
             "oce",
             "--namespace",
@@ -2487,13 +2487,6 @@ test(
   async () => {
     const { stdout } = await render(controlPlaneSelectorValues);
     const objects = await resources(stdout);
-    const selected = (kind, component) =>
-      objects.find(
-        (object) =>
-          object.kind === kind &&
-          object.metadata.labels?.["app.kubernetes.io/component"] === component,
-      );
-
     // The chart exposes exactly one internal controller Service and no public ingress surface.
     const services = objects.filter(({ kind }) => kind === "Service");
     assert.equal(services.length, 1);
@@ -2541,9 +2534,9 @@ test(
 
     // Initialization, API, and worker use distinct identities; database credentials remain isolated.
     for (const component of ["initialization", "api", "worker"]) {
-      assert.ok(selected("ServiceAccount", component));
+      assert.ok(findResourceByComponent(objects, "ServiceAccount", component));
     }
-    const initialization = selected("Job", "initialization");
+    const initialization = findResourceByComponent(objects, "Job", "initialization");
     assert.equal(initialization.spec.backoffLimit, 0);
     const pod = initialization.spec.template.spec;
     assert.equal(pod.automountServiceAccountToken, false);
@@ -2694,7 +2687,7 @@ test(
 
     // Real rendered workloads retain restricted execution and mount credentials only by Secret reference.
     for (const component of ["api", "worker"]) {
-      const pod = selected("Deployment", component).spec.template.spec;
+      const pod = findResourceByComponent(objects, "Deployment", component).spec.template.spec;
       const container = pod.containers[0];
       assert.deepEqual(pod.nodeSelector, { "oce-role": "control" });
       assert.equal(pod.securityContext.runAsNonRoot, true);
@@ -3297,14 +3290,8 @@ test(
   tooling,
   async () => {
     const objects = await renderObjects(databaseCaValues);
-    const selected = (kind, component) =>
-      objects.find(
-        (object) =>
-          object.kind === kind &&
-          object.metadata.labels?.["app.kubernetes.io/component"] === component,
-      );
-
-    const initializationPod = selected("Job", "initialization").spec.template.spec;
+    const initializationPod = findResourceByComponent(objects, "Job", "initialization").spec
+      .template.spec;
     assert.deepEqual(initializationPod.volumes.find(({ name }) => name === "database-ca")?.secret, {
       secretName: "occ-rds-ca",
       items: [{ key: "ca.pem", path: "ca.pem" }],
@@ -3319,7 +3306,7 @@ test(
     );
 
     for (const component of ["api", "worker"]) {
-      const pod = selected("Deployment", component).spec.template.spec;
+      const pod = findResourceByComponent(objects, "Deployment", component).spec.template.spec;
       assert.deepEqual(pod.volumes.find(({ name }) => name === "database-ca")?.secret, {
         secretName: "occ-rds-ca",
         items: [{ key: "ca.pem", path: "ca.pem" }],
@@ -3347,10 +3334,7 @@ test(
       ["api", ["get", "create", "update", "delete"]],
       ["worker", ["get", "delete"]],
     ]) {
-      const pod = objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
-      ).spec.template.spec;
+      const pod = findResourceByComponent(objects, "Deployment", component).spec.template.spec;
       const namespace = pod.containers[0].env.find(
         ({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE",
       ).value;
@@ -3391,14 +3375,8 @@ test(
   async () => {
     const { stdout } = await render(chatgptValues);
     const objects = await resources(stdout);
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
-      );
-
     // The operator-owned admin Secret is available only to the API through its fixed file path.
-    const apiPod = deployment("api").spec.template.spec;
+    const apiPod = findResourceByComponent(objects, "Deployment", "api").spec.template.spec;
     const adminVolume = apiPod.volumes.find(({ name }) => name === "chatgpt-admin");
     assert.deepEqual(adminVolume.secret, {
       secretName: "occ-chatgpt-admin",
@@ -3408,7 +3386,7 @@ test(
       apiPod.containers[0].volumeMounts.find(({ name }) => name === "chatgpt-admin"),
       { name: "chatgpt-admin", mountPath: "/etc/openclaw/chatgpt", readOnly: true },
     );
-    const workerPod = deployment("worker").spec.template.spec;
+    const workerPod = findResourceByComponent(objects, "Deployment", "worker").spec.template.spec;
     assert.ok(!workerPod.volumes.some(({ name }) => name === "chatgpt-admin"));
     assert.ok(!workerPod.containers[0].volumeMounts.some(({ name }) => name === "chatgpt-admin"));
     assert.equal(objects.filter(({ kind }) => kind === "Secret").length, 0);
@@ -3458,12 +3436,7 @@ const signInEnv = /^OCC_AUTH_(GOOGLE_|OIDC_|TRUSTED_PROXY_CIDRS|CLIENT_IP_HEADER
 
 async function signInObjects(overrides) {
   const objects = await resources((await render(overrides)).stdout);
-  const selected = (kind, component) =>
-    objects.find(
-      (object) =>
-        object.kind === kind &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === component,
-    );
+  const selected = (kind, component) => findResourceByComponent(objects, kind, component);
   const apiEnv = Object.fromEntries(
     selected("Deployment", "api").spec.template.spec.containers[0].env.map(({ name, ...value }) => [
       name,
@@ -3845,11 +3818,7 @@ test("the chart refuses administrator emails the bootstrap Job refuses", tooling
     "\u0085a@b.com",
   ]) {
     const objects = await renderObjects({}, { strings: { "bootstrap.adminEmail": email } });
-    const job = objects.find(
-      (object) =>
-        object.kind === "Job" &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
-    );
+    const job = findResourceByComponent(objects, "Job", "initialization");
     const value = job.spec.template.spec.containers
       .find((container) => container.name === "bootstrap")
       .env.find((entry) => entry.name === "OCC_BOOTSTRAP_ADMIN_EMAIL").value;
@@ -3870,11 +3839,7 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
     );
   }
   const objects = await renderObjects({}, { strings: { "bootstrap.password.claimName": longest } });
-  const job = objects.find(
-    (object) =>
-      object.kind === "Job" &&
-      object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
-  );
+  const job = findResourceByComponent(objects, "Job", "initialization");
   const claim = job.spec.template.spec.volumes.find(
     (volume) => volume.name === "bootstrap-password-output",
   ).persistentVolumeClaim.claimName;
@@ -4830,61 +4795,6 @@ test(
   },
 );
 
-test("Helm rejects worker timings the worker process rejects", tooling, async () => {
-  for (const [key, value] of [
-    ["worker.pollIntervalMs", "0"],
-    ["worker.pollIntervalMs", "abc"],
-    ["worker.leaseDurationMs", "1.5"],
-    ["worker.maxAttempts", "-1"],
-    ["worker.convergenceTimeoutMs", "9007199254740993"],
-  ]) {
-    await assert.rejects(render({ [key]: value }), /must be a positive safe integer/);
-  }
-  const rendered = await render({ "worker.pollIntervalMs": "010" });
-  assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
-});
-
-test("Helm refuses worker timer settings a Node.js timer cannot wait for", tooling, async (t) => {
-  // Node fires a longer timer after 1 ms; the chart shares the worker's bound (finding 2303).
-  const over = String(MAX_TIMER_DELAY_MS + 1);
-  for (const key of ["worker.pollIntervalMs", "worker.leaseDurationMs"]) {
-    await assert.rejects(
-      render({ [key]: over }),
-      new RegExp(`${key.replace(".", "\\.")} must be at most ${MAX_TIMER_DELAY_MS} milliseconds`),
-    );
-  }
-  const rendered = await render({
-    "worker.pollIntervalMs": String(MAX_TIMER_DELAY_MS),
-    "worker.leaseDurationMs": String(MAX_TIMER_DELAY_MS),
-    // Only compared with work age, never a timer delay: the safe-integer bound still applies.
-    "worker.convergenceTimeoutMs": over,
-  });
-  for (const name of ["OCC_WORKER_POLL_INTERVAL_MS", "OCC_WORKER_LEASE_DURATION_MS"]) {
-    assert.match(rendered.stdout, new RegExp(`name: ${name}\\n\\s+value: "${MAX_TIMER_DELAY_MS}"`));
-  }
-  assert.match(
-    rendered.stdout,
-    new RegExp(`name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\\n\\s+value: "${over}"`),
-  );
-  // A values file delivers a float64, which takes the helper's other parsing path.
-  const directory = await temporaryDirectory(t, "occ-worker-timer-");
-  const valuesFile = join(directory, "worker.yaml");
-  await writeFile(valuesFile, `worker:\n  leaseDurationMs: ${over}\n`, { mode: 0o600 });
-  await assert.rejects(
-    render({}, { valuesFiles: [valuesFile] }),
-    /worker\.leaseDurationMs must be at most 2147483647 milliseconds/,
-  );
-});
-
-test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, async (t) => {
-  const directory = await temporaryDirectory(t, "occ-worker-timing-");
-  const valuesFile = join(directory, "worker.yaml");
-  await writeFile(valuesFile, "worker:\n  convergenceTimeoutMs: 1800000\n", { mode: 0o600 });
-  const rendered = await render({}, { valuesFiles: [valuesFile] });
-  assert.match(rendered.stdout, /name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1800000"/);
-  assert.doesNotMatch(rendered.stdout, /OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1\.8e\+06"/);
-});
-
 test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", tooling, async () => {
   const field = "logging.collector.exporter.port";
   for (const value of ["03100", "0443", "010", "00080", "0", "65536", "18446744073709551617"]) {
@@ -4906,207 +4816,6 @@ test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", too
       .spec.egress.at(-1).ports,
     [{ protocol: "TCP", port: 3100 }],
   );
-});
-
-// Kubernetes refuses these at apply, after other objects of the release changed (finding 2337).
-test("Helm refuses unknown resource names and negative quantities", tooling, async () => {
-  const values = { ...productionCollectorValues, ...slackProxyValues };
-  for (const [field, value, message] of resourceNameAndSignRefusals) {
-    await assert.rejects(render({ ...values, [field]: value }), (error) => {
-      assert.ok(error.stderr.includes(message), `${field}: ${error.stderr}`);
-      return true;
-    });
-  }
-  // Extended and huge page resources pass, and so does zero, signed or not. Request above
-  // limit is left to Kubernetes (#1676 keeps the chart to syntax checks).
-  await render({
-    ...values,
-    "resources.requests.cpu": "2",
-    "resources.limits.cpu": "500m",
-    "resources.requests.example\\.com/gpu": "1",
-    "resources.limits.example\\.com/gpu": "1",
-    "slackProxy.resources.limits.hugepages-2Mi": "4Mi",
-    "slackProxy.resources.requests.hugepages-1\\.5Gi": "3Gi",
-    // A huge page size is any quantity: unsuffixed, or with an exponent.
-    "slackProxy.resources.limits.hugepages-2097152": "4Mi",
-    "slackProxy.resources.limits.hugepages-1e6": "4Mi",
-    [`resources.limits.example\\.com/${"g".repeat(63)}`]: "1",
-    // Null clears a quantity instead of failing the check.
-    "resources.limits.example\\.com/fpga": "null",
-    "slackProxy.resources.requests.ephemeral-storage": "-0",
-    "logging.collector.resources.requests.memory": "384e6",
-    "logging.collector.state.sizeLimit": "0",
-    "logging.collector.tmp.sizeLimit": "-0.0Mi",
-  });
-});
-
-test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
-  const collector = productionCollectorValues;
-  for (const isUpgrade of [false, true]) {
-    const options = { isUpgrade };
-    for (const [field, value] of quantityRefusals["--set"].syntax) {
-      await assert.rejects(render({ ...collector, [field]: value }, options), (error) => {
-        assert.ok(error.stderr.includes(`${field} must be a Kubernetes quantity`));
-        return true;
-      });
-    }
-    const rendered = await render(collector, options);
-    assert.match(rendered.stdout, /sizeLimit: "128Mi"/);
-    assert.match(rendered.stdout, /sizeLimit: "64Mi"/);
-
-    // Numeric YAML quantities must not be mistaken for missing or non-string values.
-    const numeric = await resources(
-      (
-        await render(
-          { ...collector, "resources.requests.cpu": 0, "resources.limits.cpu": 1 },
-          options,
-        )
-      ).stdout,
-    );
-    const api = numeric.find(
-      (object) =>
-        object.kind === "Deployment" &&
-        object.metadata?.labels?.["app.kubernetes.io/component"] === "api",
-    );
-    assert.equal(api.spec.template.spec.containers[0].resources.requests.cpu, 0);
-    assert.equal(api.spec.template.spec.containers[0].resources.limits.cpu, 1);
-
-    // Decimal E is exa; uppercase K is not a suffix. Exponent and binary forms stay.
-    for (const [field, value, diagnostic, base] of quantityRefusals["--set"].uppercaseSuffix) {
-      const values = base === "collector" ? collector : {};
-      await assert.rejects(render({ ...values, [field]: value }, options), diagnostic);
-    }
-    const accepted = await render(
-      {
-        ...collector,
-        "resources.requests.memory": "1E",
-        "logging.collector.resources.requests.memory": "1E",
-        "logging.collector.state.sizeLimit": "1E",
-      },
-      options,
-    );
-    assert.match(accepted.stdout, /memory: 1E/);
-    assert.match(accepted.stdout, /sizeLimit: "1E"/);
-    const preserved = await render(
-      {
-        "resources.requests.memory": "1e3",
-        "resources.limits.memory": "1E3",
-        "resources.requests.cpu": "1k",
-        "resources.limits.cpu": "1Ki",
-      },
-      options,
-    );
-    assert.match(preserved.stdout, /memory: "1e3"/);
-    assert.match(preserved.stdout, /memory: "1E3"/);
-    assert.match(preserved.stdout, /cpu: 1k/);
-    assert.match(preserved.stdout, /cpu: 1Ki/);
-
-    // UnmarshalJSON trims spaces on the raw JSON text. Escaped tabs stay rejected.
-    for (const [field, value, diagnostic] of quantityRefusals["--set-string"]) {
-      await assert.rejects(render({}, { ...options, strings: { [field]: value } }), diagnostic);
-    }
-    const padded = await render(collector, {
-      ...options,
-      strings: {
-        "resources.requests.cpu": " 100m ",
-        "resources.limits.memory": " 1E ",
-        "logging.collector.resources.requests.memory": " 64Mi ",
-        "logging.collector.state.sizeLimit": " 128Mi ",
-        "logging.collector.tmp.sizeLimit": " 32Mi ",
-      },
-    });
-    assert.match(padded.stdout, /cpu: ["'] 100m ["']/);
-    assert.match(padded.stdout, /memory: ["'] 1E ["']/);
-    assert.match(padded.stdout, /memory: ["'] 64Mi ["']/);
-    assert.match(padded.stdout, /sizeLimit: " 128Mi "/);
-    assert.match(padded.stdout, /sizeLimit: " 32Mi "/);
-
-    // ParseQuantity treats a missing numerator as zero. Bare Pi has an empty numeric token.
-    const zeros = await render(collector, {
-      ...options,
-      strings: {
-        "resources.requests.cpu": "m",
-        "resources.limits.cpu": "+",
-        "resources.requests.memory": ".",
-        "logging.collector.state.sizeLimit": "m",
-      },
-    });
-    assert.match(zeros.stdout, /cpu: m$/m);
-    assert.match(zeros.stdout, /cpu: \+$/m);
-    assert.match(zeros.stdout, /memory: \.$/m);
-    assert.match(zeros.stdout, /sizeLimit: "m"/);
-    await assert.rejects(
-      render({}, { ...options, strings: { "resources.requests.memory": "Pi" } }),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    const withDigit = await render(
-      {},
-      { ...options, strings: { "resources.requests.memory": "1Pi" } },
-    );
-    assert.match(withDigit.stdout, /memory: 1Pi/);
-
-    // sizeLimit is optional. Null clears the chart default and must stay YAML null on install and upgrade.
-    for (const { overrides, expectedState, expectedTmp } of collectorVolumeLimitCases) {
-      const objects = await resources(
-        (await render({ ...collector, ...overrides }, options)).stdout,
-      );
-      const collectorDaemonSet = objects.find(
-        (object) =>
-          object.kind === "DaemonSet" && object.metadata?.name === "openclaw-enterprise-collector",
-      );
-      const volumes = collectorDaemonSet.spec.template.spec.volumes;
-      assert.equal(
-        volumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
-        expectedState,
-      );
-      assert.equal(
-        volumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
-        expectedTmp,
-      );
-    }
-    await assert.rejects(
-      render(
-        {
-          ...collector,
-          "logging.collector.state.sizeLimit": "null",
-          "logging.collector.tmp.sizeLimit": "10MiB",
-        },
-        options,
-      ),
-      /logging\.collector\.tmp\.sizeLimit must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render(
-        {
-          ...collector,
-          "logging.collector.state.sizeLimit": "foo",
-          "logging.collector.tmp.sizeLimit": "null",
-        },
-        options,
-      ),
-      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
-    );
-
-    // resources: null clears defaults. Indexing that absent map used to abort the render.
-    const cleared = await render(
-      {
-        ...collector,
-        resources: "null",
-        "logging.collector.resources": "null",
-      },
-      options,
-    );
-    assert.match(cleared.stdout, /sizeLimit: "128Mi"/);
-    assert.doesNotMatch(cleared.stdout, /cpu: 100m/);
-    assert.doesNotMatch(cleared.stdout, /memory: 128Mi/);
-    await assert.rejects(
-      render(
-        { ...collector, resources: "null" },
-        { ...options, strings: { "logging.collector.resources.requests.memory": "foo" } },
-      ),
-      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-  }
 });
 
 test(

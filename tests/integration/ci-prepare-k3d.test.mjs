@@ -438,7 +438,9 @@ function assertImageCacheObservations(stderr, lane) {
 
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
-describe("CI k3d preparation", { concurrency: true }, () => {
+// Each case starts several child processes. Bound overlap so setup can reach
+// the deliberately hung command before the deadline being tested expires.
+describe("CI k3d preparation", { concurrency: 4 }, () => {
   for (const lane of ["slack", "production-tui"]) {
     test(`${lane} prepares checkout images with read-only BuildKit caches`, async (t) => {
       const commands = await fixtureImageCommands(t, "cache-progress", lane, {

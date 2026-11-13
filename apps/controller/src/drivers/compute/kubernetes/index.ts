@@ -6278,12 +6278,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   validateExecutionAdmission(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan"> &
+      Partial<Pick<AgentRevision, "harnessAuth" | "credentialSources" | "repositoryCredentials">>,
     source?: SelectedDriverRegistration | "stored",
   ): void {
     assertExecutionAdmission(revision);
     const plan = revision.egressPlan;
-    if (plan === undefined && this.proxyDriver === undefined) {
+    const auth = revision.harnessAuth;
+    const binding = revision.credentialSources?.[0];
+    const ordinaryModelOnly =
+      this.protectedExecution?.owner.allowsOrdinaryCredentialGateway() &&
+      revision.repositoryCredentials === undefined &&
+      auth?.method === "credential_source" &&
+      auth.credentialGatewayId === this.credentialGatewayDriver?.id &&
+      revision.credentialSources?.length === 1 &&
+      binding?.credentialProxyId === undefined &&
+      binding?.credentialGatewayId === auth.credentialGatewayId &&
+      binding?.sourceId === auth.sourceId &&
+      binding?.sourceType === auth.sourceType;
+    if (plan === undefined && (this.proxyDriver === undefined || ordinaryModelOnly)) {
       return;
     }
     if (
@@ -11438,7 +11451,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const catalog = await gateway.listSourceTypes({
       signal: this.operationSignal(),
     });
-    return catalog.find((entry) => entry.type === sourceType);
+    const type = catalog.find((entry) => entry.type === sourceType);
+    // The Git-only exception must still hold when an admitted revision is released.
+    // Gateway-only installations and protected plans retain their own lifecycle rules.
+    if (
+      this.protectedExecution?.owner.allowsOrdinaryCredentialGateway() &&
+      revision.executionAdmission.mode === "unprotected" &&
+      revision.egressPlan === undefined &&
+      revision.repositoryCredentials === undefined &&
+      type !== undefined &&
+      (type.rotation === "refresh" ||
+        type.deviceAuthorization !== undefined ||
+        type.harnessAuth?.loginMode === "chatgptAuthTokens")
+    ) {
+      throw new ConfigurationFailure(
+        "The selected Credential Proxy cannot preserve this credential source's lifecycle.",
+      );
+    }
+    return type;
   }
 
   /** Admission selects the route; a changed or missing live source cannot change that route. */

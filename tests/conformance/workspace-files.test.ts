@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { Permission, Principal } from "../../packages/contracts/src/index.ts";
-import { validateNativeIAMState, type NativeIAMState } from "../../packages/iam/src/index.ts";
+import type { Permission } from "../../packages/contracts/src/index.ts";
+import { validateNativeIAMState } from "../../packages/iam/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
@@ -10,11 +10,16 @@ import {
   type ControllerWorkspaceFilesAccess,
 } from "../../apps/controller/src/gateway/contracts.ts";
 import { createFastifyApp, type ControllerApp } from "../../apps/controller/src/index.ts";
-import { authenticatedHeaders, type signInToControllerApp } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { createTenantReaderFixture, tenantRequest } from "../helpers/tenant-reader-app.mjs";
+import {
+  createTenantReaderFixture,
+  tenantRequest as request,
+  type TenantReaderApp,
+  type TenantRequestOptions,
+} from "../helpers/tenant-reader-app.ts";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import {
   workspaceVersionStarting,
@@ -41,7 +46,6 @@ const administratorPermissions: Permission[] = [
   { action: "read", resourceKind: "agent_revision" },
 ];
 
-type Session = Pick<Awaited<ReturnType<typeof signInToControllerApp>>, "cookie" | "origin">;
 type FixtureOverrides = {
   workspaceFilesUnconfigured?: boolean;
   workspaceFileRequestTimeoutMs?: number;
@@ -49,12 +53,6 @@ type FixtureOverrides = {
 type FixtureOptions = {
   workspaceFilesAccess: ControllerWorkspaceFilesAccess | undefined;
   workspaceFileRequestTimeoutMs?: number;
-};
-type RequestOptions = {
-  body?: unknown;
-  headers?: Record<string, string | null>;
-  method?: string;
-  session?: Session;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,54 +78,13 @@ function errorOf(result: RequestResult) {
   return record(result.payload.error);
 }
 
-async function request(app: ControllerApp, path: string, options: RequestOptions = {}) {
-  const result = await tenantRequest(app, path, options);
-  const response: unknown = result.response;
-  assert.ok(response instanceof Response);
-  const payload: unknown = result.payload;
-  return { response, payload: record(payload) };
-}
-
 type RequestResult = Awaited<ReturnType<typeof request>>;
-type BaseFixture = Awaited<ReturnType<typeof createTenantReaderFixture>>;
-type MutableNativeIAMState = {
-  -readonly [Key in keyof NativeIAMState]: NativeIAMState[Key] extends readonly (infer Entry)[]
-    ? Entry[]
-    : NativeIAMState[Key];
+type BaseFixture = Awaited<ReturnType<typeof createTenantReaderFixture<FixtureOverrides>>>;
+type SharedFixture = BaseFixture & { controller: OpenClawController };
+type Fixture = Omit<SharedFixture, "app"> & {
+  app: TenantReaderApp;
+  firstAuditEvent: number;
 };
-type SharedFixture = Pick<
-  BaseFixture,
-  "app" | "administrator" | "tenantAReader" | "auditSink" | "createApp"
-> & {
-  controller: OpenClawController;
-  state: MutableNativeIAMState;
-  session: (principal: Principal) => Session;
-};
-type Fixture = SharedFixture & { firstAuditEvent: number };
-
-function assertMutableNativeIAMState(value: unknown): asserts value is MutableNativeIAMState {
-  validateNativeIAMState(value as NativeIAMState);
-  for (const collection of Object.values(record(value))) {
-    assert.ok(Array.isArray(collection) && !Object.isFrozen(collection));
-  }
-}
-
-function assertSession(value: unknown): asserts value is Session {
-  const session = record(value);
-  assert.equal(typeof session.cookie, "string");
-  assert.equal(typeof session.origin, "string");
-}
-
-function isListeningApp(
-  value: unknown,
-): value is Pick<ReturnType<typeof createFastifyApp>, "listen" | "close" | "addHook"> {
-  return (
-    isRecord(value) &&
-    typeof value.listen === "function" &&
-    typeof value.close === "function" &&
-    typeof value.addHook === "function"
-  );
-}
 
 // An app and two signed-in accounts cost far more than a case, so cases share one bootstrapped
 // app and run one at a time. Each gets a new Namespace and Agent, its own workspace file
@@ -136,14 +93,14 @@ function isListeningApp(
 const running: { workspaceFilesAccess: ControllerWorkspaceFilesAccess | undefined } = {
   workspaceFilesAccess: undefined,
 };
-const deadlineApps = new Map<number, ControllerApp>();
+const deadlineApps = new Map<number, TenantReaderApp>();
 let shared: Promise<SharedFixture> | undefined;
 
 async function createFixture({
   workspaceFilesAccess,
   workspaceFileRequestTimeoutMs: deadline,
 }: FixtureOptions): Promise<Fixture> {
-  shared ??= createTenantReaderFixture({
+  shared ??= createTenantReaderFixture<FixtureOverrides>({
     installationId,
     label: "workspace-files",
     administratorName: "Workspace file administrator",
@@ -155,7 +112,7 @@ async function createFixture({
       implementation: "deterministic-test",
     },
     secretDriver: createTestSecretDriver(),
-    appOptions: (overrides: FixtureOverrides = {}) => ({
+    appOptions: (overrides) => ({
       // An app built with `workspaceFilesUnconfigured` has no workspace file access at all.
       ...(overrides.workspaceFilesUnconfigured === true
         ? {}
@@ -181,23 +138,13 @@ async function createFixture({
       body: { name: "Workspace file test installation" },
     });
     assert.equal(result.response.status, 201);
-    assert.ok(fixture.controller instanceof OpenClawController);
-    const state: unknown = fixture.state;
-    assertMutableNativeIAMState(state);
-    return {
-      app: fixture.app,
-      administrator: fixture.administrator,
-      tenantAReader: fixture.tenantAReader,
-      auditSink: fixture.auditSink,
-      createApp: fixture.createApp,
-      controller: fixture.controller,
-      state,
-      session(principal: Principal) {
-        const session: unknown = fixture.session(principal);
-        assertSession(session);
-        return session;
-      },
-    };
+    const { controller, state } = fixture;
+    assert.ok(controller instanceof OpenClawController);
+    validateNativeIAMState(state);
+    for (const collection of Object.values(state)) {
+      assert.ok(Array.isArray(collection) && !Object.isFrozen(collection));
+    }
+    return { ...fixture, controller };
   });
   const fixture = await shared;
   running.workspaceFilesAccess = workspaceFilesAccess;
@@ -207,10 +154,11 @@ async function createFixture({
     });
     deadlineApps.set(deadline, app);
   }
-  return Object.assign(Object.create(fixture) as typeof fixture, {
+  return {
+    ...fixture,
     app: deadline === undefined ? fixture.app : (deadlineApps.get(deadline) ?? fixture.app),
     firstAuditEvent: fixture.auditSink.events.length,
-  });
+  };
 }
 
 // Replaces `object[key]` until the returned restore runs, at the latest when the case ends. An own
@@ -327,7 +275,7 @@ function put(
   app: ControllerApp,
   path: string,
   body: unknown,
-  { headers = {}, ...options }: RequestOptions = {},
+  { headers = {}, ...options }: TenantRequestOptions = {},
 ) {
   return request(app, path, {
     ...options,
@@ -445,6 +393,7 @@ test("Agent workspace file routes enforce read and operate permissions separatel
     }
   }
   const session = fixture.session(fixture.tenantAReader);
+  assert.ok(session);
 
   const readable = await request(
     fixture.app,
@@ -481,6 +430,7 @@ test("Agent workspace file routes authorize the caller before reporting unconfig
   });
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
   const session = fixture.session(fixture.tenantAReader);
+  assert.ok(session);
   const assertDenied = (result: RequestResult, action: "read" | "operate") => {
     assert.equal(result.response.status, 403);
     assert.equal(errorOf(result).code, "FORBIDDEN");
@@ -536,6 +486,7 @@ test("Agent workspace file routes name an Agent with no running version after it
     stage: "starting",
   });
   const session = fixture.session(fixture.tenantAReader);
+  assert.ok(session);
   const path = (agent: { id: string }) =>
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
   const assertConflict = (result: RequestResult, message: string) => {
@@ -1033,12 +984,7 @@ test(
       return identity;
     });
 
-    const app: unknown = Reflect.apply(fixture.createApp, fixture, [
-      fixture.administrator,
-      {},
-      createFastifyApp,
-    ]);
-    assert.ok(isListeningApp(app));
+    const app = fixture.createApp(fixture.administrator, {}, createFastifyApp);
     const controller = new AbortController();
     context.after(async () => {
       releaseLookup();
@@ -1069,8 +1015,8 @@ test(
       return payload;
     });
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    const defaultSession = record(fixture.app).defaultSession;
-    assertSession(defaultSession);
+    const { defaultSession } = fixture.app;
+    assert.ok(defaultSession);
     const url = new URL(path, address).href;
     const options = {
       method: "PUT",
@@ -1141,19 +1087,14 @@ test("Agent workspace file read aborts provider access on real HTTP client disco
   const namespace = await createNamespace(fixture, "Disconnect tenant");
   const { agent } = await createAgent(fixture, namespace, "Disconnect Agent");
   // Every app forwards to the running case's workspace file provider.
-  const app: unknown = Reflect.apply(fixture.createApp, fixture, [
-    fixture.administrator,
-    {},
-    createFastifyApp,
-  ]);
-  assert.ok(isListeningApp(app));
+  const app = fixture.createApp(fixture.administrator, {}, createFastifyApp);
   context.after(async () => {
     await app.close();
   });
   const address = await app.listen({ host: "127.0.0.1", port: 0 });
   const controller = new AbortController();
-  const defaultSession = record(fixture.app).defaultSession;
-  assertSession(defaultSession);
+  const { defaultSession } = fixture.app;
+  assert.ok(defaultSession);
   const response = fetchLoopback(
     new URL(`/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`, address).href,
     {

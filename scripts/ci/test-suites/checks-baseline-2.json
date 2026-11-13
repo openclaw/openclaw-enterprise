@@ -97,7 +97,7 @@
     "tests/integration/runtime-image-failure-output.test.ts",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.ts",
-    "tests/integration/plugin-driver-real-preflight.test.mjs",
+    "tests/integration/plugin-driver-real-preflight.test.ts",
     "tests/conformance/postgres-transaction-commit.test.mjs",
     "tests/conformance/plugin-runtime-policy.test.mjs",
     "tests/integration/password-sign-in-policy.test.ts",
@@ -200,7 +200,7 @@
       "path": "tests/integration/qa-repository-installation.test.ts"
     },
     {
-      "path": "tests/integration/github-app-observer.test.mjs"
+      "path": "tests/integration/github-app-observer.test.ts"
     },
     {
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
@@ -455,7 +455,7 @@
       "path": "tests/integration/plugin-driver-startup.test.ts"
     },
     {
-      "path": "tests/integration/plugin-driver-real-preflight.test.mjs"
+      "path": "tests/integration/plugin-driver-real-preflight.test.ts"
     },
     {
       "path": "tests/conformance/repository-transactions.test.mjs"

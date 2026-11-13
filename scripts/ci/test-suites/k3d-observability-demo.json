@@ -32,7 +32,7 @@
       ]
     },
     {
-      "path": "tests/integration/observability-demo-k3d.test.mjs",
+      "path": "tests/integration/observability-demo-k3d.test.ts",
       "expectedTests": ["demo Helm stack ingests fixture metrics and OTLP logs through Grafana"]
     }
   ]

@@ -339,8 +339,6 @@ export interface InstallationCapabilities {
   /** The API can configure Agent browser access during creation or provisioning. */
   readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
-  /** The selected Credential Proxy requires repository access for deployment. */
-  readonly repositoryAccessRequired?: true;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
   /** Plugin catalogs by Harness. */
