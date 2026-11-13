@@ -82,10 +82,13 @@ composition before changing the provider. The separate
 [frozen artifact contract](contracts.md#protected-codex-artifact-downloads)
 and ordinary unprotected editor retain their existing behavior.
 
-Persist the provider compare-and-swap version before updating, and reuse the
-operation ID on recovery. After an uncertain write, inspect the provider before
-retrying. The protected pair must agree on the complete new policy in subsequent
-wiring and health checks. Confirm the expected source and effective rules,
+Before dispatch, record the operation ID, the immutable Sandbox identity, the
+provider’s compare-and-swap version, and the hashes of the intended policy and
+the Installation limits. If the write response is lost, look up that original
+operation through the authenticated read-only provider path, including after a
+restore. Recovery never resends the original write. A later policy version alone cannot
+establish which operation produced it. The protected pair must agree on the new
+policy in subsequent wiring and health checks. Confirm the expected source and effective rules,
 including absence of removed access, and match the supervisor’s loaded version
 and hash to the **post-update** policy on the current Sandbox and instance.
 A queued write, a successful RPC, or the previous deployment witness alone
@@ -101,6 +104,25 @@ replacement or deletion and prevent late acknowledgments from marking a
 successor applied. Desired grants survive controller restart and are revalidated
 at the next deployment against current delegation and Installation limits.
 A replacement Sandbox or supervisor needs fresh evidence.
+
+If an original write is still uncertain when a different revision and Sandbox
+become active, first fence the old writer. In the same transaction that admits
+the new change, preserve the old operation’s reconciliation data on its original
+Agent-owned work row. This optional private field is empty on existing and
+ordinary work. Keep the operation identity, original target and precondition,
+requested scope, optional provider commit receipt, and prior confirmed witness
+through retries, cancellation and ordinary result changes. An uncertain approval cannot extend the replacement’s delegation.
+
+Only the recovery owner reads this private data. Preserve it through queue
+retries until an authorized read verifies the original effect or confirms that
+the exact old recipient has retired. Retirement closes the old recipient’s
+ability to act. Its historical policy outcome may remain unknown. In one
+transaction, record the terminal result and a sanitized audit disposition, then
+clear the private data. Reporting rollback requires independent confirmation that
+the original recipient loaded the restored policy. A successful change on the replacement
+leaves the old outcome uncertain. Successful final Agent deletion removes its
+work rows under the existing lifecycle. Restored work remains isolated from live
+writers while the recovery owner checks outstanding effects.
 
 Withdrawal denies new connections to the removed scope once confirmed. Bytes
 already delivered cannot be recalled. An admitted connection or in-flight
@@ -128,9 +150,14 @@ Agent, revision, Sandbox, Pod and supervisor identities throughout.
    Exercise an already open connection separately. Retest model and Git access,
    verify unchanged runtime identities and confirm a second Agent’s policy
    never changed. Exercise stale writes, worker restart after provider update,
-   revision replacement, and stale supervisor evidence. Report observed times
-   separately from setup and deployment; an update latency target needs
-   measurements from this flow.
+   revision replacement, and stale supervisor evidence. On replacement, verify
+   that interrupted admission preserves the original operation and its witness,
+   and that a separately verified successor succeeds independently. A late
+   acknowledgment cannot settle either operation by itself. Read the original
+   operation to settle it and clear its private data without replay. Confirm that
+   pending or failed deletion preserves unresolved evidence, successful final
+   deletion removes its row, and status, logs and audit omit the private payload.
+   Measure update latency separately from setup and deployment.
 
 The [CI pin](../../../scripts/ci/openshell.mjs) selects OpenShell 0.1.8.
 Its [policy matcher](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/crates/openshell-supervisor-network/data/sandbox-policy.rego)
