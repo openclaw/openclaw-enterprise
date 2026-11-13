@@ -1,11 +1,20 @@
-import http from "node:http";
-import tls from "node:tls";
 import fs from "node:fs";
+import http from "node:http";
+import tls, { type TLSSocket } from "node:tls";
+
+export interface CatalogReady {
+  event: "catalog.ready";
+  port: number;
+}
 
 // A separate process. It answers the two public catalog URLs locally and never
 // opens an upstream socket, so the controller's own fetch is the client.
-const key = fs.readFileSync(process.argv[2]);
-const cert = fs.readFileSync(process.argv[3]);
+const [, , keyPath, certPath] = process.argv;
+if (keyPath === undefined || certPath === undefined) {
+  throw new Error("Catalog proxy requires a TLS key and certificate.");
+}
+const key = fs.readFileSync(keyPath);
+const cert = fs.readFileSync(certPath);
 const whoami = JSON.stringify({
   chatgpt_account_id: "verified-account",
   chatgpt_account_is_fedramp: false,
@@ -18,8 +27,7 @@ const models = JSON.stringify({
   ],
 });
 
-function answer(secure, path) {
-  const pathname = path.split("?")[0];
+function answer(secure: TLSSocket, pathname: string) {
   const known =
     pathname === "/api/accounts/v1/user-auth-credential/whoami" ||
     pathname === "/backend-api/codex/models";
@@ -49,16 +57,17 @@ proxy.on("connect", (request, socket, head) => {
   const secure = new tls.TLSSocket(socket, { isServer: true, key, cert });
   secure.on("error", () => socket.destroy());
   let buffer = Buffer.alloc(0);
-  secure.on("data", (chunk) => {
+  secure.on("data", (chunk: Buffer) => {
     buffer = Buffer.concat([buffer, chunk]);
     const end = buffer.indexOf("\r\n\r\n");
     if (end < 0) {
       return;
     }
     const header = buffer.subarray(0, end).toString("utf8");
-    const path = header.split("\r\n")[0]?.split(" ")[1] ?? "";
-    // Method and path only. Authorization and any token stay off this log.
-    console.error(JSON.stringify({ event: "catalog.request", host, path: path.split("?")[0] }));
+    const requestTarget = header.split("\r\n")[0]?.split(" ")[1] ?? "";
+    const [path = ""] = requestTarget.split("?");
+    // Log only the host and path to keep headers and query credentials out.
+    console.error(JSON.stringify({ event: "catalog.request", host, path }));
     answer(secure, path);
   });
 });
@@ -67,5 +76,6 @@ proxy.listen(0, "127.0.0.1", () => {
   if (address === null || typeof address === "string") {
     throw new Error("Catalog proxy did not bind.");
   }
-  console.log(JSON.stringify({ event: "catalog.ready", port: address.port }));
+  const ready: CatalogReady = { event: "catalog.ready", port: address.port };
+  console.log(JSON.stringify(ready));
 });
