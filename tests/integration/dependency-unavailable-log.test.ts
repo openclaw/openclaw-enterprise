@@ -1,21 +1,29 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+
 import { ConfigurationBackendUnavailableError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { dependencyUnavailableLogFields } from "../../apps/controller/src/http/errors.ts";
 import { createOccLogger, WITHHELD_ERROR_TEXT } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 import {
   DependencyUnavailableError,
   RuntimeCredentialsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type HttpResponse = { status: number; body: unknown };
 
 const SECRET_VALUE = "sk-proj-dependencylogvalue0123456789";
 // What a Kubernetes client error can carry: the request and the answer's body.
@@ -23,7 +31,7 @@ const CLIENT_TEXT =
   "POST /api/v1/namespaces/t/configmaps Authorization: Bearer clienttoken0123456789";
 
 function capturedLogger() {
-  const lines = [];
+  const lines: unknown[] = [];
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
@@ -34,35 +42,50 @@ function capturedLogger() {
 
 // OCC passes a Configuration Driver's DependencyUnavailableError through to HTTP unchanged, as it
 // does a ServiceAccount Driver's.
-async function configurationFixture(t, createError, options = {}) {
+async function configurationFixture(
+  t: TestContext,
+  {
+    createError,
+    auditSink,
+  }: {
+    createError?: DependencyUnavailableError;
+    auditSink?: InMemoryAuditSink;
+  } = {},
+) {
   const { lines, logger } = capturedLogger();
   const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
   const fixture = await createConsoleAppFixture(t, {
-    ...options,
+    ...(auditSink === undefined ? {} : { auditSink }),
     logger,
     configurationDriver,
     secretDriver: createTestSecretDriver({ id: "console-secret" }),
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Dependency log", { ready: true });
-  const create = configurationDriver.create;
-  configurationDriver.create = async (configuration) => {
-    if (createError !== undefined) {
+  if (createError !== undefined) {
+    configurationDriver.create = async () => {
       throw createError;
-    }
-    return create(configuration);
-  };
+    };
+  }
   return { fixture, lines, namespace };
 }
 
-function createConfiguration(fixture, namespace) {
+function createConfiguration(fixture: Fixture, namespace: NamespaceWire): Promise<HttpResponse> {
   return fixture.request("POST", `/namespaces/${namespace.id}/configurations`, {
     body: { kind: "agent", values: { note: SECRET_VALUE } },
   });
 }
 
-function dependencyWarnings(lines) {
-  return lines.filter((line) => line.event === "http.dependency_unavailable");
+function logEvents(lines: readonly unknown[], event: string) {
+  return lines.map(asRecord).filter((line) => line?.event === event);
+}
+
+function dependencyWarnings(lines: readonly unknown[]) {
+  return logEvents(lines, "http.dependency_unavailable");
+}
+
+function errorResponse(fixture: Fixture, response: HttpResponse) {
+  return fixture.fixtureResponse(response, 503, ErrorResponse, "Dependency response");
 }
 
 test("a 503 DEPENDENCY_UNAVAILABLE keeps its generic body and logs its cause by request ID", async (t) => {
@@ -75,22 +98,25 @@ test("a 503 DEPENDENCY_UNAVAILABLE keeps its generic body and logs its cause by 
     body: CLIENT_TEXT,
     cause: Object.assign(new Error(`socket ${CLIENT_TEXT}`), { code: "ECONNRESET" }),
   });
-  const { fixture, lines, namespace } = await configurationFixture(t, error);
+  const { fixture, lines, namespace } = await configurationFixture(t, { createError: error });
   const response = await createConfiguration(fixture, namespace);
 
-  assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.deepEqual(response.body.error, {
+  const body = errorResponse(fixture, response);
+  assert.deepEqual(body.error, {
     code: "DEPENDENCY_UNAVAILABLE",
     message: DEPENDENCY_UNAVAILABLE,
   });
   const warnings = dependencyWarnings(lines);
   assert.equal(warnings.length, 1, JSON.stringify(warnings));
-  const { time: _time, ...warning } = warnings[0];
+  const [entry] = warnings;
+  assert.ok(entry);
+  const { time, ...warning } = entry;
+  assert.equal(typeof time, "string");
   assert.deepEqual(warning, {
     severity: "WARN",
     service: "occ-api",
     event: "http.dependency_unavailable",
-    requestId: response.body.meta.requestId,
+    requestId: body.meta.requestId,
     method: "POST",
     route: "/namespaces/:namespaceId/configurations",
     errorClass: "ConfigurationBackendUnavailableError",
@@ -104,67 +130,118 @@ test("a 503 DEPENDENCY_UNAVAILABLE keeps its generic body and logs its cause by 
 });
 
 test("a dependency message that resembles a credential is withheld from the log", async (t) => {
-  const { fixture, lines, namespace } = await configurationFixture(
-    t,
-    new DependencyUnavailableError(`Upstream answered with ${SECRET_VALUE}.`),
-  );
+  const { fixture, lines, namespace } = await configurationFixture(t, {
+    createError: new DependencyUnavailableError(`Upstream answered with ${SECRET_VALUE}.`),
+  });
   const response = await createConfiguration(fixture, namespace);
 
-  assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.equal(response.body.error.message, DEPENDENCY_UNAVAILABLE);
+  const body = errorResponse(fixture, response);
+  assert.equal(body.error.message, DEPENDENCY_UNAVAILABLE);
   const warnings = dependencyWarnings(lines);
   assert.equal(warnings.length, 1, JSON.stringify(warnings));
-  assert.equal(warnings[0].message, WITHHELD_ERROR_TEXT);
+  const [warning] = warnings;
+  assert.ok(warning);
+  assert.equal(warning.message, WITHHELD_ERROR_TEXT);
   assert.equal(JSON.stringify(lines).includes(SECRET_VALUE), false);
 });
 
 test("responses other than a dependency 503 log no dependency warning", async (t) => {
-  const { fixture, lines, namespace } = await configurationFixture(t, undefined);
+  const { fixture, lines, namespace } = await configurationFixture(t);
   const created = await createConfiguration(fixture, namespace);
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const missing = await fixture.request(
+  const missing: HttpResponse = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/cfg_00000000-0000-4000-8000-000000000000`,
   );
   assert.equal(missing.status, 404, JSON.stringify(missing.body));
-  const invalid = await fixture.request("POST", `/namespaces/${namespace.id}/configurations`, {
-    body: { kind: "agent" },
-  });
+  const invalid: HttpResponse = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    { body: { kind: "agent" } },
+  );
   assert.equal(invalid.status, 400, JSON.stringify(invalid.body));
   assert.deepEqual(dependencyWarnings(lines), []);
 });
 
 test("a dependency error answered with its own code logs no dependency warning", async (t) => {
-  const { fixture, lines, namespace } = await configurationFixture(
-    t,
-    new RuntimeCredentialsForbiddenByClusterError({
-      verb: "get",
-      resource: "secrets",
-      kubernetesNamespace: "tenant-dependency-log",
-      plane: "control",
-      status: 403,
-    }),
+  const { lines, logger } = capturedLogger();
+  const checkedAgents: { namespaceId: string; agentId: string }[] = [];
+  // The selected Compute Driver reports a tenant RoleBinding denial to the runtime-credentials route.
+  const computeDriver = createReadyComputeDriver("dependency-log-compute", {
+    validateHarnessAuth() {},
+    async getAgentRuntimeCredentialStatus({ namespace, agent }) {
+      checkedAgents.push({ namespaceId: namespace.id, agentId: agent.id });
+      throw new RuntimeCredentialsForbiddenByClusterError({
+        verb: "get",
+        resource: "secrets",
+        kubernetesNamespace: "tenant-dependency-log",
+        plane: "control",
+        status: 403,
+      });
+    },
+  });
+  const fixture = await createConsoleAppFixture(t, {
+    logger,
+    computeDriver,
+    secretDriver: createTestSecretDriver({ id: "console-secret" }),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Runtime credential denial", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Runtime credential Agent");
+  const response = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`,
   );
-  const response = await createConfiguration(fixture, namespace);
-  assertApiError(response, 503, "RUNTIME_CREDENTIALS_CLUSTER_RBAC");
+
+  const body = errorResponse(fixture, response);
+  assert.deepEqual(body.error, {
+    code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+    message:
+      "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
+  });
+  assert.deepEqual(checkedAgents, [{ namespaceId: namespace.id, agentId: agent.id }]);
   assert.deepEqual(dependencyWarnings(lines), []);
+  const warnings = logEvents(lines, "agent_runtime_credentials.cluster_denied");
+  assert.equal(warnings.length, 1, JSON.stringify(warnings));
+  const [entry] = warnings;
+  assert.ok(entry);
+  const { time, ...warning } = entry;
+  assert.equal(typeof time, "string");
+  assert.deepEqual(warning, {
+    severity: "WARN",
+    service: "occ-api",
+    event: "agent_runtime_credentials.cluster_denied",
+    requestId: body.meta.requestId,
+    route: "/namespaces/:namespaceId/agents/:agentId/runtime-credentials",
+    verb: "get",
+    resource: "secrets",
+    kubernetesNamespace: "tenant-dependency-log",
+    plane: "control",
+    kubernetesStatus: 403,
+  });
 });
 
 test("a dependency 503 that no dependency error raised logs no dependency warning", async (t) => {
   const auditSink = new InMemoryAuditSink();
-  const { fixture, lines, namespace } = await configurationFixture(t, undefined, { auditSink });
+  const { fixture, lines, namespace } = await configurationFixture(t, { auditSink });
   const limited = await fixture.createAccountWithPolicy("dependency-log-member", () => {});
   const session = await fixture.signIn(limited.credentials);
   // The denial's audit write fails, so the denial answers a dependency 503 of its own.
-  auditSink.append = async () => {
+  const append = t.mock.method(auditSink, "append", async () => {
     throw new DependencyUnavailableError("The platform audit repository is unavailable.");
-  };
+  });
   const response = await fixture.request("GET", `/namespaces/${namespace.id}`, { session });
-  assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.deepEqual(response.body.error, {
+  const body = errorResponse(fixture, response);
+  assert.deepEqual(body.error, {
     code: "DEPENDENCY_UNAVAILABLE",
     message: DEPENDENCY_UNAVAILABLE,
   });
+  assert.equal(append.mock.callCount(), 1);
+  const [attempt] = append.mock.calls;
+  assert.ok(attempt);
+  const [event] = attempt.arguments;
+  assert.equal(event?.kind, "authorization_denial");
+  assert.equal(event?.requestId, body.meta.requestId);
   assert.deepEqual(dependencyWarnings(lines), []);
 });
 
@@ -176,16 +253,18 @@ test("a dependency error whose fields cannot be read keeps its 503 and a bare wa
       throw new Error(CLIENT_TEXT);
     },
   };
-  const { fixture, lines, namespace } = await configurationFixture(t, error);
+  const { fixture, lines, namespace } = await configurationFixture(t, { createError: error });
   const response = await createConfiguration(fixture, namespace);
-  assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.deepEqual(response.body.error, {
+  const body = errorResponse(fixture, response);
+  assert.deepEqual(body.error, {
     code: "DEPENDENCY_UNAVAILABLE",
     message: DEPENDENCY_UNAVAILABLE,
   });
   const warnings = dependencyWarnings(lines);
   assert.equal(warnings.length, 1, JSON.stringify(warnings));
-  assert.deepEqual(Object.keys(warnings[0]).sort(), [
+  const [warning] = warnings;
+  assert.ok(warning);
+  assert.deepEqual(Object.keys(warning).sort(), [
     "event",
     "method",
     "requestId",
@@ -197,18 +276,15 @@ test("a dependency error whose fields cannot be read keeps its 503 and a bare wa
   assert.equal(JSON.stringify(lines).includes("clienttoken"), false);
 });
 
-test("an OpenShell call that fails without a gRPC status keeps only the error class", async () => {
-  const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const grpc = require("@grpc/grpc-js");
+test("an OpenShell call that fails without a gRPC status keeps only the error class", async (t) => {
   const client = new GrpcOpenShellGatewayClient({ endpoint: "127.0.0.1:1" });
-  // A local client failure, thrown before any gRPC status exists.
-  client.client = Promise.resolve({
-    grpc,
-    client: {
-      GetSandbox() {
-        throw new TypeError(`invalid argument ${CLIENT_TEXT}`);
-      },
-    },
+  // A synchronous SDK failure occurs before a call can return any gRPC status.
+  const createCall = t.mock.method(grpc.Channel.prototype, "createCall", () => {
+    throw new TypeError(`invalid argument ${CLIENT_TEXT}`);
+  });
+  t.after(() => {
+    createCall.mock.restore();
+    return client.close();
   });
   await assert.rejects(
     client.getSandbox(
@@ -221,6 +297,9 @@ test("an OpenShell call that fails without a gRPC status keeps only the error cl
       return true;
     },
   );
+  assert.equal(createCall.mock.callCount(), 1);
+  const [call] = createCall.mock.calls;
+  assert.equal(call?.arguments[0], "/openshell.v1.OpenShell/GetSandbox");
 });
 
 test("dependency log fields keep only the class and code of a bounded cause chain", () => {
@@ -244,12 +323,13 @@ test("dependency log fields keep only the class and code of a bounded cause chai
   deep.cause = chain;
   const fields = dependencyUnavailableLogFields(deep);
   assert.equal(fields.message, "Deep outage. Next line .");
+  assert.ok(fields.causes);
   assert.deepEqual(
     fields.causes.map(({ code }) => code),
     ["L5", "L4", "L3", "L2"],
   );
   for (const message of [
-    "Fetch https://user:pass@example.test/x failed.",
+    `Fetch ${syntheticCredentialUrl({ username: "user", password: "pass", host: "example.test", port: undefined, pathname: "/x" })} failed.`,
     "Fetch https://example.test/x?sig=abc failed.",
     // A credential that straddles the 512-character cut is still withheld.
     `${"a".repeat(500)} Bearer abcdefghijklmnopqrstuvwxyz`,
@@ -270,6 +350,16 @@ test("dependency log fields keep only the class and code of a bounded cause chai
 
 // Fake values, assembled so no complete token shape appears in the source.
 const FAKE = "Abcdefghij0123456789Abcdefghij012345";
+const POSTGRES_URL = syntheticCredentialUrl({
+  protocol: "postgres",
+  username: "fake-user",
+  password: "fake-pass",
+  host: "db.example.test",
+  port: undefined,
+  pathname: "/occ",
+});
+const POSTGRES_USER_ONLY = new URL("postgres://db.example.test/occ");
+POSTGRES_USER_ONLY.username = "fake-user";
 const CREDENTIAL_MESSAGES = [
   `Upstream sent ${["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJmYWtlIn0", "c2lnbmF0dXJl"].join(".")}.`,
   `Header Authorization: Basic ${Buffer.from("fake-user:fake-pass").toString("base64")}`,
@@ -279,8 +369,8 @@ const CREDENTIAL_MESSAGES = [
   ...["client_secret", "refresh_token", "id_token", "code", "apikey", "X-Amz-Signature"].map(
     (name) => `Fetch https://idp.example.test/token?a=1&${name}=fake-value failed.`,
   ),
-  "Connect postgres://fake-user:pa/ss@db.example.test:5432/occ failed.",
-  "Connect postgres://fake-user@db.example.test/occ failed.",
+  `Connect ${syntheticCredentialUrl({ protocol: "postgres", username: "fake-user", password: "pa/ss", host: "db.example.test", port: 5432, pathname: "/occ" })} failed.`,
+  `Connect ${POSTGRES_USER_ONLY} failed.`,
   "Connect host=db.example.test user=occ password=fake-pass failed.",
   "Connect Server=db.example.test;Uid=occ;Pwd=fake-pass; failed.",
   "Token exchange body grant_type=refresh_token&refresh_token=fake-value was refused.",
@@ -351,7 +441,7 @@ test("dependency log fields check a bounded prefix of a long message", () => {
     WITHHELD_ERROR_TEXT,
   );
   // Padding collapses before the bound, so it cannot push a credential's end past the check.
-  const padded = `x${" ".repeat(2_025)}postgres://fake-user:fake-pass@db.example.test/occ`;
+  const padded = `x${" ".repeat(2_025)}${POSTGRES_URL}`;
   assert.equal(
     dependencyUnavailableLogFields(new DependencyUnavailableError(padded)).message,
     WITHHELD_ERROR_TEXT,
