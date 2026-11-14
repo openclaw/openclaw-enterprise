@@ -8,13 +8,81 @@ const ownershipLabel = "org.openclaw.ci.image-file";
 
 export class ImageFileReadError extends Error {}
 
+export type ImageFileContainerReceipt = {
+  name: string;
+  // Cleanup reads persisted fields at the point where each one is needed.
+  containerId?: unknown;
+  ownershipToken?: unknown;
+  creationAcknowledged?: unknown;
+  removed?: unknown;
+};
+
+export type ImageFileResource = {
+  name: string;
+  containerId?: string;
+  ownershipToken?: string | null;
+  creationAcknowledged?: boolean;
+  removed?: boolean;
+};
+
+export type ImageFileCleanup = () => Promise<void>;
+
+type CommandLimits = { signal?: AbortSignal; timeout?: number; maxBuffer?: number };
+export type ImageFileTextOptions = CommandLimits & { encoding?: "utf8" };
+export type ImageFileArchiveOptions = CommandLimits & { encoding: "buffer"; maxBuffer: number };
+type ImageFileTextCommand = (
+  executable: "docker",
+  args: string[],
+  options?: ImageFileTextOptions,
+) => Promise<string>;
+export type ImageFileArchiveCommand = ImageFileTextCommand &
+  ((executable: "docker", args: string[], options: ImageFileArchiveOptions) => Promise<Buffer>);
+
+type ContainerRemoval = {
+  command: ImageFileTextCommand;
+  resource: ImageFileContainerReceipt;
+  final?: boolean;
+  persist?: ImageFileCleanup;
+};
+
+type ImageFileExtraction = {
+  cleanup: Pick<ImageFileCleanup[], "push">;
+  image: string;
+  platform?: string;
+  pullNever?: boolean;
+  filename: string;
+  destination: string;
+  resource?: ImageFileResource;
+  persist?: ImageFileCleanup;
+} & (
+  | { command: ImageFileTextCommand; maxBytes?: undefined }
+  | { command: ImageFileArchiveCommand; maxBytes: number }
+);
+
+function failureField(error: unknown, field: "code" | "message"): unknown {
+  // The command adapter can reject with any value. Use ordinary property
+  // access semantics, including inherited fields and the original receiver.
+  if (error === null || error === undefined) {
+    throw new TypeError(`Cannot read properties of ${error} (reading '${field}')`);
+  }
+  const target: object = Object(error);
+  const value: unknown = Reflect.get(target, field, error);
+  return value;
+}
+
+function createNeverStarted(error: unknown): boolean {
+  const code = failureField(error, "code");
+  return code === "ENOENT" || code === "EACCES";
+}
+
 // docker cp's stdout is a tar archive. Accept one ordinary file, never paths,
 // links, directories or extensions that can reinterpret the selected member.
-function singleFile(archive, filename, maxBytes) {
+function singleFile(archive: Buffer, filename: string, maxBytes: number): Buffer {
   assert.ok(Buffer.isBuffer(archive) && archive.length >= 1536);
   const header = archive.subarray(0, 512);
-  const field = (start, end) => header.subarray(start, end).toString("utf8").replace(/\0.*$/s, "");
-  const octal = (start, end) => {
+  const field = (start: number, end: number) =>
+    header.subarray(start, end).toString("utf8").replace(/\0.*$/s, "");
+  const octal = (start: number, end: number) => {
     const value = field(start, end).trim();
     assert.match(value, /^[0-7]+$/);
     return Number.parseInt(value, 8);
@@ -44,7 +112,7 @@ export async function removeImageFileContainer({
   resource,
   final = true,
   persist = async () => {},
-}) {
+}: ContainerRemoval): Promise<void> {
   if (resource.removed !== true) {
     // A lost create reply still leaves this name owned. Cleanup must outlive
     // cancellation, but shares one finite deadline for lookup and removal.
@@ -53,10 +121,12 @@ export async function removeImageFileContainer({
       timeout: 30_000,
     };
     const deadline = Date.now() + options.timeout;
-    const run = (args) => {
+    const run = (args: string[]) => {
       options.signal.throwIfAborted();
       return command("docker", args, { ...options, timeout: Math.max(1, deadline - Date.now()) });
     };
+    const listContainers = (filter: string) =>
+      run(["ps", "--all", "--quiet", "--no-trunc", "--filter", filter]);
     try {
       if (resource.containerId === undefined) {
         assert.ok(
@@ -66,43 +136,18 @@ export async function removeImageFileContainer({
         );
       }
       while (true) {
-        let container = (
-          await run([
-            "ps",
-            "--all",
-            "--quiet",
-            "--no-trunc",
-            "--filter",
-            `name=^/${resource.name}$`,
-          ])
-        ).trim();
+        let container = (await listContainers(`name=^/${resource.name}$`)).trim();
         if (!container && resource.containerId !== undefined) {
           // Docker names can change. The established ID remains our resource.
           assert.ok(
             typeof resource.containerId === "string" && /^[a-f0-9]{64}$/.test(resource.containerId),
             "Invalid image extraction container identity",
           );
-          container = (
-            await run([
-              "ps",
-              "--all",
-              "--quiet",
-              "--no-trunc",
-              "--filter",
-              `id=${resource.containerId}`,
-            ])
-          ).trim();
+          container = (await listContainers(`id=${resource.containerId}`)).trim();
         }
         if (!container && resource.containerId === undefined) {
           container = (
-            await run([
-              "ps",
-              "--all",
-              "--quiet",
-              "--no-trunc",
-              "--filter",
-              `label=${ownershipLabel}=${resource.ownershipToken}`,
-            ])
+            await listContainers(`label=${ownershipLabel}=${resource.ownershipToken}`)
           ).trim();
         }
         if (container) {
@@ -159,20 +204,20 @@ export async function extractImageFile({
   command,
   cleanup,
   image,
-  platform = /** @type {string | undefined} */ (undefined),
+  platform,
   pullNever = false,
   filename,
   destination,
-  maxBytes = /** @type {number | undefined} */ (undefined),
+  maxBytes,
   resource = { name: `oce-git-extract-${randomUUID()}` },
   persist = async () => {},
-}) {
+}: ImageFileExtraction): Promise<void> {
   const remove = async (final = false) => {
     await removeImageFileContainer({ command, resource, final, persist });
     await persist();
   };
   cleanup.push(() => remove(true));
-  const errors = [];
+  const errors: unknown[] = [];
   let dispatched = false;
   try {
     resource.ownershipToken ??= randomUUID();
@@ -209,15 +254,15 @@ export async function extractImageFile({
         });
       }
     } catch (error) {
-      throw new ImageFileReadError(error.message, { cause: error });
+      const message = failureField(error, "message");
+      throw new ImageFileReadError(message === undefined ? undefined : `${message}`, {
+        cause: error,
+      });
     }
   } catch (error) {
     // These spawn errors prove Docker was never started. A generic nonzero
     // exit or transport error cannot establish whether creation completed.
-    if (
-      !dispatched ||
-      (!resource.creationAcknowledged && ["ENOENT", "EACCES"].includes(error.code))
-    ) {
+    if (!dispatched || (!resource.creationAcknowledged && createNeverStarted(error))) {
       resource.removed = true;
     }
     errors.push(error);

@@ -4,7 +4,9 @@ import {
   extractImageFile,
   ImageFileReadError,
   removeImageFileContainer,
-} from "../lib/image-file.mjs";
+  type ImageFileArchiveCommand,
+  type ImageFileResource,
+} from "../lib/image-file.ts";
 import { readFile, rm } from "node:fs/promises";
 
 const digest = /^sha256:[a-f0-9]{64}$/;
@@ -21,20 +23,6 @@ type CodexProvenance = {
 type RuntimeProvenance = { imageId: string; manifestDigest: string } & (
   ({ status: "available" } & CodexProvenance) | { status: "unavailable" }
 );
-type ImageResource = {
-  id: string;
-  name: string;
-  removed?: boolean;
-  containerId?: string;
-  ownershipToken?: string;
-  creationAcknowledged?: boolean;
-};
-type ImageCommand = (
-  executable: string,
-  args: string[],
-  options?: { signal?: AbortSignal; timeout?: number; encoding?: "buffer"; maxBuffer?: number },
-) => Promise<string | Buffer>;
-
 const roles: RuntimeRole[] = [
   "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
   "OCC_TEST_KUBERNETES_AGENT_IMAGE",
@@ -142,8 +130,8 @@ export async function readImageCodexProvenance({
   imageId: string;
   platform: string;
   directory: string;
-  resource: ImageResource;
-  command: ImageCommand;
+  resource: ImageFileResource & { id: string };
+  command: ImageFileArchiveCommand;
   persist: () => Promise<void>;
 }): Promise<CodexProvenance | undefined> {
   const destination = join(directory, `${resource.id}.json`);

@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { extractImageFile } from "../lib/image-file.mjs";
+import {
+  extractImageFile,
+  type ImageFileArchiveOptions,
+  type ImageFileCleanup,
+  type ImageFileTextOptions,
+} from "../lib/image-file.ts";
 import { readReleaseDownloadClientSelection } from "../lib/runtime-download-clients.ts";
 import { validateReceipt } from "./container-promote.ts";
 import { ghcrPackageName } from "./container-release/admission.ts";
@@ -162,32 +167,39 @@ async function project(path: string, platform: Platform, signal: AbortSignal) {
   );
 
   const directory = await mkdtemp(join(tmpdir(), "oce-runtime-download-clients-"));
-  const cleanup: (() => Promise<void>)[] = [];
+  const cleanup: ImageFileCleanup[] = [];
+  function command(
+    executable: "docker",
+    args: string[],
+    options: ImageFileArchiveOptions,
+  ): Promise<Buffer>;
+  function command(
+    executable: "docker",
+    args: string[],
+    options?: ImageFileTextOptions,
+  ): Promise<string>;
+  async function command(
+    executable: "docker",
+    args: string[],
+    options: ImageFileTextOptions | ImageFileArchiveOptions = {},
+  ): Promise<string | Buffer> {
+    const limits = {
+      env: commandEnv,
+      timeout: 30_000,
+      maxBuffer: maxMetadataBytes,
+      // Cleanup passes its own deadline and can reconcile an interrupted create.
+      signal,
+      ...options,
+    };
+    return options.encoding === "buffer"
+      ? (await execute(executable, args, { ...limits, encoding: "buffer" })).stdout
+      : (await execute(executable, args, { encoding: "utf8", ...limits })).stdout;
+  }
   try {
     signal.throwIfAborted();
     const destination = join(directory, "provenance.json");
     await extractImageFile({
-      command: async (
-        executable: string,
-        args: string[],
-        options: {
-          signal?: AbortSignal;
-          timeout?: number;
-          encoding?: "buffer";
-          maxBuffer?: number;
-        } = {},
-      ) =>
-        (
-          await execute(executable, args, {
-            env: commandEnv,
-            encoding: "utf8",
-            timeout: 30_000,
-            maxBuffer: maxMetadataBytes,
-            // Cleanup passes its own deadline and can reconcile an interrupted create.
-            signal,
-            ...options,
-          })
-        ).stdout,
+      command,
       cleanup,
       image: sourceImage,
       platform,
