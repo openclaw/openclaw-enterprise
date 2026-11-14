@@ -142,6 +142,7 @@
     "helpers/production-upgrade-retained-fleet-preflight.ts",
     "helpers/compute-credential-catalog.ts",
     "helpers/kubernetes-openshell-network-policy.ts",
+    "helpers/kubernetes-routed-options.ts",
     "helpers/provisioning-repository-status.ts",
     "helpers/provisioning-source-status.ts",
     "helpers/codex-preparation-caller.ts",

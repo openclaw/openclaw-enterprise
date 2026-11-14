@@ -3,7 +3,6 @@ import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
   type KubernetesComputeDriver,
-  type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
@@ -190,7 +189,7 @@ export async function checkGatewayRetirement() {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
       },
-    }) as KubernetesComputeDriverOptions,
+    }),
   );
   const agentId = "agent-revision-storage";
   const ownership = { namespaceId: tenant.id, agentId };
