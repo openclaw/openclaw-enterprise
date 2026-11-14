@@ -95,6 +95,7 @@
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.ts",
     "tests/integration/ci-prepare-postgres.test.ts",
+    "tests/integration/ci-prepare-postgres-diagnostics.test.ts",
     "tests/integration/runtime-image-failure-output.test.ts",
     "tests/conformance/runtime-model-probe-settlement.test.ts",
     "tests/conformance/hosted-plugin-discovery.test.ts",
@@ -364,6 +365,9 @@
     },
     {
       "path": "tests/integration/ci-prepare-postgres.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-prepare-postgres-diagnostics.test.ts"
     },
     {
       "path": "tests/integration/runtime-image-failure-output.test.ts"
