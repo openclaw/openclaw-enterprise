@@ -5044,7 +5044,7 @@ test("namespace resolver selects exact, secure external ownership using a transp
 });
 
 // A released split-layout Installation adopts each `oce-gateways-<hash>` storage namespace as
-// its tenant namespace in place (scripts/split-layout-adopt.mjs): the storage namespace gains
+// its tenant namespace in place (scripts/split-layout-adopt.ts): the storage namespace gains
 // the tenant label and the old Harness namespace loses it. Canonical Secrets, Configurations
 // and Gateway state keep their namespace and UIDs, so both resolvers must accept the adopted
 // name, but only while it still carries its own storage label.
