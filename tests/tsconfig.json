@@ -118,6 +118,7 @@
     "helpers/ci-prepare-fixture.ts",
     "integration/ci-cleanup-process-cases.ts",
     "integration/ci-runner-complete-lifecycle-cases.ts",
+    "integration/ci-runner-environment-cases.ts",
     "integration/ci-runner-k3d-diagnostics-cases.ts",
     "integration/ci-runner-measurements-case.ts",
     "integration/ci-runner-native-worker-proof-cases.ts",
