@@ -63,7 +63,7 @@
     "tests/integration/service-api-keys.test.ts",
     "tests/integration/driver-plugin-installation.test.ts",
     "tests/conformance/workspace-files-configuration.test.mjs",
-    "tests/integration/common-logging.test.mjs",
+    "tests/integration/common-logging.test.ts",
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
@@ -561,7 +561,7 @@
       "path": "tests/integration/startup-ipv6-loopback.test.ts"
     },
     {
-      "path": "tests/integration/common-logging.test.mjs"
+      "path": "tests/integration/common-logging.test.ts"
     },
     {
       "path": "tests/integration/dev-entry-cdpath.test.ts",
