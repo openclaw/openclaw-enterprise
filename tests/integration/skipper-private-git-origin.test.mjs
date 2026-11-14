@@ -877,6 +877,7 @@ test("the installed Skipper model rejects a changed native session and stops pol
 
   // Replay the mixed-session history with a terminal result after losing callback state.
   model.restart();
+  const beforeReplay = model.observations.length;
   assert.equal(
     model.result(
       { ...poll, call_id: model.command.id + "-wait-2" },
@@ -884,7 +885,12 @@ test("the installed Skipper model rejects a changed native session and stops pol
     ),
     "SKIPPER_INCOMPLETE_skipper-test",
   );
-  assert.equal(model.observations.at(-1).status, "unrecognized");
+  assert.equal(model.observations.length, beforeReplay + 1);
+  assert.partialDeepStrictEqual(model.observations[beforeReplay], {
+    event: "skipper-native-result",
+    id: model.command.id,
+    status: "unrecognized",
+  });
 
   const expired = await controlledModel(t);
   const exec = toolCall(expired.next());
