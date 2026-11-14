@@ -243,8 +243,6 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 - 2026-10-20 14:57: Preserve human Gateway identities and reject malformed or automatic administrator grants; consolidate PR #2596 history. (PR #3049 - fd73e091f)
 
-- 2026-10-25: Refuse a taken Agent name at admission. (finding 2420)
-
 - 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 
 [Agent provisioning documentation history](agent-provisioning/history.md) preserves the older dated entries.
