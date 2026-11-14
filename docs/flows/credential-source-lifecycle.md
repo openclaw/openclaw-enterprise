@@ -344,7 +344,7 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
   recovery and version admission with a gateway double.
 - [API integration](../../tests/integration/credential-source-api.test.mjs) covers Fastify,
   IAM, OCC and the OpenShell Driver; storage and Compute are doubles.
-- [Wire conformance](../../tests/conformance/openshell-gateway-wire.test.mjs) checks provider,
+- [Wire conformance](../../tests/conformance/openshell-gateway-wire.test.ts) checks provider,
   profile, update, detach and recheck RPCs against the `v0.1.5` fixture.
 - [Worker integration](../../tests/integration/postgres-worker-agent-revision.test.mjs)
   exercises withdrawals, retries, replays and late creates with PostgreSQL and a Compute double.

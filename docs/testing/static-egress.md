@@ -180,7 +180,7 @@ middleware. Independent loopback wire and production Kubernetes packaging checks
 
 ```sh
 node --test --test-name-pattern='OpenShell mTLS|OpenShell service transport never' \
-  tests/conformance/openshell-gateway-wire.test.mjs
+  tests/conformance/openshell-gateway-wire.test.ts
 OCC_HELM_BIN=/absolute/bin/helm node --test --test-name-pattern='protected authority' \
   tests/integration/production-kubernetes-packaging.test.mjs
 ```
