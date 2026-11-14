@@ -109,10 +109,36 @@ export function compareResourceQuantities(request: string, limit: string): numbe
   if (!a || !b) {
     return undefined;
   }
+  return compareAmounts(a, b);
+}
+
+function compareAmounts(a: Amount, b: Amount): number {
   if (a.sign !== b.sign) {
     return Math.sign(a.sign - b.sign);
   }
   return a.sign === 0 ? 0 : a.sign * magnitude(a, b);
+}
+
+type ResourceQuantityPairProblem =
+  "negative-request" | "negative-limit" | "malformed" | "request-exceeds-limit";
+
+export function resourceQuantityPairProblem(
+  request: string,
+  limit: string,
+): ResourceQuantityPairProblem | undefined {
+  const requested = parsed(request);
+  if (requested && requested.sign < 0) {
+    return "negative-request";
+  }
+  const limited = parsed(limit);
+  if (limited && limited.sign < 0) {
+    return "negative-limit";
+  }
+  // Report a negative operand before a malformed pair.
+  if (!requested || !limited) {
+    return "malformed";
+  }
+  return compareAmounts(requested, limited) > 0 ? "request-exceeds-limit" : undefined;
 }
 
 export function isNonNegativeResourceQuantity(value: string): boolean {

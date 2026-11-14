@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { startFakePostgres } from "./fake-postgres-server.mjs";
+import { startFakePostgres } from "./fake-postgres-server.ts";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { listen } from "./listen.ts";
 import { createRecoveryCommandHandler } from "./production-upgrade-recovery-commands.ts";

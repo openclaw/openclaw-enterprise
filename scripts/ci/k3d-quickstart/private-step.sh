@@ -86,7 +86,7 @@ JS
         # Print only regional package hostnames, never paths or signed queries.
         if [[ $phase == git ]]; then
           kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
-            node --input-type=module - "$namespace" "$agent" "$revision" < scripts/ci/k3d-quickstart/git-route-status.mjs || true
+            node --input-type=module-typescript - "$namespace" "$agent" "$revision" < scripts/ci/k3d-quickstart/git-route-status.ts || true
         fi
         runtime_log="$RUNNER_TEMP/oce-credentials/capability-runtime.log"
         for scope in "$TENANT_NAMESPACE:openshell.ai/boundary-role=supervisor" "$TENANT_NAMESPACE:openclaw.dev/agent=$agent" "$PLATFORM_NS:app.kubernetes.io/instance=openshell-gateway"; do

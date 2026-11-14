@@ -10,7 +10,7 @@ import type {
   StartCredentialClientFixture,
 } from "../fixtures/repository-credentials/clients.ts";
 import { runPinnedClients } from "../fixtures/repository-credentials/clients.ts";
-import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
+import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
 import {
   gatewayRequest as requestGateway,

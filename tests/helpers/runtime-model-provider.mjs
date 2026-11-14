@@ -1,11 +1,19 @@
+// @ts-check
+
 import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 
 // Shared by the launcher case and FirstAgentSmoke; callers own resources,
 // subprocess policy, image selection, and cleanup.
+/**
+ * @param {{directory: string, caName: string, run: (command: string, args: string[]) => Promise<unknown>}} options
+ */
 export async function createModelProviderFiles({ directory, caName, run }) {
   await mkdir(directory, { recursive: true });
+  /** @param {string} name */
   const file = (name) => join(directory, name);
   await createModelProbeCertificates({ directory, caName, run });
   await copyFile(
@@ -18,6 +26,7 @@ export async function createModelProviderFiles({ directory, caName, run }) {
   }
 }
 
+/** @param {{context: string, caPath: string}} options */
 export async function writeModelProviderTrust({ context, caPath }) {
   await mkdir(context, { recursive: true });
   await copyFile(caPath, join(context, "smoke-ca.crt"));
@@ -37,6 +46,16 @@ export async function writeModelProviderTrust({ context, caPath }) {
   );
 }
 
+/**
+ * @param {{
+ *   kubectl: (args: string[], options?: {input?: string, timeout?: number}) => Promise<{stdout: string}>,
+ *   waitFor: (description: string, operation: () => Promise<{done: boolean, state: unknown}>,
+ *     timeout: number) => Promise<unknown>,
+ *   modelAddress: string,
+ *   platformNamespace: string,
+ *   serverFile: string,
+ * }} options
+ */
 export async function configureModelProviderDNS({
   kubectl,
   waitFor,
@@ -77,11 +96,24 @@ Promise.all([address("api.openai.com"), address("openclaw-enterprise-api")]).the
         "-o",
         "json",
       ]);
-      const pods = JSON.parse(stdout).items;
-      if (pods.length !== 1 || pods[0].metadata.deletionTimestamp) {
-        return { done: false, state: pods.map((pod) => pod.metadata.name) };
+      const items = asRecord(JSON.parse(stdout))?.items;
+      if (!Array.isArray(items)) {
+        throw new Error("CoreDNS response has no Pod list");
+      }
+      /** @type {readonly unknown[]} */
+      const pods = items;
+      const metadata = (/** @type {unknown} */ pod) => {
+        const value = asRecord(asRecord(pod)?.metadata);
+        if (value === undefined) {
+          throw new Error("CoreDNS Pod has no metadata");
+        }
+        return value;
+      };
+      if (pods.length !== 1 || metadata(pods[0]).deletionTimestamp) {
+        return { done: false, state: pods.map((pod) => metadata(pod).name) };
       }
       try {
+        /** @type {unknown} */
         const result = JSON.parse(
           (
             await kubectl(
@@ -99,9 +131,20 @@ Promise.all([address("api.openai.com"), address("openclaw-enterprise-api")]).the
             )
           ).stdout,
         );
-        return { done: result.provider === modelAddress && Boolean(result.api), state: result };
+        if (result === null) {
+          throw new Error("DNS lookup returned null");
+        }
+        const observed = asRecord(result);
+        return {
+          done: observed?.provider === modelAddress && Boolean(observed?.api),
+          state: result,
+        };
       } catch (error) {
-        return { done: false, state: error.message.slice(0, 300) };
+        const message = asRecord(error)?.message;
+        if (typeof message !== "string") {
+          throw error;
+        }
+        return { done: false, state: message.slice(0, 300) };
       }
     },
     120_000,

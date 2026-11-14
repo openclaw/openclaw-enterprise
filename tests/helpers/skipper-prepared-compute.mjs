@@ -18,7 +18,8 @@ import {
   sendConnectedRequest,
   validateConnectedDatabaseUrl,
 } from "./egress-connected-inputs.mjs";
-import { codexRepositoryEvidenceScript } from "./normal-agent-tools.mjs";
+import { parseNativeObservation } from "./normal-agent-observation-receipts.ts";
+import { codexRepositoryEvidenceScript } from "./normal-agent-codex-evidence.ts";
 
 const exec = promisify(execFile);
 export async function waitFor(description, observe, timeout = 120_000) {
@@ -395,7 +396,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     // kubectl can close the pipe early; its exit status reports the failure.
     observation.child.stdin.on("error", () => {});
     observation.child.stdin.end(codexRepositoryEvidenceScript);
-    const t = JSON.parse((await observation).stdout);
+    const t = parseNativeObservation((await observation).stdout);
     assert.equal(t.status, "completed");
     assert.equal(
       t.commands.length,
@@ -403,6 +404,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       "exactly one native command on this Agent turn; never replay",
     );
     const [command] = t.commands;
+    assert.ok(command);
     assert.equal(command.status, "completed");
     assert.equal(command.exitCode, 0, "native command failed on the Agent");
     assert.ok(t.threadId && t.turnId);

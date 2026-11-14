@@ -90,10 +90,8 @@ test(
 
         // This invokes the regular launcher and real Helm, PostgreSQL, API, and worker.
         const started = await execute(join(repository, "scripts", "dev-up"), [], {
-          cwd: repository,
           env: environment,
           timeout: 1_100_000,
-          maxBuffer: 16 * 1024 * 1024,
         });
         assert.match(started.stdout, /Deployment: Kubernetes only/);
         assert.match(started.stdout, /Sandbox Driver: none/);
@@ -186,7 +184,6 @@ test(
           OCC_SERVICE_KEY_FILE: join(stateDirectory, "initial-admin-service-key.json"),
         };
         const namespaces = await execute(occ, ["namespace", "list", "--output", "json"], {
-          cwd: repository,
           env: clientEnvironment,
         });
         const namespace = JSON.parse(namespaces.stdout).find(
@@ -323,7 +320,7 @@ test(
                 "-o",
                 "json",
               ],
-              { cwd: repository, env: environment },
+              { env: environment },
             )
           ).stdout,
         ).items;
@@ -364,7 +361,7 @@ test(
             "-c",
             script,
           ],
-          { cwd: repository, env: environment, timeout: 90_000 },
+          { env: environment, timeout: 90_000 },
         );
         if (environment.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY) {
           // This checks the deployed API's Namespace-scoped discovery. It does not
@@ -408,7 +405,7 @@ test(
                 "-o",
                 "json",
               ],
-              { cwd: repository, env: environment },
+              { env: environment },
             )
           ).stdout,
         );

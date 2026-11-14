@@ -108,7 +108,7 @@ if ! deploy_and_wait; then
     .status=="failed" and .error.code=="REPOSITORY_GIT_ROUTE_BLOCKED"' >/dev/null
   route_check() {
     kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
-      node --input-type=module - "$namespace" "$agent" "$failed_read" "$@" < "$dir/git-route-status.mjs"
+      node --input-type=module-typescript - "$namespace" "$agent" "$failed_read" "$@" < "$dir/git-route-status.ts"
   }
   checking route
   route_check recovery-target > "$RUN_DIR/git-read-recovery-target.json"

@@ -2155,6 +2155,10 @@ export function createOpenShellKubernetesFixture({
     return gatewayTurn ? observeConnectedOperation("gateway-codex-exec", run) : run();
   }
 
+  /**
+   * @param {{ namespace: string, gatewayPod: string, threadId: string }} input
+   * @returns {Promise<unknown>}
+   */
   async function readCodexThreadFromGatewayPod({ namespace, gatewayPod, threadId }) {
     assert.ok(typeof threadId === "string" && threadId.length > 0);
     return requestCodexFromPod({ namespace, pod: gatewayPod, readThreadId: threadId });

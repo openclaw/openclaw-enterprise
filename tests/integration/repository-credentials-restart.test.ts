@@ -78,7 +78,7 @@ function startProcess({ resources, config, tls }: Awaited<ReturnType<typeof conf
     JSON.stringify({
       config,
       runtime: new URL("../fixtures/repository-credentials/runtime.mjs", import.meta.url).href,
-      adapter: new URL("../fixtures/repository-credentials/alternate.mjs", import.meta.url).href,
+      adapter: new URL("../fixtures/repository-credentials/alternate.ts", import.meta.url).href,
       key: tls.keyFile,
       cert: tls.certFile,
     }),
