@@ -2,11 +2,38 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import https from "node:https";
-import { EventEmitter } from "node:events";
-import { Readable, Writable } from "node:stream";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
+}
+
+type RuntimeSocket = {
+  once(event: string, listener: () => void): unknown;
+  terminate(): unknown;
+};
+type RuntimeTransport = {
+  once(event: string, listener: () => void): unknown;
+  stdout: { on(event: "data", listener: (chunk: Buffer) => void): unknown };
+  stdin: { write(chunk: string): unknown };
+  kill(signal: string): unknown;
+};
+// The packaged modules own their implementations. Check only the operations
+// this scenario uses, without requiring a particular EventEmitter/stream class.
+function isRuntimeTransport(value: unknown): value is RuntimeTransport {
+  return (
+    isRecord(value) &&
+    typeof value.once === "function" &&
+    isRecord(value.stdout) &&
+    typeof value.stdout.on === "function" &&
+    isRecord(value.stdin) &&
+    typeof value.stdin.write === "function" &&
+    typeof value.kill === "function"
+  );
+}
+function isRuntimeSocket(value: unknown): value is RuntimeSocket {
+  return (
+    isRecord(value) && typeof value.once === "function" && typeof value.terminate === "function"
+  );
 }
 
 const role = process.argv[2];
@@ -101,15 +128,7 @@ async function provePackagedProxy() {
     const transport: unknown = Reflect.apply(makeTransport, undefined, [
       { url, transport: "websocket", authToken: token },
     ]);
-    assert.ok(
-      transport instanceof EventEmitter &&
-        "stdout" in transport &&
-        transport.stdout instanceof Readable &&
-        "stdin" in transport &&
-        transport.stdin instanceof Writable &&
-        "kill" in transport &&
-        typeof transport.kill === "function",
-    );
+    assert.ok(isRuntimeTransport(transport));
     const { stdout, stdin, kill } = transport;
     // Subscribe before writing: a refused handshake can close immediately.
     const closed = new Promise<void>((resolve) => transport.once("exit", () => resolve()));
@@ -154,11 +173,7 @@ async function provePackagedProxy() {
           handshakeTimeout: 7_000,
         },
       ]);
-      assert.ok(
-        socket instanceof EventEmitter &&
-          "terminate" in socket &&
-          typeof socket.terminate === "function",
-      );
+      assert.ok(isRuntimeSocket(socket));
       const terminate = socket.terminate;
       socket.once("open", () => {
         Reflect.apply(terminate, socket, []);
