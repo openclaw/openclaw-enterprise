@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { watch } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -192,18 +193,15 @@ async function expectedBrokerRefusal(image: string, platform: string) {
   }
 
   async function readWhenReady() {
-    let socketObserved = false;
     for (let attempt = 0; attempt < 200; attempt += 1) {
       try {
         return await rawCapability(controlSocket);
       } catch (error) {
         assert.ok(error instanceof Error && "code" in error);
         assert.ok(error.code === "ENOENT" || error.code === "ECONNREFUSED");
-        socketObserved ||= error.code === "ECONNREFUSED";
         await delay(100);
       }
     }
-    assert.equal(socketObserved, false, "broker socket appeared but never served a response");
     return undefined;
   }
 
@@ -222,6 +220,28 @@ async function expectedBrokerRefusal(image: string, platform: string) {
       id + " " + owner + ' exited 1 false ""\n',
     );
     assert.deepEqual(await readdir(control), []);
+  }
+
+  async function probePreparedAuthority() {
+    // A broker can unlink its socket during shutdown. Watch before launch so
+    // an empty directory after exit cannot hide a transient socket.
+    let socketObserved = false;
+    const watcher = watch(control, (_event, filename) => {
+      socketObserved ||= filename === null || filename === "control.sock";
+    });
+    try {
+      const id = await launch(["--authority", "prepared-git"]);
+      const response = await readWhenReady();
+      if (response) {
+        await assertMissing(response);
+        return "missing-capability";
+      }
+      await assertEarlyExit(id);
+      assert.equal(socketObserved, false, "broker opened its control socket before exit");
+      return "early-exit";
+    } finally {
+      watcher.close();
+    }
   }
 
   try {
@@ -251,14 +271,9 @@ async function expectedBrokerRefusal(image: string, platform: string) {
     );
     // Observe the packaged broker independently before checking what the operator CLI reports.
     await writeProjection(inputGeneration, registryGeneration, true);
-    const preparedAuthority = ["--authority", "prepared-git"];
-    const preparedId = await launch(preparedAuthority);
-    const response = await readWhenReady();
-    if (response) {
-      await assertMissing(response);
+    if ((await probePreparedAuthority()) === "missing-capability") {
       return missingCapability;
     }
-    await assertEarlyExit(preparedId);
     await removeContainer();
 
     // The historical loader requires an App key. Generate an unregistered key for the offline fixture.
@@ -282,7 +297,7 @@ async function expectedBrokerRefusal(image: string, platform: string) {
     await rm(controlSocket, { force: true });
 
     // Only the later authority arguments change on this otherwise working historical projection.
-    await assertEarlyExit(await launch(preparedAuthority));
+    assert.equal(await probePreparedAuthority(), "early-exit");
     return "broker exited before its control socket was ready (exit 1)";
   } finally {
     try {
