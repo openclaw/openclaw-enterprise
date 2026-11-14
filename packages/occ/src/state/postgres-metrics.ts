@@ -5,6 +5,7 @@ export interface PlatformMetricsSnapshot {
   readonly agents: Readonly<
     Record<"draft" | "deploying" | "running" | "stopping" | "stopped" | "failed", number>
   >;
+  readonly agentsByDeploymentState: Readonly<Record<"draft" | "active", number>>;
   readonly pending: number;
   readonly oldestPendingAgeSeconds: number;
 }
@@ -57,7 +58,8 @@ export class PostgresMetricsSnapshot {
             WHEN deployment.state IN ('queued', 'claimed')
               OR a.active_revision_id IS DISTINCT FROM revision.id THEN 'deploying'
             ELSE 'running'
-          END AS lifecycle_state
+          END AS lifecycle_state,
+          a.active_revision_id IS NOT NULL AS has_active_revision
           FROM occ.agents a
           JOIN occ.namespaces n ON n.id = a.namespace_id AND n.deleted_at IS NULL
           LEFT JOIN LATERAL (
@@ -69,19 +71,28 @@ export class PostgresMetricsSnapshot {
             ON deployment.idempotency_key = 'agent_revision:' || revision.id || ':reconcile'
           LEFT JOIN latest_teardown teardown ON teardown.agent_id = a.id
           LEFT JOIN unfinished_deployments unfinished ON unfinished.agent_id = a.id
-        )
-        SELECT
-          (SELECT jsonb_build_object(
+        ), agent_counts AS (
+          SELECT jsonb_build_object(
             'draft', count(*) FILTER (WHERE lifecycle_state = 'draft'),
             'deploying', count(*) FILTER (WHERE lifecycle_state = 'deploying'),
             'running', count(*) FILTER (WHERE lifecycle_state = 'running'),
             'stopping', count(*) FILTER (WHERE lifecycle_state = 'stopping'),
             'stopped', count(*) FILTER (WHERE lifecycle_state = 'stopped'),
             'failed', count(*) FILTER (WHERE lifecycle_state = 'failed')
-          ) FROM agent_states) AS agents,
+          ) AS agents,
+          jsonb_build_object(
+            'draft', count(*) FILTER (WHERE NOT has_active_revision),
+            'active', count(*) FILTER (WHERE has_active_revision)
+          ) AS "agentsByDeploymentState"
+          FROM agent_states
+        )
+        SELECT
+          agent_counts.agents,
+          agent_counts."agentsByDeploymentState",
           pending.count AS pending,
           pending.oldest AS "oldestPendingAgeSeconds"
         FROM occ.installation
+        CROSS JOIN agent_counts
         CROSS JOIN (
           SELECT count(*)::float8 AS count,
             COALESCE(GREATEST(0, extract(epoch FROM
