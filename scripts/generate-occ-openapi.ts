@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { format, resolveConfig } from "prettier";
 
+import { createRouteGenerationApp } from "../apps/controller/src/route-generation-app.ts";
 import { documentApiExamples } from "./document-api-examples.ts";
-import { createFastifyApp } from "../apps/controller/src/index.ts";
 import {
   generateApiReferenceOutputs,
   removeGeneratedApiReferenceDirectory,
@@ -16,31 +16,32 @@ const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const outputPath = fileURLToPath(
   new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url),
 );
-const documentationInstallationId = "ins_6054d30d-0f89-4cd0-aa56-2b76e3c5fb52";
 
-function sortKeys(value) {
+// Copy nested values before stringifying so JSON keeps its usual integer-key ordering.
+function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return value.map(sortKeys);
+    const items: readonly unknown[] = value;
+    return items.map(sortKeys);
   }
   if (value === null || typeof value !== "object") {
     return value;
   }
 
+  const entries: [string, unknown][] = Object.entries(value);
   return Object.fromEntries(
-    Object.entries(value)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    entries
+      .sort(([left], [right]) => {
+        if (left < right) {
+          return -1;
+        }
+        return left > right ? 1 : 0;
+      })
       .map(([key, nested]) => [key, sortKeys(nested)]),
   );
 }
 
 async function generateDocument() {
-  const app = createFastifyApp({
-    development: {
-      enabled: true,
-      installationId: documentationInstallationId,
-    },
-    maxBodyBytes: 64 * 1024,
-  });
+  const app = createRouteGenerationApp(64 * 1024);
 
   let document;
   try {
@@ -59,12 +60,14 @@ async function generateDocument() {
 }
 
 const arguments_ = process.argv.slice(2);
-if (arguments_.length > 1 || (arguments_.length === 1 && arguments_[0] !== "--check")) {
-  throw new Error("Usage: node scripts/generate-occ-openapi.mjs [--check]");
+const check = arguments_[0] === "--check";
+if (arguments_.length > 1 || (arguments_.length === 1 && !check)) {
+  throw new Error("Usage: node scripts/generate-occ-openapi.ts [--check]");
 }
 
 const document = await generateDocument();
-const referenceOutputs = generateApiReferenceOutputs(JSON.parse(document));
+const parsedDocument: unknown = JSON.parse(document);
+const referenceOutputs = generateApiReferenceOutputs(parsedDocument);
 const outputs = [
   { label: "OpenAPI contract", path: outputPath, content: document },
   ...referenceOutputs.map((output) => ({
@@ -74,15 +77,15 @@ const outputs = [
   })),
 ];
 
-if (arguments_[0] !== "--check") {
+if (!check) {
   await removeGeneratedApiReferenceDirectory();
 }
 
 for (const output of outputs) {
   const outputName = relative(repositoryRoot, output.path);
 
-  if (arguments_[0] === "--check") {
-    let existing;
+  if (check) {
+    let existing: string;
     try {
       existing = await readFile(output.path, "utf8");
     } catch (error) {
@@ -103,7 +106,7 @@ for (const output of outputs) {
   }
 }
 
-if (arguments_[0] === "--check") {
+if (check) {
   const unexpected = await unexpectedApiReferenceFiles(referenceOutputs);
   if (unexpected.length) {
     throw new Error(

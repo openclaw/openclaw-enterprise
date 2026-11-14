@@ -292,7 +292,7 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
 
   await mkdir(join(fixture, "scripts"), { recursive: true });
   for (const file of [
-    "generate-occ-openapi.mjs",
+    "generate-occ-openapi.ts",
     "generate-occ-api-reference.ts",
     "document-api-examples.ts",
     "api-examples.ts",
@@ -305,7 +305,7 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
   await mkdir(join(fixture, "packages/contracts/openapi"), { recursive: true });
   await copyFile(contractPath, join(fixture, "packages/contracts/openapi/occ-api.openapi.json"));
 
-  const generateResult = spawnSync(process.execPath, ["scripts/generate-occ-openapi.mjs"], {
+  const generateResult = spawnSync(process.execPath, ["scripts/generate-occ-openapi.ts"], {
     cwd: fixture,
     encoding: "utf8",
     timeout: 30_000,
@@ -318,7 +318,7 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
     "# Unexpected API page\n",
   );
 
-  const result = spawnSync(process.execPath, ["scripts/generate-occ-openapi.mjs", "--check"], {
+  const result = spawnSync(process.execPath, ["scripts/generate-occ-openapi.ts", "--check"], {
     cwd: fixture,
     encoding: "utf8",
     timeout: 30_000,
