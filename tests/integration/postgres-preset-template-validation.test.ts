@@ -24,7 +24,7 @@ import {
   defaultAgentConfigurationValues,
   request,
   startController,
-} from "../helpers/postgres-platform-state.mjs";
+} from "../helpers/postgres-platform-state.ts";
 
 type Controller = Awaited<ReturnType<typeof startController>>;
 interface Response {

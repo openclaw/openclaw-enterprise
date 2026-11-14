@@ -203,6 +203,9 @@ can interpolate chat text, keep the event name; other Codex warnings are dropped
 oversized, unclassified, unspecified-severity, and Codex stdout protocol records.
 Resource identity comes from protected Docker labels or Kubernetes Pod metadata;
 request, work, Namespace, Agent, and Agent revision IDs remain attributes.
+Local approved scalar strings reject recognized URL and connection-string credentials.
+The Collector omits recognized key or token shapes from diagnostic codes and cleanup
+cause codes while retaining ordinary uppercase codes and SQLSTATE.
 
 A Gateway startup failure (OpenClaw's `Gateway failed to start:` error, which has
 no subsystem) is promoted as `gateway.startup_failed`; its body keeps the message

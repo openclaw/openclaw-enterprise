@@ -140,6 +140,9 @@ ordinary chat before private Git (`before-private-git`), a native Git turn
 
 For a selected `gateway-exec` failure, the optional `gatewayExec` object contains
 the recorded process `exitCode`, allowlisted `signal`, or allowlisted error `code`.
+`helperEntered: true` means the failed exec returned a matching entry marker from
+its Gateway Node helper. The helper emits the marker before it attempts the
+HTTP request. If the field is absent, helper entry is unknown.
 Missing and invalid fields are omitted. A signal alone leaves the cause of
 termination unknown.
 After a failed runner, the writer uses complete valid ledger rows before the
@@ -190,7 +193,7 @@ both steps succeeded before `Aggregate full suite` failed.
 - [Full Integration workflow](../../../.github/workflows/full-integration.yml): events, approval, preflight, and execution queue admission.
 - [Execution workflow](../../../.github/workflows/full-integration-execution.yml): same-commit revalidation, selectable lanes, dependencies, and aggregate.
 - [Dispatch preflight](../../../scripts/ci/full-integration-preflight.mjs): lane and environment policy.
-- [CI lane planning](../../../scripts/ci/full-integration-reuse.mjs): ordinary CI lane selection and result validation.
+- [CI lane planning](../../../scripts/ci/full-integration-reuse.ts): ordinary CI lane selection and result validation.
 - [Suite index](../../../scripts/ci/test-suites.json): group membership; exact manifests are linked in Scenarios.
 - [Test runner](../../../scripts/ci/run-tests.mjs): expected-case and result checks.
 - [Lane action](../../../.github/actions/run-ci-lane/action.yml): preparation and cleanup.

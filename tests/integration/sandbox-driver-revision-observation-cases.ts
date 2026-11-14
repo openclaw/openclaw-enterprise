@@ -82,3 +82,41 @@ export async function verifyForeignSandboxAnnotations({
   await provision();
   await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
 }
+
+export async function verifyPreparedGitCleanupRefusals({
+  providerNames,
+  gateway,
+  cleanupRevision,
+}: {
+  providerNames: readonly string[];
+  gateway: Pick<RevisionGateway, "providers" | "profiles">;
+  cleanupRevision: () => ReturnType<OpenShellSandboxDriver["cleanup"]>;
+}) {
+  const gitProvider = providerNames.find((name) => name.startsWith("oce-git-"));
+  assert.ok(gitProvider);
+  const provider = gateway.providers.get(gitProvider);
+  const profile = gateway.profiles.get(gitProvider);
+  assert.ok(provider && profile);
+  const leftBehind = {
+    provider: structuredClone(provider),
+    profile: structuredClone(profile),
+  };
+
+  // A same-name provider without the revision's owner fingerprint is refused, not deleted.
+  Object.assign(provider, {
+    labels: { "openclaw.dev/prepared-git-binding": "0".repeat(48) },
+  });
+  await assert.rejects(cleanupRevision(), { name: "OpenShellPreparedGitProviderError" });
+  assert.ok(gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
+  gateway.providers.set(gitProvider, structuredClone(leftBehind.provider));
+
+  // The same for its profile: the provider goes, the profile stays.
+  const liveProfile = gateway.profiles.get(gitProvider);
+  assert.ok(liveProfile);
+  liveProfile.annotations = { "openclaw.dev/prepared-git-binding": "0".repeat(48) };
+  await assert.rejects(cleanupRevision(), { name: "OpenShellPreparedGitProviderError" });
+  assert.ok(!gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
+  gateway.profiles.set(gitProvider, structuredClone(leftBehind.profile));
+
+  return { gitProvider, leftBehind };
+}

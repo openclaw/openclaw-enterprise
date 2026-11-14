@@ -498,9 +498,9 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
   const header = headers.find((value) => stack.startsWith(value + "\n"));
   const frames = header === undefined ? "" : stack.slice(header.length + 1);
   const frame = frames.match(
-    /^ +at [^\n]*[/\\](agent-openshell-static-egress-k3d-real\.test|egress-(?:connected-inputs|controller-upgrade|custody-observations|installed-(?:agent|resource-cleanup|stack)|managed-workload-exec|supplier-custody-transitions|supervisor-reconnect)|openshell-kubernetes-real)\.mjs:(\d{1,5}):(\d{1,4})(?:\))?$/m,
+    /^ +at [^\n]*[/\\]((?:agent-openshell-static-egress-k3d-real\.test|egress-(?:connected-inputs|controller-upgrade|custody-observations|installed-(?:agent|resource-cleanup|stack)|managed-workload-exec|supplier-custody-transitions|supervisor-reconnect)|openshell-kubernetes-real)\.mjs|egress-supervisor-sessions\.ts):(\d{1,5}):(\d{1,4})(?:\))?$/m,
   );
-  const location = frame ? `${frame[1]}.mjs:${frame[2]}:${frame[3]}` : "external-operation";
+  const location = frame ? `${frame[1]}:${frame[2]}:${frame[3]}` : "external-operation";
   const kind = error?.code === "ERR_ASSERTION" ? "assertion" : "operation";
   const { operation = null, nativeTurnResult } = failedOperations.get(error) ?? {};
   const local = kubectlOutcomes.get(error);

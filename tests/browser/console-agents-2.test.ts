@@ -79,7 +79,6 @@ import {
   RESOURCE_CONFLICT,
   POD_QUOTA_FULL,
   PROVISIONING_NOT_COMPLETED,
-  codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
@@ -2616,7 +2615,8 @@ test("Agent creation names the Configuration field that holds an inline model cr
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 400);
   const feedback = page.getByRole("alert").filter({
-    hasText: codexApiKeyRefusal("models.providers.openai.apiKey"),
+    hasText:
+      "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.

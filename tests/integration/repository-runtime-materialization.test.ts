@@ -18,9 +18,14 @@ import test, { before, type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { repositorySessionFiles } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
 import type { SessionStatus } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
+import {
+  encodeRepositoryCredentialSessionFiles,
+  type ClientFiles,
+} from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
+import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/access/client/environment.ts";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.ts";
+import { setEnvironment } from "../helpers/environment.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
@@ -479,4 +484,44 @@ test("session file bytes remain exact across the encoder and Compute admission",
       repositorySessionFiles(session, { ...padded, "client.json": padded["client.json"] + " " }),
     /Repository credential material is invalid/,
   );
+});
+
+test("repository client environment preserves only managed proxy and CA variables", (t) => {
+  const configuration: ClientFiles = {
+    sessionId: "session",
+    deadlineWallMs: Date.now() + 86400000,
+    hasPublicCa: true,
+    client: repositoryClientData(),
+  };
+  setEnvironment(t, {
+    HTTPS_PROXY: "http://127.0.0.1:1234",
+    HTTP_PROXY: "http://127.0.0.1:1235",
+    ALL_PROXY: "socks5://127.0.0.1:1236",
+    https_proxy: "http://127.0.0.1:1237",
+    SSL_CERT_FILE: "/managed/ca.pem",
+    GIT_SSL_CAINFO: "/managed/git-ca.pem",
+    NODE_EXTRA_CA_CERTS: "/managed/node-ca.pem",
+    GH_TOKEN: "must-not-leak",
+    NO_PROXY: "169.254.169.254",
+  });
+  const env = createClientEnvironment(configuration, "/session", "/home/node");
+  assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:1234");
+  assert.equal(env.HTTP_PROXY, "http://127.0.0.1:1235");
+  assert.equal(env.ALL_PROXY, "socks5://127.0.0.1:1236");
+  assert.equal(env.https_proxy, "http://127.0.0.1:1237");
+  assert.equal(env.SSL_CERT_FILE, "/managed/ca.pem");
+  assert.equal(env.GIT_SSL_CAINFO, "/managed/git-ca.pem");
+  assert.equal(env.NODE_EXTRA_CA_CERTS, "/managed/node-ca.pem");
+  assert.equal(env.GH_TOKEN, undefined);
+  assert.equal(env.NO_PROXY, undefined);
+
+  setEnvironment(t, {
+    SSL_CERT_FILE: undefined,
+    GIT_SSL_CAINFO: undefined,
+    NODE_EXTRA_CA_CERTS: undefined,
+  });
+  const fallback = createClientEnvironment(configuration, "/session", "/home/node");
+  assert.equal(fallback.SSL_CERT_FILE, join("/session", "ca.pem"));
+  assert.equal(fallback.GIT_SSL_CAINFO, join("/session", "ca.pem"));
+  assert.equal(fallback.NODE_EXTRA_CA_CERTS, join("/session", "ca.pem"));
 });

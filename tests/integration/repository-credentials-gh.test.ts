@@ -23,35 +23,31 @@ import {
   startCredentialServiceFixture as startService,
   gatewayRequest as requestGateway,
 } from "../fixtures/repository-credentials/service.mjs";
-import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.mjs";
+import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
-import { registerResourceCleanup as registerCleanup } from "../fixtures/repository-credentials/cleanup.mjs";
+import {
+  registerResourceCleanup,
+  type ResourceCleanup,
+} from "../fixtures/repository-credentials/cleanup.ts";
 
-const startCredentialServiceFixture = startService as StartCredentialClientFixture;
+type GhFixture = Pick<CredentialClientFixture, "tls" | "github"> &
+  Parameters<typeof exerciseGit>[1] &
+  Parameters<typeof exerciseGh>[0];
+const startCredentialServiceFixture: (
+  ...args: Parameters<StartCredentialClientFixture>
+) => Promise<GhFixture | undefined> = startService;
+
 type GatewayOptions = {
   method?: string;
   body?: JsonValue | undefined;
   headers?: Record<string, string>;
 };
 const gatewayRequest: (
-  fixture: CredentialClientFixture,
+  fixture: GhFixture,
   target: string,
   options?: GatewayOptions,
 ) => Promise<{ status: number; body: string }> = requestGateway;
 const run = runProcess as ClientCommand;
-type Cleanup = (signal: AbortSignal) => Promise<void>;
-type CleanupRequest = { method: string; path: string; body?: JsonValue };
-const registerResourceCleanup = registerCleanup as (
-  cleanups: Cleanup[],
-  options: {
-    request: (request: CleanupRequest) => Promise<unknown>;
-    repository: string;
-    kind: string;
-    marker: string;
-    head: string;
-  },
-) => void;
-
 function jsonObject(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Record<string, unknown>;
@@ -79,8 +75,7 @@ test("pinned gh uses selected development token routing for repository, issue an
   const originalSingleHosts = await readFile(singleHostsPath);
   const { client, checkout } = await exerciseGit(t, fixture);
   await client.git(["push", "origin", "HEAD:refs/heads/native-feature"], { cwd: checkout });
-  const { issue: issuedIssue }: { issue: unknown } = await exerciseGh(fixture, client);
-  const issue = jsonObject(issuedIssue);
+  const issueNumber = await exerciseGh(fixture, client);
   // GitHub returns repository-ID links, and issue collections also carry opaque cursors.
   // The actual CLI must follow those links through the canonical gateway route.
   const issueInput = await client.json("pagination-issue.json", { title: "Second issue" });
@@ -96,6 +91,8 @@ test("pinned gh uses selected development token routing for repository, issue an
       ])
     ).stdout,
   );
+  const secondIssueNumber = secondIssue.number;
+  assert.ok(typeof secondIssueNumber === "number" && Number.isSafeInteger(secondIssueNumber));
   const pages: unknown = JSON.parse(
     (
       await client.gh([
@@ -112,7 +109,7 @@ test("pinned gh uses selected development token routing for repository, issue an
       assert.ok(Array.isArray(page));
       return page.map((entry: unknown) => jsonObject(entry).number);
     }),
-    [[issue.number], [secondIssue.number]],
+    [[issueNumber], [secondIssueNumber]],
   );
   assert.ok(
     fixture.github.trace.some((entry) => {
@@ -133,9 +130,9 @@ test("pinned gh uses selected development token routing for repository, issue an
   // Reconcile the exact marker through the same admitted session without replaying creation.
   const marker = "<!-- regression-run:gh-uncertain -->";
   const pullPath = "repos/fixture/repository/pulls";
-  const cleanups: Cleanup[] = [];
+  const cleanups: ResourceCleanup[] = [];
   registerResourceCleanup(cleanups, {
-    request: async ({ method, path, body }: CleanupRequest): Promise<unknown> => {
+    request: async ({ method, path, body }) => {
       const response = await gatewayRequest(fixture, `/${path}`, { method, body });
       assert.ok(response.status < 400);
       if (!response.body) {

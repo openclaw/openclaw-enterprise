@@ -28,6 +28,14 @@ export function cleanEnvironment(extra = {}) {
 
 export class FixtureCommandTimeoutError extends Error {}
 
+/**
+ * @param {string} command
+ * @param {readonly string[]} [args]
+ * @param {{cwd?: string | URL | undefined, env?: NodeJS.ProcessEnv | undefined,
+ *   input?: string | NodeJS.ArrayBufferView | undefined, timeout?: number | undefined,
+ *   allowFailure?: boolean | undefined, signal?: AbortSignal | undefined}} [options]
+ * @returns {Promise<{code: number | null, stdout: string, stderr: string}>}
+ */
 export async function run(
   command,
   args,
@@ -92,6 +100,7 @@ export async function run(
   child.stdout.on("data", (chunk) => collect("stdout", chunk));
   child.stderr.on("data", (chunk) => collect("stderr", chunk));
   child.stdin.on("error", () => {});
+  /** @type {Promise<number | null>} */
   const closed = new Promise((resolve) => {
     finish = resolve;
     child.once("error", () => stop("spawn failed"));
@@ -133,6 +142,7 @@ export async function temporaryDirectory(t, prefix = "repository-credentials-") 
 // the first call in a directory of its own. Every certificate minted from that key and subject
 // would verify the others anyway, so later calls lose nothing by reusing it; each still gets its
 // own key and cert files.
+/** @type {ReturnType<typeof mintFixtureCertificate> | undefined} */
 let fixtureCertificate;
 
 async function mintFixtureCertificate() {

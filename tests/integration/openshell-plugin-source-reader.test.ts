@@ -10,12 +10,10 @@ import {
 import { CODEX_ACCOUNT_CONFIG } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { Backend, Namespace } from "../../packages/contracts/src/index.ts";
-import type * as Grpc from "../../apps/controller/node_modules/@grpc/grpc-js/build/src/index.js";
-import type * as ProtoLoader from "../../apps/controller/node_modules/@grpc/proto-loader/build/src/index.js";
+import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID, X509Certificate } from "node:crypto";
-import { createRequire } from "node:module";
 import test from "node:test";
 import { createServer } from "node:http";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -63,15 +61,12 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
     new X509Certificate(ordinary.cert).fingerprint256,
     new X509Certificate(operator.cert).fingerprint256,
   );
-  const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
   const proto = fileURLToPath(
     new URL(
       "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
       import.meta.url,
     ),
   );
-  const grpc: typeof Grpc = require("@grpc/grpc-js");
-  const loader: typeof ProtoLoader = require("@grpc/proto-loader");
   const definition = loader.loadSync(proto, { keepCase: true });
   const server = new grpc.Server();
   t.after(() => server.forceShutdown());
@@ -109,11 +104,7 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
       }
     };
   };
-  // Dynamic protobuf loading exposes a package tree; only this service is used.
-  const loaded = grpc.loadPackageDefinition(definition) as unknown as {
-    openshell: { v1: { OpenShell: { service: Grpc.ServiceDefinition } } };
-  };
-  server.addService(loaded.openshell.v1.OpenShell.service, {
+  server.addService(openShellService(grpc.loadPackageDefinition(definition)), {
     GetProvider: receive("ordinary", ordinary, () => ({
       provider: {
         metadata: {

@@ -997,7 +997,7 @@ async function prepareLifecycleCommands(fixture, scenario = "success", options =
   // Isolate the launcher contract; real sandbox enforcement is covered by the
   // real-cluster lifecycle suite, not this external-command fixture.
   await writeFile(
-    join(fixture.fixtureRepository, "scripts", "prepare-development-codex-seccomp.mjs"),
+    join(fixture.fixtureRepository, "scripts", "prepare-development-codex-seccomp.ts"),
     'process.stdout.write(JSON.stringify({ mode: "RuntimeDefault", profileName: "" }));\n',
   );
   fixture.env.SAFETY_LOG = join(fixture.directory, "lifecycle.log");

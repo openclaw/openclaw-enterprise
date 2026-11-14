@@ -14,6 +14,7 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { codexGatewayModelConfiguration } from "../../apps/controller/src/drivers/compute/codex-model-configuration.ts";
 import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import type { WorkspaceNodeHotApplyReceipt } from "../fixtures/runtime-workspace-node-hot-apply.ts";
 import {
   imageTestOptions,
   runDocker,
@@ -108,9 +109,11 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
           "OPENCLAW_POD_UID=pod-workspace-node",
         ],
       });
-      const source = await readFile(
-        new URL("../fixtures/runtime-workspace-node-hot-apply.mjs", import.meta.url),
-        "utf8",
+      const source = stripTypeScriptTypes(
+        await readFile(
+          new URL("../fixtures/runtime-workspace-node-hot-apply.ts", import.meta.url),
+          "utf8",
+        ),
       );
       const { stdout } = await runDocker(
         [
@@ -125,9 +128,11 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         ],
         { timeout: 300_000 * imageSmokeTimeoutMultiplier },
       );
-      const result = lastOutputRecord(stdout);
+      const line = stdout.trim().split("\n").at(-1);
+      assert.ok(line, "expected workspace node receipt");
+      const result = JSON.parse(line) as WorkspaceNodeHotApplyReceipt;
       assert.equal(result.sameProcesses, true);
-      assert.equal(requiredRecord(result.fileTransferAfter).state, "active");
+      assert.equal(result.fileTransferAfter.state, "active");
       assert.equal(result.readBefore, "served by the Gateway host");
       assert.equal(result.readAfter, "served by the workspace node");
       const inspect = await runDocker([

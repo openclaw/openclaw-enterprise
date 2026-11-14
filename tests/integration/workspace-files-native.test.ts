@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { WorkspaceNativeProbeInput } from "../fixtures/gateway-routing/workspace-native-probe.ts";
 import type {
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
@@ -248,7 +249,8 @@ test(
       // Background memory indexing is separate from the file API's no-turn guarantee.
       configuration.memory = { search: { enabled: false } };
       const { explicitAgentId, ...agents } = roster;
-      configuration.agents = { ...configurationRecord(configuration.agents), ...agents };
+      const agentsConfiguration = { ...configurationRecord(configuration.agents), ...agents };
+      configuration.agents = agentsConfiguration;
       configuration.gateway = {
         ...configurationRecord(configuration.gateway),
         bind: "lan",
@@ -337,7 +339,7 @@ test(
         });
         await mkdir(join(directory, "client-home"), { recursive: true });
         const content = `Owned native workspace ${index}: exact text.\n`;
-        const deniedWrites = [
+        const deniedWrites: WorkspaceNativeProbeInput["deniedWrite"][] = [
           {
             identity: "proof-read",
             content: `Rejected read-only replacement ${index}.\n`,
@@ -352,7 +354,7 @@ test(
           // A fresh Node process loads only this test CA before the production WSS client starts.
           const child = execute(
             process.execPath,
-            ["tests/fixtures/gateway-routing/workspace-native-probe.mjs"],
+            ["tests/fixtures/gateway-routing/workspace-native-probe.ts"],
             {
               env: {
                 PATH: process.env.PATH,
@@ -365,9 +367,13 @@ test(
             },
           );
           assert.ok(child.child.stdin);
-          child.child.stdin.end(
-            JSON.stringify({ agents: configuration.agents, explicitAgentId, content, deniedWrite }),
-          );
+          const input: WorkspaceNativeProbeInput = {
+            agents: agentsConfiguration,
+            ...(explicitAgentId === undefined ? {} : { explicitAgentId }),
+            content,
+            deniedWrite,
+          };
+          child.child.stdin.end(JSON.stringify(input));
           const result = await child;
           assert.deepEqual(JSON.parse(result.stdout), {
             apiWrite: 200,

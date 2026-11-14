@@ -136,7 +136,7 @@ function expectError(value: unknown): Error {
 }
 
 const execute = promisify(execFile);
-const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
+const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mts", import.meta.url));
 
 // execFile rejects a non-zero kubectl exit with a numeric code and the
 // captured stderr; a spawn failure has a string code and no stderr.
@@ -2289,7 +2289,7 @@ test("only the probe's denial exit code with its stdout report is a denial", () 
 });
 
 // The Gateway container does not mount the probe fixture, so the Gateway
-// connect check (finding 335) runs probe.mjs from its source text.
+// connect check (finding 335) runs the stripped probe source inline.
 async function fakeKubectlExecInline(source: string, ...probeArguments: Array<string | number>) {
   const [node, script, ...args]: unknown[] = inlineProbeCommand(source, ...probeArguments);
   assert.equal(node, "node");

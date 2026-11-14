@@ -277,7 +277,7 @@ test(
           ],
           kubeconfigSha256: digest(await readFile(selection.kubeconfigPath)),
           scriptSha256: digest(await readFile("scripts/upgrade-production-images")),
-          startupPreflightSha256: digest(await readFile("scripts/upgrade-startup-preflight.mjs")),
+          startupPreflightSha256: digest(await readFile("scripts/upgrade-startup-preflight.ts")),
           preflightStateSha256: digest(await readFile("scripts/upgrade-preflight-state.py")),
           preflightCleanupSha256: digest(
             await readFile("scripts/lib/upgrade-preflight-cleanup.sh"),
