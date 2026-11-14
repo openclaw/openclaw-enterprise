@@ -9,23 +9,8 @@ const kubernetes: unknown = createRequire(
 )("@kubernetes/client-node");
 const loadYaml = record(kubernetes).loadYaml;
 
-type Step = Record<string, unknown> & {
-  id?: string;
-  name?: string;
-  run?: string;
-  uses?: string;
-  if?: string;
-  with?: Record<string, unknown>;
-  env?: Record<string, unknown>;
-};
-
 type Job = Record<string, unknown> & {
-  if?: string;
-  steps?: Step[];
-  with?: Record<string, unknown>;
-  env?: Record<string, unknown>;
-  outputs?: Record<string, unknown>;
-  concurrency?: string | Record<string, unknown>;
+  steps?: Record<string, unknown>[];
   needs?: string | string[];
 };
 
@@ -33,37 +18,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function optionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === "string";
-}
-
-function optionalRecord(value: unknown): value is Record<string, unknown> | undefined {
-  return value === undefined || isRecord(value);
-}
-
-function isStep(value: unknown): value is Step {
-  return (
-    isRecord(value) &&
-    optionalString(value.id) &&
-    optionalString(value.name) &&
-    optionalString(value.run) &&
-    optionalString(value.uses) &&
-    optionalString(value.if) &&
-    optionalRecord(value.with) &&
-    optionalRecord(value.env)
-  );
+export function optionalField(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
 }
 
 function isJob(value: unknown): value is Job {
   return (
     isRecord(value) &&
-    optionalString(value.if) &&
-    (value.steps === undefined || (Array.isArray(value.steps) && value.steps.every(isStep))) &&
-    optionalRecord(value.with) &&
-    optionalRecord(value.env) &&
-    optionalRecord(value.outputs) &&
-    (optionalString(value.concurrency) || isRecord(value.concurrency)) &&
-    (optionalString(value.needs) ||
+    (value.steps === undefined || (Array.isArray(value.steps) && value.steps.every(isRecord))) &&
+    (value.needs === undefined ||
+      typeof value.needs === "string" ||
       (Array.isArray(value.needs) &&
         value.needs.every((name: unknown) => typeof name === "string")))
   );
@@ -84,7 +48,7 @@ export function parseWorkflow(source: string) {
   );
   return {
     ...workflow,
-    on: record(workflow.on),
+    on: workflow.on,
     jobs,
     concurrency: workflow.concurrency,
     env: workflow.env,
@@ -106,6 +70,6 @@ export async function readLaneAction() {
     ),
   );
   const steps = array(record(action.runs).steps);
-  assert.ok(steps.every(isStep));
+  assert.ok(steps.every(isRecord));
   return steps;
 }

@@ -14,6 +14,7 @@ import { mainRun } from "./full-integration-approval-fixture.ts";
 import { array, jsonRecord, present, record, text } from "./full-integration-json-fixture.ts";
 import { reuseFixture } from "./full-integration-reuse-fixture.ts";
 import {
+  optionalField,
   parseWorkflow,
   readLaneAction,
   readWorkflow,
@@ -435,7 +436,11 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
   // Both event types execute this TypeScript command using the pinned Node setup.
   for (const workflow of [dispatcher, execution]) {
     const steps = preflightSteps(workflow);
-    const setup = present(steps.find((step) => step.uses?.startsWith("actions/setup-node@")));
+    const setup = present(
+      steps.find(
+        (step) => typeof step.uses === "string" && step.uses.startsWith("actions/setup-node@"),
+      ),
+    );
     assert.equal(setup.if, undefined);
     assert.equal(record(setup.with)["node-version"], "${{ env.NODE_VERSION }}");
     assert.match(text(record(workflow.env).NODE_VERSION), /^24\./);
@@ -449,7 +454,7 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
   assert.ok(!JSON.stringify(dispatcher).includes("full-integration-admitted"));
   assert.ok(
     present(present(execution.jobs.preflight).steps).some(
-      (step) => step.with?.name === "full-integration-admitted-v1",
+      (step) => optionalField(step.with, "name") === "full-integration-admitted-v1",
     ),
   );
 
@@ -582,10 +587,8 @@ test("OpenShell waits for its protected-input warm export before source builds",
   assert.equal(record(warmer.concurrency).group, "ci-image-cache-${{ github.ref }}");
   assert.equal(record(warmer.concurrency).queue, "max");
   assert.equal(record(warmer.concurrency)["cancel-in-progress"], false);
-  assert.equal(
-    record(record(record(warmer.on.workflow_call).inputs)["require-export"]).default,
-    false,
-  );
+  const warmInputs = record(record(record(warmer.on).workflow_call).inputs);
+  assert.equal(record(warmInputs["require-export"]).default, false);
   const github = {
     repository: mainRun.GITHUB_REPOSITORY,
     ref: mainRun.GITHUB_REF,
@@ -652,9 +655,10 @@ test("OpenShell waits for its protected-input warm export before source builds",
 
 test("workflow gates scheduled and approved manual attempts before starting lanes", async () => {
   const workflow = await readWorkflow("full-integration");
-  assert.equal(workflow.on.push, undefined);
-  assert.equal(array(workflow.on.schedule).length, 1);
-  assert.equal(workflow.on.pull_request, undefined);
+  const triggers = record(workflow.on);
+  assert.equal(triggers.push, undefined);
+  assert.equal(array(triggers.schedule).length, 1);
+  assert.equal(triggers.pull_request, undefined);
   const execution = await readWorkflow("full-integration-execution");
   const jobs = [...Object.entries(workflow.jobs), ...Object.entries(execution.jobs)].filter(
     ([name]) =>
@@ -851,20 +855,19 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     present(finalCleanup).run,
     'node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"',
   );
+  const triggers = record(dispatcher.on);
+  const dispatchInputs = record(record(triggers.workflow_dispatch).inputs);
+  const laneOptions = array(record(dispatchInputs.lane).options);
   const groups = record(jsonRecord(await read("scripts/ci/test-suites.json")).groups);
-  assert.ok(
-    array(record(record(record(dispatcher.on.workflow_dispatch).inputs).lane).options).includes(
-      "dev-up-k3d",
-    ),
-  );
-  assert.equal(dispatcher.on.push, undefined);
-  assert.equal(array(dispatcher.on.schedule).length, 1);
-  assert.equal(dispatcher.on.pull_request, undefined);
-  assert.equal(dispatcher.on.pull_request_target, undefined);
-  assert.equal(record(record(dispatcher.on.workflow_dispatch).inputs).source_ref, undefined);
+  assert.ok(laneOptions.includes("dev-up-k3d"));
+  assert.equal(triggers.push, undefined);
+  assert.equal(array(triggers.schedule).length, 1);
+  assert.equal(triggers.pull_request, undefined);
+  assert.equal(triggers.pull_request_target, undefined);
+  assert.equal(dispatchInputs.source_ref, undefined);
   for (const selected of [...Object.values(dispatcher.jobs), ...Object.values(workflow.jobs)]) {
     for (const step of selected.steps ?? []) {
-      if (step.uses?.startsWith("actions/checkout@")) {
+      if (typeof step.uses === "string" && step.uses.startsWith("actions/checkout@")) {
         assert.equal(record(step.with).ref, "${{ github.sha }}");
         assert.equal(record(step.with)["persist-credentials"], false);
       }
@@ -888,7 +891,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const queuedLanes = ["slack", "dev-up-k3d", "skipper-prepared-git-installed"];
   assert.equal(record(present(dispatcher.jobs.execute).concurrency).queue, undefined);
   const jobsWithQueue = Object.entries(workflow.jobs)
-    .filter(([, job]) => typeof job.concurrency === "object" && job.concurrency.queue !== undefined)
+    .filter(([, job]) => optionalField(job.concurrency, "queue") !== undefined)
     .map(([lane]) => lane);
   assert.deepEqual(jobsWithQueue.sort(), ["preflight", ...queuedLanes].sort());
   const resourceQueues = new Set<string>();
@@ -912,7 +915,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const qaJob = present(workflow.jobs["qa-matrix"]);
   const qaManifest = jsonRecord(await read("scripts/ci/test-suites/qa-matrix.json"));
   const qaRunnerEnv = Object.fromEntries(
-    Object.entries(present(qaJob.env))
+    Object.entries(record(qaJob.env))
       .filter(([name]) => array(qaManifest.optionalEnv).includes(name))
       .map(([name, value]) => [name, text(value)]),
   );
@@ -974,9 +977,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(record(present(run).with)["artifact-prefix"], "full-results");
   assert.ok(present(workflow.jobs["full-aggregate"]).needs?.includes("dev-up-k3d"));
   assert.equal(array(groups.ci).includes("dev-up-k3d"), false);
-  for (const lane of array(
-    record(record(record(dispatcher.on.workflow_dispatch).inputs).lane).options,
-  )) {
+  for (const lane of laneOptions) {
     if (lane !== "all") {
       assert.ok(array(groups.full).includes(lane), `all must require ${lane} results`);
     }
@@ -1006,10 +1007,12 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(gitCheckout.ref, "${{ github.sha }}");
   assert.equal(gitCheckout["persist-credentials"], false);
   assert.doesNotMatch(JSON.stringify(gitJob), /secrets\.|diagnostics\//);
-  const uploads = present(gitJob.steps).filter(({ uses }) =>
-    uses?.startsWith("actions/upload-artifact@"),
+  const uploads = present(gitJob.steps).filter(
+    ({ uses }) => typeof uses === "string" && uses.startsWith("actions/upload-artifact@"),
   );
-  const receipt = uploads.find((step) => step.with?.name === "full-results-" + privateGit);
+  const receipt = uploads.find(
+    (step) => optionalField(step.with, "name") === "full-results-" + privateGit,
+  );
   assert.equal(
     record(present(receipt).with).path,
     "${{ runner.temp }}/results/" + privateGit + ".json",
@@ -1020,7 +1023,9 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     "publish the receipt only after successful fixture cleanup",
   );
   const failure = uploads.find(
-    (step) => step.with?.name === "attempt-${{ github.run_attempt }}-full-failure-" + privateGit,
+    (step) =>
+      optionalField(step.with, "name") ===
+      "attempt-${{ github.run_attempt }}-full-failure-" + privateGit,
   );
   assert.equal(
     record(present(failure).with).path,
