@@ -79,3 +79,42 @@ when evidence never arrives. For a development workflow, also install the
 locked dependencies and run the repository formatter and tests. Record those
 results separately from package-manager bootstrap. Use the existing
 [Kubernetes test environment](../../../docs/testing/kubernetes.md).
+
+## Proposed amendment for restricted build destinations
+
+A protected Agent in restricted mode currently refuses ordinary network additions.
+This amendment would let an administrator approve a build destination for one
+Agent while keeping the public TCP fallback disabled. It would apply to any
+build client, without a package-manager rule.
+
+Use the [Installation ceiling and per-Agent SandboxPolicy](../../../docs/reference/sandbox-policies.md).
+The administrator must explicitly approve the destination for protected use and
+select it for that exact Agent. Bind the approval to the selected policy
+version and its literal public DNS hostname, TCP port and resolved absolute
+executable path. A subsequent policy edit needs fresh approval. The ceiling
+alone grants no access. Installation defaults and previously saved additions
+confer no protected approval.
+
+At deployment, OCC would freeze the approved selections in
+`AgentRevision.sandboxPolicy`. Older revisions carry no such approval. Changes
+require a new revision. Live application stays refused. A composition that
+cannot enforce the selection and verify the applied policy must retain the
+existing refusal of additions.
+
+For every connection, the enforcing peer must match the executable, hostname
+and port and verify that the address it actually connects to is public. Each
+redirect destination must independently qualify. A managed hostname stays
+reserved on every port, and a managed-route denial is final. Repository and
+model credentials stay with their managed routes. A TCP grant permits uploads
+as well as downloads. For example, approving port 80 for a package mirror
+allows plaintext traffic to that mirror. A port number alone gives no TLS or
+read-only guarantee.
+
+To qualify, fetch an uncached artifact with an unmodified build client in the
+selected Agent. Exercise each denial separately. Use another Agent, executable,
+host or port, follow an unapproved redirect, or resolve the approved name to
+a private address. For each refused destination, verify zero connections to
+that peer and zero credential I/O for the refusal. Exercise allowed Git and
+model operations through their managed routes and verify a managed-host
+denial on another port. After resume, compare the frozen, loaded and effective
+build destinations for exact equality.
