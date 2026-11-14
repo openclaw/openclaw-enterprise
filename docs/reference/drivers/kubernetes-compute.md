@@ -94,6 +94,25 @@ retirement removes resources for that Agent revision. Repeated stop
 observes exact ownership and converges when the runtime objects are already
 absent.
 
+### Planned image replacement
+
+Compatible image-only replacements of locally managed dedicated Codex revisions
+can wait up to 30 minutes for admitted work and final delivery. Both revisions
+must have admitted runtime snapshots and matching non-image inputs; the serving
+Gateway must support completion waiting and deferred stop handoff. First adoption,
+legacy revisions, other execution modes and provider-owned Harnesses retain their
+existing replacement behavior.
+
+During the wait, independent new work is rejected, not queued. Existing
+continuations may proceed. Retried requests after replacement are new requests;
+this mechanism does not replay interrupted tools or promise recovery at expiry.
+Maintenance retains the original admitted images and current authorization checks.
+
+After completion is committed, or the deadline is exhausted, the existing stop
+order remains Gateway first, then Harness. The candidate starts only after that
+boundary completes. A lost Controller lease eventually reopens Gateway admission;
+a retry preserves the original deadline.
+
 ### Plugin startup status
 
 Compute-owned OpenClaw and Codex runtimes publish private startup results after

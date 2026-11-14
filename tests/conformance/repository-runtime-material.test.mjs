@@ -1672,7 +1672,7 @@ test("the owning active reconcile withdraws its admitted reader across the Crede
   };
   const view = {
     namespaces: { findNamespace: () => ({ id: namespaceId, status: "ready" }) },
-    agents: { findAgent: () => agent },
+    agents: { findAgent: () => agent, findPredecessorReplacement: () => undefined },
     revisions: {
       findRevision: () => structuredClone(revision),
       listRevisionMetadata: () => [revision],

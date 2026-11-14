@@ -191,3 +191,167 @@ test("a waiting setup observation ends early once other work is waiting", async 
     /invalid node setup completion/,
   );
 });
+
+// These cases qualify the completion adapter's protocol and stop ordering, not native execution.
+function completionConnection({ status = "ready", info = {}, handoffFails = false } = {}) {
+  const calls = [];
+  const client = {
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === "system.info") {
+        return { deferredStopHandoff: true, pid: 12, processInstanceId: "epoch-a", ...info };
+      }
+      if (method === "gateway.suspend.prepare") {
+        return { status, suspensionId: "lease-a" };
+      }
+      if (method === "gateway.suspend.handoff") {
+        if (handoffFails) {
+          throw new Error("lost response");
+        }
+        return { status: "committed", suspensionId: params.suspensionId };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    },
+  };
+  const context = {
+    deadlineAtMs: Date.now() + 30_000,
+    async recordExecutionIdentity(identity) {
+      calls.push({ method: "record-identity", identity });
+      return true;
+    },
+    async commitStopping(identity) {
+      calls.push({ method: "commit-stopping", identity });
+    },
+  };
+  return { client, context, calls };
+}
+
+test("completion waiting preserves admitted work without committing a stop", async () => {
+  const { completePredecessorOnConnection } =
+    await import("../../apps/controller/src/gateway/predecessor-completion.ts");
+  for (const status of ["busy", "draining"]) {
+    const fixture = completionConnection({ status });
+    assert.equal(
+      await completePredecessorOnConnection(
+        fixture.client,
+        "revision-a",
+        fixture.context,
+        AbortSignal.timeout(1000),
+      ),
+      "waiting",
+    );
+    assert.deepEqual(
+      fixture.calls.map((call) => call.method),
+      ["system.info", "record-identity", "gateway.suspend.prepare"],
+    );
+    assert.deepEqual(fixture.calls.at(-1).params, {
+      requestId: "revision-a",
+      terminalPolicy: "preserve",
+      completionDeadlineMs: fixture.context.deadlineAtMs,
+    });
+  }
+});
+
+test("completion commits the common stop boundary before fencing the exact process without exit", async () => {
+  const { completePredecessorOnConnection } =
+    await import("../../apps/controller/src/gateway/predecessor-completion.ts");
+  const fixture = completionConnection();
+  assert.equal(
+    await completePredecessorOnConnection(
+      fixture.client,
+      "revision-a",
+      fixture.context,
+      AbortSignal.timeout(1000),
+    ),
+    "ready",
+  );
+  assert.deepEqual(
+    fixture.calls.map((call) => call.method),
+    [
+      "system.info",
+      "record-identity",
+      "gateway.suspend.prepare",
+      "commit-stopping",
+      "gateway.suspend.handoff",
+    ],
+  );
+  assert.deepEqual(fixture.calls.at(-1).params, {
+    suspensionId: "lease-a",
+    target: { pid: 12, processInstanceId: "epoch-a" },
+    commit: true,
+    deferExit: true,
+  });
+});
+
+test("unsupported and changed executions cannot borrow a completion handoff", async () => {
+  const { completePredecessorOnConnection } =
+    await import("../../apps/controller/src/gateway/predecessor-completion.ts");
+  const old = completionConnection({ info: { deferredStopHandoff: undefined } });
+  assert.equal(
+    await completePredecessorOnConnection(
+      old.client,
+      "revision-a",
+      old.context,
+      AbortSignal.timeout(1000),
+    ),
+    "unsupported",
+  );
+  const changed = completionConnection({ info: { pid: 13 } });
+  changed.context.expectedExecutionIdentity = "12:epoch-a";
+  assert.equal(
+    await completePredecessorOnConnection(
+      changed.client,
+      "revision-a",
+      changed.context,
+      AbortSignal.timeout(1000),
+    ),
+    "runtime-changed",
+  );
+  assert.deepEqual(
+    old.calls.map((call) => call.method),
+    ["system.info"],
+  );
+  assert.deepEqual(
+    changed.calls.map((call) => call.method),
+    ["system.info"],
+  );
+});
+
+test("a lost Work owner cannot commit a Gateway handoff", async () => {
+  const { completePredecessorOnConnection } =
+    await import("../../apps/controller/src/gateway/predecessor-completion.ts");
+  const fixture = completionConnection();
+  fixture.context.commitStopping = async () => {
+    throw new Error("claim lost");
+  };
+  await assert.rejects(
+    completePredecessorOnConnection(
+      fixture.client,
+      "revision-a",
+      fixture.context,
+      AbortSignal.timeout(1000),
+    ),
+    /claim lost/,
+  );
+  assert.equal(
+    fixture.calls.some((call) => call.method === "gateway.suspend.handoff"),
+    false,
+  );
+});
+
+test("a lost handoff response is unconfirmed stopping, never successful completion", async () => {
+  const { completePredecessorOnConnection } =
+    await import("../../apps/controller/src/gateway/predecessor-completion.ts");
+  const fixture = completionConnection({ handoffFails: true });
+  assert.equal(
+    await completePredecessorOnConnection(
+      fixture.client,
+      "revision-a",
+      fixture.context,
+      AbortSignal.timeout(1000),
+    ),
+    "handoff-unconfirmed",
+  );
+  assert.equal(fixture.calls.filter((call) => call.method === "commit-stopping").length, 1);
+  assert.equal(fixture.calls.filter((call) => call.method === "gateway.suspend.handoff").length, 1);
+});

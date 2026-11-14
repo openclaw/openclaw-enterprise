@@ -135,6 +135,7 @@ const REVISION_RECONCILE_KEY = new RegExp(`^agent_revision:${REVISION_ID_PATTERN
 const ACTIVE_REVISION_RECOVERY = "ACTIVE_REVISION_RECOVERY";
 /** Recovery evidence that a deployment with a started predecessor stop got its one extra attempt. */
 const PREDECESSOR_STOP_RECOVERY = "PREDECESSOR_STOP_RECOVERY";
+const PLANNED_PREDECESSOR_STOP_RECOVERY = "PLANNED_PREDECESSOR_STOP_RECOVERY";
 
 function backoffDelayMsSql(
   attemptCount: string,
@@ -524,28 +525,38 @@ function workEvidenceExistsSql(code: string): string {
 
 // A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
 // serving revision's Gateway; only a worker pass finishes that stop before the deployment fails
-// (finding 1090). Recovery that would end such a deployment on its attempt limit (an expired
-// claim, or queued exhaustion) without a pass instead requeues it once with one more attempt,
-// so the predecessor is not left with its Harness, workspace and credentials and no Gateway
-// (finding 1107). PREDECESSOR_STOP_RECOVERY evidence bounds this to once per deployment, so a
-// pass that keeps crashing cannot requeue it forever: the next limit ends it as before. It never
-// follows an ACTIVE_REVISION_RECOVERY grant (the pointer was published, so the predecessors were
-// already stopped); that recovery keeps its own once-only grant, so a deployment gets at most
-// two. `candidates` holds locked work keys and `excluded` keys another recovery owns; `$2` is
-// maxAttempts.
+// (finding 1090). Yielded sweeps get one more pass (finding 1107). The Agent's exact
+// committed planned stop stays recoverable until the worker confirms it or the Agent selects
+// another predecessor. An already published candidate uses the separate activation recovery.
+// `candidates` holds locked work keys and `excluded` keys another recovery owns; `$2` is maxAttempts.
 function recoveringPredecessorStopsSql(candidates: string, excluded: string): string {
   return `
     recovering_predecessor_stops AS MATERIALIZED (
-      SELECT work.idempotency_key
+      SELECT work.idempotency_key, planned.stop_pending
       FROM occ.controller_work AS work
       JOIN ${candidates} AS candidate ON candidate.idempotency_key = work.idempotency_key
+      CROSS JOIN LATERAL (
+        SELECT EXISTS (
+          SELECT 1
+          FROM occ.agents AS agent
+          WHERE agent.namespace_id = work.namespace_id AND agent.id = work.agent_id
+            AND agent.predecessor_replacement->>'phase' = 'stopping'
+            AND agent.predecessor_replacement->>'candidateRevisionId' = work.revision_id
+            AND agent.predecessor_replacement->>'predecessorRevisionId' = agent.active_revision_id
+            AND agent.predecessor_replacement->>'executionIdentity' IS NOT NULL
+            AND agent.predecessor_replacement->>'completionStartedAt' IS NOT NULL
+            AND agent.predecessor_replacement->'stopCompleted' IS DISTINCT FROM 'true'::jsonb
+        ) AS stop_pending
+      ) AS planned
       WHERE work.attempt_count >= $2::integer
         AND work.namespace_target IS NULL AND work.agent_target IS NULL
         AND work.agent_id IS NOT NULL AND work.revision_id IS NOT NULL
         AND work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
         AND ${excluded}
-        AND ${workEvidenceExistsSql("PREDECESSOR_STOP_YIELDED")}
-        AND NOT ${workEvidenceExistsSql(PREDECESSOR_STOP_RECOVERY)}
+        AND (planned.stop_pending OR (
+          ${workEvidenceExistsSql("PREDECESSOR_STOP_YIELDED")}
+          AND NOT ${workEvidenceExistsSql(PREDECESSOR_STOP_RECOVERY)}
+        ))
         AND NOT ${workEvidenceExistsSql(ACTIVE_REVISION_RECOVERY)}
     ),`;
 }
@@ -1543,6 +1554,10 @@ export class PostgresWorkQueue {
       "work.idempotency_key IN (SELECT idempotency_key FROM recovering_refused_stops)";
     const predecessorStop =
       "work.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)";
+    const predecessorRecoveryCode = `CASE WHEN EXISTS (
+      SELECT 1 FROM recovering_predecessor_stops AS stop
+      WHERE stop.idempotency_key = transitioned.idempotency_key AND stop.stop_pending
+    ) THEN '${PLANNED_PREDECESSOR_STOP_RECOVERY}' ELSE '${PREDECESSOR_STOP_RECOVERY}' END`;
     const exhaustedClaim = `(work.attempt_count >= $2::integer AND NOT ${repositoryCleanupSql("work")} AND NOT ${recovering} AND NOT ${refusedStop} AND NOT ${predecessorStop})`;
     const stale = await this.client.query(
       `WITH candidates AS (
@@ -1602,7 +1617,7 @@ export class PostgresWorkQueue {
          `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_activations)
             THEN '${ACTIVE_REVISION_RECOVERY}'
             WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)
-            THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
+            THEN (${predecessorRecoveryCode}) ELSE $4::text END`,
          `COALESCE((SELECT jsonb_build_object('refusal', stop.refusal)
             FROM recovering_refused_stops AS stop
             WHERE stop.idempotency_key = transitioned.idempotency_key), '{}'::jsonb)`,
@@ -1653,7 +1668,7 @@ export class PostgresWorkQueue {
        ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${insertEvidenceCteSql(
          "",
-         `CASE WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
+         `CASE WHEN transitioned.state = 'queued' THEN (${predecessorRecoveryCode}) ELSE $4::text END`,
        )}
        SELECT transitioned.* FROM transitioned`,
       [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED", MAX_BACKOFF_MS],

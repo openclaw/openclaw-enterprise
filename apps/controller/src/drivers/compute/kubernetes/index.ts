@@ -1,3 +1,4 @@
+import type { GatewayPredecessorCompletion } from "../../../gateway/predecessor-completion.ts";
 import {
   observeWorkspaceNodeRead,
   recordWorkspaceNodeObservation,
@@ -111,6 +112,8 @@ import type {
   AgentRuntimeCredentialStatus,
   ComputeAgentProvisioningInput,
   ComputeDriver,
+  PredecessorCompletionContext,
+  PredecessorCompletionResult,
   ComputeAgentBinding,
   ComputeAgentRevisionBinding,
   ComputePendingReason,
@@ -3597,6 +3600,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return this.protectedExecution?.proxy;
   }
   private readonly nodeEnrollment: GatewayNodeEnrollment | undefined;
+  private readonly predecessorCompletion: GatewayPredecessorCompletion | undefined;
   // How long, in total across passes, preparation may wait for one setup's node to pair.
   private workspaceNodePairingWaitMs = WORKSPACE_NODE_PAIRING_WAIT_MS;
   // Pairing wait already spent per workspace node setup ID.
@@ -4190,6 +4194,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       };
       readonly protectedDriver?: InstalledDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
+      readonly predecessorCompletion?: GatewayPredecessorCompletion;
       readonly readNodeCa?: () => Promise<string | undefined>;
     } = {},
   ) {
@@ -4243,6 +4248,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.openShellAttachments = openShellAttachments?.attachments;
     this.nodeEnrollment = selection.nodeEnrollment;
+    this.predecessorCompletion = selection.predecessorCompletion;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
     this.lifecycle = new ComputeLifecycleDispatcher(lifecycleDrivers);
@@ -14876,6 +14882,53 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       agent: this.options.images.agent,
       compatibility: this.runtimeCompatibility(revision, revision.compute.admission),
     });
+  }
+
+  canWaitForPredecessorCompletion(
+    predecessor: Readonly<AgentRevision>,
+    candidate: Readonly<AgentRevision>,
+  ): boolean {
+    if (
+      !this.predecessorCompletion ||
+      !this.options.gatewayRouting ||
+      predecessor.compute.id !== this.id ||
+      candidate.compute.id !== this.id ||
+      predecessor.compute.implementation !== this.implementation ||
+      candidate.compute.implementation !== this.implementation
+    ) {
+      return false;
+    }
+    const previous = this.replacementRuntime(predecessor);
+    const next = this.replacementRuntime(candidate);
+    return (
+      previous !== undefined &&
+      next !== undefined &&
+      previous.compatibility === next.compatibility &&
+      previous.compatibility ===
+        this.runtimeCompatibility(predecessor, predecessor.compute.admission) &&
+      next.compatibility === this.runtimeCompatibility(candidate, candidate.compute.admission) &&
+      (previous.gateway !== next.gateway || previous.agent !== next.agent)
+    );
+  }
+
+  async waitForPredecessorCompletion(
+    predecessor: Readonly<AgentRevision>,
+    context: PredecessorCompletionContext,
+  ): Promise<PredecessorCompletionResult> {
+    if (!this.predecessorCompletion) {
+      return "unsupported";
+    }
+    this.validateRevisionExecution(predecessor);
+    const endpoint = this.getGatewayEndpoint(predecessor);
+    if (endpoint === undefined) {
+      return "unsupported";
+    }
+    return this.predecessorCompletion.observe(
+      endpoint,
+      `planned-replacement:${predecessor.id}`,
+      context,
+      currentComputeAbortSignal() ?? AbortSignal.timeout(15_000),
+    );
   }
 
   private replacementRuntime(revision: Readonly<AgentRevision>) {

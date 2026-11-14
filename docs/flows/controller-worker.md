@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-11
-last_updated_session: authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9
+updated: 2026-11-13
+last_updated_session: authoring-run/7afadd63-f96a-4c29-bac6-c18615964316
 ---
 
 # Controller Worker Flow
@@ -188,9 +188,9 @@ When Compute's `requiresStoppedPredecessors` capability is set,
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
 under the live claim, it commits the stop boundary, closes credentials and stops
-earlier revisions, including failed candidates. Stop failure blocks preparation.
-Drains yield `PREDECESSOR_STOP_YIELDED`; failing, superseded and stopped Work must
-finish that stop. Maintenance cannot recreate a stopped predecessor.
+earlier revisions. Stop failure blocks preparation. After the sweep, the worker
+rechecks lifecycle and deploy authority. Yielded stops resume before Work ends.
+Maintenance cannot recreate a stopped predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the
@@ -295,13 +295,12 @@ same metrics contract.
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.defer`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.retry`
 
-Pending convergence refunds the attempt and requeues unready versions on the
-cadence in
-[pending deployment progress](../reference/agents/deployment.md#pending-deployment-progress),
-others with backoff. Compute's `pendingReason` selects the pending code.
-`PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome or
-code changes. `retry` outcomes consume attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
-terminates work. See [outcomes](../reference/controller.md) and
+Pending convergence refunds the attempt. Unready versions follow the
+[progress cadence](../reference/agents/deployment.md#pending-deployment-progress)
+and use Compute's `pendingReason`. Other pending work backs off.
+`PostgresWorkQueue.defer` records changed outcomes or codes. Retries consume
+attempts. Permanent failures, exhaustion, deadlines and `AUTHENTICATION_FAILED`
+end work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
 Before publishing a permanent refusal (not a held runtime failure, the deadline
@@ -342,10 +341,11 @@ live claim; [deployment status](../reference/agents.md#deployment-status) derive
 `error` and `warnings` from that result. Completion needs no acknowledgment or
 post-commit cleanup; maintenance cannot rewrite deployment warnings.
 
-Indexed `workId` scopes progress to work; maintenance and unbound history cannot
-supply it. `getDeploymentStatus` reads
-`findWorkAttempt` with the work row in one State snapshot and projects fixed
-public explanations. Memory State has no attempt.
+In one State snapshot, `getDeploymentStatus` reads the work and its latest
+attempt by indexed `workId`, excluding maintenance and unbound history.
+`packages/occ/src/state/controller-work.ts:deploymentProgressForWork` maps
+`PREDECESSOR_COMPLETION_WAITING` to a fixed explanation. Memory State has no
+attempt.
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
@@ -366,12 +366,11 @@ Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
 On `SIGTERM` or `SIGINT`, shutdown aborts in-flight work, waits for the loop,
 removes readiness, closes the other parts and then PostgreSQL, and emits `worker.stopped`.
 
-Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
-work, failure of a still-provisioning Namespace targeted for `ready`, and audit
-evidence, so final-attempt crashes cannot strand provisioning. At the limit, one more attempt
-goes to a deployment that published its version (`ACTIVE_REVISION_RECOVERY`;
-a failed retry keeps the active runtime) or whose predecessor stop yielded
-(`PREDECESSOR_STOP_RECOVERY`).
+`PostgresWorkQueue.recoverStale()` atomically fails exhausted Work and affected
+provisioning Namespaces with audit evidence. Published versions and yielded stops
+get one recovery attempt. A committed planned handoff stays recoverable until the
+worker confirms its exact predecessor stopped. The current candidate owns retries;
+the worker then rechecks permission to deploy.
 
 ## Debugging and Verification
 
@@ -424,6 +423,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 04:51: Explain the planned replacement wait in deployment progress. (authoring-run/7afadd63-f96a-4c29-bac6-c18615964316 - 8185f9274)
 
 - 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
 

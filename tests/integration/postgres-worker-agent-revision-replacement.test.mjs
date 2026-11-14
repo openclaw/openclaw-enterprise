@@ -5,6 +5,10 @@ import {
   SandboxGatewayUnavailableError,
   SandboxRevisionUnsupportedError,
 } from "../../packages/occ/src/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { ComputeStopYieldedError } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -1499,5 +1503,512 @@ revisionTest(
     assert.deepEqual(driver.removedBy, [older.id]);
     assert.deepEqual([...driver.harnesses], [newer.id]);
     assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, newer.id);
+  },
+);
+
+async function recordPlannedReplacement(fixture, owner, previous, candidate) {
+  return fixture.state.transact(async (unit) => {
+    await unit.namespaces.lockNamespace(fixture.namespace.id);
+    await unit.agents.lockAgent(fixture.namespace.id, owner.id);
+    return unit.agents.recordPredecessorReplacement(fixture.namespace.id, owner.id, {
+      predecessorRevisionId: previous.id,
+      candidateRevisionId: candidate.id,
+      phase: "pre-stop",
+    });
+  });
+}
+
+revisionTest(
+  "planned completion preserves work and maintenance while idle Agents advance, across retry and candidate replacement",
+  async (fixture, t) => {
+    const credentials = {
+      email: "completion-progress@openclaw.local",
+      name: "Deployment operator",
+      password: randomUUID(),
+    };
+    const auth = await createPostgresControllerAuth({
+      mode: "development",
+      installationId: fixture.installation.id,
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
+      secret: `${randomUUID()}${randomUUID()}`,
+      pool: fixture.observerPool,
+    });
+    const account = await auth.createAccount(credentials);
+    const { roles } = await fixture.state.loadNativeIAMState();
+    const adminRole = roles.find(({ name }) => name === "Installation administrator");
+    assert.ok(adminRole);
+    await fixture.state.appendNativeIAMPrincipal(
+      auth.principalSeed(account, { roleId: adminRole.id, scope: "all" }),
+    );
+    const app = createFastifyApp({
+      controller: fixture.controller,
+      iamDriver: fixture.controller.selectedDriver("iam"),
+      resolveHarness: resolveApprovedHarness,
+      auditSink: fixture.state.auditSink,
+      auth,
+      development: { enabled: false },
+    });
+    t.after(() => app.close());
+    const request = await createAuthenticatedControllerRequest(app, credentials);
+    const readDeployment = async (agent, revision) => {
+      const { status, data } = await request(
+        "GET",
+        `/namespaces/${fixture.namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+      );
+      assert.equal(status, 200);
+      return data;
+    };
+
+    const owner = await fixture.agent("completion-busy", { executionMode: "dedicated" });
+    const idle = await fixture.agent("completion-idle", { executionMode: "dedicated" });
+    let completed = false;
+    let candidateReady = false;
+    let candidateId;
+    const driver = countingExclusiveCompute(fixture, {
+      ready: (revision) => revision.id !== candidateId || candidateReady,
+    });
+    const deadlines = [];
+    const events = [];
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async (_previous, context) => {
+      deadlines.push(context.deadlineAtMs);
+      assert.ok(await context.recordExecutionIdentity("executor-original"));
+      assert.equal(await context.recordExecutionIdentity("different-execution"), false);
+      if (!completed) {
+        return "waiting";
+      }
+      await context.commitStopping("executor-original");
+      return "ready";
+    };
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const second = await fixture.revision(owner, 2);
+    await recordPlannedReplacement(fixture, owner, first, second);
+    const queued = await readDeployment(owner, second);
+    assert.equal(queued.status, "queued");
+    assert.equal(queued.progress.lastAttempt, null);
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    await waitFor(
+      "completion waiting",
+      () => events.some((event) => event.code === "PREDECESSOR_COMPLETION_WAITING") || undefined,
+    );
+    // A committed Worker deferral must explain the wait to a signed-in operator.
+    const waiting = await readDeployment(owner, second);
+    assert.equal(waiting.status, "running");
+    assert.equal(waiting.error, null);
+    const expectedWait = {
+      code: "PREDECESSOR_COMPLETION_WAITING",
+      message:
+        "Waiting for the previous version to finish its active work and deliver its results before this version starts.",
+    };
+    const { code, message } = waiting.progress.lastAttempt;
+    assert.deepEqual({ code, message }, expectedWait);
+    const originalDeadline = deadlines[0];
+    const idleRevision = await fixture.revision(idle, 1);
+    await fixture.work(idleRevision, "succeeded");
+    const beforeMaintenance = driver.preparations(first);
+    await fixture.work(await enqueueMaintenance(fixture, owner, first), "succeeded");
+    assert.ok(driver.preparations(first) > beforeMaintenance);
+    assert.equal(driver.count(first), 0);
+    assert.equal(driver.preparations(second), 0);
+    await fixture.stop();
+    const third = await fixture.revision(owner, 3);
+    candidateId = third.id;
+    const kept = await recordPlannedReplacement(fixture, owner, first, third);
+    assert.equal(Date.parse(kept.completionStartedAt) + 30 * 60_000, originalDeadline);
+    const observationsBeforeRestart = deadlines.length;
+    await fixture.start(driver.compute, {
+      convergenceTimeoutMs: 1000,
+      emit: (event) => events.push(event),
+    });
+    await waitFor(
+      "resumed completion observation",
+      () => deadlines.length > observationsBeforeRestart || undefined,
+    );
+    const preparationsBeforeChurnMaintenance = driver.preparations(first);
+    await fixture.work(await enqueueMaintenance(fixture, owner, first), "succeeded");
+    assert.ok(
+      driver.preparations(first) > preparationsBeforeChurnMaintenance,
+      "candidate churn must preserve predecessor maintenance",
+    );
+    const replacementWait = await readDeployment(owner, third);
+    const { code: replacementCode, message: replacementMessage } =
+      replacementWait.progress.lastAttempt;
+    assert.deepEqual({ code: replacementCode, message: replacementMessage }, expectedWait);
+    // Spend longer in completion than the ordinary convergence budget.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(driver.count(first), 0);
+    completed = true;
+    await waitForWorkPass(
+      "candidate preparation after completion",
+      fixture,
+      third,
+      () => driver.preparations(third) > 0 || undefined,
+    );
+    assert.equal(
+      new Set(deadlines).size,
+      1,
+      "retry, restart and candidate churn cannot extend the cutoff",
+    );
+    assert.ok(driver.count(first) > 0);
+    assert.equal(driver.preparations(second), 0);
+    assert.notEqual((await fixture.currentAgent(owner)).activeRevisionId, third.id);
+    candidateReady = true;
+    await waitForWorkStateDue(fixture, third, "succeeded");
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, third.id);
+    const deployed = await readDeployment(owner, third);
+    assert.equal(deployed.status, "succeeded");
+    assert.equal(deployed.progress, null);
+  },
+);
+
+for (const recovery of [
+  "retry",
+  "reassigned",
+  "explicit Stop",
+  "legacy sweep",
+  "Stop during sweep",
+]) {
+  test(
+    `planned replacement recovers a committed predecessor stop after its only claim expires (${recovery})`,
+    { ...requiresPostgres, timeout: 60_000 },
+    async (context) => {
+      const fixture = await setup(context, { maxAttempts: 1 });
+      const owner = await fixture.agent("completion-handoff-recovery", {
+        executionMode: "dedicated",
+      });
+      const driver = countingExclusiveCompute(fixture);
+      const events = [];
+      let committed = false;
+      let releaseHandoff;
+      const handoff = new Promise((resolve) => {
+        releaseHandoff = resolve;
+      });
+      driver.compute.canWaitForPredecessorCompletion = () => true;
+      driver.compute.waitForPredecessorCompletion = async (_previous, handoffContext) => {
+        assert.equal(await handoffContext.recordExecutionIdentity("executor-committed"), true);
+        await handoffContext.commitStopping("executor-committed");
+        committed = true;
+        await handoff;
+        return "ready";
+      };
+      await fixture.start(driver.compute);
+      const earlier = await fixture.revision(owner, 1);
+      await fixture.work(earlier, "succeeded");
+      const first = await fixture.revision(owner, 2);
+      await fixture.work(first, "succeeded");
+      await fixture.stop();
+      const earlierStops = driver.count(earlier);
+      assert.equal(earlierStops, 1);
+      const candidate = await fixture.revision(owner, 3);
+      await recordPlannedReplacement(fixture, owner, first, candidate);
+      await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+      let claim;
+      try {
+        await waitFor("committed handoff before predecessor stop", () => committed || undefined);
+        const boundary = await fixture.state.read((view) =>
+          view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
+        );
+        assert.equal(boundary?.phase, "stopping");
+        assert.equal(boundary.predecessorRevisionId, first.id);
+        assert.equal(boundary.candidateRevisionId, candidate.id);
+        assert.equal(boundary.executionIdentity, "executor-committed");
+        claim = await fixture.work(candidate, "claimed");
+        assert.equal(claim.attempt_count, 1);
+        assert.equal(driver.count(first), 0);
+        assert.equal(driver.preparations(candidate), 0);
+      } finally {
+        const stopping = fixture.stop();
+        releaseHandoff();
+        await stopping;
+      }
+      assert.ok(events.some((event) => event.event === "worker.pass-interrupted"));
+      assert.equal((await fixture.expireClaim(candidate, claim.claim_token)).rowCount, 1);
+      if (recovery === "retry" || recovery === "reassigned") {
+        await denyDeploy(fixture, owner);
+      }
+      const stop = driver.compute.stopRevision.bind(driver.compute);
+      let stopAttempts = 0;
+      let sweepAttempts = 0;
+      let newer;
+      let stopWork;
+      let releaseRetry;
+      const retryInFlight = new Promise((resolve) => {
+        releaseRetry = resolve;
+      });
+      driver.compute.stopRevision = async (revision) => {
+        if (
+          revision.id === earlier.id &&
+          recovery === "Stop during sweep" &&
+          stopWork === undefined
+        ) {
+          stopWork = await fixture.requestStop(owner);
+        }
+        if (revision.id === earlier.id && recovery === "legacy sweep") {
+          sweepAttempts += 1;
+          if (sweepAttempts === 1) {
+            throw new ComputeStopYieldedError("older predecessor drain yielded");
+          }
+          if (sweepAttempts === 2) {
+            await retryInFlight;
+            return;
+          }
+        }
+        if (
+          revision.id === first.id &&
+          recovery !== "legacy sweep" &&
+          recovery !== "Stop during sweep"
+        ) {
+          stopAttempts += 1;
+          if (stopAttempts === 1 && recovery === "reassigned") {
+            newer = await fixture.revision(owner, 4);
+            await recordPlannedReplacement(fixture, owner, first, newer);
+          } else if (stopAttempts === 1 && recovery === "explicit Stop") {
+            stopWork = await fixture.requestStop(owner);
+          } else if (stopAttempts === 1) {
+            throw new Error("temporary predecessor stop outage");
+          } else if (stopAttempts === 2 && recovery === "retry") {
+            throw new ComputeStopYieldedError("predecessor drain yielded");
+          } else if (stopAttempts === 3 && recovery === "retry") {
+            await retryInFlight;
+            return;
+          }
+        }
+        await stop(revision);
+      };
+      await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+      if (recovery === "retry") {
+        let retryClaim;
+        try {
+          await waitFor("a renewed stop attempt after error and yield", () =>
+            stopAttempts === 3 ? true : undefined,
+          );
+          retryClaim = await fixture.work(candidate, "claimed");
+          assert.equal(retryClaim.attempt_count, 1);
+          assert.equal(driver.running.has(first.id), true);
+        } finally {
+          const stopping = fixture.stop();
+          releaseRetry();
+          await stopping;
+        }
+        assert.equal((await fixture.expireClaim(candidate, retryClaim.claim_token)).rowCount, 1);
+        await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+      }
+      if (recovery === "legacy sweep") {
+        let sweepClaim;
+        try {
+          await waitFor("legacy sweep reclaimed after yield", () =>
+            sweepAttempts === 2 ? true : undefined,
+          );
+          sweepClaim = await fixture.work(candidate, "claimed");
+          assert.equal(sweepClaim.attempt_count, 1);
+          assert.equal(driver.preparations(candidate), 0);
+          assert.ok(events.some((event) => event.code === "PREDECESSOR_STOP_YIELDED"));
+        } finally {
+          const stopping = fixture.stop();
+          releaseRetry();
+          await stopping;
+        }
+        assert.equal((await fixture.expireClaim(candidate, sweepClaim.claim_token)).rowCount, 1);
+        await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+        const terminal = await waitFor("legacy sweep deployment terminal state", async () => {
+          const { rows } = await fixture.workResult(candidate);
+          return rows[0].reason_code || undefined;
+        });
+        assert.equal(
+          terminal,
+          "REVISION_ACTIVATED",
+          "exact recovery must preserve the legacy grant",
+        );
+        assert.equal(sweepAttempts, 3);
+        assert.ok(driver.preparations(candidate) > 0);
+        return;
+      }
+      if (recovery === "explicit Stop" || recovery === "Stop during sweep") {
+        await fixture.work(candidate, "succeeded");
+        assert.ok(stopWork);
+        await fixture.work(stopWork, "succeeded");
+        assert.equal(driver.preparations(candidate), 0, "Stop must prevent candidate preparation");
+        assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
+        assert.equal(driver.running.has(first.id), false);
+        assert.equal(driver.running.has(candidate.id), false);
+        return;
+      }
+      await fixture.work(candidate, "failed_permanent");
+      if (newer !== undefined) {
+        await fixture.work(newer, "failed_permanent");
+        assert.equal(driver.preparations(newer), 0);
+      }
+      const completedBoundary = await fixture.state.read((view) =>
+        view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
+      );
+      assert.equal(completedBoundary.candidateRevisionId, newer?.id ?? candidate.id);
+      assert.equal(completedBoundary.predecessorRevisionId, first.id);
+      assert.equal(completedBoundary.stopCompleted, true);
+      assert.equal(stopAttempts, recovery === "retry" ? 4 : 1);
+      const pending = events.filter((event) => event.code === "PLANNED_PREDECESSOR_STOP_PENDING");
+      assert.equal(pending.length, recovery === "retry" ? 1 : 0);
+      const yields = events.filter((event) => event.code === "PLANNED_PREDECESSOR_STOP_YIELDED");
+      assert.equal(yields.length, recovery === "retry" ? 1 : 0);
+      if (recovery === "retry") {
+        assert.equal(yields[0].stopYields, 1);
+      }
+      assert.equal(driver.preparations(candidate), 0);
+      assert.equal(driver.count(first), 1, "recovery must stop the exact committed predecessor");
+      assert.equal(driver.running.has(first.id), false);
+      assert.equal(
+        driver.count(earlier),
+        earlierStops,
+        "recovery must leave other predecessors alone",
+      );
+      assert.equal(
+        (await fixture.workResult(candidate)).rows[0].reason_code,
+        "AUTHORIZATION_DENIED",
+      );
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+    },
+  );
+}
+
+revisionTest(
+  "a published replacement keeps a deploy denial discovered during its recovery sweep",
+  async (fixture) => {
+    const owner = await fixture.agent("published-sweep-denial", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    await fixture.start(driver.compute);
+    const predecessor = await fixture.revision(owner, 1);
+    await fixture.work(predecessor, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+    await fixture.state.transact(async (unit) => {
+      await unit.namespaces.lockNamespace(fixture.namespace.id);
+      await unit.agents.lockAgent(fixture.namespace.id, owner.id);
+      const published = await unit.agents.compareAndSetActiveRevision(
+        fixture.namespace.id,
+        owner.id,
+        predecessor.id,
+        candidate.id,
+      );
+      assert.equal(published?.activeRevisionId, candidate.id);
+    });
+
+    const stop = driver.compute.stopRevision.bind(driver.compute);
+    driver.compute.stopRevision = async (revision) => {
+      if (revision.id === predecessor.id) {
+        await denyDeploy(fixture, owner);
+      }
+      await stop(revision);
+    };
+    const events = [];
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    const first = await waitFor("first published recovery outcome", () =>
+      events.find(
+        (event) => event.event === "worker.completed" && event.workId === candidate.idempotencyKey,
+      ),
+    );
+    assert.equal(first.code, "AUTHORIZATION_DENIED");
+    await assertWorkEnds(fixture, candidate, "failed_permanent", "AUTHORIZATION_DENIED");
+    assert.equal(driver.preparations(candidate), 0);
+    const { rows } = await fixture.observerPool.query(
+      `SELECT actor_id, details->'__occAuditMetadata'->>'reasonCode' AS reason_code,
+              details->'__occAuditMetadata'->'authorization' AS authorization
+       FROM occ.audit_events
+       WHERE namespace_id = $1 AND kind = 'authorization_denial' AND outcome = 'denied'
+         AND action = 'openclaw.agents.deploy' AND resource_id = $2`,
+      [fixture.namespace.id, owner.id],
+    );
+    assert.deepEqual(rows, [
+      {
+        actor_id: fixture.actor.id,
+        reason_code: "AUTHORIZATION_DENIED",
+        authorization: {
+          action: "deploy",
+          principalId: fixture.actor.id,
+          resource: { kind: "agent", id: owner.id, namespaceId: fixture.namespace.id },
+        },
+      },
+    ]);
+  },
+);
+
+revisionTest(
+  "an expired planned-completion cutoff forces the shared stop before preparing the successor",
+  async (fixture) => {
+    const owner = await fixture.agent("completion-expired", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    const events = [];
+    let observations = 0;
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async (_previous, context) => {
+      observations += 1;
+      assert.ok(await context.recordExecutionIdentity("executor-busy"));
+      return "waiting";
+    };
+    await fixture.start(driver.compute);
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+    await recordPlannedReplacement(fixture, owner, first, candidate);
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    await waitFor(
+      "busy predecessor lease",
+      () => events.some((event) => event.code === "PREDECESSOR_COMPLETION_WAITING") || undefined,
+    );
+    await fixture.stop();
+    await fixture.observerPool.query(
+      `UPDATE occ.agents SET predecessor_replacement = predecessor_replacement ||
+       jsonb_build_object('completionStartedAt', clock_timestamp() - interval '31 minutes',
+                         'startedAt', clock_timestamp() - interval '31 minutes')
+     WHERE namespace_id = $1 AND id = $2`,
+      [fixture.namespace.id, owner.id],
+    );
+    const before = observations;
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    await waitForWorkStateDue(fixture, candidate, "succeeded");
+    assert.equal(observations, before, "expiry must not renew or restart the wait");
+    assert.ok(driver.count(first) > 0);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.event === "worker.predecessor_completion" && event.outcome === "deadline-exhausted",
+      ),
+    );
+    assert.equal(
+      events.some(
+        (event) => event.event === "worker.predecessor_completion" && event.outcome === "ready",
+      ),
+      false,
+    );
+  },
+);
+
+revisionTest(
+  "explicit Stop preempts planned completion without preparing the candidate",
+  async (fixture) => {
+    const owner = await fixture.agent("completion-stop", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    const events = [];
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async () => "waiting";
+    await fixture.start(driver.compute);
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+    await recordPlannedReplacement(fixture, owner, first, candidate);
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    await waitFor(
+      "completion waiting before Stop",
+      () => events.some((event) => event.code === "PREDECESSOR_COMPLETION_WAITING") || undefined,
+    );
+    const stop = await fixture.requestStop(owner);
+    await waitForWorkStateDue(fixture, stop, "succeeded");
+    assert.ok(driver.count(first) > 0);
+    assert.equal(driver.preparations(candidate), 0);
   },
 );

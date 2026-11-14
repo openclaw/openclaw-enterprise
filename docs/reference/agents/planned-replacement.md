@@ -20,3 +20,20 @@ Replacement closes earlier credential sessions and stops every earlier revision,
 including failed candidates, before preparing its successor. A failed stop blocks
 the successor. Repeated stops must confirm release while preserving workspace data.
 This policy can cause downtime; recovery deploys a newer revision.
+
+## Bounded predecessor completion
+
+The worker owns one predecessor operation on the Agent. Eligible replacement
+passes preserve its completion start and execution identity across retries,
+Controller restarts and candidate changes. They renew a short Gateway lease and
+yield the existing Work claim while admitted tasks or delivery remain active.
+This interval, capped at 30 minutes, does not consume the ordinary convergence
+budget. Other Agents continue independently.
+
+A ready observation is not permission to stop. The Driver calls the worker's
+claim-checked `commitStopping` callback, then commits a handoff to that exact
+Gateway process. This is the same durable boundary used by ordinary replacement;
+no separate completion worker or queue is introduced. An unconfirmed handoff
+continues normal bounded stopping without claiming task completion. Expiry,
+unsupported runtimes and a changed Gateway process also continue normal stopping.
+Stop, deletion and authorization withdrawal do not wait for task completion.

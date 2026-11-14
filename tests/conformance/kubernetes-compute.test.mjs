@@ -1239,6 +1239,7 @@ function dedicatedFirstDeployFixture({
     },
   };
   revision.configuration = admitLoggingConfiguration(operatorSuppliedConfiguration, "info");
+  revision.compute.runtimeInputs = driver.snapshotRuntimeInputs(revision);
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const agentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
   const { objects, templates, key, save, read, clients, podPatches, markReady } =
@@ -1408,6 +1409,56 @@ test("shared OpenAI provider leaves a roster-selected Anthropic provider unchang
   assert.equal(providers.anthropic.baseUrl, "https://api.anthropic.com");
   assert.equal(providers.openai.baseUrl, "https://unselected.example.test/v1");
   assert.equal(fixture.revision.compute.admission, undefined);
+});
+
+test("only compatible admitted image changes qualify for completion waiting", () => {
+  const fixture = dedicatedFirstDeployFixture();
+  const selection = {
+    id: fixture.driver.id,
+    implementation: fixture.driver.implementation,
+    predecessorCompletion: { observe: async () => "waiting" },
+  };
+  const driver = new KubernetesComputeDriver(
+    {
+      ...fixture.driver.options,
+      images: {
+        ...fixture.driver.options.images,
+        gateway: "gateway:candidate",
+        agent: "agent:candidate",
+      },
+    },
+    selection,
+  );
+  const candidate = structuredClone(fixture.revision);
+  candidate.id = "candidate-image-revision";
+  candidate.revision += 1;
+  candidate.createdAt = new Date().toISOString();
+  candidate.compute.runtimeInputs = driver.snapshotRuntimeInputs(candidate);
+  assert.equal(driver.canWaitForPredecessorCompletion(fixture.revision, candidate), true);
+  const legacy = structuredClone(fixture.revision);
+  delete legacy.compute.runtimeInputs;
+  assert.equal(driver.canWaitForPredecessorCompletion(legacy, candidate), false);
+  assert.equal(driver.canWaitForPredecessorCompletion(fixture.revision, fixture.revision), false);
+  const changed = structuredClone(candidate);
+  changed.configuration = { ...changed.configuration, messages: { responsePrefix: "changed" } };
+  changed.compute.runtimeInputs = driver.snapshotRuntimeInputs(changed);
+  assert.equal(driver.canWaitForPredecessorCompletion(fixture.revision, changed), false);
+  const differentInstallation = new KubernetesComputeDriver(
+    {
+      ...driver.options,
+      network: { ...driver.options.network, gatewayPort: driver.options.network.gatewayPort + 1 },
+    },
+    selection,
+  );
+  assert.equal(
+    differentInstallation.canWaitForPredecessorCompletion(fixture.revision, candidate),
+    false,
+  );
+  const otherDriver = new KubernetesComputeDriver(driver.options, {
+    ...selection,
+    id: "another-driver",
+  });
+  assert.equal(otherDriver.canWaitForPredecessorCompletion(fixture.revision, candidate), false);
 });
 
 test("invalid runtime snapshots cannot fall back to current images", async () => {
@@ -2853,7 +2904,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
       };
       const view = {
         namespaces: { findNamespace: () => tenant },
-        agents: { findAgent: () => agent },
+        agents: { findAgent: () => agent, findPredecessorReplacement: () => undefined },
         revisions: {
           findRevision: () => structuredClone(pendingRevision),
           listRevisionMetadata: () => [pendingRevision],

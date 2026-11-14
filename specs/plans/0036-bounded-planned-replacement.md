@@ -63,10 +63,10 @@ default runtime pin is not advanced before the candidate runtime is qualified.
 | ------------------------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | Wait for tasks and final delivery          | Authenticated Gateway RPC, actual task and completion handoff                   | Transport with a held admitted root passed; real Codex task pending                   |
 | Reject new work; permit continuations      | Gateway admission and approval paths during the same wait                       | Existing continuation contracts and real chat rejection passed; full workflow pending |
-| Keep a fixed deadline                      | PostgreSQL restart, retry and successor replacement                             | Gateway cutoff passed; worker integration pending                                     |
-| Preserve authority and stop intent         | Revocation, cancellation and worker interruption through regular Agent workflow | Shared stop boundary and legacy adoption passed; wait integration pending             |
+| Keep a fixed deadline                      | PostgreSQL restart, retry and successor replacement                             | Gateway cutoff and PostgreSQL restart/churn tests passed                              |
+| Preserve authority and stop intent         | Revocation, cancellation and worker interruption through regular Agent workflow | Shared boundary, explicit Stop, legacy adoption and exact execution identity passed   |
 | Upgrade busy and idle Agents independently | Retained isolated Kubernetes installation, both Gateway and Harness replaced    | Not run                                                                               |
-| Force progress after deadline              | Same release path with outstanding work; no uncertain replay                    | Not run                                                                               |
+| Force progress after deadline              | Same release path with outstanding work; no uncertain replay                    | Persisted-expiry worker test passed; actual release path pending                      |
 | Preserve ordinary operations               | Old conversation, scheduled task and unsupported-runtime replacement            | Not run                                                                               |
 
 ## Delivery record
@@ -113,3 +113,14 @@ default runtime pin is not advanced before the candidate runtime is qualified.
 ## Changelog
 
 - 2026-11-10: Started implementation from the inspected source baselines.
+
+- Bounded worker integration: 44 PostgreSQL replacement tests passed. Independent
+  review found that candidate churn could supersede the serving revision's
+  maintenance too early. A new database regression reproduced it, then passed
+  after selecting the recorded candidate first. Seven affected cases passed
+  again, including fixed deadlines, exact identity, explicit Stop, expiry and
+  legacy behavior. Fifteen native-admin cases and five actual HTTP admission
+  cases passed. Protocol review confirmed cross-connection renewal and the
+  independent machine route; the real Envoy/Codex release chain is still pending.
+- Drafts: Gateway #196972, shared boundary #5385, admitted runtime images #5408.
+  Worker integration and release-helper changes remain separate publication slices.

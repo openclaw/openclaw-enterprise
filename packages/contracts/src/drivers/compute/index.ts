@@ -202,6 +202,17 @@ export interface ComputePreflightResult {
 export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
+/** Completion observation never authorizes a stop without the Work owner's commit. */
+export interface PredecessorCompletionContext {
+  readonly deadlineAtMs: number;
+  readonly expectedExecutionIdentity?: string;
+  recordExecutionIdentity(identity: string): Promise<boolean>;
+  commitStopping(identity: string): Promise<void>;
+}
+
+export type PredecessorCompletionResult =
+  "waiting" | "ready" | "unsupported" | "runtime-changed" | "handoff-unconfirmed";
+
 export interface ComputeDriver extends Driver {
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
@@ -248,6 +259,16 @@ export interface ComputeDriver extends Driver {
   admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
   /** Optional immutable launch inputs, separate from execution authority. No side effects. */
   snapshotRuntimeInputs?(revision: Readonly<AgentRevision>): string | undefined;
+  /** Pure eligibility check; does not admit work or authorize retention. */
+  canWaitForPredecessorCompletion?(
+    predecessor: Readonly<AgentRevision>,
+    candidate: Readonly<AgentRevision>,
+  ): boolean;
+  /** One bounded observation/renewal; the worker yields its claim between calls. */
+  waitForPredecessorCompletion?(
+    predecessor: Readonly<AgentRevision>,
+    context: PredecessorCompletionContext,
+  ): Promise<PredecessorCompletionResult>;
   /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive
