@@ -55,7 +55,7 @@
     "tests/conformance/runtime-logs-content.test.mjs",
     "tests/conformance/runtime-logs-container-wire.test.ts",
     "tests/conformance/node-enrollment-client.test.mjs",
-    "tests/integration/startup-ipv6-loopback.test.mjs",
+    "tests/integration/startup-ipv6-loopback.test.ts",
     "tests/docs/generated-api-reference.test.ts",
     "tests/integration/service-api-keys.test.ts",
     "tests/integration/driver-plugin-installation.test.ts",
@@ -100,7 +100,7 @@
     "tests/conformance/sandbox-policy-persistence.test.ts",
     "tests/conformance/contracts.test.mjs",
     "tests/conformance/presets.test.ts",
-    "tests/integration/production-healthcheck.test.mjs",
+    "tests/integration/production-healthcheck.test.ts",
     "tests/conformance/pr-status.test.ts",
     "tests/conformance/codex-stderr-filter.test.ts",
     "tests/docs/docs-server.test.mjs",
@@ -477,7 +477,7 @@
       "path": "tests/integration/production-controller-security.test.mjs"
     },
     {
-      "path": "tests/integration/production-healthcheck.test.mjs"
+      "path": "tests/integration/production-healthcheck.test.ts"
     },
     {
       "path": "tests/integration/production-image-upgrade.test.ts"
@@ -528,13 +528,13 @@
       "path": "tests/integration/service-api-keys.test.ts"
     },
     {
-      "path": "tests/integration/startup-ipv6-loopback.test.mjs"
+      "path": "tests/integration/startup-ipv6-loopback.test.ts"
     },
     {
       "path": "tests/integration/common-logging.test.mjs"
     },
     {
-      "path": "tests/integration/dev-entry-cdpath.test.mjs",
+      "path": "tests/integration/dev-entry-cdpath.test.ts",
       "expectedTests": [
         "development wrappers resolve relative paths without changing CDPATH",
         "k3d and CI tool setup resolve the checkout without CDPATH"

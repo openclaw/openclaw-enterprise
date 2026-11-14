@@ -5,10 +5,27 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
+
+function runProbe(environment: NodeJS.ProcessEnv, readiness?: "ready") {
+  return execute(
+    process.execPath,
+    ["scripts/production-healthcheck.mjs", "worker", ...(readiness === "ready" ? ["ready"] : [])],
+    { cwd: repository, env: environment, encoding: "utf8" },
+  );
+}
+
+function reportsProbeError(error: unknown, message: RegExp): boolean {
+  return (
+    error instanceof Error &&
+    "stderr" in error &&
+    typeof error.stderr === "string" &&
+    message.test(error.stderr)
+  );
+}
 
 test("production worker readiness rejects a stale health marker that still satisfies liveness", async (t) => {
   const directory = await temporaryDirectory(t, "occ-worker-health-");
@@ -16,19 +33,13 @@ test("production worker readiness rejects a stale health marker that still satis
   await writeFile(marker, "ready\n", { encoding: "utf8", mode: 0o600 });
   const stale = new Date(Date.now() - 60_000);
   await utimes(marker, stale, stale);
-  const environment = { ...process.env, OCC_WORKER_READINESS_PATH: marker };
+  const environment: NodeJS.ProcessEnv = { ...process.env, OCC_WORKER_READINESS_PATH: marker };
+  delete environment.OCC_WORKER_LIVENESS_PATH;
 
   // An existing marker proves the process initialized, not that queue health is still current.
-  await execute(process.execPath, ["scripts/production-healthcheck.mjs", "worker"], {
-    cwd: repository,
-    env: environment,
-  });
-  await assert.rejects(
-    execute(process.execPath, ["scripts/production-healthcheck.mjs", "worker", "ready"], {
-      cwd: repository,
-      env: environment,
-    }),
-    ({ stderr }) => /recent healthy database observation/.test(stderr),
+  await runProbe(environment);
+  await assert.rejects(runProbe(environment, "ready"), (error: unknown) =>
+    reportsProbeError(error, /recent healthy database observation/),
   );
 });
 
@@ -38,16 +49,12 @@ test("production worker liveness fails once the run loop stops reporting progres
   const alive = join(directory, "alive");
   await writeFile(ready, "ready\n", { encoding: "utf8", mode: 0o600 });
   await writeFile(alive, "alive\n", { encoding: "utf8", mode: 0o600 });
-  const environment = {
+  const environment: NodeJS.ProcessEnv = {
     ...process.env,
     OCC_WORKER_READINESS_PATH: ready,
     OCC_WORKER_LIVENESS_PATH: alive,
   };
-  const live = () =>
-    execute(process.execPath, ["scripts/production-healthcheck.mjs", "worker"], {
-      cwd: repository,
-      env: environment,
-    });
+  const live = () => runProbe(environment);
 
   await live();
   // A loop waiting out a database outage keeps moving, so a stale or missing readiness
@@ -59,7 +66,9 @@ test("production worker liveness fails once the run loop stops reporting progres
   await live();
   // A loop stuck on one await (a query on a silent connection) stops reporting progress.
   await utimes(alive, outage, outage);
-  await assert.rejects(live(), ({ stderr }) => /run loop has not made progress/.test(stderr));
+  await assert.rejects(live(), (error: unknown) =>
+    reportsProbeError(error, /run loop has not made progress/),
+  );
 });
 
 for (const mode of ["readiness", "liveness", "legacy liveness"]) {
@@ -67,26 +76,21 @@ for (const mode of ["readiness", "liveness", "legacy liveness"]) {
     const directory = await temporaryDirectory(t, "occ-worker-health-");
     const marker = join(directory, "marker");
     await mkdir(marker);
-    const environment = { ...process.env, OCC_WORKER_READINESS_PATH: marker };
+    const environment: NodeJS.ProcessEnv = { ...process.env, OCC_WORKER_READINESS_PATH: marker };
     delete environment.OCC_WORKER_LIVENESS_PATH;
     if (mode === "liveness") {
       environment.OCC_WORKER_LIVENESS_PATH = marker;
     }
-    const probe = () =>
-      execute(
-        process.execPath,
-        [
-          "scripts/production-healthcheck.mjs",
-          "worker",
-          ...(mode === "readiness" ? ["ready"] : []),
-        ],
-        { cwd: repository, env: environment },
-      );
+    const probe = () => runProbe(environment, mode === "readiness" ? "ready" : undefined);
 
     // No worker observation exists: a freshly mounted or replaced directory is not a marker.
     await assert.rejects(
       probe(),
-      ({ code, stderr }) => code === 1 && /marker must be a regular file/.test(stderr),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === 1 &&
+        reportsProbeError(error, /marker must be a regular file/),
     );
     await rm(marker, { recursive: true });
     await writeFile(marker, "healthy\n", { mode: 0o600 });

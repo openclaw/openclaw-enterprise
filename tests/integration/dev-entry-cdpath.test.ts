@@ -5,9 +5,21 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
+
+function shellEnvironment(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.BASH_ENV;
+  delete env.ENV;
+  delete env.SHELLOPTS;
+  return { ...env, ...overrides };
+}
+
+function runBash(args: readonly string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
+  return spawnSync("/bin/bash", args, { ...options, encoding: "utf8" });
+}
 
 test("development wrappers resolve relative paths without changing CDPATH", async (t) => {
   // Spaces and an alternate scripts directory exercise real shell path lookup;
@@ -26,7 +38,7 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
     cwd: repository,
     encoding: "utf8",
   });
-  assert.equal(build.status, 0, build.stderr || build.error?.message);
+  assert.equal(build.status, 0, build.stderr || build.error?.message || "Go CLI build failed");
   const observed = join(directory, "child-cdpath");
   // Observe the delegation environment, then execute the compiled CLI unchanged.
   await writeCommand(
@@ -34,28 +46,24 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
     "occ",
     'printf "%s" "$CDPATH" > "$TEST_CDPATH_OUTPUT"\nexec "$TEST_CDPATH_CLI" "$@"\n',
   );
+  const wrappers: readonly [script: "dev-up" | "dev-down", driver: "docker" | "kubernetes"][] = [
+    ["dev-up", "docker"],
+    ["dev-up", "kubernetes"],
+    ["dev-down", "docker"],
+  ];
   for (const cdpath of ["", ".:", search]) {
-    const env = {
-      ...process.env,
+    const env = shellEnvironment({
       CDPATH: cdpath,
       TEST_CDPATH_OUTPUT: observed,
       TEST_CDPATH_CLI: cli,
-    };
-    delete env.BASH_ENV;
-    delete env.ENV;
-    delete env.SHELLOPTS;
-    for (const [script, driver] of [
-      ["dev-up", "docker"],
-      ["dev-up", "kubernetes"],
-      ["dev-down", "docker"],
-    ]) {
+    });
+    for (const [script, driver] of wrappers) {
       await rm(observed, { force: true });
-      const result = spawnSync("/bin/bash", [`scripts/${script}`, "--help"], {
+      const result = runBash([`scripts/${script}`, "--help"], {
         cwd: checkout,
-        encoding: "utf8",
         env: { ...env, OCC_DEVELOPMENT_COMPUTE_DRIVER: driver },
       });
-      assert.equal(result.status, 0, result.stderr || result.error?.message);
+      assert.equal(result.status, 0, result.stderr || result.error?.message || script);
       assert.match(result.stdout + result.stderr, /usage:/i);
       assert.doesNotMatch(result.stdout + result.stderr, /No such file or directory/);
       if (script === "dev-down" || driver === "kubernetes") {
@@ -69,24 +77,16 @@ test("docker dev-up accepts --key-output=PATH", () => {
   // Kubernetes Compute execs occ, whose flags accept either spelling. Docker
   // Compute parses this script itself and used to report the equals form as an
   // unknown option before any engine or Compose work.
-  const env = { ...process.env, OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker" };
-  delete env.BASH_ENV;
-  delete env.ENV;
-  delete env.SHELLOPTS;
-  const empty = spawnSync("/bin/bash", ["scripts/dev-up", "--key-output="], {
+  const options = {
     cwd: repository,
-    encoding: "utf8",
-    env,
-  });
+    env: shellEnvironment({ OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker" }),
+  };
+  const empty = runBash(["scripts/dev-up", "--key-output="], options);
   assert.equal(empty.status, 2, empty.stderr);
   assert.match(empty.stderr, /--key-output requires a path/);
   assert.doesNotMatch(empty.stderr, /unknown option/);
 
-  const equals = spawnSync("/bin/bash", ["scripts/dev-up", "--key-output=relative-key"], {
-    cwd: repository,
-    encoding: "utf8",
-    env,
-  });
+  const equals = runBash(["scripts/dev-up", "--key-output=relative-key"], options);
   assert.notEqual(equals.status, 0, equals.stderr);
   assert.doesNotMatch(equals.stderr ?? "", /unknown option/);
   assert.match(equals.stderr ?? "", /key output must be an absolute path|OCC CLI is required/);
@@ -111,32 +111,29 @@ test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
   await writeFile(startup, `trap 'pwd -P > "$TEST_WRAPPER_CWD"' EXIT\n`);
   for (const cdpath of ["", ".:", search]) {
     // setup-tools checks the Node on PATH before its profile, so put this Node first.
-    const env = {
-      ...process.env,
+    const env = shellEnvironment({
       BASH_ENV: startup,
       CDPATH: cdpath,
       PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH}`,
       RUNNER_TEMP: join(directory, "runner"),
       TEST_WRAPPER_CWD: exitDirectory,
-    };
-    delete env.ENV;
-    delete env.SHELLOPTS;
+    });
     delete env.GITHUB_ENV;
-    const run = async (args) => {
+    const run = async (script: string, argument: string) => {
       await rm(exitDirectory, { force: true });
-      const result = spawnSync("/bin/bash", args, { cwd: checkout, encoding: "utf8", env });
-      const context = `CDPATH=${cdpath}: ${result.stderr || result.error?.message}`;
+      const result = runBash([script, argument], { cwd: checkout, env });
+      const context = `CDPATH=${cdpath}: ${result.stderr || result.error?.message || script}`;
       assert.equal(
         await readFile(exitDirectory, "utf8"),
         `${expected}\n`,
-        `CDPATH=${cdpath}: ${args[0]} left the checkout`,
+        `CDPATH=${cdpath}: ${script} left the checkout`,
       );
       return { ...result, context };
     };
-    const k3d = await run(["scripts/k3d", "help"]);
+    const k3d = await run("scripts/k3d", "help");
     assert.equal(k3d.status, 0, k3d.context);
     assert.match(k3d.stdout, /^usage: \.\/scripts\/k3d/);
-    const setup = await run(["scripts/ci/setup-tools.sh", "unknown-profile"]);
+    const setup = await run("scripts/ci/setup-tools.sh", "unknown-profile");
     assert.equal(setup.status, 64, setup.context);
     assert.equal(setup.stderr, "Unknown setup profile: unknown-profile\n");
   }
@@ -146,26 +143,23 @@ test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
 // as wildcard requests; otherwise an explicitly cached affected runtime wins.
 test("CI cached Node requests reject affected patch releases", () => {
   const helper = join(repository, ".github/actions/setup-pnpm-store-cache/ensure-node.sh");
-  for (const [version, accepted] of [
-    ["24.22.0", false],
-    ["24.22.1", true],
-    ["26.12.0", false],
-    ["26.12.1", true],
-  ]) {
-    const [major, minor] = version.split(".");
-    for (const request of [version, `${major}.${minor}`, major, `${major}.x`, ""]) {
-      const result = spawnSync(
-        "/bin/bash",
-        [
-          "-c",
-          'source "$1"; openclaw_node_version_matches "$2" "$3"',
-          "node-floor",
-          helper,
-          version,
-          request,
-        ],
-        { encoding: "utf8" },
-      );
+  const versions: readonly [major: number, minor: number, patch: number, accepted: boolean][] = [
+    [24, 22, 0, false],
+    [24, 22, 1, true],
+    [26, 12, 0, false],
+    [26, 12, 1, true],
+  ];
+  for (const [major, minor, patch, accepted] of versions) {
+    const version = `${major}.${minor}.${patch}`;
+    for (const request of [version, `${major}.${minor}`, String(major), `${major}.x`, ""]) {
+      const result = runBash([
+        "-c",
+        'source "$1"; openclaw_node_version_matches "$2" "$3"',
+        "node-floor",
+        helper,
+        version,
+        request,
+      ]);
       assert.equal(
         result.status,
         accepted ? 0 : 1,
