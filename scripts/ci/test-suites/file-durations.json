@@ -161,7 +161,7 @@
     "tests/integration/bootstrap-output.test.mjs": 100,
     "tests/integration/bootstrap-volume.test.ts": 5000,
     "tests/integration/caller-denial-api.test.ts": 1200,
-    "tests/integration/ci-cleanup.test.mjs": 17100,
+    "tests/integration/ci-cleanup.test.ts": 17100,
     "tests/integration/ci-download-pinned.test.ts": 7200,
     "tests/integration/ci-image-config-digest.test.mjs": 100,
     "tests/integration/ci-image-pull.test.ts": 1200,

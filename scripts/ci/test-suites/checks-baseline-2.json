@@ -93,7 +93,7 @@
     "tests/integration/ssh-compute-startup.test.mjs",
     "tests/integration/oidc-login-transport.test.ts",
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
-    "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/ci-cleanup.test.ts",
     "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.ts",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
@@ -339,7 +339,7 @@
       "path": "tests/integration/full-integration-preflight.test.mjs"
     },
     {
-      "path": "tests/integration/ci-cleanup.test.mjs"
+      "path": "tests/integration/ci-cleanup.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare-postgres.test.ts"
