@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
-import type { ClientCommand } from "../fixtures/repository-credentials/clients.ts";
+import type {
+  ClientCommand,
+  CredentialClientFixture,
+  StartCredentialClientFixture,
+} from "../fixtures/repository-credentials/clients.ts";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
@@ -16,7 +20,7 @@ import {
   run as runProcess,
 } from "../fixtures/repository-credentials/process.mjs";
 import {
-  startCredentialServiceFixture,
+  startCredentialServiceFixture as startService,
   gatewayRequest as requestGateway,
 } from "../fixtures/repository-credentials/service.mjs";
 import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.ts";
@@ -26,13 +30,20 @@ import {
   type ResourceCleanup,
 } from "../fixtures/repository-credentials/cleanup.ts";
 
+type GhFixture = Pick<CredentialClientFixture, "tls" | "github"> &
+  Parameters<typeof exerciseGit>[1] &
+  Parameters<typeof exerciseGh>[0];
+const startCredentialServiceFixture: (
+  ...args: Parameters<StartCredentialClientFixture>
+) => Promise<GhFixture | undefined> = startService;
+
 type GatewayOptions = {
   method?: string;
   body?: JsonValue | undefined;
   headers?: Record<string, string>;
 };
 const gatewayRequest: (
-  fixture: NonNullable<Awaited<ReturnType<typeof startCredentialServiceFixture>>>,
+  fixture: GhFixture,
   target: string,
   options?: GatewayOptions,
 ) => Promise<{ status: number; body: string }> = requestGateway;
