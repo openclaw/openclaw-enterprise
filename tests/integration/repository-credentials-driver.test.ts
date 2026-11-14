@@ -1,23 +1,41 @@
-import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
-import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { run } from "../fixtures/repository-credentials/process.mjs";
-import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
 import assert from "node:assert/strict";
-import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { request } from "node:https";
-import { dirname, join } from "node:path";
-import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
-import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { join } from "node:path";
+import test from "node:test";
+import type {
+  OpenRepositorySessionInput,
+  OpenRepositorySessionResult,
+  RepositoryCredentialSessionStatus,
+} from "@openclaw-enterprise/contracts";
+import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
+import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
+import { readJsonObject, startRegistryFixture } from "./repository-credentials-driver-fixture.ts";
+import { registerAdmissionCapabilityCases } from "./repository-credentials-driver-admission-capability-cases.ts";
 
-function driverFor(backendId, registry, socket, sessionDurationSeconds = 3600, publicCa) {
+type Registry = ConstructorParameters<typeof GitHubRepositoryPolicy>[1];
+type CreatedSession = Extract<OpenRepositorySessionResult, { kind: "created" }>;
+type RegistryFixture = NonNullable<Awaited<ReturnType<typeof startRegistryFixture>>>;
+
+function isRetryable(error: unknown): error is { retryable: true } {
+  return (
+    error !== null && typeof error === "object" && "retryable" in error && error.retryable === true
+  );
+}
+
+function driverFor(
+  backendId: string,
+  registry: Registry,
+  socket: string,
+  sessionDurationSeconds = 3600,
+) {
   const backend = {
     id: backendId,
     client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
@@ -29,13 +47,15 @@ function driverFor(backendId, registry, socket, sessionDurationSeconds = 3600, p
       registry,
       { sessionDurationSeconds },
     ),
-    sender: new GitHubNativeRepositorySender(backend, {
-      ...(publicCa === undefined ? {} : { publicCa }),
-    }),
+    sender: new GitHubNativeRepositorySender(backend, {}),
   };
 }
 
-function assertPublicStatus(status, binding) {
+function assertPublicStatus(
+  status: RepositoryCredentialSessionStatus | undefined,
+  binding: RepositoryCredentialSessionStatus["binding"],
+): asserts status is RepositoryCredentialSessionStatus {
+  assert.ok(status);
   assert.deepEqual(Object.keys(status).sort(), ["binding", "deadlineWallMs", "sessionId", "state"]);
   assert.deepEqual(Object.keys(status.binding).sort(), [
     "grantId",
@@ -47,44 +67,47 @@ function assertPublicStatus(status, binding) {
   assert.equal(Object.isFrozen(status.binding), true);
 }
 
-function gateway(fixture, opened, repository) {
-  return new Promise((resolve, reject) => {
-    const outgoing = request(
-      {
-        hostname: "127.0.0.1",
-        port: fixture.listeners.address.port,
-        path: `/${repository}.git/info/refs?service=git-upload-pack`,
-        method: "GET",
-        ca: fixture.tls.ca,
-        agent: false,
-        headers: {
-          host: "credentials.example.test",
-          authorization: `Basic ${Buffer.from(`gateway-session:${opened.files.bearer}`).toString("base64")}`,
+function gateway(fixture: RegistryFixture, opened: CreatedSession, repository: string) {
+  return new Promise<{ status: number | undefined; body: string }>(
+    (resolve, reject: (reason?: unknown) => void) => {
+      const outgoing = request(
+        {
+          hostname: "127.0.0.1",
+          port: fixture.listeners.address.port,
+          path: `/${repository}.git/info/refs?service=git-upload-pack`,
+          method: "GET",
+          ca: fixture.tls.ca,
+          agent: false,
+          headers: {
+            host: "credentials.example.test",
+            authorization: `Basic ${Buffer.from(`gateway-session:${opened.files.bearer}`).toString("base64")}`,
+          },
         },
-      },
-      (incoming) => {
-        const chunks = [];
-        incoming.on("data", (chunk) => chunks.push(chunk));
-        incoming.once("error", reject);
-        incoming.once("end", () =>
-          resolve({ status: incoming.statusCode, body: Buffer.concat(chunks).toString() }),
-        );
-      },
-    );
-    outgoing.once("error", reject);
-    outgoing.end();
-  });
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+          incoming.once("error", reject);
+          incoming.once("end", () =>
+            resolve({ status: incoming.statusCode, body: Buffer.concat(chunks).toString() }),
+          );
+        },
+      );
+      outgoing.once("error", reject);
+      outgoing.end();
+    },
+  );
 }
 
 test(
   "concrete Driver resolves locally and controls exact sessions for two repositories",
   { timeout: 30000 },
   async (t) => {
-    const fixture = await startRegistryCredentialServiceFixture(t, {
+    const fixture = await startRegistryFixture(t, {
       namespaceId: `ns_${randomUUID()}`,
       autoOpen: false,
       gateway: { listen: "127.0.0.1:0" },
     });
+    assert.ok(fixture);
     const signal = new AbortController().signal;
     const local = driverFor(
       fixture.backendId,
@@ -146,6 +169,7 @@ test(
       namespaceId: fixture.namespaceId,
       bindings: [{ repositoryRef: "repo-a" }],
     }).bindings[0];
+    assert.ok(contributor);
     // This exact registry used to admit the narrower git-write grant under this
     // digest. The real Driver/control/service join must reject its stale authority
     // before either repository's provider sees acquisition or exchange traffic.
@@ -180,57 +204,65 @@ test(
       binding,
       durationSeconds: 3600,
       deadlineWallMs,
-      preparedOnly: true,
+      preparedOnly: true as const,
     }));
     for (const input of inputs) {
       await receipts.prepare(input.admissionId, input.binding.repositoryRef, input.durationSeconds);
     }
     const opened = await Promise.all(inputs.map((input) => driver.sender.open(input, signal)));
-    for (let index = 0; index < opened.length; index++) {
-      await receipts.advance(
-        inputs[index].admissionId,
-        "opening",
-        "open",
-        opened[index].session.sessionId,
-      );
+    for (const [index, result] of opened.entries()) {
+      const input = inputs[index];
+      assert.ok(input);
+      assert.ok("session" in result);
+      await receipts.advance(input.admissionId, "opening", "open", result.session.sessionId);
     }
-    for (let index = 0; index < opened.length; index++) {
-      assert.equal(opened[index].kind, "created");
-      const result = opened[index];
-      assertPublicStatus(result.session, inputs[index].binding.grant);
-      assert.notEqual(result.session.binding, inputs[index].binding.grant);
+    for (const [index, result] of opened.entries()) {
+      const input = inputs[index];
+      const repository: RegistryFixture["repositories"][number] | undefined =
+        fixture.repositories[index];
+      const other: RegistryFixture["repositories"][number] | undefined =
+        fixture.repositories[1 - index];
+      assert.equal(result.kind, "created");
+      assert.ok(input && repository && other);
+      assertPublicStatus(result.session, input.binding.grant);
+      assert.notEqual(result.session.binding, input.binding.grant);
       const privateStatus = await client.status(result.session.sessionId, signal);
+      assert.ok(privateStatus);
       assert.equal(typeof privateStatus.activeUses, "number");
       assert.equal(typeof privateStatus.cleanup.pending, "number");
       assert.notEqual(result.session, privateStatus);
       assert.notEqual(result.session.binding, privateStatus.binding);
-      assert.equal(result.session.deadlineWallMs, inputs[index].deadlineWallMs);
-      assert.equal(result.result, undefined);
-      assert.equal(result.bearer, undefined);
+      assert.equal(result.session.deadlineWallMs, input.deadlineWallMs);
+      assert.equal("result" in result ? result.result : undefined, undefined);
+      assert.equal("bearer" in result ? result.bearer : undefined, undefined);
       assert.equal(result.files["ca.pem"], fixture.tls.ca.toString("utf8"));
       assert.deepEqual(
         Object.keys(result.files).sort(),
         ["bearer", "ca.pem", "client.json", "gh/config.yml", "gh/hosts.yml", "gitconfig"].sort(),
       );
-      assert.equal(JSON.parse(result.files["client.json"]).sessionId, result.session.sessionId);
-      assert.deepEqual(JSON.parse(result.files["client.json"]).client.pushRefAllowlist, [
-        `refs/heads/agent-${inputs[index].binding.repositoryRef}`,
-      ]);
-      const response = await gateway(fixture, result, fixture.repositories[index].repository);
-      assert.equal(response.status, 503, "a sender without prepared material must fail closed");
-      assert.equal(
-        (await gateway(fixture, result, fixture.repositories[1 - index].repository)).status,
-        400,
+      const clientFile = result.files["client.json"];
+      assert.ok(clientFile);
+      const metadata = readJsonObject(clientFile);
+      const configuration = metadata.client;
+      assert.ok(
+        configuration && typeof configuration === "object" && "pushRefAllowlist" in configuration,
       );
-      const recovered = await driver.sender.open({ ...inputs[index], recoverOnly: true }, signal);
+      assert.equal(metadata.sessionId, result.session.sessionId);
+      assert.deepEqual(configuration.pushRefAllowlist, [
+        `refs/heads/agent-${input.binding.repositoryRef}`,
+      ]);
+      const response = await gateway(fixture, result, repository.repository);
+      assert.equal(response.status, 503, "a sender without prepared material must fail closed");
+      assert.equal((await gateway(fixture, result, other.repository)).status, 400);
+      const recovered = await driver.sender.open({ ...input, recoverOnly: true }, signal);
       assert.equal(recovered.kind, "recovered");
       assert.equal(recovered.status.sessionId, result.session.sessionId);
-      assertPublicStatus(recovered.status, inputs[index].binding.grant);
+      assertPublicStatus(recovered.status, input.binding.grant);
       assert.notEqual(recovered.status, result.session);
       assert.notEqual(recovered.status.binding, result.session.binding);
-      assert.equal(recovered.bearer, undefined);
+      assert.equal("bearer" in recovered ? recovered.bearer : undefined, undefined);
       const status = await driver.sender.status(result.session.sessionId, signal);
-      assertPublicStatus(status, inputs[index].binding.grant);
+      assertPublicStatus(status, input.binding.grant);
       assert.equal(status.state, "OPEN");
     }
     assert.ok(
@@ -238,12 +270,15 @@ test(
         ({ github, git }) => github.trace.length === 0 && git.trace.length === 0,
       ),
     );
+    const [firstInput, secondInput] = inputs;
+    const [firstOpened] = opened;
+    assert.ok(firstInput && secondInput && firstOpened && "session" in firstOpened);
     await assert.rejects(
-      driver.sender.open({ ...inputs[0], durationSeconds: 3599 }, signal),
+      driver.sender.open({ ...firstInput, durationSeconds: 3599 }, signal),
       ScopeViolationError,
     );
-    await receipts.advance(inputs[0].admissionId, "open", "closing");
-    const fenced = { ...inputs[0], admissionId: `${fixture.clock.wallNow()}-${randomUUID()}` };
+    await receipts.advance(firstInput.admissionId, "open", "closing");
+    const fenced = { ...firstInput, admissionId: `${fixture.clock.wallNow()}-${randomUUID()}` };
     await receipts.prepare(
       fenced.admissionId,
       fenced.binding.repositoryRef,
@@ -261,19 +296,23 @@ test(
       fixture.config.gateway.controlSocket,
     );
     assert.equal(
-      (await changedProvider.sender.open({ ...inputs[0], recoverOnly: true }, signal)).kind,
+      (await changedProvider.sender.open({ ...firstInput, recoverOnly: true }, signal)).kind,
       "recovered",
     );
-    await assert.rejects(changedProvider.sender.open(inputs[0], signal), ScopeViolationError);
+    await assert.rejects(changedProvider.sender.open(firstInput, signal), ScopeViolationError);
 
-    await receipts.advance(inputs[1].admissionId, "open", "closing");
-    for (let index = 0; index < opened.length; index++) {
-      const closed = await driver.sender.close(opened[index].session.sessionId, signal);
-      assertPublicStatus(closed, inputs[index].binding.grant);
+    await receipts.advance(secondInput.admissionId, "open", "closing");
+    for (const [index, result] of opened.entries()) {
+      const input = inputs[index];
+      assert.ok(input);
+      assert.ok("session" in result);
+      const closed = await driver.sender.close(result.session.sessionId, signal);
+      assertPublicStatus(closed, input.binding.grant);
       assert.notEqual(closed.state, "OPEN");
     }
 
     for (const result of opened) {
+      assert.ok("session" in result);
       await waitUntil(
         `session ${result.session.sessionId} to be disposed`,
         async () =>
@@ -282,15 +321,15 @@ test(
     }
     await fixture.restart();
     assert.equal(
-      (await driver.sender.status(opened[0].session.sessionId, signal)).state,
+      (await driver.sender.status(firstOpened.session.sessionId, signal))?.state,
       "DISPOSED",
     );
     assert.equal(
-      (await driver.sender.open({ ...inputs[0], recoverOnly: true }, signal)).kind,
+      (await driver.sender.open({ ...firstInput, recoverOnly: true }, signal)).kind,
       "recovered",
     );
     await assert.rejects(
-      local.sender.status(opened[0].session.sessionId, signal),
+      local.sender.status(firstOpened.session.sessionId, signal),
       DependencyUnavailableError,
     );
   },
@@ -325,6 +364,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     namespaceId: "namespace",
     bindings: [{ repositoryRef: "project", profile: "git-read" }],
   }).bindings[0];
+  assert.ok(admitted);
   const valid = {
     sessionId: id,
     state: "CLOSED",
@@ -340,7 +380,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
       auxiliaryPending: false,
     },
   };
-  let reply = { status: 200, body: valid };
+  let reply: { status: number; body: unknown } = { status: 200, body: valid };
   let requests = 0;
   // This independent wire peer supplies invalid protocol packets; it implements no session policy.
   const server = createServer((incoming, response) => {
@@ -349,14 +389,14 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     response.writeHead(reply.status, { "content-type": "application/json" });
     response.end(JSON.stringify(reply.body));
   });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject: (reason?: unknown) => void) => {
     server.once("error", reject);
     server.listen(socket, resolve);
   });
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
   const signal = new AbortController().signal;
-  assert.equal((await client.close(id, signal)).cleanup.pending, 1);
+  assert.equal((await client.close(id, signal))?.cleanup.pending, 1);
   for (const body of [
     { ...valid, sessionId: randomUUID() },
     { ...valid, binding: { ...valid.binding, grantId: "x".repeat(513) } },
@@ -367,7 +407,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     { ...valid, state: "DISPOSED" },
   ]) {
     reply = { status: 200, body };
-    await assert.rejects(client.close(id, signal), (error) => error.retryable === true);
+    await assert.rejects(client.close(id, signal), isRetryable);
   }
   const openInput = {
     namespaceId: "namespace",
@@ -389,17 +429,13 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     const before = requests;
     // Installation access belongs to protected delivery, including recovery attempts.
     for (const recoverOnly of [false, true]) {
-      await assert.rejects(
-        driver.sender.open(
-          {
-            ...openInput,
-            binding: { ...admitted, profile: "github-installation" },
-            recoverOnly,
-          },
-          signal,
-        ),
-        ScopeViolationError,
-      );
+      const input: OpenRepositorySessionInput = {
+        ...openInput,
+        binding: { ...admitted, profile: "github-installation" },
+      };
+      // Exercise both values supplied by JavaScript callers at the Driver boundary.
+      Reflect.set(input, "recoverOnly", recoverOnly);
+      await assert.rejects(driver.sender.open(input, signal), ScopeViolationError);
       assert.equal(requests, before);
     }
   });
@@ -463,7 +499,10 @@ test("Unix control rejects malformed status and preserves authoritative absence 
         // Use CLOSED for otherwise OPEN observations so rejection must inspect the malformed field.
         reply = {
           status: 200,
-          body: { ...status, ...(status.state === "OPEN" ? { state: "CLOSED" } : {}) },
+          body: {
+            ...status,
+            ...("state" in status && status.state === "OPEN" ? { state: "CLOSED" } : {}),
+          },
         };
         await assert.rejects(driver.sender.close(id, signal), DependencyUnavailableError);
       }
@@ -488,11 +527,11 @@ test("Unix control rejects malformed status and preserves authoritative absence 
       reply = { status: 200, body: disposed };
       assert.deepEqual(await client.status(id, signal), disposed);
       assert.deepEqual(await client.close(id, signal), disposed);
-      for (const status of [
-        await driver.sender.status(id, signal),
-        await driver.sender.close(id, signal),
-        (await driver.sender.open({ ...openInput, recoverOnly: true }, signal)).status,
-      ]) {
+      const statusById = await driver.sender.status(id, signal);
+      const closed = await driver.sender.close(id, signal);
+      const recovered = await driver.sender.open({ ...openInput, recoverOnly: true }, signal);
+      assert.equal(recovered.kind, "recovered");
+      for (const status of [statusById, closed, recovered.status]) {
         assertPublicStatus(status, disposed.binding);
         assert.equal(status.state, "DISPOSED");
       }
@@ -505,8 +544,8 @@ test("Unix control rejects malformed status and preserves authoritative absence 
         { ...disposed, cleanup: { ...disposed.cleanup, auxiliaryPending: true } },
       ]) {
         reply = { status: 200, body: outstanding };
-        await assert.rejects(client.status(id, signal), (error) => error.retryable === true);
-        await assert.rejects(client.close(id, signal), (error) => error.retryable === true);
+        await assert.rejects(client.status(id, signal), isRetryable);
+        await assert.rejects(client.close(id, signal), isRetryable);
         await assert.rejects(driver.sender.status(id, signal), DependencyUnavailableError);
         await assert.rejects(driver.sender.close(id, signal), DependencyUnavailableError);
         await assert.rejects(
@@ -551,14 +590,6 @@ test("Unix control rejects malformed status and preserves authoritative absence 
   );
 
   await t.test("created response rejects a non-string client username", async () => {
-    const configuration = {
-      gatewayOrigin: "https://credentials.example.test",
-      gitRemote: "https://credentials.example.test/example/project.git",
-      gitUsername: "gateway-session",
-      canonicalApiHost: "github.com",
-      apiHost: "credentials.example.test",
-      repository: "example/project",
-    };
     const input = {
       namespaceId: "namespace",
       repositoryRef: "project",
@@ -568,28 +599,25 @@ test("Unix control rejects malformed status and preserves authoritative absence 
       deadlineWallMs: valid.deadlineWallMs,
     };
     const admissionId = `${Date.now()}-${randomUUID()}`;
-    reply = {
-      status: 201,
-      body: {
-        session: { ...valid, state: "OPEN" },
-        bearer: "b".repeat(43),
-        client: configuration,
-      },
+    const body = {
+      session: { ...valid, state: "OPEN" },
+      bearer: "b".repeat(43),
+      client: configuration,
     };
-    assert.deepEqual((await client.open(input, admissionId, signal)).result.client, configuration);
+    reply = { status: 201, body };
+    const opened = await client.open(input, admissionId, signal);
+    assert.equal(opened.kind, "created");
+    assert.deepEqual(opened.result.client, configuration);
     for (const policy of [null, "refs/heads/main", ["refs/tags/v1"], ["refs/heads/topic/**"]]) {
-      reply.body.client = { ...configuration, pushRefAllowlist: policy };
-      await assert.rejects(
-        client.open(input, admissionId, signal),
-        (error) => error.retryable === true,
-      );
+      reply = {
+        status: 201,
+        body: { ...body, client: { ...configuration, pushRefAllowlist: policy } },
+      };
+      await assert.rejects(client.open(input, admissionId, signal), isRetryable);
     }
     // A username bypasses URL parsing but still crosses the untrusted control-response boundary.
-    reply.body.client = { ...configuration, gitUsername: 1 };
-    await assert.rejects(
-      client.open(input, admissionId, signal),
-      (error) => error.retryable === true,
-    );
+    reply = { status: 201, body: { ...body, client: { ...configuration, gitUsername: 1 } } };
+    await assert.rejects(client.open(input, admissionId, signal), isRetryable);
   });
   reply = { status: 404, body: { error: "not-found" } };
   assert.equal(await client.status(id, signal), undefined);
@@ -601,155 +629,13 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     reply = candidate;
     await assert.rejects(
       client.status(id, signal),
-      (error) => error.retryable === true && !error.message.includes(socket),
+      (error: unknown) =>
+        isRetryable(error) &&
+        "message" in error &&
+        typeof error.message === "string" &&
+        !error.message.includes(socket),
     );
   }
 });
 
-test("durable admission capability rejects an old response, malformed replies, and timeouts", async (t) => {
-  let response = { status: 404, body: { error: "not-found" } };
-  const server = createServer((incoming, outgoing) => {
-    if (incoming.url === "/healthz") {
-      outgoing.writeHead(200, { "content-type": "application/json" });
-      outgoing.end(JSON.stringify({ ready: true, protocolVersion: 1 }));
-      return;
-    }
-    if (response === undefined) {
-      return;
-    }
-    outgoing.writeHead(response.status, {
-      "content-type": response.contentType ?? "application/json",
-    });
-    outgoing.end(JSON.stringify(response.body));
-  });
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  // Registered after the close hook, so the server closes before its directory goes.
-  const socket = join(await socketDirectory(t, "repository-capability-"), "control.sock");
-  await new Promise((resolve) => server.listen(socket, resolve));
-  const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
-  // An older broker reports healthy protocol 1 but does not recognize this endpoint.
-  await client.health(AbortSignal.timeout(1000));
-  // Every refusal is the retryable control error, never a parse or type error.
-  const unavailable = { name: "RepositoryCredentialControlError", retryable: true };
-  await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(1000)), unavailable);
-  for (const value of [
-    { status: 200, body: {} },
-    { status: 200, body: { durableAdmissionVersion: 2 } },
-    { status: 200, body: { durableAdmissionVersion: "1" } },
-    { status: 503, body: { error: "unavailable" } },
-    // A well-formed reply still needs both a 200 status and a JSON content type.
-    { status: 503, body: { durableAdmissionVersion: 1 } },
-    { status: 200, body: { durableAdmissionVersion: 1 }, contentType: "text/plain" },
-  ]) {
-    response = value;
-    await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(1000)), unavailable);
-  }
-  response = { status: 200, body: { durableAdmissionVersion: 1 } };
-  await client.checkAdmissionReady(AbortSignal.timeout(1000));
-  response = undefined;
-  await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(50)), unavailable);
-});
-
-test(
-  "controller image probe correlates real Driver calls with an isolated receipt fixture",
-  { timeout: 30000 },
-  async (t) => {
-    const fixture = await startRegistryCredentialServiceFixture(t, {
-      autoOpen: false,
-      clock: { ...createControlledClock(), wallNow: Date.now },
-      gateway: { listen: "127.0.0.1:0" },
-    });
-    const receipts = [];
-    let hideReceiptObservation = false;
-    const receiptServer = createServer(async (incoming, outgoing) => {
-      const chunks = [];
-      for await (const chunk of incoming) {
-        chunks.push(chunk);
-      }
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if (!hideReceiptObservation) {
-        receipts.push(body);
-      }
-      // The fixture supplies only a missing recovery result or a failed reserve.
-      // It never acknowledges a reservation or creates provider authority.
-      if (body.kind === "recover") {
-        outgoing.writeHead(200, { "content-type": "application/json" });
-        outgoing.end(JSON.stringify({ kind: "missing" }));
-      } else {
-        outgoing.writeHead(503, { "content-type": "application/json" });
-        outgoing.end(JSON.stringify({ error: "fixture-unavailable" }));
-      }
-    });
-    const receiptSocket = join(dirname(fixture.config.gateway.controlSocket), "receipt.sock");
-    await new Promise((resolve, reject) => {
-      receiptServer.once("error", reject);
-      receiptServer.listen(receiptSocket, resolve);
-    });
-    t.after(async () => {
-      receiptServer.closeAllConnections();
-      await new Promise((resolve) => receiptServer.close(resolve));
-    });
-    const probe = new URL(
-      "../../apps/controller/src/drivers/repo/github/access/admission-probe.ts",
-      import.meta.url,
-    ).pathname;
-    for (const [mode, outcome] of [
-      ["recover", "missing"],
-      ["reserve", "unavailable"],
-    ]) {
-      const admissionId = `${Date.now()}-${randomUUID()}`;
-      const result = await run(process.execPath, [
-        probe,
-        fixture.config.gateway.controlSocket,
-        mode,
-        admissionId,
-      ]);
-      const report = JSON.parse(result.stdout);
-      assert.deepEqual(
-        {
-          version: report.version,
-          mode: report.mode,
-          admissionId: report.admissionId,
-          outcome: report.outcome,
-        },
-        { version: 1, mode, admissionId, outcome },
-      );
-      const observed = receipts.at(-1);
-      assert.equal(observed.kind, mode);
-      assert.equal(observed.admissionId, admissionId);
-      assert.deepEqual(observed.input, report.input);
-    }
-    // An old Driver omits durableAdmission; the new broker rejects it before
-    // contacting the receipt fixture, so a generic failure cannot qualify the pair.
-    const input = { ...receipts[0].input, recoverOnly: true };
-    const before = receipts.length;
-    const { status } = await controlRequest(
-      fixture.config.gateway.controlSocket,
-      "POST",
-      "/v1/sessions",
-      input,
-      { "x-admission-id": `${Date.now()}-${randomUUID()}` },
-    );
-    assert.equal(status, 400);
-    assert.equal(receipts.length, before);
-    // An unavailable result alone cannot prove which request reached the
-    // broker. Qualification must also match the fixture's reserve observation.
-    hideReceiptObservation = true;
-    const unobservedId = `${Date.now()}-${randomUUID()}`;
-    const unobserved = await run(process.execPath, [
-      probe,
-      fixture.config.gateway.controlSocket,
-      "reserve",
-      unobservedId,
-    ]);
-    assert.equal(JSON.parse(unobserved.stdout).outcome, "unavailable");
-    assert.equal(
-      receipts.some(({ admissionId }) => admissionId === unobservedId),
-      false,
-    );
-    assert.ok(fixture.repositories.every(({ github }) => github.issuesOfTokens.length === 0));
-  },
-);
+registerAdmissionCapabilityCases();
