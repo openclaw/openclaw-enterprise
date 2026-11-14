@@ -42,6 +42,16 @@ The separate [worker-restart preflight proposal](../0033-repository-worker-resta
 asks the selected repository owner to report restart risk before maintenance.
 It does not replace the existing post-replacement terminal-result amendment.
 
+The [protected workspace endpoint amendment](protected-workspace-endpoint.md)
+proposes pinning the original transport and obtaining a genuine Gateway binding
+acknowledgment before signed startup release. Its
+[implementation plan](../../plans/0051-protected-workspace-endpoint.md) records the
+required changes and verification. The amendment remains proposed.
+
+The proposed [native Service route extension](protected-workspace-endpoint.md#native-service-route-extension)
+adds independently observed in-cluster routing before that release. Its
+implementation and installed qualification remain pending.
+
 ## Two deployment modes
 
 The deployment selects protection independently of credential count. Full and unknown profiles retain protected admission or refusal, including empty deny-all plans. Only the validated Git-only compatibility installation can omit a Proxy plan for exactly one ready static model source matching the Harness snapshot and configured Gateway, with no other sources or Git bindings. Source-free runtime authentication retains protected admission or refusal; existing no-Proxy deployments retain their behavior.
