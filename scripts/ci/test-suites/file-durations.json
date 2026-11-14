@@ -132,7 +132,7 @@
     "tests/conformance/runtime-logs-content.test.ts": 5800,
     "tests/conformance/runtime-logs-replay.test.ts": 200,
     "tests/conformance/runtime-logs-sandbox.test.ts": 4000,
-    "tests/conformance/runtime-model-probe-settlement.test.mjs": 3800,
+    "tests/conformance/runtime-model-probe-settlement.test.ts": 3800,
     "tests/conformance/runtime-probe-cpu-counter.test.ts": 100,
     "tests/conformance/secret-gateway-delivery.test.mjs": 400,
     "tests/conformance/secret-occ.test.ts": 300,
