@@ -6581,7 +6581,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   // f3096: every Dedicated Codex Gateway runs the codex plugin, and its entrypoint exits at every
   // start on a plugin policy that turns it off. Agent save, provisioning, deployment and the save
   // of a Configuration whose model policy selects Codex refuse it, after the workspace node's
-  // rule (above). The entrypoint parity test is in plugin-runtime-policy.test.mjs.
+  // rule (above). The entrypoint parity test is in plugin-runtime-policy.test.ts.
   const codexSelected = {
     agents: {
       defaults: {
