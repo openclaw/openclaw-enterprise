@@ -2,7 +2,6 @@ import { submitCreateAgent } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { APIResponse, Page, Route } from "playwright";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
 import type {
   Agent,
   CredentialSourceContext,
@@ -32,7 +31,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
-import { createReadyConsoleNamespace as createUntypedReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
   AGENT_DEVICE_LOGIN_POLL_DENIED,
@@ -87,21 +86,6 @@ function assertDeviceDriver<T extends { id: string; implementation: string; capa
   assert.ok(
     driver.capability === "credential_gateway" || driver.capability === "credential_refresh",
   );
-}
-
-async function createReadyConsoleNamespace(
-  t: TestContext,
-  name: string,
-  options?: { provisionedPeople?: string[]; agentProvisioning?: boolean; now?: () => Date },
-) {
-  const ready = await createUntypedReadyConsoleNamespace(t, name, options);
-  const controller: unknown = ready.fixture.controller;
-  assert.ok(controller instanceof OpenClawController);
-  const fixture: Omit<typeof ready.fixture, "controller"> & { controller: OpenClawController } =
-    ready.fixture;
-  const namespace: unknown = ready.namespace;
-  assertResourceIdentity(namespace);
-  return { fixture, namespace };
 }
 
 // The fixture's login asks the Console to poll every 5 s, and the API refuses an earlier poll.
@@ -752,7 +736,7 @@ for (const savedAgent of [false, true]) {
       (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
       200,
     );
-    await page.getByRole("link", { name: "Secrets", exact: true }).click();
+    await page.getByRole("link", { name: "Credentials", exact: true }).click();
     await page.waitForURL("**/console/secrets?**");
     release.resolve();
     await waitForSettledFetches(page, beginPath, 1);

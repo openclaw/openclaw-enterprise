@@ -1,4 +1,3 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -24,68 +23,23 @@ import {
   kubernetesHash as hash,
   productionGatewayMemoryLimit,
 } from "./kubernetes-real.mjs";
+import { createGatewaySessionEvidence } from "./plugin-gateway-session-evidence.ts";
+import {
+  optionalPluginProofModel,
+  requiredPluginProofEnv,
+  selectPluginProofInputs,
+} from "./plugin-driver-proof-inputs.ts";
+
+export { ConversationReplyError } from "./plugin-gateway-session-evidence.ts";
+export {
+  optionalPluginProofModel,
+  pluginProofSkipReason,
+  realPluginProofSelected,
+} from "./plugin-driver-proof-inputs.ts";
 
 const authSecret = "plugin-driver-real-auth-secret-32-bytes";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.localhost";
 const proofPrefix = "occ-plugin-01a08228";
-
-export const realPluginProofSelected = process.env.OCC_TEST_PLUGIN_DRIVER_REAL === "1";
-
-export function pluginProofSkipReason(scenario) {
-  const key = `OCC_TEST_PLUGIN_DRIVER_${scenario.toUpperCase()}_REAL`;
-  if (realPluginProofSelected || process.env[key] === "1") {
-    return false;
-  }
-  return `Set ${key}=1 or OCC_TEST_PLUGIN_DRIVER_REAL=1 with disposable k3d/PostgreSQL, immutable real runtime images, model credentials, injected CODEX_ACCESS_TOKEN for Codex proofs, curated plugin proof prompts.`;
-}
-
-function requiredPluginProofEnv(name, description = name) {
-  const value = process.env[name];
-  assert.ok(value && value.trim().length > 0, `${description} (${name}) is required.`);
-  return value;
-}
-
-export function optionalPluginProofModel() {
-  return (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
-    /^(?:openai|codex)\//,
-    "",
-  );
-}
-
-function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {
-  if (realPluginProofSelected) {
-    const scenarioKeys = {
-      openclaw: "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
-      codex_linear: "OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL",
-      codex_failure: "OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL",
-    };
-    assert.ok(Object.hasOwn(scenarioKeys, scenario), "unknown real plugin-driver scenario.");
-    const databases = Object.entries(scenarioKeys).map(([name, key]) => {
-      const url = requiredPluginProofEnv(key);
-      let connection;
-      try {
-        connection = new pg.Client({ connectionString: url }).connectionParameters;
-      } catch {
-        assert.fail(`${key} must be a valid PostgreSQL connection URL.`);
-      }
-      assert.ok(connection.database, `${key} must name a database.`);
-      return [name, JSON.stringify([connection.host, connection.port, connection.database])];
-    });
-    assert.ok(
-      databaseUrl === process.env[scenarioKeys[scenario]],
-      `${scenario} must use its scenario-specific database URL.`,
-    );
-    for (let index = 0; index < databases.length; index += 1) {
-      for (let sibling = index + 1; sibling < databases.length; sibling += 1) {
-        assert.ok(
-          databases[index][1] !== databases[sibling][1],
-          `real plugin-driver scenarios ${databases[index][0]} and ${databases[sibling][0]} must use separate dedicated databases.`,
-        );
-      }
-    }
-  }
-  return databaseUrl ?? requiredPluginProofEnv("OCC_TEST_DATABASE_URL");
-}
 
 export function assertNoSecretMaterial(value, secrets, description) {
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
@@ -470,425 +424,6 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
     }));
 }
 
-const sessionEvidenceScript = String.raw`
-  const { DatabaseSync } = require("node:sqlite");
-  const { isDeepStrictEqual } = require("node:util");
-  const { zstdDecompressSync } = require("node:zlib");
-  const sessionKey = process.argv[1];
-  const marker = process.argv[2];
-  const toolName = process.argv[3];
-  const resultPatterns = JSON.parse(process.argv[4]);
-  const expectedArguments = JSON.parse(process.argv[5] || "null");
-  const expectedCatalog = JSON.parse(process.argv[6] || "null");
-  const codeModeCall = JSON.parse(process.argv[7] || "null");
-  const databasePath = "/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite";
-  const db = new DatabaseSync(databasePath, { readOnly: true });
-  function contains(value, needle) {
-    if (!needle) return false;
-    if (typeof value === "string") return value.includes(needle);
-    if (Array.isArray(value)) return value.some((entry) => contains(entry, needle));
-    if (value && typeof value === "object") {
-      return Object.values(value).some((entry) => contains(entry, needle));
-    }
-    return false;
-  }
-  function textOf(content) {
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) {
-      return content
-        .filter((block) => block && block.type === "text" && typeof block.text === "string")
-        .map((block) => block.text)
-        .join("\n");
-    }
-    return "";
-  }
-  function hasStructuredResult(value) {
-    if (Array.isArray(value)) {
-      return value.some((entry) => hasStructuredResult(entry));
-    }
-    if (value && typeof value === "object") {
-      if (value.type === "text" && typeof value.text === "string") {
-        return hasStructuredResult(value.text);
-      }
-      return Object.keys(value).length > 0;
-    }
-    if (typeof value !== "string") return false;
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return false;
-    try {
-      return hasStructuredResult(JSON.parse(trimmed));
-    } catch {
-      return false;
-    }
-  }
-  function matchesToolName(name) {
-    if (typeof name !== "string") return false;
-    if (toolName) return name === toolName;
-    return /(^|[._:-])list[_-]?calendars$/i.test(name);
-  }
-  // A row that is not JSON establishes nothing. One written before the evidence window must not
-  // fail the evidence of a passing run (finding 2029); one inside it fails the evidence below.
-  function parseEvent(text) {
-    try {
-      return JSON.parse(text);
-    } catch {
-      return undefined;
-    }
-  }
-  try {
-    db.exec("PRAGMA busy_timeout=5000");
-    const session = db.prepare("SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?").get(sessionKey);
-    if (!session) {
-      process.stdout.write(JSON.stringify({ databasePath, sessionKey, exists: false }));
-      process.exit(0);
-    }
-    const entry = JSON.parse(session.entry_json);
-    const hasSnapshots = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_entry_snapshots'").get();
-    const snapshot = hasSnapshots ? db.prepare("SELECT value_json FROM session_entry_snapshots WHERE session_key = ? AND field = 'systemPromptReport'").get(sessionKey) : undefined;
-    const promptReport = snapshot ? JSON.parse(snapshot.value_json) : entry?.systemPromptReport;
-    const promptTools =
-      promptReport?.source === "run" &&
-      Array.isArray(promptReport.tools?.entries)
-        ? promptReport.tools.entries
-            .map((tool) => tool?.name)
-            .filter((name) => typeof name === "string")
-        : undefined;
-    const allRows = db
-      .prepare("SELECT seq, event_json, event_zstd, event_utf8_bytes FROM transcript_events WHERE session_id = ? ORDER BY seq")
-      .all(session.current_session_id)
-      .map((row) => {
-        const eventText = row.event_json ?? zstdDecompressSync(row.event_zstd).toString("utf8");
-        if (row.event_utf8_bytes !== null && Buffer.byteLength(eventText) !== row.event_utf8_bytes) {
-          throw new Error("transcript event length mismatch");
-        }
-        return { ...row, event_json: eventText };
-      });
-    // Repeated calls share a session; an earlier allowed result cannot prove this turn.
-    const start = allRows.findLastIndex((row) => {
-      const event = parseEvent(row.event_json);
-      return event?.type === "message" && event.message?.role === "user" && contains(event.message, marker);
-    });
-    const rows = start < 0 ? [] : allRows.slice(start);
-    // Every user message that carries the marker, in or before the window, so a turn without
-    // its prompt mirror shows where the prompt went (finding 2019): a second, unmirrored copy
-    // after the mirrored one moves the window past it. The newest ten.
-    const markerUserMessages = allRows
-      .map((row, index) => ({ row, index, event: parseEvent(row.event_json) }))
-      .filter(({ event }) => event?.type === "message" && event.message?.role === "user" && contains(event.message, marker))
-      .slice(-10)
-      .map(({ row, index, event }) => ({
-        seq: row.seq,
-        inWindow: index >= start,
-        mirrorIdentity: event.message.__openclaw?.mirrorIdentity ?? null,
-        mirrorOrigin: event.message.__openclaw?.mirrorOrigin ?? null,
-        idempotencyKey: typeof event.message.idempotencyKey === "string" ? event.message.idempotencyKey : null,
-        timestamp: event.message.timestamp ?? null,
-      }));
-    const messages = [];
-    const calls = [];
-    const results = [];
-    const eventTypeCounts = {};
-    const roleCounts = {};
-    const contentBlockTypeCounts = {};
-    const observedToolNames = new Set();
-    const resultToolNames = new Set();
-    const finalAssistantDiagnostics = {
-      mentionsUnavailable: false,
-      mentionsAuth: false,
-    };
-    const codexTurns = new Map();
-    function turn(prefix) {
-      const current = codexTurns.get(prefix) ?? {
-        turnPrefix: prefix,
-        promptSeen: false,
-        terminalAssistantSeen: false,
-        toolCallMirrorSeen: false,
-        toolResultMirrorSeen: false,
-      };
-      codexTurns.set(prefix, current);
-      return current;
-    }
-    function prefixForMirrorIdentity(identity, suffix) {
-      return typeof identity === "string" && identity.endsWith(suffix)
-        ? identity.slice(0, -suffix.length)
-        : undefined;
-    }
-    function prefixForToolMirrorIdentity(identity, suffix) {
-      if (typeof identity !== "string" || !identity.endsWith(suffix)) return undefined;
-      const withoutSuffix = identity.slice(0, -suffix.length);
-      const marker = ":tool:";
-      const index = withoutSuffix.lastIndexOf(marker);
-      return index === -1 ? undefined : withoutSuffix.slice(0, index);
-    }
-    for (const row of rows) {
-      const event = parseEvent(row.event_json);
-      // A row in the window that is not JSON could hide a tool call, so a check that this turn made
-      // none must not pass over it.
-      if (event === undefined) {
-        throw new Error("transcript row " + row.seq + " in the evidence window is not JSON");
-      }
-      // Non-message rows, including null payloads, cannot establish tool or turn evidence.
-      eventTypeCounts[event?.type ?? "unknown"] = (eventTypeCounts[event?.type ?? "unknown"] ?? 0) + 1;
-      if (event?.type !== "message") continue;
-      const message = event.message;
-      const hasMarker = contains(message, marker);
-      const mirrorIdentity = message?.__openclaw?.mirrorIdentity;
-      roleCounts[message.role ?? "unknown"] = (roleCounts[message.role ?? "unknown"] ?? 0) + 1;
-      const promptPrefix = prefixForMirrorIdentity(mirrorIdentity, ":prompt");
-      if (message.role === "user" && hasMarker && promptPrefix !== undefined) {
-        turn(promptPrefix).promptSeen = true;
-      }
-      const assistantPrefix = prefixForMirrorIdentity(mirrorIdentity, ":assistant");
-      if (message.role === "assistant" && hasMarker && assistantPrefix !== undefined) {
-        turn(assistantPrefix).terminalAssistantSeen = true;
-      }
-      messages.push({
-        seq: row.seq,
-        role: message.role,
-        hasMarker,
-        stopReason: message.stopReason,
-        mirrorIdentity,
-        runId: message.__openclaw?.runId,
-        runTerminal: message.__openclaw?.runTerminal === true,
-        codexSource: message.__openclaw?.mirrorOrigin === "codex-app-server" &&
-          typeof message.__openclaw?.mirrorSourceFingerprint === "string" &&
-          message.__openclaw.mirrorSourceFingerprint.length > 0,
-        textMarker: textOf(message.content).includes(marker),
-        toolCallIds: message.role === "assistant" && Array.isArray(message.content)
-          ? message.content.filter((block) => block?.type === "toolCall").map((block) => block.id) : [],
-        toolCallId: message.toolCallId,
-      });
-      if (message.role === "assistant" && Array.isArray(message.content)) {
-        for (const block of message.content) {
-          const blockType = block?.type ?? "unknown";
-          contentBlockTypeCounts[blockType] = (contentBlockTypeCounts[blockType] ?? 0) + 1;
-          if (typeof block?.name === "string") observedToolNames.add(block.name);
-          // Preserve the actual dispatcher call; do not invent an inner transcript event.
-          const id = block?.arguments?.id;
-          const selectedId = typeof id === "string" ? id.trim() : undefined;
-          const targetId = block?.name === "dispatch_action" && toolName &&
-            (selectedId === toolName || selectedId === "openclaw:core:" + toolName)
-              ? selectedId : undefined;
-          if (block?.type === "toolCall" && (matchesToolName(block.name) || targetId)) {
-            const input = targetId ? block.arguments.args : block.arguments;
-            const toolPrefix = prefixForToolMirrorIdentity(mirrorIdentity, ":call");
-            if (toolPrefix !== undefined) turn(toolPrefix).toolCallMirrorSeen = true;
-            calls.push({ seq: row.seq, id: block.id, name: block.name, mirrorIdentity,
-              ...(targetId ? { targetId, targetName: toolName } : {}),
-              matchesArguments: expectedArguments === null || Object.entries(expectedArguments)
-                .every(([key, value]) => isDeepStrictEqual(input?.[key], value)),
-              ...(expectedCatalog ? {
-                matchesSearchArguments: block.name === "tool_search" && Array.isArray(input?.queries) &&
-                  input.queries.length === expectedCatalog.present.length + expectedCatalog.absent.length &&
-                  [...expectedCatalog.present, ...expectedCatalog.absent].every((name) =>
-                    input.queries.filter((query) => query.query === name && query.limit === 1).length === 1),
-              } : {}),
-            });
-          }
-        }
-        if (hasMarker) {
-          const text = textOf(message.content).toLowerCase();
-          finalAssistantDiagnostics.mentionsUnavailable ||=
-            /unavailable|not available|unable|cannot|can't|could not|no access|not connected|not installed/.test(text);
-          finalAssistantDiagnostics.mentionsAuth ||=
-            /auth|permission|credential|login|connect|unauthoriz/.test(text);
-        }
-      }
-      if (message.role === "toolResult" && calls.some((call) => call.id === message.toolCallId)) {
-        const resultPrefix = prefixForToolMirrorIdentity(mirrorIdentity, ":result");
-        if (resultPrefix !== undefined) turn(resultPrefix).toolResultMirrorSeen = true;
-        const call = calls.find((call) => call.id === message.toolCallId);
-        const envelope = call.targetId ? message.details : undefined;
-        // Thrown errors name the dispatcher as a string; canonical results carry tool metadata.
-        const hasEnvelope = (envelope?.tool !== null && typeof envelope?.tool === "object") ||
-          envelope?.result !== undefined;
-        const matchesDispatcherTarget = !call.targetId || (message.toolName === call.name && (hasEnvelope
-          ? envelope.tool?.name === toolName && envelope.tool?.source === "openclaw" &&
-            envelope.tool?.id === (call.targetId === toolName ? "openclaw:core:" + toolName : call.targetId) &&
-            Array.isArray(envelope.result?.content)
-          : message.isError === true));
-        // Code Mode returns guest values, so inspect them only after matching the
-        // complete fixture-authored program, title and synchronous execution request.
-        // Keep the real outer exec identity; this does not invent an inner transcript call.
-        const exactCodeMode = codeModeCall !== null && call.matchesArguments && message.toolName === "exec";
-        const cell = exactCodeMode ? message.details : undefined;
-        const value = cell?.value;
-        const returnedFailure = cell?.status === "completed" && value?.status === "error" && typeof value.error === "string";
-        const thrownFailure = cell?.status === "failed" && cell.bridgeDispatchStarted === true;
-        const matchesTarget = matchesDispatcherTarget && (codeModeCall === null ||
-          (exactCodeMode && (cell?.status === "completed" || thrownFailure)));
-        const targetResult = exactCodeMode
-          ? { content: message.content, details: cell?.status === "completed" ? value : cell }
-          : call.targetId && hasEnvelope ? envelope.result : message;
-        // Dedicated Gateway proxies return an error value; input validation can throw.
-        const isError = message.isError === true || returnedFailure || thrownFailure ||
-          (call.targetId && typeof envelope?.status === "string");
-        const groups = expectedCatalog && Array.isArray(message.details?.results)
-          ? message.details.results : undefined;
-        const codeModeCatalog = exactCodeMode ? cell?.value?.catalog : undefined;
-        const matchesCodeModeCatalog = Array.isArray(codeModeCatalog) &&
-          codeModeCatalog.every((candidate) => typeof candidate?.name === "string" &&
-            candidate.source === "openclaw" && typeof candidate.callableName === "string") &&
-          [...(expectedCatalog?.present ?? []), ...(expectedCatalog?.absent ?? [])].every((name) => {
-            const exact = codeModeCatalog.filter((candidate) => candidate.name === name);
-            return expectedCatalog.present.includes(name)
-              ? exact.length === 1 && exact[0].callableName === name : exact.length === 0;
-          });
-        const matchesCatalog = expectedCatalog === null || (codeModeCall !== null
-          ? exactCodeMode && cell?.status === "completed" && matchesCodeModeCatalog
-          : (call.matchesSearchArguments === true && message.details?.truncated !== true &&
-          groups?.length === expectedCatalog.present.length + expectedCatalog.absent.length &&
-          [...expectedCatalog.present, ...expectedCatalog.absent].every((name) => {
-            const matched = groups.filter((group) => group.query === name);
-            if (matched.length !== 1 || matched[0].truncated === true ||
-                !Array.isArray(matched[0].candidates) || matched[0].candidates.length > 1) return false;
-            const candidates = matched[0].candidates;
-            if (candidates.some((candidate) => typeof candidate?.name !== "string" ||
-                typeof candidate.id !== "string" || typeof candidate.source !== "string")) return false;
-            const exact = candidates.filter((candidate) => candidate.name?.toLowerCase() === name.toLowerCase());
-            return expectedCatalog.present.includes(name)
-              ? exact.length === 1 && exact[0].source === "openclaw" && exact[0].id === "openclaw:core:" + name
-              : exact.length === 0;
-          }))
-        );
-        const matchedResultPattern = resultPatterns.find((pattern) =>
-          contains(targetResult, pattern) || textOf(targetResult?.content).includes(pattern));
-        results.push({
-          seq: row.seq,
-          toolCallId: message.toolCallId,
-          toolName: message.toolName,
-          isError: Boolean(isError),
-          matchesTarget,
-          exitCode: Number.isInteger(targetResult?.details?.exitCode) &&
-            (codeModeCall === null || (cell?.status === "completed" && targetResult.details.status === "completed"))
-              ? targetResult.details.exitCode : undefined,
-          resultDetails: {
-            type: targetResult?.details === null ? "null" : typeof targetResult?.details,
-            keys: targetResult?.details && typeof targetResult.details === "object"
-              ? Object.keys(targetResult.details).slice(0, 16).map((key) => key.slice(0, 64)) : [],
-            status: ["running", "completed", "failed", "approval-pending", "pending", "deferred", "blocked", "error"]
-              .includes(targetResult?.details?.status) ? targetResult.details.status : undefined,
-          },
-          errorText: isError || (exactCodeMode && cell?.status === "failed")
-            ? textOf(targetResult?.content) : undefined,
-          ...(exactCodeMode ? { codeModeProgramVerified: true } : {}),
-          // Native Codex emits this terminal reason when MCP approval is denied.
-          deniedByUser: textOf(message.content).includes("user rejected MCP tool call"),
-          matchesResult: matchesTarget && matchesCatalog && (resultPatterns.length
-            ? matchedResultPattern !== undefined
-            : hasStructuredResult(targetResult?.content)),
-          matchedResultPattern,
-          ...(expectedCatalog ? { matchesCatalog, catalog: exactCodeMode ? codeModeCatalog : groups?.map((group) => ({
-            query: group.query,
-            names: group.candidates?.map((candidate) => candidate.name),
-            truncated: group.truncated === true,
-          })), catalogTruncated: message.details?.truncated === true } : {}),
-          mirrorIdentity,
-          // Codex records risk and authorization only with a completed judgement; a
-          // reviewer that failed closed or timed out leaves them out (finding 1980).
-          approvalReviews: (message.details?.approvalReviews ?? []).map((review) => ({
-            id: review.id,
-            status: review.status,
-            ...(typeof review.riskLevel === "string" ? { riskLevel: review.riskLevel } : {}),
-            ...(typeof review.userAuthorization === "string"
-              ? { userAuthorization: review.userAuthorization }
-              : {}),
-            ...(typeof review.rationale === "string"
-              ? { rationale: review.rationale.slice(0, 500) }
-              : {}),
-          })),
-        });
-      }
-      if (message.role === "toolResult" && typeof message.toolName === "string") {
-        resultToolNames.add(message.toolName);
-      }
-    }
-    // A Gateway run can finish in a later Codex turn or in a separate, tool-free finalizer.
-    // Both stamp the answer with the admitted run's ID and terminal ownership. The native
-    // prompt and tool pair must still come from one turn before that answer.
-    const prompt = messages[0];
-    const sourcePrefix = prefixForMirrorIdentity(prompt?.mirrorIdentity, ":prompt");
-    const sourceTurn = codexTurns.get(sourcePrefix);
-    if (sourceTurn?.promptSeen && !sourceTurn.terminalAssistantSeen && prompt.textMarker &&
-        prompt.codexSource && prompt.runId && markerUserMessages.length === 1) {
-      const belongsToSource = (row) => typeof row.mirrorIdentity === "string" &&
-        row.mirrorIdentity.startsWith(sourcePrefix + ":");
-      const run = messages.filter((row) => row.runId === prompt.runId || belongsToSource(row));
-      const terminal = run.pop();
-      const source = run.filter(belongsToSource);
-      const completion = terminal?.mirrorIdentity === "settled-finalizer:" + prompt.runId
-        ? "settled-finalizer"
-        : prefixForMirrorIdentity(terminal?.mirrorIdentity, ":assistant") &&
-          !belongsToSource(terminal) ? "native-continuation" : undefined;
-      if (completion && terminal.role === "assistant" && terminal.textMarker &&
-          terminal.codexSource && terminal.runTerminal && terminal.runId === prompt.runId &&
-          run.every((row) => row.role !== "user" || row === prompt) &&
-          source.every((row) => row.codexSource && row.runId === prompt.runId)) {
-        // Progress from a continuation belongs to that later native turn. Only the
-        // original turn needs to supply the pair, even when testing another tool's absence.
-        const callsByMirror = new Map();
-        for (const row of source) {
-          if (row.role === "assistant" && row.toolCallIds.length) {
-            callsByMirror.set(row.mirrorIdentity, row.toolCallIds);
-          } else if (row.role === "toolResult" &&
-              prefixForToolMirrorIdentity(row.mirrorIdentity, ":result") === sourcePrefix) {
-            const callIdentity = row.mirrorIdentity.slice(0, -":result".length) + ":call";
-            if (typeof row.toolCallId === "string" && row.toolCallId.trim() &&
-                callsByMirror.get(callIdentity)?.includes(row.toolCallId)) {
-              sourceTurn.gatewayRunCompletion = completion;
-              break;
-            }
-          }
-        }
-      }
-    }
-    const markerAssistantMessages = messages
-      .filter((row) => row.role === "assistant" && row.textMarker)
-      .slice(-5)
-      .map(({ seq, stopReason, mirrorIdentity, runId, runTerminal }) =>
-        ({ seq, stopReason, mirrorIdentity, runId, runTerminal }));
-    process.stdout.write(JSON.stringify({
-      databasePath,
-      sessionKey,
-      sessionId: session.current_session_id,
-      exists: true,
-      promptReportSource: promptReport?.source,
-      promptReportShape: {
-        present: promptReport !== undefined,
-        valueType: promptReport === null ? "null" : typeof promptReport,
-        source: promptReport?.source,
-        entriesType: Array.isArray(promptReport?.tools?.entries)
-          ? "array"
-          : promptReport?.tools?.entries === null ? "null" : typeof promptReport?.tools?.entries,
-        entriesCount: Array.isArray(promptReport?.tools?.entries)
-          ? promptReport.tools.entries.length
-          : null,
-      },
-      promptToolNames: promptTools,
-      messageCount: messages.length,
-      userMarkerSeen: messages.some((message) => message.role === "user" && message.hasMarker),
-      assistantMarkerSeen: messages.some((message) => message.role === "assistant" && message.hasMarker),
-      assistantError: messages.some((message) => message.role === "assistant" && message.stopReason === "error"),
-      calls,
-      results,
-      codexTurns: Array.from(codexTurns.values()),
-      markerUserMessages,
-      markerAssistantMessages,
-      diagnostics: {
-        eventCount: rows.length,
-        eventTypeCounts,
-        roleCounts,
-        contentBlockTypeCounts,
-        observedToolNames: Array.from(observedToolNames).sort(),
-        resultToolNames: Array.from(resultToolNames).sort(),
-        finalAssistantDiagnostics,
-      },
-    }));
-  } finally {
-    db.close();
-  }
-`;
-
 // Codex's automatic reviewer reports a judgement as approved or denied with a risk level
 // and user authorization. When the review itself cannot finish (session, parse or prompt
 // errors) Codex fails closed: "denied" with no risk or authorization and a rationale that
@@ -1084,7 +619,28 @@ let catalogStage = "local app-server authentication";
   // RPC errors can contain upstream response text. Emit only locally classified facts.
   const timedOut = error.message?.startsWith("Codex app-server plugin runtime request timed out during ");
   const reason = timedOut ? "timed out" : "failed";
-  process.stderr.write("Native Codex catalog query " + reason + " during " + catalogStage + ".");
+  const categories = new Map([
+    ["Codex app-server plugin runtime transport failed.", "transport-failed"],
+    ["Codex app-server plugin runtime transport closed.", "transport-closed"],
+    ["Codex app-server plugin runtime response was invalid JSON.", "invalid-json"],
+    ["Codex app-server plugin runtime response was malformed.", "malformed-response"],
+    ["Codex plugin search deadline expired.", "search-deadline"],
+    ["Codex plugin search repeated its cursor.", "repeated-cursor"],
+    ["Local plugin runtime status is unavailable.", "local-status-unavailable"],
+    ["Local plugin runtime status is not ready.", "local-status-not-ready"],
+  ]);
+  const rpcError = error instanceof CodexAppServerRequestError;
+  const category = timedOut ? "request-timeout" :
+    rpcError ? "rpc-error" : categories.get(error.message) ?? "unknown";
+  // Keep only a numeric HTTP status, never the surrounding upstream text or URLs.
+  const httpStatus = rpcError && typeof error.message === "string"
+    ? error.message.slice(0, 4096).match(/\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?:\s+code)?[:=]?\s+)([45]\d{2})\b/i)?.[1]
+    : undefined;
+  const rpcMethod = rpcError && ["initialize", "plugin/search", "plugin/read"].includes(error.method)
+    ? ", RPC method: " + error.method : "";
+  const status = httpStatus === undefined ? "" : ", HTTP status: " + httpStatus;
+  process.stderr.write("Native Codex catalog query " + reason + " during " + catalogStage +
+    " (category: " + category + rpcMethod + status + ").");
   process.exitCode = 1;
 });
 `;
@@ -1447,6 +1003,9 @@ export function createNativePluginAssertions({
     "native plugin proof mode must be openclaw or codex.",
   );
 
+  const { sessionEvidence, readCodexSessionBinding, readConversationReply } =
+    createGatewaySessionEvidence({ execGateway, proofMode });
+
   async function assertGatewayChatCompletionsEnabled(agent) {
     const execution = await execGateway(agent, ["node", "-e", gatewayHttpConfigScript]);
     const summary = JSON.parse(execution.stdout);
@@ -1499,6 +1058,62 @@ export function createNativePluginAssertions({
         throw error;
       }
     });
+  }
+
+  async function captureRuntimeFailureLogs(logTarget, secrets = []) {
+    if (readRuntimeLogs && recordRuntimeLogs && logTarget.revisionId) {
+      // OCC authorizes and redacts each exact revision read. Apply the existing QA
+      // redactor again for fixture secrets before writing the public evidence artifact.
+      try {
+        for (const value of secrets) {
+          if (typeof value === "string" && value) {
+            registerQaSecret(value);
+          }
+        }
+        const sources = [];
+        for (const source of ["gateway", "agent"]) {
+          // Stay within OCC's two log reads/second per principal and Agent.
+          await delay(500);
+          try {
+            const page = await readRuntimeLogs({ ...logTarget, source });
+            const lines = page.records.map((record) => {
+              if (record.type === "line") {
+                const { type, time, level, message, fields } = record;
+                return JSON.stringify({ type, time, level, message, fields });
+              }
+              const { type, time, reason, count } = record;
+              return JSON.stringify({ type, time, reason, count });
+            });
+            sources.push({
+              source,
+              lines: redactedQaTail(lines.join("\n"), process.env, {
+                lines: 80,
+                lineChars: 900,
+              }),
+            });
+          } catch {
+            sources.push({ source, unavailable: true });
+          }
+        }
+        await recordRuntimeLogs({ ...logTarget, sources });
+      } catch {
+        // Diagnostic reads/writes must never replace the original turn failure.
+      }
+    }
+  }
+
+  async function withRuntimeFailureLogs(agent, action) {
+    const logTarget = {
+      namespaceId: agent.namespaceId,
+      agentId: agent.id,
+      revisionId: agent.revision?.id,
+    };
+    try {
+      return await action();
+    } catch (error) {
+      await captureRuntimeFailureLogs(logTarget);
+      throw error;
+    }
   }
 
   async function normalGatewayTurn({
@@ -1654,45 +1269,7 @@ export function createNativePluginAssertions({
       }
       return content;
     } catch (error) {
-      if (readRuntimeLogs && recordRuntimeLogs && logTarget.revisionId) {
-        // OCC authorizes and redacts each exact revision read. Apply the existing QA
-        // redactor again for fixture secrets before writing the public evidence artifact.
-        try {
-          for (const value of [password, ...secrets]) {
-            if (typeof value === "string" && value) {
-              registerQaSecret(value);
-            }
-          }
-          const sources = [];
-          for (const source of ["gateway", "agent"]) {
-            // Stay within OCC's two log reads/second per principal and Agent.
-            await delay(500);
-            try {
-              const page = await readRuntimeLogs({ ...logTarget, source });
-              const lines = page.records.map((record) => {
-                if (record.type === "line") {
-                  const { type, time, level, message, fields } = record;
-                  return JSON.stringify({ type, time, level, message, fields });
-                }
-                const { type, time, reason, count } = record;
-                return JSON.stringify({ type, time, reason, count });
-              });
-              sources.push({
-                source,
-                lines: redactedQaTail(lines.join("\n"), process.env, {
-                  lines: 80,
-                  lineChars: 900,
-                }),
-              });
-            } catch {
-              sources.push({ source, unavailable: true });
-            }
-          }
-          await recordRuntimeLogs({ ...logTarget, sources });
-        } catch {
-          // Diagnostic reads/writes must never replace the original turn failure.
-        }
-      }
+      await captureRuntimeFailureLogs(logTarget, [password, ...secrets]);
       throw error;
     } finally {
       abort.abort();
@@ -1700,84 +1277,6 @@ export function createNativePluginAssertions({
       await reviewer?.stopAndWait?.({ timeoutMs: 1_000 });
       await gateway.close?.();
     }
-  }
-
-  async function sessionEvidence(
-    agent,
-    {
-      sessionKey,
-      turnMarker,
-      toolName,
-      resultPattern,
-      expectedArguments,
-      expectedCatalog,
-      codeModeCall,
-    },
-  ) {
-    if (codeModeCall !== undefined) {
-      assert.equal(proofMode, "openclaw");
-      assert.equal(toolName, "exec");
-      assert.ok(typeof codeModeCall.code === "string" && codeModeCall.code.length > 0);
-      assert.ok(typeof codeModeCall.title === "string" && codeModeCall.title.length > 0);
-      assert.equal(codeModeCall.awaitResults, true);
-      assert.equal(expectedArguments, undefined);
-    }
-    const execution = await execGateway(agent, [
-      "node",
-      "-e",
-      sessionEvidenceScript,
-      sessionKey,
-      turnMarker,
-      toolName ?? "",
-      JSON.stringify(
-        Array.isArray(resultPattern) ? resultPattern : resultPattern ? [resultPattern] : [],
-      ),
-      JSON.stringify(codeModeCall ?? expectedArguments ?? null),
-      JSON.stringify(expectedCatalog ?? null),
-      JSON.stringify(codeModeCall ?? null),
-    ]);
-    const evidence = JSON.parse(execution.stdout);
-    for (const result of evidence.results ?? []) {
-      if (typeof result.errorText === "string") {
-        result.errorLines = redactedQaTail(result.errorText, process.env, {
-          lines: 3,
-          lineChars: 900,
-        });
-        delete result.errorText;
-      }
-    }
-    return { runtime: execution.label, ...evidence };
-  }
-
-  async function readCodexSessionBinding(agent, { sessionKey }) {
-    assert.equal(proofMode, "codex");
-    const execution = await execGateway(agent, [
-      "node",
-      "-e",
-      String.raw`
-      const assert = require("node:assert/strict");
-      const { createHash } = require("node:crypto");
-      const { DatabaseSync } = require("node:sqlite");
-      const sessionKey = process.argv[1];
-      const sessions = new DatabaseSync("/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite", { readOnly: true });
-      const state = new DatabaseSync("/home/node/.openclaw/state/openclaw.sqlite", { readOnly: true });
-      try {
-        const session = sessions.prepare("SELECT current_session_id FROM session_nodes WHERE session_key = ?").get(sessionKey);
-        assert.ok(session, "the original OC session must exist");
-        const key = "session-key:main:" + createHash("sha256").update(sessionKey.trim()).digest("base64url");
-        const row = state.prepare("SELECT value_json FROM plugin_state_entries WHERE plugin_id = 'codex' AND namespace = 'app-server-thread-bindings' AND entry_key = ? AND (expires_at IS NULL OR expires_at > ?)").get(key, Date.now());
-        assert.ok(row, "the OC session must have an active Codex binding");
-        const stored = JSON.parse(row.value_json);
-        assert.equal(stored.version, 1);
-        assert.equal(stored.state, "active");
-        assert.equal(stored.sessionId, session.current_session_id);
-        assert.ok(typeof stored.binding.threadId === "string" && stored.binding.threadId.length > 0);
-        process.stdout.write(JSON.stringify({ sessionId: session.current_session_id, threadId: stored.binding.threadId }));
-      } finally { sessions.close(); state.close(); }
-    `,
-      sessionKey,
-    ]);
-    return JSON.parse(execution.stdout);
   }
 
   async function readCodexThreadMetadata(agent, thread) {
@@ -2227,7 +1726,9 @@ export function createNativePluginAssertions({
 
   return {
     normalGatewayTurn,
+    withRuntimeFailureLogs,
     readCodexSessionBinding,
+    readConversationReply,
     readCodexThreadMetadata,
     assertSessionToolCallEvidence,
     assertSessionToolDeniedEvidence,
@@ -2244,22 +1745,19 @@ export function createNativePluginAssertions({
   };
 }
 
+/**
+ * @param {{ after: (cleanup: () => Promise<void>) => void }} context
+ * @param {import("./plugin-driver-proof-inputs.ts").PluginProofInputOptions & {
+ *   codexCredential?: Awaited<ReturnType<typeof readCodexServiceAccountCredential>>,
+ *   pluginDriverConfiguration?: Record<string, unknown>,
+ * }} options
+ */
 export async function createPluginDriverRealFixture(
   context,
   { scenario, pluginDriverId, databaseUrl, codexCredential, pluginDriverConfiguration = {} },
 ) {
-  const kubeconfigPath = requiredPluginProofEnv("OCC_TEST_KUBERNETES_KUBECONFIG");
-  const kubernetesContext = requiredPluginProofEnv("OCC_TEST_KUBERNETES_CONTEXT");
-  const gatewayImage = requiredPluginProofEnv("OCC_TEST_KUBERNETES_GATEWAY_IMAGE");
-  const codexImage =
-    pluginDriverId === "codex-plugin"
-      ? (process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
-        requiredPluginProofEnv("OCC_TEST_KUBERNETES_AGENT_IMAGE", "Codex runtime image"))
-      : (process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
-        process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE ??
-        gatewayImage);
-  const selectedDatabaseUrl = selectPluginProofDatabaseUrl({ scenario, databaseUrl });
-  const directory = await mkdtemp(join(tmpdir(), "occ-plugin-driver-real-"));
+  const inputs = selectPluginProofInputs({ scenario, pluginDriverId, databaseUrl });
+  const { gatewayImage, codexImage, databaseUrl: selectedDatabaseUrl } = inputs;
   const suffix = hash(`${proofPrefix}-${randomUUID()}`);
   const platformNamespace = `${proofPrefix}-${suffix}`;
   const credentials = {
@@ -2277,13 +1775,7 @@ export async function createPluginDriverRealFixture(
     startPortForward,
     startPortForwardTarget,
     applyManifest,
-  } = createRealKubernetesFixture({
-    kubeconfigPath,
-    kubernetesContext,
-    gatewayImage,
-    codexImage,
-    databaseUrl: selectedDatabaseUrl,
-  });
+  } = createRealKubernetesFixture(inputs);
 
   await validatePrerequisites();
   let worker;
@@ -2313,6 +1805,7 @@ export async function createPluginDriverRealFixture(
     }
   }
 
+  const directory = await mkdtemp(join(tmpdir(), "occ-plugin-driver-real-"));
   context.after(async () => {
     const failures = [];
     async function cleanup(operation) {
@@ -2561,6 +2054,7 @@ export async function createPluginDriverRealFixture(
       installationId: existing.id,
       secret: authSecret,
       baseURL: authBaseURL,
+      agentDomain: "agents.oce.localhost",
       pool,
     });
     const servicePrincipal = installationAdministratorServicePrincipal(
@@ -2592,6 +2086,7 @@ export async function createPluginDriverRealFixture(
     databaseUrl: selectedDatabaseUrl,
     authSecret,
     authBaseURL,
+    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     drivers: apiDrivers,
     ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
   });

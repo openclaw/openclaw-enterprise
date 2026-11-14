@@ -40,15 +40,17 @@ async function createFixture(t) {
 
 // Sends `text` as the exact request body, without re-encoding it.
 async function sendRaw(fixture, method, path, text, session) {
-  const response = await fetch(new URL(path, fixture.origin), {
-    method,
-    headers: {
-      ...authenticatedHeaders(session, { origin: fixture.origin }),
-      "content-type": "application/json",
-    },
-    body: text,
-    signal: AbortSignal.timeout(30_000),
-  });
+  const response = await fixture.fetch(
+    new Request(new URL(path, fixture.origin), {
+      method,
+      headers: {
+        ...authenticatedHeaders(session, { origin: fixture.origin }),
+        "content-type": "application/json",
+      },
+      body: text,
+      signal: AbortSignal.timeout(30_000),
+    }),
+  );
   return { status: response.status, body: await response.json() };
 }
 
@@ -119,6 +121,32 @@ test("Configuration writes admit every Configuration the Kubernetes Driver store
   assert.equal(stored.data.generation, 3);
 });
 
+test("Configuration writes refuse a serialized wide body without changing stored state", async (t) => {
+  const fixture = await createFixture(t);
+  const { namespace } = fixture;
+  const existing = await fixture.createConfiguration(namespace.id, notes("retained"));
+  const session = await fixture.signIn();
+  const values = notes(["\u0000", ...Array(100000).fill(0), "\ud800"]);
+  const text = JSON.stringify({ values });
+  assert.ok(Buffer.byteLength(text) < CONFIGURATION_BODY_LIMIT);
+
+  // The first array value is invalid. The later surrogate must not replace its detail, and the
+  // ordinary serialized HTTP path must refuse before the Configuration generation changes.
+  const refused = await sendRaw(
+    fixture,
+    "PATCH",
+    configurationPath(namespace.id, existing.id),
+    text,
+    session,
+  );
+  assertApiError(refused, 400, "INVALID_REQUEST");
+  assert.deepEqual(refused.body.error.details, [
+    { path: "/values/plugins/entries/knowledge/config/notes/0", code: "INVALID_FORMAT" },
+  ]);
+  const unchanged = await fixture.request("GET", configurationPath(namespace.id, existing.id));
+  assert.deepEqual(unchanged.data, existing);
+});
+
 test("Configuration writes refuse a caller without the grant before reading the body", async (t) => {
   const fixture = await createFixture(t);
   const { namespace } = fixture;
@@ -163,6 +191,7 @@ test("Configuration writes refuse a caller without the grant before reading the 
     const auditStart = fixture.auditSink.events.length;
     const refused = await partialWrite({
       origin: fixture.origin,
+      transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
       method,
       path,
       session,

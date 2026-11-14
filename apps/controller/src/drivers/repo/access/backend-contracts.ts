@@ -1,0 +1,213 @@
+import type { RepositoryCredentialBoundSessionInput } from "./service-contracts.ts";
+import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
+import type { RepositoryCredentialClientConfiguration } from "./client-contracts.ts";
+import type { JsonValue } from "./json-value.ts";
+
+/** Backend extension protocol. Runtime owners also check original object identity. */
+declare const credentialIdentity: unique symbol;
+declare const renewalIdentity: unique symbol;
+declare const sessionIdentity: unique symbol;
+declare const planIdentity: unique symbol;
+declare const outcomeIdentity: unique symbol;
+export type CredentialRef = Readonly<{ [credentialIdentity]: true }>;
+export type RenewalRef = Readonly<{ [renewalIdentity]: true }>;
+export type SessionRef = Readonly<{ [sessionIdentity]: true }>;
+export type AuthorityIdentity = RepositoryCredentialGrantIdentity & Readonly<{ sessionId: string }>;
+export interface Clock {
+  wallNow(): number;
+  monotonicNow(): number;
+  schedule(delayMs: number, callback: () => void): () => void;
+}
+export interface Bounds {
+  readonly deadlineMonoMs: number;
+  readonly signal: AbortSignal;
+}
+export interface AttemptContext extends Bounds {
+  readonly id: string;
+  readonly authority: AuthorityIdentity;
+  readonly action: "acquire" | "retire" | "finalize";
+  assertAdmitted(): void;
+  observeDispatch(): void;
+}
+export interface CaptureObservation {
+  readonly observedWallMs: number;
+  readonly expiresAtWallMs: number | undefined;
+}
+export interface DriverCustody {
+  assertAttempt(attempt: AttemptContext, action: AttemptContext["action"]): void;
+  capture(
+    attempt: AttemptContext,
+    bytes: Uint8Array,
+    observation: CaptureObservation,
+  ): CredentialRef;
+  withRetirement<T>(
+    attempt: AttemptContext,
+    credential: CredentialRef,
+    consume: (bytes: Uint8Array) => Promise<T>,
+  ): Promise<T>;
+  retainRenewal(bytes: Uint8Array): RenewalRef;
+  withRenewal<T>(renewal: RenewalRef, consume: (bytes: Uint8Array) => Promise<T>): Promise<T>;
+  disposeRenewal(renewal: RenewalRef): Promise<void>;
+}
+export type SafeProviderCode =
+  | "authority-unavailable"
+  | "scope-mismatch"
+  | "invalid-response"
+  | "insufficient-validity"
+  | "provider-rejected";
+export type OriginalOutcome = Readonly<{
+  readonly [outcomeIdentity]: true;
+  readonly attemptId: string;
+}>;
+export type AcquireOutcome = OriginalOutcome &
+  (
+    | Readonly<{
+        kind: "acquired";
+        credential: CredentialRef;
+        observedWallMs: number;
+        expiresAtWallMs: number;
+      }>
+    | Readonly<{ kind: "not-dispatched" | "uncertain" }>
+    | Readonly<{ kind: "rejected" | "reauthorization-required"; code: SafeProviderCode }>
+  );
+export type RetireOutcome = OriginalOutcome &
+  Readonly<{ kind: "revoked" | "expired" | "not-dispatched" | "uncertain" | "unsupported" }>;
+export type FinalizeOutcome = OriginalOutcome &
+  (
+    | Readonly<{ kind: "finalized" }>
+    | Readonly<{ kind: "cleanup-pending"; reason: "not-dispatched" | "uncertain" | "unsupported" }>
+  );
+export type HeaderFields = Readonly<Record<string, string>>;
+export interface RequestHead {
+  readonly method: string;
+  readonly rawTarget: string;
+  readonly headers: HeaderFields;
+  readonly receivedMonoMs: number;
+  readonly contentEncoding: "identity" | "gzip";
+  readonly framing: Readonly<{ kind: "none" | "chunked" | "length"; bytes: number | undefined }>;
+}
+export interface SessionAuthenticatedRequest {
+  readonly session: SessionRef;
+  readonly authority: AuthorityIdentity;
+  readonly head: RequestHead;
+}
+export interface ExchangeLimits {
+  readonly inputWireBytes: number;
+  readonly inputDecodedBytes: number;
+  readonly responseBytes: number;
+  readonly totalMs: number;
+  readonly inputMs: number;
+  readonly firstHeaderMs: number;
+  readonly stallMs: number;
+  readonly connectMs: number;
+}
+export type ResponsePolicy = {
+  headers(status: number, headers: HeaderFields): HeaderFields;
+  readonly parseJson?: (source: string) => JsonValue;
+  readonly rewriteJson: ((value: JsonValue) => JsonValue) | undefined;
+} & (
+  | { readonly body: "stream"; readonly trailers?: never }
+  | { readonly body: "bounded-json" | "bounded-raw"; readonly trailers?: "forbid" }
+);
+export interface RequestPlan {
+  readonly [planIdentity]: true;
+  readonly origin: string;
+  readonly method: string;
+  readonly target: string;
+  readonly category: string;
+  readonly effect: "read" | "write";
+  readonly requestHeaders: HeaderFields;
+  readonly limits: ExchangeLimits;
+  readonly responsePolicy: ResponsePolicy;
+  /** When set, the complete request body is buffered and must pass before dispatch. */
+  readonly inputPolicy?: (body: Uint8Array) => InputVerdict;
+  /** Bind the validated complete request to a one-use prepared material selection. */
+  readonly bindRequestDigest?: true;
+  /** Immutable, non-secret operation scope included in the digest, never upstream headers. */
+  readonly digestScope?: readonly string[];
+}
+/**
+ * `true` admits the body; `false` refuses it as 400 `unsupported-request`; a refusal
+ * object answers with its own status, stable code and service-owned message instead.
+ */
+export type InputVerdict =
+  | boolean
+  | Readonly<{ body: Uint8Array }>
+  | Readonly<{ status: 400 | 413; code: string; message?: string }>;
+export interface PrivateUpstreamRequest {
+  readonly plan: RequestPlan;
+  readonly headers: HeaderFields;
+  /** If supplied, the service returns only the durable receipt, never the provider response.
+   * Settlement has its own bounded lifetime even if the client has gone away. */
+  readonly settle?: (
+    result: { created: JsonValue } | "not-submitted" | "outcome_unknown",
+  ) => Promise<OperationReceipt>;
+}
+export type OperationReceipt = Readonly<{ kind: "recorded"; status: number; body: JsonValue }>;
+export type Denied = Readonly<{ kind: "denied"; status: number; code: string }>;
+export interface RepositoryBackend {
+  readonly binding: RepositoryCredentialGrantIdentity;
+  readonly replacement: "overlap" | "drain-before";
+  readonly cleanup: "revocable" | "expiry-only";
+  acquire(
+    attempt: AttemptContext,
+    previous: CredentialRef | undefined,
+    minimumValidityMs: number,
+  ): Promise<AcquireOutcome>;
+  retire(attempt: AttemptContext, credential: CredentialRef): Promise<RetireOutcome>;
+  finalize(attempt: AttemptContext): Promise<FinalizeOutcome>;
+  settle(original: AcquireOutcome | RetireOutcome | FinalizeOutcome): Promise<void>;
+  plan(request: SessionAuthenticatedRequest): RequestPlan | Denied;
+  /**
+   * The trusted lifecycle owner invokes the returned authenticator with temporary bytes
+   * from the exact credential record identified by `credential`. The reference alone
+   * does not grant access to bytes; the authenticator must not retain them.
+   */
+  prepareAuthentication(
+    credential: CredentialRef,
+    plan: RequestPlan,
+  ): <T>(bytes: Uint8Array, send: (request: PrivateUpstreamRequest) => Promise<T>) => Promise<T>;
+}
+export interface ResolvedGrant {
+  readonly binding: RepositoryCredentialGrantIdentity;
+  readonly client: RepositoryCredentialClientConfiguration;
+}
+export interface RepositoryBackendFactory {
+  parseAuthentication(head: RequestHead, authorization: string): string | Denied;
+  resolve(profile: string): ResolvedGrant;
+  create(
+    input: Readonly<{ authority: AuthorityIdentity; custody: DriverCustody; clock: Clock }>,
+  ): RepositoryBackend;
+  unauthenticated(head: RequestHead): Readonly<{ kind: "challenge"; realm: string }> | Denied;
+}
+
+/** An exchange capability, with no provider acquisition, retention or retirement methods. */
+export interface PreparedRepositoryBackend {
+  readonly binding: RepositoryCredentialGrantIdentity;
+  plan(request: SessionAuthenticatedRequest): RequestPlan | Denied;
+  authorize(
+    request: RequestPlan,
+    requestDigestSha256: string,
+    bounds: Bounds,
+  ): Promise<
+    | Readonly<{
+        headers: HeaderFields;
+        settle?: NonNullable<PrivateUpstreamRequest["settle"]>;
+        /** Checked synchronously at the actual upstream request start. */
+        assertSendStart(): void;
+      }>
+    | OperationReceipt
+  >;
+}
+
+/** Bound selection without a profile resolver; construction remains a separate capability. */
+export interface BoundPreparedRepositoryBackendFactory extends Omit<
+  RepositoryBackendFactory,
+  "resolve" | "create"
+> {
+  resolveBound(input: RepositoryCredentialBoundSessionInput): ResolvedGrant;
+  createPrepared(authority: AuthorityIdentity, selection: ResolvedGrant): PreparedRepositoryBackend;
+}
+
+export type RepositoryServiceFactory =
+  RepositoryBackendFactory | BoundPreparedRepositoryBackendFactory;

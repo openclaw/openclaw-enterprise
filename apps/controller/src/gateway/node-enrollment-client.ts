@@ -4,14 +4,12 @@ import {
   GatewayClientRequestTimeoutError,
   type GatewayClientOptions,
 } from "@openclaw/gateway-client";
+import { recordWorkspaceNodeObservation } from "./workspace-node-observation.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { TransientDependencyError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, isWorkspaceNodeDeviceId } from "@openclaw-enterprise/utils";
 
-/** Device identifiers accepted by the persisted workspace-node binding. */
-export function isWorkspaceNodeDeviceId(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
-}
+export { isWorkspaceNodeDeviceId } from "@openclaw-enterprise/utils";
 
 export interface NodeSetup {
   readonly setupId: string;
@@ -262,6 +260,7 @@ async function isConnected(
     throw new Error("The Gateway returned an invalid node observation.");
   }
   if (!node.connected) {
+    recordWorkspaceNodeObservation("disconnected");
     return false;
   }
   const commands = Array.isArray(node.commands) ? node.commands : [];
@@ -280,6 +279,9 @@ async function isConnected(
   // Bootstrap registration and its server receipt do not prove possession.
   // Native exposes this fact only for the current open session after checking
   // the exact device token and its still-current pairing generation.
+  recordWorkspaceNodeObservation(
+    node.deviceTokenAuthenticated ? "accepted" : "connected without device-token authentication",
+  );
   return node.deviceTokenAuthenticated;
 }
 

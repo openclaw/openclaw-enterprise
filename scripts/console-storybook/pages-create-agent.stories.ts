@@ -13,6 +13,7 @@ export const FormNamespaceFailed = story("createFormNamespaceFailed");
 export const FormNamespaceMissing = story("createFormNamespaceMissing");
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
 export const CreateNativeAdmin = story("createNativeAdmin");
+export const CreateMemberBrowserChat = story("createMemberBrowserChat");
 export const CreateNativeAdminSelected = story("createNativeAdminSelected");
 export const CreateNativeAdminDisabled = story("createNativeAdminDisabled");
 export const CreateSecretCreateNotPermitted = {
@@ -23,6 +24,7 @@ export const CreateSecretOperateDenied = {
   ...story("createSecretOperateDenied"),
   name: "Secret operate not permitted",
 };
+export const CreateRepositoryOnlyCredentialProxy = story("createRepositoryOnlyCredentialProxy");
 export const CreateRepositoryNotConfigured = {
   ...story("createRepositoryNotConfigured"),
   name: "Repository access not set up",
@@ -127,6 +129,7 @@ export const CreatePresetMultiline = story("createPresetMultiline");
 export const CreatePresetMultilineApplied = story("createPresetMultilineApplied");
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
+export const CreateCredentialRegistrationRefused = story("createCredentialRegistrationRefused");
 export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
 export const CreateCredentialRegistrationMismatch = story("createCredentialRegistrationMismatch");
 export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");
@@ -209,6 +212,10 @@ export const CreatePresetInvalidField = {
   ...story("createPresetInvalidField"),
   name: "Preset with an invalid field",
 };
+export const CreatePresetNonTextPrimary = {
+  ...story("createPresetNonTextPrimary"),
+  name: "Preset with a non-text primary",
+};
 export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
   name: "Permission check failed",
@@ -223,7 +230,11 @@ export const CreateMember = {
 };
 export const CreateMemberGrantRefused = {
   ...story("createMemberGrantRefused"),
-  name: "Member Agent created, grant needs an administrator",
+  name: "Member Agent created, opens its draft",
+};
+export const CreateMemberCredentialGateway = {
+  ...story("createMemberCredentialGateway"),
+  name: "Member on a Credential Gateway Installation",
 };
 export const CreateRestricted = {
   ...story("createRestricted"),

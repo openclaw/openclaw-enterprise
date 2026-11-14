@@ -6,8 +6,9 @@ import {
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type { Locator } from "playwright";
+import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import type { PluginApprovers, SecretMetadata } from "../../packages/contracts/src/index.ts";
@@ -194,6 +195,51 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await enabled.uncheck();
   await save(false);
   catalog.release();
+});
+
+test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Default plugin catalog");
+  const namespace = entity(namespaceValue);
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-default-plugin-catalog"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const agent = entity(
+    await fixture.createAgent(
+      namespace.id,
+      "Default catalog Agent",
+      {},
+      {
+        executionMode: "dedicated",
+        harnessAuth: null,
+      },
+    ),
+  );
+  const catalogUrl = new URL(
+    `/namespaces/${namespace.id}/agents/${agent.id}/plugins`,
+    fixture.origin,
+  ).href;
+  const { page } = await newPage(t, fixture, { browser });
+  await Promise.all([
+    responseTo(page, "GET", `${catalogUrl}/capabilities`).then((response) =>
+      assert.equal(response.status(), 200, "saved Agent plugin capabilities"),
+    ),
+    responseTo(page, "POST", catalogUrl).then((response) =>
+      assert.equal(response.status(), 200, "saved Agent plugin catalog"),
+    ),
+    (async () => {
+      await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+      await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    })(),
+  ]);
+  await page
+    .getByRole("dialog", { name: "Configure plugins", exact: true })
+    .getByRole("button", { name: "Google Workspace", exact: true })
+    .waitFor({ state: "visible" });
 });
 
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
@@ -1225,4 +1271,454 @@ test("plugin prefetch remains usable after leaving during its debounce", async (
     responseData(await fixture.request("GET", agentPath)).plugins,
     initialSelections,
   );
+});
+
+const conflictingDefaultsMessage =
+  'These defaults conflict. Choose "Inherit default policy" for either "tools enabled by default" (toolDefaults.enabled) or "Destructive tools" (driverPolicy.destructiveEnabled), keeping the other. API clients: omit either field.';
+
+async function policyRecoveryFixture(t: TestContext) {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Plugin default recovery");
+  const namespace = entity(namespaceValue);
+  const driver = new CodexPluginDriver();
+  controller(fixture).registerDriver(driver);
+  controller(fixture).selectDriver("plugin", driver.id);
+  const agent = agentEntity(
+    await fixture.createAgent(
+      namespace.id,
+      "Policy recovery",
+      nativeValues("policy-recovery", { harnessId: "codex" }),
+      { executionMode: "dedicated", harnessAuth: null },
+    ),
+  );
+  const id = "codex-plugin:calendar@openai-curated-remote";
+  const sibling = { approval: "provider_default" } as const;
+  const tool = { "app_calendar/create_event": { enabled: false } };
+  const initial = { [id]: { enabled: true, toolDefaults: sibling, tools: tool } };
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const initialized = record(
+    await fixture.request("PATCH", path, {
+      body: { configurationId: agent.configurationId, plugins: initial },
+    }),
+  );
+  assert.equal(initialized.status, 200, JSON.stringify(initialized.body));
+  return { fixture, namespace, agent, id, sibling, tool, initial, path };
+}
+
+test("Plugin JSON drafts refuse out-of-range numbers before requests or picker edits", async (t) => {
+  const { fixture, namespace, agent, id, initial, path, sibling, tool } =
+    await policyRecoveryFixture(t);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const input = page.getByLabel("Plugin selections JSON", { exact: true });
+  const summary = page.locator("summary").filter({ hasText: "Plugin selections JSON" });
+  const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const requests = apiRequests(page, fixture.origin);
+  const agentRequests = () => requests.filter((request) => request.path === path);
+  const valid = {
+    [id]: {
+      enabled: true,
+      toolDefaults: sibling,
+      tools: tool,
+      driverPolicy: { destructiveEnabled: false },
+    },
+  };
+  const bad = JSON.stringify(valid).replace(
+    '"destructiveEnabled":false',
+    '"destructiveEnabled":1e400',
+  );
+  await summary.click();
+  // Save must open the raw editor and explain the refusal before its GET preflight or PATCH.
+  for (const raw of [bad, bad.replace("1e400", "-1e400"), "{", "[]", "null"]) {
+    await input.fill(raw);
+    await summary.click();
+    const before = agentRequests().length;
+    await save.click();
+    await page
+      .getByText(
+        raw.includes("1e400")
+          ? "A number is too large or too small to save. Use a number closer to zero."
+          : "Enter a valid Plugin selections JSON object.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(await input.inputValue(), raw);
+    assert.equal(await input.evaluate((node) => document.activeElement === node), true);
+    assert.equal(await input.isVisible(), true);
+    assert.equal(agentRequests().length, before);
+  }
+  await input.fill(bad);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog
+    .getByText(
+      "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await input.inputValue(), bad);
+  assert.equal(await dialog.evaluate((node) => node.contains(document.activeElement)), true);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, initial);
+
+  // Valid JSON with an ill-typed policy still belongs to the real Driver's refusal path.
+  // Picker edits preserve legitimate nulls and exponent-like strings in unknown fields.
+  const illTyped = {
+    [id]: {
+      enabled: true,
+      toolDefaults: sibling,
+      tools: tool,
+      driverPolicy: {
+        destructiveEnabled: 7,
+        extra: [null, "1e400", "-1e400"],
+      },
+    },
+  };
+  await input.fill(JSON.stringify(illTyped));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const defaults = dialog.getByLabel(`${id} tools enabled by default`, { exact: true });
+  if (!(await defaults.isVisible())) {
+    await dialog.getByRole("button", { name: id, exact: true }).click();
+  }
+  await defaults.selectOption({ label: "Enabled" });
+  const edited = { [id]: { ...illTyped[id], toolDefaults: { ...sibling, enabled: true } } };
+  assert.deepEqual(JSON.parse(await input.inputValue()), edited);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const finitePolicy = { [id]: { ...valid[id], driverPolicy: { destructiveEnabled: 7 } } };
+  await input.fill(JSON.stringify(finitePolicy));
+  const refused = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+  await save.click();
+  assert.equal((await refused).status(), 400);
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "The supplied plugin policies are invalid." })
+    .waitFor();
+  assert.equal(await input.inputValue(), JSON.stringify(finitePolicy));
+  assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, initial);
+
+  // Correcting the Boolean saves through the same real Controller and survives a reread.
+  await input.fill(JSON.stringify(valid));
+  const recovered = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+  await save.click();
+  assert.equal((await recovered).status(), 200);
+  assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, valid);
+});
+
+test("driver policy controls return fixed conflict advice without changing saved state", async (t) => {
+  const { fixture, agent, id, initial, path, sibling, tool } = await policyRecoveryFixture(t);
+  let saved: unknown = initial;
+  for (const enabled of [true, false]) {
+    for (const destructiveEnabled of [true, false]) {
+      const plugins = {
+        [id]: {
+          enabled: true,
+          toolDefaults: { ...sibling, enabled },
+          tools: tool,
+          driverPolicy: { destructiveEnabled },
+        },
+      };
+      const refused = record(
+        await fixture.request("PATCH", path, {
+          body: { configurationId: agent.configurationId, plugins },
+        }),
+      );
+      assert.equal(refused.status, 400);
+      assert.deepEqual(record(record(refused.body).error), {
+        code: "INVALID_REQUEST",
+        message: conflictingDefaultsMessage,
+      });
+      assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, saved);
+      // Omitting either side independently resolves the same pair; siblings survive each write.
+      for (const selection of [
+        { enabled: true, toolDefaults: sibling, tools: tool, driverPolicy: { destructiveEnabled } },
+        { enabled: true, toolDefaults: { ...sibling, enabled }, tools: tool },
+      ]) {
+        const plugins = { [id]: selection };
+        assert.equal(
+          record(
+            await fixture.request("PATCH", path, {
+              body: { configurationId: agent.configurationId, plugins },
+            }),
+          ).status,
+          200,
+        );
+        saved = plugins;
+        assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, saved);
+      }
+    }
+  }
+  const unrelated = record(
+    await fixture.request("PATCH", path, {
+      body: {
+        configurationId: agent.configurationId,
+        plugins: { [id]: { enabled: true, driverPolicy: { unexpected: "private-policy-value" } } },
+      },
+    }),
+  );
+  assert.equal(unrelated.status, 400);
+  assert.deepEqual(record(record(unrelated.body).error), {
+    code: "INVALID_REQUEST",
+    message: "The supplied plugin policies are invalid.",
+  });
+  assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, saved);
+});
+
+for (const width of [1280, 390]) {
+  test(`driver policy controls recover from rejected defaults at ${width}px`, async (t) => {
+    const { fixture, namespace, agent, id, sibling, tool, initial, path } =
+      await policyRecoveryFixture(t);
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: { width, height: 900 } },
+    });
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+    const input = page.getByLabel("Plugin selections JSON", { exact: true });
+    const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+    const defaults = dialog.getByLabel(`${id} tools enabled by default`, { exact: true });
+    const destructive = dialog.getByLabel(`${id} Destructive tools`, { exact: true });
+    const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
+    const readDraft = async (): Promise<unknown> => JSON.parse(await input.inputValue());
+    const readSaved = async () => responseData(await fixture.request("GET", path)).plugins;
+    async function open() {
+      await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+      await dialog.waitFor({ state: "visible" });
+      if (!(await destructive.isVisible())) {
+        const back = dialog.getByRole("button", { name: "Back to plugins", exact: true });
+        if (await back.isVisible()) {
+          await back.click();
+        }
+        await dialog.getByRole("button", { name: id, exact: true }).click();
+      }
+      await destructive.waitFor({ state: "visible" });
+      await defaults.waitFor({ state: "visible" });
+    }
+    async function submit(status: number, message?: string) {
+      const pending = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+      await save.click();
+      const response = await pending;
+      assert.equal(response.status(), status);
+      if (message) {
+        const body: unknown = await response.json();
+        assert.equal(record(record(body).error).message, message);
+        const alert = page.getByRole("alert").filter({ hasText: message });
+        await alert.waitFor();
+        assert.equal(
+          await alert.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            return (
+              box.top >= 0 &&
+              box.bottom <= innerHeight + 1 &&
+              document.documentElement.scrollWidth <= innerWidth + 1
+            );
+          }),
+          true,
+          "The refusal is visible without horizontal scrolling",
+        );
+      }
+      await page
+        .getByRole("button", {
+          name: "Save plugin selections",
+          exact: true,
+          disabled: status === 200,
+        })
+        .waitFor();
+    }
+    // Opposite orders across viewports cover inheritance on either side without repeating journeys.
+    const first = width === 1280 ? "destructive" : "defaults";
+    await open();
+    await destructive.selectOption({ label: "Inherit default policy" });
+    await defaults.selectOption({ label: "Inherit default policy" });
+    if (first === "destructive") {
+      await destructive.selectOption({ label: "Disabled" });
+      await defaults.selectOption({ label: "Enabled" });
+    } else {
+      await defaults.selectOption({ label: "Disabled" });
+      await destructive.selectOption({ label: "Enabled" });
+    }
+    const conflict = {
+      [id]: {
+        enabled: true,
+        toolDefaults: { ...sibling, enabled: first === "destructive" },
+        tools: tool,
+        driverPolicy: { destructiveEnabled: first === "defaults" },
+      },
+    };
+    assert.deepEqual(await readDraft(), conflict);
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    await submit(400, conflictingDefaultsMessage);
+    assert.deepEqual(await readDraft(), conflict);
+    assert.deepEqual(await readSaved(), initial);
+    await open();
+    // Either visible control can resolve the conflict, without clearing the other choice.
+    await (first === "destructive" ? defaults : destructive).selectOption({
+      label: "Inherit default policy",
+    });
+    const saved = {
+      [id]: {
+        enabled: true,
+        tools: tool,
+        toolDefaults: first === "destructive" ? sibling : { ...sibling, enabled: false },
+        ...(first === "destructive" ? { driverPolicy: { destructiveEnabled: false } } : {}),
+      },
+    };
+    assert.deepEqual(await readDraft(), saved);
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    await submit(200);
+    assert.deepEqual(await readSaved(), saved);
+    await open();
+    await dialog
+      .getByText(
+        "Whether destructive tools are enabled by default. Explicit tool enablement overrides this default. Leave toolDefaults.enabled unset when using this setting.",
+        { exact: true },
+      )
+      .waitFor();
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    // Unrelated invalid policy must not expose arbitrary values or acquire conflict advice.
+    await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+    const unrelated = {
+      [id]: { enabled: true, driverPolicy: { unexpected: "private-policy-value" } },
+    };
+    await input.fill(JSON.stringify(unrelated));
+    await input.press("Tab");
+    await submit(400, "The supplied plugin policies are invalid.");
+    assert.deepEqual(await readDraft(), unrelated);
+    assert.deepEqual(await readSaved(), saved);
+  });
+}
+
+test("driver policy controls distinguish saved types, empty strings, and inheritance", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console");
+  await page.locator(settledView).waitFor();
+  const driver = new CodexPluginDriver();
+  // Boolean cases use the stock schema. String enums are generic renderer contract coverage,
+  // not a claim that the stock Driver accepts this extra setting.
+  const capabilities = {
+    ...driver.policyCapabilities,
+    driver: { id: driver.id, implementation: driver.implementation },
+    driverPolicySchema: {
+      ...driver.policyCapabilities.driverPolicySchema,
+      properties: {
+        destructiveEnabled: record(driver.policyCapabilities.driverPolicySchema.properties)
+          .destructiveEnabled,
+        mode: { type: "string", enum: ["", "false", "inherit", "unsupported"] },
+      },
+    },
+  };
+  await page.evaluate(async (capabilities) => {
+    const modulePath = "/console/agents/plugin-fields.mjs";
+    const module: unknown = await import(modulePath);
+    function isPluginModule(
+      value: unknown,
+    ): value is Pick<
+      typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs"),
+      "createPluginFields"
+    > {
+      return (
+        typeof value === "object" &&
+        value !== null &&
+        "createPluginFields" in value &&
+        typeof value.createPluginFields === "function"
+      );
+    }
+    if (!isPluginModule(module)) {
+      throw new Error("Expected the served plugin fields module");
+    }
+    const input = document.createElement("textarea");
+    input.id = "policy-types-proof";
+    input.value = JSON.stringify({ sample: { enabled: true } });
+    const fields = module.createPluginFields({
+      input,
+      capabilities,
+      catalog: { status: "ready", entries: [{ id: "sample", name: "Sample", tools: [] }] },
+    });
+    input.addEventListener("policy-readonly", () => fields.setDisabled(true));
+    document.body.replaceChildren(fields.section);
+  }, capabilities);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await page.getByRole("button", { name: "Sample", exact: true }).click();
+  const input = page.locator("#policy-types-proof");
+  const boolean = page.getByLabel("Sample Destructive tools", { exact: true });
+  const mode = page.getByLabel("Sample mode", { exact: true });
+  const draft = async (): Promise<unknown> => JSON.parse(await input.inputValue());
+  const selected = (control: Locator) => control.locator("option:checked").textContent();
+  const observations: (string | null)[] = [];
+  const expected: string[] = [];
+  for (const [saved, label] of [
+    [true, "Enabled"],
+    [false, "Disabled"],
+    ["true", '"true" (unsupported)'],
+    ["false", '"false" (unsupported)'],
+    [null, "null (unsupported)"],
+  ] as const) {
+    const value = {
+      sample: {
+        enabled: true,
+        driverPolicy: { destructiveEnabled: saved, mode: "false", sibling: { retain: true } },
+      },
+    };
+    await input.evaluate((node, value) => {
+      if (!(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected the policy textarea");
+      }
+      node.value = JSON.stringify(value);
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+    observations.push(await selected(boolean));
+    expected.push(label);
+    // Rendering does not repair or coerce malformed persisted/raw-JSON values.
+    assert.deepEqual(await draft(), value);
+    await boolean.selectOption({ label: "Enabled" });
+    assert.deepEqual(await draft(), {
+      sample: {
+        ...value.sample,
+        driverPolicy: { ...value.sample.driverPolicy, destructiveEnabled: true },
+      },
+    });
+  }
+  for (const [saved, label] of [
+    ["", "Empty string"],
+    ["false", "false"],
+    [false, "false (unsupported)"],
+    ["inherit", "inherit"],
+    ["unsupported", "unsupported"],
+  ] as const) {
+    await input.evaluate((node, saved) => {
+      if (!(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected the policy textarea");
+      }
+      node.value = JSON.stringify({
+        sample: { enabled: true, driverPolicy: { mode: saved, sibling: 42 } },
+      });
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+    }, saved);
+    observations.push(await selected(mode));
+    expected.push(label);
+    await mode.selectOption({ label: "Inherit default policy" });
+    assert.deepEqual(await draft(), {
+      sample: { enabled: true, driverPolicy: { sibling: 42 } },
+    });
+  }
+  console.log("saved policy labels:", JSON.stringify(observations));
+  assert.deepEqual(observations, expected);
+  // Selecting an empty enum value writes a string; selecting inheritance deletes only its key.
+  await mode.selectOption({ label: "Empty string" });
+  assert.deepEqual(await draft(), {
+    sample: { enabled: true, driverPolicy: { sibling: 42, mode: "" } },
+  });
+  const retained = await input.inputValue();
+  await input.dispatchEvent("policy-readonly");
+  for (const control of [boolean, mode]) {
+    assert.equal(await control.isDisabled(), true);
+    await control.evaluate((node) => {
+      if (!(node instanceof HTMLSelectElement)) {
+        throw new Error("Expected a policy select");
+      }
+      node.value = "";
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    assert.equal(await input.inputValue(), retained);
+  }
 });

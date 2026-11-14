@@ -4,7 +4,11 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
+import {
+  AGENT_CHILD_RESOURCE_KINDS,
+  PERMISSION_ACTIONS,
+  RESOURCE_KINDS,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { immutableSnapshot } from "../../packages/utils/src/index.ts";
 import {
@@ -1219,21 +1223,19 @@ test("invalid loaded IAM state fails closed", async () => {
       ...state,
       memberships: [{ ...memberships[0], namespaceId: "namespace-b" }],
     },
+    // An Installation Group may be bound in a Namespace (RFC-0026 Default users); a Namespace
+    // Group bound in another Namespace still fails closed.
     {
       ...state,
-      groups: [{ id: "group-installation", name: "global" }],
-      memberships: [
-        {
-          groupId: "group-installation",
-          principalId: "principal-group-reader",
-        },
-      ],
       bindings: [
         {
           ...bindings[0],
           subjectKind: "group",
-          subjectId: "group-installation",
-          namespaceId: "namespace-a",
+          subjectId: "group-readers-a",
+          namespaceId: "namespace-b",
+          roleId: "role-reader-b",
+          resourceKind: undefined,
+          resourceId: undefined,
         },
       ],
     },
@@ -1595,8 +1597,85 @@ test("identity access coverage counts Agent administer for a delegated read_logs
   assert.equal(await covers("agent-administrator", "agent-reader"), false);
 });
 
+test("identity access coverage counts only direct human Agent audit grants", async () => {
+  const auditPermission = { action: "read_audit", resourceKind: "agent" };
+  const readPermission = { action: "read", resourceKind: "agent" };
+  const agentA = { namespaceId: "namespace-a", resourceKind: "agent", resourceId: "agent-a" };
+  const driver = createDriver({
+    roles: [
+      { id: "audit-only", permissions: [auditPermission] },
+      { id: "read-only", permissions: [readPermission] },
+      { id: "read-and-audit", permissions: [readPermission, auditPermission] },
+    ],
+    bindings: [
+      {
+        id: "direct",
+        subjectKind: "identity",
+        subjectId: "principal-reader-a",
+        roleId: "read-and-audit",
+        ...agentA,
+      },
+      {
+        id: "ordinary",
+        subjectKind: "identity",
+        subjectId: "principal-foreign",
+        roleId: "read-only",
+        ...agentA,
+      },
+      {
+        id: "service",
+        subjectKind: "identity",
+        subjectId: "service-principal-reader-a",
+        roleId: "read-and-audit",
+        ...agentA,
+      },
+      {
+        id: "group",
+        subjectKind: "group",
+        subjectId: "group-readers-a",
+        roleId: "read-and-audit",
+        ...agentA,
+      },
+      {
+        id: "broad",
+        subjectKind: "identity",
+        subjectId: "principal-reader-b",
+        roleId: "read-and-audit",
+        namespaceId: "namespace-a",
+      },
+      {
+        id: "unscoped",
+        subjectKind: "identity",
+        subjectId: "principal-unbound",
+        roleId: "audit-only",
+        resourceKind: "agent",
+        resourceId: "agent-a",
+      },
+    ],
+  });
+  const covers = (principalId, targetIdentityId) =>
+    driver.coversIdentityAccess({ principalId, targetIdentityId });
+
+  // A key manager still needs the ServicePrincipal's ordinary read, but gains nothing
+  // by holding an audit permission that the ServicePrincipal cannot use.
+  assert.equal(await covers("principal-foreign", "service-principal-reader-a"), true);
+  assert.equal(await covers("principal-unbound", "service-principal-reader-a"), false);
+  // A person who manages the directly bound reader needs that same exact audit grant.
+  assert.equal(await covers("principal-reader-a", "principal-reader-a"), true);
+  assert.equal(await covers("principal-reader-b", "principal-reader-a"), false);
+  assert.equal(await covers("principal-group-reader", "principal-reader-a"), false);
+  const unscoped = await driver.authorize({
+    principalId: "principal-unbound",
+    action: "read_audit",
+    resource: { kind: "agent", id: "agent-a" },
+  });
+  assert.equal(unscoped.allowed, false);
+});
+
 // The Driver's decisions before it indexed policies: linear scans over a validated state,
-// as on main at 9f620fe48. The seeded differential below holds the indexed Driver to it.
+// as on main at 9f620fe48, plus RFC-0026 parent checks: an exact Agent binding also applies to
+// that Agent's revisions and sandbox policy. Agent audit grants require a direct binding on
+// one Agent. The seeded differential below holds the indexed Driver to these rules.
 const reference = (() => {
   const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
   const optionalNonempty = (value) => value === undefined || nonempty(value);
@@ -1622,6 +1701,16 @@ const reference = (() => {
     driverId: "occ-native-iam",
     evidence: value,
   });
+  const auditBindings = (state, identity) =>
+    identity.kind === "principal"
+      ? state.bindings.filter(
+          ({ subjectKind, subjectId, namespaceId, resourceKind }) =>
+            subjectKind === "identity" &&
+            subjectId === identity.id &&
+            namespaceId !== undefined &&
+            resourceKind === "agent",
+        )
+      : [];
   const validRequest = (request) =>
     typeof request === "object" &&
     request !== null &&
@@ -1641,6 +1730,10 @@ const reference = (() => {
       "sandbox_policy",
     ].includes(request.resource.kind) ||
       nonempty(request.resource.namespaceId)) &&
+    (request.parentAgentId === undefined ||
+      (nonempty(request.parentAgentId) &&
+        nonempty(request.resource.namespaceId) &&
+        AGENT_CHILD_RESOURCE_KINDS.includes(request.resource.kind))) &&
     PERMISSION_ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind);
 
@@ -1684,7 +1777,16 @@ const reference = (() => {
     const bindingIds = [];
     const roleIds = [];
     const grantingGroupIds = [];
-    for (const binding of state.bindings) {
+    const candidates =
+      request.action === "read_audit"
+        ? auditBindings(state, identity).filter(
+            (binding) =>
+              resource.kind === "agent" &&
+              binding.namespaceId === resource.namespaceId &&
+              binding.resourceId === resource.id,
+          )
+        : state.bindings;
+    for (const binding of candidates) {
       const role = state.roles.find((candidate) => candidate.id === binding.roleId);
       if (
         !(
@@ -1693,7 +1795,10 @@ const reference = (() => {
         ) ||
         (binding.namespaceId !== undefined && binding.namespaceId !== resource.namespaceId) ||
         (binding.resourceKind !== undefined &&
-          (binding.resourceKind !== resource.kind || binding.resourceId !== resource.id)) ||
+          (binding.resourceKind !== resource.kind || binding.resourceId !== resource.id) &&
+          (request.parentAgentId === undefined ||
+            binding.resourceKind !== "agent" ||
+            binding.resourceId !== request.parentAgentId)) ||
         role === undefined ||
         (role.namespaceId !== undefined && role.namespaceId !== resource.namespaceId) ||
         !role.permissions.some(
@@ -1776,6 +1881,7 @@ const reference = (() => {
   }
 
   function grants(state, identity) {
+    const directAuditBindings = auditBindings(state, identity);
     const subjects = [{}];
     if (identity.kind === "principal") {
       for (const membership of state.memberships) {
@@ -1809,8 +1915,12 @@ const reference = (() => {
           resourceId: binding.resourceId,
           permissions: role.permissions.filter(
             (permission) =>
-              binding.resourceKind === undefined ||
-              permission.resourceKind === binding.resourceKind,
+              (permission.action !== "read_audit" ||
+                (permission.resourceKind === "agent" && directAuditBindings.includes(binding))) &&
+              (binding.resourceKind === undefined ||
+                permission.resourceKind === binding.resourceKind ||
+                (binding.resourceKind === "agent" &&
+                  AGENT_CHILD_RESOURCE_KINDS.includes(permission.resourceKind))),
           ),
         });
       }
@@ -2040,6 +2150,22 @@ function randomPolicies(seed) {
       request.resource.id = binding.resourceId ?? request.resource.id;
       if (binding.namespaceId !== undefined) {
         request.resource.namespaceId = binding.namespaceId;
+      }
+    }
+    // Some requests name a parent Agent: the Agent of an exact binding, for that binding's
+    // revision or sandbox policy permission, or another Agent, or an invalid parent.
+    if (chance(0.2)) {
+      const role = state.roles.find((candidate) => candidate.id === binding.roleId);
+      const child = role?.permissions.find((permission) =>
+        AGENT_CHILD_RESOURCE_KINDS.includes(permission.resourceKind),
+      );
+      if (binding.resourceKind === "agent" && chance(0.7)) {
+        request.parentAgentId = binding.resourceId;
+        request.resource.kind = child?.resourceKind ?? pick(AGENT_CHILD_RESOURCE_KINDS);
+        request.action = child?.action ?? request.action;
+        request.resource.id = "rev-0";
+      } else {
+        request.parentAgentId = chance(0.1) ? "" : pick(["agt-0", "agt-1"]);
       }
     }
     if (chance(0.01)) {

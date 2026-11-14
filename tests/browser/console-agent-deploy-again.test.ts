@@ -37,7 +37,7 @@ import {
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.ts";
 import { responseTo } from "./console-action-helpers.ts";
-import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
+import { replyWithDifferentAgentId } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   GENERIC_DENIAL,
@@ -682,6 +682,7 @@ for (const [from, to] of [
                   access.status === "available"
                     ? {
                         status: "available",
+                        mode: "admin",
                         host,
                         origin: `https://${host}`,
                         activeRevisionId: current.id,

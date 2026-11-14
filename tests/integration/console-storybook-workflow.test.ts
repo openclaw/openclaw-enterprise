@@ -233,6 +233,7 @@ test("shared preview inputs select the Storybook build only on pushes to main", 
     "apps/controller/src/console-theme.ts",
     "apps/controller/src/composition/console-theme.ts",
     "packages/contracts/src/workspace-defaults.mjs",
+    "packages/contracts/src/workspace-defaults.ts",
     "packages/occ/src/environment-references.ts",
     "packages/occ/src/gateway-security-defaults.ts",
     "packages/occ/src/stored-configuration-rules.ts",
@@ -804,11 +805,24 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         await invalidRequest(`${policyPath}/apply`, "POST", body);
       }
       assert.equal(await (await request(policyPath)).text(), before);
+      const stale = await request(`${policyPath}/apply`, "POST", {
+        expectedVersion: 1,
+        revisionId: id("rev", 8),
+        additions: [],
+      });
+      assert.equal(stale.status, 409);
+      assert.equal(await (await request(policyPath)).text(), before);
       const valid = await request(`${policyPath}/apply`, "POST", {
         expectedVersion: 1,
         revisionId: id("rev", 7),
       });
       assert.equal(valid.status, 202);
+      const pending = await request(`${policyPath}/apply`, "POST", {
+        expectedVersion: 1,
+        revisionId: id("rev", 7),
+        additions: [],
+      });
+      assert.equal(pending.status, 409);
       assert.partialDeepStrictEqual(await valid.json(), {
         data: { application: { revisionId: id("rev", 7), state: "pending" } },
       });

@@ -1,4 +1,10 @@
 import { Check } from "typebox/value";
+import {
+  ConfigurationValues,
+  CreatePresetBody,
+  JsonValue,
+} from "../../packages/contracts/src/api/common.ts";
+import { validatePresetTemplate } from "../../packages/contracts/src/index.ts";
 import { AgentDeploymentStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import {
   deploymentErrorForWork,
@@ -24,6 +30,7 @@ import type {
 } from "playwright";
 import type {
   Permission,
+  OpenClawConfigurationDocument,
   Secret,
   Agent,
   AgentRevision,
@@ -32,15 +39,17 @@ import type {
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
-type PageFixture =
-  | (Pick<Fixture, "registerCleanupBeforeAppClose"> & { sharedByFile?: false })
-  | { sharedByFile: true };
+type PageFixture = Pick<Fixture, "browserArgs"> &
+  (
+    | (Pick<Fixture, "registerCleanupBeforeAppClose"> & { sharedByFile?: false })
+    | { sharedByFile: true }
+  );
 type LoginFixture = Pick<Fixture, "origin" | "credentials"> & { sharedByFile?: boolean };
 type Credentials = Pick<LoginFixture["credentials"], "email" | "password">;
 type Grant = readonly [Permission["action"], Permission["resourceKind"]];
 type RequestRecord = { method: string; path: string; body: unknown };
 type Scope = Page | Locator;
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function refusalMessage(body: unknown): string {
@@ -74,7 +83,7 @@ import { AgentCallerPermissionsResponse } from "../../packages/contracts/src/api
 import { waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 
-import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
+import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -305,45 +314,52 @@ async function launchBrowser(options: { args?: string[] } = {}) {
 // One Chromium for every test in a file (CI runs each file in its own process), launched on
 // first use and closed after the file's last test: `after` here runs when the module loads, so it
 // attaches to the root test. newPage uses it unless a test passes launch arguments, which need a
-// browser of their own. Each test still gets its own context (cookies, storage, viewport,
+// browser of their own. Shared browsers are keyed by fixture certificate arguments so one
+// fixture cannot widen another fixture's trust. Each test still gets its own context (cookies, storage, viewport,
 // routes); this only saves the launch and close, about 0.2 CPU-s a test. A failed launch, or a
 // browser that has crashed or disconnected, is launched again for the next caller.
-let sharedLaunch: Promise<Browser> | undefined;
+const sharedLaunches = new Map<string, Promise<Browser>>();
 after(async () => {
-  await (await sharedLaunch?.catch(() => null))?.close();
+  await Promise.all(
+    [...sharedLaunches.values()].map(async (pending) => {
+      await (await pending.catch(() => null))?.close();
+    }),
+  );
 });
 
-async function sharedBrowser() {
-  const pending = sharedLaunch;
+async function sharedBrowser(args: string[] = []) {
+  const key = JSON.stringify(args);
+  const pending = sharedLaunches.get(key);
   if (pending !== undefined) {
     const browser = await pending.catch(() => null);
     if (browser?.isConnected()) {
       return browser;
     }
-    if (sharedLaunch === pending) {
-      sharedLaunch = undefined;
+    if (sharedLaunches.get(key) === pending) {
+      sharedLaunches.delete(key);
     }
   }
-  if (sharedLaunch === undefined) {
-    const launching = launchBrowser().then(
+  let launching = sharedLaunches.get(key);
+  if (launching === undefined) {
+    launching = launchBrowser({ args }).then(
       (browser) => {
         browser.on("disconnected", () => {
-          if (sharedLaunch === launching) {
-            sharedLaunch = undefined;
+          if (sharedLaunches.get(key) === launching) {
+            sharedLaunches.delete(key);
           }
         });
         return browser;
       },
       (error) => {
-        if (sharedLaunch === launching) {
-          sharedLaunch = undefined;
+        if (sharedLaunches.get(key) === launching) {
+          sharedLaunches.delete(key);
         }
         throw error;
       },
     );
-    sharedLaunch = launching;
+    sharedLaunches.set(key, launching);
   }
-  return sharedLaunch;
+  return launching;
 }
 
 // The file's shared browser, for callers that pass it as newPage's `browser` option. newPage
@@ -357,19 +373,21 @@ export async function newPage(
   fixture: PageFixture,
   options: {
     args?: string[];
-    browser?: () => Promise<Browser>;
+    launch?: () => Promise<Browser>;
+    browser?: (args?: string[]) => Promise<Browser>;
     context?: Parameters<Browser["newContext"]>[0];
   } = {},
 ) {
   const artifacts = await artifactDirectory(t);
   assert.ok(
-    options.browser === undefined || options.args === undefined,
-    "pass a shared browser or launch arguments, not both",
+    [options.browser, options.args, options.launch].filter((option) => option !== undefined)
+      .length <= 1,
+    "pass one of a shared browser, launch arguments, or a dedicated browser factory",
   );
-  const shared = options.args === undefined;
+  const shared = options.args === undefined && options.launch === undefined;
   const browser = shared
-    ? await (options.browser ?? sharedBrowser)()
-    : await launchBrowser(options);
+    ? await (options.browser ?? sharedBrowser)(fixture.browserArgs)
+    : await (options.launch?.() ?? launchBrowser(options));
   const resources: {
     context?: BrowserContext;
     diagnostics?: Awaited<ReturnType<typeof watchBrowserContext>>;
@@ -427,9 +445,9 @@ function assertCredentials(credentials: unknown): asserts credentials is Credent
 // a file app (fileConsoleApp) signed in as its administrator loads the file's session cookies
 // instead, so the file makes one password sign-in rather than one a test. A tab that has
 // already loaded a page signs in through the form, so a test that signs in again on the same tab
-// keeps that tab's session storage and history across the sign-in. So does a fixture served
-// over TLS or under another host name, whose cookies are what such a test checks. Tests about
-// the sign-in page itself use the form directly or loginThroughForm.
+// keeps that tab's session storage and history across the sign-in. A fixture under a custom
+// host also uses the form, for tests of its cookie boundary. Tests about the sign-in page
+// itself use the form directly or loginThroughForm.
 
 export async function login(
   page: Page,
@@ -441,8 +459,8 @@ export async function login(
   const origin = new URL(fixture.origin);
   if (
     page.url() !== "about:blank" ||
-    origin.protocol !== "http:" ||
-    origin.hostname !== "127.0.0.1"
+    origin.protocol !== "https:" ||
+    origin.hostname !== "console.oce.localhost"
   ) {
     await loginForm(page, fixture, path, credentials);
     return;
@@ -711,11 +729,24 @@ export async function waitForShownInputValue(
 export async function waitForEnabled(locator: Locator, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   await locator.waitFor({ state: "attached", timeout: timeoutMs });
-  await waitForCondition(
-    () => locator.isEnabled(),
-    `${locator} stayed disabled for ${timeoutMs} ms`,
-    Math.max(1, deadline - Date.now()),
-  );
+  try {
+    await waitForCondition(
+      () => locator.isEnabled(),
+      `${locator} stayed disabled for ${timeoutMs} ms`,
+      Math.max(1, deadline - Date.now()),
+    );
+  } catch (error) {
+    const reason = await locator.evaluate((element) =>
+      (element.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" "),
+    );
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; UI reason: ${reason}`,
+      { cause: error },
+    );
+  }
 }
 
 // Ordering sentinel for "this action sends no request" checks. After one macrotask turn, the
@@ -769,13 +800,19 @@ export async function waitForCondition(
   }
 }
 
-// A Preset the product ships in deploy/presets, by file name without ".json" ("default-codex",
-// "standard-codex"): for createConsoleAppFixture's defaultPresets or a Preset create. Each call
-// reads the file again, so callers never share one object.
+// Read a fresh shipped draft by file name without ".json". The wire shape and template
+// syntax are checked; concrete launch fields and credential admission remain downstream.
 export async function shippedPreset(name: string) {
   const preset: unknown = JSON.parse(
     await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8"),
   );
+  assert.ok(
+    Check({ SafeJsonValue: JsonValue }, CreatePresetBody, preset),
+    `Expected shipped Preset ${name} to match the create wire shape`,
+  );
+  // Discard the validator's broader return type: tokenized approvers are valid drafts but
+  // need not satisfy the concrete Agent approver schema until rendered.
+  validatePresetTemplate(preset.template);
   return preset;
 }
 
@@ -1501,13 +1538,23 @@ export async function countInvalidEvents(page: Page) {
   return () => page.evaluate(() => globalThis.invalidEvents);
 }
 
+// Rejection fixtures may have invalid native settings, but must still contain JSON values.
+export function assertConfigurationValues(
+  values: unknown,
+): asserts values is OpenClawConfigurationDocument {
+  assert.ok(
+    Check({ SafeJsonValue: JsonValue }, ConfigurationValues, values),
+    "Expected native Configuration JSON values",
+  );
+}
+
 // A Configuration row as a release before a save rule stored it: save refuses `values` with
 // `reason`, and the row is then written through the Configuration Driver, as an older release
 // left it. `configurationDriver` is the fixture's test Configuration Driver.
 export async function storeRefusedConfiguration(
   fixture: Pick<Fixture, "request">,
   configurationDriver: ReturnType<
-    typeof import("../helpers/configuration-driver.mjs").createTestConfigurationDriver
+    typeof import("../helpers/configuration-driver.ts").createTestConfigurationDriver
   >,
   agent: Pick<Agent, "namespaceId" | "configurationId">,
   values: Record<string, unknown>,
@@ -1517,11 +1564,12 @@ export async function storeRefusedConfiguration(
   const refusedSave = await fixture.request("PATCH", configurationPath, { body: { values } });
   assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
   assert.equal(refusalMessage(refusedSave.body), reason);
-  const stored: unknown = configurationDriver.stored({
+  const stored = configurationDriver.stored({
     namespaceId: agent.namespaceId,
     id: agent.configurationId,
   });
-  assert.ok(isRecord(stored));
+  assert.ok(stored, "Expected the stored Configuration");
+  assertConfigurationValues(values);
   await configurationDriver.update({ ...stored, values });
 }
 

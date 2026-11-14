@@ -14,17 +14,17 @@ import {
 import { settled as settle } from "../helpers/child-processes.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/credentials/client/commands.ts";
-import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/credentials/client/environment.ts";
+import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/access/client/commands.ts";
+import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/access/client/environment.ts";
 import {
   inheritedRepositoryBinding,
   readRuntimeRepositoryManifest,
-} from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
 import {
   selectGhRepository,
   selectGitPushDestination,
   selectImplicitGhRepository,
-} from "../../apps/controller/src/drivers/repo/github/credentials/client/targets.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/client/targets.ts";
 
 // Children get an allowlisted environment, so they only share the lane's Node
 // compile cache when it is passed explicitly; outside CI the file keeps its own.
@@ -716,6 +716,16 @@ describe("repository credential router", { concurrency: true }, () => {
       () => selectGhRepository(manifest, gh.target.value, manifest.bindings[0]),
       /conflicting-repository-selection/,
     );
+    for (const args of [
+      ["repo", "view", "github.com/project"],
+      ["api", "repos/github.com/project"],
+    ]) {
+      const invocation = parseGhInvocation(args);
+      assert.equal(invocation.target.value, "github.com/project");
+      assert.throws(() => selectGhRepository(manifest, invocation.target.value), {
+        message: "unsupported-repository-target",
+      });
+    }
     for (const endpoint of [
       "https://api.github.com/repos/example/project",
       // The gateway refuses any escape in a path, so the client refuses it first.
@@ -776,7 +786,7 @@ describe("repository credential router", { concurrency: true }, () => {
       /conflicting-repository-selection/,
     );
 
-    const router = resolve("apps/controller/src/drivers/repo/github/credentials/client/router.ts");
+    const router = resolve("apps/controller/src/drivers/repo/github/access/client/router.ts");
     const route = (args) =>
       exec(process.execPath, [router, ...args], { env: clean(), allowFailure: true });
     // Rejection happens before private material is read or a native child starts.

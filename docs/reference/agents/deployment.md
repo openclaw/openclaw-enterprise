@@ -164,9 +164,10 @@ Deployment for that version reports a full Pod quota in `ReplicaFailure`,
 outstanding. Activation of a dedicated version reports
 `WORKSPACE_NODE_BINDING_PENDING` until the gateway applies the workspace node it
 was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
-the code is `REVISION_INCOMPLETE`. The version stays pending until it is ready,
-a held failure (such as `WORKSPACE_SETUP_REFUSED`) ends it, or the convergence
-deadline passes. The worker rechecks an unready
+the code is `REVISION_INCOMPLETE`. The version stays pending until ready, a
+startup failure (such as `WORKSPACE_SETUP_REFUSED` or a Kubernetes
+[crash loop](../drivers/kubernetes-compute.md#troubleshooting)) ends it, or the
+convergence deadline passes. The worker rechecks an unready
 version after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
@@ -272,6 +273,12 @@ Agent revision list and read operations are scoped beneath the exact Namespace a
 Agent. Each returned Agent revision requires its own authorized read; substituting a
 parent does not grant access to another Agent's history. Public response shapes
 are defined by the [API reference](../api.md).
+
+## Harness settings
+
+Revisions save `harnessOverrides` and resolved settings.
+See the [provider contract](../drivers/kubernetes-compute/model-provider.md) and
+[deployment and recovery workflow](../../guides/topics/agent-revisions.md#choose-a-harness-destination).
 
 ## Guarded first deployment
 

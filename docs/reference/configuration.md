@@ -57,9 +57,13 @@ unsupported settings, and unavailable Drivers stop startup before requests run.
 
 The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
 network additions. It grants no default access; an absent or empty array delegates
-none. API and worker must use the same trusted value. See
+none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
+
+The optional `iam` block declares the
+[Default users](authorization/default-users.md#installation-iam-configuration)
+Roles, Groups, and bindings.
 
 The optional `observability` block sets one external console destination:
 
@@ -238,13 +242,12 @@ its metadata names the source generation. Where unset, OCC sets
 `tools.exec.applyPatch.workspaceOnly: true` and `agents.defaults.sandbox.mode: "off"`.
 OCE isolates the Agent and has no Gateway approval screen. Unless `tools.exec`
 sets `security` or `ask`, OCC defaults `tools.exec.mode` to `"full"` and, in that
-mode, `tools.exec.strictInlineEval` to `false`.
+mode, `tools.exec.strictInlineEval` to `false`. With a channel enabled, OCC
+also sets an unset [`session.dmScope`](configuration/secrets.md#direct-message-sessions)
+to `"per-account-channel-peer"`.
 Later Configuration updates change no running gateway or existing version
 until the next deployment. Deleting a Configuration still referenced by an Agent
 returns `409`.
-
-Native OpenClaw provider settings in `values.channels` follow the same
-Configuration ownership and immutable Agent deployment lifecycle.
 
 Database constraints require the supported Configuration kind, a positive
 generation, matching Agent ownership, and a valid immutable saved version

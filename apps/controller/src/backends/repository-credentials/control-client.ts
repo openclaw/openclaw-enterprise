@@ -1,17 +1,25 @@
 import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
-import { isAbsolute, resolve } from "node:path";
+import { readPrivateJsonResponse } from "../../drivers/repo/access/private-json-response.ts";
+import { admissionIdTimestamp } from "../../drivers/repo/access/admission-id.ts";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
-import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/credentials/client-contracts.ts";
+import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
   hasControlCharacter,
+  isCanonicalUnixSocketPath,
+  matchesRepositorySessionId,
+  isValidGitClientConnection,
   normalizePushRefAllowlist,
-} from "../../drivers/repo/credentials/client-contracts.ts";
-import type {
-  RepositoryCredentialBoundSessionInput,
-  RepositoryCredentialSessionResult,
-  SessionStatus,
-} from "../../drivers/repo/credentials/service-contracts.ts";
+  repositorySessionBearerSource,
+} from "../../drivers/repo/access/client-contracts.ts";
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type RepositoryCredentialSessionResult,
+  type SessionStatus,
+} from "../../drivers/repo/access/service-contracts.ts";
+
+const repositorySessionBearerPattern = new RegExp(`^${repositorySessionBearerSource}$`);
 
 /** Private wire response; the selected Driver renders the portable runtime files. */
 export type RepositoryCredentialControlOpenResult =
@@ -48,45 +56,34 @@ function unavailable(): never {
   throw new RepositoryCredentialControlError(true);
 }
 
-const { object, identity, counter } = createStatusWirePrimitives(unavailable);
+const {
+  object,
+  identity,
+  counter,
+  parseCleanup,
+  sessionStatusObject,
+  grantIdentityObject,
+  projectGrantIdentity,
+} = createStatusWirePrimitives(unavailable);
 
 function sessionId(value: unknown): string {
-  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+  if (typeof value !== "string" || !matchesRepositorySessionId(value)) {
     return unavailable();
   }
   return value;
 }
 
 function binding(value: unknown): RepositoryCredentialGrantIdentity {
-  const parsed = object(value, ["providerInstanceId", "repositoryId", "grantId"]);
-  return Object.freeze({
-    providerInstanceId: identity(parsed.providerInstanceId),
-    repositoryId: identity(parsed.repositoryId),
-    grantId: identity(parsed.grantId),
-  });
+  const parsed = grantIdentityObject(value);
+  return Object.freeze(projectGrantIdentity(parsed));
 }
 
 function status(value: unknown): SessionStatus {
-  const parsed = object(value, [
-    "sessionId",
-    "state",
-    "deadlineWallMs",
-    "binding",
-    "activeUses",
-    "cleanup",
-  ]);
-  const cleanup = object(parsed.cleanup, [
-    "active",
-    "pending",
-    "revoked",
-    "expired",
-    "uncertain",
-    "auxiliaryPending",
-  ]);
+  const parsed = sessionStatusObject(value);
+  const cleanup = parseCleanup(parsed.cleanup);
   const deadlineWallMs = counter(parsed.deadlineWallMs);
   if (
     (parsed.state !== "OPEN" && parsed.state !== "CLOSED" && parsed.state !== "DISPOSED") ||
-    typeof cleanup.auxiliaryPending !== "boolean" ||
     deadlineWallMs === 0
   ) {
     return unavailable();
@@ -97,22 +94,11 @@ function status(value: unknown): SessionStatus {
     deadlineWallMs,
     binding: binding(parsed.binding),
     activeUses: counter(parsed.activeUses),
-    cleanup: Object.freeze({
-      active: counter(cleanup.active),
-      pending: counter(cleanup.pending),
-      revoked: counter(cleanup.revoked),
-      expired: counter(cleanup.expired),
-      uncertain: counter(cleanup.uncertain),
-      auxiliaryPending: cleanup.auxiliaryPending,
-    }),
+    cleanup: Object.freeze(cleanup),
   });
   if (
     result.state === "DISPOSED" &&
-    (result.activeUses !== 0 ||
-      result.cleanup.active !== 0 ||
-      result.cleanup.pending !== 0 ||
-      result.cleanup.uncertain !== 0 ||
-      result.cleanup.auxiliaryPending)
+    (hasUnsettledCleanupCounts(result) || result.cleanup.auxiliaryPending)
   ) {
     return unavailable();
   }
@@ -143,15 +129,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
   const origin = new URL(fields.gatewayOrigin);
   const remote = new URL(fields.gitRemote);
   if (
-    origin.protocol !== "https:" ||
-    origin.origin !== fields.gatewayOrigin ||
-    origin.username ||
-    origin.password ||
-    remote.origin !== origin.origin ||
-    remote.username ||
-    remote.password ||
-    remote.search ||
-    remote.hash ||
+    !isValidGitClientConnection(origin, remote, fields) ||
     fields.apiHost !== origin.hostname ||
     !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(fields.canonicalApiHost) ||
     !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(fields.repository) ||
@@ -164,7 +142,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
 
 function opened(value: unknown): RepositoryCredentialSessionResult {
   const parsed = object(value, ["session", "bearer", "client"]);
-  if (typeof parsed.bearer !== "string" || !/^[A-Za-z0-9_-]{43,256}$/.test(parsed.bearer)) {
+  if (typeof parsed.bearer !== "string" || !repositorySessionBearerPattern.test(parsed.bearer)) {
     return unavailable();
   }
   const session = status(parsed.session);
@@ -185,9 +163,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
 
   constructor(options: { readonly controlSocket: string }) {
     if (
-      !isAbsolute(options.controlSocket) ||
-      resolve(options.controlSocket) !== options.controlSocket ||
-      Buffer.byteLength(options.controlSocket) > 103 ||
+      !isCanonicalUnixSocketPath(options.controlSocket) ||
       hasControlCharacter(options.controlSocket)
     ) {
       throw new Error("The repository credential control socket must be an absolute Unix path.");
@@ -208,11 +184,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     admissionId: string,
     signal: AbortSignal,
   ): Promise<RepositoryCredentialControlOpenResult> {
-    if (
-      !/^[0-9]{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-        admissionId,
-      )
-    ) {
+    if (admissionIdTimestamp(admissionId) === undefined) {
       throw new RepositoryCredentialControlError(false);
     }
     const reply = await this.call("POST", "/v1/sessions", signal, input, admissionId);
@@ -296,7 +268,6 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     signal: AbortSignal,
     input?: RepositoryCredentialBoundSessionInput,
     admissionId?: string,
-    maximumResponseBytes = 16 * 1024,
   ): Promise<Reply> {
     const body = input === undefined ? "" : JSON.stringify(input);
     const bodyBytes = Buffer.byteLength(body);
@@ -305,8 +276,6 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     }
     try {
       return await new Promise<Reply>((resolveReply, reject) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
         const outgoing = request(
           {
             socketPath: this.#socket,
@@ -323,38 +292,23 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
             },
           },
           (incoming) => {
-            incoming.on("data", (chunk: Buffer) => {
-              size += chunk.length;
-              if (size > maximumResponseBytes) {
-                incoming.destroy();
-                outgoing.destroy();
-                reject(new RepositoryCredentialControlError(true));
-                return;
-              }
-              chunks.push(chunk);
-            });
-            incoming.once("error", reject);
-            incoming.once("end", () => {
-              try {
-                if (
-                  !incoming.complete ||
-                  incoming.statusCode === undefined ||
-                  incoming.headers["content-type"] !== "application/json"
-                ) {
-                  unavailable();
+            readPrivateJsonResponse(
+              incoming,
+              (bytes) => {
+                try {
+                  if (bytes === undefined || incoming.statusCode === undefined) {
+                    unavailable();
+                  }
+                  resolveReply({
+                    status: incoming.statusCode,
+                    body: JSON.parse(bytes.toString("utf8")),
+                  });
+                } catch {
+                  reject(new RepositoryCredentialControlError(true));
                 }
-                resolveReply({
-                  status: incoming.statusCode,
-                  body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-                });
-              } catch {
-                reject(new RepositoryCredentialControlError(true));
-              } finally {
-                for (const chunk of chunks) {
-                  chunk.fill(0);
-                }
-              }
-            });
+              },
+              reject,
+            );
           },
         );
         outgoing.once("error", reject);

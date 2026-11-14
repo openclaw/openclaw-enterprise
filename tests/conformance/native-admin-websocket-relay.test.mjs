@@ -7,7 +7,7 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { proxyNativeAdminWebSocket } from "../../apps/controller/src/gateway/native-admin-proxy.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { within } from "../helpers/wait-for.mjs";
 

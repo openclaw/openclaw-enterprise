@@ -31,11 +31,6 @@ run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
 install -d -m 700 "$run_root"
 RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
 printf 'Private session directory: %s\n' "$RUN_DIR"
-
-# Stage the network policy for cluster startup and the configuration script for the Helm reload.
-install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
-install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
-source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 Choose one image path before starting the cluster.
@@ -51,6 +46,17 @@ unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 ```bash
 export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller}"
 export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the published runtime}"
+```
+
+After selecting the images and matching checkout, stay in the same Bash shell
+and stage the quickstart files from that checkout. `RUN_DIR` still names the
+private directory created above, even after changing checkouts.
+
+```bash
+# Stage the network policy for cluster startup and the configuration script for the Helm reload.
+install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
+source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 ## 2. Start a new k3d installation
@@ -90,26 +96,10 @@ The [configuration script](../../snippets/openshell-quickstart/configure-install
 node "$RUN_DIR/configure-installation.mjs"
 ```
 
-Reload the edited file through Helm. Use a new Secret name for each change. Helm rolls the API and worker when the referenced name changes. Wait for both deployments before provisioning the Agent.
-
-```bash
-# Verify the generated kubeconfig targets this run before changing the release.
-state=$OCC_DEVELOPMENT_STATE_DIRECTORY
-export KUBECONFIG="$state/kubeconfig"
-CONTEXT="k3d-$(jq -er .cluster "$state/state.json")"
-PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
-(
-  set -e
-  test "$(kubectl config current-context)" = "$CONTEXT"
-
-  # Point Helm at a new, versioned Secret so that the API and worker reload the changes.
-  secret="oce-openshell-codex-$(date +%s)"
-  kubectl --context "$CONTEXT" -n "$PLATFORM_NS" create secret generic "$secret" \
-    --from-file="installation.yaml=$state/installation.yaml"
-  helm --kube-context "$CONTEXT" upgrade openclaw-enterprise deploy/helm/openclaw-enterprise \
-    -n "$PLATFORM_NS" -f "$state/helm-values.json" --set-string installation.secretName="$secret" --wait
-)
-```
+Step 4 reloads this edit through the authenticated operator session, preserving the
+startup Secret and its Installation identity. Exclude other release and initialization writers
+through rollout; see [update and recovery](quickstart-session.md#update-and-recover-the-installation).
+Finish that step before provisioning an Agent.
 
 [Helm warned that `api.trustedProxy` is unset?](../operate/local-setup-troubleshooting.md#helm-warns-that-apitrustedproxy-is-unset)
 
@@ -120,6 +110,11 @@ If your network intercepts HTTPS, [install its approved public CA in the OpenShe
 Use the service key that the launcher generated for REST requests. The helper sends requests through the selected API Pod. Keep the key in the private run directory.
 
 ```bash
+state=$OCC_DEVELOPMENT_STATE_DIRECTORY
+export KUBECONFIG="$state/kubeconfig"
+CONTEXT="k3d-$(jq -er .cluster "$state/state.json")"
+PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
+test "$(kubectl config current-context)" = "$CONTEXT"
 PLATFORM=local-k3d
 RELEASE=openclaw-enterprise
 OCE_CHART="$(pwd)/deploy/helm/openclaw-enterprise"
@@ -134,12 +129,14 @@ CONSOLE_ORIGIN=$(jq -er .browserOrigin "$state/state.json")
 NATIVE_ADMIN_DOMAIN=$(jq -er .nativeAdminDomain "$state/state.json")
 # The local launcher supplies the cluster policies. No extra CNI service rules are needed.
 cat > "$RUN_DIR/platform.sh" <<'SH'
-deployment_preflight() { :; }
+deployment_preflight() { ./bin/occ dev check; }
 deployment_network() { :; }
 repository_network() { :; }
 SH
 source "$RUN_DIR/operator-session.sh"
 source "$RUN_DIR/platform.sh"
+save_session
+upgrade_installation
 namespace=$(request GET /namespaces | jq -er '[.data[]|select(.name=="default" and .status=="ready")]|select(length==1)|first.id')
 base="/namespaces/$namespace"
 TENANT_NAMESPACE=$(kube get ns -l "openclaw.dev/namespace=$namespace" -o json |

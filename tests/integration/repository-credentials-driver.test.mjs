@@ -1,6 +1,6 @@
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
-import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
+import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
@@ -108,23 +108,25 @@ test(
         }),
       ScopeViolationError,
     );
-    const composed = await composeRepositoryAccess({
-      backend: {
-        id: fixture.backendId,
-        type: "github",
-        drivers: { repo: "repository-credentials" },
-        configuration: { registryPath: fixture.registryFile },
-      },
-      selection: {
-        id: "repository-credentials",
-        implementation: "github",
-        configuration: {
-          sessionDurationSeconds: 3600,
-          controlSocket: fixture.config.gateway.controlSocket,
-          publicCaPath: fixture.tls.certFile,
+    const composed = await composeRepositoryAccess(
+      {
+        backend: {
+          id: fixture.backendId,
+          type: "github",
+          drivers: { repo: "repository-credentials" },
+          configuration: { registryPath: fixture.registryFile },
+        },
+        selection: {
+          id: "repository-credentials",
+          implementation: "github",
+          configuration: { sessionDurationSeconds: 3600 },
         },
       },
-    });
+      {
+        controlSocket: fixture.config.gateway.controlSocket,
+        publicCaPath: fixture.tls.certFile,
+      },
+    );
     const driver = { policy: composed.repositoryPolicy, sender: composed.nativeRepositorySender };
     assert.deepEqual(driver.policy.resolve(selection), resolution);
     assert.throws(
@@ -691,7 +693,7 @@ test(
       await new Promise((resolve) => receiptServer.close(resolve));
     });
     const probe = new URL(
-      "../../apps/controller/src/drivers/repo/github/credentials/admission-probe.mjs",
+      "../../apps/controller/src/drivers/repo/github/access/admission-probe.mjs",
       import.meta.url,
     ).pathname;
     for (const [mode, outcome] of [

@@ -63,7 +63,7 @@ presentation; use the build, formatting, link checks, and visual inspection.
 The full repository checks (`pnpm format:check` and `pnpm openapi:check`) require
 the controller workspace dependencies from `pnpm install --frozen-lockfile`.
 Both API Markdown pages can also be checked against the checked-in OpenAPI
-contract with `node scripts/generate-occ-api-reference.mjs --check`.
+contract with `node scripts/generate-occ-api-reference.ts --check`.
 
 ## Edit the source
 
