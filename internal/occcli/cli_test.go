@@ -161,7 +161,9 @@ type runtimeLogStub struct {
 	activeRevision string
 	// revisions is the JSON revision list; empty means the Agent has none.
 	revisions string
-	paths     []string
+	// revisionListUnavailable fails only the optional revision discovery request.
+	revisionListUnavailable bool
+	paths                   []string
 	// podless lists revisions whose runtime description has no Pods.
 	podless []string
 	// harness is the provider status returned for a podless newer revision.
@@ -183,6 +185,10 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 	case request.URL.Path == "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/permissions":
 		fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.permissions, `{"update":true,"deploy":true,"operate":true,"delete":true}`))
 	case request.URL.Path == "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/revisions":
+		if stub.revisionListUnavailable {
+			logError(http.StatusInternalServerError, "INTERNAL_ERROR", nil)(response, nil)
+			return
+		}
 		fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.revisions, "[]"))
 	case request.URL.Path == "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/revisions/"+stub.activeID:
 		if stub.activeRevision == "forbidden" {
@@ -894,6 +900,26 @@ func TestAgentLogsExitsNonZeroWhenLogsAreUnsupportedOrUnavailable(t *testing.T) 
 		if !errors.As(err, &apiErr) || apiErr.Status != test.status || apiErr.Code != test.code {
 			t.Errorf("%d %s follow=%v: err = %v", test.status, test.code, test.follow, err)
 		}
+	}
+}
+
+func TestAgentRuntimeReportsFailedRevisionDiscovery(t *testing.T) {
+	const active = "rev_00000000-0000-4000-8000-000000000001"
+	stub := &runtimeLogStub{t: t, activeID: active, revisionListUnavailable: true}
+	out, notices, err := runLogsCommand(t, context.Background(), stub, "agent", "runtime", "agt_00000000-0000-4000-8000-000000000001", "-o", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The active revision remains useful, but its healthy status cannot rule
+	// out a newer deployment in trouble when revision discovery failed.
+	var description map[string]any
+	if err := json.Unmarshal([]byte(out), &description); err != nil || description["revisionId"] != active {
+		t.Fatalf("runtime output=%q error=%v", out, err)
+	}
+	if !strings.Contains(notices, "reading the active revision "+active) ||
+		!strings.Contains(notices, "newer or failed revision was not checked") ||
+		!strings.Contains(notices, "INTERNAL_ERROR") {
+		t.Fatalf("notice does not explain the incomplete diagnosis: %q", notices)
 	}
 }
 
