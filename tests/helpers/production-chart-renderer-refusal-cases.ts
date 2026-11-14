@@ -5,6 +5,28 @@ type RendererRefusalCase = readonly [
   diagnostic?: RegExp,
 ];
 
+const executionKubeconfigValues = {
+  "executionCluster.enabled": "true",
+  "executionCluster.apiKubeconfigSecretName": "execution-api",
+  "executionCluster.workerKubeconfigSecretName": "execution-worker",
+  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+};
+
+const googleRecoveryValues = {
+  "auth.google.enabled": "true",
+  "auth.recoveryUserId": "recovery-admin_1",
+};
+
+function secretKeyCase(
+  description: string,
+  field: string,
+  value: string,
+  prerequisites?: ChartOverrides,
+): RendererRefusalCase {
+  const diagnostic = new RegExp(`${field.replaceAll(".", "\\.")} must be a Kubernetes Secret key`);
+  return [description, { ...prerequisites, [field]: value }, diagnostic];
+}
+
 export function productionChartRendererRefusalCases({
   agentNativeAdminValues,
   chatgptValues,
@@ -51,101 +73,60 @@ export function productionChartRendererRefusalCases({
       "invalid database CA key",
       { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
     ],
-    [
-      "overlong database CA key",
-      { "database.caSecretName": "occ-rds-ca", "database.caKey": "a".repeat(254) },
-      /database\.caKey must be a Kubernetes Secret key/,
-    ],
+    secretKeyCase("overlong database CA key", "database.caKey", "a".repeat(254), {
+      "database.caSecretName": "occ-rds-ca",
+    }),
     ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
     ["reserved application database Secret key", { "database.appUrlKey": "." }],
     ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
     ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
     ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
     ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
-    [
-      "invalid installation startup Secret key",
-      { "installation.key": "bad/key" },
-      /installation\.key must be a Kubernetes Secret key/,
-    ],
-    [
-      "reserved installation startup Secret key",
-      { "installation.key": "." },
-      /installation\.key must be a Kubernetes Secret key/,
-    ],
-    [
+    secretKeyCase("invalid installation startup Secret key", "installation.key", "bad/key"),
+    secretKeyCase("reserved installation startup Secret key", "installation.key", "."),
+    secretKeyCase(
       "invalid execution kubeconfig Secret key",
-      {
-        "executionCluster.enabled": "true",
-        "executionCluster.apiKubeconfigSecretName": "execution-api",
-        "executionCluster.workerKubeconfigSecretName": "execution-worker",
-        "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-        "executionCluster.kubeconfigKey": "bad/key",
-      },
-      /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
-    ],
-    [
+      "executionCluster.kubeconfigKey",
+      "bad/key",
+      executionKubeconfigValues,
+    ),
+    secretKeyCase(
       "reserved execution kubeconfig Secret key",
-      {
-        "executionCluster.enabled": "true",
-        "executionCluster.apiKubeconfigSecretName": "execution-api",
-        "executionCluster.workerKubeconfigSecretName": "execution-worker",
-        "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-        "executionCluster.kubeconfigKey": "..kube",
-      },
-      /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
-    ],
-    [
-      "invalid Better Auth signing Secret key",
-      { "auth.secretKey": "bad/key" },
-      /auth\.secretKey must be a Kubernetes Secret key/,
-    ],
-    [
-      "reserved Better Auth signing Secret key",
-      { "auth.secretKey": "." },
-      /auth\.secretKey must be a Kubernetes Secret key/,
-    ],
-    [
-      "overlong Better Auth signing Secret key",
-      { "auth.secretKey": "a".repeat(254) },
-      /auth\.secretKey must be a Kubernetes Secret key/,
-    ],
-    [
+      "executionCluster.kubeconfigKey",
+      "..kube",
+      executionKubeconfigValues,
+    ),
+    secretKeyCase("invalid Better Auth signing Secret key", "auth.secretKey", "bad/key"),
+    secretKeyCase("reserved Better Auth signing Secret key", "auth.secretKey", "."),
+    secretKeyCase("overlong Better Auth signing Secret key", "auth.secretKey", "a".repeat(254)),
+    secretKeyCase(
       "invalid GitHub client ID Secret key",
-      { ...googleLoginValues, "auth.google.clientIdKey": "bad/key" },
-      /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
-    ],
-    [
+      "auth.google.clientIdKey",
+      "bad/key",
+      googleLoginValues,
+    ),
+    secretKeyCase(
       "reserved GitHub client secret Secret key",
-      { ...googleLoginValues, "auth.google.clientSecretKey": "." },
-      /auth\.google\.clientSecretKey must be a Kubernetes Secret key/,
-    ],
-    [
+      "auth.google.clientSecretKey",
+      ".",
+      googleLoginValues,
+    ),
+    secretKeyCase(
       "overlong Google client secret Secret key",
-      {
-        "auth.google.enabled": "true",
-        "auth.recoveryUserId": "recovery-admin_1",
-        "auth.google.clientSecretKey": "a".repeat(254),
-      },
-      /auth\.google\.clientSecretKey must be a Kubernetes Secret key/,
-    ],
-    [
-      "invalid OIDC client ID Secret key",
-      {
-        "auth.oidc.enabled": "true",
-        "auth.recoveryUserId": "recovery-admin_1",
-        "auth.oidc.clientIdKey": "bad/key",
-      },
-      /auth\.oidc\.clientIdKey must be a Kubernetes Secret key/,
-    ],
-    [
+      "auth.google.clientSecretKey",
+      "a".repeat(254),
+      googleRecoveryValues,
+    ),
+    secretKeyCase("invalid OIDC client ID Secret key", "auth.oidc.clientIdKey", "bad/key", {
+      "auth.oidc.enabled": "true",
+      "auth.recoveryUserId": "recovery-admin_1",
+    }),
+    secretKeyCase(
       "reserved Google client ID Secret key",
-      {
-        "auth.google.enabled": "true",
-        "auth.recoveryUserId": "recovery-admin_1",
-        "auth.google.clientIdKey": "..client-id",
-      },
-      /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
-    ],
+      "auth.google.clientIdKey",
+      "..client-id",
+      googleRecoveryValues,
+    ),
     ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
     [
       "retired ChatGPT integration key",
@@ -183,26 +164,29 @@ export function productionChartRendererRefusalCases({
       { ...chatgptValues, "backend.chatgpt.secretName": "Bad_Name" },
       /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
     ],
-    [
+    secretKeyCase(
       "ChatGPT Backend with an invalid admin Secret key",
-      { ...chatgptValues, "backend.chatgpt.key": "bad/key" },
-      /backend\.chatgpt\.key must be a Kubernetes Secret key/,
-    ],
-    [
+      "backend.chatgpt.key",
+      "bad/key",
+      chatgptValues,
+    ),
+    secretKeyCase(
       "ChatGPT Backend with a reserved admin Secret key",
-      { ...chatgptValues, "backend.chatgpt.key": "..admin-key" },
-      /backend\.chatgpt\.key must be a Kubernetes Secret key/,
-    ],
+      "backend.chatgpt.key",
+      "..admin-key",
+      chatgptValues,
+    ),
     [
       "ChatGPT Backend with an overlong admin Secret name",
       { ...chatgptValues, "backend.chatgpt.secretName": "a".repeat(254) },
       /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
     ],
-    [
+    secretKeyCase(
       "ChatGPT Backend with an overlong admin Secret key",
-      { ...chatgptValues, "backend.chatgpt.key": "a".repeat(254) },
-      /backend\.chatgpt\.key must be a Kubernetes Secret key/,
-    ],
+      "backend.chatgpt.key",
+      "a".repeat(254),
+      chatgptValues,
+    ),
     [
       "Agent native admin enabled without a public DNS suffix",
       { "agentNativeAdmin.enabled": "true", "agentNativeAdmin.domain": "" },
@@ -262,15 +246,12 @@ export function productionChartRendererRefusalCases({
       "private Envoy Gateway with an incomplete private CA Secret",
       { ...externalGatewayRoutingValues, "gatewayRouting.caSecretName": "occ-private-ca" },
     ],
-    [
+    secretKeyCase(
       "private Envoy Gateway with an invalid external CA Secret key",
-      {
-        ...externalGatewayRoutingValues,
-        "gatewayRouting.caSecretName": "occ-private-ca",
-        "gatewayRouting.caSecretKey": "bad/key",
-      },
-      /gatewayRouting\.caSecretKey must be a Kubernetes Secret key/,
-    ],
+      "gatewayRouting.caSecretKey",
+      "bad/key",
+      { ...externalGatewayRoutingValues, "gatewayRouting.caSecretName": "occ-private-ca" },
+    ),
     [
       "private Envoy Gateway with leaf TLS colliding with installation Secret",
       { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-installation-startup" },
