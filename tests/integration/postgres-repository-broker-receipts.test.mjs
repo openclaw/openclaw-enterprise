@@ -452,14 +452,45 @@ test(
     assert.equal(repository.github.tokenState()[0].revoked, false);
     assert.equal(repository.github.issuesOfTokens.length, 0);
     assert.deepEqual(repository.github.trace, []);
-    await state.transact((unit) =>
-      unit.repositorySessions.advanceAttempt({
-        admissionId: fencedId,
-        expectedPhase: "opening",
-        phase: "invalidated",
-        updatedAt: revision.createdAt,
-      }),
-    );
+    // Recovery must validate the attempt after the invalidation commits.
+    let recovering;
+    let recoverySignal;
+    try {
+      await state.transact(async (unit) => {
+        const invalidated = await unit.repositorySessions.advanceAttempt({
+          admissionId: fencedId,
+          expectedPhase: "opening",
+          phase: "invalidated",
+          updatedAt: revision.createdAt,
+        });
+        assert.equal(invalidated?.phase, "invalidated");
+        recoverySignal = AbortSignal.timeout(4000);
+        recovering = driver.open({ ...fencedInput, recoverOnly: true }, recoverySignal);
+        void recovering.catch(() => {});
+        await waitFor(
+          "recovery to wait for this attempt's invalidation",
+          async () => {
+            const result = await pool.query(
+              `SELECT EXISTS (
+                SELECT 1 FROM occ.repository_session_attempts attempt
+                JOIN pg_stat_activity holder ON holder.backend_xid = attempt.xmax
+                JOIN pg_stat_activity waiter ON holder.pid = ANY(pg_blocking_pids(waiter.pid))
+                WHERE attempt.admission_id = $1
+                  AND waiter.datname = current_database()
+                  AND waiter.state = 'active' AND waiter.wait_event_type = 'Lock'
+              ) AS blocked`,
+              [fencedId],
+            );
+            return result.rows[0].blocked || undefined;
+          },
+          2000,
+        );
+      });
+      await assert.rejects(recovering, DependencyUnavailableError);
+      assert.equal(recoverySignal.aborted, false, "recovery must refuse before its deadline");
+    } finally {
+      await recovering?.catch(() => {});
+    }
 
     // A registered old v1 owner reports its own observations directly. This is
     // receipt-protocol evidence, not new provider issuance by the prepared sender.

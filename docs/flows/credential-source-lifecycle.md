@@ -340,7 +340,7 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 
 ## Debugging and Verification
 
-- [OCC conformance](../../tests/conformance/credential-source-occ.test.mjs) exercises grants,
+- [OCC conformance](../../tests/conformance/credential-source-occ.test.ts) exercises grants,
   recovery and version admission with a gateway double.
 - [API integration](../../tests/integration/credential-source-api.test.mjs) covers Fastify,
   IAM, OCC and the OpenShell Driver; storage and Compute are doubles.

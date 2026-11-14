@@ -14,7 +14,7 @@
     "tests/integration/precompiled-route-compilers.test.ts",
     "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.ts",
-    "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/plugin-compute.test.ts",
     "tests/conformance/plugin-compute-codex-install.test.ts",
     "tests/conformance/protected-codex-artifact-policy.test.ts",
     "tests/integration/openshell-quickstart-policy.test.ts",
@@ -86,7 +86,7 @@
     "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.ts",
     "tests/conformance/configuration-model-policy.test.ts",
-    "tests/conformance/credential-source-occ.test.mjs",
+    "tests/conformance/credential-source-occ.test.ts",
     "tests/conformance/kubernetes-real-kubectl.test.ts",
     "tests/conformance/k3d-failure-diagnostics.test.ts",
     "tests/conformance/secret-occ.test.ts",
@@ -238,7 +238,7 @@
       ]
     },
     {
-      "path": "tests/conformance/credential-source-occ.test.mjs"
+      "path": "tests/conformance/credential-source-occ.test.ts"
     },
     {
       "path": "tests/conformance/docker-compute.test.mjs"
@@ -619,7 +619,7 @@
       ]
     },
     {
-      "path": "tests/conformance/plugin-compute.test.mjs"
+      "path": "tests/conformance/plugin-compute.test.ts"
     },
     {
       "path": "tests/conformance/plugin-compute-codex-install.test.ts",
