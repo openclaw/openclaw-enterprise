@@ -90,6 +90,7 @@ type LoadedInstallation = Awaited<ReturnType<typeof loadInstallationConfiguratio
 
 async function startWorkerOwner(loaded: LoadedInstallation) {
   assert.ok(loaded?.repositoryOwner && loaded.preparedRepositoryGit && loaded.repositoryRegistry);
+  assert.ok("privateKeyPath" in loaded.preparedRepositoryGit);
   const { issuerCaPath, ...prepared } = loaded.preparedRepositoryGit;
   assert.equal(issuerCaPath, undefined);
   // The worker serves this socket; the policy and key checks come first.
@@ -191,6 +192,7 @@ test("QA repository inputs start the controller, worker owner and repository ser
   );
 
   // The owner refuses an App key it cannot sign with at startup (finding 2217).
+  assert.ok("privateKeyPath" in loaded.preparedRepositoryGit);
   assert.equal(
     loaded.preparedRepositoryGit.privateKeyPath,
     `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`,

@@ -111,7 +111,7 @@ export type {
 } from "@openclaw-enterprise/contracts";
 import { InstalledDriver } from "./installed-driver.ts";
 
-export { InstalledDriver } from "./installed-driver.ts";
+export { InstalledDriver, installedDriverReference } from "./installed-driver.ts";
 import type { DriverByCapability } from "@openclaw-enterprise/contracts";
 import {
   DriverConfigurationRegistry,

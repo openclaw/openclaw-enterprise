@@ -60,29 +60,42 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   readonly id: string;
   readonly #registry: GitHubRepositoryRegistry;
   readonly #duration: number;
+  readonly #selectedRepositoriesOnly: boolean;
   constructor(
     owner: { readonly driverId: string; readonly backendId: string },
     registry: GitHubRepositoryRegistry,
-    options: { readonly sessionDurationSeconds: number },
+    options: {
+      readonly sessionDurationSeconds: number;
+      readonly selectedRepositoriesOnly?: boolean;
+    },
   ) {
     const { driverId: id, backendId } = owner;
-    if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
-      throw new Error("The GitHub Backend must declare its repository policy Driver.");
-    }
+    GitHubRepositoryPolicy.validateDriverId(id);
     this.id = id;
     if (typeof backendId !== "string") {
       throw new Error("The GitHub repository policy must declare its owning Backend.");
     }
     this.#registry = validateGitHubRepositoryRegistry(registry, backendId);
-    if (
-      !Number.isSafeInteger(options.sessionDurationSeconds) ||
-      options.sessionDurationSeconds < 1 ||
-      options.sessionDurationSeconds > registry.maximumDurationSeconds
-    ) {
+    GitHubRepositoryPolicy.validateDuration(
+      options.sessionDurationSeconds,
+      registry.maximumDurationSeconds,
+    );
+    this.#duration = options.sessionDurationSeconds;
+    this.#selectedRepositoriesOnly = options.selectedRepositoriesOnly === true;
+  }
+
+  static validateDriverId(id: string) {
+    if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
+      throw new Error("The GitHub Backend must declare its repository policy Driver.");
+    }
+  }
+
+  static validateDuration(duration: number, maximum: number) {
+    if (!Number.isSafeInteger(duration) || duration < 1 || duration > maximum) {
       throw new Error("Repository credential session duration exceeds the registry policy.");
     }
-    this.#duration = options.sessionDurationSeconds;
   }
+
   async listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
     return this.listCatalog(input);
   }
@@ -97,16 +110,25 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       if (policy === undefined) {
         return;
       }
+      const profiles = this.#selectedRepositoriesOnly
+        ? policy.profiles.filter((profile) => profile === "github-repository")
+        : policy.profiles;
+      if (profiles.length === 0) {
+        return;
+      }
       options.push(
         Object.freeze({
           repositoryRef: repository.repositoryRef,
           displayName: repository.repository,
-          allowedProfiles: Object.freeze([...policy.profiles]),
+          allowedProfiles: Object.freeze([...profiles]),
         }),
       );
     });
     const installation = this.#registry.installationAccess;
-    if (installation?.namespaces.some((policy) => policy.namespaceId === input.namespaceId)) {
+    if (
+      !this.#selectedRepositoriesOnly &&
+      installation?.namespaces.some((policy) => policy.namespaceId === input.namespaceId)
+    ) {
       options.push(
         Object.freeze({
           repositoryRef: installation.repositoryRef,
@@ -122,7 +144,9 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     namespaceId: string;
     binding: import("@openclaw-enterprise/contracts").AdmittedRepositoryBinding;
   }): import("@openclaw-enterprise/contracts").RepositoryApprovalScope | undefined {
-    return resolveGitHubStandingApprovalScope(this.#registry, input);
+    return this.#selectedRepositoriesOnly && input.binding.profile !== "github-repository"
+      ? undefined
+      : resolveGitHubStandingApprovalScope(this.#registry, input);
   }
 
   allowsStandingApproval(input: {
@@ -163,6 +187,12 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         ),
         sessionDurationSeconds: this.#duration,
       });
+      if (
+        this.#selectedRepositoriesOnly &&
+        resolved.bindings.some((b) => b.profile !== "github-repository")
+      ) {
+        throw new Error("selected-repository-profile-required");
+      }
       if (resolved.bindings.some((b) => b.profile === "github-repository")) {
         resolveSelectedRepositoryScope(this.#registry, input.namespaceId, resolved.bindings);
       }

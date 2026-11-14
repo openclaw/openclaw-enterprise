@@ -19,7 +19,10 @@ import {
 import { createGitHubKeyOwner } from "../../drivers/repo/github/access/material.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
-import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
+import {
+  PreparedRepositoryGitStore,
+  type PreparedRepositoryGitWorker,
+} from "../../drivers/repo/github/access/prepared-repository-git.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveCurrentGitHubRepositoryBinding,
@@ -64,6 +67,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
     severity?: "info" | "error",
   ) => void;
   startWorker?: boolean;
+  /** The committed-use listener binds a verified client to its durable witness. */
+  enrolledWorker?: PreparedRepositoryGitWorker;
   /** Private host selection; never derived from issuer configuration or a request. */
   repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
@@ -322,6 +327,7 @@ export async function startPreparedGitHubGitOwner(
       };
     },
     custodySelection,
+    options.enrolledWorker,
   );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>

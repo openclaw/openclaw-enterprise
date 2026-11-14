@@ -14,9 +14,109 @@ const credentialDirectories = [
 const sharedConfigurationFields = "composition/installation-fields.ts";
 const sharedJsonMembers = "drivers/json-members.ts";
 const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
+const issuerEntrypoints = [
+  "prepared-git-issuer.ts",
+  "composition/driver-package-resolution.ts",
+  "composition/external-protected-driver-selection.ts",
+  "composition/installation-selection.ts",
+  "composition/startup-file.ts",
+  "logging.ts",
+];
+const issuerImports = {
+  "backends/repository-credentials/remote-prepared-git.ts": {
+    "node:https": ["createServer", "request"],
+    "node:tls": ["createSecureContext", "TLSSocket"],
+    "../../composition/repository-credentials/public-ca.ts": ["loadPublicCa"],
+    "../../composition/repository-credentials/protected-file.ts": ["readProtectedFile"],
+    "../../drivers/repo/access/transport/request.ts": ["inspectRequestHead"],
+  },
+  "composition/repository-credentials/issuer.ts": {
+    "@openclaw-enterprise/occ": ["createPostgresPool"],
+    "node:net": ["isIP"],
+    "./issuer-selection.ts": ["loadPreparedGitIssuerSelection"],
+    "../../backends/repository-credentials/prepared-git-owner.ts": ["startPreparedGitHubGitOwner"],
+    "../../backends/repository-credentials/remote-prepared-git.ts": [
+      "preparedGitTlsIdentity",
+      "serveRemotePreparedGit",
+    ],
+    "./public-ca.ts": ["loadPublicCa"],
+    "./protected-file.ts": ["readProtectedFile"],
+    "../../backends/repository-credentials/remote-prepared-git-config.ts": ["preparedGitFilePath"],
+    "../installation-fields.ts": ["closed", "nonempty", "object"],
+  },
+  "composition/repository-credentials/issuer-selection.ts": {
+    "@openclaw-enterprise/contracts": ["validateConfiguration"],
+    "@openclaw-enterprise/occ": ["installedDriverReference", "validateBackendDefinitions"],
+    "node:url": ["fileURLToPath"],
+    "../driver-package-resolution.ts": ["resolveDriverPackage"],
+    "../external-protected-driver-selection.ts": ["externalProtectedDriverSelection"],
+    "../startup-file.ts": ["startupConfiguration"],
+    "./github-selection.ts": [
+      "githubRepositoryAuthorityIdentity",
+      "githubRepositorySelection",
+      "selectGitHubRepositoryPolicy",
+    ],
+    "./policy.ts": ["loadRepositoryPolicyInputs"],
+    "./custody-selection.ts": ["selectRegisteredRepositoryGitCustody"],
+    "../installation-fields.ts": ["closed", "nonempty", "object"],
+  },
+  "composition/repository-credentials/github-selection.ts": {
+    "node:crypto": ["createHash"],
+    "../installation-selection.ts": ["selected"],
+    "../installation-fields.ts": ["closed", "object"],
+  },
+  "composition/driver-package-resolution.ts": {
+    "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
+    "node:fs/promises": ["readFile", "realpath", "stat"],
+    "node:module": ["findPackageJSON"],
+    "node:path": [
+      "basename",
+      "dirname",
+      "extname",
+      "isAbsolute",
+      "join",
+      "relative",
+      "resolve",
+      "sep",
+    ],
+    "node:url": ["fileURLToPath", "pathToFileURL"],
+    "./startup-file.ts": ["withoutByteOrderMark"],
+  },
+  "composition/installation-selection.ts": {
+    "@openclaw-enterprise/contracts": ["requireConfiguration", "serializeStartupConfiguration"],
+    "@openclaw-enterprise/occ": ["DriverConfigurationRegistry"],
+    "./installation-fields.ts": ["object", "nonempty"],
+  },
+  "composition/startup-file.ts": {
+    "node:fs/promises": ["readFile"],
+    "node:path": ["isAbsolute"],
+    "../logging.ts": ["operationalLoggingConfiguration"],
+    "@kubernetes/client-node": ["loadYaml"],
+    "./installation-fields.ts": ["closed", "nonempty", "object"],
+  },
+  "logging.ts": {
+    "typebox/value": ["Check"],
+    "@openclaw-enterprise/contracts": ["ErrorDetail", "normalizeLoggingLevel"],
+    pino: ["default"],
+  },
+  "backends/repository-credentials/remote-prepared-git-config.ts": {
+    "../../composition/installation-fields.ts": ["closed", "nonempty", "object"],
+  },
+  "prepared-git-issuer.ts": {
+    "./composition/repository-credentials/issuer.ts": ["startPreparedGitIssuer"],
+  },
+  "composition/external-protected-driver-selection.ts": {},
+};
+const issuerReExports = {
+  "composition/startup-file.ts": {
+    "./installation-fields.ts": ["closed", "nonempty", "object"],
+  },
+};
+
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
   ...processEntrypoints,
+  ...issuerEntrypoints,
   sharedConfigurationFields,
   sharedJsonMembers,
   openShellEvidence,
@@ -38,6 +138,7 @@ const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", 
 
 // Adding an I/O owner or member requires security review; see the owning test guide.
 const reviewedImports = {
+  ...issuerImports,
   // Pure recipient SQL only: no adapter, loader, material or I/O authority.
   [openShellEvidence]: {
     "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
@@ -282,6 +383,41 @@ const ordinaryBuiltins = new Set([
 // Restrict imports and re-exports inside scanned credential source. The worker
 // entrypoint is outside that source; packaging and runtime tests cover that boundary.
 const capabilityConsumers = {
+  "composition/repository-credentials/issuer.ts": {
+    "prepared-git-issuer.ts": ["startPreparedGitIssuer"],
+  },
+  "logging.ts": {
+    "composition/startup-file.ts": ["operationalLoggingConfiguration"],
+  },
+  "composition/installation-selection.ts": {
+    "composition/repository-credentials/github-selection.ts": ["selected"],
+  },
+  "composition/repository-credentials/github-selection.ts": {
+    "composition/repository-credentials/issuer-selection.ts": [
+      "githubRepositoryAuthorityIdentity",
+      "githubRepositorySelection",
+      "selectGitHubRepositoryPolicy",
+    ],
+  },
+  "composition/startup-file.ts": {
+    "composition/repository-credentials/issuer-selection.ts": ["startupConfiguration"],
+    "composition/driver-package-resolution.ts": ["withoutByteOrderMark"],
+  },
+  "composition/external-protected-driver-selection.ts": {
+    "composition/repository-credentials/issuer-selection.ts": ["externalProtectedDriverSelection"],
+  },
+  "composition/driver-package-resolution.ts": {
+    "composition/repository-credentials/issuer-selection.ts": ["resolveDriverPackage"],
+  },
+  "backends/repository-credentials/remote-prepared-git.ts": {
+    "composition/repository-credentials/issuer.ts": [
+      "preparedGitTlsIdentity",
+      "serveRemotePreparedGit",
+    ],
+  },
+  "composition/repository-credentials/issuer-selection.ts": {
+    "composition/repository-credentials/issuer.ts": ["loadPreparedGitIssuerSelection"],
+  },
   [openShellEvidence]: {
     "composition/repository-credentials/custody-selection.ts": [
       "openShellGitRecipientEvidence",
@@ -293,6 +429,8 @@ const capabilityConsumers = {
     "drivers/repo/access/server.ts": ["prepareControlSocket"],
   },
   "composition/repository-credentials/public-ca.ts": {
+    "backends/repository-credentials/remote-prepared-git.ts": ["loadPublicCa"],
+    "composition/repository-credentials/issuer.ts": ["loadPublicCa"],
     "composition/repository-credentials/config.ts": ["loadPublicCa"],
     "composition/repository-credentials/platform.ts": ["loadPublicCa"],
   },
@@ -304,8 +442,10 @@ const capabilityConsumers = {
     "backends/repository-credentials/receipt-server.ts": ["servePrivateRepositoryRequest"],
     "backends/repository-credentials/prepared-git-owner.ts": ["servePrivateRepositoryRequest"],
   },
-  // Selected directly by worker.mjs; no runtime import from credential source is authorized.
-  "backends/repository-credentials/prepared-git-owner.ts": {},
+  // Only the narrow issuer composition may start this owner from scanned source.
+  "backends/repository-credentials/prepared-git-owner.ts": {
+    "composition/repository-credentials/issuer.ts": ["startPreparedGitHubGitOwner"],
+  },
   "drivers/repo/github/access/prepared-repository-git.ts": {
     "backends/repository-credentials/prepared-git-owner.ts": ["PreparedRepositoryGitStore"],
   },
@@ -344,6 +484,9 @@ const rawGlobals = new Set([
   "module",
 ]);
 const reviewedProcessMembers = {
+  "composition/repository-credentials/issuer.ts": ["env", "stderr"],
+  "composition/startup-file.ts": ["env"],
+  "prepared-git-issuer.ts": ["argv", "env", "once", "stdout", "stderr", "exitCode"],
   "composition/repository-credentials/check-config.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/access/client/environment.ts": ["env"],
   "drivers/repo/github/access/client/git-helper.ts": [
@@ -469,6 +612,32 @@ function relativeSource(path, root, specifier, sources) {
   return sourceTarget && sources.has(sourceTarget) ? sourceTarget : target;
 }
 
+function namedYamlImport(node, file) {
+  const loading = node?.init?.type === "AwaitExpression" ? node.init.argument : undefined;
+  const property =
+    node?.id?.type === "ObjectPattern" && node.id.properties.length === 1
+      ? node.id.properties[0]
+      : undefined;
+  if (
+    file !== "composition/startup-file.ts" ||
+    node.type !== "VariableDeclarator" ||
+    loading?.type !== "ImportExpression" ||
+    loading.source.type !== "Literal" ||
+    loading.source.value !== "@kubernetes/client-node" ||
+    loading.options != null ||
+    loading.attributes != null ||
+    property?.type !== "Property" ||
+    property.computed ||
+    property.method ||
+    property.kind !== "init" ||
+    name(property.key) !== "loadYaml" ||
+    property.value.type !== "Identifier"
+  ) {
+    return undefined;
+  }
+  return { loading, local: property.value.name };
+}
+
 function inspectSource(path, root, sources, ast) {
   const file = slash(relative(root, path));
   const failures = [];
@@ -481,14 +650,17 @@ function inspectSource(path, root, sources, ast) {
     if (
       ordinaryBuiltins.has(source) &&
       file !== sharedConfigurationFields &&
-      file !== openShellEvidence
+      file !== openShellEvidence &&
+      !issuerEntrypoints.includes(file) &&
+      !reviewedImports[file]?.[source]
     ) {
       continue;
     }
     if (
       source.startsWith(".") &&
       file !== sharedConfigurationFields &&
-      file !== openShellEvidence
+      file !== openShellEvidence &&
+      !issuerEntrypoints.includes(file)
     ) {
       const target = relativeSource(path, root, source, sources);
       const restricted =
@@ -506,12 +678,45 @@ function inspectSource(path, root, sources, ast) {
       }
     }
   }
+  // Collect before checking exports, including exports that precede their declaration.
+  function dynamicBindings(node) {
+    if (!node || typeof node.type !== "string") {
+      return;
+    }
+    const yaml = namedYamlImport(node, file);
+    if (yaml) {
+      rawBindings.add(yaml.local);
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (["comments", "tokens", "loc", "range"].includes(key)) {
+        continue;
+      }
+      if (Array.isArray(child)) {
+        child.forEach(dynamicBindings);
+      } else {
+        dynamicBindings(child);
+      }
+    }
+  }
+  dynamicBindings(ast);
   function deny(node, reason) {
     failures.push(`${file}:${node.loc?.start.line ?? 1}: ${reason}`);
   }
   function edge(node, specifier, names, kind) {
     if (typeof specifier !== "string") {
       deny(node, "nonliteral module loading requires security review");
+      return;
+    }
+    if (
+      issuerEntrypoints.includes(file) &&
+      !(
+        (kind === "import" &&
+          names.every((binding) => reviewedImports[file]?.[specifier]?.includes(binding))) ||
+        (kind === "export" &&
+          names.every((binding) => issuerReExports[file]?.[specifier]?.includes(binding)))
+      )
+    ) {
+      deny(node, `unreviewed issuer source ${kind} from ${specifier} (${names.join(", ")})`);
       return;
     }
     // Like the shared field owner, this pure module must not inherit general
@@ -540,6 +745,12 @@ function inspectSource(path, root, sources, ast) {
       if (
         kind === "import" &&
         names.every((binding) => reviewedImports[file]?.[specifier]?.includes(binding))
+      ) {
+        return;
+      }
+      if (
+        kind === "export" &&
+        names.every((binding) => issuerReExports[file]?.[specifier]?.includes(binding))
       ) {
         return;
       }
@@ -604,7 +815,11 @@ function inspectSource(path, root, sources, ast) {
       }
       return;
     }
-    if (ordinaryBuiltins.has(specifier)) {
+    if (
+      ordinaryBuiltins.has(specifier) &&
+      !issuerEntrypoints.includes(file) &&
+      !reviewedImports[file]?.[specifier]
+    ) {
       return;
     }
     if (
@@ -620,6 +835,11 @@ function inspectSource(path, root, sources, ast) {
     if (!node || typeof node.type !== "string" || node.declare) {
       return;
     }
+    const yaml = namedYamlImport(node, file);
+    if (yaml) {
+      edge(yaml.loading, "@kubernetes/client-node", ["loadYaml"], "import");
+      return;
+    }
     if (node.type === "ImportDeclaration") {
       if (node.importKind === "type") {
         return;
@@ -627,8 +847,20 @@ function inspectSource(path, root, sources, ast) {
       const values = node.specifiers.filter((specifier) => specifier.importKind !== "type");
       // With verbatimModuleSyntax, inline type-only specifiers retain import {}.
       const names = values.length
-        ? values.map((specifier) => name(specifier.imported) ?? "*")
+        ? values.map((specifier) =>
+            specifier.type === "ImportDefaultSpecifier"
+              ? "default"
+              : (name(specifier.imported) ?? "*"),
+          )
         : ["<side-effect>"];
+      if (
+        file === "logging.ts" &&
+        node.source.value === "pino" &&
+        (values.length !== 1 || values[0].type !== "ImportDefaultSpecifier")
+      ) {
+        deny(node, "only the reviewed default pino import is permitted");
+        return;
+      }
       edge(node, node.source.value, names, "import");
       return;
     }
@@ -732,6 +964,7 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
   }
   for (const entrypoint of [
     ...processEntrypoints,
+    ...issuerEntrypoints,
     sharedConfigurationFields,
     sharedJsonMembers,
     openShellEvidence,

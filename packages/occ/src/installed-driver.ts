@@ -22,6 +22,28 @@ import {
 } from "./driver-contract.ts";
 import { DriverSelectionError, ResourceStateConflictError } from "./errors.ts";
 
+type DriverSelection = {
+  readonly id: string;
+  readonly implementation: string;
+  readonly configuration: unknown;
+};
+
+export function installedDriverReference(
+  selection: DriverSelection,
+  capabilityIds: Readonly<Partial<Record<DriverCapability, string>>> = {},
+): DriverRegistrationRef {
+  const { id, implementation, configuration } = selection;
+  if (!isNonEmptyString(id) || !isNonEmptyString(implementation)) {
+    throw new DriverSelectionError(
+      "A Driver registration requires an identity and implementation.",
+    );
+  }
+  const configurationId = createHash("sha256")
+    .update(canonicalProvisioningJson({ configuration, capabilityIds }))
+    .digest("hex");
+  return Object.freeze({ id, implementation, configurationId });
+}
+
 /** One process-local owner. Its reference, unlike object identity, survives an API/worker handoff. */
 export class InstalledDriver {
   readonly ref: DriverRegistrationRef;
@@ -48,22 +70,14 @@ export class InstalledDriver {
     // Installation composition supplies the configured identity for each capability.
     capabilityIds: Readonly<Partial<Record<DriverCapability, string>>> = {},
   ) {
-    const { id, implementation, configuration } = selection;
+    const { id, implementation } = selection;
     this.#repositoryOnly = selection.repositoryOnly === true;
     this.#retiredStaticProviderRefs = Object.freeze(
       (selection.retiredStaticProviderRefs ?? []).map(({ id, generation }) =>
         Object.freeze({ id, generation }),
       ),
     );
-    if (!isNonEmptyString(id) || !isNonEmptyString(implementation)) {
-      throw new DriverSelectionError(
-        "A Driver registration requires an identity and implementation.",
-      );
-    }
-    const configurationId = createHash("sha256")
-      .update(canonicalProvisioningJson({ configuration, capabilityIds }))
-      .digest("hex");
-    this.ref = Object.freeze({ id, implementation, configurationId });
+    this.ref = installedDriverReference(selection, capabilityIds);
     for (const [key, driver] of Object.entries(registration.capabilities)) {
       if (
         !capability(key) ||

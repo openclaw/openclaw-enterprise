@@ -8,7 +8,7 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 export async function protectedDriverPackage(
   t: TestContext,
   id: string,
-  filename: "index" | "repository-git" = "index",
+  filename: "index" | "repository-git" | "remote-repository-git" = "index",
 ) {
   const directory = await temporaryDirectory(t, "oce-protected-driver-");
   const entry = join(directory, "node_modules", id);
@@ -21,7 +21,14 @@ export async function protectedDriverPackage(
     join(entry, "package.json"),
     JSON.stringify({ name: id, version: "1.0.0", exports: "./" + filename + ".mjs" }),
   );
-  for (const name of filename === "repository-git" ? ["index", filename] : [filename]) {
+  const modules = [filename];
+  if (filename !== "index") {
+    modules.unshift("index");
+  }
+  if (filename === "remote-repository-git") {
+    modules.unshift("repository-git");
+  }
+  for (const name of modules) {
     const source = await readFile(
       new URL(
         "../fixtures/driver-packages/protected-execution-driver/" + name + ".ts",
@@ -29,7 +36,9 @@ export async function protectedDriverPackage(
       ),
       "utf8",
     );
-    const js = stripTypeScriptTypes(source).replace('"./index.ts"', '"./index.mjs"');
+    const js = stripTypeScriptTypes(source)
+      .replaceAll('"./index.ts"', '"./index.mjs"')
+      .replaceAll('"./repository-git.ts"', '"./repository-git.mjs"');
     await writeFile(join(entry, name + ".mjs"), js);
   }
   return { directory, entry };

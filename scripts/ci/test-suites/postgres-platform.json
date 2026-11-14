@@ -450,6 +450,7 @@
       "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
+        "remote Worker uses only committed selected-repository material for its enrolled recipient",
         "changing between repository and installation scope waits for the previous owner to settle its token",
         "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",

@@ -21,6 +21,7 @@ import {
   readPublicCaBundle,
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { startPreparedGitIssuer } from "../../apps/controller/src/composition/repository-credentials/issuer.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
@@ -328,6 +329,97 @@ test("production composition separates repository policy from protected and expl
   assert.deepEqual(scope.pushRefAllowlist, ["refs/heads/review"]);
   assert.equal(scope.pullRequestBase, "main");
   assert.equal(scope.draftPullLimit, "one-per-grant");
+  // Remote startup accepts only its four mounted TLS settings and external delivery.
+  const remotePrepared = {
+    issuerEndpoint: "https://issuer.example.test:9443",
+    issuerCaPath: "/unmounted/issuer-ca.pem",
+    workerCertificatePath: "/unmounted/worker.pem",
+    workerPrivateKeyPath: "/unmounted/worker-key.pem",
+  };
+  const remote = {
+    ...configuration,
+    repository: { ...configuration.repository, preparedGitHub: remotePrepared },
+  };
+  const loadedRemote = await load(remote);
+  assert.deepEqual(loadedRemote.preparedRepositoryGit, remotePrepared);
+  await loadedRemote.protectedDriver!.close();
+  for (const [preparedGitHub, reason] of [
+    [
+      { ...remotePrepared, privateKeyPath: "/unmounted/app.pem" },
+      /unsupported option privateKeyPath/,
+    ],
+    [
+      { ...remotePrepared, issuerEndpoint: "https://issuer.example.test:9443/other" },
+      /canonical HTTPS origin/,
+    ],
+    [
+      { ...remotePrepared, workerPrivateKeyPath: "/mount/../worker.pem" },
+      /absolute mounted-file path/,
+    ],
+  ] as const) {
+    await assert.rejects(
+      load({
+        ...remote,
+        repository: { ...remote.repository, preparedGitHub },
+      }),
+      reason,
+    );
+  }
+  await assert.rejects(
+    load({
+      ...remote,
+      drivers: { ...remote.drivers, credential_proxy: undefined },
+    }),
+    /issuerEndpoint requires a production external Sandbox and Credential Proxy/,
+  );
+  await assert.rejects(
+    load({
+      ...remote,
+      drivers: {
+        ...remote.drivers,
+        credential_gateway: { id, configuration: {} },
+      },
+    }),
+    /cannot share the Installation with native, bundled OpenShell, or Credential Gateway/,
+  );
+
+  // Wildcard and scoped addresses must fail before opening a pool or a key.
+  const issuerFile = join(directory, "issuer.json");
+  for (const listenHost of [
+    "0.0.0.0",
+    "::0",
+    "0::",
+    "::ffff:0.0.0.0",
+    "fe80::1%lo",
+    "localhost",
+    "127.0.0.1",
+  ]) {
+    await writeFile(
+      issuerFile,
+      JSON.stringify({
+        listenHost,
+        listenPort: 8443,
+        serverCertificatePath: "/unmounted/issuer.pem",
+        serverPrivateKeyPath: "/unmounted/issuer-key.pem",
+        workerCaPath: "/unmounted/worker-ca.pem",
+        workerFingerprintSha256: "1".repeat(64),
+        workerInstanceId: randomUUID(),
+        installationId: "fixture-installation",
+        namespaceId,
+        agentId: "fixture-agent",
+        servicePrincipalId: "fixture-principal",
+        privateKeyPath: "/unmounted/app.pem",
+        custodyKeyPath: "/unmounted/custody.key",
+      }),
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      startPreparedGitIssuer(issuerFile, "postgresql://127.0.0.1:1/unreachable", {}),
+      listenHost === "127.0.0.1"
+        ? { message: /OCC_CONFIG_PATH must identify/ }
+        : { message: "PREPARED_GIT_ISSUER_CONFIGURATION_INVALID" },
+    );
+  }
   const startup = await loadStartupConfigurationSnapshot({
     mode: "production",
     environment: { OCC_CONFIG_PATH: path },
@@ -812,6 +904,7 @@ function externalGitJourney(
     const release = new ProtectedExecutionDriver(owner);
     // Use production authority and sender composition, including their background maintenance.
     // The short-lived local issuer makes rotation observable without changing stored deadlines.
+    assert.ok("privateKeyPath" in drivers.preparedRepositoryGit);
     const { issuerCaPath, ...preparedConfig } = drivers.preparedRepositoryGit;
     const issuerCa = Buffer.from(await readPublicCaBundle(issuerCaPath!));
     const startOwner = (startWorker = true) =>

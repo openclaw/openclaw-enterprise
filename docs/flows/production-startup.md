@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-13"
-last_updated_session: "authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c"
+updated: "2026-11-14"
+last_updated_session: "authoring-run/87b49445-92f3-4be2-ad7e-f25fb734ab11"
 ---
 
 # Production Startup Flow
@@ -296,27 +296,31 @@ observations; neither process mounts the bootstrap PVC.
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
-With `repository` selected, both processes load the same registry and construct
-`GitHubRepositoryPolicy`; the GitHub Backend's `drivers.repo` member must equal
-`repository.id`. Only native delivery loads the Unix client and CA reader used by
-`GitHubNativeRepositorySender`. Startup refuses the retired Installation
-`drivers.repo`. API startup performs no control operation and loads no App key.
-With prepared repository Git, the worker reads the App key at startup and exits
-before readiness with `PREPARED_GITHUB_APP_KEY_INVALID` if it cannot sign.
-The worker owns session lifecycle; API readiness remains database-backed.
+The API and Worker load the registry matching `repository.id`. A bad co-located
+App key prevents Worker readiness (`PREPARED_GITHUB_APP_KEY_INVALID`).
+The API loads no App key.
+
+For a [separate prepared Git issuer](../reference/backends.md#remote-prepared-git-issuer),
+the Worker checks that the external Driver preserves its declared registration.
+A mismatch prevents readiness. The Worker closes a registration refused after
+creation. Successful cleanup yields `DRIVER_CONFIGURATION_INVALID`. A close
+failure yields `WORKER_STARTUP_FAILED`.
+
+`apps/controller/src/composition/repository-credentials/issuer-selection.ts:loadPreparedGitIssuerSelection`
+
+The issuer derives the same registration from Installation configuration and
+package metadata. The Worker loads the Driver. The issuer retains App and
+custody keys and verifies the enrolled Worker certificate. The Worker connects
+over mutual TLS before binding its sender. Custody checks committed release,
+Worker, recipient, fence and material before recording use.
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 
-Beside the single worker, the optional service pins a projection generation,
-copies config/key/TLS/registry inputs into owned private regular files, validates
-the selected Backend and exact Service origin, then starts both listeners through
-the protected loader. App/TLS private material stays in its container; only the
-worker receives a projected Kubernetes API token. They share only the private
-control volume. The Pod uses `Recreate` and a 75-second termination grace period.
-Readiness requires both the service's Unix-listener probe and the worker's
-queue-health probe. The worker retries unavailable session operations through
-its Driver contract. Neither component has independent high availability.
-Repository runtime reconciliation continues in the
+The optional credential service pins the mounted projection, verifies its
+Backend and Service origin, then starts both listeners. The worker alone
+receives a Kubernetes API token. The private control volume is shared.
+The Pod uses `Recreate` and a 75-second termination grace period. Both the
+Unix-listener and worker queue-health probes gate readiness. See the
 [Agent repository credential flow](agent-repository-credentials.md).
 
 ### 5. Retrieve the key and prove authenticated access
@@ -393,6 +397,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 01:36: Trace the remote issuer and Worker registration checks. (authoring-run/87b49445-92f3-4be2-ad7e-f25fb734ab11 - 7a3279d4c81772d2880e36b69b3f46382c1d2a7c)
 
 - 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
 

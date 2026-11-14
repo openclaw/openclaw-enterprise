@@ -109,27 +109,35 @@ repository:
     privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
 ```
 
-Keep the ordinary required Driver settings alongside this fragment. One GitHub
-Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match `repository.id`. With this configuration, the API and worker use the
-built-in GitHub registry policy. They require no public Repo Driver registration.
-Omit both the GitHub Backend and `repository` to leave Git unconfigured.
-Existing configurations may keep or omit `repository.policyMode: built-in` with
-the same policy and protected sender identity. Startup rejects other values and
-the retired `drivers.repo` selection. Drain admitted work on its original owner
-before changing senders. The registry's Backend ID must match the definition,
-and the session duration must fit the registry's maximum.
-See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
-for delivery settings.
+One GitHub Backend can coexist with a ChatGPT Backend. Its Repo member
+matches `repository.id`. To leave Git unconfigured, omit both the Backend and
+`repository`. Startup accepts an omitted `repository.policyMode` or `built-in`
+and rejects `drivers.repo`. The registry's Backend ID must match and the session
+duration must fit its maximum. See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
+for co-located delivery with bundled Kubernetes Compute and no Sandbox.
+Drain admitted work on its original owner before switching senders.
 
-The API, worker, and credential service consume the same immutable, versioned
-registry ConfigMap. Its exact Namespace, repository, and profile policies own
-admission; no repository list is stored in Helm values. Follow the
-[repository credential reference](repository-credentials.md) for registry fields
-and the [operator guide](../guides/repository-credentials.md) for service setup.
-The capability requires the bundled Kubernetes Compute Driver without a Sandbox
-Driver; admitted Agents must use a supported
-[runtime and authentication combination](repository-credentials.md).
+#### Remote prepared Git issuer
+
+With bundled Kubernetes Compute, select one pinned external Sandbox and
+Credential Proxy registration. In `repository.preparedGitHub`, set
+`issuerEndpoint` to a canonical HTTPS origin and supply mounted paths
+`issuerCaPath`, `workerCertificatePath` and `workerPrivateKeyPath`.
+Remove the native sender and co-located key options. Omit bundled OpenShell
+repository delivery, Credential Gateway and Credential Refresh.
+
+Run `node apps/controller/src/prepared-git-issuer.ts /absolute/issuer.json`
+with `NODE_ENV=production`, `OCC_DATABASE_URL` for the application role and
+`OCC_CONFIG_PATH` for the same Installation and registry.
+The issuer JSON requires `listenHost` (specific IP), `listenPort`,
+`serverCertificatePath`, `serverPrivateKeyPath`, `workerCaPath`,
+`workerFingerprintSha256` (64 lowercase hex digits), `workerInstanceId` (v4 UUID),
+`installationId`, `namespaceId`, `agentId`, `servicePrincipalId`,
+`privateKeyPath` and `custodyKeyPath`. Optional `apiOrigin` and `issuerCaPath`
+select the upstream GitHub API and its CA. Use canonical absolute paths.
+The issuer mounts the App, custody and server TLS keys. The selected
+online `github-repository` profile uses GitHub ref protection and registry
+permissions. Co-located callers can use other profiles. See the [startup flow](../flows/production-startup.md).
 
 ### OpenShell gateway
 

@@ -18,6 +18,7 @@ The controlled tests use disposable fixtures and do not use ambient GitHub crede
 
 ```sh
 node scripts/verify-repository-credentials-boundary.mjs
+node --test tests/conformance/repository-credentials-source-boundary.test.mjs
 node --test tests/conformance/repository-credentials-fixture-ownership.test.ts \
   tests/conformance/repository-credentials-backend-conformance.test.ts
 node --test tests/integration/repository-credentials-git.test.ts \
@@ -36,6 +37,13 @@ is exercised by the worker Token Service suites.
 The source boundary check also runs in `pnpm check:workspace`. Changes to its
 privileged allowlists require security review of the authority, caller, scope,
 and negative coverage. It is a regression guard, not a sandbox or a dataflow proof.
+
+The guard requires six additional issuer files and limits their imports to
+reviewed members. The full Installation loader and Worker remain outside the
+issuer graph. YAML loading requires immediate awaited `loadYaml` destructuring;
+logging requires a default `pino` import. Unscanned imports, arbitrary dynamic
+loading, unapproved process access and raw I/O re-exports still fail. Passing
+grants no runtime or credential authority.
 
 The separate [public GitHub reader](../reference/public-github-reads.md) owns an
 HTTP listener and permits anonymous HTTPS GET requests to a fixed origin. The source guard forbids imports

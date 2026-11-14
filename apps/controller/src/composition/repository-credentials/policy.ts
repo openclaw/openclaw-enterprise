@@ -29,16 +29,32 @@ export function repositoryPolicyOwner(input: RepositoryPolicyInput) {
   });
 }
 
-export async function loadRepositoryPolicy(
+export async function loadRepositoryPolicyInputs(
   input: RepositoryPolicyInput<Readonly<{ sessionDurationSeconds: number }>>,
 ) {
   const repositoryOwner = repositoryPolicyOwner(input);
+  GitHubRepositoryPolicy.validateDriverId(repositoryOwner.driverId);
   const { sessionDurationSeconds } = input.selection.configuration;
   const registry = await loadGitHubRepositoryRegistry(
     input.backend.configuration.registryPath,
     input.backend.id,
   );
-  const policy = composeRepositoryPolicy(repositoryOwner, registry, sessionDurationSeconds);
+  GitHubRepositoryPolicy.validateDuration(sessionDurationSeconds, registry.maximumDurationSeconds);
+  return { repositoryOwner, registry, sessionDurationSeconds };
+}
+
+export async function loadRepositoryPolicy(
+  input: RepositoryPolicyInput<Readonly<{ sessionDurationSeconds: number }>>,
+  selectedRepositoriesOnly = false,
+) {
+  const { repositoryOwner, registry, sessionDurationSeconds } =
+    await loadRepositoryPolicyInputs(input);
+  const policy = composeRepositoryPolicy(
+    repositoryOwner,
+    registry,
+    sessionDurationSeconds,
+    selectedRepositoriesOnly,
+  );
   return Object.freeze({
     ...policy,
     resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
@@ -50,9 +66,11 @@ export function composeRepositoryPolicy(
   repositoryOwner: ReturnType<typeof repositoryPolicyOwner>,
   registry: GitHubRepositoryRegistry,
   sessionDurationSeconds: number,
+  selectedRepositoriesOnly = false,
 ) {
   const repositoryPolicy = new GitHubRepositoryPolicy(repositoryOwner, registry, {
     sessionDurationSeconds,
+    selectedRepositoriesOnly,
   });
   return Object.freeze({
     repositoryRegistry: registry,
