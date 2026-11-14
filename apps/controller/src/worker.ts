@@ -250,6 +250,20 @@ function isCandidateDeployment(claim: ClaimedWork): boolean {
   return claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`;
 }
 
+function isCommittedPredecessorStop(
+  replacement: Readonly<PredecessorReplacement> | undefined,
+  candidateRevisionId: string,
+): replacement is Readonly<PredecessorReplacement> & { readonly stoppingAt: string } {
+  return (
+    replacement?.phase === "stopping" &&
+    replacement.candidateRevisionId === candidateRevisionId &&
+    replacement.executionIdentity !== undefined &&
+    replacement.completionStartedAt !== undefined &&
+    replacement.stoppingAt !== undefined &&
+    replacement.stopCompleted !== true
+  );
+}
+
 // A refused candidate whose stop keeps failing waits on that stop, which can block the serial
 // worker for minutes (Kubernetes waits for gateway and Agent Pods to terminate). Each failed stop
 // doubles its recheck from the readiness cadence up to 5 minutes, and waits at least four times
@@ -6557,17 +6571,9 @@ export class ControllerWorker {
     if (
       (resolved.outcome === "permanent" ||
         (resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts)) &&
-      isCandidateDeployment(claim)
+      (await this.recoverCommittedPredecessorStop(claim))
     ) {
-      const candidate = await this.state.read((view) =>
-        view.revisions.findRevision(claim.namespaceId, claim.agentId!, claim.revisionId!),
-      );
-      if (
-        candidate !== undefined &&
-        (await this.recoverCommittedPredecessorStop(claim, candidate))
-      ) {
-        return;
-      }
+      return;
     }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
@@ -6850,42 +6856,57 @@ export class ControllerWorker {
    */
   private async recoverCommittedPredecessorStop(
     claim: ClaimedWork,
-    candidate: Readonly<AgentRevision>,
+    candidate?: Readonly<AgentRevision>,
   ): Promise<boolean> {
+    const { namespaceId, agentId, revisionId } = claim;
     if (
-      !isCandidateDeployment(claim) ||
-      this.compute.requiresStoppedPredecessors?.(candidate) !== true
+      agentId === undefined ||
+      revisionId === undefined ||
+      claim.namespaceTarget !== undefined ||
+      claim.agentTarget !== undefined ||
+      !isCandidateDeployment(claim)
     ) {
+      return false;
+    }
+    if (candidate !== undefined && this.compute.requiresStoppedPredecessors?.(candidate) !== true) {
+      return false;
+    }
+    // A durable planned stop is required before the locked recovery path.
+    const replacement = await this.state.read((view) =>
+      view.agents.findPredecessorReplacement(namespaceId, agentId),
+    );
+    if (!isCommittedPredecessorStop(replacement, revisionId)) {
       return false;
     }
     const target = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
-      const replacement = await unit.agents.findPredecessorReplacement(
-        candidate.namespaceId,
-        candidate.agentId,
-      );
+      const replacement = await unit.agents.findPredecessorReplacement(namespaceId, agentId);
       if (
-        replacement?.phase !== "stopping" ||
-        replacement.candidateRevisionId !== candidate.id ||
-        replacement.predecessorRevisionId !== agent?.activeRevisionId ||
-        replacement.executionIdentity === undefined ||
-        replacement.completionStartedAt === undefined ||
-        replacement.stoppingAt === undefined ||
-        replacement.stopCompleted === true
+        !isCommittedPredecessorStop(replacement, revisionId) ||
+        replacement.predecessorRevisionId !== agent?.activeRevisionId
       ) {
         return undefined;
       }
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
+      const currentCandidate =
+        candidate ?? (await unit.revisions.findRevision(namespaceId, agentId, revisionId));
+      if (
+        currentCandidate === undefined ||
+        (candidate === undefined &&
+          this.compute.requiresStoppedPredecessors?.(currentCandidate) !== true)
+      ) {
+        return undefined;
+      }
       const predecessor = await unit.revisions.findRevision(
-        candidate.namespaceId,
-        candidate.agentId,
+        namespaceId,
+        agentId,
         replacement.predecessorRevisionId,
       );
       if (
         predecessor === undefined ||
-        predecessor.revision >= candidate.revision ||
+        predecessor.revision >= currentCandidate.revision ||
         predecessor.compute.id !== this.compute.id ||
         predecessor.compute.implementation !== this.compute.implementation
       ) {
