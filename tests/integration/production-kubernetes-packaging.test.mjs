@@ -26,6 +26,10 @@ import {
   goToolEnvironment,
   renderExecutionChart,
 } from "../helpers/production-chart.mjs";
+import {
+  oidcLoginValues,
+  trustedProxyRefusalCases,
+} from "../helpers/production-chart-sign-in-cases.ts";
 import { productionChartRendererRefusalCases } from "../helpers/production-chart-renderer-refusal-cases.ts";
 import {
   gatewayRoutingValues,
@@ -234,12 +238,7 @@ const stringNameCaValues = {
   database: stringNameDatabaseCa,
   oidc: {
     ...stringNameDatabaseCa,
-    "auth.oidc.enabled": "true",
-    "auth.recoveryUserId": "recovery-admin_1",
-    "auth.oidc.issuer": "https://tenant.idp.example.test/",
-    "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
-    "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
-    "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+    ...oidcLoginValues,
     "auth.oidc.secretName": "oidc-client",
     "auth.oidc.clientIdKey": "client-id",
     "auth.oidc.clientSecretKey": "client-secret",
@@ -3651,127 +3650,7 @@ test(
         { ...googleLoginValues, ...agentNativeAdminValues },
         /agentNativeAdmin\.enabled: false/,
       ],
-      [
-        "an unknown trusted proxy preset",
-        { ...trustedProxyValues, "api.trustedProxy.preset": "haproxy" },
-        /ingress-nginx, aws, or generic/,
-      ],
-      [
-        "a trusted proxy preset without CIDRs",
-        { "api.trustedProxy.preset": "ingress-nginx" },
-        /requires api\.trustedProxy\.cidrs/,
-      ],
-      [
-        "trusted proxy CIDRs without a preset",
-        { "api.trustedProxy.cidrs[0]": "10.42.0.0/16" },
-        /require api\.trustedProxy\.preset/,
-      ],
-      [
-        "a client-address header without a preset",
-        { "api.trustedProxy.clientAddressHeader": "x-real-ip" },
-        /require api\.trustedProxy\.preset/,
-      ],
-      [
-        "a generic trusted proxy without a header",
-        { ...trustedProxyValues, "api.trustedProxy.preset": "generic" },
-        /generic requires api\.trustedProxy\.clientAddressHeader/,
-      ],
-      [
-        "a trusted proxy for every IPv4 peer",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "0.0.0.0/0" },
-        /nonzero prefix/,
-      ],
-      [
-        "a trusted proxy for every IPv6 peer",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "::/0" },
-        /nonzero prefix/,
-      ],
-      [
-        "a trusted proxy hostname",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "ingress.example.invalid" },
-        /nonzero prefix/,
-      ],
-      [
-        "a trusted proxy with an invalid IPv4 address",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "10.420.0.0/16" },
-        /invalid IPv4 address/,
-      ],
-      [
-        "a trusted proxy with a leading-zero IPv4 address",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "01.2.3.4/32" },
-        /invalid IPv4 address/,
-      ],
-      [
-        "a trusted proxy with a malformed IPv6 address",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "a:/64" },
-        /invalid IPv6 address/,
-      ],
-      [
-        "a trusted proxy with more than one IPv6 compression",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": ":::/64" },
-        /invalid IPv6 address/,
-      ],
-      [
-        "a trusted proxy with too many IPv6 groups",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "1:2:3:4:5:6:7:8:9/64" },
-        /invalid IPv6 address/,
-      ],
-      [
-        "a trusted proxy with a dotted tail before compression",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "1.2.3.4::/96" },
-        /invalid IPv6 address/,
-      ],
-      [
-        "an IPv4-mapped trusted proxy with an IPv6 prefix",
-        { ...trustedProxyValues, "api.trustedProxy.cidrs[0]": "::ffff:192.0.2.1/128" },
-        /prefix must be 1 through 32/,
-      ],
-      [
-        "the internal client-address header",
-        { ...trustedProxyValues, "api.trustedProxy.clientAddressHeader": "X-OCC-Client-IP" },
-        /cannot be x-occ-client-ip/,
-      ],
-      [
-        "the cookie header as a client address",
-        { ...trustedProxyValues, "api.trustedProxy.clientAddressHeader": "cookie" },
-        /cannot be cookie/,
-      ],
-      [
-        "a structured Forwarded header as a client address",
-        { ...trustedProxyValues, "api.trustedProxy.clientAddressHeader": "Forwarded" },
-        /cannot be forwarded/,
-      ],
-      [
-        "a client-address header list",
-        {
-          ...trustedProxyValues,
-          "api.trustedProxy.clientAddressHeader": "x-real-ip x-forwarded-for",
-        },
-        /single HTTP header name/,
-      ],
-      [
-        "a client-address header longer than the controller accepts",
-        {
-          "api.trustedProxy.preset": "generic",
-          "api.trustedProxy.cidrs[0]": "10.42.0.0/16",
-          "api.trustedProxy.clientAddressHeader": `x-${"a".repeat(63)}`,
-        },
-        /single HTTP header name of at most 64 characters/,
-      ],
-      [
-        "an API key header as a client address",
-        {
-          "api.trustedProxy.preset": "generic",
-          "api.trustedProxy.cidrs[0]": "10.42.0.0/16",
-          "api.trustedProxy.clientAddressHeader": "X-API-Key",
-        },
-        /cannot be x-api-key/,
-      ],
-      [
-        "a named preset with another client-address header",
-        { ...trustedProxyValues, "api.trustedProxy.clientAddressHeader": "X-Real-IP" },
-        /ingress-nginx reads x-forwarded-for; use the generic preset for x-real-ip/,
-      ],
+      ...trustedProxyRefusalCases(trustedProxyValues),
     ]) {
       await assert.rejects(
         render(override),
@@ -3842,14 +3721,6 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
 // Findings 1065 and 1066: every Secret or ConfigMap name an operator sets, and the GatewayClass,
 // must be a Kubernetes resource name (the profile renderer's resourceNameRule), so a malformed
 // one fails at template time instead of in the cluster.
-const oidcLoginValues = {
-  "auth.oidc.enabled": "true",
-  "auth.recoveryUserId": "recovery-admin_1",
-  "auth.oidc.issuer": "https://tenant.idp.example.test/",
-  "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
-  "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
-  "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
-};
 for (const [field, enable = {}] of [
   ["installation.secretName"],
   ["database.secretName"],
@@ -4195,12 +4066,7 @@ test(
       [
         "oidc",
         {
-          "auth.oidc.enabled": "true",
-          "auth.recoveryUserId": "recovery-admin_1",
-          "auth.oidc.issuer": "https://tenant.idp.example.test/",
-          "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
-          "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
-          "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+          ...oidcLoginValues,
           "auth.oidc.clientSecretKey": "a".repeat(253),
         },
       ],
