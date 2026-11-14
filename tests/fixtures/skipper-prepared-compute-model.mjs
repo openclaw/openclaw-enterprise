@@ -145,7 +145,12 @@ export function createSkipperPreparedComputeEvents(commandPath) {
         call_id: id,
         name: "exec_command",
         arguments: JSON.stringify({
-          cmd: cmd + "\nprintf '%s\\n' '" + marker + "'",
+          cmd: [
+            cmd,
+            "oce_skipper_exit=$?",
+            '[ "$oce_skipper_exit" -eq 0 ] || exit "$oce_skipper_exit"',
+            "printf '%s\\n' '" + marker + "'",
+          ].join("\n"),
           login: false,
           yield_time_ms: Math.min(30_000, remaining),
         }),

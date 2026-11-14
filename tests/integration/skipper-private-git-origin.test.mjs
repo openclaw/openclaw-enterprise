@@ -744,11 +744,11 @@ function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
   ].join("\n");
 }
 
-async function controlledModel(t) {
+async function controlledModel(t, cmd = "set -eu; printf 'private git task'") {
   const directory = await temporaryDirectory(t, "skipper-model-");
   const path = join(directory, "command.json");
   const command = {
-    cmd: "set -eu; printf 'private git task'",
+    cmd,
     id: "skipper-test",
     expiresAt: Date.now() + 170_000,
   };
@@ -779,6 +779,41 @@ async function controlledModel(t) {
 function toolCall(events) {
   return events.find((event) => event.type === "response.output_item.done").item;
 }
+
+test("the installed Skipper model preserves the exit status of its Git command", async (t) => {
+  const cwd = await temporaryDirectory(t, "skipper-model-git-");
+  const env = cleanEnvironment({ HOME: cwd });
+  const commit =
+    "git -C work -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet --allow-empty -m fixture";
+  const command = commit + " && git -C work rev-parse HEAD";
+  async function execute() {
+    const model = await controlledModel(t, command);
+    const call = toolCall(model.next());
+    const { code, stdout, stderr } = await run("sh", ["-c", JSON.parse(call.arguments).cmd], {
+      cwd,
+      env,
+      allowFailure: true,
+    });
+    const answer = model.result(call, nativeToolOutput({ exit: code, output: stdout + stderr }));
+    return { code, stdout, answer };
+  }
+
+  const missing = await execute();
+  assert.equal(missing.code, 128);
+  assert.equal(missing.stdout, "");
+  assert.equal(missing.answer, "SKIPPER_INCOMPLETE_skipper-test");
+
+  await run("git", ["init", "--quiet", "work"], { cwd, env });
+  const success = await execute();
+  const head = await run("git", ["-C", "work", "rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd,
+    env,
+  });
+  assert.equal(success.code, 0);
+  assert.match(head.stdout.trim(), /^[0-9a-f]{40}$/);
+  assert.equal(success.stdout, head.stdout + "SKIPPER_COMPUTE_DONE_skipper-test\n");
+  assert.equal(success.answer, "SKIPPER_COMPUTE_DONE_skipper-test");
+});
 
 test("the installed Skipper model waits for the same native session without replaying its command", async (t) => {
   const model = await controlledModel(t);
