@@ -45,6 +45,22 @@ Before accessing a credential store or entering values in Console, follow
 [Supply credentials](./credentials.md) for field selection, protected retrieval,
 and the supported binding steps.
 
+## Dedicated Codex setup
+
+For Helm, follow the main steps for [local k3d](./setup-k3d.md#main) or
+[EKS](./setup-eks.md#main) until the configured installation and its Namespace are ready.
+In [Create Agent](../../../../docs/reference/console/create-and-deploy.md), choose
+**Standard Codex** and **Use Preset**. Bind the approved model with **Service
+Accounts** before enabling repository credentials. Select **Enable Native admin
+UI** for the browser checks. First deploy without plugins and verify the
+[Standard Codex baseline](./runtime-acceptance.md#standard-runtime-branches). If Console cannot bind the model or
+deploy the preset, record the failed step. Deploying a draft created by the
+quickstart API does not exercise preset creation.
+
+Continue with the SWE Agent, then the remaining runtime cases. Keep the
+read-only denial and separate contributor checks. Follow the
+[Compose setup](./setup-compose-k3d.md) for its distinct capability limits.
+
 ## Installation acceptance
 
 Record a separate result for each selected topology and follow its setup:
