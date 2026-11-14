@@ -24,7 +24,14 @@ test("staging runtime lane preserves the reviewed Codex version in its child", c
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
 
-const signinChanges = ["compatible", "controller", "catalog", "runtime", "catalog-source"] as const;
+const signinChanges = [
+  "compatible",
+  "controller",
+  "catalog",
+  "runtime",
+  "catalog-source",
+  "historical-auth",
+] as const;
 
 for (const change of signinChanges) {
   test(`staging sign-in preparation checks the current ${change} source pair`, (t) =>
@@ -114,6 +121,11 @@ async function checkWorkflowCommand(
   if (signin === "catalog-source") {
     // The catalog source alone must invalidate the reviewed reader contract.
     await writeFile(join(root, "scripts/migration-catalog.ts"), "// Unreviewed catalog input\n");
+  }
+  if (signin === "historical-auth") {
+    // The historical controller image copied this entry point into the production target.
+    const file = join(root, "scripts/auth-maintain.mjs");
+    await writeFile(file, (await readFile(file, "utf8")) + "\n// Unreviewed entry point change\n");
   }
   const unrelated = (
     await git([
