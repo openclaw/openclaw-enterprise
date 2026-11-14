@@ -185,7 +185,7 @@
     "integration/codex-plugin-startup-read-cases.ts",
     "helpers/codex-gateway-supervisor.ts",
     "helpers/codex-runtime-helper-fixture.ts",
-    "helpers/signin/chart.ts",
+    "helpers/production-worker-chart.ts",
     "helpers/controlled-tls-origin.ts",
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/plugin-driver-preflight-database-child.ts",

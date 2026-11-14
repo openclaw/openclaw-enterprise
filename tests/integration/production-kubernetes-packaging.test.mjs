@@ -37,7 +37,11 @@ import {
   tooling,
 } from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
-import { stageSigninChart } from "../helpers/signin/chart.ts";
+import {
+  initialUpgradeChart,
+  inspectWorkerProbe,
+  stageSigninChart,
+} from "../helpers/production-worker-chart.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
@@ -2524,7 +2528,25 @@ test(
   async (t) => {
     const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
     const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-    const objects = await resources((await renderProductionChart()).stdout);
+    const directory = await temporaryDirectory(t, "occ-image-health-");
+    const [inspectionCommand, ...inspectionArgs] = inspectWorkerProbe;
+    const { stdout } = await execute(docker, [
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "1000:1000",
+      "--entrypoint",
+      inspectionCommand,
+      image,
+      ...inspectionArgs,
+    ]);
+    // The image built from this checkout must serve the unmodified release chart.
+    assert.equal(stdout.trim(), "ts");
+    const chartDirectory = await initialUpgradeChart(repository, directory, stdout.trim());
+    const objects = await resources((await renderProductionChart({}, { chartDirectory })).stdout);
     const worker = findResourceByComponent(
       objects,
       "Deployment",
@@ -2534,7 +2556,6 @@ test(
     const readiness = marker("OCC_WORKER_READINESS_PATH");
     const liveness = marker("OCC_WORKER_LIVENESS_PATH");
     const mountPath = worker.volumeMounts.find(({ name }) => name === "worker-readiness").mountPath;
-    const directory = await temporaryDirectory(t, "occ-image-health-");
     const ready = join(directory, "ready");
     const alive = join(directory, "alive");
     await chmod(directory, 0o755);

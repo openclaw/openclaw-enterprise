@@ -337,7 +337,6 @@ export async function prepareMaterialization({
     providerFetch,
     dnsMapping,
     helmOptions: {
-      chartDirectory,
       databaseTLS: {
         imagePullPolicy: "Never",
         caSecretName: "signin-rehearsal-database-ca",

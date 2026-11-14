@@ -349,7 +349,10 @@ One input fails. Omitting both skips upgrades.
 
 This lane requires an explicit `OCC_TEST_OPENAI_MODEL`. Select compatible prior
 controller and runtime digests and distinct reviewed candidate digests. Verify
-provenance separately. Install Docker, k3d, kubectl, Helm, yq, and Go to build OCC.
+provenance separately. Before the initial install, a disposable Pod checks which
+worker probe the selected controller image contains. The fixture uses that
+command for the initial chart and the candidate release chart for the upgrade.
+Install Docker, k3d, kubectl, Helm, yq, and Go to build OCC.
 
 ```sh
 run_dir="$(mktemp -d)"
