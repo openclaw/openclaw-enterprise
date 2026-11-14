@@ -252,7 +252,7 @@ test("Preset and revision lists return summaries, not the stored documents", asy
   });
 
   // The in-memory fixture runs no worker and keeps no deployment records, so every summary
-  // reports none; postgres-agent-provisioning.test.mjs lists a stopped one with its code
+  // reports none; postgres-agent-provisioning.test.ts lists a stopped one with its code
   // (finding 2422).
   assert.deepEqual(
     listedRevisions.data.map(({ deploymentStatus }) => deploymentStatus),

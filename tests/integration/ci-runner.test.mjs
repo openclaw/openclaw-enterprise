@@ -61,7 +61,7 @@ import {
 } from "../helpers/local-first-agent-native.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 test("runtime provenance excludes structured image identities and invalid native metadata", async (t) => {
   const root = await temporaryDirectory(t, "ci-provenance-projection-");
@@ -1235,7 +1235,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
         ci: ["hang"],
       });
 
-      // Detached, so the signal reaches only run-tests.mjs, never this test's group.
+      // Detached, so the signal reaches only run-tests.ts, never this test's group.
       const ciRunner = spawn(
         process.execPath,
         [runnerPath, ...laneArgs(root, "hang", statePath, resultsPath)],
@@ -1264,7 +1264,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
       // spawned, and the exact pids the fixture recorded while still in its group.
       t.after(async () => {
         if (exit === undefined) {
-          // Let run-tests.mjs end its test groups first: they may not have recorded pids.
+          // Let run-tests.ts end its test groups first: they may not have recorded pids.
           for (const lastResort of ["SIGTERM", "SIGKILL"]) {
             try {
               process.kill(ciRunner.pid, lastResort);
@@ -1288,7 +1288,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
       }, 30_000);
       assert.equal(typeof recorded, "object", `no test file started (${recorded}): ${stderr}`);
       pids = recorded;
-      // The Node test runner leads its own group, apart from run-tests.mjs and this test.
+      // The Node test runner leads its own group, apart from run-tests.ts and this test.
       assert(Number.isSafeInteger(pids.runner) && pids.runner > 1, String(pids.runner));
       assert.equal(pids.pgid, pids.runner);
       assert.equal(pids.grandchildPgid, pids.runner);

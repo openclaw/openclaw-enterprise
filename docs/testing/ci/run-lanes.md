@@ -20,7 +20,7 @@ exactly one lane. The same audit covers `tests/conformance/`, `tests/browser/`,
 and `tests/docs/`. Check registration without running tests or provisioning resources:
 
 ```sh
-node scripts/ci/run-tests.mjs audit
+node scripts/ci/run-tests.ts audit
 ```
 
 The audit fails for unmapped files, duplicate ownership, missing files, or invalid
@@ -206,7 +206,7 @@ clean up a lane with one command. Its parent directory must already exist, belon
 to the runner's user, and deny group and other write access:
 
 ```sh
-node scripts/ci/run-tests.mjs run checks-baseline-1 --lifecycle complete \
+node scripts/ci/run-tests.ts run checks-baseline-1 --lifecycle complete \
   --attempt "$HOME/oce-profile-wire-attempt-1" \
   --file tests/conformance/openshell-provider-profile-wire.test.ts
 ```
@@ -227,7 +227,7 @@ before the runner starts Docker. If pnpm reports a stale installation, run
 runner’s `--root` option does not change the directory pnpm checks.
 
 ```sh
-corepack pnpm exec node scripts/ci/run-tests.mjs run postgres-platform --lifecycle complete \
+corepack pnpm exec node scripts/ci/run-tests.ts run postgres-platform --lifecycle complete \
   --attempt "$HOME/oce-postgres-idle-attempt-1" \
   --file tests/integration/postgres-connection-auth.test.ts \
   --test-name 'the pool survives PostgreSQL terminating an idle backend'
@@ -283,7 +283,7 @@ confirm its processes have stopped, then use the existing cleanup command below
 with its `state.json`. Do not remove another attempt's resources. SIGKILL or host
 failure can prevent a final result; a missing result is not cleanup evidence.
 
-The [runner](../../../scripts/ci/run-tests.mjs) starts each phase through a private IPC channel.
+The [runner](../../../scripts/ci/run-tests.ts) starts each phase through a private IPC channel.
 [Preparation](../../../scripts/ci/prepare.mjs) and
 [cleanup](../../../scripts/ci/cleanup.ts) report their owned command groups.
 The runner checks that these groups have stopped before it starts cleanup.
@@ -299,14 +299,14 @@ state file until cleanup completes.
 
 ```sh
 corepack pnpm exec node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>
-node scripts/ci/run-tests.mjs run <lane> --state <private-state-file> --results <results-file>
+node scripts/ci/run-tests.ts run <lane> --state <private-state-file> --results <results-file>
 node scripts/ci/cleanup.ts --state <private-state-file>
 ```
 
 Run cleanup after preparation or test failures too. See [local browser diagnostics](../local.md#browser-failure-diagnostics) and the [CI flow](../../flows/github-actions-testing.md) for failure evidence.
 
 For focused local proof, first validate the exact manifest path with
-`node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path>`.
+`node scripts/ci/run-tests.ts check-selection <lane> --file <manifest-path>`.
 Then prepare the lane and pass the same `--file` argument to `run`. The `run`
 command also accepts `--test-name` for the top-level cases described
 above; `check-selection` validates only the file. Omit both selection arguments

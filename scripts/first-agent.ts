@@ -24,7 +24,7 @@ import {
   reuseFirstAgentRecord,
   selectFirstAgentModel,
   verifyFirstAgentModel,
-} from "./first-agent-model.mjs";
+} from "./first-agent-model.ts";
 import { privateOwned } from "./lib/private-owned-path.ts";
 
 type Fields = Record<string, unknown>;
@@ -396,7 +396,7 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
   ];
   const compose = (...args: string[]) =>
     run(containerEngine, [...composeBase, ...args], { env: environment });
-  const kubectl = (...args: (string | RunOptions)[]) => {
+  const kubectl = (...args: unknown[]) => {
     const last = args.at(-1);
     const options = typeof last === "object" ? last : {};
     const commandArgs = typeof last === "object" ? args.slice(0, -1) : args;

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
-import { startFakePostgres } from "./fake-postgres-server.mjs";
+import { startFakePostgres } from "./fake-postgres-server.ts";
 import {
   commandShim as fixtureCommandShim,
   startCommandServer,
@@ -17,7 +17,7 @@ import {
 // and pipes; only the scenario logic below runs in the test process. A command sends
 // the environment variables below. The fixture directory the scenarios write to is the
 // server's, never the client's. `compose up` starts a fake PostgreSQL server
-// (fake-postgres-server.mjs) for the port the fixture reports, where its administrative
+// (fake-postgres-server.ts) for the port the fixture reports, where its administrative
 // SQL arrives (scripts/ci/postgres-admin.ts); each query is logged as a "postgres"
 // command whose args are the database and the query. `compose down` stops it. The fake
 // listens on that port's Unix socket in OPENCLAW_CI_POSTGRES_SOCKET_DIR. These command

@@ -8,7 +8,7 @@
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.ts",
     "tests/integration/postgres-bootstrap-failures.test.ts",
-    "tests/integration/postgres-agent-provisioning.test.mjs",
+    "tests/integration/postgres-agent-provisioning.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
     "tests/integration/postgres-oidc-recovery-replacement.test.ts",
@@ -267,7 +267,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-agent-provisioning.test.mjs",
+      "path": "tests/integration/postgres-agent-provisioning.test.ts",
       "expectedTests": [
         "provisioning API queues one job with existing Secret references and replays only the exact same request",
         "provisioning status judges claim liveness by the database clock, not the controller clock",

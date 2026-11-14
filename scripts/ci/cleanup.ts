@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { removeImageFileContainer } from "../lib/image-file.mjs";
+import { removeImageFileContainer, type ImageFileContainerReceipt } from "../lib/image-file.ts";
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.ts";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.ts";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
@@ -871,6 +871,19 @@ async function cleanupFirstAgentImages(resource: CleanupResource, state: Cleanup
   }
 }
 
+function assertImageFileName(
+  resource: CleanupResource,
+  prefix: string,
+): asserts resource is CleanupResource & ImageFileContainerReceipt {
+  if (
+    typeof resource.name !== "string" ||
+    !resource.name.startsWith(`${prefix}-provenance-`) ||
+    !/^openclaw-ci-[a-z0-9-]+-provenance-[a-f0-9]{12}$/.test(resource.name)
+  ) {
+    throw new Error("Refusing to remove an unowned image extraction container.");
+  }
+}
+
 async function cleanupResource(
   resource: CleanupResource,
   state: CleanupState,
@@ -878,21 +891,15 @@ async function cleanupResource(
   identity?: K3dCleanupIdentity,
 ) {
   switch (resource.kind) {
-    case "image-file":
+    case "image-file": {
       if (resource.owner !== state.prefix) {
         throw new Error("Refusing to clean an image extraction container owned by another prefix.");
       }
-      if (
-        typeof resource.name !== "string" ||
-        !resource.name.startsWith(`${state.prefix}-provenance-`) ||
-        !/^openclaw-ci-[a-z0-9-]+-provenance-[a-f0-9]{12}$/.test(resource.name)
-      ) {
-        throw new Error("Refusing to remove an unowned image extraction container.");
-      }
+      assertImageFileName(resource, state.prefix);
       await removeImageFileContainer({
         resource,
         persist: () => writeState(statePath, state),
-        command: async (_docker: string, args: string[], options: { timeout?: number } = {}) => {
+        command: async (_docker, args, options = {}) => {
           try {
             return (
               await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
@@ -905,6 +912,7 @@ async function cleanupResource(
         },
       });
       break;
+    }
     case "first-agent-image-registry":
       await cleanupFirstAgentImages(resource, state);
       break;

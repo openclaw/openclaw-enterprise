@@ -1,6 +1,6 @@
 // Runtime image workspace node and native worker smoke tests, split from
-// runtime-image-startup-probe.test.mjs and runtime-image-startup.test.mjs so CI
-// can run them beside runtime-image-startup.test.mjs: workspace node enrollment
+// runtime-image-startup-probe.test.mjs and runtime-image-startup.test.ts so CI
+// can run them beside runtime-image-startup.test.ts: workspace node enrollment
 // and reconnect, descendant reaping across workspace node and Codex restarts,
 // and the inactive Slack approver startup check on both production launchers.
 // Ephemeral native worker reconnect is in runtime-image-startup-probe.test.mjs.

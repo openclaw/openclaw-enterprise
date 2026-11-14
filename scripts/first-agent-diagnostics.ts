@@ -5,9 +5,9 @@ import {
 
 import type { RuntimeLogContainerSourceId } from "../packages/contracts/src/runtime-logs.ts";
 import type { FirstAgentApi } from "./first-agent-api.ts";
+import type { GatewaySelection } from "./first-agent-model.ts";
 
 type Fields = Record<string, unknown>;
-type Gateway = { pod: string; uid?: string; restartCount?: number };
 
 function fields(value: unknown): Fields {
   if (value === null || value === undefined) {
@@ -112,7 +112,7 @@ export async function collectFirstAgentDiagnostics(
     agentId,
     revisionId,
     gateway,
-  }: { namespaceId: string; agentId: string; revisionId: string; gateway: Gateway },
+  }: { namespaceId: string; agentId: string; revisionId: string; gateway: GatewaySelection },
 ) {
   const lines = [
     "Runtime snapshot after model failure (observations do not establish the request's cause):",

@@ -24,7 +24,7 @@ import {
   gatewayRequest as requestGateway,
 } from "../fixtures/repository-credentials/service.mjs";
 import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.ts";
-import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
+import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 import {
   registerResourceCleanup,
   type ResourceCleanup,

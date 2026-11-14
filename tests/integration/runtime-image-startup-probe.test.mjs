@@ -1,4 +1,4 @@
-// Runtime image startup smoke tests split from runtime-image-startup.test.mjs so
+// Runtime image startup smoke tests split from runtime-image-startup.test.ts so
 // CI can run the files in parallel lanes: startup model probes and ephemeral
 // native worker reconnect from an expired replayed setup code. SIGTERM during
 // startup is in runtime-image-startup-termination.test.ts; workspace node

@@ -57,7 +57,7 @@ test("full coverage receipts require real case evidence and retain approved same
   const skipperFiles = files(readSuiteLane(full, skipperLane));
   const fixtureRoot = await temporaryDirectory(t, "full-coverage-receipts-");
   const policyPath = "tests/integration/coverage-policy.test.mjs";
-  const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+  const runner = join(repositoryRoot, "scripts/ci/run-tests.ts");
   const json = (path: string, value: object) => writeFile(path, JSON.stringify(value));
   const generate = async (path: string, names: string[], body: string, suite = "") => {
     const target = join(fixtureRoot, path);

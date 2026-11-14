@@ -44,7 +44,7 @@ current source before running that file by itself:
 
 ```sh
 pnpm cli:build
-node --test tests/integration/first-agent-startup.test.mjs
+node --test tests/integration/first-agent-startup.test.ts
 ```
 
 ## Check packaged OpenShell Workspace resources
@@ -338,7 +338,7 @@ NetworkPolicy. Use a fresh private state directory for each run:
 OBS_LANE=k3d-observability
 OBS_RUN_DIR=$(mktemp -d)
 env -u OPENAI_API_KEY node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
-  env -u OPENAI_API_KEY node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+  env -u OPENAI_API_KEY node scripts/ci/run-tests.ts run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
 Inspect the exit status and result counts, including skips. After preparation
@@ -367,7 +367,7 @@ Run from the checkout root with a fresh state directory.
 OBS_LANE=k3d-otel
 OBS_RUN_DIR=$(mktemp -d)
 corepack pnpm exec node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
-  corepack pnpm exec node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+  corepack pnpm exec node scripts/ci/run-tests.ts run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
 Inspect results and clean up as above. The model lane checks embedded and

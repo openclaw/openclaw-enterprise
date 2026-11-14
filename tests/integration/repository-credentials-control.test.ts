@@ -22,8 +22,10 @@ import {
 import { startRegistryProviderFixtures } from "../fixtures/repository-credentials/registry/provider.ts";
 import { chmod, lstat, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { startAlternateUpstream } from "../fixtures/repository-credentials/alternate.mjs";
-import { createAlternateFixtureFactory } from "../fixtures/repository-credentials/alternate-shape.ts";
+import {
+  createAlternateDriverFactory,
+  startAlternateUpstream,
+} from "../fixtures/repository-credentials/alternate.ts";
 import {
   fixtureRepository,
   type startGitHubFixture,
@@ -89,11 +91,6 @@ type RegistryFixture = {
   backendId: string;
   repositories: readonly { github: { trace: readonly object[] } }[];
   restart(): Promise<void>;
-};
-type AlternateUpstream = {
-  origin: string;
-  accepted: Map<string, number>;
-  trace: { committed?: boolean }[];
 };
 type RepositoryDefinition = Readonly<{
   repositoryRef: string;
@@ -222,9 +219,8 @@ async function admissionFixture(t: TestContext, onCreate?: (sessionId: string) =
     callControl,
   }: typeof import("../../apps/controller/src/drivers/repo/github/access/client/operator.ts") =
     await appModule("drivers/repo/github/access/client/operator");
-  const upstreamOptions = { clock, tls };
-  const upstream: AlternateUpstream = await startAlternateUpstream(resources, upstreamOptions);
-  const driverFactory = createAlternateFixtureFactory({
+  const upstream = await startAlternateUpstream(resources, { clock, tls });
+  const driverFactory = createAlternateDriverFactory({
     origin: upstream.origin,
     gatewayOrigin: config.gateway.publicOrigin,
     clock,
@@ -636,7 +632,7 @@ test(
       ...base,
       gateway: { ...base.gateway, listen: "127.0.0.1:0", controlSocket: target },
     };
-    const factory = createAlternateFixtureFactory({
+    const factory = createAlternateDriverFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -672,11 +668,10 @@ test(
     );
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
-    const upstreamOptions: { tls: typeof tls; clock?: Clock } = { tls };
-    const upstream: AlternateUpstream = await startAlternateUpstream(resources, upstreamOptions);
+    const upstream = await startAlternateUpstream(resources, { tls });
     const config: ServiceConfig = await createLoopbackServiceConfiguration(resources);
     const { promise: barrier, resolve: resume } = Promise.withResolvers<void>();
-    const factory = createAlternateFixtureFactory({
+    const factory = createAlternateDriverFactory({
       origin: upstream.origin,
       gatewayOrigin: config.gateway.publicOrigin,
       clock,

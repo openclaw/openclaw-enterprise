@@ -40,14 +40,14 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Prepare hosted disk for source images
-        env:
-          OPENCLAW_CI_HEADROOM_LANE: k3d-quickstart
-        run: node scripts/ci/repository-platform-headroom.mjs
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.22.1"
           package-manager-cache: false
+      - name: Prepare hosted disk for source images
+        env:
+          OPENCLAW_CI_HEADROOM_LANE: k3d-quickstart
+        run: node scripts/ci/repository-platform-headroom.ts
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
