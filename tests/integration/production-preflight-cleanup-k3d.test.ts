@@ -10,7 +10,7 @@ import {
   explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 
 type Slot = "secret" | "networkpolicy" | "api" | "worker";
 type PlannedSlot = Record<string, unknown> & { kind: string; name: string };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { X509Certificate } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, X509Certificate } from "node:crypto";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { RequestListener } from "node:http";
 import { createServer } from "node:https";
 import { join } from "node:path";
@@ -9,6 +9,8 @@ import Type from "typebox";
 import { Check } from "typebox/value";
 import { oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
 import { readHarnessNodeCa } from "../../apps/controller/src/composition/installation-config.ts";
+import { generateApiCaScripts } from "../../deploy/helm/src/generate-api-ca.ts";
+import { chartArchiveContent } from "../../scripts/ci/chart-release.ts";
 import {
   callbackState,
   createIdTokenSigner,
@@ -37,6 +39,41 @@ import {
   type Container,
 } from "./oidc-ca-chart-fixture.ts";
 import { verifyDatabaseStartupTrust } from "./oidc-ca-postgres-case.ts";
+
+test(
+  "packaged OIDC CA programs match their TypeScript sources and chart commands",
+  tooling,
+  async (t) => {
+    const chart = "deploy/helm/openclaw-enterprise";
+    const directory = await temporaryDirectory(t, "occ-oidc-ca-chart-");
+    const helm = process.env.OCC_HELM_BIN ?? "helm";
+    await execute(helm, ["package", chart, "--destination", directory]);
+    const [archiveName] = await readdir(directory);
+    assert.ok(archiveName && archiveName.endsWith(".tgz"), "Expected a Helm chart archive");
+    const archive = join(directory, archiveName);
+    const files = new Map(await chartArchiveContent(archive));
+    for (const { filename, contents } of await generateApiCaScripts()) {
+      const member = `files/${filename}`;
+      assert.equal(
+        await readFile(join(chart, member), "utf8"),
+        contents,
+        `Regenerate ${member} with node deploy/helm/src/generate-api-ca.ts`,
+      );
+      assert.equal(
+        files.get(`openclaw-enterprise/${member}`),
+        createHash("sha256").update(contents).digest("hex"),
+      );
+    }
+    // Render with the private CA settings enabled so comparison includes both embedded programs.
+    const values = { ...oidcValues, ...caValues, ...gatewayValues };
+    const source: unknown = await renderProductionChart(values);
+    const packaged: unknown = await renderProductionChart(values, { chartDirectory: archive });
+    const renderResult = Type.Object({ stdout: Type.String({ minLength: 1 }) });
+    assert.ok(Check(renderResult, source), "Expected Helm to render the source chart");
+    assert.ok(Check(renderResult, packaged), "Expected Helm to render the packaged chart");
+    assert.equal(packaged.stdout, source.stdout);
+  },
+);
 
 const callbackObservation = Type.Object({
   accepted: Type.Boolean(),

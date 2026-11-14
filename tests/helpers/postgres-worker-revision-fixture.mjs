@@ -128,7 +128,7 @@ const disposeLimitsMs = {
   "worker stop": 30_000,
   "pool end": 15_000,
   // Waits for the CI state lock, which other files' test databases also take. The drop's lock
-  // wait shares this limit; the drop itself has its own (scripts/ci/cleanup.mjs).
+  // wait shares this limit; the drop itself has its own (scripts/ci/cleanup.ts).
   "drop database": 120_000,
 };
 
@@ -225,7 +225,7 @@ export function createWorkerRevisionFixtures(
   }
 
   /**
-   * @param {TestContext} context
+   * @param {Pick<TestContext, "after">} context
    * @param {Partial<typeof disposeLimitsMs>} limitsMs
    */
   async function prepareDatabase(context, limitsMs = {}) {
@@ -300,7 +300,7 @@ export function createWorkerRevisionFixtures(
   }
 
   /**
-   * @param {TestContext} context
+   * @param {Pick<TestContext, "after">} context
    * @param {{
    *   database?: Pick<Awaited<ReturnType<typeof prepareDatabase>>, "url" | "pools" | "workers">,
    *   leaseDurationMs?: number,

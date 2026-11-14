@@ -261,7 +261,7 @@ behavior.
   real PostgreSQL and HTTP admission, the configured rows, membership, Owner
   bindings in `default`, refusal of a second member, deploy-time grants, a
   configuration change at restart, and the authority fences.
-- `node --test tests/conformance/occ-api-security.test.mjs` checks that Agent
+- `node --test tests/conformance/occ-api-security.test.ts` checks that Agent
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.ts` checks
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.

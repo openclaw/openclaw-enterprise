@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-11-14
-last_updated_session: authoring-run/b8058a93-be93-46c4-a823-6c9397935811
+last_updated_session: authoring-run/b17203e9-337c-40cf-9a41-0139532525fe
 ---
 
 # Installation Profile Rendering Flow
@@ -9,8 +9,7 @@ last_updated_session: authoring-run/b8058a93-be93-46c4-a823-6c9397935811
 ## Overview
 
 An operator passes a profile, JSON inputs, and output directory to
-`scripts/render-installation-profile.mjs`, the compatibility entry point for
-`scripts/render-installation-profile.ts`. The typed owner validates inputs, resolves omitted
+`scripts/render-installation-profile.ts`. The renderer validates inputs, resolves omitted
 hosted Codex destinations, and writes paired Helm values, Installation YAML, and
 preflight. This flow ends at those files. Operators still prepare the cluster
 and Secrets, apply Helm, and configure hosted/runtime tokens, optional ChatGPT
@@ -18,8 +17,8 @@ service accounts, the repository registry, and Slack consumers.
 
 ## Entry Points
 
-- Trigger: `node scripts/render-installation-profile.mjs --profile openclaw|codex --input <json> --out-dir <dir>`.
-- Source: `scripts/render-installation-profile.ts:parseArgs`,
+- Trigger: `node scripts/render-installation-profile.ts --profile openclaw|codex --input <json> --out-dir <dir>`.
+- Source: `scripts/render-installation-profile.ts:runInstallationProfileCli`,
   `scripts/render-installation-profile.ts:buildRendered`, and
   `scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`.
 - Assumptions: The caller runs from the repository root with installed
@@ -57,6 +56,9 @@ graph TD
 ### 1. Parse arguments and select the profile
 
 `scripts/render-installation-profile.ts:parseArgs`
+
+Direct Node execution runs the CLI. Importing the module exposes the renderer
+and its refusal type without running the command.
 
 `parseArgs` accepts `--profile`, `--input`, and `--out-dir`; other flags fail
 before output. Profiles are `openclaw` or `codex`, with no `default`. JSON supplies
@@ -278,7 +280,7 @@ activation, and repository registry creation need separate evidence.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
+- Run `node --test tests/integration/profile-renderer.test.ts` to exercise the
   CLI and inspect generated profile output.
 - `tests/integration/profile-preflight-chart-parity.test.ts` runs trusted proxy
   CIDRs and client address headers, namespaces, node selectors, sign-in Secret
@@ -313,6 +315,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 12:18: Run the installation profile command directly from its TypeScript source in the accompanying change. (authoring-run/b17203e9-337c-40cf-9a41-0139532525fe - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 
 - 2026-11-14 13:26: Keep the public renderer entry point and point to its strict TypeScript owner in the accompanying change. (authoring-run/b8058a93-be93-46c4-a823-6c9397935811 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 

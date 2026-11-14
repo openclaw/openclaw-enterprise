@@ -8,7 +8,7 @@ import {
   publishPrepared,
   publishWorkflow,
   repository,
-} from "../../scripts/ci/container-release.mjs";
+} from "../../scripts/ci/container-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -697,7 +697,7 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     await writeFixture();
     execFileSync(
       process.execPath,
-      ["--import", preload, "scripts/ci/container-release.mjs", command, directory],
+      ["--import", preload, "scripts/ci/container-release.ts", command, directory],
       {
         env: {
           ...process.env,
