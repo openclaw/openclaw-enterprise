@@ -181,7 +181,10 @@ test("QA credential materializer validates isolated repository fixture target", 
     exported
       .trim()
       .split("\n")
-      .map((line) => line.split(/=(.*)/s).slice(0, 2)),
+      .map((line) => {
+        const [name = "", value] = line.split(/=(.*)/s);
+        return [name, value] as const;
+      }),
   );
   const runnerSelection = selectQaMatrix({
     ...runnerEnv,

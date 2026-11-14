@@ -26,7 +26,7 @@ async function writeReuseMetadataFixture(
   routes: string[],
 ) {
   const responses = Object.fromEntries(
-    await Promise.all(routes.map(async (path) => [path, await get(path)])),
+    await Promise.all(routes.map(async (path) => [path, await get(path)] as const)),
   );
   await writeFile(
     preload,

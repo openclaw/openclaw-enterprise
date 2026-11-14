@@ -1068,22 +1068,25 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     for (const preflight of ["success", "failure"]) {
       for (const slack of ["success", "failure", "skipped"]) {
         for (const cancelled of [false, true]) {
-          const selected = runInNewContext(text(qa.if).replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
-            inputs: { lane },
-            github: {
-              repository: mainRun.GITHUB_REPOSITORY,
-              ref: mainRun.GITHUB_REF,
-              ref_type: "branch",
-              run_attempt: "1",
-              event_name: "workflow_dispatch",
+          const selected: unknown = runInNewContext(
+            text(qa.if).replace(/^\$\{\{\s*|\s*\}\}$/g, ""),
+            {
+              inputs: { lane },
+              github: {
+                repository: mainRun.GITHUB_REPOSITORY,
+                ref: mainRun.GITHUB_REF,
+                ref_type: "branch",
+                run_attempt: "1",
+                event_name: "workflow_dispatch",
+              },
+              needs: {
+                preflight: { result: preflight, outputs: { selected_lane: lane } },
+                slack: { result: slack },
+              },
+              always: () => true,
+              cancelled: () => cancelled,
             },
-            needs: {
-              preflight: { result: preflight, outputs: { selected_lane: lane } },
-              slack: { result: slack },
-            },
-            always: () => true,
-            cancelled: () => cancelled,
-          });
+          );
           assert.equal(
             selected,
             !cancelled && preflight === "success" && ["all", "qa-matrix"].includes(lane),
