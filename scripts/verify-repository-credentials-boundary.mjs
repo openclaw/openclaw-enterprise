@@ -14,9 +14,9 @@ const credentialDirectories = [
 const sharedConfigurationFields = "composition/installation-fields.ts";
 const sharedJsonMembers = "drivers/json-members.ts";
 const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
-const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
+const processEntrypoint = "repository-credentials.ts";
 const requiredEntrypoints = [
-  ...processEntrypoints,
+  processEntrypoint,
   sharedConfigurationFields,
   sharedJsonMembers,
   openShellEvidence,
@@ -381,7 +381,6 @@ const reviewedProcessMembers = {
   ],
   "composition/repository-credentials/probe.ts": ["exitCode"],
   "repository-credentials.ts": ["argv", "exitCode", "stderr", "stdout"],
-  "repository-credentials.mjs": ["exitCode", "stderr"],
   "drivers/repo/access/server.ts": ["getuid"],
   "backends/repository-credentials/control-socket.ts": ["getuid"],
   "backends/repository-credentials/private-request-server.ts": ["getuid"],
@@ -494,8 +493,7 @@ function inspectSource(path, root, sources, ast) {
       const restricted =
         target === sharedConfigurationFields ||
         capabilityConsumers[target] ||
-        (!file.startsWith(clientDirectory) && target.startsWith(clientDirectory)) ||
-        (file === "repository-credentials.mjs" && source === "../dist/repository-credentials.js");
+        (!file.startsWith(clientDirectory) && target.startsWith(clientDirectory));
       if (!restricted) {
         continue;
       }
@@ -548,14 +546,6 @@ function inspectSource(path, root, sources, ast) {
     }
     if (specifier.startsWith(".")) {
       const target = relativeSource(path, root, specifier, sources);
-      if (
-        file === "repository-credentials.mjs" &&
-        kind === "import" &&
-        specifier === "../dist/repository-credentials.js" &&
-        names.join() === "main"
-      ) {
-        return;
-      }
       if (
         target === ".." ||
         target.startsWith("../") ||
@@ -731,7 +721,7 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     files.push(...owned.sort());
   }
   for (const entrypoint of [
-    ...processEntrypoints,
+    processEntrypoint,
     sharedConfigurationFields,
     sharedJsonMembers,
     openShellEvidence,

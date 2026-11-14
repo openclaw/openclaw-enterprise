@@ -63,7 +63,7 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
 
 # The runtime's credential client compiles from its own sources only: the
 # client directory and client-contracts.ts, the only modules the client
-# closure in scripts/build-repository-credentials.mjs accepts. Other controller
+# closure in scripts/build-repository-credentials.ts accepts. Other controller
 # and package changes then keep this stage cached. tsconfig.client.json keeps
 # the controller's compiler options and turns off only project build outputs
 # (declarations, build info) and the type check; Static Checks and the service
@@ -75,12 +75,11 @@ COPY apps/controller/tsconfig.json apps/controller/tsconfig.json
 COPY deploy/runtime/repository-credentials/tsconfig.client.json deploy/runtime/repository-credentials/tsconfig.client.json
 COPY apps/controller/src/drivers/repo/access/client-contracts.ts apps/controller/src/drivers/repo/access/client-contracts.ts
 COPY apps/controller/src/drivers/repo/github/access/client apps/controller/src/drivers/repo/github/access/client
-COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY scripts/build-repository-credentials.ts scripts/build-repository-credentials.ts
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
 RUN node_modules/.bin/tsc -p deploy/runtime/repository-credentials/tsconfig.client.json --pretty false \
-    && node scripts/build-repository-credentials.mjs --client-only
+    && node scripts/build-repository-credentials.ts --client-only
 # Assemble the runtime's credential client as one tree with fixed modes and
 # timestamps. The runtime copies it onto / as its last layer, so a client change
 # rebuilds only that layer and every builder writes the same bytes. With a fixed
@@ -105,7 +104,6 @@ FROM repository-credentials-deps AS repository-credentials-build
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages packages
 COPY apps/controller apps/controller
-COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY scripts/build-repository-credentials.ts scripts/build-repository-credentials.ts
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json

@@ -18,7 +18,6 @@ const custodySelection = "composition/repository-credentials/custody-selection.t
 const evidenceImport = "../../drivers/egress-proxy/openshell-repository-git-evidence.ts";
 const entrypoints = [
   "repository-credentials.ts",
-  "repository-credentials.mjs",
   sharedFields,
   sharedJsonMembers,
   openShellEvidence,
@@ -122,11 +121,6 @@ test("credential source boundary rejects new raw capabilities in the real source
       "the platform Driver can render portable session files",
       "drivers/repo/github/driver.ts",
       'import { encodeRepositoryCredentialSessionFiles as encodeFiles } from "./access/client/config.js"; void encodeFiles;',
-    ],
-    [
-      "the bootstrap can load only the emitted process main",
-      "repository-credentials.mjs",
-      'import { main as emittedMain } from "../dist/repository-credentials.js"; void emittedMain;',
     ],
   ]) {
     await t.test(label, () => appendSource(root, file, source, () => verify(root)));
@@ -653,12 +647,6 @@ test("credential source boundary rejects new raw capabilities in the real source
       "repository-credentials.ts",
     ],
     [
-      "the emitted bootstrap cannot use a raw network global",
-      'fetch("https://example.test");',
-      /raw global fetch/,
-      "repository-credentials.mjs",
-    ],
-    [
       "direct HTTPS request",
       'import { request } from "node:https";',
       /unreviewed runtime import from node:https/,
@@ -817,25 +805,7 @@ test("credential source boundary rejects new raw capabilities in the real source
       "drivers/repo/github/driver.ts",
     ],
     [
-      "the bootstrap cannot load a different emitted module",
-      'import { main as unrelatedMain } from "../dist/main.js";',
-      /runtime import escapes credential source/,
-      "repository-credentials.mjs",
-    ],
-    [
-      "the bootstrap cannot load another emitted binding",
-      'import { runService } from "../dist/repository-credentials.js";',
-      /runtime import escapes credential source/,
-      "repository-credentials.mjs",
-    ],
-    [
-      "the bootstrap cannot re-export its emitted main",
-      'export { main } from "../dist/repository-credentials.js";',
-      /runtime import escapes credential source/,
-      "repository-credentials.mjs",
-    ],
-    [
-      "other source cannot use the emitted bootstrap exception",
+      "the process entrypoint cannot import from the emitted tree",
       'import { main } from "../dist/repository-credentials.js";',
       /runtime import escapes credential source/,
       "repository-credentials.ts",
@@ -958,12 +928,6 @@ test("credential source boundary rejects new raw capabilities in the real source
       "export { encodeRepositoryCredentialSessionFiles };",
       /raw I\/O binding cannot be re-exported/,
       "drivers/repo/github/driver.ts",
-    ],
-    [
-      "the bootstrap cannot re-export its local emitted main",
-      "export { main };",
-      /raw I\/O binding cannot be re-exported/,
-      "repository-credentials.mjs",
     ],
     [
       "the Provider transport cannot re-export its local raw sender",
