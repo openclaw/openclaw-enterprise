@@ -623,7 +623,7 @@ export async function cleanupKeycloak(
   if (typeof directory !== "string" || !isAbsolute(directory) || basename(directory) !== name) {
     throw new Error(`Refusing to clean Keycloak directory outside ownership: ${directory}`);
   }
-  await execFile(docker, ["rm", "--force", "--volumes", name]).catch((error) => {
+  await execFile(docker, ["rm", "--force", "--volumes", name]).catch((error: unknown) => {
     if (!/no such container|no container with name or id/i.test(errorMessage(error))) {
       throw error;
     }
