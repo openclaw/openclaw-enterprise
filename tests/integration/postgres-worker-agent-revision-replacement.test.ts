@@ -1072,7 +1072,11 @@ for (const [shape, options] of Object.entries(olderShapes)) {
       // The older version was checked after the held failure, before its deadline...
       await waitFor("an older pass after the held failure", async () => {
         const failedAt = events.findIndex(
-          ({ event, workId }) => event === "worker.completed" && workId === newer.idempotencyKey,
+          ({ event, workId, outcome, code }) =>
+            event === "worker.completed" &&
+            workId === newer.idempotencyKey &&
+            outcome === "permanent" &&
+            code === "RUNTIME_MODEL_PROBE_FAILED",
         );
         return failedAt >= 0 &&
           events
