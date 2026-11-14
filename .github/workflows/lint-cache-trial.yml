@@ -58,9 +58,11 @@ jobs:
           echo "pnpm=$pnpm_version" >> "$GITHUB_OUTPUT"
           fingerprint=$(printf '%s\0' "$GITHUB_SHA" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" \
             "$RUNNER_OS" "$RUNNER_ARCH" "$node_version" "$pnpm_version" | sha256sum | cut -d' ' -f1)
-          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
-          echo "key=lint-trial-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$fingerprint-$(cat /proc/sys/kernel/random/uuid)" >> "$GITHUB_OUTPUT"
-          echo "probe=lint-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$(cat /proc/sys/kernel/random/uuid)" >> "$GITHUB_OUTPUT"
+          {
+            echo "fingerprint=$fingerprint"
+            echo "key=lint-trial-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$fingerprint-$(cat /proc/sys/kernel/random/uuid)"
+            echo "probe=lint-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$(cat /proc/sys/kernel/random/uuid)"
+          } >> "$GITHUB_OUTPUT"
           echo "CACHE_FILE=$RUNNER_TEMP/lint-trial.cache" >> "$GITHUB_ENV"
           echo "start=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
       - name: Look up the new exact key without downloading
