@@ -13,7 +13,7 @@ import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
+const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.ts");
 
 type Realm = {
   clients: { secret: string; redirectUris: string[]; attributes: Record<string, unknown> }[];

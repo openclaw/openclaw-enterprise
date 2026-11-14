@@ -342,7 +342,7 @@ env -u OPENAI_API_KEY node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$O
 ```
 
 Inspect the exit status and result counts, including skips. After preparation
-or testing, including failure, run `node scripts/ci/cleanup.mjs --state
+or testing, including failure, run `node scripts/ci/cleanup.ts --state
 "$OBS_RUN_DIR/state.json"`. Retain state if cleanup fails. After interruption,
 confirm owned subprocesses have stopped before cleanup. See [CI testing](ci.md).
 

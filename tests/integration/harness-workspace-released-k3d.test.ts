@@ -164,7 +164,7 @@ test(
     const namespace = `oce-released-workspace-${randomUUID().slice(0, 8)}`;
     await kubectl("create", "namespace", namespace);
     // The upgraded directories are uid 1000 mode 0700 on the runner's k3d storage bind mount.
-    // Lane cleanup empties that storage as root (scripts/ci/cleanup.mjs), so the case does not
+    // Lane cleanup empties that storage as root (scripts/ci/cleanup.ts), so the case does not
     // wait for local-path to remove its volume.
     t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
     const completed = (name: string): Promise<unknown> =>
