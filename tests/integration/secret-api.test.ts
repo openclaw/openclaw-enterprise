@@ -1,11 +1,42 @@
+/// <reference lib="es2023.array" />
+
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { Type, type Static, type TSchema } from "typebox";
+import { Check } from "typebox/value";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { createControllerApp } from "../../apps/controller/src/index.ts";
+import {
+  createControllerApp,
+  type ControllerApp,
+  type ControllerAppOptions,
+} from "../../apps/controller/src/index.ts";
+import { ErrorResponse, Meta, RequestId } from "../../packages/contracts/src/api/common.ts";
+import {
+  AgentReadResponse,
+  AgentResponse,
+  AgentRevisionResponse,
+  ConfigurationResponse,
+  CredentialSourceResponse,
+  NamespaceResponse,
+  SecretDetailResponse,
+  SecretResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+import type {
+  CredentialGatewayDriver,
+  CredentialSourceInput,
+  HarnessAuthBinding,
+  OpenClawConfigurationDocument,
+  Permission,
+  PermissionAction,
+  ResourceKind,
+  Principal,
+  SecretReference,
+} from "../../packages/contracts/src/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
@@ -17,21 +48,32 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantRole, restrict } from "../helpers/iam-grants.mjs";
+import { grantRole as grantIAMRole, restrict } from "../helpers/iam-grants.mjs";
 import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 
+import { registerModelDiscoveryCases } from "./secret-api-model-discovery-cases.ts";
+
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
+const identifier = (prefix: string) => new RegExp(`^${prefix}_${uuidV4}$`);
+// These cases use only the ID. Agent configuration values have a separate validation suite.
+const configurationIdentityResponse = Type.Object({
+  data: Type.Pick(ConfigurationResponse.properties.data, ["id"]),
+  meta: Meta,
+});
+const revisionBindingResponse = Type.Object({
+  data: Type.Pick(AgentRevisionResponse.properties.data, ["id", "harnessAuth"]),
+  meta: Meta,
+});
 const defaultControllerBodyLimit = 64 * 1024;
 const syntheticSecretSentinel = "synthetic-secret-boundary:";
 
-function jsonBodyBytes(value) {
+function jsonBodyBytes(value: unknown) {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
-function bodyAtJsonLimit(limit, buildBody) {
+function bodyAtJsonLimit<Body>(limit: number, buildBody: (value: string) => Body) {
   const emptyBodyBytes = jsonBodyBytes(buildBody(""));
   const targetValueBytes = limit - emptyBodyBytes;
   assert.ok(targetValueBytes >= syntheticSecretSentinel.length);
@@ -45,7 +87,33 @@ function bodyAtJsonLimit(limit, buildBody) {
   return { body, value };
 }
 
-async function createFixture(options = {}) {
+type Session = Pick<Awaited<ReturnType<typeof signInToControllerApp>>, "cookie" | "origin">;
+type SessionApp = ControllerApp & { defaultSession: Session | undefined };
+type MutableIAMState = {
+  -readonly [Key in Exclude<keyof NativeIAMState, "roles">]: Array<NativeIAMState[Key][number]>;
+} & {
+  roles: (Omit<NativeIAMState["roles"][number], "permissions"> & { permissions: Permission[] })[];
+};
+
+type GrantOptions = {
+  id: string;
+  bindingId?: string;
+  namespaceId: string;
+  permissions: Partial<Record<ResourceKind, PermissionAction[]>>;
+  resource?: { kind: ResourceKind; id: string };
+};
+
+function grantRole(state: MutableIAMState, subjectId: string, options: GrantOptions): void {
+  grantIAMRole(state, subjectId, { ...options, resource: options.resource });
+}
+
+type FixtureOptions = Pick<ControllerAppOptions, "computeDriver"> & {
+  secretDriver?: ReturnType<typeof createTestSecretDriver>;
+  recordOperations?: boolean;
+  now?: () => Date;
+};
+
+async function createFixture(options: FixtureOptions = {}) {
   const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
   const authFixture = await createTestAuthPrincipal({
     installationId,
@@ -53,18 +121,21 @@ async function createFixture(options = {}) {
     password: `generated-password-${randomUUID()}`,
     name: "Secret API Administrator",
   });
-  const principal = authFixture.seed.principal;
-  const state = {
+  const principal: Principal = authFixture.seed.principal;
+  const roles: NativeIAMState["roles"] = authFixture.seed.roles;
+  const [adminRole] = roles;
+  assert.ok(adminRole, "The seeded administrator must have a role");
+  const state: MutableIAMState = {
     identities: [principal],
     groups: [],
     memberships: [],
-    roles: authFixture.seed.roles.map((role) => ({ ...role, permissions: [...role.permissions] })),
+    roles: roles.map((role) => ({ ...role, permissions: [...role.permissions] })),
     bindings: [
       {
         id: "binding-admin",
         subjectKind: "identity",
         subjectId: principal.id,
-        roleId: authFixture.seed.roles[0].id,
+        roleId: adminRole.id,
       },
     ],
     restrictions: [],
@@ -75,10 +146,10 @@ async function createFixture(options = {}) {
   );
   const auditSink = new InMemoryAuditSink();
   const secretDriver = options.secretDriver ?? createTestSecretDriver({ id: "secret-api-test" });
-  let controller;
-  const sessionsByPrincipalId = new Map();
+  let controller: OpenClawController | undefined;
+  const sessionsByPrincipalId = new Map<string, Session>();
 
-  function createApp(identity = principal) {
+  function createApp(identity: Principal = principal): SessionApp {
     const app = createControllerApp({
       ...(controller
         ? { controller }
@@ -105,15 +176,14 @@ async function createFixture(options = {}) {
       },
       auth: authFixture.auth,
     });
-    app.defaultSession = sessionsByPrincipalId.get(identity.id);
-    return app;
+    return Object.assign(app, { defaultSession: sessionsByPrincipalId.get(identity.id) });
   }
 
   const app = createApp();
   sessionsByPrincipalId.set(principal.id, await signInToControllerApp(app, authFixture));
   app.defaultSession = sessionsByPrincipalId.get(principal.id);
 
-  async function createPrincipal(name) {
+  async function createPrincipal(name: string) {
     const email = `${name}-${randomUUID()}@example.com`;
     const password = `generated-password-${randomUUID()}`;
     const account = await authFixture.auth.createAccount({ email, password, name });
@@ -129,7 +199,10 @@ async function createFixture(options = {}) {
   return {
     app,
     auditSink,
-    controller: () => controller,
+    controller() {
+      assert.ok(controller, "Bootstrap must initialize the controller before it is used");
+      return controller;
+    },
     createPrincipal,
     principal,
     secretDriver,
@@ -137,13 +210,40 @@ async function createFixture(options = {}) {
   };
 }
 
-async function request(app, method, pathname, options = {}) {
-  const headers = {
-    ...(options.identity === false
-      ? {}
-      : authenticatedHeaders(options.session ?? app.defaultSession)),
-    ...options.headers,
-  };
+type RequestOptions = {
+  body?: unknown;
+};
+
+type ApiResult<Data = unknown> = {
+  status: number;
+  headers: Headers;
+  body: unknown;
+  data: Data;
+  requestId: string | undefined;
+};
+
+type DataSchema = TSchema & { properties: { data: TSchema } };
+
+function request<Schema extends DataSchema>(
+  app: SessionApp,
+  method: string,
+  pathname: string,
+  options: RequestOptions & { schema: Schema },
+): Promise<ApiResult<Static<Schema["properties"]["data"]>>>;
+function request(
+  app: SessionApp,
+  method: string,
+  pathname: string,
+  options?: RequestOptions,
+): Promise<ApiResult>;
+async function request(
+  app: SessionApp,
+  method: string,
+  pathname: string,
+  options: RequestOptions & { schema?: DataSchema } = {},
+): Promise<ApiResult> {
+  assert.ok(app.defaultSession, "The request needs an authenticated test principal");
+  const headers: Record<string, string> = authenticatedHeaders(app.defaultSession);
   const hasBody = Object.hasOwn(options, "body");
   if (hasBody) {
     headers["content-type"] ??= "application/json";
@@ -152,23 +252,56 @@ async function request(app, method, pathname, options = {}) {
     new Request(`https://console.oce.localhost${pathname}`, {
       method,
       headers,
-      ...(hasBody ? { body: JSON.stringify(options.body) } : {}),
+      ...(hasBody ? { body: JSON.stringify(options.body) ?? null } : {}),
     }),
   );
-  const body = response.status === 204 ? undefined : await response.json();
+  const body: unknown = response.status === 204 ? undefined : await response.json();
+  const envelope = asRecord(body);
+  const requestId = asRecord(envelope?.meta)?.requestId;
   if (body !== undefined) {
-    assert.match(body.meta?.requestId ?? "", identifier("req"));
+    assert.ok(Check(RequestId, requestId), "Expected a request ID in the response metadata");
   }
-  return { status: response.status, headers: response.headers, body, data: body?.data };
+  if (options.schema !== undefined) {
+    assert.ok(
+      Check(options.schema, body),
+      `Unexpected response contract for ${method} ${pathname} (HTTP ${response.status})`,
+    );
+  }
+  return {
+    status: response.status,
+    headers: response.headers,
+    body,
+    data: envelope?.data,
+    requestId: typeof requestId === "string" ? requestId : undefined,
+  };
 }
 
-async function bootstrapNamespace(fixture) {
+function responseError(result: ApiResult): ErrorResponse["error"] {
+  assert.ok(
+    Check(ErrorResponse, result.body),
+    `Expected an error envelope (HTTP ${result.status})`,
+  );
+  return result.body.error;
+}
+
+export type ModelDiscoveryFixture = {
+  createFixture: typeof createFixture;
+  bootstrapNamespace: typeof bootstrapNamespace;
+  request: typeof request;
+  responseError: typeof responseError;
+  grantRole: typeof grantRole;
+};
+
+type Fixture = Awaited<ReturnType<typeof createFixture>>;
+
+async function bootstrapNamespace(fixture: Fixture) {
   const bootstrapped = await request(fixture.app, "POST", "/installation/bootstrap", {
     body: { name: "Secret API installation" },
   });
   assert.equal(bootstrapped.status, 201);
 
   const namespace = await request(fixture.app, "POST", "/namespaces", {
+    schema: NamespaceResponse,
     body: { name: "secret-api-namespace" },
   });
   assert.equal(namespace.status, 201);
@@ -179,392 +312,34 @@ async function bootstrapNamespace(fixture) {
   return namespace.data;
 }
 
-async function bootstrapAgent(fixture, values = {}, executionMode = "embedded") {
+async function bootstrapAgent(
+  fixture: Fixture,
+  values: OpenClawConfigurationDocument = {},
+  executionMode: AgentResponse["data"]["executionMode"] = "embedded",
+) {
   const namespace = await bootstrapNamespace(fixture);
   const configuration = await request(
     fixture.app,
     "POST",
     `/namespaces/${namespace.id}/configurations`,
-    { body: { kind: "agent", values } },
+    { schema: configurationIdentityResponse, body: { kind: "agent", values } },
   );
   assert.equal(configuration.status, 201);
 
   const agent = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    schema: AgentResponse,
     body: { name: "secret-api-agent", configurationId: configuration.data.id, executionMode },
   });
   assert.equal(agent.status, 201);
   return { namespace, configuration: configuration.data, agent: agent.data };
 }
 
-function createModelDiscoveryFixture() {
-  const native = createTestKubernetesComputeDriver("compute-model-discovery");
-  return createFixture({
-    computeDriver: {
-      ...createReadyComputeDriver("compute-secret-api"),
-      discoverHarnessModels: native.discoverHarnessModels,
-    },
-  });
-}
-
-test("Agent model discovery uses native provider APIs without creating platform resources", async (t) => {
-  const fixture = await createModelDiscoveryFixture();
-  const namespace = await bootstrapNamespace(fixture);
-  const apiKey = `model-discovery-key-${randomUUID()}`;
-  const pages = [
-    { data: [{ id: "z-model" }, { id: "embedding-model" }, { id: "ft:model/custom" }] },
-    {
-      data: [{ id: "claude-new", display_name: "New Claude" }],
-      has_more: true,
-      last_id: "claude-new",
-    },
-    {
-      data: [{ id: "claude-previous", display_name: "Previous Claude" }],
-      has_more: false,
-      last_id: "claude-previous",
-    },
-    { data: [], has_more: false, last_id: null },
-    { chatgpt_account_id: "verified-account", chatgpt_account_is_fedramp: true },
-    {
-      models: [
-        {
-          slug: "codex-later",
-          display_name: "Later model",
-          visibility: "list",
-          priority: 2,
-          model_messages: { instructions: "omit runtime prompts" },
-        },
-        { slug: "codex-hidden", display_name: "Hidden model", visibility: "hide", priority: 0 },
-        { slug: "codex-dynamic", display_name: "Codex dynamic", visibility: "list", priority: 1 },
-      ],
-    },
-  ];
-  const transport = t.mock.method(globalThis, "fetch", async () => Response.json(pages.shift()));
-  const path = `/namespaces/${namespace.id}/agents/models`;
-  const openai = await request(fixture.app, "POST", path, {
-    body: { provider: "openai", authMethod: "api_key", apiKey },
-  });
-  assert.equal(openai.status, 200);
-  assert.equal(openai.headers.get("cache-control"), "no-store");
-  assert.deepEqual(openai.data, [
-    { id: "embedding-model", name: "embedding-model" },
-    { id: "ft:model/custom", name: "ft:model/custom" },
-    { id: "z-model", name: "z-model" },
-  ]);
-  const anthropic = await request(fixture.app, "POST", path, {
-    body: { provider: "anthropic", authMethod: "api_key", apiKey },
-  });
-  assert.equal(anthropic.status, 200);
-  assert.deepEqual(anthropic.data, [
-    { id: "claude-new", name: "New Claude" },
-    { id: "claude-previous", name: "Previous Claude" },
-  ]);
-  const empty = await request(fixture.app, "POST", path, {
-    body: { provider: "anthropic", authMethod: "api_key", apiKey },
-  });
-  assert.equal(empty.status, 200);
-  assert.deepEqual(empty.data, []);
-  const pat = await request(fixture.app, "POST", path, {
-    body: { provider: "openai", authMethod: "codex_pat", apiKey: "at-fixture-token" },
-  });
-  assert.equal(pat.status, 200);
-  assert.deepEqual(pat.data, [
-    { id: "codex-dynamic", name: "Codex dynamic" },
-    { id: "codex-later", name: "Later model" },
-  ]);
-  const calls = transport.mock.calls.map(({ arguments: args }) => args);
-  assert.deepEqual(
-    calls.map(([url]) => url),
-    [
-      "https://api.openai.com/v1/models",
-      "https://api.anthropic.com/v1/models?limit=1000",
-      "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-new",
-      "https://api.anthropic.com/v1/models?limit=1000",
-      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
-      "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0",
-    ],
-  );
-  assert.deepEqual(calls[0][1].headers, { Authorization: `Bearer ${apiKey}` });
-  for (const [, options] of calls.slice(1, 4)) {
-    assert.deepEqual(options.headers, { "x-api-key": apiKey, "anthropic-version": "2023-06-01" });
-  }
-  for (const [, options] of calls) {
-    assert.equal(options.redirect, "error");
-    assert.ok(options.signal instanceof AbortSignal);
-  }
-  assert.equal(calls[1][1].signal, calls[2][1].signal);
-  assert.deepEqual(calls[4][1].headers, { Authorization: "Bearer at-fixture-token" });
-  assert.deepEqual(calls[5][1].headers, {
-    Authorization: "Bearer at-fixture-token",
-    "ChatGPT-Account-ID": "verified-account",
-    "X-OpenAI-Fedramp": "true",
-  });
-  assert.equal(calls[4][1].signal, calls[5][1].signal);
-  assert.deepEqual(fixture.secretDriver.calls, []);
-  assert.deepEqual(
-    await fixture.controller().transact(async (unit) => ({
-      agents: await unit.namespaces.hasAgents(namespace.id),
-      configurations: await unit.namespaces.hasConfigurations(namespace.id),
-      secrets: await unit.namespaces.hasSecrets(namespace.id),
-    })),
-    { agents: false, configurations: false, secrets: false },
-  );
-  assert.equal(JSON.stringify([openai.body, anthropic.body, empty.body]).includes(apiKey), false);
-  assert.equal(JSON.stringify(fixture.auditSink.events).includes(apiKey), false);
-});
-
-test("OpenAI API-key model discovery excludes models whose shutdown date has arrived", async (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-04-15T23:59:59Z") });
-  const fixture = await createModelDiscoveryFixture();
-  const namespace = await bootstrapNamespace(fixture);
-  // OpenAI's optional shutdown_date is a calendar date, independent of model age or ID.
-  t.mock.method(globalThis, "fetch", async () =>
-    Response.json({
-      data: [
-        { id: "past-shutdown", shutdown_date: "2030-04-14" },
-        { id: "today-shutdown", shutdown_date: "2030-04-15" },
-        { id: "future-shutdown", shutdown_date: "2030-04-16" },
-        { id: "invalid-date", shutdown_date: "2030-02-30" },
-        { id: "invalid-type", shutdown_date: 1 },
-        { id: "null-shutdown", shutdown_date: null },
-        { id: "unspecified-shutdown", created: 1 },
-      ],
-    }),
-  );
-  const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
-    body: { provider: "openai", authMethod: "api_key", apiKey: "synthetic-discovery-key" },
-  });
-  assert.equal(result.status, 200);
-  assert.deepEqual(result.data, [
-    { id: "future-shutdown", name: "future-shutdown" },
-    { id: "invalid-date", name: "invalid-date" },
-    { id: "invalid-type", name: "invalid-type" },
-    { id: "null-shutdown", name: "null-shutdown" },
-    { id: "unspecified-shutdown", name: "unspecified-shutdown" },
-  ]);
-});
-
-test("Codex service-account discovery returns visible models when the catalog omits priority", async (t) => {
-  const fixture = await createModelDiscoveryFixture();
-  const namespace = await bootstrapNamespace(fixture);
-  // The operator catalog command lists visibility "list" and does not read priority.
-  // A hidden row is not part of that list. The shipped models API is the entry.
-  const pages = [
-    { chatgpt_account_id: "verified-account", chatgpt_account_is_fedramp: false },
-    {
-      models: [
-        { slug: "gpt-5.5", display_name: "GPT-5.5", visibility: "list" },
-        { slug: "codex-auto-review", display_name: "Codex Auto Review", visibility: "hide" },
-        { slug: "gpt-5.4", display_name: "GPT-5.4", visibility: "list" },
-      ],
-    },
-  ];
-  const transport = t.mock.method(globalThis, "fetch", async () => Response.json(pages.shift()));
-  const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
-    body: { provider: "openai", authMethod: "codex_pat", apiKey: "at-fixture-token" },
-  });
-  assert.equal(result.status, 200, JSON.stringify(result.body));
-  assert.equal(result.headers.get("cache-control"), "no-store");
-  assert.deepEqual(result.data, [
-    { id: "gpt-5.5", name: "GPT-5.5" },
-    { id: "gpt-5.4", name: "GPT-5.4" },
-  ]);
-  assert.deepEqual(
-    transport.mock.calls.map(({ arguments: args }) => args[0]),
-    [
-      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
-      "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0",
-    ],
-  );
-  assert.equal(
-    JSON.stringify([result.body, fixture.auditSink.events]).includes("at-fixture-token"),
-    false,
-  );
-});
-
-test("Service account token discovery rejects invalid identity without falling through to the API-key endpoint", async (t) => {
-  const fixture = await createModelDiscoveryFixture();
-  const namespace = await bootstrapNamespace(fixture);
-  for (const [response, expectedCode] of [
-    [
-      Response.json({ error: "private upstream error" }, { status: 401 }),
-      "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
-    ],
-    [Response.json({ chatgpt_account_id: "unverified" }), "MODEL_DISCOVERY_INVALID_RESPONSE"],
-  ]) {
-    const transport = t.mock.method(globalThis, "fetch", async () => response);
-    const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
-      body: { provider: "openai", authMethod: "codex_pat", apiKey: "at-private-fixture" },
-    });
-    assert.equal(result.body.error.code, expectedCode);
-    assert.equal(transport.mock.callCount(), 1);
-    assert.equal(
-      transport.mock.calls[0].arguments[0],
-      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
-    );
-    assert.doesNotMatch(
-      JSON.stringify([result.body, fixture.auditSink.events]),
-      /at-private-fixture|private upstream error/,
-    );
-    transport.mock.restore();
-  }
-});
-
-test("Agent model discovery requires namespace Agent-create permission before provider I/O", async (t) => {
-  const fixture = await createModelDiscoveryFixture();
-  const namespace = await bootstrapNamespace(fixture);
-  const { principal: reader, app: readerApp } = await fixture.createPrincipal("model-reader");
-  grantRole(fixture.state, reader.id, {
-    id: "role-model-reader",
-    bindingId: "binding-model-reader",
-    namespaceId: namespace.id,
-    permissions: { namespace: ["read"] },
-  });
-  const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
-  const apiKey = `denied-discovery-key-${randomUUID()}`;
-  const denied = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
-    body: { provider: "openai", authMethod: "api_key", apiKey },
-  });
-  assertApiError(denied, 403, "FORBIDDEN");
-  assert.equal(transport.mock.callCount(), 0);
-  const denial = fixture.auditSink.events.at(-1);
-  assert.equal(denial.kind, "authorization_denial");
-  assert.deepEqual(denial.authorization, {
-    principalId: reader.id,
-    action: "create",
-    resource: { kind: "agent", id: namespace.id, namespaceId: namespace.id },
-  });
-  assert.equal(JSON.stringify([denied.body, denial]).includes(apiKey), false);
-
-  fixture.state.roles[fixture.state.roles.length - 1].permissions.push({
-    action: "create",
-    resourceKind: "agent",
-  });
-  const granted = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
-    body: { provider: "openai", authMethod: "api_key", apiKey },
-  });
-  assert.equal(granted.status, 200);
-  assert.deepEqual(granted.data, []);
-  assert.equal(transport.mock.callCount(), 1);
-});
-
-test("Agent model discovery reports unsupported Compute Drivers without contacting a provider", async (t) => {
-  const fixture = await createFixture();
-  const namespace = await bootstrapNamespace(fixture);
-  const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
-  const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
-    body: { provider: "openai", authMethod: "api_key", apiKey: `unsupported-key-${randomUUID()}` },
-  });
-  assert.equal(result.status, 501);
-  assert.equal(result.body.error.code, "NOT_IMPLEMENTED");
-  assert.equal(
-    result.body.error.message,
-    "Model discovery is unavailable. Enter a model ID manually.",
-  );
-  assert.equal(transport.mock.callCount(), 0);
-});
-
-test("Agent model discovery bounds and redacts provider failures", async (t) => {
-  const fixture = await createModelDiscoveryFixture();
-  const namespace = await bootstrapNamespace(fixture);
-  const apiKey = `private-discovery-key-${randomUUID()}`;
-  const upstreamDetail = `private-upstream-detail-${randomUUID()}`;
-  let oversizedCancelled = false;
-  const credentialsRejected = [
-    400,
-    "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
-    "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
-  ];
-  const rateLimited = [
-    429,
-    "MODEL_DISCOVERY_RATE_LIMITED",
-    "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
-  ];
-  const unavailable = [
-    503,
-    "MODEL_DISCOVERY_UNAVAILABLE",
-    "The provider model service is unavailable. Retry or enter a model ID manually.",
-  ];
-  const invalidResponse = [
-    503,
-    "MODEL_DISCOVERY_INVALID_RESPONSE",
-    "The provider returned an invalid model list. Retry or enter a model ID manually.",
-  ];
-  const scenarios = [
-    [
-      "rejected API key",
-      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 401 }),
-      credentialsRejected,
-    ],
-    [
-      "missing Models permission",
-      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 403 }),
-      credentialsRejected,
-    ],
-    [
-      "provider rate limit",
-      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 429 }),
-      rateLimited,
-    ],
-    [
-      "provider service error",
-      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 500 }),
-      unavailable,
-    ],
-    [
-      "transport error",
-      () => {
-        throw new Error(`${upstreamDetail} ${apiKey}`);
-      },
-      unavailable,
-    ],
-    [
-      "provider timeout",
-      () => {
-        throw new DOMException(`${upstreamDetail} ${apiKey}`, "TimeoutError");
-      },
-      unavailable,
-    ],
-    ["malformed JSON", () => new Response(`{${upstreamDetail} ${apiKey}`), invalidResponse],
-    [
-      "missing model list",
-      () => Response.json({ message: `${upstreamDetail} ${apiKey}` }),
-      invalidResponse,
-    ],
-    [
-      "oversized stream",
-      () =>
-        new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(new Uint8Array(4 * 1024 * 1024 + 1));
-            },
-            cancel() {
-              oversizedCancelled = true;
-            },
-          }),
-        ),
-      invalidResponse,
-    ],
-  ];
-  for (const [name, respond, [status, code, message]] of scenarios) {
-    await t.test(name, async (subtest) => {
-      const transport = subtest.mock.method(globalThis, "fetch", respond);
-      const failed = await request(
-        fixture.app,
-        "POST",
-        `/namespaces/${namespace.id}/agents/models`,
-        { body: { provider: "openai", authMethod: "api_key", apiKey } },
-      );
-      assert.equal(failed.status, status);
-      assert.equal(failed.body.error.code, code);
-      assert.equal(failed.body.error.message, message);
-      assert.equal(transport.mock.callCount(), 1);
-      const exposed = JSON.stringify([failed.body, fixture.auditSink.events]);
-      assert.equal(exposed.includes(apiKey), false);
-      assert.equal(exposed.includes(upstreamDetail), false);
-    });
-  }
-  assert.equal(oversizedCancelled, true);
+registerModelDiscoveryCases({
+  createFixture,
+  bootstrapNamespace,
+  request,
+  responseError,
+  grantRole,
 });
 
 test("Secret API stores values through the selected driver and returns metadata only", async () => {
@@ -584,6 +359,7 @@ test("Secret API stores values through the selected driver and returns metadata 
   assertApiError(removedOwnerField, 400, "INVALID_REQUEST");
 
   const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    schema: SecretResponse,
     body: { name: "Backend API key", value: originalValue },
   });
   assert.equal(created.status, 201);
@@ -600,6 +376,7 @@ test("Secret API stores values through the selected driver and returns metadata 
   assert.equal(fixture.secretDriver.valueFor(created.data), originalValue);
 
   const hidden = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    schema: SecretResponse,
     body: { name: "Hidden provider API key", value: `secret-value-${randomUUID()}` },
   });
   assert.equal(hidden.status, 201);
@@ -608,6 +385,7 @@ test("Secret API stores values through the selected driver and returns metadata 
     resourceId: hidden.data.id,
   });
   const foreignNamespace = await request(fixture.app, "POST", "/namespaces", {
+    schema: NamespaceResponse,
     body: { name: `foreign-secret-list-${randomUUID()}` },
   });
   assert.equal(foreignNamespace.status, 201);
@@ -618,17 +396,19 @@ test("Secret API stores values through the selected driver and returns metadata 
     fixture.app,
     "POST",
     `/namespaces/${foreignNamespace.data.id}/secrets`,
-    { body: { name: "Foreign provider API key", value: `secret-value-${randomUUID()}` } },
+    {
+      schema: SecretResponse,
+      body: { name: "Foreign provider API key", value: `secret-value-${randomUUID()}` },
+    },
   );
   assert.equal(foreign.status, 201);
   const listed = await request(fixture.app, "GET", `/namespaces/${namespace.id}/secrets`);
   assert.equal(listed.status, 200);
   assert.deepEqual(listed.data, [created.data]);
   assert.equal(JSON.stringify(listed.body).includes(originalValue), false);
-  assert.equal(
-    JSON.stringify(listed.body).includes(fixture.secretDriver.valueFor(hidden.data)),
-    false,
-  );
+  const hiddenValue = fixture.secretDriver.valueFor(hidden.data);
+  assert.ok(typeof hiddenValue === "string");
+  assert.equal(JSON.stringify(listed.body).includes(hiddenValue), false);
   assert.equal(JSON.stringify(listed.body).includes(foreign.data.id), false);
 
   const detail = await request(
@@ -662,28 +442,26 @@ test("Secret API stores values through the selected driver and returns metadata 
   assert.deepEqual(updated.data, created.data);
   assert.equal(fixture.secretDriver.valueFor(created.data), rotatedValue);
 
-  for (const invalid of ["", "bad\u0000value"]) {
-    const rejected = await request(
-      fixture.app,
-      "PATCH",
-      `/namespaces/${namespace.id}/secrets/${created.data.id}`,
-      { body: { value: invalid } },
-    );
-    assertApiError(rejected, 400, "INVALID_REQUEST");
-  }
+  const nul = await request(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespace.id}/secrets/${created.data.id}`,
+    { body: { value: "bad\u0000value" } },
+  );
+  assertApiError(nul, 400, "INVALID_REQUEST");
   // An empty value or name also names the schema's minimum length, so the caller can fix it.
   for (const [method, path, body, field] of [
     ["POST", `/namespaces/${namespace.id}/secrets`, { name: "Empty", value: "" }, "value"],
     ["POST", `/namespaces/${namespace.id}/secrets`, { name: "", value: "nonempty" }, "name"],
     ["PATCH", `/namespaces/${namespace.id}/secrets/${created.data.id}`, { value: "" }, "value"],
-  ]) {
+  ] as const) {
     const empty = await request(fixture.app, method, path, { body });
-    assert.equal(empty.status, 400);
+    assertApiError(empty, 400, "INVALID_REQUEST");
     assert.equal(
-      empty.body.error.message,
+      responseError(empty).message,
       `The request does not match the operation contract: body /${field} has an unsupported value (expected at least 1 character).`,
     );
-    assert.deepEqual(empty.body.error.details, [{ path: `/${field}`, code: "INVALID_VALUE" }]);
+    assert.deepEqual(responseError(empty).details, [{ path: `/${field}`, code: "INVALID_VALUE" }]);
   }
   // A name over the schema's maximum length names that bound too.
   const longName = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
@@ -691,10 +469,10 @@ test("Secret API stores values through the selected driver and returns metadata 
   });
   assert.equal(longName.status, 400);
   assert.equal(
-    longName.body.error.message,
+    responseError(longName).message,
     "The request does not match the operation contract: body /name is too long (expected at most 200 characters).",
   );
-  assert.deepEqual(longName.body.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+  assert.deepEqual(responseError(longName).details, [{ path: "/name", code: "TOO_LONG" }]);
   const deleted = await request(
     fixture.app,
     "DELETE",
@@ -736,6 +514,7 @@ test("Secret API accepts the largest default JSON body and rejects one byte over
     value,
   }));
   const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    schema: SecretResponse,
     body: createEnvelope.body,
   });
   assert.equal(created.status, 201);
@@ -788,6 +567,7 @@ test("Secret API denial and storage failures return value-free errors", async ()
   const { namespace } = await bootstrapAgent(fixture);
   const value = `private-denied-value-${randomUUID()}`;
   const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    schema: SecretResponse,
     body: { name: "Denied metadata key", value },
   });
   assert.equal(created.status, 201);
@@ -807,7 +587,7 @@ test("Secret API denial and storage failures return value-free errors", async ()
   );
   assertApiError(denied, 403, "FORBIDDEN");
   const denial = fixture.auditSink.events.at(-1);
-  assert.equal(denial.kind, "authorization_denial");
+  assert.ok(denial?.kind === "authorization_denial");
   assert.deepEqual(denial.authorization, {
     principalId: reader.id,
     action: "read",
@@ -835,7 +615,7 @@ test("Secret API denial and storage failures return value-free errors", async ()
     },
   );
   assert.equal(failed.status, 503);
-  assert.equal(failed.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(responseError(failed).code, "DEPENDENCY_UNAVAILABLE");
   assert.equal(JSON.stringify(failed.body).includes(leakedBackendValue), false);
   assert.equal(JSON.stringify(failingFixture.auditSink.events).includes(leakedBackendValue), false);
 });
@@ -846,7 +626,7 @@ for (const [model, method, executionMode] of [
   ["openai/gpt-5", "api_key", "embedded"],
   ["anthropic/claude-sonnet-4-5", "api_key", "embedded"],
   ["codex/gpt-5", "codex_pat", "dedicated"],
-]) {
+] as const) {
   test(`${model} Harness Secret binding preserves draft semantics, exact delivery grants, and revision source retention`, async () => {
     const harnessAuthDriver = createTestKubernetesComputeDriver("compute-harness-auth");
     const fixture = await createFixture({
@@ -856,7 +636,7 @@ for (const [model, method, executionMode] of [
         validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
       },
     });
-    let { namespace, configuration, agent } = await bootstrapAgent(
+    const draft = await bootstrapAgent(
       fixture,
       {
         ...(method === "codex_pat" ? createHarnessConfiguration("codex", "gpt-5") : {}),
@@ -871,17 +651,21 @@ for (const [model, method, executionMode] of [
       },
       executionMode,
     );
+    const { namespace, configuration } = draft;
+    let { agent } = draft;
     let path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     assert.equal(agent.harnessAuth, null);
     assert.equal((await request(fixture.app, "POST", `${path}/deploy`)).status, 409);
     const value = `synthetic-harness-key-${randomUUID()}`;
     const key = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+      schema: SecretResponse,
       body: { name: "Harness key", value },
     });
     assert.equal(key.status, 201, JSON.stringify(key.body));
     const binding = { method, source: key.data.ref };
     if (method === "codex_pat") {
       const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
+        schema: AgentResponse,
         body: {
           name: "direct-pat-agent",
           configurationId: configuration.id,
@@ -896,11 +680,13 @@ for (const [model, method, executionMode] of [
     }
 
     const bound = await request(fixture.app, "PATCH", path, {
+      schema: AgentResponse,
       body: { configurationId: configuration.id, harnessAuth: binding },
     });
     assert.equal(bound.status, 200);
     assert.deepEqual(bound.data.harnessAuth, binding);
     const unchanged = await request(fixture.app, "PATCH", path, {
+      schema: AgentResponse,
       body: { configurationId: configuration.id },
     });
     assert.deepEqual(unchanged.data.harnessAuth, binding);
@@ -912,7 +698,7 @@ for (const [model, method, executionMode] of [
     );
     assert.equal(blocked.status, 409);
     assert.equal(
-      blocked.body.error.message,
+      responseError(blocked).message,
       `The Secret is still referenced by Agent ${agent.id}. Remove those references first.`,
     );
     // Authorization precedes the reference check: a caller without delete learns nothing about references.
@@ -927,6 +713,7 @@ for (const [model, method, executionMode] of [
     const { servicePrincipalId } = await fixture
       .controller()
       .getAgent(fixture.principal.id, namespace.id, agent.id);
+    assert.ok(servicePrincipalId);
     // The Agent's service principal exists but holds no grant on the key.
     fixture.state.identities.push({
       kind: "service_principal",
@@ -940,11 +727,12 @@ for (const [model, method, executionMode] of [
     const agentDenial = fixture.auditSink.events.findLast(
       (event) => event.kind === "authorization_denial",
     );
+    assert.ok(agentDenial);
     assert.equal(agentDenial.reasonCode, "AGENT_PRINCIPAL_NOT_AUTHORIZED");
     // The caller may read the key, so the answer names it; it never names the principal, which
     // the audit event records (finding 2592).
     assert.equal(
-      denied.body.error.message,
+      responseError(denied).message,
       agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${key.data.id}`),
     );
     // The route's reason passes through the audit factory like any other: redacted and capped
@@ -961,18 +749,22 @@ for (const [model, method, executionMode] of [
       action: "deploy",
       resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
     });
-    assert.equal(agentDenial.details.servicePrincipalId, servicePrincipalId);
-    assert.equal(agentDenial.details.action, "operate");
-    assert.deepEqual(agentDenial.details.resource, key.data.ref);
-    assert.equal(agentDenial.details.iamEvidence, undefined);
-    assert.equal(agentDenial.details.servicePrincipalEvidence.identityId, servicePrincipalId);
+    const details = agentDenial.details;
+    assert.ok(details);
+    assert.equal(details.servicePrincipalId, servicePrincipalId);
+    assert.equal(details.action, "operate");
+    assert.deepEqual(details.resource, key.data.ref);
+    assert.equal(details.iamEvidence, undefined);
+    assert.equal(asRecord(details.servicePrincipalEvidence)?.identityId, servicePrincipalId);
     grantRole(fixture.state, servicePrincipalId, {
       id: "harness-key-delivery",
       namespaceId: namespace.id,
       permissions: { secret: ["operate"] },
       resource: { kind: "secret", id: key.data.id },
     });
-    const admitted = await request(fixture.app, "POST", `${path}/deploy`);
+    const admitted = await request(fixture.app, "POST", `${path}/deploy`, {
+      schema: revisionBindingResponse,
+    });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
     assert.deepEqual(admitted.data.harnessAuth, binding);
     const internal = await fixture
@@ -982,6 +774,7 @@ for (const [model, method, executionMode] of [
     assert.equal(JSON.stringify(admitted.body).includes("secretDriverId"), false);
     assert.equal(JSON.stringify(admitted.body).includes(value), false);
     const cleared = await request(fixture.app, "PATCH", path, {
+      schema: AgentResponse,
       body: { configurationId: configuration.id, harnessAuth: null },
     });
     assert.equal(cleared.status, 200);
@@ -1022,18 +815,22 @@ test("Secret consumers name only readable references, on GET and in the delete c
   });
   const secrets = `/namespaces/${namespace.id}/secrets`;
   const key = await request(fixture.app, "POST", secrets, {
+    schema: SecretResponse,
     body: { name: "Shared key", value: `synthetic-shared-key-${randomUUID()}` },
   });
   assert.equal(key.status, 201, JSON.stringify(key.body));
   const keyPath = `${secrets}/${key.data.id}`;
   const none = { agents: [], configurations: [], credentialSources: [], provisioningRequests: [] };
   // A new Secret has no consumers, and the field is on the exact read only.
-  assert.deepEqual((await request(fixture.app, "GET", keyPath)).data.consumers, {
-    ...none,
-    unreadable: 0,
-    truncated: false,
-  });
-  assert.equal(key.data.consumers, undefined);
+  assert.deepEqual(
+    (await request(fixture.app, "GET", keyPath, { schema: SecretDetailResponse })).data.consumers,
+    {
+      ...none,
+      unreadable: 0,
+      truncated: false,
+    },
+  );
+  assert.equal(Object.hasOwn(key.data, "consumers"), false);
 
   const bindTo = async () => {
     const created = await request(
@@ -1041,6 +838,7 @@ test("Secret consumers name only readable references, on GET and in the delete c
       "POST",
       `/namespaces/${namespace.id}/configurations`,
       {
+        schema: configurationIdentityResponse,
         body: {
           kind: "agent",
           values: {},
@@ -1067,7 +865,7 @@ test("Secret consumers name only readable references, on GET and in the delete c
   );
   assert.equal(bound.status, 200, JSON.stringify(bound.body));
 
-  const admin = await request(fixture.app, "GET", keyPath);
+  const admin = await request(fixture.app, "GET", keyPath, { schema: SecretDetailResponse });
   assert.equal(admin.status, 200);
   assert.deepEqual(admin.data.consumers, {
     ...none,
@@ -1091,7 +889,7 @@ test("Secret consumers name only readable references, on GET and in the delete c
     permissions: { configuration: ["read"] },
     resource: { kind: "configuration", id: visible },
   });
-  const read = await request(memberApp, "GET", keyPath);
+  const read = await request(memberApp, "GET", keyPath, { schema: SecretDetailResponse });
   assert.equal(read.status, 200, JSON.stringify(read.body));
   // The Agent and the other Configuration are counted, never named: no existence oracle.
   assert.deepEqual(read.data.consumers, {
@@ -1103,7 +901,7 @@ test("Secret consumers name only readable references, on GET and in the delete c
   const memberDelete = await request(memberApp, "DELETE", keyPath);
   assertApiError(memberDelete, 409, "RESOURCE_CONFLICT");
   assert.equal(
-    memberDelete.body.error.message,
+    responseError(memberDelete).message,
     `The Secret is still referenced by Configuration ${visible}; 2 resources you cannot read. Remove those references first.`,
   );
   for (const unreadable of [hidden, agent.id]) {
@@ -1127,15 +925,15 @@ test("Secret consumers name only readable references, on GET and in the delete c
   });
   assert.equal((await request(deleterApp, "GET", keyPath)).status, 403);
   assert.deepEqual(
-    (await request(deleterApp, "DELETE", keyPath)).body.error,
-    memberDelete.body.error,
+    responseError(await request(deleterApp, "DELETE", keyPath)),
+    responseError(memberDelete),
   );
 
   // The caller who can read everything sees every ID that fits the 256-character message.
   const adminDelete = await request(fixture.app, "DELETE", keyPath);
   assert.equal(adminDelete.status, 409);
   assert.equal(
-    adminDelete.body.error.message,
+    responseError(adminDelete).message,
     `The Secret is still referenced by Agent ${agent.id}; Configurations ${[visible, hidden].sort().join(", ")}. Remove those references first.`,
   );
 
@@ -1145,15 +943,15 @@ test("Secret consumers name only readable references, on GET and in the delete c
   while (many.length < 50) {
     many.push(await bindTo());
   }
-  const full = await request(fixture.app, "GET", keyPath);
+  const full = await request(fixture.app, "GET", keyPath, { schema: SecretDetailResponse });
   assert.equal(full.data.consumers.truncated, true);
   assert.deepEqual(full.data.consumers.agents, [agent.id]);
   assert.deepEqual(full.data.consumers.configurations, many.sort().slice(0, 49));
   const capped = await request(fixture.app, "DELETE", keyPath);
   assert.equal(capped.status, 409);
-  assert.ok(capped.body.error.message.length <= 256, capped.body.error.message);
+  assert.ok(responseError(capped).message.length <= 256, responseError(capped).message);
   assert.match(
-    capped.body.error.message,
+    responseError(capped).message,
     new RegExp(
       `^The Secret is still referenced by Agent ${agent.id}; Configurations cfg_[^;]+ and \\d+ more; and more\\. Remove those references first\\.$`,
     ),
@@ -1177,11 +975,14 @@ test("Secret consumers name only readable references, on GET and in the delete c
     );
     assert.equal(removed.status, 204, JSON.stringify(removed.body));
   }
-  assert.deepEqual((await request(fixture.app, "GET", keyPath)).data.consumers, {
-    ...none,
-    unreadable: 0,
-    truncated: false,
-  });
+  assert.deepEqual(
+    (await request(fixture.app, "GET", keyPath, { schema: SecretDetailResponse })).data.consumers,
+    {
+      ...none,
+      unreadable: 0,
+      truncated: false,
+    },
+  );
   assert.equal((await request(fixture.app, "DELETE", keyPath)).status, 204);
 });
 
@@ -1192,15 +993,16 @@ test("Changing Harness Secret bindings requires grants on both removed and repla
   const secrets = [];
   for (const name of ["Original", "Replacement"]) {
     const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+      schema: SecretResponse,
       body: { name, value: `synthetic-${randomUUID()}` },
     });
     assert.equal(result.status, 201);
     secrets.push(result.data);
   }
-  const [original, replacement] = secrets.map((secret) => ({
-    method: "api_key",
-    source: secret.ref,
-  }));
+  const [originalSecret, replacementSecret] = secrets;
+  assert.ok(originalSecret && replacementSecret);
+  const original: HarnessAuthBinding = { method: "api_key", source: originalSecret.ref };
+  const replacement: HarnessAuthBinding = { method: "api_key", source: replacementSecret.ref };
   assert.equal(
     (
       await request(fixture.app, "PATCH", path, {
@@ -1215,33 +1017,46 @@ test("Changing Harness Secret bindings requires grants on both removed and repla
     namespaceId: namespace.id,
     permissions: { agent: ["update"], configuration: ["read"] },
   });
-  const { binding: grant } = grantRole(fixture.state, principal.id, {
+  grantRole(fixture.state, principal.id, {
     id: "harness-source",
     namespaceId: namespace.id,
     permissions: { secret: ["operate"] },
-    resource: { kind: "secret", id: secrets[0].id },
+    resource: { kind: "secret", id: originalSecret.id },
   });
-  const patch = (harnessAuth) =>
+  const grant = fixture.state.bindings.find(({ id }) => id === "harness-source");
+  assert.ok(grant);
+  const patch = (harnessAuth: HarnessAuthBinding | null) =>
     request(app, "PATCH", path, { body: { configurationId: configuration.id, harnessAuth } });
   assert.equal((await patch(replacement)).status, 403); // Missing replacement authority.
-  grant.resourceId = secrets[1].id;
+  const grantIndex = fixture.state.bindings.indexOf(grant);
+  fixture.state.bindings[grantIndex] = { ...grant, resourceId: replacementSecret.id };
   assert.equal((await patch(replacement)).status, 403); // Missing removed-source authority.
   assert.equal((await patch(null)).status, 403);
   fixture.state.bindings.push({
     ...grant,
     id: "harness-source-original",
-    resourceId: secrets[0].id,
+    resourceId: originalSecret.id,
   });
   assert.equal((await patch(replacement)).status, 200);
   assert.equal(
-    (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${secrets[0].id}`))
-      .status,
+    (
+      await request(
+        fixture.app,
+        "DELETE",
+        `/namespaces/${namespace.id}/secrets/${originalSecret.id}`,
+      )
+    ).status,
     204,
   );
   assert.equal((await patch(null)).status, 200);
   assert.equal(
-    (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${secrets[1].id}`))
-      .status,
+    (
+      await request(
+        fixture.app,
+        "DELETE",
+        `/namespaces/${namespace.id}/secrets/${replacementSecret.id}`,
+      )
+    ).status,
     204,
   );
 });
@@ -1250,6 +1065,7 @@ test("Harness source admission rejects foreign references and superseded model s
   const fixture = await createFixture();
   const { namespace, configuration, agent } = await bootstrapAgent(fixture);
   const foreign = await request(fixture.app, "POST", "/namespaces", {
+    schema: NamespaceResponse,
     body: { name: "foreign-harness-source" },
   });
   assert.equal(foreign.status, 201);
@@ -1258,21 +1074,24 @@ test("Harness source admission rejects foreign references and superseded model s
     .handleNamespaceLifecycle(fixture.principal.id, foreign.data.id, "ready");
   const foreignValue = `synthetic-${randomUUID()}`;
   const key = await request(fixture.app, "POST", `/namespaces/${foreign.data.id}/secrets`, {
+    schema: SecretResponse,
     body: { name: "Foreign key", value: foreignValue },
   });
   assert.equal(key.status, 201, JSON.stringify(key.body));
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const localKey = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    schema: SecretResponse,
     body: { name: "Local model key", value: `synthetic-${randomUUID()}` },
   });
   assert.equal(localKey.status, 201);
-  const patch = (source) =>
+  const patch = (source: SecretReference) =>
     request(fixture.app, "PATCH", path, {
       body: { configurationId: configuration.id, harnessAuth: { method: "api_key", source } },
     });
   assert.equal((await patch(localKey.data.ref)).status, 200);
-  const before = await request(fixture.app, "GET", path);
+  const before = await request(fixture.app, "GET", path, { schema: AgentReadResponse });
   assert.equal(before.status, 200);
+  assert.ok("harnessAuth" in before.data);
   assert.deepEqual(before.data.harnessAuth, { method: "api_key", source: localKey.data.ref });
 
   // Foreign references fail validation before OCC looks up either Secret.
@@ -1286,7 +1105,7 @@ test("Harness source admission rejects foreign references and superseded model s
     assert.equal(denied.status, 400);
     assert.deepEqual(denied.body, {
       error: { code: "INVALID_REQUEST", message: "Secret references cannot cross Namespaces." },
-      meta: { requestId: denied.body.meta.requestId },
+      meta: { requestId: denied.requestId },
     });
     const after = await request(fixture.app, "GET", path);
     assert.equal(after.status, 200);
@@ -1316,9 +1135,9 @@ test("Harness source admission rejects foreign references and superseded model s
   assert.equal(malformed.status, 400);
   // Provider keys, reserved prefixes and process-control names, in any letter case. The
   // message names the rule and the destination, and the detail points at its binding.
-  const reservedPrefix = (prefix, name) =>
+  const reservedPrefix = (prefix: string, name: string) =>
     `A secret binding destination uses the reserved prefix ${prefix}*: ${name}.`;
-  const reservedName = (name) =>
+  const reservedName = (name: string) =>
     `A secret binding destination is a reserved process or platform variable name: ${name}.`;
   for (const [destination, message] of [
     ["OPENAI_API_KEY", reservedPrefix("OPENAI_", "OPENAI_API_KEY")],
@@ -1330,7 +1149,7 @@ test("Harness source admission rejects foreign references and superseded model s
     ["PATH", reservedName("PATH")],
     ["path", reservedName("path")],
     ["HTTPS_PROXY", reservedName("HTTPS_PROXY")],
-  ]) {
+  ] as const) {
     const reserved = await request(
       fixture.app,
       "POST",
@@ -1344,9 +1163,9 @@ test("Harness source admission rejects foreign references and superseded model s
       },
     );
     assert.equal(reserved.status, 400, destination);
-    assert.equal(reserved.body.error.message, message, destination);
+    assert.equal(responseError(reserved).message, message, destination);
     assert.deepEqual(
-      reserved.body.error.details,
+      responseError(reserved).details,
       [{ path: `/secretBindings/${destination}`, code: "INVALID_VALUE" }],
       destination,
     );
@@ -1391,7 +1210,7 @@ test("Contract messages give no bound hint for keywords inherited from Object.pr
 
 /** Records gateway copies; OCC admission, IAM and the audit rows under test stay real. */
 function createRecordingCredentialGateway() {
-  const stored = new Map();
+  const stored = new Map<string, CredentialSourceInput["secrets"]>();
   return {
     id: "credential-gateway-secret-api",
     capability: "credential_gateway",
@@ -1417,9 +1236,6 @@ function createRecordingCredentialGateway() {
       stored.set(context.source.id, input.secrets);
       return { state: "ready" };
     },
-    async rotateSource() {
-      throw new Error("not exercised");
-    },
     async sourceStatus(context) {
       return stored.has(context.source.id) ? { state: "ready" } : { state: "absent" };
     },
@@ -1435,7 +1251,7 @@ function createRecordingCredentialGateway() {
     async withdraw() {
       throw new Error("not exercised");
     },
-  };
+  } satisfies CredentialGatewayDriver & { stored: typeof stored };
 }
 
 test("credential source writes commit one value-free audit row each", async () => {
@@ -1456,12 +1272,14 @@ test("credential source writes commit one value-free audit row each", async () =
   const value = `credential-source-value-${randomUUID()}`;
   const rotated = `credential-source-rotated-${randomUUID()}`;
   const secret = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    schema: SecretResponse,
     body: { name: "Source key", value },
   });
   assert.equal(secret.status, 201);
   const sources = `/namespaces/${namespace.id}/credential-sources`;
 
   const created = await request(fixture.app, "POST", sources, {
+    schema: CredentialSourceResponse,
     body: { name: "openai", type: "openai", secrets: { api_key: secret.data.ref } },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
