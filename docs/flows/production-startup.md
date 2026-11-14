@@ -205,7 +205,7 @@ the Job. Helm failure does not imply database-hook rollback.
 
 ### 4. Start private API and worker Deployments
 
-`apps/controller/src/api-startup.mjs:configuration`, `apps/controller/src/worker.ts:312`
+`apps/controller/src/api-startup.ts:configuration`, `apps/controller/src/worker.ts:312`
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
@@ -361,7 +361,7 @@ until tenant deployment/TUI procedures run.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
 - `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
-  `apps/controller/src/api-startup.mjs:startupFailureFields` passes these diagnostics
+  `apps/controller/src/api-startup.ts:startupFailureFields` passes these diagnostics
   to `server.mjs`.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role

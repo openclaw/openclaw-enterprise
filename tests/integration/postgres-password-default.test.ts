@@ -386,7 +386,7 @@ test(
     await t.test(
       "production hashes with scrypt N=16384, r=16, p=1 and no configuration selects another hasher",
       async (t) => {
-        // api-startup.mjs composes from its configuration alone. A hasher placed in that
+        // api-startup.ts composes from its configuration alone. A hasher placed in that
         // configuration, as a parsed setting would be, is ignored: only the code-only
         // dependencies argument (which the server never passes) replaces scrypt.
         const configuration = {
