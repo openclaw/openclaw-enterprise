@@ -615,8 +615,8 @@ test("minLevel filters log lines on the server and a cursor still resumes after 
   // A poll at the same level is the same view and resumes after the last line read,
   // including the hidden debug line, so lowering the level later never replays it.
   state.lines.push(
-    codex(5, "INFO", { message: "new" }, { name: "fs.get_metadata" }),
-    codex(6, "ERROR", { message: "model request failed" }),
+    codex(5, "ERROR", { message: "model request failed" }),
+    codex(6, "INFO", { message: "new" }, { name: "fs.get_metadata" }),
   );
   const next = await fixture.request(
     "GET",
@@ -770,15 +770,19 @@ test("log polls describe only the requested source and skip Event lists", async 
   ];
   const status = await fixture.request("GET", target.runtimePath);
   assert.equal(runtimeDescription(status).pods[0]?.events.length, 1);
-  const logs = await fixture.request("GET", target.logsPath());
-  assert.equal(logs.status, 200, logs.text);
+  const logs = logPage(await fixture.request("GET", target.logsPath()));
+  const poll = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${encodeURIComponent(cursorFrom(logs))}`),
+  );
+  logPage(poll);
   const describes = fixture.computeDriver.calls.filter(
     (call): call is Extract<ComputeCall, { operation: "describe" }> =>
       call.operation === "describe",
   );
   assert.deepEqual(
     describes.map(({ options }) => options),
-    [{}, { source: "gateway", events: false }],
+    [{}, { source: "gateway", events: false }, { source: "gateway", events: false }],
   );
 });
 
