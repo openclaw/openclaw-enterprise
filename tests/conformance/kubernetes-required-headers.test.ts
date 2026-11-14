@@ -203,5 +203,16 @@ test("Kubernetes required-header Preset values retain literal checks while pendi
       "invalid literal fragment",
     );
   }
+
+  // A pending whole-token boolean still looks like a string until launch supplies its value.
+  const { settings, unresolved, unresolvedType } = presetTemplateDefaultsWithPlaceholders({
+    ...template(["{{ vars.header }}"]),
+    variables: { header: { type: "boolean" } },
+  });
+  assert.throws(
+    () => compute.validateConfiguration(presetValues(settings), { unresolved, unresolvedType }),
+    saveRefusal,
+    "pending whole-token boolean at Configuration save",
+  );
   assert.equal(clusterCalls(), 0);
 });
