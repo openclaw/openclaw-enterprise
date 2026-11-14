@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type {
   V1ContainerStatus,
   V1EndpointSliceList,
@@ -203,11 +204,11 @@ export async function rehearseOnlineMigration({
   const migration = spec.initContainers?.find(({ name }) => name === "migration");
   assert.ok(migration);
   assert.equal(migration.image, candidate.reference);
-  // This rehearsal can render a candidate from before or after the entry point moved.
-  assert.equal(migration.args?.length, 1);
-  const [entry] = migration.args ?? [];
+  // Both generations of chart must request an apply with no migration mode flags.
   assert.ok(
-    entry === "scripts/migrate-production.ts" || entry === "scripts/migrate-production.mjs",
+    isDeepStrictEqual(migration.args, ["--run", "db:migrate:production", "--"]) ||
+      isDeepStrictEqual(migration.args, ["scripts/migrate-production.mjs"]),
+    "the candidate chart did not render its migration apply command",
   );
   const mounts = new Set(migration.volumeMounts?.map(({ name }) => name));
   const job = "online-migration";

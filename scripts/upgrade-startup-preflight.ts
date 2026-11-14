@@ -4,6 +4,7 @@
 // Installation and runs the bundled Kubernetes Compute preflight exactly as the
 // API and worker do at startup, and checks migration compatibility against the database.
 import { readFileSync, writeFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { gzipSync } from "node:zlib";
 
 // Printed before the image's own message when Compute preflight stops startup:
@@ -719,17 +720,18 @@ function migrationJob(
   if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
     fail("the initialization Job contains invalid migration arguments.");
   }
-  const [entry, option, ...extra] = args;
+  const option = args.at(-1);
+  const entry =
+    option === "--expect-empty" || option === "--require-current" ? args.slice(0, -1) : args;
   if (
-    (entry !== "scripts/migrate-production.ts" && entry !== "scripts/migrate-production.mjs") ||
-    (option !== undefined && option !== "--expect-empty" && option !== "--require-current") ||
-    extra.length
+    !isDeepStrictEqual(entry, ["--run", "db:migrate:production", "--"]) &&
+    !isDeepStrictEqual(entry, ["scripts/migrate-production.mjs"])
   ) {
     fail("the initialization Job contains invalid migration arguments.");
   }
   const container: Container = selectFields(initializer, containerFields);
   container.command = ["node"];
-  container.args = [entry, "--check"];
+  container.args = [...entry, "--check"];
   const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
   return {
     apiVersion: "batch/v1",

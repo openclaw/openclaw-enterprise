@@ -102,7 +102,9 @@ test(
         ["installation-check", "migration"],
       );
       assert.deepEqual(install.hook.initContainers[1].args, [
-        "scripts/migrate-production.ts",
+        "--run",
+        "db:migrate:production",
+        "--",
         "--expect-empty",
       ]);
       assert.deepEqual(install.hook.containers, hook.containers);
@@ -115,7 +117,7 @@ test(
       );
       const [check, migration] = hook.initContainers;
       const server = api.containers.find(({ name }) => name === "api");
-      assert.deepEqual(migration.args, ["scripts/migrate-production.ts"]);
+      assert.deepEqual(migration.args, ["--run", "db:migrate:production", "--"]);
       assert.equal(check.image, server.image);
       assert.deepEqual(check.command, ["node"]);
       assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
@@ -185,7 +187,9 @@ test(
       const { hook } = await render(values, isUpgrade);
       const migration = hook.initContainers.find(({ name }) => name === "migration");
       assert.deepEqual(migration.args, [
-        "scripts/migrate-production.ts",
+        "--run",
+        "db:migrate:production",
+        "--",
         isUpgrade ? "--require-current" : "--expect-empty",
       ]);
     }

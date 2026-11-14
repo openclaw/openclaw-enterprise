@@ -159,7 +159,8 @@ to the hook, API and worker. `requireChartGatewayRouting` compares the Kubernete
 Compute Gateway name, Gateway and Envoy namespaces, and effective hostname.
 A mismatch reports the field without its value.
 
-The hook keeps the release name and bounds its suffix to 63 characters. Both
+The hook runs the selected controller image’s `db:migrate:production` task.
+It keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
 migration Secret keys against Kubernetes syntax before use. `installation.key`
 and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,

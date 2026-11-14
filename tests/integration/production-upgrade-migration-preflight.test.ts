@@ -111,7 +111,9 @@ test(
         assert.equal(generated.spec.template.spec.initContainers, undefined);
         assert.deepEqual(generated.spec.template.spec.containers[0]?.command, ["node"]);
         assert.deepEqual(generated.spec.template.spec.containers[0]?.args, [
-          "scripts/migrate-production.ts",
+          "--run",
+          "db:migrate:production",
+          "--",
           "--check",
         ]);
 
@@ -124,11 +126,11 @@ test(
           "scripts/migrate-production.mjs",
           "--check",
         ]);
-        migration.args = ["./scripts/migrate-production.ts"];
+        migration.args = ["--run", "db:migrate", "--"];
         await refuses(action, withInitializer(selected), /invalid migration arguments/);
-        migration.args = ["scripts/migrate-production.ts", "--expect-empty", "unexpected"];
+        migration.args = ["--run", "db:migrate:production", "--", "--expect-empty", "unexpected"];
         await refuses(action, withInitializer(selected), /invalid migration arguments/);
-        migration.args = ["scripts/migrate-production.ts"];
+        migration.args = ["--run", "db:migrate:production", "--"];
         migration.command = ["sh"];
         await refuses(action, withInitializer(selected), /invalid migration command/);
         delete migration.command;

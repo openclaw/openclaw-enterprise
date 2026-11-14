@@ -331,9 +331,9 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	is := func(cs []container, name string, args ...string) bool {
 		return len(cs) == 1 && cs[0].Name == name && len(cs[0].Command) == 0 && slices.Equal(cs[0].Args, args)
 	}
-	// Retained Jobs from older charts used the JavaScript entry point.
+	// Current charts select the task inside the image. Retained Jobs used the JavaScript entry.
 	migration := func(flags ...string) bool {
-		return is(init, "migration", append([]string{"scripts/migrate-production.ts"}, flags...)...) ||
+		return is(init, "migration", append([]string{"--run", "db:migrate:production", "--"}, flags...)...) ||
 			is(init, "migration", append([]string{"scripts/migrate-production.mjs"}, flags...)...)
 	}
 	var hook string

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { verifyCompletedMigrationHistory } from "../staging-upgrade-return.ts";
 
 export function runtimeProof({
@@ -58,10 +59,13 @@ export function runtimeProof({
       await custody.assertPostgres();
       const template = (await get("job/" + release + "-initialization")).spec.template;
       const migration = template.spec.initContainers.find((c) => c.name === "migration");
+      const args = migration.args;
+      const mode = args.at(-1);
+      const entry =
+        mode === "--expect-empty" || mode === "--require-current" ? args.slice(0, -1) : args;
       assert(
-        ["scripts/migrate-production.mjs", "scripts/migrate-production.ts"].includes(
-          migration.args[0],
-        ),
+        isDeepStrictEqual(entry, ["--run", "db:migrate:production", "--"]) ||
+          isDeepStrictEqual(entry, ["scripts/migrate-production.mjs"]),
       );
       const db = migration.env.find((e) => e.name === "OCC_MIGRATION_DATABASE_URL")?.valueFrom
         .secretKeyRef;
