@@ -106,7 +106,8 @@ graph TD
 ### 1. Compose discovery metadata and serve public assets
 
 `apps/controller/src/api-startup.mjs:startApi` loads the [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
-ConfigMap links stay inside the bundle. `renderConsoleThemeShell` escapes branding;
+ConfigMap links stay inside the bundle. `renderConsoleThemeShell` escapes branding; a bundle with colors also gets
+`<html data-theme-colors>`, keeping the light role set.
 `console/shell.mts:brandContents` renders names as text. `/console/theme/` serves
 images and generated CSS with `no-store`; missing assets return 404.
 
@@ -384,6 +385,8 @@ gateway startup and file availability.
 
 - 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
 
+- 2026-10-30 03:41: Follow system dark appearance; color themes stay light. (authoring-run/8d7f8ba3-f41e-46d5-ba36-6adca6c837e7 - 4a364ef759354)
+
 - 2026-10-29 22:18: Cancel the unfinished row reads of Agents a search hides. (authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816 - 225ce0ebaf1dd14c01c5c50ccf8ac420e13c72a4)
 
 - 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
@@ -391,10 +394,5 @@ gateway startup and file availability.
 - 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
 
 - 2026-10-29 11:42: Keep contextual request recovery and scope binding scrubbing to its preflight. (authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae - aa74d9bc28d8c)
-- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
-
-- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
-
-- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

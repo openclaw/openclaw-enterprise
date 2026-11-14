@@ -58,8 +58,8 @@ verify both paths. A browser-only module needs no forwarder.
 Use **Pages/Agents → Populated** to review the shared shell and controls at
 desktop (1440 × 1000), tablet (768 × 1024), and mobile (390 × 844).
 Check keyboard focus, search, navigation, an open dialog, and empty, loading,
-error, permission-denied, and missing-credential stories. The console stays light
-under either system appearance.
+error, permission-denied, and missing-credential stories. Use the **Appearance**
+selector beside **Reset story** to review light and dark. Themed stories stay light.
 
 In **Components/Native admin → Available on tablet**, check that the 768px preview
 keeps the Agent name readable beside the visible sidebar. The title uses its own
