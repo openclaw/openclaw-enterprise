@@ -106,8 +106,8 @@ archives, preserving existing files.
 `prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.ts) validate cached/pulled native
 manifest/config/CRI identity before apply (`Never`); CRI misses retry. Overrides remain intact.
 [`importOpenShellImage`](../../internal/occdev/openshell_image.go) journals staging-tag/engine-ID intent before creation.
-`imageCommand` accepts Podman 6 exit `125` only for the complete absence diagnostic
-naming the requested image, with empty/`[]` stdout.
+`imageCommand` accepts Podman exit `125` only for exact legacy or Podman 6 absence
+diagnostics naming the requested image, with empty/`[]` stdout.
 Return/rollback/`dev down` reconcile without clusters/Compose. Incomplete inspection
 or uncertain/replaced tags retain state.
 
