@@ -114,6 +114,8 @@ export interface SandboxNamespaceContext {
 export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly revision: Readonly<AgentRevision>;
   readonly requirements: HarnessWorkloadRequirements;
+  /** Refuse a missing workload before creating resources or reading enrollment credentials. */
+  readonly existingHarnessOnly?: true;
   /**
    * True once the revision's workspace node has enrolled with its Agent Gateway. A dedicated
    * OpenClaw worker's Harness exposure serves Compute's status read only before that: a Driver
@@ -244,6 +246,8 @@ export interface SandboxDriver extends Driver {
   ): Promise<SandboxPolicyRecommendations>;
 
   readonly capability: "sandbox";
+  /** Request periodic maintenance of active revisions bound to this Sandbox. */
+  readonly maintenanceIntervalMs?: number;
   /** One or more distinct containment facets implemented by this driver. */
   readonly facets: readonly SandboxFacet[];
   /**

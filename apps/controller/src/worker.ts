@@ -1383,6 +1383,9 @@ export class ControllerWorker {
       if (!validSandboxDriver(this.sandbox)) {
         throw new Error("The selected Sandbox Driver is unavailable.");
       }
+      if (this.sandbox.maintenanceIntervalMs !== undefined) {
+        positiveInteger(this.sandbox.maintenanceIntervalMs, "Sandbox maintenance interval");
+      }
       if (!validLifecycleHooks(this.sandbox)) {
         throw new Error("The selected Sandbox Driver exposes invalid lifecycle hooks.");
       }
@@ -1998,9 +2001,16 @@ export class ControllerWorker {
     const standingInterval = revision.repositoryCredentials?.standingApprovalId
       ? Math.max(100, Math.min(10_000, (this.repositoryCredentials.validate(revision) ?? 1) * 100))
       : undefined;
-    const intervals = [this.maintenanceIntervalMs, repositoryInterval, standingInterval].filter(
-      (interval): interval is number => interval !== undefined,
-    );
+    const sandboxInterval =
+      this.sandbox?.id === revision.sandboxDriverId
+        ? this.sandbox?.maintenanceIntervalMs
+        : undefined;
+    const intervals = [
+      this.maintenanceIntervalMs,
+      repositoryInterval,
+      standingInterval,
+      sandboxInterval,
+    ].filter((interval): interval is number => interval !== undefined);
     return intervals.length === 0 ? undefined : Math.min(...intervals);
   }
 
@@ -4757,20 +4767,16 @@ export class ControllerWorker {
         await this.assertRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
-      if (
+      const activeMaintenance =
         agent.activeRevisionId === revision.id &&
-        revision.harnessAuth.method === "credential_source" &&
-        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)
-      ) {
+        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`);
+      if (activeMaintenance && revision.harnessAuth.method === "credential_source") {
         if (await this.requiredModelCredentialWithdrawn(revision)) {
           await this.completeWithdrawnRevisionMaintenance(claim, revision);
           return;
         }
       }
-      if (
-        agent.activeRevisionId === revision.id &&
-        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)
-      ) {
+      if (activeMaintenance) {
         await this.recoverPendingCredentialWithdrawals(claim, revision);
       }
       // Deploy and repair work must never re-attach a withdrawn source.
@@ -4830,7 +4836,17 @@ export class ControllerWorker {
           const compute = this.compute;
           // Publishing the active pointer precedes activation. Reobserve even when
           // periodic maintenance is disabled so recovery verifies current readiness.
-          const prepared = await this.prepareRevision(claim, revision, secretContext.context);
+          const existingHarnessOnly =
+            activeMaintenance &&
+            this.sandbox?.maintenanceIntervalMs !== undefined &&
+            this.sandbox.id === revision.sandboxDriverId;
+          const prepared = await this.prepareRevision(
+            claim,
+            revision,
+            existingHarnessOnly
+              ? { ...secretContext.context, existingHarnessOnly: true }
+              : secretContext.context,
+          );
           const observation = prepared.observation;
           const context = prepared.context;
           if (!validRevisionObservation(observation, revision)) {

@@ -8,7 +8,9 @@ import type {
   Agent,
   ComputeDriver,
   RuntimeFailureEvidence,
+  SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   requiresPostgres,
   setup as setupSingletonWorker,
@@ -44,8 +46,11 @@ interface RevisionEffect {
   readonly activeRevisionId: string | null;
 }
 
-async function setup(context: TestContext): Promise<MaintenanceFixture> {
-  const fixture = await setupSingletonWorker(context);
+async function setup(
+  context: TestContext,
+  sandboxDriver?: SandboxDriver,
+): Promise<MaintenanceFixture> {
+  const fixture = await setupSingletonWorker(context, { sandboxDriver });
   // The JavaScript fixture infers a zero-argument default emitter. The Worker supplies the event.
   return { ...fixture, start: fixture.start as MaintenanceFixture["start"] };
 }
@@ -130,6 +135,53 @@ export function registerComputeSingletonMaintenanceCases(): void {
            AND idempotency_key LIKE $2`,
         [fixture.namespace.id, `${maintenancePrefix}%`],
       );
+    },
+  );
+
+  test(
+    "a Sandbox schedules active maintenance without granting that pass permission to create a Harness",
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, {
+        id: "maintenance-sandbox",
+        implementation: "fixture",
+        capability: "sandbox",
+        facets: ["process"],
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+        maintenanceIntervalMs: 75,
+        async cleanup() {},
+      });
+      const owner = await fixture.agent();
+      const candidate = await fixture.revision(owner, 1);
+      const observations: {
+        revisionId: string;
+        active: string | null;
+        existingOnly: true | undefined;
+      }[] = [];
+      await fixture.start({
+        ...fixture.compute,
+        activationOrder: "beforeCommit",
+        async preflight() {},
+        async activateRevision() {},
+        async prepareRevision(revision, dispatch) {
+          observations.push({
+            revisionId: revision.id,
+            active: await fixture.activeRevision(owner),
+            existingOnly: dispatch?.existingHarnessOnly,
+          });
+          return fixture.compute.prepareRevision(revision);
+        },
+      });
+      await fixture.work(candidate);
+      await waitFor(
+        "the worker to revisit the active revision",
+        () => observations.length >= 2 || undefined,
+      );
+      await fixture.stop();
+      assert.deepEqual(observations.slice(0, 2), [
+        { revisionId: candidate.id, active: null, existingOnly: undefined },
+        { revisionId: candidate.id, active: candidate.id, existingOnly: true },
+      ]);
     },
   );
 
