@@ -157,16 +157,16 @@ version-worker tests and therefore require prepared ownership.
 
 ## OIDC human sign-in
 
-With a fresh migrated `OCC_TEST_DATABASE_URL` and the
-[Playwright browser](local.md#console-browser-checks), run:
+Set `OCC_TEST_DATABASE_URL` to a fresh migrated database and run:
 
 ```sh
-node --test tests/integration/postgres-oidc-sign-in.test.mjs
+node --test tests/integration/postgres-oidc-sign-in.test.ts
 ```
 
-The database case skips without the URL and fails without the browser. Provider
-responses are fixtures; a pass does not prove live IdP registration or HTTPS
-cookies. Password and other provider scenarios are in the `postgres-auth` lane.
+The test skips without the database URL. It sends requests directly to Fastify
+and uses fixture identity provider responses. Use the
+[Playwright browser](local.md#console-browser-checks) for the browser tests in
+the `postgres-auth` lane.
 
 ## PostgreSQL test environment
 

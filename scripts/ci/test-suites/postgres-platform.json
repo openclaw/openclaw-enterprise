@@ -11,7 +11,7 @@
     "tests/integration/postgres-agent-provisioning.test.mjs",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.mjs",
-    "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
+    "tests/integration/postgres-oidc-recovery-replacement.test.ts",
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
     "tests/integration/postgres-backend-ownership.test.ts",
@@ -398,7 +398,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
+      "path": "tests/integration/postgres-oidc-recovery-replacement.test.ts",
       "expectedTests": [
         "online recovery replacement moves the reserved lane and survives a restart with the original seed"
       ]
