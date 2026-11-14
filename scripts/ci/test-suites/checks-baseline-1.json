@@ -92,7 +92,7 @@
     "tests/conformance/secret-occ.test.ts",
     "tests/conformance/http-errors.test.ts",
     "tests/conformance/http-error-details.test.ts",
-    "tests/conformance/docker-compute.test.mjs",
+    "tests/conformance/docker-compute.test.ts",
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.ts",
@@ -241,7 +241,7 @@
       "path": "tests/conformance/credential-source-occ.test.ts"
     },
     {
-      "path": "tests/conformance/docker-compute.test.mjs"
+      "path": "tests/conformance/docker-compute.test.ts"
     },
     {
       "path": "tests/conformance/grafana-overview-dashboard.test.ts"
