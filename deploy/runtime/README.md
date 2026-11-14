@@ -321,7 +321,7 @@ set -a
 . /tmp/images-runtime-startup.env
 set +a
 OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
-  node --test tests/integration/runtime-image-startup.test.mjs \
+  node --test tests/integration/runtime-image-startup.test.ts \
     tests/integration/runtime-image-gateway-workspace.test.ts \
     tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-managed-files.test.ts \

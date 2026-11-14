@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const digest = `sha256:${"b".repeat(64)}`;
 const repository = "openclaw/openclaw-enterprise";
-const runtimeFile = "tests/integration/runtime-image-startup.test.mjs";
+const runtimeFile = "tests/integration/runtime-image-startup.test.ts";
 const runtimeChildCase = "runtime startup child consumes the CI-prepared Codex seccomp profile";
 const runtimeChildFixture = new URL(
   "../fixtures/staging-qualification-seccomp-child.ts",

@@ -3531,7 +3531,7 @@ process.exit(2);
     // The Git broker case is a known caller; this keeps the scan from passing
     // vacuously if the helper is renamed.
     assert.ok(
-      callers.includes("images-runtime-startup:tests/integration/runtime-image-startup.test.mjs"),
+      callers.includes("images-runtime-startup:tests/integration/runtime-image-startup.test.ts"),
       callers.join(", "),
     );
     // Preparing the profile needs k3d, which only the full and k3d tool profiles install.

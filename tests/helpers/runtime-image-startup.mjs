@@ -1,5 +1,5 @@
 // Shared by the runtime image startup smoke tests, which CI runs in three lanes
-// (runtime-image-startup.test.mjs, runtime-image-startup-probe.test.mjs,
+// (runtime-image-startup.test.ts, runtime-image-startup-probe.test.mjs,
 // runtime-image-startup-termination.test.ts,
 // runtime-image-gateway-unclean-restart.test.ts,
 // runtime-image-gateway-retained-state.test.ts,
@@ -132,6 +132,12 @@ export const imageTestOptions =
       }
     : {};
 
+/**
+ * @param {{after(cleanup: () => unknown): void}} t
+ * @param {string} harnessId
+ * @param {unknown} [configuration]
+ * @returns {Promise<string>}
+ */
 export async function temporaryGatewayConfiguration(
   t,
   harnessId,
@@ -174,6 +180,10 @@ export function createRuntimeImageConfiguration(harnessId, providerModel, option
   return configuration;
 }
 
+/**
+ * @param {string} harnessId
+ * @param {{enableSlack?: boolean}} [options]
+ */
 export function createAdmittedRuntimeImageConfiguration(harnessId, options = {}) {
   return admitLoggingConfiguration(
     createRuntimeImageConfiguration(harnessId, runtimeImageModel, options),
@@ -221,6 +231,15 @@ export async function gatewayStateVolume(t, mountPath, { seed, seedVolumes = [] 
   return volume;
 }
 
+/**
+ * @param {{after(cleanup: () => unknown): void}} t
+ * @param {string} harnessId
+ * @param {{collectPlugins?: boolean, configuration?: unknown, configurationPath?: string,
+ *   entrypoint?: string | undefined, extraEnvironment?: string[], readinessAttempts?: number | undefined,
+ *   tmpfs?: string[], volumes?: string[], network?: string, until?: "ready" | "spawned",
+ *   waitUntilReady?: boolean, withAppServer?: boolean}} [options]
+ * @returns {Promise<{containerName: string, logs?: string, pluginList?: unknown}>}
+ */
 export async function runGatewaySmoke(t, harnessId, options = {}) {
   const {
     collectPlugins = false,
