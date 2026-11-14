@@ -401,7 +401,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback after an IAM Driver change.
-- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs),
+- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.ts),
   [Installation configuration](../../tests/integration/sandbox-driver-installation-configuration.test.ts)
   and [IPv6 endpoints](../../tests/integration/sandbox-driver-ipv6-endpoints.test.ts)
   check startup. [k3d tests](../../tests/helpers/openshell-sandbox-workflows.mjs)

@@ -5,14 +5,9 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { OpenShellSandboxExecRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import {
-  OpenShellSandboxDriver,
-  type OpenShellSandboxDriverOptions,
-  type OpenShellSandboxDriverSelection,
-} from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type {
   AgentRevision,
-  ConfigurationValidationError,
   CredentialSourceControl,
   RepositoryGitDeliveryProfile,
   RevisionHarnessDescriptor,
@@ -21,32 +16,20 @@ import type {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.ts";
 import { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
 import {
   buildSandboxInstallation,
   rejectsAtStartup,
 } from "./sandbox-driver-startup-installation-fixture.ts";
+import type {
+  kubernetesObjectClient as makeKubernetesObjectClient,
+  KubernetesMutation,
+} from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 type Installation = ReturnType<typeof buildSandboxInstallation>;
 type SandboxInput = Installation["drivers"]["sandbox"]["configuration"];
 type GatewayClient = ReturnType<typeof workspaceGatewayClient>;
-type KubernetesEvent = ["kubernetes", "patch" | "delete", string, string, string];
-type OperatorPolicy = {
-  metadata: { name: string };
-  spec: {
-    ingress: [{ from: object[]; ports: [{ port: number }] }];
-  };
-};
-type OperatorWire = OperatorPolicy & {
-  metadata: OperatorPolicy["metadata"] & {
-    namespace: string;
-    labels: Record<string, string>;
-    annotations: Record<string, string>;
-  };
-};
-
 export async function verifySharedBackendComposition(t: TestContext) {
   // An explicit hard_requirement composes like the omitted default above.
   const configuration = buildSandboxInstallation();
@@ -115,16 +98,16 @@ export async function verifyWorkspaceWrapperDiagnostics({
   setup,
 }: {
   t: TestContext;
-  execution: Pick<OpenShellSandboxExecRequest, "command"> & {
-    command: readonly [string, string, string, ...string[]];
-  };
+  execution: Pick<OpenShellSandboxExecRequest, "command">;
   setup: { files: Record<string, string>; completed: boolean };
 }) {
+  const wrapper = execution.command[2];
+  assert.ok(wrapper, "the observed initializer command must include its Node program");
   const root = await temporaryDirectory(t, "openshell-workspace-wrapper-");
   const workspace = join(root, "workspace");
   await mkdir(workspace);
   const wrapped = (payload: object, environment: NodeJS.ProcessEnv = {}, runnerExit?: number) => {
-    let program = execution.command[2];
+    let program = wrapper;
     if (runnerExit !== undefined) {
       // Only the nested initializer's result is synthetic; the wrapper and flock run.
       program =
@@ -173,12 +156,9 @@ export async function verifyManagedNamespaceRejectsMutation({
   sandboxInstallation: () => Installation;
   openShellDriver: (client: GatewayClient, configuration: SandboxInput) => OpenShellSandboxDriver;
   namespaceContext: () => Omit<SandboxNamespaceContext, "kubernetes"> & { kubernetes: object };
-  kubernetesObjectClient: (events: KubernetesEvent[]) => {
-    patch: (resource: object) => Promise<object>;
-    delete: (resource: object) => Promise<void>;
-  };
+  kubernetesObjectClient: typeof makeKubernetesObjectClient;
 }) {
-  const events: KubernetesEvent[] = [];
+  const events: KubernetesMutation[] = [];
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
   configuration.gateway.workspaceMode = "managed";
   Object.assign(configuration.gateway, {
@@ -197,135 +177,6 @@ export async function verifyManagedNamespaceRejectsMutation({
   );
   assert.deepEqual(events, []);
   assert.deepEqual(gatewayClient.calls, []);
-}
-
-export async function verifyOperatorPolicyDrift({
-  observed,
-  driver,
-  context,
-  gatewayClient,
-  callCount,
-  policy,
-  metadata,
-  setWire,
-}: {
-  observed: { spec: { ingress: [{ _from?: object[]; from?: object[] }] } };
-  driver: OpenShellSandboxDriver;
-  context: SandboxNamespaceContext;
-  gatewayClient: GatewayClient;
-  callCount: (client: GatewayClient, operation: GatewayClient["calls"][number][0]) => number;
-  policy: OperatorPolicy;
-  metadata: OperatorWire["metadata"];
-  setWire: (value: OperatorWire) => void;
-}) {
-  assert.ok(observed.spec.ingress[0]._from);
-  assert.equal(observed.spec.ingress[0].from, undefined);
-  await driver.ensureNamespace(context);
-  assert.equal(callCount(gatewayClient, "createWorkspace"), 1);
-  for (const mutate of [
-    (value: OperatorWire) => {
-      value.spec.ingress[0].from = [{}];
-    },
-    (value: OperatorWire) => {
-      value.spec.ingress[0].ports[0].port = 9090;
-    },
-  ]) {
-    const wire = { ...structuredClone(policy), metadata };
-    setWire(wire);
-    mutate(wire);
-    await assert.rejects(
-      driver.ensureNamespace(context),
-      /Operator workspace resource does not match/,
-    );
-  }
-}
-
-export async function verifyOperatorAliasesRejected({
-  configuration,
-  gatewayClient,
-  backendFor,
-  SharedConfigurationValidationError,
-}: {
-  configuration: OpenShellSandboxDriverOptions & {
-    gateway: { networkPolicyResources: [OperatorPolicy] };
-  };
-  gatewayClient: GatewayClient;
-  backendFor: (client: GatewayClient) => OpenShellSandboxDriverSelection["backend"];
-  SharedConfigurationValidationError: typeof ConfigurationValidationError;
-}) {
-  const malformed = structuredClone(configuration);
-  const rule = malformed.gateway.networkPolicyResources[0].spec.ingress[0];
-  Reflect.set(rule, "_from", rule.from);
-  Reflect.deleteProperty(rule, "from");
-  let refusal: unknown;
-  try {
-    new OpenShellSandboxDriver(malformed, {
-      id: "openshell-sandbox",
-      implementation: "openshell",
-      backend: backendFor(gatewayClient),
-      operatorOwnedKubernetesResources: true,
-    });
-  } catch (error) {
-    refusal = error;
-  }
-  assert.ok(refusal instanceof SharedConfigurationValidationError);
-  // The write-only list is reported at its own path; its items stay out of diagnostics.
-  assert.deepEqual(refusal.error.details, [
-    {
-      path: "/gateway/networkPolicyResources",
-      code: "INVALID_VALUE",
-      message: "Name NetworkPolicy ingress sources with the Kubernetes field from.",
-    },
-  ]);
-}
-
-export async function prepareStockWorkspaceChart({
-  t,
-  sandboxInstallation,
-  sandboxOf,
-  openShellWorkspaceChartResources,
-}: {
-  t: TestContext;
-  sandboxInstallation: () => Installation;
-  sandboxOf: (configuration: Installation) => SandboxInput;
-  openShellWorkspaceChartResources: typeof chartResources;
-}) {
-  const chart = openShellWorkspaceChartResources();
-  const forms = {
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    metadata: { name: "value-forms" },
-    spec: {
-      podSelector: {},
-      policyTypes: ["Ingress", "Egress"],
-      ingress: [
-        {
-          from: [],
-          ports: [
-            { protocol: "TCP", port: "ssh" },
-            { port: 1000, endPort: 2000 },
-          ],
-        },
-        { from: null },
-        {},
-        { from: [{ ipBlock: { cidr: "10.0.0.0/8", except: [] } }] },
-      ],
-      egress: [{ to: [{ namespaceSelector: {}, podSelector: { matchExpressions: [] } }] }],
-    },
-  };
-  const crd = {
-    apiVersion: "crd.antrea.io/v1beta1",
-    kind: "NetworkPolicy",
-    metadata: { name: "provider-crd" },
-    spec: { priority: 5, appliedTo: [{ podSelector: {} }], ingress: [{ action: "Allow" }] },
-  };
-  const installation = sandboxInstallation();
-  Object.assign(sandboxOf(installation).gateway, {
-    operatorWorkspaceResources: chart,
-    networkPolicyResources: [forms, crd],
-  });
-  await loadInstallationFile(t, installation);
-  return { chart, forms, crd, installation };
 }
 
 export async function verifyProtectedGatewayAdmission({
