@@ -282,41 +282,41 @@ function pluginInstallOutcome(
   stdout: string,
   cleanExit: boolean,
   killedByTimeout = false,
-): string | undefined {
+): { failure: string | undefined; ordinaryFailure?: boolean } {
   if (killedByTimeout) {
-    return timedOut;
+    return { failure: timedOut };
   }
   // Exact serialized values also reject partial, duplicated or malformed output.
   if (cleanExit && stdout === JSON.stringify("passed")) {
-    return undefined;
+    return { failure: undefined };
   }
   // Validate the bounded protocol before rendering any child-provided fields.
   if (stdout.length > 4096) {
-    return incomplete;
+    return { failure: incomplete };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    return incomplete;
+    return { failure: incomplete };
   }
   const outcome = record(parsed);
   if (
     typeof outcome.teardown !== "boolean" ||
     stdout !== JSON.stringify({ primary: outcome.primary, teardown: outcome.teardown })
   ) {
-    return incomplete;
+    return { failure: incomplete };
   }
   let primary: string;
   if (outcome.primary === null && outcome.teardown) {
-    return teardownFailed;
+    return { failure: teardownFailed };
   }
   if (typeof outcome.primary === "string") {
     if (
       outcome.primary !== incomplete &&
       !failureMessages.some((message) => message === outcome.primary)
     ) {
-      return incomplete;
+      return { failure: incomplete };
     }
     primary = outcome.primary;
   } else {
@@ -331,11 +331,14 @@ function pluginInstallOutcome(
       (code !== policyCode && categories !== "") ||
       JSON.stringify(outcome.primary) !== JSON.stringify({ code, categories })
     ) {
-      return incomplete;
+      return { failure: incomplete };
     }
     primary = `OpenShell revision deployment failed (${code}${categories ? `: ${categories}` : ""}).`;
   }
-  return outcome.teardown ? `${primary} ${teardownFailed}` : primary;
+  return {
+    failure: outcome.teardown ? `${primary} ${teardownFailed}` : primary,
+    ordinaryFailure: outcome.primary !== incomplete,
+  };
 }
 
 // Keep the last complete stage even if execFile's deadline interrupts the child.
@@ -372,14 +375,12 @@ export function pluginInstallResult(
       }
     }
   }
-  const failure = pluginInstallOutcome(stdout.slice(offset), cleanExit, killedByTimeout);
-  return {
-    progress,
-    failure,
-    ...(failedTiming && failure && failure !== incomplete && failure !== teardownFailed
-      ? { failedTiming }
-      : {}),
-  };
+  const { failure, ordinaryFailure } = pluginInstallOutcome(
+    stdout.slice(offset),
+    cleanExit,
+    killedByTimeout,
+  );
+  return { progress, failure, ...(failedTiming && ordinaryFailure ? { failedTiming } : {}) };
 }
 
 export async function runPluginInstallCase(

@@ -21,6 +21,7 @@ const progress = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.
 const caseName = "OpenShell installs selected Codex plugins before WebSocket startup";
 const outerCaseName = "OpenShell Agent workflow installs and retains selected Codex plugins";
 const sentinel = "invented-plugin-diagnostic-sentinel";
+const teardownFailed = "OpenShell plugin installation fixture teardown failed.";
 const incomplete =
   "OpenShell plugin installation did not complete one exact passing case; child details withheld.";
 
@@ -28,16 +29,25 @@ const failureScenarios = {
   "installation-failure": { checkpoint: ["installation", "failed"], failedStage: "installation" },
   "deployment-failure": { checkpoint: ["installation", "failed"], failedStage: "agent-deploy" },
   "plugin-failure": { checkpoint: ["exposure-auth", "passed"], failedStage: "plugin-check" },
+  "plugin-failure-with-teardown": {
+    checkpoint: ["exposure-auth", "passed"],
+    failedStage: "plugin-check",
+    teardown: true,
+  },
   "exposure-failure": { checkpoint: ["exposure-auth", "failed"] },
   "ambiguous-timing": { checkpoint: ["exposure-auth", "passed"] },
   "foreign-timing": {},
   "no-frame": {},
   "invalid-frame": {},
-} satisfies Record<string, { checkpoint?: readonly [string, string]; failedStage?: string }>;
+} satisfies Record<
+  string,
+  { checkpoint?: readonly [string, string]; failedStage?: string; teardown?: boolean }
+>;
 
 for (const [scenario, expected] of Object.entries<{
   checkpoint?: readonly [string, string];
   failedStage?: string;
+  teardown?: boolean;
 }>(failureScenarios)) {
   test(`plugin wrapper normalizes the checkpoint and failed timing for ${scenario}`, async (t) => {
     const root = await createRunnerFixture(t);
@@ -86,13 +96,19 @@ test(${JSON.stringify(caseName)}, async (t) => {
   if (scenario === "deployment-failure") {
     await runOpenShellStage(t, "installation", () => runOpenShellStage(t, "agent-deploy", fail));
   }
-  if (["plugin-failure", "exposure-failure", "ambiguous-timing"].includes(scenario)) {
+  if (["plugin-failure", "plugin-failure-with-teardown", "exposure-failure", "ambiguous-timing"].includes(scenario)) {
     await runOpenShellStage(t, "installation", () => {});
     await runOpenShellStage(t, "exposure-auth", scenario === "exposure-failure" ? fail : () => {});
     if (scenario === "ambiguous-timing") {
       await runOpenShellStage(t, "agent-deploy", fail).catch(() => {});
     }
-    await runOpenShellStage(t, "plugin-check", fail);
+    try {
+      await runOpenShellStage(t, "plugin-check", fail);
+    } finally {
+      if (scenario === "plugin-failure-with-teardown") {
+        t.diagnostic('openclaw-ci-measurement {"kind":"openshell-fixture-teardown","outcome":"failed"}');
+      }
+    }
   }
   if (scenario === "foreign-timing") {
     await t.test("unrelated child diagnostic", (subtest) => {
@@ -140,7 +156,7 @@ test(${JSON.stringify(caseName)}, async (t) => {
     assert.deepEqual(fileResult.installationPhases, { phases: [], truncated: false });
     const summary = "OpenShell plugin installation case failed; child details withheld.";
     const measurements = [];
-    let failure = summary;
+    let failure = expected.teardown ? `${summary} ${teardownFailed}` : summary;
     if (expected.checkpoint) {
       const [stage, outcome] = expected.checkpoint;
       measurements.push({ kind: "openshell-plugin-stage", stage, outcome });
@@ -367,6 +383,29 @@ test("failed timing requires an intact ordinary failure response", () => {
       stage: "installation",
       outcome: "failed",
     });
+  }
+});
+
+test("failed timing follows the validated primary when teardown fails", () => {
+  const checkpoint = stageFrame("installation", "started") + stageFrame("installation", "failed");
+  const timing =
+    'openclaw-ci-measurement {"kind":"openshell-stage","stage":"installation","outcome":"failed","elapsedMs":1}';
+  const ordinaryFailure = "OpenShell plugin installation case failed; child details withheld.";
+  for (const [primary, failedTiming] of [
+    [ordinaryFailure, timing],
+    [incomplete, undefined],
+    [null, undefined],
+  ] as const) {
+    // A teardown failure can coexist with the child primary but cannot establish one.
+    const terminal = JSON.stringify({ primary, teardown: true });
+    const result = pluginInstallResult(checkpoint + timing + "\n" + terminal, false);
+    assert.equal(result.failure, primary ? `${primary} ${teardownFailed}` : teardownFailed);
+    assert.deepEqual(result.progress, {
+      kind: "openshell-stage",
+      stage: "installation",
+      outcome: "failed",
+    });
+    assert.equal(result.failedTiming, failedTiming, primary ?? "teardown only");
   }
 });
 
