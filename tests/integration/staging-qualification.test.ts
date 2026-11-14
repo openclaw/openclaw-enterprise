@@ -31,6 +31,7 @@ const signinChanges = [
   "runtime",
   "catalog-source",
   "historical-auth",
+  "probe",
 ] as const;
 
 for (const change of signinChanges) {
@@ -126,6 +127,10 @@ async function checkWorkflowCommand(
     // The historical controller image copied this entry point into the production target.
     const file = join(root, "scripts/auth-maintain.mjs");
     await writeFile(file, (await readFile(file, "utf8")) + "\n// Unreviewed entry point change\n");
+  }
+  if (signin === "probe") {
+    // The new script is a production build input even though the reviewed pair has only .mjs.
+    await cp("scripts/production-healthcheck.ts", join(root, "scripts/production-healthcheck.ts"));
   }
   const unrelated = (
     await git([
@@ -567,6 +572,10 @@ else:
           assert.equal(plan.previous.version, 3);
           assert.equal(plan.candidate.version, 3);
           assert.equal(plan.previous.buildInputs, plan.candidate.buildInputs);
+          assert.equal(
+            plan.previous.buildInputs,
+            "797f9d81cebb649ecec631cae57bdcb43172e26e47a8619d60e07eb2ff78caa3",
+          );
           assert.equal(
             plan.migrationTree,
             (

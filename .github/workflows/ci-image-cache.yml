@@ -39,6 +39,7 @@ on:
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
       - scripts/migration-catalog.ts
+      - scripts/production-healthcheck.ts
       - tsconfig.base.json
       - tsconfig.json
   # The kept runtime image reaches Blacksmith's shared Docker store only if this

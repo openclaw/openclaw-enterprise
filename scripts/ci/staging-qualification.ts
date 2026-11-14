@@ -683,6 +683,7 @@ function signinBuildInputs(root: string, revision: string) {
     "scripts/auth-maintain.ts",
     "scripts/lib",
     "scripts/production-healthcheck.mjs",
+    "scripts/production-healthcheck.ts",
   ]);
   return createHash("sha256").update(projection).digest("hex");
 }
