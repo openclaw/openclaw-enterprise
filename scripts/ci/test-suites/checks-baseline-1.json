@@ -99,7 +99,7 @@
     "tests/conformance/kubernetes-ownership.test.ts",
     "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
-    "tests/conformance/platform-state-memory.test.mjs",
+    "tests/conformance/platform-state-memory.test.ts",
     "tests/conformance/sandbox-policy-persistence.test.ts",
     "tests/conformance/contracts.test.mjs",
     "tests/conformance/presets.test.ts",
@@ -361,7 +361,7 @@
       "path": "tests/conformance/openshell-harness-status.test.mjs"
     },
     {
-      "path": "tests/conformance/platform-state-memory.test.mjs"
+      "path": "tests/conformance/platform-state-memory.test.ts"
     },
     {
       "path": "tests/conformance/sandbox-policy-persistence.test.ts",

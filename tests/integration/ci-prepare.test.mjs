@@ -4591,7 +4591,7 @@ ${scenario.failure === "signal" ? 'process.kill(process.pid, "SIGTERM");' : `pro
 import assert from "node:assert/strict";
 const { prepareFile } = await import(process.argv[1]);
 await assert.rejects(() => prepareFile({ lane: "postgres-application",
-  file: "tests/integration/postgres-platform-state.test.mjs", statePath: process.argv[2] }),
+  file: "tests/integration/postgres-platform-state.test.ts", statePath: process.argv[2] }),
   error => {
     assert.equal(error.code, "CI_PREPARATION_COMMAND_FAILED");
     assert.equal(error.stage, ${JSON.stringify(scenario.stage)});

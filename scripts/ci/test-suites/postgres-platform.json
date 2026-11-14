@@ -10,7 +10,7 @@
     "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.mjs",
     "tests/integration/postgres-plugin-discovery.test.ts",
-    "tests/integration/postgres-platform-state.test.mjs",
+    "tests/integration/postgres-platform-state.test.ts",
     "tests/integration/postgres-oidc-recovery-replacement.test.ts",
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
@@ -120,7 +120,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-platform-state.test.mjs",
+      "path": "tests/integration/postgres-platform-state.test.ts",
       "expectedTests": [
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
