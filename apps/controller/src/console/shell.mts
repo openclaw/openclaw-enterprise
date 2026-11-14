@@ -1,6 +1,6 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
-import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
+import { bindLinkClick, button, element, requestIdLine, setUnavailable } from "./dom.mjs";
 import {
   connectionTemplatesPage,
   oauthClientsPage,
@@ -500,11 +500,7 @@ export function createShell({
       { href: pageUrl("agents"), className: "button button--ghost button--sm page-back" },
       "← Agents",
     );
-    back.addEventListener("click", (event) => {
-      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-        return;
-      }
-      event.preventDefault();
+    bindLinkClick(back, () => {
       if (refuseLeave()) {
         return;
       }

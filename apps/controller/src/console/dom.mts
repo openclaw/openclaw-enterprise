@@ -140,6 +140,16 @@ export function button(
   return node;
 }
 
+export function bindLinkClick(link: HTMLAnchorElement, action: () => void): void {
+  link.addEventListener("click", (event) => {
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    action();
+  });
+}
+
 export function dismissOnBackdrop(dialog: HTMLDialogElement) {
   let startedOnBackdrop = false;
   const isBackdrop = (event: MouseEvent) => {
