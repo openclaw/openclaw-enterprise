@@ -27,7 +27,7 @@
     "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/codex-plugin-preparation.test.ts",
-    "tests/integration/container-release.test.mjs",
+    "tests/integration/container-release.test.ts",
     "tests/integration/password-sign-in-audit.test.ts",
     "tests/integration/ci-impact-gate.test.ts",
     "tests/integration/console-provisioning-request.test.ts",
@@ -390,7 +390,7 @@
       "path": "tests/integration/ci-go-test.test.ts"
     },
     {
-      "path": "tests/integration/container-release.test.mjs"
+      "path": "tests/integration/container-release.test.ts"
     },
     {
       "path": "tests/integration/cli-release.test.ts",

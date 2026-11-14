@@ -190,7 +190,7 @@
     "tests/integration/container-promote.test.ts": 100,
     "tests/integration/container-publication-workflow.test.ts": 100,
     "tests/integration/container-registry-real.test.mjs": 1900,
-    "tests/integration/container-release.test.mjs": 1700,
+    "tests/integration/container-release.test.ts": 1700,
     "tests/integration/container-resume.test.ts": 5400,
     "tests/integration/controlled-tls-origin.test.ts": 7200,
     "tests/integration/controller-lifecycle.test.ts": 500,
