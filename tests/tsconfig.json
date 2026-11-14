@@ -135,7 +135,6 @@
     "fixtures/ci-runner-openshell-failure-child.ts",
     "fixtures/ci-runner-openshell-progress-child.ts",
     "integration/first-agent-startup-lifecycle-cases.ts",
-    "integration/ci-openshell-bootstrap-cases.ts",
     "helpers/fixture-command-server.ts",
     "helpers/keycloak-enrollment-wait.ts",
     "helpers/node-test-summary.ts",

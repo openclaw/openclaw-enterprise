@@ -1,25 +1,22 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback, spawnSync } from "node:child_process";
-import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { createServer, request } from "node:http";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, request, type IncomingMessage, type Server } from "node:http";
+import type { EventEmitter } from "node:events";
+import type { Duplex } from "node:stream";
 import { createRequire } from "node:module";
-import { delimiter, dirname, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
+
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { createOccLogger, resemblesCredential } from "../../apps/controller/src/logging.ts";
 import {
   redactLogLine,
   redactOutputLine,
   redactFailureDetail,
 } from "../../scripts/ci/failure-redaction.mjs";
-import {
-  prepareOpenShell,
-  selectKubectlAsset,
-  validateOpenShellSelection,
-} from "../../scripts/ci/openshell.ts";
 import { withEnvironment } from "../helpers/environment.ts";
-import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
+import { prependPath } from "../helpers/fake-commands.ts";
 import {
   assertGatewayPolicyRunSucceeded,
   openShellStaleRelay,
@@ -41,18 +38,18 @@ import {
   outageAttemptRead,
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
-import {
-  registerOpenShellBootstrapCases,
-  registerOpenShellPreparationCases,
-} from "./ci-openshell-bootstrap-cases.ts";
+import { openShellTestDirectory } from "./ci-openshell-fixtures.ts";
 
-async function fixture(t, prefix = "ci-openshell-test") {
-  const root = await temporaryDirectory(t, `${prefix}-`);
-  await chmod(root, 0o700);
-  return root;
+function jsonObject(text: string) {
+  const object = asRecord(JSON.parse(text));
+  assert.ok(object, "expected a JSON object");
+  return object;
 }
+
+type GatewayPolicyClient = Parameters<typeof assertGatewayPolicyRunSucceeded>[0];
+type GatewayPolicyOutcome = Parameters<typeof assertGatewayPolicyRunSucceeded>[1];
+type PollOnce = Parameters<typeof waitForOpenShellRevisionActivation>[0];
 
 test("OpenShell failure summaries retain bounded Compute causes without provider or chat text", () => {
   const revisionId = "rev_10000000-0000-4000-8000-000000000003";
@@ -66,30 +63,34 @@ test("OpenShell failure summaries retain bounded Compute causes without provider
     candidatePreparationReached: false,
   };
   // The worker can retry the same preparation failure many times before the wait ends.
-  const events = ["2026-11-11T20:00:00.000Z", "2026-11-11T20:01:00.000Z"].map((observedAt) => ({
+  const firstAt = "2026-11-11T20:00:00.000Z";
+  const lastAt = "2026-11-11T20:01:00.000Z";
+  const at = "2026-11-11T20:02:00.000Z";
+  const events = [firstAt, lastAt].map((observedAt) => ({
     ...failure,
     observedAt,
     message: "private provider response",
     chat: "private chat",
   }));
-  events.push({
+  const completed = {
     event: "worker.completed",
     revisionId,
     code: "WORKSPACE_NODE_PENDING",
     cleanupCause: "SANDBOX_DELETE_PENDING",
-    observedAt: "2026-11-11T20:02:00.000Z",
-  });
-  assert.deepEqual(summarizeWorkerEvents(events, revisionId), [
-    { ...failure, count: 2, firstAt: events[0].observedAt, lastAt: events[1].observedAt },
+    observedAt: at,
+  };
+  const observations = [...events, completed];
+  assert.deepEqual(summarizeWorkerEvents(observations, revisionId), [
+    { ...failure, count: 2, firstAt, lastAt },
     {
       event: "worker.completed",
       revisionId,
       code: "WORKSPACE_NODE_PENDING",
       cleanupCause: "SANDBOX_DELETE_PENDING",
-      at: events[2].observedAt,
+      at,
     },
   ]);
-  assert.equal(summarizeWorkerEvents(events, revisionId, 1).length, 1);
+  assert.equal(summarizeWorkerEvents(observations, revisionId, 1).length, 1);
   assert.deepEqual(
     summarizeWorkerEvents(
       [
@@ -107,21 +108,12 @@ test("OpenShell failure summaries retain bounded Compute causes without provider
   );
 });
 
-function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
-  return {
-    name,
-    directory: root,
-    kubeconfig: join(root, "kubeconfig"),
-    context: `k3d-${name}`,
-  };
-}
-
 test("OpenShell worker sinks omit response text and share both credential checks", () => {
-  const lines = [];
+  const lines: ReturnType<typeof jsonObject>[] = [];
   const emit = createOpenShellWorkerLogEmitter(
     createOccLogger({
       component: "openshell-test-worker",
-      destination: { write: (line) => lines.push(JSON.parse(line)) },
+      destination: { write: (line) => lines.push(jsonObject(line)) },
     }),
   );
   const token = "ghs_" + "a_b".repeat(6);
@@ -144,7 +136,9 @@ test("OpenShell worker sinks omit response text and share both credential checks
   emit({ event: "worker.error", code: "DEPENDENCY_UNAVAILABLE", cleanupCause: token });
   emit({ event: "worker.health", message: "private health text" });
   assert.equal(lines.length, 3, "health stays at the suppressed debug level");
-  const { time: _time, ...first } = lines[0];
+  const [failed, denied, unavailable] = lines;
+  assert.ok(failed && denied && unavailable);
+  const { time: _time, ...first } = failed;
   assert.deepEqual(first, {
     severity: "ERROR",
     service: "openshell-test-worker",
@@ -156,10 +150,10 @@ test("OpenShell worker sinks omit response text and share both credential checks
     errorClass: event.errorClass,
     validationCategory: event.validationCategory,
   });
-  assert.equal(lines[2].severity, "ERROR");
-  assert.equal(lines[2].cleanupCause, undefined);
-  assert.equal(lines[1].code, "ACCESS_DENIED");
-  assert.equal(redactOutputLine(JSON.stringify(lines[1]), [], "", 1000), JSON.stringify(lines[1]));
+  assert.equal(unavailable.severity, "ERROR");
+  assert.equal(unavailable.cleanupCause, undefined);
+  assert.equal(denied.code, "ACCESS_DENIED");
+  assert.equal(redactOutputLine(JSON.stringify(denied), [], "", 1000), JSON.stringify(denied));
   const summaries = summarizeWorkerEvents(
     [
       event,
@@ -171,15 +165,19 @@ test("OpenShell worker sinks omit response text and share both credential checks
     ],
     "rev_test",
   );
-  assert.equal(summaries[0].cause, undefined);
-  assert.equal(summaries[0].validationCategory, event.validationCategory);
+  const [prepareFailure, accessDenied] = summaries;
+  assert.ok(prepareFailure && accessDenied);
+  assert.equal(prepareFailure.cause, undefined);
+  assert.equal(prepareFailure.validationCategory, event.validationCategory);
   assert.equal(
-    summaries[1].code,
+    accessDenied.code,
     "AUTHORIZATION_DENIED",
     "returned evidence retains the exact fixed code",
   );
-  assert.equal(summaries[1].cleanupCause, undefined);
-  assert.match(workerDiagnosticLines({ events: summaries }).at(-1), /PVC_ADMISSION_LABELS/);
+  assert.equal(accessDenied.cleanupCause, undefined);
+  const diagnostic = workerDiagnosticLines({ events: summaries }).at(-1);
+  assert.ok(diagnostic);
+  assert.match(diagnostic, /PVC_ADMISSION_LABELS/);
 });
 
 test("OpenShell persisted queue records survive the reporter's per-line limit", () => {
@@ -207,13 +205,15 @@ test("OpenShell persisted queue records survive the reporter's per-line limit", 
     assert.equal(redactOutputLine(line, [], "", 1000), line);
     assert.doesNotThrow(() => JSON.parse(line.slice(line.indexOf("{"))));
   }
-  assert.match(lines.at(-1), /ACCESS_DENIED/);
+  const last = lines.at(-1);
+  assert.ok(last);
+  assert.match(last, /ACCESS_DENIED/);
 });
 
 test("OpenShell activation diagnostics share one deadline and preserve the original failure", async (t) => {
-  const lines = [];
-  t.mock.method(process.stderr, "write", (line) => {
-    lines.push(line);
+  const lines: string[] = [];
+  t.mock.method(process.stderr, "write", (line: string | Uint8Array) => {
+    lines.push(String(line));
     return true;
   });
   const original = new Error("activation failed");
@@ -223,15 +223,9 @@ test("OpenShell activation diagnostics share one deadline and preserve the origi
     }),
     (error) => error === original,
   );
-  let release;
-  const read = new Promise((resolve) => {
-    release = resolve;
-  });
-  let complete;
-  const completed = new Promise((resolve) => {
-    complete = resolve;
-  });
-  let lateLines;
+  const { promise: read, resolve: release } = Promise.withResolvers<void>();
+  const { promise: completed, resolve: complete } = Promise.withResolvers<void>();
+  let lateLines: string[] | undefined;
   await assert.rejects(
     rethrowOpenShellFailure(
       original,
@@ -249,8 +243,10 @@ test("OpenShell activation diagnostics share one deadline and preserve the origi
     (error) => error === original,
   );
   assert.equal(lines.length, 2);
-  assert.match(lines[0], /^First OpenShell provisioning failure: sandbox prepare failed:/);
-  assert.doesNotMatch(lines[0], /private-provider-detail/);
+  const first = lines[0];
+  assert.ok(first);
+  assert.match(first, /^First OpenShell provisioning failure: sandbox prepare failed:/);
+  assert.doesNotMatch(first, /private-provider-detail/);
   assert.equal(lines[1], "OpenShell activation diagnostics timed out\n");
   release();
   await completed;
@@ -282,12 +278,13 @@ test("OpenShell replacement failure detail preserves denied and adjacent worker 
   };
   const detail = workerFailureDetail(worker, []);
   const published = redactFailureDetail(new Error(`activation failed\n${detail}`), [], "");
+  assert.ok(published);
   assert.equal(published.message, `activation failed\n${detail}`);
   assert.match(published.message, /ACCESS_DENIED/);
   assert.match(published.message, /DEPENDENCY_UNAVAILABLE/);
   assert.match(published.message, /"revisionNumber":2/);
   assert.match(published.message, /"state":"queued"/);
-  assert.equal(worker.events[1].code, "AUTHORIZATION_DENIED");
+  assert.equal(worker.events[1]?.code, "AUTHORIZATION_DENIED");
 });
 
 test("OpenShell turnover accepts established relay failures, not connection admission denials", () => {
@@ -304,7 +301,7 @@ test("OpenShell turnover accepts established relay failures, not connection admi
     message: `TLS relay error: ${stale}`,
     privateDetail: "private payload",
   };
-  const line = (value) => `2026-11-07T00:00:00Z OCSF-JSON ${JSON.stringify(value)}`;
+  const line = (value: unknown) => `2026-11-07T00:00:00Z OCSF-JSON ${JSON.stringify(value)}`;
   for (const protocol of ["TLS", "L7", "HTTP"]) {
     assert.deepEqual(
       openShellStaleRelay(line({ ...event, message: `${protocol} relay error: ${stale}` }), domain),
@@ -354,7 +351,12 @@ test("a failed protected update reports its stored job state without disclosing 
   const before = { id: "job-1", sessionTarget: "isolated", payload: { message: "private job" } };
   const runId = "7f397a07-2e4a-49b1-bb45-d2db87fc4032";
   const failed = { runId, status: "error", endedAt: 42, error: "private provider detail" };
-  for (const [jobState, current, terminal, metadata] of [
+  const jobCases: [
+    state: string,
+    current: typeof before | undefined,
+    terminal: GatewayPolicyOutcome & { terminalReply?: unknown; endedAt?: number },
+    metadata: string,
+  ][] = [
     ["unchanged", structuredClone(before), failed, "errorText=present"],
     [
       "changed",
@@ -374,9 +376,10 @@ test("a failed protected update reports its stored job state without disclosing 
       },
       "stopReason=timeout, timeoutPhase=provider, providerStarted=true",
     ],
-  ]) {
-    const requests = [];
-    const client = {
+  ];
+  for (const [jobState, current, terminal, metadata] of jobCases) {
+    const requests: Parameters<GatewayPolicyClient["request"]>[] = [];
+    const client: GatewayPolicyClient = {
       async request(...args) {
         requests.push(args);
         if (!current) {
@@ -388,6 +391,7 @@ test("a failed protected update reports its stored job state without disclosing 
     await assert.rejects(
       assertGatewayPolicyRunSucceeded(client, terminal, { attempt, before }),
       (error) => {
+        assert.ok(error instanceof assert.AssertionError);
         assert.equal(error.actual, terminal.status);
         assert.equal(
           error.message.split("\n")[0],
@@ -402,11 +406,6 @@ test("a failed protected update reports its stored job state without disclosing 
   const request = t.mock.fn();
   await assertGatewayPolicyRunSucceeded({ request }, { runId, status: "ok" }, { attempt, before });
   assert.equal(request.mock.callCount(), 0);
-});
-
-test("kubectl asset selection supports the pinned OpenShell CI host platforms", () => {
-  assert.equal(selectKubectlAsset("darwin", "arm64").name, "kubectl-darwin-arm64");
-  assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
 test("OpenShell Helm chart image values use the registry and digest contract", () => {
@@ -446,13 +445,13 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   const agentPath =
     "/namespaces/ns_10000000-0000-4000-8000-000000000001/agents/agt_10000000-0000-4000-8000-000000000002";
   const revisionId = "rev_10000000-0000-4000-8000-000000000003";
-  const waitOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
+  const waitOnce: PollOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
   const refusalCode = "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
   const privateDetail = "private requirements detail";
   const activate = (
-    deployment,
-    activeRevisionId = null,
-    workerEvents = [],
+    deployment: unknown,
+    activeRevisionId: string | null = null,
+    workerEvents: Parameters<typeof waitForOpenShellRevisionActivation>[1]["workerEvents"] = [],
     checkDeploymentBeforeActivation = false,
     deploymentStatus = 200,
   ) =>
@@ -461,7 +460,7 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
       revisionId,
       workerEvents,
       checkDeploymentBeforeActivation,
-      request: async (method, path) => {
+      request: async (method: string, path: string) => {
         assert.equal(method, "GET");
         if (path === agentPath) {
           return { status: 200, data: { activeRevisionId } };
@@ -488,13 +487,17 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
     code: refusalCode,
     failure: "sandbox-mode-denied_reviewer-denied",
   };
-  for (const [events, reason] of [
+  const workerCases: [
+    NonNullable<Parameters<typeof waitForOpenShellRevisionActivation>[1]["workerEvents"]>,
+    string | undefined,
+  ][] = [
     [[completed], completed.failure],
     [[{ ...completed, revisionId: "different" }], undefined],
     [[{ ...completed, code: "OTHER" }], undefined],
     [[{ ...completed, event: "worker.error" }], undefined],
     [[{ ...completed, failure: `named-profile-denied_${privateDetail}` }], undefined],
-  ]) {
+  ];
+  for (const [events, reason] of workerCases) {
     await assert.rejects(
       activate({ status: "failed", error: { code: refusalCode } }, null, events),
       {
@@ -514,7 +517,7 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
         message: `Deployment refused (${refusalCode}); stopping the refused version before recording the failure. The controller will retry.`,
       },
     ],
-  ]) {
+  ] as const) {
     await assert.rejects(
       activate({ status, error: null, progress: { lastAttempt, nextAttemptAt } }),
       { message: `Timed out waiting for OpenShell revision ${revisionId} activation.` },
@@ -550,6 +553,8 @@ test("the OpenShell policy replacement timeout reports only the last recognized 
   const agentPath = "/agents/agent";
   const revisionId = "replacement";
   const description = `Timed out waiting for OpenShell revision ${revisionId} activation`;
+  const waitBriefly: PollOnce = (description, read) =>
+    waitFor(description, read, { timeoutMs: 1, intervalMs: 0 });
   for (const [status, label] of [
     ["queued", "queued"],
     ["running", "running"],
@@ -561,27 +566,24 @@ test("the OpenShell policy replacement timeout reports only the last recognized 
     const deadline = Date.now() + 1;
     let reads = 0;
     await assert.rejects(
-      waitForOpenShellRevisionActivation(
-        (description, read) => waitFor(description, read, { timeoutMs: 1, intervalMs: 0 }),
-        {
-          request: async (method, path) => {
-            assert.equal(method, "GET");
-            if (path === agentPath) {
-              return { status: 200, data: { activeRevisionId: "previous" } };
-            }
-            assert.equal(path, `${agentPath}/deployments/${revisionId}`);
-            if (++reads === 1) {
-              return { status: 200, data: { status: "running" } };
-            }
-            t.mock.timers.setTime(deadline);
-            return { status: 200, data: { status } };
-          },
-          agentPath,
-          revisionId,
-          checkDeploymentBeforeActivation: true,
-          reportDeploymentStatusOnTimeout: true,
+      waitForOpenShellRevisionActivation(waitBriefly, {
+        request: async (method: string, path: string) => {
+          assert.equal(method, "GET");
+          if (path === agentPath) {
+            return { status: 200, data: { activeRevisionId: "previous" } };
+          }
+          assert.equal(path, `${agentPath}/deployments/${revisionId}`);
+          if (++reads === 1) {
+            return { status: 200, data: { status: "running" } };
+          }
+          t.mock.timers.setTime(deadline);
+          return { status: 200, data: { status } };
         },
-      ),
+        agentPath,
+        revisionId,
+        checkDeploymentBeforeActivation: true,
+        reportDeploymentStatusOnTimeout: true,
+      }),
       {
         message:
           label === undefined
@@ -597,28 +599,36 @@ test("the OpenShell policy replacement timeout reports only the last recognized 
 // the work is queued after an attempt, and a started deployment reads as `running` then (finding
 // 2456), so that read ends the wait with the work it followed.
 test("OpenShell outage proof reads the status only for work queued after an attempt", async () => {
-  const queued = (attempt) => ({ state: "queued", reason_code: null, attempt_count: attempt });
-  const claimed = (attempt) => ({ state: "claimed", reason_code: null, attempt_count: attempt });
+  const queued = (attempt: number) => ({
+    state: "queued",
+    reason_code: null,
+    attempt_count: attempt,
+  });
+  const claimed = (attempt: number) => ({
+    state: "claimed",
+    reason_code: null,
+    attempt_count: attempt,
+  });
   const polls = [
     [queued(0), undefined],
     [claimed(1), undefined],
     [queued(1), "running"],
-  ];
-  let reads = 0;
-  const poll = outageAttemptRead({
-    readWork: async () => polls[reads][0],
-    readStatus: async () => {
-      assert.notEqual(
-        polls[reads][1],
-        undefined,
-        "status is read only once the work is queued after an attempt",
-      );
-      return polls[reads][1];
-    },
-  });
+  ] as const;
   const results = [];
-  for (; reads < polls.length; reads += 1) {
-    results.push(await poll());
+  for (const [work, status] of polls) {
+    results.push(
+      await outageAttemptRead({
+        readWork: async () => work,
+        readStatus: async () => {
+          assert.notEqual(
+            status,
+            undefined,
+            "status is read only once the work is queued after an attempt",
+          );
+          return status;
+        },
+      })(),
+    );
   }
   assert.deepEqual(results, [undefined, undefined, { work: queued(1), status: "running" }]);
   // A revision that failed or activated during the outage ends the wait, so the proof fails on it.
@@ -641,7 +651,9 @@ test("OpenShell outage proof counts a pass that waited on the gateway without an
     last_attempt_code: "SANDBOX_GATEWAY_UNAVAILABLE",
   };
   let statusReads = 0;
-  const read = (work) =>
+  const read = (
+    work: Omit<typeof waited, "last_attempt_code"> & { last_attempt_code: string | null },
+  ) =>
     outageAttemptRead({
       readWork: async () => work,
       readStatus: async () => {
@@ -671,7 +683,7 @@ test("OpenShell host probes retain the exposed hostname while connecting to loop
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const serviceUrl = `http://${serviceHostname}:${address.port}/health`;
-  const response = await new Promise((resolve, reject) => {
+  const response = await new Promise<IncomingMessage>((resolve, reject) => {
     const probe = request(serviceUrl, {
       lookup: createOpenShellServiceLoopbackLookup(serviceHostname),
     });
@@ -679,8 +691,9 @@ test("OpenShell host probes retain the exposed hostname while connecting to loop
     probe.on("error", reject);
     probe.end();
   });
-  const body = [];
+  const body: Buffer[] = [];
   for await (const chunk of response) {
+    assert.ok(Buffer.isBuffer(chunk));
     body.push(chunk);
   }
 
@@ -689,37 +702,169 @@ test("OpenShell host probes retain the exposed hostname while connecting to loop
   assert.equal(observedHost, `${serviceHostname}:${address.port}`);
 });
 
+type PeerSocket = EventEmitter<{ message: [data: Buffer | ArrayBuffer | Buffer[]] }> & {
+  send(data: string): void;
+  close(): void;
+  readyState: number;
+  OPEN: number;
+};
+
+type UpgradePeerServer = EventEmitter<{ connection: [socket: PeerSocket, stream: Duplex] }> & {
+  handleUpgrade(
+    request: IncomingMessage,
+    stream: Duplex,
+    head: Buffer,
+    callback: (socket: PeerSocket) => void,
+  ): void;
+};
+
+type PeerModule = {
+  WebSocketServer: {
+    new (options: { server: Server }): EventEmitter<{ connection: [PeerSocket, IncomingMessage] }>;
+    new (options: { noServer: true }): UpgradePeerServer;
+  };
+};
+
+function hasWebSocketServer(value: unknown): value is PeerModule {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    "WebSocketServer" in value &&
+    typeof value.WebSocketServer === "function"
+  );
+}
+
+function probeWebSocketServer() {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const fromKubernetesClient = createRequire(controller.resolve("@kubernetes/client-node"));
+  const websocket: unknown = fromKubernetesClient("ws");
+  assert.ok(hasWebSocketServer(websocket), "the Kubernetes client must provide a WebSocket server");
+  return websocket.WebSocketServer;
+}
+
+function readPeerMessage(data: Buffer | ArrayBuffer | Buffer[]) {
+  const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(new Uint8Array(data));
+  const { method, id, params, result } = jsonObject(bytes.toString("utf8"));
+  assert.ok(method === undefined || typeof method === "string");
+  assert.ok(id === undefined || typeof id === "string" || typeof id === "number");
+  return { method, id, params, result };
+}
+
+// The probes use only local kubectl exec and the generated client. These options
+// are unset on the real fixture path and are read only when provisioning a cluster.
+const localProbeOptions = {
+  kubeconfigPath: undefined,
+  kubernetesContext: undefined,
+  gatewayImage: undefined,
+  codexImage: undefined,
+  databaseUrl: undefined,
+  openShellGatewayImage: undefined,
+  openShellSandboxImage: undefined,
+  openShellSupervisorImage: undefined,
+  openShellHelmPath: undefined,
+  openShellHelmChart: undefined,
+  openShellWorkspaceHelmChart: undefined,
+  commandTimeoutMs: undefined,
+  signal: undefined,
+};
+
+const gatewayProbe = {
+  namespace: "fixture",
+  gatewayPod: "fixture",
+  container: undefined,
+  providerModel: undefined,
+  prompt: undefined,
+};
+
+type ProbeRequest = Parameters<typeof observeSandboxProbe>[0]["requestTurn"];
+type TurnMessage = Awaited<ReturnType<ProbeRequest>>["items"][number];
+
+function isTurnMessage(value: unknown): value is TurnMessage {
+  const message = asRecord(value);
+  if (!message || (message.method !== undefined && typeof message.method !== "string")) {
+    return false;
+  }
+  if (message.error !== undefined && asRecord(message.error) === undefined) {
+    return false;
+  }
+  if (message.params === undefined) {
+    return true;
+  }
+  const params = asRecord(message.params);
+  if (!params) {
+    return false;
+  }
+  const turn = asRecord(params.turn);
+  return (
+    (params.item == null || asRecord(params.item) !== undefined) &&
+    (params.error === undefined || asRecord(params.error) !== undefined) &&
+    (params.turn === undefined ||
+      (turn !== undefined && (turn.error === undefined || asRecord(turn.error) !== undefined)))
+  );
+}
+
+function observedTurn(value: unknown) {
+  const result = asRecord(value);
+  assert.ok(result);
+  const { items } = result;
+  assert.ok(Array.isArray(items) && items.every(isTurnMessage), "expected recorded turn messages");
+  return Object.assign(result, { items });
+}
+
+function nativeExecutionSummary(text: string) {
+  // pendingCommands is the summary's last field, so the object ends at the first "]}".
+  const frame = /Native execution summary: (\{.*?\]\})/s.exec(text)?.[1];
+  assert.ok(frame, "expected a native execution summary");
+  const summary = jsonObject(frame);
+  const { pendingCommands, sinceTurnEndMs } = summary;
+  assert.ok(Array.isArray(pendingCommands));
+  assert.ok(sinceTurnEndMs === null || typeof sinceTurnEndMs === "number");
+  return Object.assign(summary, { pendingCommands: pendingCommands.map(asRecord), sinceTurnEndMs });
+}
+
+async function probeFailure(promise: Promise<unknown>) {
+  try {
+    await promise;
+  } catch (error) {
+    assert.ok(error instanceof Error);
+    return error;
+  }
+  assert.fail("the probe must fail");
+}
+
+async function kubectlFailure(promise: Promise<unknown>) {
+  const error = await probeFailure(promise);
+  assert.ok("stderr" in error && typeof error.stderr === "string");
+  assert.ok("code" in error && typeof error.code === "number");
+  return { message: error.message, stderr: error.stderr, code: error.code };
+}
+
 test("OpenShell probe observes its command after the turn ends, or preserves the unknown outcome", async (t) => {
   // Run the actual in-Pod client and probe decision. Only kubectl transport and the
   // app-server peer are fixtures. WebSocket message order, not a sleep, creates the boundary.
-  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const server = createServer();
+  const WebSocketServer = probeWebSocketServer();
   const peer = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, stream, head) => {
     peer.handleUpgrade(request, stream, head, (socket) => peer.emit("connection", socket, stream));
   });
-  await listen(t, server);
+  const port = await listen(t, server);
 
-  const directory = await fixture(t);
+  const directory = await openShellTestDirectory(t);
   await writeFile(
     join(directory, "kubectl"),
     [
       "#!/bin/sh",
       'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
       "shift",
-      `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      `export APP_SERVER_URL=ws://127.0.0.1:${port}`,
       'exec "$@"',
     ].join("\n"),
     { mode: 0o755 },
   );
-  const path = process.env.PATH;
-  process.env.PATH = directory + delimiter + path;
-  t.after(() => {
-    process.env.PATH = path;
-  });
+  prependPath(t, directory);
   const { requestCodexTurnFromGatewayPod, readCodexThreadFromGatewayPod } =
-    createOpenShellKubernetesFixture({});
+    createOpenShellKubernetesFixture(localProbeOptions);
 
   for (const event of [
     "late result",
@@ -734,15 +879,15 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     "incomplete result",
     "expiry",
     "close",
-  ]) {
+  ] as const) {
     const threadId = "probe-thread";
     const turnId = "probe-turn";
     const nonce = "probe-command";
     const unexpected = event !== "late result" && event !== "expiry" && event !== "close";
     peer.once("connection", (socket, stream) => {
       socket.on("message", (data) => {
-        const { method, id } = JSON.parse(data);
-        const send = (message) => socket.send(JSON.stringify(message));
+        const { method, id } = readPeerMessage(data);
+        const send = (message: object) => socket.send(JSON.stringify(message));
         // The approval response is checked below.
         if (method === undefined || method === "initialized") {
           return;
@@ -770,12 +915,15 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         };
         send({ method: "item/started", params: { threadId, turnId, item } });
         const extra = { ...item, id: "extra" };
-        const unbound = {
+        const unbound: Partial<
+          Record<typeof event, { turnId?: string | undefined; threadId?: string | undefined }>
+        > = {
           "foreign completion before turn ends": { turnId: "other-turn" },
           "completion without turn ID": { turnId: undefined },
           "start without thread ID": { threadId: undefined },
-        }[event];
-        if (unbound) {
+        };
+        const unboundScope = unbound[event];
+        if (unboundScope) {
           // Even with the probe nonce, this event cannot establish what our command did.
           const started = event === "start without thread ID";
           const status = started ? {} : { status: "failed", exitCode: 77 };
@@ -784,7 +932,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
             params: {
               threadId,
               turnId,
-              ...unbound,
+              ...unboundScope,
               item: { ...extra, ...status, command: nonce },
             },
           });
@@ -797,14 +945,18 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           params: { threadId, turn: { ...turn, status: "completed" } },
         });
         stream.uncork();
-        const setupSucceeded = unexpected && !unbound;
+        const setupSucceeded = unexpected && !unboundScope;
         const terminal = {
           ...item,
           status: setupSucceeded ? "completed" : "failed",
           exitCode: setupSucceeded ? 0 : 23,
         };
         const params = { threadId, turnId, item: terminal };
-        const completed = (params) => send({ method: "item/completed", params });
+        const completed = (
+          completion: Omit<typeof params, "item"> & {
+            item: Omit<typeof terminal, "exitCode"> & { exitCode: number | null };
+          },
+        ) => send({ method: "item/completed", params: completion });
         if (event === "late result") {
           // Neither an unrelated completion nor output from the command is its terminal.
           completed({ ...params, turnId: "other-turn" });
@@ -815,14 +967,14 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           });
           send({ id: "approval", method: "item/commandExecution/requestApproval", params });
           socket.once("message", (data) => {
-            const { id, result } = JSON.parse(data);
+            const { id, result } = readPeerMessage(data);
             assert.equal(id, "approval");
             assert.deepEqual(result, { decision: "decline" });
             completed(params);
           });
         } else if (event === "close") {
           socket.close();
-        } else if (unbound) {
+        } else if (unboundScope) {
           completed(params);
         } else if (unexpected) {
           // If the client loses evidence of the probe, the later successful setup
@@ -833,12 +985,15 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
               event === "duplicate start" ? item : { ...item, command: nonce, id: other.id };
             send({ method: "item/started", params: { ...params, item: started } });
           } else {
-            const changed = {
+            const changes: Partial<
+              Record<typeof event, { id?: string; command?: string; exitCode?: null | number }>
+            > = {
               "conflicting command": { command: nonce },
               "incomplete result": { exitCode: null },
               "untracked completion": other,
               "duplicate completion": { id: extra.id },
-            }[event];
+            };
+            const changed = changes[event];
             if (event === "duplicate completion") {
               completed({ ...params, item: { ...terminal, id: extra.id } });
             }
@@ -850,18 +1005,18 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
       });
     });
 
-    const attempts = [];
+    const attempts: number[] = [];
     const probe = observeSandboxProbe({
       nonce,
       traceSecrets: [],
-      requestTurn(attempt) {
+      async requestTurn(attempt) {
         attempts.push(attempt);
         assert.equal(attempt, 1, event);
-        return requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" });
+        return observedTurn(await requestCodexTurnFromGatewayPod(gatewayProbe));
       },
     });
     if (event === "late result") {
-      assert.equal((await probe).run.exitCode, 23, "retain the command's actual nonzero result");
+      assert.equal((await probe).run?.exitCode, 23, "retain the command's actual nonzero result");
     } else {
       await assert.rejects(probe, /Codex command outcome is unknown/, event);
     }
@@ -870,12 +1025,12 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
 
   await t.test("thread reads ignore unrelated notifications without starting work", async () => {
     const thread = { id: "requested-thread", turns: [] };
-    const methods = [];
+    const methods: (string | undefined)[] = [];
     peer.once("connection", (socket) => {
       socket.on("message", (data) => {
-        const { method, id, params } = JSON.parse(data);
+        const { method, id, params } = readPeerMessage(data);
         methods.push(method);
-        const send = (message) => socket.send(JSON.stringify(message));
+        const send = (message: object) => socket.send(JSON.stringify(message));
         if (method === "initialize") {
           return send({ id, result: {} });
         }
@@ -919,12 +1074,11 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   // Finding 1630: Codex hands a long command back to the model, which can reply and end the
   // turn while the command still runs. The in-Pod client waits for that command's completion
   // event up to the fixture's bound, and reports the command's timing when the bound expires.
-  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const server = createServer();
+  const WebSocketServer = probeWebSocketServer();
   const peer = new WebSocketServer({ server });
-  await listen(t, server);
-  const directory = await fixture(t);
+  const port = await listen(t, server);
+  const directory = await openShellTestDirectory(t);
   // Finding 1665: wakes the client's first command-deadline timer after 1 ms instead of its
   // delay, as an early libuv wake would, and records that it did.
   const earlyWake = join(directory, "early-wake.mjs");
@@ -952,7 +1106,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
       "#!/bin/sh",
       'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
       "shift",
-      `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      `export APP_SERVER_URL=ws://127.0.0.1:${port}`,
       `if [ -n "$EARLY_WAKE_GRACE_MS" ]; then export NODE_OPTIONS="\${NODE_OPTIONS:+$NODE_OPTIONS }--import=${pathToFileURL(earlyWake)}"; fi`,
       'exec "$@"',
     ].join("\n"),
@@ -965,11 +1119,11 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   // The command completes this long after the turn: past the former fixed 5 s wait would make
   // the test slow, so the bounds below scale it down. The client sees only message order and time.
   const lateMs = 800;
-  let turnCompletedAt;
+  let turnCompletedAt: number | undefined;
   peer.on("connection", (socket) => {
     socket.on("message", (data) => {
-      const { method, id } = JSON.parse(data);
-      const send = (message) => socket.send(JSON.stringify(message));
+      const { method, id } = readPeerMessage(data);
+      const send = (message: object) => socket.send(JSON.stringify(message));
       if (method === undefined || method === "initialized") {
         return;
       }
@@ -1008,50 +1162,51 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
       }, lateMs);
     });
   });
-  const probe = (codexCommandGraceMs) => {
+  const probe = (codexCommandGraceMs: number) => {
     const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({
+      ...localProbeOptions,
       codexCommandGraceMs,
     });
     return observeSandboxProbe({
       nonce,
       traceSecrets: [],
-      requestTurn: () =>
-        requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" }),
+      requestTurn: async () => observedTurn(await requestCodexTurnFromGatewayPod(gatewayProbe)),
     });
   };
 
   // Within the bound, the late completion settles the probe with the command's own result.
   const { run } = await probe(lateMs * 4);
-  assert.equal(run.exitCode, 28, "keep the late command's actual result");
+  assert.equal(run?.exitCode, 28, "keep the late command's actual result");
   // The grace starts when the turn ends; launching the client isn't part of that wait.
+  assert.ok(turnCompletedAt !== undefined);
   assert.ok(performance.now() - turnCompletedAt < lateMs * 4, "settle on the completion event");
 
   // Past the bound, the outcome stays unknown and the failure says how long the command ran.
-  const error = await probe(lateMs / 4).then(
-    () => assert.fail("a command that outlives the bound must leave the outcome unknown"),
-    (failure) => failure,
-  );
+  const error = await probeFailure(probe(lateMs / 4));
   assert.match(error.message, /Codex command outcome is unknown/);
-  // pendingCommands is the summary's last field, so the object ends at the first "]}".
-  const summary = JSON.parse(/Native execution summary: (\{.*?\]\})/s.exec(error.message)[1]);
+  const summary = nativeExecutionSummary(error.message);
   assert.equal(summary.commandGraceMs, lateMs / 4);
-  assert.ok(summary.sinceTurnEndMs >= lateMs / 4);
+  assert.ok(summary.sinceTurnEndMs !== null && summary.sinceTurnEndMs >= lateMs / 4);
   assert.equal(summary.pendingCommands.length, 1);
-  assert.equal(summary.pendingCommands[0].outputDeltas, 1);
-  assert.equal(summary.pendingCommands[0].outputBytes, "TOOL_EXIT=".length);
-  assert.ok(summary.pendingCommands[0].startedBeforeTurnEndMs >= 0);
-  assert.ok(summary.pendingCommands[0].runningMs >= lateMs / 4);
+  const pending = summary.pendingCommands[0];
+  assert.ok(pending);
+  assert.equal(pending.outputDeltas, 1);
+  assert.equal(pending.outputBytes, "TOOL_EXIT=".length);
+  assert.ok(
+    typeof pending.startedBeforeTurnEndMs === "number" && pending.startedBeforeTurnEndMs >= 0,
+  );
+  assert.ok(typeof pending.runningMs === "number" && pending.runningMs >= lateMs / 4);
 
   // An early timer wake must not end the grace before turn completion plus the bound: the
   // client re-arms for the remainder. A one-shot timer would report an unknown outcome here.
-  const probeWithEarlyWake = async (codexCommandGraceMs) => {
+  const probeWithEarlyWake = async (codexCommandGraceMs: number) => {
     await rm(earlyWakeMarker, { force: true });
     const outcome = await withEnvironment(
       { EARLY_WAKE_GRACE_MS: String(codexCommandGraceMs) },
       () =>
         probe(codexCommandGraceMs).then(
           (result) => ({ result }),
-          (error) => ({ error }),
+          (error: unknown) => ({ error }),
         ),
     );
     // The deadline was armed for the grace less the moment since the turn ended.
@@ -1060,29 +1215,32 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
       woke > codexCommandGraceMs - 50 && woke <= codexCommandGraceMs,
       "the command-deadline timer must wake early",
     );
-    if (outcome.error) {
+    if ("error" in outcome) {
       throw outcome.error;
     }
     return outcome.result;
   };
   const early = await probeWithEarlyWake(lateMs * 4);
-  assert.equal(early.run.exitCode, 28, "an early wake keeps waiting for the late command");
-  const expired = await probeWithEarlyWake(lateMs / 4).then(
-    () => assert.fail("a command that outlives the bound must leave the outcome unknown"),
-    (failure) => failure,
-  );
+  assert.equal(early.run?.exitCode, 28, "an early wake keeps waiting for the late command");
+  const expired = await probeFailure(probeWithEarlyWake(lateMs / 4));
   assert.match(expired.message, /Codex command outcome is unknown/);
-  const expiredSummary = JSON.parse(
-    /Native execution summary: (\{.*?\]\})/s.exec(expired.message)[1],
+  const expiredSummary = nativeExecutionSummary(expired.message);
+  assert.ok(
+    expiredSummary.sinceTurnEndMs !== null && expiredSummary.sinceTurnEndMs >= lateMs / 4,
+    "never end the grace before its bound",
   );
-  assert.ok(expiredSummary.sinceTurnEndMs >= lateMs / 4, "never end the grace before its bound");
 
-  for (const codexCommandGraceMs of [0, 1.5, 60_001, "5000"]) {
+  for (const codexCommandGraceMs of [0, 1.5, 60_001]) {
     assert.throws(
-      () => createOpenShellKubernetesFixture({ codexCommandGraceMs }),
+      () => createOpenShellKubernetesFixture({ ...localProbeOptions, codexCommandGraceMs }),
       /codexCommandGraceMs must be a positive number/,
     );
   }
+  assert.throws(
+    // @ts-expect-error The runtime must reject a string from a JavaScript caller.
+    () => createOpenShellKubernetesFixture({ ...localProbeOptions, codexCommandGraceMs: "5000" }),
+    /codexCommandGraceMs must be a positive number/,
+  );
 });
 
 test("a turn the model answered at capacity runs again only for its own final error before any action", async (t) => {
@@ -1091,12 +1249,11 @@ test("a turn the model answered at capacity runs again only for its own final er
   // timing, decides: a command that began (even one that completed), or an approval request,
   // before the at-capacity answer leaves the outcome unknown, so no second thread starts. Only
   // the client's exit status and exact stdout receipt allow another turn; stderr never does.
-  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const server = createServer();
+  const WebSocketServer = probeWebSocketServer();
   const peer = new WebSocketServer({ server });
-  await listen(t, server);
-  const directory = await fixture(t);
+  const port = await listen(t, server);
+  const directory = await openShellTestDirectory(t);
   // A transport that can drop the last two bytes of the client's stdout or stderr ("mode").
   const mode = join(directory, "mode");
   const out = join(directory, "out");
@@ -1115,7 +1272,7 @@ test("a turn the model answered at capacity runs again only for its own final er
       "#!/bin/sh",
       'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
       "shift",
-      `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      `export APP_SERVER_URL=ws://127.0.0.1:${port}`,
       `transport=$(cat ${JSON.stringify(mode)})`,
       'if [ -z "$transport" ]; then exec "$@"; fi',
       `"$@" >${JSON.stringify(out)} 2>${JSON.stringify(err)}`,
@@ -1129,7 +1286,12 @@ test("a turn the model answered at capacity runs again only for its own final er
   const retryReceipt = "occ-codex-turn: retry-safe: model at capacity before any action";
   // The app server's final error for a turn names that turn (ErrorNotification: error,
   // threadId, turnId, willRetry).
-  const atCapacity = (at, fields = {}) => ({
+  type TurnScope = { threadId: string; turnId: string };
+  type CapacityFields = Partial<TurnScope> & {
+    error?: { message: string };
+    willRetry?: boolean | undefined;
+  };
+  const atCapacity = (at: Partial<TurnScope>, fields: CapacityFields = {}) => ({
     method: "error",
     params: {
       error: { message: "Selected model is at capacity. Please try a different model." },
@@ -1139,14 +1301,14 @@ test("a turn the model answered at capacity runs again only for its own final er
     },
   });
   // Each turn/start answers with the next script's events; "close" closes the socket.
-  let scripts = [];
+  let scripts: string[] = [];
   let threadStarts = 0;
   let connections = 0;
   peer.on("connection", (socket) => {
     connections += 1;
     socket.on("message", (data) => {
-      const { method, id } = JSON.parse(data);
-      const send = (message) => socket.send(JSON.stringify(message));
+      const { method, id } = readPeerMessage(data);
+      const send = (message: object) => socket.send(JSON.stringify(message));
       if (method === undefined || method === "initialized") {
         return;
       }
@@ -1190,11 +1352,11 @@ test("a turn the model answered at capacity runs again only for its own final er
         method: "item/started",
         params: { ...at, item: { ...command, status: "inProgress" } },
       };
-      const completed = (status, exitCode) => ({
+      const completed = (status: "completed" | "failed", exitCode: number) => ({
         method: "item/completed",
         params: { ...at, item: { ...command, status, exitCode } },
       });
-      const events = {
+      const eventsByScript: Record<string, readonly (object | "close")[]> = {
         capacity: [atCapacity(at)],
         // Our own turn's final error before any action, but not the at-capacity answer.
         "other final error": [
@@ -1262,7 +1424,10 @@ test("a turn the model answered at capacity runs again only for its own final er
             params: { threadId, turn: { ...turn, status: "completed" } },
           },
         ],
-      }[script];
+      };
+      assert.ok(script);
+      const events = eventsByScript[script];
+      assert.ok(events, `unexpected turn script: ${script}`);
       for (const event of events) {
         if (event === "close") {
           socket.close();
@@ -1272,30 +1437,26 @@ test("a turn the model answered at capacity runs again only for its own final er
       }
     });
   });
-  const sleeps = [];
+  const sleeps: number[] = [];
   const graceMs = 500;
   const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({
+    ...localProbeOptions,
     codexCommandGraceMs: graceMs,
-    modelAtCapacityRetry: { sleep: async (ms) => sleeps.push(ms), log: () => {} },
+    modelAtCapacityRetry: {
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+      },
+      log: () => {},
+    },
   });
-  const turn = async (turnScripts, timeoutMs = 300_000) => {
+  const turn = async (turnScripts: readonly string[], timeoutMs = 300_000) => {
     scripts = [...turnScripts];
     threadStarts = 0;
     sleeps.length = 0;
-    return requestCodexTurnFromGatewayPod({
-      namespace: "fixture",
-      gatewayPod: "fixture",
-      timeoutMs,
-    });
+    return observedTurn(await requestCodexTurnFromGatewayPod({ ...gatewayProbe, timeoutMs }));
   };
-  const failure = (promise) =>
-    promise.then(
-      () => assert.fail("the turn must fail"),
-      (error) => error,
-    );
-  // pendingCommands is the summary's last field, so the object ends at the first "]}".
-  const summaryOf = (error) =>
-    JSON.parse(/Native execution summary: (\{.*?\]\})/s.exec(error.stderr)[1]);
+  const summaryOf = (error: Awaited<ReturnType<typeof kubectlFailure>>) =>
+    nativeExecutionSummary(error.stderr);
   const notRetried =
     'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).';
 
@@ -1308,7 +1469,7 @@ test("a turn the model answered at capacity runs again only for its own final er
   }
 
   // At capacity on every attempt: three threads, and the first line says so.
-  const persistent = await failure(turn(["capacity", "capacity", "capacity"]));
+  const persistent = await kubectlFailure(turn(["capacity", "capacity", "capacity"]));
   assert.equal(threadStarts, 3);
   assert.deepEqual(sleeps, [15_000, 30_000]);
   assert.equal(
@@ -1330,7 +1491,7 @@ test("a turn the model answered at capacity runs again only for its own final er
     "approval",
     "output",
   ]) {
-    const error = await failure(turn([script, "reply"]));
+    const error = await kubectlFailure(turn([script, "reply"]));
     assert.equal(threadStarts, 1, script);
     assert.deepEqual(sleeps, [], script);
     assert.equal(error.message.split("\n")[0], notRetried, script);
@@ -1339,7 +1500,7 @@ test("a turn the model answered at capacity runs again only for its own final er
 
   // A command that ends within the grace after the final error: its result is kept, the turn
   // still fails, and no second thread starts.
-  const ended = await failure(turn(["command ends after capacity", "reply"]));
+  const ended = await kubectlFailure(turn(["command ends after capacity", "reply"]));
   assert.equal(threadStarts, 1);
   assert.equal(ended.message.split("\n")[0], notRetried);
   assert.doesNotMatch(ended.stderr, /Codex command outcome is unknown/);
@@ -1351,7 +1512,7 @@ test("a turn the model answered at capacity runs again only for its own final er
 
   // A command whose terminal never arrives, or whose socket closes: the outcome is unknown.
   for (const script of ["command never ends", "socket closes after capacity"]) {
-    const error = await failure(turn([script, "reply"]));
+    const error = await kubectlFailure(turn([script, "reply"]));
     assert.equal(threadStarts, 1, script);
     assert.equal(error.message.split("\n")[0], notRetried, script);
     assert.match(
@@ -1364,19 +1525,22 @@ test("a turn the model answered at capacity runs again only for its own final er
     assert.equal(summary.failedCommands, 0, script);
   }
   // The never-ending command was waited for up to the grace, not given up on at once.
-  const waited = summaryOf(await failure(turn(["command never ends"])));
-  assert.ok(waited.sinceTurnEndMs >= graceMs, JSON.stringify(waited));
+  const waited = summaryOf(await kubectlFailure(turn(["command never ends"])));
+  assert.ok(
+    waited.sinceTurnEndMs !== null && waited.sinceTurnEndMs >= graceMs,
+    JSON.stringify(waited),
+  );
 
   // Any other final error, even our own turn's before any action, gets no receipt and no retry.
-  const other = await failure(turn(["other final error", "reply"]));
+  const other = await kubectlFailure(turn(["other final error", "reply"]));
   assert.equal(threadStarts, 1);
-  assert.match(other.message.split("\n")[0], /^Command failed: kubectl /);
+  assert.match(other.message, /^Command failed: kubectl /);
   assert.equal(other.code, 1);
 
   // A pending command, a final error posing as a retry-safe summary and receipt, and a
   // transport that cuts the client's real summary short: still one thread, outcome unknown.
   await writeFile(mode, "truncate-stderr");
-  const posed = await failure(turn(["command then posing capacity", "reply"]));
+  const posed = await kubectlFailure(turn(["command then posing capacity", "reply"]));
   assert.equal(threadStarts, 1);
   assert.equal(posed.message.split("\n")[0], notRetried);
   assert.match(posed.stderr, /Codex command outcome is unknown; not sending another turn/);
@@ -1387,7 +1551,7 @@ test("a turn the model answered at capacity runs again only for its own final er
   assert.equal(threadStarts, 2);
   // A cut receipt is no receipt.
   await writeFile(mode, "truncate-stdout");
-  const cutReceipt = await failure(turn(["capacity", "reply"]));
+  const cutReceipt = await kubectlFailure(turn(["capacity", "reply"]));
   assert.equal(threadStarts, 1);
   assert.equal(cutReceipt.message.split("\n")[0], notRetried);
   assert.equal(cutReceipt.code, 75);
@@ -1397,7 +1561,7 @@ test("a turn the model answered at capacity runs again only for its own final er
   // fail once, without retrying an unknown outcome, and identify that stage without payloads.
   for (const phase of ["initialize", "thread/start", "turn/start", "turn"]) {
     const before = connections;
-    const error = await failure(turn([`stall ${phase}`, "reply"], 1_000));
+    const error = await kubectlFailure(turn([`stall ${phase}`, "reply"], 1_000));
     assert.match(error.stderr, /Codex harness turn timed out/, phase);
     assert.equal(connections, before + 1, phase);
     assert.deepEqual(sleeps, [], phase);
@@ -1418,19 +1582,21 @@ test("OpenShell fixture networking admits the supervisor callback without granti
     codexImage: "codex-fixture",
     cluster: { name: "fixture" },
   });
-  const networkPolicyResources =
-    configuration.drivers.sandbox.configuration.gateway.networkPolicyResources;
+  const drivers = configuration.drivers;
+  assert.ok("sandbox" in drivers);
+  const sandbox = asRecord(drivers.sandbox);
+  const sandboxConfig = asRecord(sandbox?.configuration);
+  const gateway = asRecord(sandboxConfig?.gateway);
+  const networkPolicyResources = gateway?.networkPolicyResources;
   // Compute owns Harness DNS; the supervisor's egress comes from OpenShell's own policy.
   assert.deepEqual(networkPolicyResources, []);
   const apiPeers = [{ ipBlock: { cidr: "192.0.2.10/32" } }];
-  const policies = [
-    ...openShellGatewayNetworkPolicies("tenant-fixture", apiPeers).items,
-    ...networkPolicyResources,
-  ];
+  const policies = openShellGatewayNetworkPolicies("tenant-fixture", apiPeers).items;
   for (const policy of policies) {
     assert.notDeepEqual(policy.spec.podSelector, {}, `${policy.metadata.name} selects every Pod`);
   }
-  const matches = (selector, labels) =>
+  type Labels = Readonly<Record<string, string>>;
+  const matches = (selector: { matchLabels?: Labels }, labels: Labels) =>
     selector.matchLabels !== undefined &&
     Object.entries(selector.matchLabels).every(([key, value]) => labels[key] === value);
   // OpenShell v0.1.6 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
@@ -1440,17 +1606,25 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   };
   const callbacks = policies.filter((policy) => matches(policy.spec.podSelector, supervisor));
   assert.equal(callbacks.length, 1);
-  assert.equal(callbacks[0].metadata.name, "allow-openshell-sandbox-callback");
-  assert.deepEqual(callbacks[0].spec.policyTypes, ["Egress"]);
-  assert.deepEqual(callbacks[0].spec.egress[0].ports, [{ protocol: "TCP", port: 8080 }]);
-  const gatewayLabels = callbacks[0].spec.egress[0].to[0].podSelector.matchLabels;
+  const [callback] = callbacks;
+  assert.ok(callback);
+  assert.equal(callback.metadata.name, "allow-openshell-sandbox-callback");
+  assert.deepEqual(callback.spec.policyTypes, ["Egress"]);
+  const callbackEgress = callback.spec.egress?.[0];
+  assert.ok(callbackEgress);
+  assert.deepEqual(callbackEgress.ports, [{ protocol: "TCP", port: 8080 }]);
+  const gatewayPeer = callbackEgress.to[0];
+  assert.ok(gatewayPeer && "podSelector" in gatewayPeer);
+  const gatewayLabels = gatewayPeer.podSelector.matchLabels;
   const gatewayPolicies = policies.filter((policy) =>
     matches(policy.spec.podSelector, gatewayLabels),
   );
   assert.equal(gatewayPolicies.length, 3);
   const controlPlane = gatewayPolicies.find((policy) => policy.spec.egress !== undefined);
+  const controlPlaneEgress = controlPlane?.spec.egress;
+  assert.ok(controlPlaneEgress);
   assert.deepEqual(
-    controlPlane.spec.egress.map((rule) => rule.ports),
+    controlPlaneEgress.map((rule) => rule.ports),
     [
       [
         { protocol: "UDP", port: 53 },
@@ -1460,33 +1634,38 @@ test("OpenShell fixture networking admits the supervisor callback without granti
       [{ protocol: "TCP", port: 6443 }],
     ],
   );
-  assert.deepEqual(controlPlane.spec.egress[1].to, apiPeers);
-  assert.deepEqual(controlPlane.spec.egress[2].to, apiPeers);
+  assert.deepEqual(controlPlaneEgress[1]?.to, apiPeers);
+  assert.deepEqual(controlPlaneEgress[2]?.to, apiPeers);
   const callbackIngress = gatewayPolicies.find(
     (policy) => policy.metadata.name === "allow-openshell-gateway-callback",
   );
-  assert.equal(callbackIngress.metadata.name, "allow-openshell-gateway-callback");
-  assert.deepEqual(callbackIngress.spec.ingress[0].ports, [
+  const supervisorRule = callbackIngress?.spec.ingress?.[0];
+  assert.ok(supervisorRule);
+  assert.deepEqual(supervisorRule.ports, [
     { protocol: "TCP", port: 8080 },
     { protocol: "TCP", port: 8081 },
   ]);
-  const callers = callbackIngress.spec.ingress[0].from;
-  assert.equal(callers.length, 1);
-  assert.equal(callers[0].namespaceSelector, undefined);
-  assert.equal(matches(callers[0].podSelector, supervisor), true);
+  assert.equal(supervisorRule.from.length, 1);
+  const [supervisorCaller] = supervisorRule.from;
+  assert.ok(supervisorCaller);
+  assert.equal(asRecord(supervisorCaller)?.namespaceSelector, undefined);
+  assert.equal(matches(supervisorCaller.podSelector, supervisor), true);
   // Dedicated Agent Gateways reach the OpenShell-exposed Codex endpoint on the service port only.
   const agentGatewayIngress = gatewayPolicies.find(
     (policy) => policy.metadata.name === "allow-openshell-gateway-agent-gateways",
   );
-  assert.deepEqual(agentGatewayIngress.spec.ingress[0].ports, [{ protocol: "TCP", port: 8080 }]);
-  const agentGatewayCallers = agentGatewayIngress.spec.ingress[0].from;
-  assert.equal(agentGatewayCallers.length, 1);
-  assert.equal(agentGatewayCallers[0].namespaceSelector, undefined);
+  const agentGatewayRule = agentGatewayIngress?.spec.ingress?.[0];
+  assert.ok(agentGatewayRule);
+  assert.deepEqual(agentGatewayRule.ports, [{ protocol: "TCP", port: 8080 }]);
+  assert.equal(agentGatewayRule.from.length, 1);
+  const [agentGatewayCaller] = agentGatewayRule.from;
+  assert.ok(agentGatewayCaller);
+  assert.equal(asRecord(agentGatewayCaller)?.namespaceSelector, undefined);
   const agentGateway = {
     "app.kubernetes.io/managed-by": "openclaw-enterprise",
     "openclaw.dev/workload-role": "gateway",
   };
-  assert.equal(matches(agentGatewayCallers[0].podSelector, agentGateway), true);
+  assert.equal(matches(agentGatewayCaller.podSelector, agentGateway), true);
 
   // The Harness workload (any profile) is not the gateway caller, and no additive fixture policy
   // may select an openclaw Pod, classified or not.
@@ -1501,9 +1680,9 @@ test("OpenShell fixture networking admits the supervisor callback without granti
       "openclaw.dev/workload-role": "agent",
       ...(profile === undefined ? {} : { "openclaw.dev/network-profile": profile }),
     };
-    assert.equal(matches(callers[0].podSelector, agent), false);
+    assert.equal(matches(supervisorCaller.podSelector, agent), false);
     assert.equal(
-      matches(agentGatewayCallers[0].podSelector, {
+      matches(agentGatewayCaller.podSelector, {
         "app.kubernetes.io/managed-by": "openclaw-enterprise",
         ...agent,
       }),
@@ -1515,332 +1694,3 @@ test("OpenShell fixture networking admits the supervisor callback without granti
     );
   }
 });
-
-registerOpenShellBootstrapCases({ fixture, ownedCluster });
-
-const execFileAsync = promisify(execFileCallback);
-
-async function candidateCheckout(t, { gatewayAppVersion = "0.0.0" } = {}) {
-  const root = await fixture(t, "openshell-candidate");
-  const gatewayChart = join(root, "deploy", "helm", "openshell");
-  const workspaceChart = join(root, "deploy", "helm", "openshell-workspace");
-  for (const [directory, name] of [
-    [gatewayChart, "openshell"],
-    [workspaceChart, "openshell-workspace"],
-  ]) {
-    await mkdir(directory, { recursive: true });
-    await writeFile(
-      join(directory, "Chart.yaml"),
-      `apiVersion: v2\nname: ${name}\nversion: 0.1.6\n${directory === gatewayChart && gatewayAppVersion ? `appVersion: "${gatewayAppVersion}"\n` : ""}`,
-    );
-    await writeFile(join(directory, "values.yaml"), "replicaCount: 1\n");
-  }
-  await writeFile(join(root, ".gitignore"), "ignored.yaml\n");
-  await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", root]);
-  await execFileAsync("git", ["-C", root, "add", "."]);
-  await execFileAsync("git", [
-    "-C",
-    root,
-    "-c",
-    "user.name=OpenShell fixture",
-    "-c",
-    "user.email=fixture@example.invalid",
-    "commit",
-    "--quiet",
-    "-m",
-    "Candidate chart fixture",
-  ]);
-  const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"]);
-  return {
-    root,
-    env: {
-      OCC_TEST_OPENSHELL_SOURCE_REVISION: stdout.trim(),
-      OCC_TEST_OPENSHELL_HELM_CHART: gatewayChart,
-      OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: workspaceChart,
-      OCC_TEST_OPENSHELL_GATEWAY_IMAGE: `localhost/candidate/gateway@sha256:${"a".repeat(64)}`,
-      OCC_TEST_OPENSHELL_SANDBOX_IMAGE: `localhost/candidate/sandbox@sha256:${"b".repeat(64)}`,
-      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: `localhost/candidate/supervisor@sha256:${"c".repeat(64)}`,
-    },
-  };
-}
-
-test("OpenShell stock selection accepts empty selectors and mirrors of released digests", async (t) => {
-  const execFile = t.mock.fn(() => assert.fail("stock selection must not inspect a candidate"));
-  for (const env of [
-    {},
-    {
-      OCC_TEST_OPENSHELL_SOURCE_REVISION: "",
-      OCC_TEST_OPENSHELL_HELM_CHART: "",
-      OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: "",
-      OCC_TEST_OPENSHELL_GATEWAY_IMAGE: "",
-      OCC_TEST_OPENSHELL_SANDBOX_IMAGE: "",
-      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: "",
-    },
-    {
-      OCC_TEST_OPENSHELL_GATEWAY_IMAGE:
-        "localhost/mirror/gateway@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
-      OCC_TEST_OPENSHELL_SANDBOX_IMAGE:
-        "localhost/mirror/sandbox@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
-      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE:
-        "localhost/mirror/supervisor@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
-    },
-  ]) {
-    assert.equal(await validateOpenShellSelection(env, execFile), null);
-  }
-  assert.equal(execFile.mock.callCount(), 0);
-});
-
-test("prepareOpenShell rejects incomplete candidate tuples before commands or image registration", async (t) => {
-  const { env } = await candidateCheckout(t);
-  const root = await fixture(t, "openclaw-k8s-openshell-test");
-  const execFile = t.mock.fn(() => assert.fail("incomplete candidates must not run commands"));
-  const registerImage = t.mock.fn(() =>
-    assert.fail("incomplete candidates must not register images"),
-  );
-  // Any explicit candidate input commits this run to one complete tuple, never a
-  // mixture of candidate images and released charts (or the reverse).
-  for (const missing of Object.keys(env)) {
-    await assert.rejects(
-      prepareOpenShell({
-        cluster: ownedCluster(root),
-        execFile,
-        registerImage,
-        env: { ...env, [missing]: "" },
-      }),
-      /requires a source revision, all three images, and both Helm charts/,
-      missing,
-    );
-  }
-  await assert.rejects(
-    prepareOpenShell({
-      cluster: ownedCluster(root),
-      execFile,
-      registerImage,
-      env: { ...env, OCC_TEST_OPENSHELL_SOURCE_REVISION: "A".repeat(40) },
-    }),
-    /full lowercase Git commit/,
-  );
-  assert.equal(execFile.mock.callCount(), 0);
-  assert.equal(registerImage.mock.callCount(), 0);
-});
-
-test("OpenShell candidate preflight uses verified chart bytes and removes its snapshot", async (t) => {
-  const { env } = await candidateCheckout(t);
-  const inspected = [];
-  let charts;
-  const selection = await validateOpenShellSelection(env, async (command, args) => {
-    if (command === "git") {
-      return execFileAsync(command, args);
-    }
-    if (command === "helm") {
-      assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
-      const gateway = await readFile(join(args[2], "Chart.yaml"), "utf8");
-      const directory = dirname(args[2]);
-      const workspace = await readFile(
-        join(directory, "openshell-workspace", "values.yaml"),
-        "utf8",
-      );
-      charts = { gateway, directory, workspace };
-      return { stdout: gateway };
-    }
-    // Docker reports fixture metadata. Git tree and on-disk chart comparisons run for real.
-    assert.equal(command, "docker");
-    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-    if (inspected.length === 0) {
-      // The checkout can change after chart validation and before Helm consumes it.
-      await writeFile(join(env.OCC_TEST_OPENSHELL_HELM_CHART, "Chart.yaml"), "appVersion: 9.9.9\n");
-      await writeFile(
-        join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"),
-        "replicaCount: 99\n",
-      );
-    }
-    inspected.push(args.at(-1));
-    return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
-  });
-  assert.deepEqual(
-    new Set(inspected),
-    new Set([
-      env.OCC_TEST_OPENSHELL_GATEWAY_IMAGE,
-      env.OCC_TEST_OPENSHELL_SANDBOX_IMAGE,
-      env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE,
-    ]),
-  );
-  assert.match(charts.gateway, /appVersion: "0\.0\.0"/);
-  assert.equal(charts.workspace, "replicaCount: 1\n");
-  assert.equal(selection, null, "preflight must not return paths it has removed");
-  await assert.rejects(readdir(charts.directory), { code: "ENOENT" });
-});
-
-test("OpenShell candidate CLI reports verified JSON and rejects unselected or invalid candidates", async (t) => {
-  const { env } = await candidateCheckout(t);
-  const root = await fixture(t);
-  const temporary = join(root, "tmp");
-  await mkdir(temporary);
-  const log = join(root, "commands.log");
-  // Synthetic Docker metadata and a Helm stand-in; Git and chart filesystem
-  // checks are real. No image engine, cluster, or installed behavior is tested.
-  const docker = await writeCommand(
-    root,
-    "docker",
-    `
-[ "$#" = 5 ] && [ "$1" = image ] && [ "$2" = inspect ] || exit 1
-printf '%s\\n' "$OCC_TEST_OPENSHELL_SOURCE_REVISION"
-`,
-    { log },
-  );
-  const helm = await writeCommand(
-    root,
-    "helm",
-    `
-[ "$#" = 3 ] && [ "$1" = show ] && [ "$2" = chart ] || exit 1
-cat "$3/Chart.yaml"
-`,
-    { log },
-  );
-  const run = (selection) =>
-    spawnSync(
-      process.execPath,
-      [fileURLToPath(new URL("../../scripts/ci/check-openshell-candidate.ts", import.meta.url))],
-      {
-        cwd: root,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          ...Object.fromEntries(Object.keys(env).map((key) => [key, ""])),
-          ...selection,
-          OCC_DOCKER_BIN: docker,
-          OCC_HELM_BIN: helm,
-          TMPDIR: temporary,
-          TMP: temporary,
-          TEMP: temporary,
-        },
-      },
-    );
-  const success = run(env);
-  assert.equal(success.status, 0, success.stderr);
-  assert.equal(success.stderr, "");
-  const receipt = JSON.parse(success.stdout);
-  assert.deepEqual(receipt, {
-    outcome: "verified",
-    sourceRevision: env.OCC_TEST_OPENSHELL_SOURCE_REVISION,
-    elapsedMs: receipt.elapsedMs,
-  });
-  assert.ok(Number.isInteger(receipt.elapsedMs) && receipt.elapsedMs >= 0);
-  const calls = await commandCalls(log);
-  assert.equal(calls.length, 4);
-  for (const role of ["GATEWAY", "SANDBOX", "SUPERVISOR"]) {
-    assert.ok(calls.some((call) => call.endsWith(env[`OCC_TEST_OPENSHELL_${role}_IMAGE`])));
-  }
-  await writeFile(join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"), "changed\n");
-  for (const selection of [
-    {},
-    { OCC_TEST_OPENSHELL_SOURCE_REVISION: env.OCC_TEST_OPENSHELL_SOURCE_REVISION },
-    env,
-  ]) {
-    const rejected = run(selection);
-    assert.equal(rejected.status, 1);
-    assert.equal(rejected.stdout, "");
-    const failure = JSON.parse(rejected.stderr);
-    assert.equal(failure.outcome, "failed");
-    assert.ok(Number.isInteger(failure.elapsedMs) && failure.elapsedMs >= 0);
-    assert.equal(
-      failure.message,
-      Object.keys(selection).length === 0
-        ? "No OpenShell candidate selected. Set all six candidate inputs."
-        : "OpenShell candidate verification failed. Check all six inputs and local artifacts.",
-    );
-  }
-  assert.deepEqual(await commandCalls(log), calls, "rejections precede Docker and Helm");
-  assert.deepEqual(
-    (await readdir(temporary)).filter((name) => name.startsWith("openshell-candidate-check-")),
-    [],
-    "success and failures remove snapshots",
-  );
-});
-
-test("prepareOpenShell rejects a verified gateway chart without an application version", async (t) => {
-  const { env } = await candidateCheckout(t, { gatewayAppVersion: "" });
-  const root = await fixture(t, "openclaw-k8s-openshell-test");
-  await assert.rejects(
-    prepareOpenShell({
-      cluster: ownedCluster(root),
-      async execFile(command, args) {
-        if (command === "git") {
-          return execFileAsync(command, args);
-        }
-        if (command === "docker") {
-          assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-          return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
-        }
-        assert.equal(command, "helm");
-        assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
-        assert.equal(dirname(dirname(args[2])), root);
-        return { stdout: await readFile(join(args[2], "Chart.yaml"), "utf8") };
-      },
-      registerImage: async () => assert.fail("invalid candidate must not register images"),
-      env,
-    }),
-    /must set a label-safe appVersion/,
-  );
-  assert.deepEqual(await readdir(root), [], "a failed candidate must leave no partial snapshot");
-});
-
-test("prepareOpenShell rejects source, chart, and image mismatches before cluster commands", async (t) => {
-  const { root: checkout, env } = await candidateCheckout(t);
-  const root = await fixture(t, "openclaw-k8s-openshell-test");
-  const registerImage = t.mock.fn(() =>
-    assert.fail("mismatched candidates must not register images"),
-  );
-  let imageRevision = env.OCC_TEST_OPENSHELL_SOURCE_REVISION;
-  const execFile = async (command, args) => {
-    if (command === "git") {
-      return execFileAsync(command, args);
-    }
-    assert.equal(command, "docker", "candidate mismatch must fail before cluster commands");
-    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-    return { stdout: `${imageRevision}\n` };
-  };
-  const prepare = (selected = env) =>
-    prepareOpenShell({
-      cluster: ownedCluster(root),
-      execFile,
-      registerImage,
-      env: selected,
-    });
-  await assert.rejects(
-    prepare({ ...env, OCC_TEST_OPENSHELL_SOURCE_REVISION: "0".repeat(40) }),
-    /chart checkout does not match the selected source revision/,
-  );
-
-  // Git status can hide modified tracked files and ignored additions; Helm still
-  // reads them. Prove validation compares physical chart contents to the commit.
-  const values = join(env.OCC_TEST_OPENSHELL_HELM_CHART, "values.yaml");
-  await execFileAsync("git", ["-C", checkout, "update-index", "--assume-unchanged", values]);
-  await writeFile(values, "replicaCount: 99\n");
-  await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
-  await writeFile(values, "replicaCount: 1\n");
-  // A committed file must remain a regular file with its recorded mode, even
-  // when a link points at a file with identical bytes.
-  await chmod(values, 0o755);
-  await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
-  await rm(values);
-  await symlink(join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"), values);
-  await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
-  await rm(values);
-  await writeFile(values, "replicaCount: 1\n");
-  for (const name of ["extra.yaml", "ignored.yaml"]) {
-    const extra = join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, name);
-    await writeFile(extra, "replicaCount: 99\n");
-    await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
-    await rm(extra);
-  }
-
-  // Git tracks the owner execute bit. An execute bit for others alone must
-  // leave this chart file non-executable in Git and reach the image check.
-  await chmod(values, 0o645);
-  imageRevision = "0".repeat(40);
-  await assert.rejects(prepare(), /image revision does not match the selected source revision/);
-  assert.equal(registerImage.mock.callCount(), 0);
-});
-
-registerOpenShellPreparationCases({ fixture, ownedCluster });
