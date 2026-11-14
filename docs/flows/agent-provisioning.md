@@ -121,8 +121,9 @@ Admission rejects unknown or padded operator scopes, blank or padded identity ke
 grants outside `allowUsers`, and human admission with admin device scopes, even with whitespace.
 Human allowlists require `x-openclaw-scopes`. Compute validates resolved `requiredHeaders`
 at provisioning, deployment admission and Gateway rendering. For private status, `validateConfiguration` requires
-`gateway.auth.password` for Codex workspace node sign-in. Refusals precede workload replacement. Operators manage human ingress
-and network policy without OCE human accounts. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
+`gateway.auth.password` for Codex workspace node sign-in. Refusals precede workload replacement. Operators manage
+[human ingress and network policy](../reference/drivers/kubernetes-compute/gateway-authentication.md)
+without OCE human accounts.
 Provisioning supplies neither Gateway token nor trust override. Claim loss cancels
 Kubernetes Configuration requests.
 
