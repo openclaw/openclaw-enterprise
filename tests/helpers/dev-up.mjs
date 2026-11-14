@@ -907,6 +907,7 @@ async function createFixture(t, options = {}) {
     "compose.native-admin.yaml",
     "compose.postgres.yaml",
     "compose.kubernetes.yaml",
+    "migrations",
   ]) {
     await symlink(join(repository, source), join(fixtureRepository, source));
   }

@@ -1,7 +1,7 @@
 # Local Kubernetes development
 
-Run OpenClaw Enterprise (OCE) in a disposable, loopback-only k3d cluster. The
-Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and Agents.
+Run PostgreSQL, the OpenClaw Control Plane (OCC), and Agents in OpenClaw Enterprise's
+(OCE) disposable, loopback-only k3d cluster.
 
 ## Start the profile
 
@@ -9,21 +9,17 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
-On Linux, install Podman and `podman-compose`. No VM is required. Start the
-rootful API socket:
+On Linux, install Podman and `podman-compose`, then start the rootful API socket:
 
 ```bash
 sudo systemctl enable --now podman.socket
 ```
 
-Run the launcher through `sudo` with the profile below. Startup selects and
-checks the API socket and k3d mount; no Docker variables are required.
-Rootful and rootless Podman use separate container storage.
+Run the launcher through `sudo` as shown below. Startup checks the socket and
+k3d mount. Rootful and rootless Podman have separate storage.
 
-On macOS, or Linux without host root access, use a rootful Podman machine
-sharing the checkout and state directory. VM creation needs an available
-virtualization provider.
-Run the launcher as your normal host user:
+On macOS or Linux without root access, use a rootful Podman machine with a
+virtualization provider, sharing the checkout and state directory. Run as your host user:
 
 ```bash
 podman machine stop
@@ -139,9 +135,8 @@ and privately writes kubeconfig and an administrator key.
 Agent Sandbox reuses verified native content from cached children or indexes; cache
 misses pull on the host. Custom manifests retain image/pull policy.
 
-Preload failures report the host import error before controller creation. Rollout
-failures capture controller status, image IDs and Warning reasons when available,
-excluding messages, environment values and logs.
+Preload failures report import errors before controller creation. Rollout failures
+report controller status, image IDs and Warning reasons, excluding messages, environment and logs.
 
 For native rootful Linux Podman with Compose:
 
@@ -158,43 +153,41 @@ sudo env PATH="$PATH" \
 
 Use the same environment with `dev-down` to remove the Installation and database.
 
-Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to run PostgreSQL, OCC, and its
-Kubernetes worker in Compose. Startup installs private Envoy routing in k3d,
+This Compose profile installs private Envoy routing in k3d,
 mounts its service key and public CA only into the controller and
 `worker-kubernetes`, and records the node hostname and Envoy NodePort in the
 Installation. It enables OCC native administration, publishes loopback HTTPS
 for console and Agent hosts, and prints the browser CA path.
 `OCC_DEVELOPMENT_BROWSER_PORT` must differ from Compose and k3d API ports.
-Skip manual hybrid routing. Trust the printed public CA and follow
-[Agent native administration](native-admin.md) to enable each Agent's exact browser origin. Profile startup alone does not enable every Agent's UI.
+Trust the printed public CA; [enable each Agent's browser origin](native-admin.md).
+No manual hybrid routing is needed. Startup does not enable Agent UIs.
 
 Runtime changes need [explicit source verification](../../../deploy/runtime/README.md#verify-runtime-source).
 
 Image preparation requires [host registry access](../operate/troubleshooting.md#local-agent-sandbox-controller-image-pull-fails).
-For reviewed local charts and manifests, set
+Select reviewed local assets through absolute paths in
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
-`OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
-To test a candidate release, [select its OpenShell images by digest](local-openshell-images.md).
+`OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST`.
+For candidate releases, [select OpenShell images by digest](local-openshell-images.md).
 
 See [startup network policy](local-sandbox-network-policy.md) for binary/endpoint rules.
 
-Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
-engine. Kubernetes-only startup rejects Compose arguments.
+Select the engine with `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker`.
+Kubernetes-only startup rejects Compose arguments.
 
-Startup prints its private [state directory](../../reference/settings/development.md#required-development-controller-environment)
-containing kubeconfig and credentials. Its default is `openclaw-development`
-under the temporary directory (macOS: `/private/var/folders/<id>/T`). Set absolute
+Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
+with kubeconfig and credentials: `openclaw-development` under the temporary
+directory (macOS: `/private/var/folders/<id>/T`). Set absolute
 `OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup to override it; parent
 paths cannot contain symlinks (macOS: use `/private/tmp/...`, not `/tmp/...`).
 `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds Compose startup commands, cluster
 readiness, and later waits. Separate image builds run until completion or cancellation.
 Failures roll back owned resources; retained state includes cleanup instructions.
-Failed exclusive key writes remove partial outputs, never existing files, and
-report removal errors alongside write errors.
+Failed key writes remove partial outputs, preserve existing files, and report cleanup errors.
 
-Startup refuses existing state or clusters. For source edits,
-[rebuild services](#rebuild-after-a-source-edit); cleanup discards the Installation.
+Startup refuses existing state or clusters. [Rebuild after source edits](#rebuild-after-a-source-edit);
+cleanup discards the Installation.
 State stays mode `0700`; generated mounts are container-readable but inaccessible
 to other host users. The default kubeconfig and context stay unchanged.
 
