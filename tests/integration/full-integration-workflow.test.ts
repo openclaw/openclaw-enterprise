@@ -888,10 +888,10 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const queuedLanes = ["slack", "dev-up-k3d", "skipper-prepared-git-installed"];
   assert.equal(record(present(dispatcher.jobs.execute).concurrency).queue, undefined);
   const jobsWithQueue = Object.entries(workflow.jobs)
-    .filter(([, job]) => job.concurrency?.queue !== undefined)
+    .filter(([, job]) => typeof job.concurrency === "object" && job.concurrency.queue !== undefined)
     .map(([lane]) => lane);
   assert.deepEqual(jobsWithQueue.sort(), ["preflight", ...queuedLanes].sort());
-  const resourceQueues = new Set();
+  const resourceQueues = new Set<string>();
   for (const lane of queuedLanes) {
     const job = present(workflow.jobs[lane]);
     assert.equal(job.needs, "preflight");

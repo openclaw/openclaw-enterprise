@@ -25,7 +25,7 @@ type Job = Record<string, unknown> & {
   with?: Record<string, unknown>;
   env?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
-  concurrency?: Record<string, unknown>;
+  concurrency?: string | Record<string, unknown>;
   needs?: string | string[];
 };
 
@@ -62,7 +62,7 @@ function isJob(value: unknown): value is Job {
     optionalRecord(value.with) &&
     optionalRecord(value.env) &&
     optionalRecord(value.outputs) &&
-    optionalRecord(value.concurrency) &&
+    (optionalString(value.concurrency) || isRecord(value.concurrency)) &&
     (optionalString(value.needs) ||
       (Array.isArray(value.needs) &&
         value.needs.every((name: unknown) => typeof name === "string")))
