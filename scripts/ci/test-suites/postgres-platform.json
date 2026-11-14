@@ -38,7 +38,7 @@
     "tests/integration/postgres-workspace-setup.test.ts",
     "tests/integration/postgres-connection-auth.test.ts",
     "tests/integration/postgres-pool-options.test.ts",
-    "tests/integration/postgres-repository-transactions.test.mjs",
+    "tests/integration/postgres-repository-transactions.test.ts",
     "tests/integration/postgres-controller-work-targets.test.mjs",
     "tests/integration/postgres-transaction-commit.test.mjs",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
@@ -360,7 +360,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-repository-transactions.test.mjs",
+      "path": "tests/integration/postgres-repository-transactions.test.ts",
       "expectedTests": ["PostgreSQL repository ownership, lifetime, and atomicity"]
     },
     {
