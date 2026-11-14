@@ -177,15 +177,9 @@ Console parses each reply in
 recovery. A malformed present `agentId` or `revisionId` makes even a terminal
 `failed` reply unknown. The form keeps the accepted job URL and original request,
 disables Create, and offers Retry without a recovery link. Retry posts to the same
-<<<<<<< HEAD
 job's `/retry`. `packages/occ/src/agent-provisioning-requests.ts:retryAgentProvisioning` refuses a changed
 Agent lifecycle or an existing deployment handoff with `409`. After refusal during
 unknown-outcome recovery, the form enables a resend of the original request ID.
-=======
-job's `/retry`. `packages/occ/src/index.ts:retryAgentProvisioning` refuses a changed
-Agent lifecycle or an existing deployment handoff with `409`; the form then resends the
-original request ID.
->>>>>>> fb954bc3e0 (fix(console): follow the review on the Create Agent status line and recovery)
 
 With valid IDs, a failure whose message is absent or not a nonempty string stays
 confirmed. `ProvisioningFailure` uses “Provisioning did not complete.” while keeping
@@ -254,8 +248,9 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 ## Changelog
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
+- 2026-11-14 11:20: Apply the maintainer's unattributed-failure correction; clear deleted credentials from the saved form state. (feat/create-agent-progress - 514b3917f)
 
+- 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
 - 2026-11-13 15:30: Unlock recovery for deleted resources; monotonic meter steps. (feat/create-agent-progress - 3c59aee2e)
 
 - 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
