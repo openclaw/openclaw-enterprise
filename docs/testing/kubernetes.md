@@ -228,7 +228,7 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 state="$PWD/.ci-state/keycloak-oidc.json"
 node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
   node scripts/ci/run-tests.mjs run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
-node scripts/ci/cleanup.mjs --state "$state"
+node scripts/ci/cleanup.ts --state "$state"
 ```
 
 Preparation creates a private CA, fixture credentials and a Keycloak container.
@@ -287,7 +287,7 @@ node scripts/ci/run-tests.mjs run gateway-routing \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
 
-Use `scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/gateway-routing.json"`
+Use `scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
 to remove the lane's resources.
 
 ### Native workspace identity
@@ -364,7 +364,7 @@ After success or failure, save the private image mapping if needed and clean up:
 
 ```sh
 install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
-node scripts/ci/cleanup.mjs --state "$run_dir/state.json"
+node scripts/ci/cleanup.ts --state "$run_dir/state.json"
 ```
 
 Retain the state if cleanup fails. Do not publish the state or environment file.

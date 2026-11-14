@@ -22,7 +22,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
-import { stopCleanupCommands } from "./cleanup.mjs";
+import { stopCleanupCommands } from "./cleanup.ts";
 import {
   failureInputLimit,
   failureSecrets,
@@ -429,7 +429,7 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
     const supervised = process.env.OPENCLAW_CI_COMPLETE_PHASE === "1";
     let commandResult;
     const child = supervised
-      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+      ? fork(new URL("./cleanup-command.ts", import.meta.url), [], {
           cwd,
           env,
           detached: true,
@@ -2000,7 +2000,7 @@ async function completePhaseChild() {
       await owner.prepareLane({ lane, statePath, file });
       exitCode = 0;
     } else if (phase === "cleanup") {
-      const owner = await import(pathToFileURL(join(root, "scripts/ci/cleanup.mjs")));
+      const owner = await import(pathToFileURL(join(root, "scripts/ci/cleanup.ts")));
       await owner.cleanupState(statePath);
       exitCode = 0;
     } else if (phase === "run") {

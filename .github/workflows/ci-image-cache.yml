@@ -140,4 +140,4 @@ jobs:
           echo "source-sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Cleanup
         if: always()
-        run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/image-cache-warm.json"
+        run: node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/image-cache-warm.json"
