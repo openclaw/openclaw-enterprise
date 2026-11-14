@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
+import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
@@ -17,6 +18,7 @@ import {
 } from "./postgres-prepared-github-fixture.ts";
 import {
   connectedRepository,
+  readWarm,
   mockPgQuery,
   useCheckedOutClient,
 } from "./postgres-prepared-github-observation.ts";
@@ -201,7 +203,7 @@ export function registerSettlementCases() {
       assert.equal(gh.issuesOfTokens.length, 2);
       // Use stops as deletion commits, before any worker pass.
       assert.equal(await lifecycle.ready(source, signal), false);
-      assert.equal(await lifecycle["readWarm"](source, readWindow()), undefined);
+      assert.equal(await readWarm(lifecycle, source, readWindow()), undefined);
       assert.equal(await proveCurrent(), false);
       // The selection retained from before deletion is refused at send authorization, so its
       // bytes never reach GitHub, while the token is still awaiting revocation.
@@ -341,7 +343,7 @@ export function registerSettlementCases() {
       // The JWT expiry comes from the worker's clock, settlement from the database's: a worker
       // whose clock runs ten minutes ahead could sign a JWT GitHub accepts past the bound.
       const skewed = await registerSource("prepared-skewed-clock");
-      const clock = lifecycle["clock"];
+      const clock: Clock = lifecycle["clock"];
       Reflect.set(lifecycle, "clock", { ...clock, wallNow: () => Date.now() + 10 * 60_000 });
       const beforeSkew = issues();
       try {

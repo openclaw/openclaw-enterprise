@@ -38,6 +38,7 @@ import {
 } from "./postgres-prepared-github-send-cases.ts";
 import {
   connectedRepository,
+  readWarm,
   mockPgQuery,
   useCheckedOutClient,
   containsSealedRow,
@@ -333,7 +334,7 @@ test(
     const readWindow = () => ({ signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() });
     const firstReads = f.secretReads;
     assert.equal(await lifecycle.ready(source, signal), false);
-    assert.equal(await lifecycle["readWarm"](source, readWindow()), undefined);
+    assert.equal(await readWarm(lifecycle, source, readWindow()), undefined);
     assert.equal(f.secretReads, firstReads, "cold request read the issuer Secret");
     assert.equal(
       gh.issuesOfTokens.length,
@@ -348,7 +349,7 @@ test(
     const losers = await raceMaintenance([lifecycle, competitor], signal);
     await competitor.close();
     assert.deepEqual(losers, ["idle"]);
-    const old = await lifecycle["readWarm"](source, readWindow());
+    const old = await readWarm(lifecycle, source, readWindow());
     assert.ok(old);
     assert.equal(old.ownerEpoch, 1);
     assert.deepEqual(gh.issuesOfTokens[0]?.permissions, { metadata: "read" });
@@ -433,7 +434,7 @@ test(
     const beforeRestartRead = f.secretReads;
     assert.equal(await fresh.ready(source, signal), true);
     assert.equal(
-      (await fresh["readWarm"](source, readWindow()))?.materialVersion,
+      (await readWarm(fresh, source, readWindow()))?.materialVersion,
       old.materialVersion,
     );
     assert.equal(f.secretReads, beforeRestartRead);
@@ -472,7 +473,7 @@ test(
           }
           return result;
         });
-        const pending = lifecycle["readWarm"](source, readWindow());
+        const pending = readWarm(lifecycle, source, readWindow());
         try {
           const selection = await Promise.race([
             selected.promise,
@@ -520,7 +521,7 @@ test(
           fresh = createOwner();
           await fresh.connect(f.pool);
           assert.deepEqual(reports, []);
-          renewed = await fresh["readWarm"](source, readWindow());
+          renewed = await readWarm(fresh, source, readWindow());
           assert.ok(renewed);
           // Correlate the background report with actual encrypted PostgreSQL publication.
           assert.equal(diagnostics.length, 1);
@@ -629,7 +630,7 @@ test(
           "custody or outcome changed under B",
         );
         assert.equal(await restartedAtB.ready(source, signal), false);
-        assert.equal(Boolean(await restartedAtB["readWarm"](source, readWindow())), false);
+        assert.equal(Boolean(await readWarm(restartedAtB, source, readWindow())), false);
         assert.equal(await status(old.accessToken), 200, "A still accepts the displaced token");
       },
     );
@@ -660,7 +661,7 @@ test(
     assert.equal(changed.status, 200);
     await due();
     assert.equal(await fresh.maintain(signal), "committed");
-    const rotated = await fresh["readWarm"](source, readWindow());
+    const rotated = await readWarm(fresh, source, readWindow());
     assert.ok(rotated);
     assert.equal(rotated.ownerEpoch, 2);
     assert.notEqual(rotated.inputVersion, old.inputVersion);
@@ -715,7 +716,7 @@ test(
     );
     assert.deepEqual(await pendingRetirements(), []);
     assert.equal(await fresh.ready(source, signal), false);
-    assert.equal(await fresh["readWarm"](source, readWindow()), undefined);
+    assert.equal(await readWarm(fresh, source, readWindow()), undefined);
     assert.equal(
       await status(rotated.accessToken),
       401,
@@ -741,7 +742,7 @@ test(
       "must not replay the uncertain issuance",
     );
     assert.equal(gh.issuesOfTokens.length, issuedBefore + 1);
-    assert.equal(await lifecycle["readWarm"](lost, readWindow()), undefined);
+    assert.equal(await readWarm(lifecycle, lost, readWindow()), undefined);
     await assert.rejects(lifecycle.withdraw(lost, signal), {
       name: "CredentialTokenUnsettledError",
     });

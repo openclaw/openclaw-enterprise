@@ -19,6 +19,7 @@ import {
 import type { LifecycleFixture } from "./postgres-prepared-github-fixture.ts";
 import {
   connectedRepository,
+  readWarm,
   mockPgQuery,
   containsSealedRow,
   observeTransaction,
@@ -230,7 +231,7 @@ export async function checkSendDeadlines(
               const result = signed ? await f.resolve(request) : undefined;
               const material = signed
                 ? result?.ready
-                : await lifecycle["readWarm"](source, readWindow());
+                : await readWarm(lifecycle, source, readWindow());
               // A deadline can release the sender before an already-started SQL read settles.
               // Observe the real projection and decryption only after the held query returns.
               const waitForQuery = () => completedQuery?.promise;

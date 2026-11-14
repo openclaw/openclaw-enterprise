@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
-import { callFixture } from "./postgres-prepared-github-wire.ts";
 import type { TestContext } from "node:test";
 import type { Client, Pool, PoolClient } from "pg";
 import type { PostgresClient } from "../../packages/occ/src/state/postgres-state.ts";
 import type { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
+import { PreparedGitHubPostgres as Repository } from "../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts";
+import type {
+  CredentialReadLifetime,
+  PreparedGitHubEgressSource,
+  PreparedTokenSelection,
+} from "../../packages/contracts/src/index.ts";
+import { callFixture } from "./postgres-prepared-github-wire.ts";
 
-type Repository = NonNullable<PostgresPreparedGitHubLifecycle["repository"]>;
 type CustodyMethods = {
   open: Repository["open"];
-  seal: Repository["seal"];
+  seal(bytes: Uint8Array, admission: Parameters<Repository["open"]>[1], id: string): Buffer;
   transaction: Repository["transaction"];
 };
 
@@ -26,10 +31,25 @@ function hasCustodyMethods(value: object): value is CustodyMethods {
 export function connectedRepository(
   lifecycle: PostgresPreparedGitHubLifecycle,
 ): Pick<Repository, keyof Repository> & CustodyMethods {
-  const repository = lifecycle["repository"];
-  assert.ok(repository, "the lifecycle is connected to PostgreSQL");
-  assert.ok(hasCustodyMethods(repository));
-  return repository;
+  const repository: unknown = lifecycle["repository"];
+  assert.ok(repository instanceof Repository, "the lifecycle is connected to PostgreSQL");
+  const methods: Pick<Repository, keyof Repository> = repository;
+  assert.ok(hasCustodyMethods(methods));
+  return methods;
+}
+
+// The controller declaration omits the private method signature. Keep the probe
+// typed at the call boundary and invoke it on the connected lifecycle.
+export function readWarm(
+  lifecycle: PostgresPreparedGitHubLifecycle,
+  source: PreparedGitHubEgressSource,
+  lifetime: CredentialReadLifetime,
+): Promise<PreparedTokenSelection | undefined> {
+  const read: (
+    source: PreparedGitHubEgressSource,
+    lifetime: CredentialReadLifetime,
+  ) => Promise<PreparedTokenSelection | undefined> = lifecycle["readWarm"];
+  return read.call(lifecycle, source, lifetime);
 }
 
 type Query = (
