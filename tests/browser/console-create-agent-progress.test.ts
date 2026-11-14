@@ -5,6 +5,7 @@ import type { TestContext } from "node:test";
 import type { Page } from "playwright";
 import { CreatePresetBody, JsonValue } from "../../packages/contracts/src/api/common.ts";
 import { Check } from "typebox/value";
+import type { ProvisionAgentBody } from "../../packages/contracts/src/api/common.ts";
 import type { PresetTemplate } from "../../packages/contracts/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
@@ -264,9 +265,15 @@ test("a failed provisioning job marks its step failed and a retry starts the met
     work.failed({ phase: "configuration" }),
   ];
   const served = await routeProvisioningJob(page, fixture, work, reads);
-  // The retry is accepted as the same job, queued again from its first phase.
-  await page.route(`**${work.url}/retry`, (route) =>
-    route.fulfill({
+  // The retry is accepted as the same job, queued with the Configuration phase it completed
+  // (the PostgreSQL retry keeps the checkpoint and resets the attempt count).
+  let releaseRetry: ((value: unknown) => void) | undefined;
+  const retryHeld = new Promise((release) => {
+    releaseRetry = release;
+  });
+  await page.route(`**${work.url}/retry`, async (route) => {
+    await retryHeld;
+    await route.fulfill({
       status: 202,
       contentType: "application/json",
       body: JSON.stringify({
@@ -274,15 +281,15 @@ test("a failed provisioning job marks its step failed and a retry starts the met
           requestId: served.requestId ?? "",
           workId: work.workId,
           status: "queued",
-          phase: "admitted",
+          phase: "configuration",
           attemptCount: 2,
           updatedAt: work.updatedAt,
           url: work.url,
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000002" },
       }),
-    }),
-  );
+    });
+  });
 
   await recordMeterPaints(page);
   await runProvisioningPolls(
@@ -318,13 +325,25 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   assert.ok(bar.retry.top >= 0 && bar.retry.bottom <= bar.viewportHeight, "Retry off screen");
   assert.ok(bar.meter.top >= 0 && bar.meter.bottom <= bar.viewportHeight, "meter off screen");
 
-  // The retry resets the meter to its first step before the job fails again on the next read.
-  // Retry itself is offered only now that the request ended; it stayed hidden in flight, and
-  // the retried request hides it again for its own run, exactly like the first submission.
+  // The retry resets the meter on the click itself — not only the first submission, whose
+  // layout this recorder also holds — so its record starts over here. Retry is offered only
+  // now that the request ended; the retried request hides it again for its own run.
   const retryButton = page.getByRole("button", { name: "Retry provisioning request" });
   assert.equal(await retryButton.isVisible(), true);
+  await page.evaluate(() => {
+    globalThis.meterPaints = [];
+  });
   await retryButton.click();
   assert.equal(await retryButton.isVisible(), false);
+  // The retry POST is held: the reset is the retry's own doing, not the response's.
+  const reset = await meterState(page);
+  assert.equal(reset.phase, "Waiting for the controller worker…");
+  assert.equal(reset.elapsed, "Elapsed 0:00");
+  assert.deepEqual(
+    reset.steps,
+    stepStates(["current", "pending", "pending", "pending", "pending"]),
+  );
+  releaseRetry?.(null);
   await runProvisioningPolls(page, () => Promise.resolve(), work.url, reads.length + 1);
   await waitForProvisioningFailure(page);
   // The busy flag cleared with the attempt: Retry returns enabled and can run the same job
@@ -337,12 +356,93 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   );
   const paints = await page.evaluate(() => globalThis.meterPaints);
   const layouts = paints.map((paint) => paint.states.join());
+  // The record starts at the retry click: its first layout is the retry's own reset, then the
+  // queued answer resumes at the Configuration phase the retry kept, before the refailure.
+  assert.equal(layouts[0], "current,pending,pending,pending,pending");
   assert.ok(
-    layouts.includes("current,pending,pending,pending,pending"),
-    "the retry restarts the meter at its first step",
+    layouts.includes("done,done,current,pending,pending"),
+    "the retry resumes at the Configuration phase it kept",
   );
   assert.equal(layouts.at(-1), "done,done,failed,pending,pending");
 });
+
+for (const failureAt of ["admission", "first poll", "after transport"] as const) {
+  test(`a failed reply without a phase at ${failureAt} keeps only confirmed steps`, async (t) => {
+    const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
+    await fixture.bootstrap();
+    const namespace = await readyNamespace(fixture, "Failure without a phase");
+    const page = await openCreateForm(t, fixture, namespace);
+    const work = provisioningJob(namespace.id, "work_unattributed");
+    const failed = work.failed({ phase: undefined });
+    const reads =
+      failureAt === "after transport"
+        ? [work.job("running", { phase: "transport" }), failed]
+        : [failed];
+    const served = await routeProvisioningJob(page, fixture, work, reads);
+    const admissionPath = `/namespaces/${namespace.id}/agents/provision`;
+    if (failureAt === "admission") {
+      await page.route(`**${admissionPath}`, (route) => {
+        const { requestId }: ProvisionAgentBody = route.request().postDataJSON();
+        return route.fulfill({
+          status: 202,
+          json: { data: { provisioning: { ...failed, requestId } } },
+        });
+      });
+    }
+    const admission = page.waitForResponse(
+      (r) => r.request().method() === "POST" && new URL(r.url()).pathname === admissionPath,
+    );
+    const firstRead = () =>
+      page.waitForResponse(
+        (r) => r.request().method() === "GET" && new URL(r.url()).pathname === work.url,
+      );
+    let terminal = failureAt === "admission" ? admission : firstRead();
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    const accepted = await admission;
+    assert.equal(accepted.status(), 202);
+    const { requestId }: ProvisionAgentBody = accepted.request().postDataJSON();
+    assert.ok(requestId);
+    if (failureAt === "after transport") {
+      const previous = await terminal;
+      terminal = firstRead();
+      assert.equal(previous.status(), 200);
+      const { data } = await previous.json();
+      assert.equal(data.requestId, requestId);
+      assert.equal(data.workId, work.workId);
+      assert.equal(data.phase, "transport");
+      assert.equal(data.status, "running");
+    }
+    const response = await terminal;
+    assert.equal(response.status(), failureAt === "admission" ? 202 : 200);
+    const { data } = await response.json();
+    const job = failureAt === "admission" ? data.provisioning : data;
+    assert.equal(job.status, "failed");
+    assert.equal(job.requestId, requestId);
+    assert.equal(job.workId, work.workId);
+    assert.equal(job.url, work.url);
+    assert.equal(Object.hasOwn(job, "phase"), false);
+    assert.equal(Object.hasOwn(job, "revisionId"), false);
+    await waitForProvisioningFailure(page);
+    const state = await meterState(page);
+    assert.equal(state.outcome, "failed");
+    assert.equal(state.phase, "Agent provisioning failed.");
+    assert.deepEqual(
+      state.steps,
+      stepStates(
+        failureAt === "after transport"
+          ? ["done", "done", "done", "pending", "pending"]
+          : ["pending", "pending", "pending", "pending", "pending"],
+      ),
+    );
+    assert.equal(state.reason, PROVISIONING_NOT_COMPLETED);
+    assert.equal(state.reasonHidden, false);
+    assert.equal(
+      await page.getByRole("button", { name: "Retry provisioning request" }).isEnabled(),
+      true,
+    );
+    assert.equal(served.reads, failureAt === "admission" ? 0 : reads.length);
+  });
+}
 
 test("a superseded first deployment keeps its own meter outcome", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
