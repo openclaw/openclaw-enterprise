@@ -50,7 +50,11 @@ export function isGitHubRepositoryPermissions(
 }
 
 const numericIdPattern = /^[1-9][0-9]{0,15}$/;
-const repositorySlugPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const repositorySlugPattern = createRepositorySlugPattern();
+
+export function createRepositorySlugPattern(): RegExp {
+  return /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+}
 
 export function parseGitHubNumericId(value: unknown): number | undefined {
   if (typeof value !== "string" || !numericIdPattern.test(value)) {
