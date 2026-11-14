@@ -1,54 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {
-  CredentialRevisionContext,
-  CredentialSource,
-  CredentialSourceContext,
-  CredentialSourceInput,
-} from "../../packages/contracts/src/index.ts";
 import type { ScopeViolationError } from "../../packages/occ/src/index.ts";
-import type {
-  OpenShellCredentialGatewayDriver,
-  OpenShellCredentialGatewayOptions,
-} from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import type {
-  OpenShellProviderCreateRequest,
-  OpenShellProviderProfile,
-} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { assertCredentialSourceReady } from "./sandbox-driver-credential-fixture.ts";
-
-type StoredProfile = OpenShellProviderProfile & { resourceVersion: string };
+import type { OpenShellProviderCreateRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  assertCredentialSourceReady,
+  type credentialGatewayOverProviders,
+} from "./sandbox-driver-credential-fixture.ts";
 
 function requiredValue<T>(value: T | undefined): T {
   assert.ok(value);
   return value;
 }
 
-type ProviderFixture = {
-  calls: [operation: string, providerName: string][];
-  client: {
-    createProvider: (provider: OpenShellProviderCreateRequest) => Promise<void>;
-    deleteProviderProfile: (workspace: string, id: string) => Promise<void>;
-    getProviderProfile: (workspace: string, id: string) => Promise<StoredProfile | undefined>;
-  };
-  context: (id: string) => CredentialSourceContext;
-  deletedProfiles: string[];
-  driver: OpenShellCredentialGatewayDriver;
-  driverWith: (
-    options?: Partial<OpenShellCredentialGatewayOptions>,
-  ) => OpenShellCredentialGatewayDriver;
-  input: (apiKey?: string) => CredentialSourceInput;
-  profiles: Map<string, StoredProfile>;
-  profileWrites: [operation: string, profileId: string][];
-  providers: Map<string, OpenShellProviderCreateRequest>;
-  revisionContext: (sources: readonly CredentialSource[]) => CredentialRevisionContext;
-  source: (id: string, namespaceId?: string) => CredentialSource;
-  unmark: (id: string) => StoredProfile | undefined;
-};
-
 type ProviderProfilesCaseFixtures = {
   ScopeViolationError: typeof ScopeViolationError;
-  credentialGatewayOverProviders: (options?: { keepDeleted?: boolean }) => ProviderFixture;
+  credentialGatewayOverProviders: typeof credentialGatewayOverProviders;
 };
 
 export function createSandboxProviderProfileChecks({

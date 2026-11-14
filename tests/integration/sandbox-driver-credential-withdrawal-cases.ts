@@ -8,7 +8,6 @@ import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import type { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { OpenShellCredentialRefreshDriver as CredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import type { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
@@ -19,12 +18,12 @@ import {
 import type {
   ConfigurationValidationError,
   HarnessWorkloadRequirements,
-  Namespace,
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { SandboxGatewayUnauthorizedError } from "../../packages/occ/src/index.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import type { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
+import type { CredentialProviderFixture } from "./sandbox-driver-credential-fixture.ts";
 import {
   completeSandboxRevision,
   completeWorkspaceRevision,
@@ -49,29 +48,15 @@ type CredentialClient = Partial<
     "getWorkspace" | "getSandbox" | "detachSandboxProvider" | "getSandboxProviderStatus"
   >
 >;
-type KubernetesFixtureResource = {
-  kind: string;
-  metadata: { name: string; namespace?: string };
-};
 type FixtureDependencies = {
   OpenShellCredentialRefreshDriver: typeof CredentialRefreshDriver;
   conformanceKubernetesOptions: (options: {
     gatewayTrustedProxyCidrs: string[];
   }) => KubernetesComputeDriverOptions;
-  credentialGatewayOverProviders: () => {
+  credentialGatewayOverProviders: () => Pick<CredentialProviderFixture, "driver" | "context"> & {
     client: CredentialClient;
-    driver: OpenShellCredentialGatewayDriver;
-    context: (sourceId: string) => {
-      namespace: Pick<Namespace, "id" | "name">;
-      signal: AbortSignal;
-    };
   };
-  kubernetesObjectClient: (
-    events: Array<["kubernetes", "patch" | "delete", string, string, string | undefined]>,
-  ) => {
-    patch: (resource: KubernetesFixtureResource) => Promise<KubernetesFixtureResource>;
-    delete: (resource: KubernetesFixtureResource) => Promise<void>;
-  };
+  kubernetesObjectClient: typeof import("./sandbox-driver-startup-orchestration.ts").kubernetesObjectClient;
   openShellDriver: (client: GrpcOpenShellGatewayClient) => OpenShellSandboxDriver;
   rejectsAtStartup: (
     context: TestContext,
@@ -194,12 +179,7 @@ export function createCredentialWithdrawalChecks({
       const { client, driver, context } = credentialGatewayOverProviders();
       const sourceId = "cs_00000000-0000-4000-8000-0000000000c1";
       const { namespace, signal } = context(sourceId);
-      const fullNamespace: Namespace = {
-        ...namespace,
-        status: "ready",
-        createdAt: "2026-09-23T00:00:00.000Z",
-      };
-      const workspace = openShellWorkspaceName(fullNamespace);
+      const workspace = openShellWorkspaceName(namespace);
       const provider = openShellProviderName(sourceId);
       const sandbox = "sb-credential";
       const visibleWorkspace = (name: string) => ({
@@ -262,7 +242,7 @@ export function createCredentialWithdrawalChecks({
       });
       const withdraw = (recheck: boolean) =>
         driver.withdraw({
-          namespace: fullNamespace,
+          namespace,
           revision: withdrawalRevision,
           sandbox: {
             resourceName: sandbox,

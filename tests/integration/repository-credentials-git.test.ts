@@ -14,7 +14,7 @@ import {
   startCredentialServiceFixture as startService,
 } from "../fixtures/repository-credentials/service.mjs";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
-import { exerciseGit } from "../fixtures/repository-credentials/workflows.mjs";
+import { exerciseGit } from "../fixtures/repository-credentials/workflows.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
 
 const startCredentialServiceFixture = startService as StartCredentialClientFixture;

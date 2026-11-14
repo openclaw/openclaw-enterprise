@@ -38,7 +38,7 @@ test("production upgrades check the stock chart before recording evidence or con
     upgradeScript,
     "scripts/lib/image-reference-problem.ts",
     "packages/occ/src/image-reference.ts",
-    "scripts/upgrade-repository-image-probe.mjs",
+    "scripts/upgrade-repository-image-probe.ts",
     "scripts/upgrade-image-identity.py",
     "scripts/upgrade-node-platform.py",
     "scripts/upgrade-deployment-identity.py",

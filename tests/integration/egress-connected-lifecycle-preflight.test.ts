@@ -14,14 +14,13 @@ import {
   prepareControllerUpgrade,
 } from "../helpers/egress-controller-upgrade.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
+import { requireSupervisorReconnect } from "../helpers/egress-supervisor-reconnect.mjs";
 import {
   acceptedSupervisorSessions,
-  requireSupervisorReconnect,
   supervisorSessionLifecycle,
-} from "../helpers/egress-supervisor-reconnect.mjs";
+  type ObservedSession,
+} from "../helpers/egress-supervisor-sessions.ts";
 import { listen } from "../helpers/listen.mjs";
-
-type ObservedSession = { sessionId: string; epoch: string; at: string };
 
 type ControllerProcess = {
   name: string;
@@ -105,7 +104,7 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
   const accepted = line(first, "9007199254740992");
   const ansi = accepted.replace("INFO", "\u001b[32mINFO\u001b[0m");
   const next = line(second, "9007199254740993");
-  const sessions: ObservedSession[] = acceptedSupervisorSessions(
+  const sessions = acceptedSupervisorSessions(
     [
       accepted,
       ansi,
@@ -121,18 +120,16 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
     { sessionId: first, epoch: "9007199254740992", at: "2026-01-01T00:00:00.000Z" },
     { sessionId: second, epoch: "9007199254740993", at: "2026-01-01T00:00:00.000Z" },
   ]);
-  assert.throws(
-    () =>
-      acceptedSupervisorSessions(
-        accepted.replace(
-          "connection_epoch=9007199254740992",
-          "connection_epoch=18446744073709551616",
-        ),
-        sandboxId,
-        instanceId,
-      ),
-    { name: "AssertionError" },
+  const maxEpoch = "18446744073709551615";
+  assert.equal(
+    acceptedSupervisorSessions(line(first, maxEpoch), sandboxId, instanceId)[0]?.epoch,
+    maxEpoch,
   );
+  for (const invalid of ["0", "01", "18446744073709551616"]) {
+    assert.throws(() => acceptedSupervisorSessions(line(first, invalid), sandboxId, instanceId), {
+      code: "ERR_ASSERTION",
+    });
+  }
   assert.throws(
     () =>
       acceptedSupervisorSessions(
@@ -159,7 +156,7 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
     },
   );
   const safe = await safeConnectedFailure(failure, "reconnect-before-policy");
-  assert.match(safe.message, /egress-supervisor-reconnect\.mjs:\d+:\d+/);
+  assert.match(safe.message, /\(egress-supervisor-sessions\.ts:\d+:\d+\)/);
   assert.equal(safe.message.includes(privateField), false);
   assert.throws(
     () =>
@@ -171,13 +168,14 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
     { name: "AssertionError", message: /conflicting accepted session event/ },
   );
   const closed = `2026-01-01T00:00:01.000Z 2026-01-01T00:00:01Z  INFO openshell_server::supervisor_session: supervisor session: stream closed by supervisor sandbox_id=${sandboxId} session_id=${first}`;
-  const lifecycle = supervisorSessionLifecycle(
-    [accepted, closed].join("\n"),
-    sandboxId,
-    instanceId,
+  const ended = closed.replace("stream closed by supervisor", "ended");
+  const gatewayClosed = closed.replace(
+    "stream closed by supervisor",
+    "superseded or closed by the gateway, shutting down",
   );
-  assert.deepEqual(lifecycle, {
-    total: 2,
+  const lifecycleLines = [accepted, closed, ansi, gatewayClosed, next, ended];
+  assert.deepEqual(supervisorSessionLifecycle(lifecycleLines.join("\n"), sandboxId, instanceId), {
+    total: 6,
     truncated: false,
     events: [
       {
@@ -187,6 +185,20 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
         event: "accepted",
       },
       { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "inbound_eof" },
+      {
+        sessionId: first,
+        epoch: "9007199254740992",
+        at: "2026-01-01T00:00:00.000Z",
+        event: "accepted",
+      },
+      { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "gateway_closed" },
+      {
+        sessionId: second,
+        epoch: "9007199254740993",
+        at: "2026-01-01T00:00:00.000Z",
+        event: "accepted",
+      },
+      { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "ended" },
     ],
   });
   assert.deepEqual(
@@ -202,14 +214,22 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
       supervisorSessionLifecycle(closed.replace(first, "unchecked-secret"), sandboxId, instanceId),
     { code: "ERR_ASSERTION" },
   );
+  // A distinct head record exposes an incorrect first-nine slice. Repeated
+  // endings must still contribute to the full count.
+  const endings = Array.from({ length: 8 }, () => ended);
   const bounded = supervisorSessionLifecycle(
-    Array(12).fill(closed).join("\n"),
+    [accepted, closed, ...endings, gatewayClosed].join("\n"),
     sandboxId,
     instanceId,
   );
-  assert.equal(bounded.total, 12);
-  assert.equal(bounded.truncated, true);
-  assert.equal(bounded.events.length, 9);
+  assert.deepEqual(bounded, {
+    total: 11,
+    truncated: true,
+    events: [
+      ...endings.map(() => ({ sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "ended" })),
+      { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "gateway_closed" },
+    ],
+  });
 });
 test(
   "reconnect checkpoints keep correlation in the private ledger on success and failure",

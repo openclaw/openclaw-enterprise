@@ -64,7 +64,7 @@
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
-    "tests/conformance/test-files.test.mjs",
+    "tests/conformance/test-files.test.ts",
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
@@ -116,7 +116,7 @@
     "tests/conformance/console-namespace-name.test.ts",
     "tests/conformance/console-agent-name-runs.test.ts",
     "tests/conformance/console-json-errors.test.ts",
-    "tests/integration/bootstrap-output.test.mjs",
+    "tests/integration/bootstrap-output.test.ts",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/integration/slack-destination.test.ts",
     "tests/conformance/console-gateway-safety.test.ts",
@@ -370,7 +370,7 @@
       "path": "tests/conformance/service-account-driver.test.ts"
     },
     {
-      "path": "tests/conformance/test-files.test.mjs"
+      "path": "tests/conformance/test-files.test.ts"
     },
     {
       "path": "tests/conformance/socket-directory.test.ts"
@@ -414,7 +414,7 @@
       ]
     },
     {
-      "path": "tests/integration/bootstrap-output.test.mjs"
+      "path": "tests/integration/bootstrap-output.test.ts"
     },
     {
       "path": "tests/integration/bootstrap-volume.test.ts"

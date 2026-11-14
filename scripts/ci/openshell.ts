@@ -1,13 +1,39 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
+import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { request } from "node:https";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { request } from "node:https";
 import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
-import { downloadPinnedArtifact } from "./routing.mjs";
 import { preloadAgentSandboxController } from "./agent-sandbox.ts";
 import { selectOpenShellCandidate, verifyOpenShellCandidate } from "./openshell-candidate.ts";
+import { downloadPinnedArtifact } from "./routing.ts";
+
+type Environment = Parameters<typeof selectOpenShellCandidate>[0];
+type ExecuteFile = Parameters<typeof verifyOpenShellCandidate>[1]["execFile"];
+type AgentSandboxNodes = Parameters<typeof preloadAgentSandboxController>[1];
+type RegisterControllerImage = Parameters<typeof preloadAgentSandboxController>[2];
+type NativeImageSelection = Parameters<RegisterControllerImage>[2];
+type RegisterImage = (
+  image: string,
+  description: string,
+  nativeSelection?: NativeImageSelection,
+) => Promise<string>;
+type DownloadArtifact = (url: string, destination: string, sha256: string) => Promise<void>;
+
+interface Cluster {
+  name: string;
+  directory: string;
+  kubeconfig: string;
+  context: string;
+}
+
+interface KubectlAsset {
+  name: string;
+  path: string;
+  sha256: string;
+}
 
 const openShellVersion = "0.1.8";
 const openShellRevision = "f3d976590d3eb1379690a2abaf0f0e26c21d487d";
@@ -28,7 +54,7 @@ const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShel
 const podSecurityAdmissionConfigName = "openshell-pod-security-admission.yaml";
 const podSecurityAdmissionContainerPath = `/etc/openclaw-ci/${podSecurityAdmissionConfigName}`;
 
-const kubectlAssets = Object.freeze({
+const kubectlAssets: Readonly<Record<string, KubectlAsset>> = Object.freeze({
   "darwin:arm64": {
     name: "kubectl-darwin-arm64",
     path: "darwin/arm64/kubectl",
@@ -46,8 +72,8 @@ const kubectlAssets = Object.freeze({
   },
 });
 
-function assertCluster(cluster) {
-  for (const field of ["name", "directory", "kubeconfig", "context"]) {
+function assertCluster(cluster: Cluster): Cluster {
+  for (const field of ["name", "directory", "kubeconfig", "context"] as const) {
     if (typeof cluster?.[field] !== "string" || cluster[field].length === 0) {
       throw new Error(`OpenShell bootstrap requires cluster.${field}.`);
     }
@@ -73,7 +99,7 @@ function assertCluster(cluster) {
   return { ...cluster, directory, kubeconfig };
 }
 
-function assertPrivateDirectory(info, path) {
+function assertPrivateDirectory(info: Stats, path: string): void {
   if (!info.isDirectory()) {
     throw new Error(`OpenShell bootstrap path must be a directory: ${path}`);
   }
@@ -82,7 +108,7 @@ function assertPrivateDirectory(info, path) {
   }
 }
 
-async function ensurePrivateDirectory(path) {
+async function ensurePrivateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   await chmod(path, 0o700);
   await assertPrivateDirectory(await stat(path), path);
@@ -96,7 +122,7 @@ function agentSandboxManifestUrl() {
   return `https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${agentSandboxVersion}/sandbox.yaml`;
 }
 
-function download(url, destination, redirects = 0) {
+function download(url: string, destination: string, redirects = 0): Promise<void> {
   if (redirects > 5) {
     throw new Error(`Too many redirects while downloading ${url}.`);
   }
@@ -128,13 +154,13 @@ function download(url, destination, redirects = 0) {
   });
 }
 
-async function sha256File(path) {
+async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
   await pipeline(createReadStream(path), hash);
   return hash.digest("hex");
 }
 
-async function verifySha256(path, expectedSha256) {
+async function verifySha256(path: string, expectedSha256: string): Promise<void> {
   const actual = await sha256File(path);
   if (actual !== expectedSha256) {
     throw new Error(
@@ -143,14 +169,18 @@ async function verifySha256(path, expectedSha256) {
   }
 }
 
-async function downloadVerified(url, destination, expectedSha256) {
+async function downloadVerified(
+  url: string,
+  destination: string,
+  expectedSha256: string,
+): Promise<void> {
   await rm(destination, { force: true });
   await download(url, destination);
   await chmod(destination, 0o600);
   await verifySha256(destination, expectedSha256);
 }
 
-function normalizeArchitecture(arch) {
+function normalizeArchitecture(arch: string): string {
   switch (arch) {
     case "amd64":
     case "x86_64":
@@ -164,7 +194,10 @@ function normalizeArchitecture(arch) {
   }
 }
 
-function selectKubectlAsset(platform = process.platform, arch = process.arch) {
+function selectKubectlAsset(
+  platform: string = process.platform,
+  arch: string = process.arch,
+): KubectlAsset {
   const normalizedPlatform = String(platform).toLowerCase();
   const normalizedArch = normalizeArchitecture(String(arch).toLowerCase());
   const asset = kubectlAssets[`${normalizedPlatform}:${normalizedArch}`];
@@ -176,29 +209,32 @@ function selectKubectlAsset(platform = process.platform, arch = process.arch) {
   return asset;
 }
 
-function kubectlReleaseUrl(asset) {
+function kubectlReleaseUrl(asset: KubectlAsset): string {
   return `https://dl.k8s.io/release/${kubectlVersion}/bin/${asset.path}`;
 }
 
-function assertKubernetesName(value, description) {
+function assertKubernetesName(value: string, description: string): void {
   if (!/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(value) || value.length > 63) {
     throw new Error(`${description} must be a Kubernetes DNS label.`);
   }
 }
 
-function assertRuntimeHandler(value) {
+function assertRuntimeHandler(value: string): void {
   if (!/^[A-Za-z0-9_.-]+$/.test(value)) {
     throw new Error("OpenShell runtime handler must be a containerd runtime handler name.");
   }
 }
 
-function assertImmutableImageReference(image, name) {
+function assertImmutableImageReference(
+  image: string | undefined,
+  name: string,
+): asserts image is string {
   if (!/^\S+@sha256:[a-f0-9]{64}$/i.test(image ?? "")) {
     throw new Error(`${name} must be an immutable image@sha256 reference.`);
   }
 }
 
-function chartDeployableImageReference(image, name) {
+function chartDeployableImageReference(image: string, name: string): string {
   assertImmutableImageReference(image, name);
   const digestStart = image.search(/@sha256:[a-f0-9]{64}$/i);
   const withoutDigest = image.slice(0, digestStart);
@@ -211,15 +247,15 @@ function chartDeployableImageReference(image, name) {
   return `${withoutDigest}:local${digest}`;
 }
 
-function kubectlArgs(cluster, args) {
+function kubectlArgs(cluster: Cluster, args: string[]): string[] {
   return ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context, ...args];
 }
 
-function escapeRegExp(value) {
+function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-async function acquireOpenShellCharts(execFile, helm, directory) {
+async function acquireOpenShellCharts(execFile: ExecuteFile, helm: string, directory: string) {
   const chartDirectory = join(directory, "chart");
   const chartPath = join(chartDirectory, openShellChartArchive);
   const workspaceChartPath = join(chartDirectory, openShellWorkspaceChartArchive);
@@ -269,7 +305,39 @@ async function acquireOpenShellCharts(execFile, helm, directory) {
   return { gateway: chartPath, workspace: workspaceChartPath };
 }
 
-async function installAgentSandbox(execFile, kubectl, cluster, directory, registerImage) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAgentSandboxNode(node: unknown): node is AgentSandboxNodes["items"][number] {
+  return (
+    isRecord(node) &&
+    isRecord(node.metadata) &&
+    typeof node.metadata.name === "string" &&
+    isRecord(node.status) &&
+    isRecord(node.status.nodeInfo) &&
+    typeof node.status.nodeInfo.operatingSystem === "string" &&
+    typeof node.status.nodeInfo.architecture === "string"
+  );
+}
+
+function parseAgentSandboxNodes(stdout: string): AgentSandboxNodes {
+  const nodes: unknown = JSON.parse(stdout);
+  if (!isRecord(nodes) || !Array.isArray(nodes.items) || !nodes.items.every(isAgentSandboxNode)) {
+    throw new Error(
+      "OpenShell bootstrap requires a kubectl node list with node platform information.",
+    );
+  }
+  return { items: nodes.items };
+}
+
+async function installAgentSandbox(
+  execFile: ExecuteFile,
+  kubectl: string,
+  cluster: Cluster,
+  directory: string,
+  registerImage: RegisterControllerImage,
+): Promise<void> {
   const manifestPath = await downloadPinnedArtifact({
     artifact: {
       name: "Agent Sandbox",
@@ -280,7 +348,7 @@ async function installAgentSandbox(execFile, kubectl, cluster, directory, regist
     },
     directory,
   });
-  const nodes = JSON.parse(
+  const nodes = parseAgentSandboxNodes(
     (await execFile(kubectl, kubectlArgs(cluster, ["get", "nodes", "-o", "json"]))).stdout,
   );
   const localManifest = await preloadAgentSandboxController(manifestPath, nodes, registerImage);
@@ -299,19 +367,19 @@ async function installAgentSandbox(execFile, kubectl, cluster, directory, regist
   );
 }
 
-function assertRuntimeSmokeImage(image) {
+function assertRuntimeSmokeImage(image: string | undefined): string {
   assertImmutableImageReference(image, "OCC_TEST_KUBERNETES_AGENT_IMAGE");
   return image;
 }
 
 async function runOpenShellRuntimeSmoke(
-  execFile,
-  kubectl,
-  cluster,
-  directory,
-  runtimeClass,
-  image,
-) {
+  execFile: ExecuteFile,
+  kubectl: string,
+  cluster: Cluster,
+  directory: string,
+  runtimeClass: string,
+  image: string,
+): Promise<void> {
   const podName = "openshell-runtimeclass-smoke";
   const manifestPath = join(directory, `${podName}.yaml`);
   const manifest = [
@@ -349,18 +417,15 @@ async function runOpenShellRuntimeSmoke(
       ]),
     );
   } catch (error) {
-    const describe = await execFile(
+    const details = await execFile(
       kubectl,
       kubectlArgs(cluster, ["describe", "pod", podName]),
-    ).catch((describeError) => describeError);
-    const details = [describe.stdout, describe.stderr, describe.message]
-      .filter(Boolean)
-      .join("\n")
-      .trim();
+    ).then(commandDetails, commandDetails);
     throw new Error(
-      `OpenShell Kubernetes RuntimeClass smoke pod failed for RuntimeClass ${runtimeClass}: ${error.message}${
+      `OpenShell Kubernetes RuntimeClass smoke pod failed for RuntimeClass ${runtimeClass}: ${commandField(error, "message") ?? String(error)}${
         details ? `\n${details}` : ""
       }`,
+      { cause: error },
     );
   } finally {
     await execFile(
@@ -370,7 +435,14 @@ async function runOpenShellRuntimeSmoke(
   }
 }
 
-async function ensureRuntimeClass(execFile, kubectl, cluster, directory, runtimeClass, handler) {
+async function ensureRuntimeClass(
+  execFile: ExecuteFile,
+  kubectl: string,
+  cluster: Cluster,
+  directory: string,
+  runtimeClass: string,
+  handler: string,
+): Promise<void> {
   const manifestPath = join(directory, `${runtimeClass}-runtimeclass.yaml`);
   const manifest = [
     "apiVersion: node.k8s.io/v1",
@@ -390,7 +462,12 @@ async function ensureRuntimeClass(execFile, kubectl, cluster, directory, runtime
   );
 }
 
-async function assertKubernetesRuntimeHandlerAvailable(execFile, docker, cluster, handler) {
+async function assertKubernetesRuntimeHandlerAvailable(
+  execFile: ExecuteFile,
+  docker: string,
+  cluster: Cluster,
+  handler: string,
+): Promise<void> {
   const result = await execFile(docker, [
     "exec",
     `k3d-${cluster.name}-server-0`,
@@ -408,7 +485,13 @@ async function assertKubernetesRuntimeHandlerAvailable(execFile, docker, cluster
   }
 }
 
-async function acquireKubectl(execFile, directory, platform, arch, downloadArtifact) {
+async function acquireKubectl(
+  execFile: ExecuteFile,
+  directory: string,
+  platform: string,
+  arch: string,
+  downloadArtifact: DownloadArtifact,
+): Promise<string> {
   const asset = selectKubectlAsset(platform, arch);
   const binDirectory = join(directory, "bin");
   await ensurePrivateDirectory(binDirectory);
@@ -420,7 +503,7 @@ async function acquireKubectl(execFile, directory, platform, arch, downloadArtif
   return kubectlPath;
 }
 
-function podSecurityAdmissionConfiguration(runtimeClass) {
+function podSecurityAdmissionConfiguration(runtimeClass: string): string {
   return [
     "apiVersion: apiserver.config.k8s.io/v1",
     "kind: AdmissionConfiguration",
@@ -445,7 +528,13 @@ function podSecurityAdmissionConfiguration(runtimeClass) {
   ].join("\n");
 }
 
-async function prepareOpenShellPodSecurityAdmission({ directory, runtimeClass }) {
+async function prepareOpenShellPodSecurityAdmission({
+  directory,
+  runtimeClass,
+}: {
+  directory: string;
+  runtimeClass: string;
+}) {
   assertKubernetesName(runtimeClass, "OpenShell RuntimeClass");
   if (typeof directory !== "string" || directory.length === 0) {
     throw new Error("OpenShell Pod Security admission directory must be provided.");
@@ -471,7 +560,7 @@ async function prepareOpenShellPodSecurityAdmission({ directory, runtimeClass })
   };
 }
 
-function violatingPodSecurityManifest(namespace, runtimeClass) {
+function violatingPodSecurityManifest(namespace: string, runtimeClass?: string): string {
   return [
     "apiVersion: v1",
     "kind: Pod",
@@ -494,17 +583,34 @@ function violatingPodSecurityManifest(namespace, runtimeClass) {
   ].join("\n");
 }
 
-function errorDetails(error) {
-  return [error?.stdout, error?.stderr, error?.message].filter(Boolean).join("\n").trim();
+function commandField(value: unknown, field: "stdout" | "stderr" | "message"): string | undefined {
+  if (isRecord(value)) {
+    const fieldValue = value[field];
+    if (typeof fieldValue === "string") {
+      return fieldValue;
+    }
+  }
+  return undefined;
+}
+
+function commandDetails(value: unknown): string {
+  return [
+    commandField(value, "stdout"),
+    commandField(value, "stderr"),
+    commandField(value, "message"),
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 }
 
 async function assertOpenShellPodSecurityAdmissionExemption(
-  execFile,
-  kubectl,
-  cluster,
-  directory,
-  runtimeClass,
-) {
+  execFile: ExecuteFile,
+  kubectl: string,
+  cluster: Cluster,
+  directory: string,
+  runtimeClass: string,
+): Promise<void> {
   const namespace = "openshell-psa-probe";
   const rejectedManifestPath = join(directory, "openshell-psa-restricted-rejection.yaml");
   const exemptManifestPath = join(directory, "openshell-psa-runtimeclass-exemption.yaml");
@@ -531,7 +637,7 @@ async function assertOpenShellPodSecurityAdmissionExemption(
       ]),
     );
 
-    let restrictedRejection;
+    let restrictedRejection: unknown;
     try {
       await execFile(
         kubectl,
@@ -540,7 +646,7 @@ async function assertOpenShellPodSecurityAdmissionExemption(
     } catch (error) {
       restrictedRejection = error;
     }
-    const details = errorDetails(restrictedRejection);
+    const details = commandDetails(restrictedRejection);
     if (!restrictedRejection) {
       throw new Error(
         "OpenShell Pod Security admission probe unexpectedly admitted a restricted-violating Pod without the selected RuntimeClass.",
@@ -579,6 +685,15 @@ async function prepareOpenShellClusterBootstrap({
   runtimeClass = env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox",
   runtimeHandler = env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER ?? "runc",
   downloadArtifact = downloadVerified,
+}: {
+  directory: string;
+  execFile: ExecuteFile;
+  env?: Environment;
+  hostPlatform?: string;
+  hostArch?: string;
+  runtimeClass?: string;
+  runtimeHandler?: string;
+  downloadArtifact?: DownloadArtifact;
 }) {
   if (typeof execFile !== "function") {
     throw new Error("OpenShell cluster bootstrap requires execFile.");
@@ -606,13 +721,17 @@ async function prepareOpenShellClusterBootstrap({
   };
 }
 
-async function validateOpenShellSelection(env, execFile, snapshotParent) {
+async function validateOpenShellSelection(
+  env: Environment,
+  execFile: ExecuteFile,
+  snapshotParent?: string,
+) {
   const releasedImages = {
     gateway: openShellGatewayImage,
     sandbox: openShellSandboxImage,
     supervisor: openShellSupervisorImage,
   };
-  for (const role of Object.keys(releasedImages)) {
+  for (const role of ["gateway", "sandbox", "supervisor"] as const) {
     const name = `OCC_TEST_OPENSHELL_${role.toUpperCase()}_IMAGE`;
     assertImmutableImageReference(env[name] || releasedImages[role], name);
   }
@@ -622,13 +741,23 @@ async function validateOpenShellSelection(env, execFile, snapshotParent) {
       execFile,
       docker: env.OCC_DOCKER_BIN ?? "docker",
       helm: env.OCC_HELM_BIN ?? "helm",
-      snapshotParent,
+      ...(snapshotParent === undefined ? {} : { snapshotParent }),
     });
   }
   return candidate;
 }
 
-async function prepareOpenShell({ cluster, execFile, registerImage, env = process.env }) {
+async function prepareOpenShell({
+  cluster,
+  execFile,
+  registerImage,
+  env = process.env,
+}: {
+  cluster: Cluster;
+  execFile: ExecuteFile;
+  registerImage: RegisterImage;
+  env?: Environment;
+}) {
   const selectedCluster = assertCluster(cluster);
   if (typeof execFile !== "function") {
     throw new Error("OpenShell bootstrap requires execFile.");

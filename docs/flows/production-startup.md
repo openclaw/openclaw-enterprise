@@ -187,9 +187,8 @@ Otherwise Drizzle retains pending migration and read-only refusal.
 `finally` releases the lock and client
 ([history](../reference/settings/operations.md#migration-history)).
 
-`scripts/lib/bootstrap-configuration.mjs:authBaseURL` checks HTTP(S) origin before
-database access. Production requires HTTPS except HTTP loopback verification
-(`127.0.0.1`, `localhost`, `[::1]`).
+`scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
+Console origin before database access, including during `--verify-existing`.
 
 `scripts/bootstrap-installation.mjs` creates or verifies Installation,
 human/service administrators, IAM seed, audit evidence, and initial service key.

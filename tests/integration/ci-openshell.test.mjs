@@ -17,7 +17,7 @@ import {
   prepareOpenShell,
   selectKubectlAsset,
   validateOpenShellSelection,
-} from "../../scripts/ci/openshell.mjs";
+} from "../../scripts/ci/openshell.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import {

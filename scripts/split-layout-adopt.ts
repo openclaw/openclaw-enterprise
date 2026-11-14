@@ -18,6 +18,98 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+type KubectlResult = { status: number | null; stdout: string; stderr: string };
+type RunKubectl = (args: string[], input?: string) => KubectlResult;
+type Kubectl = ReturnType<typeof createKubectl>;
+type Log = (line: string) => void;
+type WaitOptions = { sleep: (milliseconds: number) => Promise<void>; timeoutMs: number };
+type RecoveryOptions = WaitOptions & { occNamespace: string; log: Log };
+type ArchiveOptions = WaitOptions & { archive: string; log: Log };
+type Selection = { namespaceIds?: string[] };
+type PlanningOptions = Selection & { dropResources?: string[]; acceptOauthReconnect?: boolean };
+type RevertOptions = Selection & Partial<RecoveryOptions> & { archive: string };
+type ApplyOptions = RevertOptions & PlanningOptions;
+type FinalizeOptions = Selection & Partial<RecoveryOptions> & { controllerUpgraded?: boolean };
+
+type RecordValue = Record<string, unknown>;
+type StringMap = Record<string, string>;
+type KubernetesObject = RecordValue & {
+  apiVersion?: string;
+  metadata: RecordValue & {
+    name: string;
+    namespace?: string;
+    uid?: string;
+    labels?: StringMap;
+    annotations?: StringMap;
+    ownerReferences?: unknown[];
+  };
+};
+type Writer = (typeof WRITERS)[number];
+type WriterState = { replicas: number; images: string[] };
+type Writers = Record<Writer, WriterState>;
+type Route = { resource: string; name: string };
+type ArchivedRoute = { resource: string; object: KubernetesObject };
+type ClaimSpec = {
+  accessModes: string[];
+  resources: { requests: { storage: string } };
+  volumeMode: string;
+  storageClassName?: string;
+};
+type ClaimEntry = {
+  name: string;
+  pv: string;
+  reclaimPolicy: string;
+  labels: StringMap;
+  annotations: StringMap;
+  spec: ClaimSpec;
+  moved: boolean;
+};
+type SecretCopy = null | "preexisting" | string;
+type TenantPlan = {
+  namespaceId: string;
+  storage: string;
+  storageUid: string | undefined;
+  tenant: string | undefined;
+  tenantUid: string | undefined;
+  claims: string[];
+  volumes: (string | undefined)[];
+  secrets: string[];
+  routes: Route[];
+  dropped: Record<string, number>;
+  running: string[];
+  reconnectAgents: string[];
+  refusals: string[];
+};
+type TenantLocation = { tenant: string; storage: string };
+type Journal = TenantLocation & {
+  format: typeof JOURNAL_FORMAT;
+  state: "applying" | "applied" | "reverting";
+  namespaceId: string;
+  storageUid: string;
+  tenantUid: string;
+  writers: Writers;
+  running: string[];
+  workloads: Record<string, number>;
+  archive?: string;
+  dropResources?: string[];
+  claims: ClaimEntry[];
+  secrets: Record<string, SecretCopy>;
+  routes: Route[];
+  routesArchived: boolean;
+};
+type CliOptions = {
+  command: string | undefined;
+  namespaceIds: string[];
+  dropResources: string[];
+  kubectlArgs: string[];
+  yes?: boolean;
+  acceptOauthReconnect?: boolean;
+  controllerUpgraded?: boolean;
+  out?: string;
+  archive?: string;
+  occNamespace?: string;
+};
+
 const MANAGER = "openclaw-enterprise";
 const MANAGED_BY = "app.kubernetes.io/managed-by";
 const TENANT_LABEL = "openclaw.dev/namespace";
@@ -31,7 +123,7 @@ const COMPUTE_FIELD_MANAGER = "openclaw-enterprise-compute";
 const GATEWAY_MEMBERSHIP_LABEL = "openclaw-enterprise.io/gateway";
 export const JOURNAL_ANNOTATION = "openclaw.dev/split-layout-adopt";
 const JOURNAL_FORMAT = "oce-split-layout-adopt/v1";
-const WRITERS = Object.freeze(["api", "worker"]);
+const WRITERS = ["api", "worker"] as const;
 // Claims that hold Harness workspaces and embedded Gateway state.
 const MOVED_CLAIM = /^(?:workspace|gateway-state)-[0-9a-f]{12}$/u;
 // Per-revision projections of canonical Secrets; the next deploy renders them again.
@@ -47,7 +139,7 @@ const DERIVED_RESOURCES = new Set([
   "endpointslices.discovery.k8s.io",
 ]);
 const ROUTE_RESOURCES = new Set(["httproutes", "securitypolicies"]);
-const listedResource = (resource) =>
+const listedResource = (resource: string) =>
   resource === "pods" ||
   (!DERIVED_RESOURCES.has(resource) && !resource.endsWith(".metrics.k8s.io"));
 const REQUIRED_GRANTS = Object.freeze([
@@ -57,29 +149,89 @@ const REQUIRED_GRANTS = Object.freeze([
 ]);
 
 const usage = `Usage:
-  node scripts/split-layout-adopt.mjs plan [--out FILE]
-  node scripts/split-layout-adopt.mjs apply --archive DIR --yes
-  node scripts/split-layout-adopt.mjs revert --archive DIR --yes
-  node scripts/split-layout-adopt.mjs finalize --yes [--controller-upgraded]
+  node scripts/split-layout-adopt.ts plan [--out FILE]
+  node scripts/split-layout-adopt.ts apply --archive DIR --yes
+  node scripts/split-layout-adopt.ts revert --archive DIR --yes
+  node scripts/split-layout-adopt.ts finalize --yes [--controller-upgraded]
 Options: [--namespace-id ID]... [--occ-namespace NAME] [--context NAME] [--kubeconfig FILE]
   [--drop-resource RESOURCE]... [--accept-oauth-reconnect]
 The script does not back up volumes: snapshot the PersistentVolumes plan lists first.`;
 
 export class AdoptError extends Error {}
 
-const sha256Hex = (value, length) =>
+const sha256Hex = (value: string, length: number) =>
   createHash("sha256").update(value).digest("hex").slice(0, length);
-export const storageNamespaceName = (id) => `oce-gateways-${sha256Hex(id, 24)}`;
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const labelsOf = (object) => object?.metadata?.labels ?? {};
-const managed = (object, id) =>
+export const storageNamespaceName = (id: string) => `oce-gateways-${sha256Hex(id, 24)}`;
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const labelsOf = (object: KubernetesObject | undefined) => object?.metadata.labels ?? {};
+const managed = (object: KubernetesObject, id: string) =>
   labelsOf(object)[MANAGED_BY] === MANAGER && labelsOf(object)[TENANT_LABEL] === id;
-const terminating = (object) =>
-  object.metadata?.deletionTimestamp !== undefined || object.status?.phase === "Terminating";
+const terminating = (object: KubernetesObject) =>
+  object.metadata.deletionTimestamp !== undefined || statusOf(object)?.phase === "Terminating";
+
+function isRecord(value: unknown): value is RecordValue {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Discovery also returns custom resources. Only the known kinds' fields are read below.
+function specOf(object: KubernetesObject | undefined): RecordValue | undefined {
+  return isRecord(object?.spec) ? object.spec : undefined;
+}
+
+function statusOf(object: KubernetesObject | undefined): RecordValue | undefined {
+  return isRecord(object?.status) ? object.status : undefined;
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === "number";
+}
+
+function arrayOf<T>(value: unknown, check: (item: unknown) => item is T): value is T[] {
+  return Array.isArray(value) && value.every(check);
+}
+
+function recordOf<T>(
+  value: unknown,
+  check: (item: unknown) => item is T,
+): value is Record<string, T> {
+  return isRecord(value) && Object.values(value).every(check);
+}
+
+function optional<T>(value: unknown, check: (item: unknown) => item is T): value is T | undefined {
+  return value === undefined || check(value);
+}
+
+function isObject(value: unknown): value is KubernetesObject {
+  if (!isRecord(value) || !isRecord(value.metadata)) {
+    return false;
+  }
+  const { metadata, apiVersion } = value;
+  return (
+    isString(metadata.name) &&
+    optional(metadata.namespace, isString) &&
+    optional(metadata.uid, isString) &&
+    optional(metadata.labels, isStringMap) &&
+    optional(metadata.annotations, isStringMap) &&
+    (metadata.ownerReferences === undefined || Array.isArray(metadata.ownerReferences)) &&
+    optional(apiVersion, isString)
+  );
+}
+
+function objectUid(object: KubernetesObject): string {
+  const { name, uid } = object.metadata;
+  if (uid === undefined) {
+    throw new AdoptError(`${name} did not report its UID`);
+  }
+  return uid;
+}
 
 /** A kubectl client over `run(args, input)`, which returns `{status, stdout, stderr}`. */
-export function createKubectl(run, { warn = () => {} } = {}) {
-  const call = (args, input) => {
+export function createKubectl(run: RunKubectl, { warn = () => {} }: { warn?: Log } = {}) {
+  const call = (args: string[], input?: string) => {
     const result = run(args, input);
     if (result.status !== 0) {
       // kubectl errors name the object, never Secret data.
@@ -89,23 +241,45 @@ export function createKubectl(run, { warn = () => {} } = {}) {
     }
     return result.stdout;
   };
-  const json = (args, input) => {
+  const json = (args: string[], input?: string): unknown => {
     const out = call(args, input);
     return out.trim() === "" ? undefined : JSON.parse(out);
   };
-  const scope = (namespace) => (namespace === undefined ? [] : ["-n", namespace]);
+  const scope = (namespace: string | undefined) =>
+    namespace === undefined ? [] : ["-n", namespace];
   return {
-    get: (resource, name, namespace) =>
-      json(["get", resource, name, ...scope(namespace), "--ignore-not-found", "-o", "json"]),
-    list: (resource, namespace, selector) =>
-      json([
+    get: (resource: string, name: string, namespace?: string) => {
+      const object = json([
+        "get",
+        resource,
+        name,
+        ...scope(namespace),
+        "--ignore-not-found",
+        "-o",
+        "json",
+      ]);
+      if (object === undefined || isObject(object)) {
+        return object;
+      }
+      throw new AdoptError(`kubectl did not return a ${resource} object for ${name}`);
+    },
+    list: (resource: string, namespace?: string, selector?: string) => {
+      const list = json([
         "get",
         resource,
         ...scope(namespace),
         ...(selector === undefined ? [] : ["-l", selector]),
         "-o",
         "json",
-      ])?.items ?? [],
+      ]);
+      if (list == null || (isRecord(list) && list.items == null)) {
+        return [];
+      }
+      if (isRecord(list) && arrayOf(list.items, isObject)) {
+        return list.items;
+      }
+      throw new AdoptError(`kubectl did not return a ${resource} list`);
+    },
     resources: () => {
       // One unavailable APIService fails the whole command but still prints the rest.
       const args = ["api-resources", "--verbs=list", "--namespaced", "-o", "name"];
@@ -128,7 +302,7 @@ export function createKubectl(run, { warn = () => {} } = {}) {
       return resources;
     },
     // Server-side apply under another field manager, for fields that manager owns natively.
-    applyAs: (manager, object) =>
+    applyAs: (manager: string, object: unknown) =>
       json(
         [
           "apply",
@@ -142,8 +316,14 @@ export function createKubectl(run, { warn = () => {} } = {}) {
         ],
         JSON.stringify(object),
       ),
-    create: (object) => json(["create", "-f", "-", "-o", "json"], JSON.stringify(object)),
-    patch: (resource, name, namespace, type, patch) =>
+    create: (object: unknown) => json(["create", "-f", "-", "-o", "json"], JSON.stringify(object)),
+    patch: (
+      resource: string,
+      name: string,
+      namespace: string | undefined,
+      type: "merge" | "json",
+      patch: unknown,
+    ) =>
       json([
         "patch",
         resource,
@@ -157,7 +337,7 @@ export function createKubectl(run, { warn = () => {} } = {}) {
         "json",
       ]),
     // kubectl has no precondition flag; the raw DELETE carries the API's DeleteOptions.
-    deleteExact: (path, uid) =>
+    deleteExact: (path: string, uid: string) =>
       call(
         ["delete", "--raw", path, "-f", "-"],
         JSON.stringify({ kind: "DeleteOptions", apiVersion: "v1", preconditions: { uid } }),
@@ -165,33 +345,67 @@ export function createKubectl(run, { warn = () => {} } = {}) {
   };
 }
 
-function objectPath(object, resource) {
+function objectPath(object: KubernetesObject, resource: string) {
+  const { apiVersion, metadata } = object;
+  if (apiVersion === undefined) {
+    throw new AdoptError(`${resource}/${metadata.name} did not report its API version`);
+  }
   const plural = resource.split(".")[0];
-  const base = object.apiVersion.includes("/") ? `/apis/${object.apiVersion}` : "/api/v1";
-  const scoped = object.metadata.namespace ? `/namespaces/${object.metadata.namespace}` : "";
-  return `${base}${scoped}/${plural}/${object.metadata.name}`;
+  const base = apiVersion.includes("/") ? `/apis/${apiVersion}` : "/api/v1";
+  const scoped = metadata.namespace ? `/namespaces/${metadata.namespace}` : "";
+  return `${base}${scoped}/${plural}/${metadata.name}`;
 }
 
-const mountedClaims = (pods) =>
-  new Set(
-    pods.flatMap((pod) =>
-      (pod.spec?.volumes ?? []).map((volume) => volume.persistentVolumeClaim?.claimName),
-    ),
-  );
+function mountedClaims(pods: KubernetesObject[]) {
+  const claims = new Set<string>();
+  for (const pod of pods) {
+    const volumes = specOf(pod)?.volumes;
+    if (volumes === undefined) {
+      continue;
+    }
+    if (!arrayOf(volumes, isRecord)) {
+      throw new AdoptError(`Pod ${pod.metadata.name} did not report its volumes`);
+    }
+    for (const volume of volumes) {
+      const claim = volume.persistentVolumeClaim;
+      if (claim === undefined) {
+        continue;
+      }
+      if (!isRecord(claim) || !isString(claim.claimName)) {
+        throw new AdoptError(`Pod ${pod.metadata.name} has an unreadable claim reference`);
+      }
+      claims.add(claim.claimName);
+    }
+  }
+  return claims;
+}
 
-function hasGrant(bindings, { role, serviceAccount }) {
-  return bindings.some(
-    (binding) =>
-      binding.roleRef?.kind === "ClusterRole" &&
-      (binding.roleRef.name === role || binding.roleRef.name?.endsWith(`-${role}`)) &&
-      (binding.subjects ?? []).some(
-        (subject) => subject.kind === "ServiceAccount" && subject.name === serviceAccount,
-      ),
-  );
+function hasGrant(
+  bindings: KubernetesObject[],
+  { role, serviceAccount }: (typeof REQUIRED_GRANTS)[number],
+) {
+  return bindings.some(({ roleRef, subjects }) => {
+    if (!isRecord(roleRef) || roleRef.kind !== "ClusterRole" || !isString(roleRef.name)) {
+      return false;
+    }
+    return (
+      (roleRef.name === role || roleRef.name.endsWith(`-${role}`)) &&
+      Array.isArray(subjects) &&
+      subjects.some(
+        (subject: unknown) =>
+          isRecord(subject) && subject.kind === "ServiceAccount" && subject.name === serviceAccount,
+      )
+    );
+  });
 }
 
 /** Sorts every object in the old Harness namespace into moved, dropped or refused. */
-export function classify(resource, object, id, dropResources = []) {
+function classify(
+  resource: string,
+  object: KubernetesObject,
+  id: string,
+  dropResources: string[] = [],
+) {
   const name = object.metadata.name;
   if (resource === "pods") {
     // Workload Pods go with their owners; a bare Pod is someone's and is not deleted silently.
@@ -221,21 +435,21 @@ export function classify(resource, object, id, dropResources = []) {
   if (resource === "secrets") {
     return PROJECTED_SECRET.test(name) ? "drop" : "copy-secret";
   }
-  if (ROUTE_RESOURCES.has(resource.split(".")[0])) {
+  if (ROUTE_RESOURCES.has(resource.split(".")[0] ?? "")) {
     return "route";
   }
   return "drop";
 }
 
 /** Reads one tenant's two namespaces and decides what adoption must do. Read-only. */
-export function planTenant(
-  kubectl,
-  storage,
-  resources,
-  { dropResources = [], acceptOauthReconnect = false } = {},
-) {
-  const id = labelsOf(storage)[STORAGE_LABEL];
-  const plan = {
+function planTenant(
+  kubectl: Kubectl,
+  storage: KubernetesObject,
+  id: string,
+  resources: string[],
+  { dropResources = [], acceptOauthReconnect = false }: PlanningOptions = {},
+): TenantPlan {
+  const plan: TenantPlan = {
     namespaceId: id,
     storage: storage.metadata.name,
     storageUid: storage.metadata.uid,
@@ -250,7 +464,7 @@ export function planTenant(
     reconnectAgents: [],
     refusals: [],
   };
-  const refuse = (reason) => plan.refusals.push(reason);
+  const refuse = (reason: string) => plan.refusals.push(reason);
   if (
     storage.metadata.annotations?.[ID_ANNOTATION] !== id ||
     labelsOf(storage)[MANAGED_BY] !== MANAGER
@@ -261,7 +475,8 @@ export function planTenant(
     refuse(`${storage.metadata.name} is terminating`);
   }
   const tenants = kubectl.list("namespaces", undefined, `${TENANT_LABEL}=${id}`);
-  if (tenants.length !== 1) {
+  const [tenant] = tenants;
+  if (tenants.length !== 1 || tenant === undefined) {
     refuse(
       tenants.length === 0
         ? "no tenant namespace in this cluster (a two-cluster control target is not affected)"
@@ -269,8 +484,8 @@ export function planTenant(
     );
     return plan;
   }
-  const tenant = tenants[0];
-  plan.tenant = tenant.metadata.name;
+  const tenantName = tenant.metadata.name;
+  plan.tenant = tenantName;
   plan.tenantUid = tenant.metadata.uid;
   if (tenant.metadata.annotations?.[LIFECYCLE_ANNOTATION] === "external") {
     refuse(`${plan.tenant} is an existing namespace; use scripts/split-layout-tenants.ts`);
@@ -284,11 +499,13 @@ export function planTenant(
     refuse(`${plan.tenant} is terminating`);
   }
   for (const resource of resources.filter(listedResource)) {
-    let objects;
+    let objects: KubernetesObject[];
     try {
       objects = kubectl.list(resource, plan.tenant);
     } catch (error) {
-      refuse(`cannot list ${resource} in ${plan.tenant}: ${error.message}`);
+      refuse(
+        `cannot list ${resource} in ${plan.tenant}: ${error instanceof Error ? error.message : String(error)}`,
+      );
       continue;
     }
     for (const object of objects) {
@@ -296,7 +513,7 @@ export function planTenant(
       const verdict = classify(resource, object, id, dropResources);
       if (verdict === "move-claim") {
         plan.claims.push(name);
-        plan.volumes.push(object.spec?.volumeName);
+        plan.volumes.push(volumeName(object));
       } else if (verdict === "copy-secret") {
         plan.secrets.push(name);
       } else if (verdict === "route") {
@@ -308,7 +525,7 @@ export function planTenant(
       }
     }
   }
-  const claimUids = new Set();
+  const claimUids = new Set<string>();
   for (const name of plan.claims) {
     if (kubectl.get("persistentvolumeclaims", name, plan.storage) !== undefined) {
       refuse(`${plan.storage} already has PersistentVolumeClaim ${name}`);
@@ -322,7 +539,8 @@ export function planTenant(
   for (const namespace of [plan.storage, plan.tenant]) {
     for (const secret of kubectl.list("secrets", namespace)) {
       const annotations = secret.metadata.annotations ?? {};
-      if (claimUids.has(annotations[OAUTH_VOLUME_ANNOTATION])) {
+      const uid = annotations[OAUTH_VOLUME_ANNOTATION];
+      if (uid !== undefined && claimUids.has(uid)) {
         plan.reconnectAgents.push(annotations[OAUTH_AGENT_ANNOTATION] ?? secret.metadata.name);
       }
     }
@@ -349,10 +567,11 @@ export function planTenant(
       );
     }
   }
-  for (const namespace of [plan.tenant, plan.storage]) {
+  for (const namespace of [tenantName, plan.storage]) {
     for (const deployment of kubectl.list("deployments.apps", namespace, "openclaw.dev/agent")) {
-      if ((deployment.spec?.replicas ?? 0) > 0) {
-        plan.running.push(labelsOf(deployment)["openclaw.dev/agent"]);
+      const agent = labelsOf(deployment)["openclaw.dev/agent"];
+      if (agent !== undefined && replicasOf(deployment, 0) > 0) {
+        plan.running.push(agent);
       }
     }
   }
@@ -360,24 +579,29 @@ export function planTenant(
   return plan;
 }
 
-function sameSecret(left, right) {
+function sameSecret(left: KubernetesObject | undefined, right: KubernetesObject | undefined) {
+  if (left === undefined || right === undefined || left.type !== right.type) {
+    return false;
+  }
+  const leftData = left.data ?? {};
+  const rightData = right.data ?? {};
+  if (!isStringMap(leftData) || !isStringMap(rightData)) {
+    throw new AdoptError("kubectl returned unreadable Secret data");
+  }
   return (
-    left !== undefined &&
-    right !== undefined &&
-    left.type === right.type &&
-    JSON.stringify(Object.entries(left.data ?? {}).sort()) ===
-      JSON.stringify(Object.entries(right.data ?? {}).sort())
+    JSON.stringify(Object.entries(leftData).sort()) ===
+    JSON.stringify(Object.entries(rightData).sort())
   );
 }
 
 /** Plans every released split-layout tenant, or only the selected Namespace IDs. */
-export function planAll(kubectl, { namespaceIds = [], ...options } = {}) {
+export function planAll(kubectl: Kubectl, { namespaceIds = [], ...options }: PlanningOptions = {}) {
   const resources = kubectl.resources();
-  const plans = [];
-  const adopted = [];
+  const plans: TenantPlan[] = [];
+  const adopted: Pick<TenantPlan, "namespaceId" | "storage">[] = [];
   for (const storage of kubectl.list("namespaces", undefined, STORAGE_LABEL)) {
     const id = labelsOf(storage)[STORAGE_LABEL];
-    if (namespaceIds.length > 0 && !namespaceIds.includes(id)) {
+    if (id === undefined || (namespaceIds.length > 0 && !namespaceIds.includes(id))) {
       continue;
     }
     if (storage.metadata.name !== storageNamespaceName(id)) {
@@ -391,41 +615,133 @@ export function planAll(kubectl, { namespaceIds = [], ...options } = {}) {
     if (labelsOf(storage)[TENANT_LABEL] !== undefined) {
       continue;
     }
-    plans.push(planTenant(kubectl, storage, resources, options));
+    plans.push(planTenant(kubectl, storage, id, resources, options));
   }
   return { plans, adopted };
 }
 
-function readJournal(kubectl, storage) {
+function isStringMap(value: unknown): value is StringMap {
+  return recordOf(value, isString);
+}
+
+function isRoute(value: unknown): value is Route {
+  return isRecord(value) && isString(value.resource) && isString(value.name);
+}
+
+function isArchivedRoute(value: unknown): value is ArchivedRoute {
+  return isRecord(value) && isString(value.resource) && isObject(value.object);
+}
+
+function readRoutes(path: string): ArchivedRoute[] {
+  const routes: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!arrayOf(routes, isArchivedRoute)) {
+    throw new AdoptError(`${path} has unreadable archived routes`);
+  }
+  return routes;
+}
+
+function isClaimResources(value: unknown): value is ClaimSpec["resources"] {
+  return isRecord(value) && isRecord(value.requests) && isString(value.requests.storage);
+}
+
+function isClaimSpec(value: unknown): value is ClaimSpec {
+  return (
+    isRecord(value) &&
+    arrayOf(value.accessModes, isString) &&
+    isClaimResources(value.resources) &&
+    isString(value.volumeMode) &&
+    optional(value.storageClassName, isString)
+  );
+}
+
+function isClaimEntry(value: unknown): value is ClaimEntry {
+  return (
+    isRecord(value) &&
+    isString(value.name) &&
+    isString(value.pv) &&
+    isString(value.reclaimPolicy) &&
+    isStringMap(value.labels) &&
+    isStringMap(value.annotations) &&
+    isClaimSpec(value.spec) &&
+    typeof value.moved === "boolean"
+  );
+}
+
+function isWriterState(value: unknown): value is WriterState {
+  return isRecord(value) && isNumber(value.replicas) && arrayOf(value.images, isString);
+}
+
+function isJournal(value: unknown): value is Journal {
+  if (!isRecord(value) || !isRecord(value.writers)) {
+    return false;
+  }
+  const { writers } = value;
+  return (
+    value.format === JOURNAL_FORMAT &&
+    (value.state === "applying" || value.state === "applied" || value.state === "reverting") &&
+    isString(value.namespaceId) &&
+    isString(value.storage) &&
+    isString(value.storageUid) &&
+    isString(value.tenant) &&
+    isString(value.tenantUid) &&
+    WRITERS.every((component) => isWriterState(writers[component])) &&
+    arrayOf(value.running, isString) &&
+    recordOf(value.workloads, isNumber) &&
+    optional(value.archive, isString) &&
+    (value.dropResources === undefined || arrayOf(value.dropResources, isString)) &&
+    arrayOf(value.claims, isClaimEntry) &&
+    recordOf(value.secrets, (uid): uid is SecretCopy => uid === null || isString(uid)) &&
+    arrayOf(value.routes, isRoute) &&
+    typeof value.routesArchived === "boolean"
+  );
+}
+
+function readJournal(kubectl: Kubectl, storage: string): Journal | undefined {
   const object = kubectl.get("namespaces", storage);
-  const raw = object?.metadata?.annotations?.[JOURNAL_ANNOTATION];
+  const raw = object?.metadata.annotations?.[JOURNAL_ANNOTATION];
   if (raw === undefined) {
     return undefined;
   }
-  const journal = JSON.parse(raw);
-  if (journal?.format !== JOURNAL_FORMAT) {
+  const journal: unknown = JSON.parse(raw);
+  if (!isJournal(journal)) {
     throw new AdoptError(`${storage} has an unreadable ${JOURNAL_ANNOTATION} annotation`);
   }
   return journal;
 }
 
-function journalsOf(kubectl) {
+function existingJournal(kubectl: Kubectl, storage: string): Journal {
+  const journal = readJournal(kubectl, storage);
+  if (journal === undefined) {
+    throw new AdoptError(`${storage} lost its ${JOURNAL_ANNOTATION} annotation`);
+  }
+  return journal;
+}
+
+function journalsOf(kubectl: Kubectl) {
   return kubectl
     .list("namespaces", undefined, STORAGE_LABEL)
     .filter((object) => object.metadata.annotations?.[JOURNAL_ANNOTATION] !== undefined)
-    .map((object) => readJournal(kubectl, object.metadata.name));
+    .map((object) => existingJournal(kubectl, object.metadata.name));
 }
 
-function writeJournal(kubectl, journal) {
+function writeJournal(kubectl: Kubectl, journal: Journal) {
   kubectl.patch("namespaces", journal.storage, undefined, "merge", {
     metadata: { annotations: { [JOURNAL_ANNOTATION]: JSON.stringify(journal) } },
   });
 }
 
 async function waitFor(
-  check,
-  description,
-  { timeoutMs, intervalMs = 2_000, sleep, detail = () => "" },
+  check: () => boolean,
+  description: string,
+  {
+    timeoutMs,
+    intervalMs = 2_000,
+    sleep,
+    detail = () => "",
+  }: WaitOptions & {
+    intervalMs?: number;
+    detail?: () => string;
+  },
 ) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -439,52 +755,111 @@ async function waitFor(
   }
 }
 
-function writerDeployments(kubectl, occNamespace) {
-  return Object.fromEntries(
-    WRITERS.map((component) => {
-      const name = `openclaw-enterprise-${component}`;
-      const deployment = kubectl.get("deployments.apps", name, occNamespace);
-      if (deployment === undefined) {
-        throw new AdoptError(`${occNamespace}/${name} does not exist; set --occ-namespace`);
-      }
-      return [component, deployment];
-    }),
-  );
+function writerDeployments(
+  kubectl: Kubectl,
+  occNamespace: string,
+): Record<Writer, KubernetesObject> {
+  const deploymentFor = (component: Writer) => {
+    const name = `openclaw-enterprise-${component}`;
+    const deployment = kubectl.get("deployments.apps", name, occNamespace);
+    if (deployment === undefined) {
+      throw new AdoptError(`${occNamespace}/${name} does not exist; set --occ-namespace`);
+    }
+    return deployment;
+  };
+  return { api: deploymentFor("api"), worker: deploymentFor("worker") };
 }
 
-const images = (deployment) =>
-  (deployment.spec?.template?.spec?.containers ?? []).map(({ image }) => image).sort();
+function images(deployment: KubernetesObject): string[] {
+  const template = specOf(deployment)?.template;
+  const containers =
+    isRecord(template) && isRecord(template.spec) ? template.spec.containers : undefined;
+  if (containers === undefined) {
+    return [];
+  }
+  if (!arrayOf(containers, isRecord)) {
+    throw new AdoptError(`Deployment ${deployment.metadata.name} has unreadable containers`);
+  }
+  return containers
+    .map(({ image }) => {
+      if (!isString(image)) {
+        throw new AdoptError(
+          `Deployment ${deployment.metadata.name} did not report its container image`,
+        );
+      }
+      return image;
+    })
+    .sort();
+}
+
+function replicasOf(deployment: KubernetesObject, fallback: number): number {
+  const replicas = specOf(deployment)?.replicas;
+  if (replicas == null) {
+    return fallback;
+  }
+  if (!isNumber(replicas)) {
+    throw new AdoptError(`Deployment ${deployment.metadata.name} has unreadable replicas`);
+  }
+  return replicas;
+}
+
+function observedReplicas(
+  deployment: KubernetesObject | undefined,
+  field: "replicas" | "availableReplicas",
+): number {
+  const replicas = statusOf(deployment)?.[field];
+  if (replicas == null) {
+    return 0;
+  }
+  if (!isNumber(replicas)) {
+    throw new AdoptError(`Deployment ${deployment?.metadata.name} has unreadable ${field} status`);
+  }
+  return replicas;
+}
+
+function volumeName(claim: KubernetesObject | undefined): string | undefined {
+  const name = specOf(claim)?.volumeName;
+  return isString(name) ? name : undefined;
+}
+
+function volumeFor(kubectl: Kubectl, pv: string, claim: string) {
+  const volume = kubectl.get("persistentvolumes", pv);
+  if (volume === undefined) {
+    throw new AdoptError(`PersistentVolume ${pv} of claim ${claim} is missing`);
+  }
+  return volume;
+}
 
 /**
  * Moves one claim's PersistentVolume from `from` to `to`. Every step reads live state first,
  * so a rerun after any failure continues where the last one stopped.
  */
-export async function rebindClaim(kubectl, entry, from, to, { sleep, timeoutMs }) {
+async function rebindClaim(
+  kubectl: Kubectl,
+  entry: ClaimEntry,
+  from: string,
+  to: string,
+  { sleep, timeoutMs }: WaitOptions,
+) {
   const { name, pv } = entry;
-  const readVolume = () => {
-    const volume = kubectl.get("persistentvolumes", pv);
-    if (volume === undefined) {
-      throw new AdoptError(`PersistentVolume ${pv} of claim ${name} is missing`);
-    }
-    return volume;
-  };
+  const readVolume = () => volumeFor(kubectl, pv, name);
   // Retain first: the claim delete below must never release the volume's data.
-  if (readVolume().spec.persistentVolumeReclaimPolicy !== "Retain") {
+  if (specOf(readVolume())?.persistentVolumeReclaimPolicy !== "Retain") {
     kubectl.patch("persistentvolumes", pv, undefined, "merge", {
       spec: { persistentVolumeReclaimPolicy: "Retain" },
     });
-    if (readVolume().spec.persistentVolumeReclaimPolicy !== "Retain") {
+    if (specOf(readVolume())?.persistentVolumeReclaimPolicy !== "Retain") {
       throw new AdoptError(`PersistentVolume ${pv} did not keep reclaim policy Retain`);
     }
   }
   const source = kubectl.get("persistentvolumeclaims", name, from);
-  if (source !== undefined && source.spec?.volumeName === pv) {
+  if (source !== undefined && volumeName(source) === pv) {
     if (mountedClaims(kubectl.list("pods", from)).has(name)) {
       throw new AdoptError(`a Pod in ${from} still mounts ${name}; stop it and run again`);
     }
     kubectl.deleteExact(
       `/api/v1/namespaces/${from}/persistentvolumeclaims/${name}`,
-      source.metadata.uid,
+      objectUid(source),
     );
     await waitFor(
       () => kubectl.get("persistentvolumeclaims", name, from) === undefined,
@@ -495,10 +870,17 @@ export async function rebindClaim(kubectl, entry, from, to, { sleep, timeoutMs }
     throw new AdoptError(`${from}/${name} is bound to another volume`);
   }
   const target = kubectl.get("persistentvolumeclaims", name, to);
-  if (target !== undefined && target.spec?.volumeName !== pv) {
+  if (target !== undefined && volumeName(target) !== pv) {
     throw new AdoptError(`${to}/${name} already exists for another volume`);
   }
-  const claimRef = readVolume().spec.claimRef;
+  const readReference = () => {
+    const reference = specOf(readVolume())?.claimRef;
+    if (reference !== undefined && !isRecord(reference)) {
+      throw new AdoptError(`PersistentVolume ${pv} has an unreadable claim reference`);
+    }
+    return reference;
+  };
+  const claimRef = readReference();
   const reserved =
     claimRef?.namespace === to &&
     claimRef.name === name &&
@@ -512,7 +894,7 @@ export async function rebindClaim(kubectl, entry, from, to, { sleep, timeoutMs }
         value: { apiVersion: "v1", kind: "PersistentVolumeClaim", namespace: to, name },
       },
     ]);
-    const observed = readVolume().spec.claimRef;
+    const observed = readReference();
     // The PV controller may already have bound an existing target claim.
     if (
       observed?.namespace !== to ||
@@ -534,7 +916,9 @@ export async function rebindClaim(kubectl, entry, from, to, { sleep, timeoutMs }
     () => {
       const claim = kubectl.get("persistentvolumeclaims", name, to);
       return (
-        claim?.status?.phase === "Bound" && readVolume().spec.claimRef?.uid === claim.metadata.uid
+        claim !== undefined &&
+        statusOf(claim)?.phase === "Bound" &&
+        readReference()?.uid === objectUid(claim)
       );
     },
     `claim ${to}/${name} to bind ${pv}`,
@@ -544,14 +928,14 @@ export async function rebindClaim(kubectl, entry, from, to, { sleep, timeoutMs }
     kubectl.patch("persistentvolumes", pv, undefined, "merge", {
       spec: { persistentVolumeReclaimPolicy: entry.reclaimPolicy },
     });
-    if (readVolume().spec.persistentVolumeReclaimPolicy !== entry.reclaimPolicy) {
+    if (specOf(readVolume())?.persistentVolumeReclaimPolicy !== entry.reclaimPolicy) {
       throw new AdoptError(`PersistentVolume ${pv} did not restore ${entry.reclaimPolicy}`);
     }
   }
 }
 
 // Server-populated fields that must not be sent back on create.
-function portable(object) {
+function portable(object: KubernetesObject) {
   const copy = structuredClone(object);
   for (const field of [
     "uid",
@@ -573,17 +957,34 @@ const CLAIM_ANNOTATION_PREFIXES = [
   "volume.kubernetes.io/",
 ];
 
-function claimEntry(kubectl, plan, name) {
+function claimEntry(kubectl: Kubectl, plan: TenantLocation, name: string): ClaimEntry {
   const claim = kubectl.get("persistentvolumeclaims", name, plan.tenant);
-  const pv = claim?.spec?.volumeName;
-  if (claim === undefined || claim.status?.phase !== "Bound" || !pv) {
+  const pv = volumeName(claim);
+  if (claim === undefined || statusOf(claim)?.phase !== "Bound" || !pv) {
     throw new AdoptError(`${plan.tenant}/${name} is not a bound claim`);
   }
-  const volume = kubectl.get("persistentvolumes", pv);
+  const volume = volumeFor(kubectl, pv, name);
+  const reclaimPolicy = specOf(volume)?.persistentVolumeReclaimPolicy;
+  if (!isString(reclaimPolicy)) {
+    throw new AdoptError(`PersistentVolume ${pv} did not report its reclaim policy`);
+  }
+  const spec = specOf(claim) ?? {};
+  const accessModes = spec.accessModes;
+  const resources = spec.resources;
+  const volumeMode = spec.volumeMode ?? "Filesystem";
+  const storageClassName = spec.storageClassName;
+  if (
+    !arrayOf(accessModes, isString) ||
+    !isClaimResources(resources) ||
+    !isString(volumeMode) ||
+    !optional(storageClassName, isString)
+  ) {
+    throw new AdoptError(`${plan.tenant}/${name} has an unreadable claim spec`);
+  }
   return {
     name,
     pv,
-    reclaimPolicy: volume.spec.persistentVolumeReclaimPolicy,
+    reclaimPolicy,
     labels: claim.metadata.labels ?? {},
     annotations: Object.fromEntries(
       Object.entries(claim.metadata.annotations ?? {}).filter(
@@ -592,24 +993,22 @@ function claimEntry(kubectl, plan, name) {
     ),
     // The live claim's class, not the release's manifest: a defaulted class must match the PV.
     spec: {
-      accessModes: claim.spec.accessModes,
-      resources: { requests: { storage: claim.spec.resources.requests.storage } },
-      volumeMode: claim.spec.volumeMode ?? "Filesystem",
-      ...(claim.spec.storageClassName === undefined
-        ? {}
-        : { storageClassName: claim.spec.storageClassName }),
+      accessModes,
+      resources: { requests: { storage: resources.requests.storage } },
+      volumeMode,
+      ...(storageClassName === undefined ? {} : { storageClassName }),
     },
     moved: false,
   };
 }
 
-function writePrivate(path, value) {
+function writePrivate(path: string, value: unknown) {
   const partial = `${path}.partial`;
   writeFileSync(partial, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(partial, path);
 }
 
-function archiveDirectory(archive, id) {
+function archiveDirectory(archive: string, id: string) {
   mkdirSync(archive, { recursive: true, mode: 0o700 });
   if ((statSync(archive).mode & 0o077) !== 0) {
     throw new AdoptError(`${archive} must be private (mode 0700)`);
@@ -619,9 +1018,9 @@ function archiveDirectory(archive, id) {
   return directory;
 }
 
-/** Adopts every planned tenant. Stops OCC's API and worker first and leaves them stopped. */
+/** Adopts every planned tenant, then restarts the old API and leaves the worker stopped. */
 export async function applyAdoption(
-  kubectl,
+  kubectl: Kubectl,
   {
     archive,
     occNamespace = "openclaw-system",
@@ -631,14 +1030,14 @@ export async function applyAdoption(
     log = () => {},
     sleep = defaultSleep,
     timeoutMs = 300_000,
-  },
-) {
+  }: ApplyOptions,
+): Promise<Journal[]> {
   const { plans, adopted } = planAll(kubectl, {
     namespaceIds,
     dropResources,
     acceptOauthReconnect,
   });
-  const started = adopted.map(({ storage }) => readJournal(kubectl, storage));
+  const started = adopted.map(({ storage }) => existingJournal(kubectl, storage));
   const resumed = started.filter(({ state }) => state === "applying");
   const refusals = plans.flatMap(({ storage, refusals }) =>
     refusals.map((reason) => `${storage}: ${reason}`),
@@ -658,15 +1057,15 @@ export async function applyAdoption(
   // A resumed run, or one after another tenant's apply, finds OCC already stopped: keep the
   // replicas and images recorded before the first stop.
   // --namespace-id narrows the plan, not this: any journal holds the pre-stop record.
-  const anyJournal = journalsOf(kubectl).find((journal) => journal.writers !== undefined);
-  const recorded =
-    anyJournal?.writers ??
-    Object.fromEntries(
-      WRITERS.map((component) => [
-        component,
-        { replicas: writers[component].spec.replicas ?? 1, images: images(writers[component]) },
-      ]),
-    );
+  const [anyJournal] = journalsOf(kubectl);
+  const writerState = (component: Writer): WriterState => ({
+    replicas: replicasOf(writers[component], 1),
+    images: images(writers[component]),
+  });
+  const recorded = anyJournal?.writers ?? {
+    api: writerState("api"),
+    worker: writerState("worker"),
+  };
   if (plans.length + resumed.length === 0) {
     log("no split-layout tenants to adopt");
     // A run killed after its last tenant but before the API restart finishes here.
@@ -691,20 +1090,24 @@ export async function applyAdoption(
   // Journals are written before any change, so revert can always restore what was there.
   const journals = [...resumed];
   for (const plan of plans) {
-    const journal = readJournal(kubectl, plan.storage) ?? {
+    const { tenant, tenantUid, storageUid } = plan;
+    if (tenant === undefined || tenantUid === undefined || storageUid === undefined) {
+      throw new AdoptError(`${plan.storage} did not report both namespace names and UIDs`);
+    }
+    const location = { tenant, storage: plan.storage };
+    const journal: Journal = readJournal(kubectl, plan.storage) ?? {
       format: JOURNAL_FORMAT,
       state: "applying",
       namespaceId: plan.namespaceId,
-      storage: plan.storage,
-      storageUid: plan.storageUid,
-      tenant: plan.tenant,
-      tenantUid: plan.tenantUid,
+      ...location,
+      storageUid,
+      tenantUid,
       writers: recorded,
       running: plan.running,
       workloads: {},
       archive: resolve(archive),
       dropResources,
-      claims: plan.claims.map((name) => claimEntry(kubectl, plan, name)),
+      claims: plan.claims.map((name) => claimEntry(kubectl, location, name)),
       // null: to copy; "preexisting": an identical copy was already there and is not ours.
       secrets: Object.fromEntries(
         plan.secrets.map((name) => [
@@ -729,48 +1132,66 @@ export async function applyAdoption(
 // The upgrade helper reads the Installation through the API, and the old API runs on the
 // adopted layout: requests that touch an adopted tenant fail its ownership checks. The worker,
 // which reconciles Agents, stays stopped until the upgrade.
-async function startOldApi(kubectl, recorded, { occNamespace, log, sleep, timeoutMs }) {
+async function startOldApi(
+  kubectl: Kubectl,
+  recorded: Writers,
+  { occNamespace, log, sleep, timeoutMs }: RecoveryOptions,
+) {
   const { replicas, images: recordedImages } = recorded.api;
   const name = "openclaw-enterprise-api";
   const live = kubectl.get("deployments.apps", name, occNamespace);
-  if (replicas === 0 || JSON.stringify(images(live)) !== JSON.stringify(recordedImages)) {
+  if (replicas === 0) {
     return;
   }
-  if ((live.spec.replicas ?? 1) !== replicas) {
+  if (live === undefined) {
+    throw new AdoptError(`${occNamespace}/${name} disappeared before restart`);
+  }
+  if (JSON.stringify(images(live)) !== JSON.stringify(recordedImages)) {
+    return;
+  }
+  if (replicasOf(live, 1) !== replicas) {
     kubectl.patch("deployments.apps", name, occNamespace, "merge", { spec: { replicas } });
     log(`scaled ${occNamespace}/${name} back to ${replicas}`);
   }
   await waitFor(
     () =>
-      (kubectl.get("deployments.apps", name, occNamespace)?.status?.availableReplicas ?? 0) >=
+      observedReplicas(kubectl.get("deployments.apps", name, occNamespace), "availableReplicas") >=
       replicas,
     `${name} to serve`,
     { sleep, timeoutMs },
   );
 }
 
-async function stopWriters(kubectl, writers, { occNamespace, log, sleep, timeoutMs }) {
+async function stopWriters(
+  kubectl: Kubectl,
+  writers: Record<Writer, KubernetesObject>,
+  { occNamespace, log, sleep, timeoutMs }: RecoveryOptions,
+) {
   for (const component of WRITERS) {
     const name = `openclaw-enterprise-${component}`;
-    if ((writers[component].spec.replicas ?? 1) !== 0) {
+    if (replicasOf(writers[component], 1) !== 0) {
       kubectl.patch("deployments.apps", name, occNamespace, "merge", { spec: { replicas: 0 } });
       log(`scaled ${occNamespace}/${name} to 0`);
     }
     await waitFor(
-      () => (kubectl.get("deployments.apps", name, occNamespace)?.status?.replicas ?? 0) === 0,
+      () => observedReplicas(kubectl.get("deployments.apps", name, occNamespace), "replicas") === 0,
       `${name} to stop`,
       { sleep, timeoutMs },
     );
   }
 }
 
-async function adoptTenant(kubectl, journal, { archive, log, sleep, timeoutMs }) {
+async function adoptTenant(
+  kubectl: Kubectl,
+  journal: Journal,
+  { archive, log, sleep, timeoutMs }: ArchiveOptions,
+) {
   const { tenant, storage, namespaceId: id } = journal;
   const save = () => writeJournal(kubectl, journal);
   // The plan ran while OCC still served. With OCC stopped nothing new appears, so take in
   // what appeared meanwhile; anything adoption does not handle stops here, before any change.
   for (const resource of kubectl.resources().filter(listedResource)) {
-    const kind = resource.split(".")[0];
+    const [kind = ""] = resource.split(".");
     if (!["persistentvolumeclaims", "secrets", "pods", ...ROUTE_RESOURCES].includes(kind)) {
       continue;
     }
@@ -798,10 +1219,10 @@ async function adoptTenant(kubectl, journal, { archive, log, sleep, timeoutMs })
   for (const deployment of kubectl.list("deployments.apps", tenant)) {
     const name = deployment.metadata.name;
     if (journal.workloads[name] === undefined) {
-      journal.workloads[name] = deployment.spec?.replicas ?? 1;
+      journal.workloads[name] = replicasOf(deployment, 1);
       save();
     }
-    if ((deployment.spec?.replicas ?? 1) !== 0) {
+    if (replicasOf(deployment, 1) !== 0) {
       kubectl.patch("deployments.apps", name, tenant, "merge", { spec: { replicas: 0 } });
     }
   }
@@ -814,7 +1235,10 @@ async function adoptTenant(kubectl, journal, { archive, log, sleep, timeoutMs })
   // A Gateway that ignores SIGTERM holds its claim for its whole grace period (330 s).
   const graceMs = Math.max(
     0,
-    ...mountingPods().map((pod) => (pod.spec?.terminationGracePeriodSeconds ?? 0) * 1_000),
+    ...mountingPods().map((pod) => {
+      const seconds = specOf(pod)?.terminationGracePeriodSeconds;
+      return isNumber(seconds) ? seconds * 1_000 : 0;
+    }),
   );
   await waitFor(() => mounting().length === 0, `Pods in ${tenant} to release their claims`, {
     sleep,
@@ -831,7 +1255,7 @@ async function adoptTenant(kubectl, journal, { archive, log, sleep, timeoutMs })
       }
       // A run that died between create and journal save left its own copy.
       if (journal.secrets[name] === null) {
-        journal.secrets[name] = existing.metadata.uid;
+        journal.secrets[name] = objectUid(existing);
         save();
       }
       continue;
@@ -843,24 +1267,32 @@ async function adoptTenant(kubectl, journal, { archive, log, sleep, timeoutMs })
     copy.metadata.namespace = storage;
     // An owner in the old namespace would make the garbage collector delete the copy.
     delete copy.metadata.ownerReferences;
-    journal.secrets[name] = kubectl.create(copy).metadata.uid;
+    const created = kubectl.create(copy);
+    if (!isObject(created)) {
+      throw new AdoptError(`kubectl did not return the created Secret ${storage}/${name}`);
+    }
+    journal.secrets[name] = objectUid(created);
     save();
   }
   log(`${tenant}: ${Object.keys(journal.secrets).length} Agent Secrets copied to ${storage}`);
   // Archive the routes before deleting them: revert recreates them from this file.
   const routesFile = join(archiveDirectory(archive, id), "routes.json");
   if (!journal.routesArchived) {
-    const routes = journal.routes
-      .map(({ resource, name }) => ({ resource, object: kubectl.get(resource, name, tenant) }))
-      .filter(({ object }) => object !== undefined);
+    const routes: ArchivedRoute[] = [];
+    for (const { resource, name } of journal.routes) {
+      const object = kubectl.get(resource, name, tenant);
+      if (object !== undefined) {
+        routes.push({ resource, object });
+      }
+    }
     writePrivate(routesFile, routes);
     journal.routesArchived = true;
     save();
   }
-  for (const { resource, object } of JSON.parse(readFileSync(routesFile, "utf8"))) {
+  for (const { resource, object } of readRoutes(routesFile)) {
     const live = kubectl.get(resource, object.metadata.name, tenant);
     if (live !== undefined) {
-      kubectl.deleteExact(objectPath(live, resource), live.metadata.uid);
+      kubectl.deleteExact(objectPath(live, resource), objectUid(live));
     }
   }
   log(`${tenant}: ${journal.routes.length} routes archived and deleted`);
@@ -910,7 +1342,7 @@ async function adoptTenant(kubectl, journal, { archive, log, sleep, timeoutMs })
 
 /** Undoes apply while the old release is still installed (its API and worker stopped). */
 export async function revertAdoption(
-  kubectl,
+  kubectl: Kubectl,
   {
     archive,
     occNamespace = "openclaw-system",
@@ -918,14 +1350,13 @@ export async function revertAdoption(
     log = () => {},
     sleep = defaultSleep,
     timeoutMs = 300_000,
-  },
-) {
-  const journals = kubectl
-    .list("namespaces", undefined, STORAGE_LABEL)
-    .filter((storage) => storage.metadata.annotations?.[JOURNAL_ANNOTATION] !== undefined)
-    .map((storage) => readJournal(kubectl, storage.metadata.name))
-    .filter(({ namespaceId }) => namespaceIds.length === 0 || namespaceIds.includes(namespaceId));
-  if (journals.length === 0) {
+  }: RevertOptions,
+): Promise<Journal[]> {
+  const journals = journalsOf(kubectl).filter(
+    ({ namespaceId }) => namespaceIds.length === 0 || namespaceIds.includes(namespaceId),
+  );
+  const [first] = journals;
+  if (first === undefined) {
     log("nothing to revert");
     return [];
   }
@@ -936,7 +1367,7 @@ export async function revertAdoption(
   }
   const writers = writerDeployments(kubectl, occNamespace);
   for (const component of WRITERS) {
-    const recorded = journals[0].writers[component];
+    const recorded = first.writers[component];
     if (JSON.stringify(images(writers[component])) !== JSON.stringify(recorded.images)) {
       throw new AdoptError(
         `openclaw-enterprise-${component} runs another image; revert is only possible ` +
@@ -956,13 +1387,11 @@ export async function revertAdoption(
     journal.state = "reverting";
     writeJournal(kubectl, journal);
     for (const entry of journal.claims) {
-      if (
-        kubectl.get("persistentvolumeclaims", entry.name, tenant)?.spec?.volumeName !== entry.pv
-      ) {
+      if (volumeName(kubectl.get("persistentvolumeclaims", entry.name, tenant)) !== entry.pv) {
         await rebindClaim(kubectl, entry, storage, tenant, { sleep, timeoutMs });
         log(`${storage}/${entry.name} -> ${tenant} (${entry.pv})`);
       } else if (
-        kubectl.get("persistentvolumes", entry.pv)?.spec.persistentVolumeReclaimPolicy !==
+        specOf(kubectl.get("persistentvolumes", entry.pv))?.persistentVolumeReclaimPolicy !==
         entry.reclaimPolicy
       ) {
         // Apply may have set Retain before it stopped.
@@ -987,7 +1416,7 @@ export async function revertAdoption(
         throw new AdoptError(`${storage} was adopted with --archive ${journal.archive}`);
       }
       const routesFile = join(archiveDirectory(archive, id), "routes.json");
-      for (const { resource, object } of JSON.parse(readFileSync(routesFile, "utf8"))) {
+      for (const { resource, object } of readRoutes(routesFile)) {
         if (kubectl.get(resource, object.metadata.name, tenant) === undefined) {
           kubectl.create(portable(object));
         }
@@ -1005,7 +1434,7 @@ export async function revertAdoption(
   if (remaining.length > 0) {
     // --namespace-id reverted only some tenants; the others stay adopted, so the old worker
     // must not run yet.
-    await startOldApi(kubectl, journals[0].writers, { occNamespace, log, sleep, timeoutMs });
+    await startOldApi(kubectl, first.writers, { occNamespace, log, sleep, timeoutMs });
     log(
       `${remaining.map(({ storage }) => storage).join(", ")} stay adopted; the worker stays ` +
         "stopped until they are reverted or the upgrade runs",
@@ -1013,7 +1442,7 @@ export async function revertAdoption(
     return journals;
   }
   for (const component of WRITERS) {
-    const { replicas } = journals[0].writers[component];
+    const { replicas } = first.writers[component];
     kubectl.patch("deployments.apps", `openclaw-enterprise-${component}`, occNamespace, "merge", {
       spec: { replicas },
     });
@@ -1024,7 +1453,7 @@ export async function revertAdoption(
 
 /** Deletes each adopted tenant's old Harness namespace once the new release runs. */
 export async function finalizeAdoption(
-  kubectl,
+  kubectl: Kubectl,
   {
     occNamespace = "openclaw-system",
     namespaceIds = [],
@@ -1032,10 +1461,10 @@ export async function finalizeAdoption(
     log = () => {},
     sleep = defaultSleep,
     timeoutMs = 300_000,
-  },
-) {
+  }: FinalizeOptions,
+): Promise<Journal[]> {
   const writers = writerDeployments(kubectl, occNamespace);
-  const finalized = [];
+  const finalized: Journal[] = [];
   for (const storage of kubectl.list("namespaces", undefined, STORAGE_LABEL)) {
     const journal = readJournal(kubectl, storage.metadata.name);
     if (
@@ -1095,7 +1524,7 @@ export async function finalizeAdoption(
       }
       for (const entry of journal.claims) {
         if (
-          kubectl.get("persistentvolumeclaims", entry.name, journal.storage)?.status?.phase !==
+          statusOf(kubectl.get("persistentvolumeclaims", entry.name, journal.storage))?.phase !==
           "Bound"
         ) {
           throw new AdoptError(`${journal.storage}/${entry.name} is not bound`);
@@ -1122,26 +1551,42 @@ export async function finalizeAdoption(
   return finalized;
 }
 
-function parseArgs(argv) {
+const booleanFlags = {
+  "--yes": "yes",
+  "--accept-oauth-reconnect": "acceptOauthReconnect",
+  "--controller-upgraded": "controllerUpgraded",
+} as const;
+const valueFlags = {
+  "--out": "out",
+  "--archive": "archive",
+  "--occ-namespace": "occNamespace",
+} as const;
+
+function hasFlag<T extends object>(flags: T, flag: string): flag is keyof T & string {
+  return Object.hasOwn(flags, flag);
+}
+
+function parseArgs(argv: string[]): CliOptions {
   const [command, ...rest] = argv;
-  const options = { command, namespaceIds: [], dropResources: [], kubectlArgs: [] };
-  for (let index = 0; index < rest.length; index += 1) {
-    const flag = rest[index];
-    const value = rest[index + 1];
-    if (["--yes", "--accept-oauth-reconnect", "--controller-upgraded"].includes(flag)) {
-      options[flag.slice(2).replace(/-(\w)/gu, (_, c) => c.toUpperCase())] = true;
-    } else if (flag === "--drop-resource" && value !== undefined) {
+  const options: CliOptions = { command, namespaceIds: [], dropResources: [], kubectlArgs: [] };
+  const flags = rest.entries();
+  for (const [, flag] of flags) {
+    if (hasFlag(booleanFlags, flag)) {
+      options[booleanFlags[flag]] = true;
+      continue;
+    }
+    const value = flags.next().value?.[1];
+    if (value === undefined) {
+      throw new AdoptError(`unknown argument ${flag}\n${usage}`);
+    }
+    if (flag === "--drop-resource") {
       options.dropResources.push(value);
-      index += 1;
-    } else if (["--context", "--kubeconfig"].includes(flag) && value !== undefined) {
+    } else if (flag === "--context" || flag === "--kubeconfig") {
       options.kubectlArgs.push(flag, value);
-      index += 1;
-    } else if (flag === "--namespace-id" && value !== undefined) {
+    } else if (flag === "--namespace-id") {
       options.namespaceIds.push(value);
-      index += 1;
-    } else if (["--out", "--archive", "--occ-namespace"].includes(flag) && value !== undefined) {
-      options[flag.slice(2).replace(/-(\w)/gu, (_, c) => c.toUpperCase())] = value;
-      index += 1;
+    } else if (hasFlag(valueFlags, flag)) {
+      options[valueFlags[flag]] = value;
     } else {
       throw new AdoptError(`unknown argument ${flag}\n${usage}`);
     }
@@ -1149,22 +1594,21 @@ function parseArgs(argv) {
   return options;
 }
 
-export async function main(argv, { run } = {}) {
+async function main(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
-  const log = (line) => console.log(`${new Date().toISOString()} ${line}`);
+  const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
   const kubectl = createKubectl(
-    run ??
-      ((args, input) =>
-        spawnSync("kubectl", ["--request-timeout=30s", ...options.kubectlArgs, ...args], {
-          input,
-          encoding: "utf8",
-          timeout: 60_000,
-          maxBuffer: 256 * 1024 * 1024,
-        })),
+    (args, input) =>
+      spawnSync("kubectl", ["--request-timeout=30s", ...options.kubectlArgs, ...args], {
+        input,
+        encoding: "utf8",
+        timeout: 60_000,
+        maxBuffer: 256 * 1024 * 1024,
+      }),
     { warn: log },
   );
   const common = {
-    occNamespace: options.occNamespace,
+    ...(options.occNamespace === undefined ? {} : { occNamespace: options.occNamespace }),
     namespaceIds: options.namespaceIds,
     dropResources: options.dropResources,
     acceptOauthReconnect: options.acceptOauthReconnect === true,
@@ -1194,11 +1638,12 @@ export async function main(argv, { run } = {}) {
     }
     return result.plans.some(({ refusals }) => refusals.length > 0) ? 2 : 0;
   }
-  if (!options.yes || (options.command !== "finalize" && !options.archive)) {
+  const { archive, command } = options;
+  if (!options.yes) {
     throw new AdoptError(usage);
   }
-  if (options.command === "apply") {
-    await applyAdoption(kubectl, { ...common, archive: options.archive });
+  if (command === "apply" && archive) {
+    await applyAdoption(kubectl, { ...common, archive });
     // Earlier runs may have adopted some tenants already; list every journal's Agents.
     const running = journalsOf(kubectl).flatMap(({ running }) => running);
     log(
@@ -1206,9 +1651,9 @@ export async function main(argv, { run } = {}) {
         "then deploy the Agents that " +
         `were running: ${running.join(" ") || "none"}`,
     );
-  } else if (options.command === "revert") {
-    await revertAdoption(kubectl, { ...common, archive: options.archive });
-  } else if (options.command === "finalize") {
+  } else if (command === "revert" && archive) {
+    await revertAdoption(kubectl, { ...common, archive });
+  } else if (command === "finalize") {
     await finalizeAdoption(kubectl, {
       ...common,
       controllerUpgraded: options.controllerUpgraded === true,

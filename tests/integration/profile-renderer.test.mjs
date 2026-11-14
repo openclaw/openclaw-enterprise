@@ -2201,6 +2201,7 @@ function checkoutWithoutDependencies() {
   const sources = [
     "package.json",
     "scripts/render-installation-profile.mjs",
+    "scripts/render-installation-profile.ts",
     "scripts/lib/prepared-repository-installation.mjs",
     "deploy/profiles",
     "apps/controller/package.json",

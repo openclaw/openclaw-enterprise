@@ -544,7 +544,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     if (tool === "node") {
       // Pair cases exercise upgrade orchestration after a successful qualification. The
       // separately selected real-image test verifies compatibility itself.
-      if (args[0] === "scripts/upgrade-repository-image-probe.mjs") {
+      if (args[0] === "scripts/upgrade-repository-image-probe.ts") {
         const identity = (image) => ({
           image,
           platform: args[3],

@@ -10,9 +10,11 @@ does not change an existing Installation; adopted resource values apply to each
 Agent at its next deployment. A candidate that changes any setting other
 than the Plugin Driver selection stops the helper with `candidate Installation
 changes a protected setting`. Diff `deploy/examples/production/installation.yaml`
-and `scripts/render-installation-profile.mjs` between the deployed and candidate
-source, decide which changes to adopt, and apply them as a separate change, not
-during an image upgrade. Run these commands from a checkout of the installed
+and `scripts/render-installation-profile.ts` between the deployed and candidate
+source. If the deployed release predates the TypeScript renderer, compare its
+`scripts/render-installation-profile.mjs` implementation with the candidate
+TypeScript file. Decide which changes to adopt and apply them as a separate
+change, not during an image upgrade. Run these commands from a checkout of the installed
 controller's source commit, not the release checkout, and keep the image
 references in `values.yaml` unchanged:
 
