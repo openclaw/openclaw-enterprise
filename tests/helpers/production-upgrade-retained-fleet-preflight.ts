@@ -8,6 +8,7 @@ import type {
   InstallationDeploymentInventoryAgent,
   InstallationDeploymentInventoryNamespace,
 } from "@openclaw-enterprise/contracts";
+import { optionalField, type RecoveryState } from "./production-upgrade-recovery-state.ts";
 
 // The command fixture also accepts deliberately malformed JSON and raw stdout.
 // Undefined object fields are omitted when the fixture serializes its state.
@@ -24,21 +25,12 @@ type FixtureOptions = {
   inventoryResponses?: readonly (InstallationDeploymentInventory | JsonObject | string)[];
 };
 
-type UpgradeState = {
-  api: number;
-  worker: number;
-  version: number;
-  dispatches: number;
-  inventoryReadCount?: number;
-  preflight?: { created?: readonly { kind: string; name: string; uid: string }[] };
-};
-
 type UpgradeFixture = {
   directory: string;
   evidence: string;
   run(...args: string[]): Promise<unknown>;
   failNext(fault: string): Promise<void>;
-  state(): Promise<UpgradeState>;
+  state(): Promise<RecoveryState>;
   events(): Promise<string[]>;
 };
 
@@ -78,7 +70,7 @@ export function restartInventory(
   };
 }
 
-function assertWritersUntouched(state: UpgradeState): void {
+function assertWritersUntouched(state: RecoveryState): void {
   assert.equal(state.version, 1);
   assert.equal(state.api, 1);
   assert.equal(state.worker, 1);
@@ -144,7 +136,7 @@ export function registerRetainedFleetPreflightTests(
         assert.deepEqual(await f.events(), ["revision-read rev_old"]);
         const state = await f.state();
         assertWritersUntouched(state);
-        assert.deepEqual(state.preflight?.created ?? [], []);
+        assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);
         const inventoryFiles = await readdir(join(f.evidence, "inventory"));
         if (readFailure) {
           assert.deepEqual(
@@ -198,7 +190,7 @@ export function registerRetainedFleetPreflightTests(
         await assert.rejects(f.run(), /deployment inventory/u);
         assert.deepEqual(await f.events(), []);
         const state = await f.state();
-        assert.deepEqual(state.preflight?.created ?? [], []);
+        assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);
         assertWritersUntouched(state);
       });
     }
@@ -217,7 +209,7 @@ export function registerRetainedFleetPreflightTests(
         await assert.rejects(f.run(), /deployment inventory/u);
         assert.deepEqual(await f.events(), []);
         const state = await f.state();
-        assert.deepEqual(state.preflight?.created ?? [], []);
+        assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);
         assertWritersUntouched(state);
       });
     }
@@ -245,7 +237,7 @@ export function registerRetainedFleetPreflightTests(
         assert.deepEqual(await f.events(), []);
         const state = await f.state();
         assertWritersUntouched(state);
-        assert.deepEqual(state.preflight?.created ?? [], []);
+        assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);
       },
     );
     await t.test("a stopped Agent may omit its active revision", async (t) => {
@@ -335,7 +327,7 @@ export function registerRetainedFleetPreflightTests(
         await assert.rejects(f.run(), expected);
         assert.deepEqual(await f.events(), []);
         const state = await f.state();
-        assert.deepEqual(state.preflight?.created ?? [], []);
+        assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);
         assertWritersUntouched(state);
       });
     }
