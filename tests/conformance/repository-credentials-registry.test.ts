@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import test from "node:test";
 import { chmod, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,9 +10,8 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/repository-approval.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-
-import type { AgentRevision } from "@openclaw-enterprise/contracts";
 
 interface NamespaceInput {
   namespaceId: string;
@@ -442,17 +442,27 @@ test("selected repository standing approval binds permissions and rechecks deliv
     metadata: "read",
     pull_requests: "write",
   });
-  const state: NonNullable<AgentRevision["repositoryCredentials"]> = {
+  const agentId = "agent";
+  const finiteState: NonNullable<AgentRevision["repositoryCredentials"]> = {
     driver: { id: "repository-credentials", implementation: "repository-credentials" },
     deadlineWallMs: 1700003600000,
     bindings: [binding],
-    standingApprovalId: "approval",
   };
   const revision = {
     id: "revision",
     namespaceId: request.namespaceId,
-    repositoryCredentials: state,
-    agentId: "agent",
+    repositoryCredentials: {
+      ...finiteState,
+      standingApprovalId: "approval",
+      standingApprovalGeneration: 1,
+      standingApprovalScopeFingerprint: repositoryApprovalFingerprint({
+        namespaceId: request.namespaceId,
+        agentId,
+        binding,
+        scope,
+      }),
+    },
+    agentId,
     revision: 1,
     backendId: null,
     configurationId: "configuration",
@@ -484,7 +494,6 @@ test("selected repository standing approval binds permissions and rechecks deliv
     scope,
     "permission order cannot invalidate the same reviewed authority",
   );
-  const { standingApprovalId: _approval, ...finiteState } = state;
   for (const mutate of [
     (value) => {
       delete value.allowStandingApprovals;
