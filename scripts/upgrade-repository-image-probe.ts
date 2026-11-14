@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { watch, type FSWatcher } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request, type Server } from "node:http";
 import { createConnection } from "node:net";
@@ -228,7 +229,7 @@ async function ready(path: string): Promise<boolean> {
   return false;
 }
 
-async function brokerExitBeforeReadiness(containerId: string, owner: string) {
+async function ownedBrokerExitCode(containerId: string, owner: string) {
   const format =
     '{{.Id}} {{index .Config.Labels "openclaw.upgrade-probe"}} ' +
     "{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{json .State.Error}}";
@@ -236,9 +237,7 @@ async function brokerExitBeforeReadiness(containerId: string, owner: string) {
     await run("docker", ["inspect", "--type", "container", "--format", format, containerId]),
   );
   if (result?.[1] === containerId && result[2] === owner && Number(result[3]) <= 255) {
-    throw new IncompatibleImageError(
-      "broker exited before its control socket was ready (exit " + result[3] + ")",
-    );
+    return result[3];
   }
 }
 
@@ -319,6 +318,7 @@ async function main(args: readonly string[]) {
   const observations = new Map<ProbeMode, ReceiptRequest>();
   let invalid = false;
   let fixture: Server | undefined;
+  let socketWatcher: FSWatcher | undefined;
   let proof: PairProof | undefined;
   let probeFailed = false;
   let probeError;
@@ -466,6 +466,21 @@ for (const path of process.argv.slice(1)) {
       throw new IncompatibleImageError("controller admission probe is missing");
     }
     assert.ok(controllerProbePaths.includes(controllerCommand));
+    // A process may create and unlink its socket before Docker returns the container ID.
+    // Without continuous observation, an early exit alone cannot rule out socket activity.
+    let canDiagnoseEarlyExit = true;
+    try {
+      socketWatcher = watch(control, (_event, filename) => {
+        if (filename === null || filename === "control.sock") {
+          canDiagnoseEarlyExit = false;
+        }
+      });
+      socketWatcher.on("error", () => {
+        canDiagnoseEarlyExit = false;
+      });
+    } catch {
+      canDiagnoseEarlyExit = false;
+    }
     const brokerId = (
       await run("docker", [
         "run",
@@ -497,7 +512,12 @@ for (const path of process.argv.slice(1)) {
     ).trim();
     assert.match(brokerId, /^[a-f0-9]{64}$/u);
     if (!(await ready(join(control, "control.sock")))) {
-      await brokerExitBeforeReadiness(brokerId, owner);
+      const exitCode = await ownedBrokerExitCode(brokerId, owner);
+      if (canDiagnoseEarlyExit && exitCode) {
+        throw new IncompatibleImageError(
+          "broker exited before its control socket was ready (exit " + exitCode + ")",
+        );
+      }
       throw new Error("broker control socket was not ready");
     }
     await checkBrokerCapability(join(control, "control.sock"));
@@ -549,6 +569,7 @@ for (const path of process.argv.slice(1)) {
     probeFailed = true;
     probeError = error;
   } finally {
+    socketWatcher?.close();
     // Inspect even after a failed or timed-out launch: Docker may have created
     // the container before the client lost the response.
     for (const container of [brokerName, `${name}-inspect`, `${name}-recover`, `${name}-reserve`]) {

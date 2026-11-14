@@ -359,13 +359,52 @@ test(
       execute(process.execPath, [pairScript, controller, broker, nativePlatform], {
         timeout: 350000,
       });
-    await t.test("current controller refuses the broker without durable admission", async () => {
+    await t.test("current controller refuses the broker without durable admission", async (t) => {
       const detail = await expectedBrokerRefusal(oldBrokerImage, nativePlatform);
       await assert.rejects(cli(controllerImage, oldBrokerImage), {
         code: 1,
         stdout: "",
         stderr: probeFailure + ": " + detail + "\n",
       });
+      if (detail === missingCapability) {
+        return;
+      }
+
+      // Docker has launched the real historical broker. Briefly place an invalid entry at
+      // its socket path before returning the container ID to the CLI's readiness loop.
+      const root = await temporaryDirectory(t, "oce-pair-transient-");
+      const marker = join(root, "entry-removed");
+      await writeCommand(
+        root,
+        "docker",
+        'PATH="$OCE_PAIR_REAL_PATH"\n' +
+          'if [ "$1" = run ] && [ "$2" = -d ]; then\n' +
+          '  id=$(docker "$@") || exit $?\n' +
+          '  for arg in "$@"; do\n' +
+          '    case "$arg" in type=bind,src=*,dst=/run/openclaw/repository-control/private)\n' +
+          "      src=${arg#type=bind,src=}\n" +
+          '      entry="${src%,dst=*}/control.sock"\n' +
+          '      ln -s absent "$entry" && rm "$entry" && touch "$OCE_PAIR_ENTRY_MARKER" || exit 1\n' +
+          "    esac\n" +
+          "  done\n" +
+          '  echo "$id"\n' +
+          "  exit 0\n" +
+          "fi\n" +
+          'exec docker "$@"',
+      );
+      await assert.rejects(
+        execute(process.execPath, [pairScript, controllerImage, oldBrokerImage, nativePlatform], {
+          timeout: 350000,
+          env: {
+            ...process.env,
+            PATH: commandPath(root),
+            OCE_PAIR_REAL_PATH: process.env.PATH,
+            OCE_PAIR_ENTRY_MARKER: marker,
+          },
+        }),
+        { code: 1, stdout: "", stderr: probeFailure + "\n" },
+      );
+      assert.deepEqual((await readdir(root)).sort(), ["docker", "entry-removed"]);
     });
     for (const [name, broker] of [
       ["current", brokerImage],
