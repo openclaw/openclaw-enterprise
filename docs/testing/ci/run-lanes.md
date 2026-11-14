@@ -180,7 +180,7 @@ Before each k3d file, the runner awaits initial Pod/Event synchronization
 ([flow](../../flows/github-actions-testing.md#2-prepare-resources-under-the-job-owner)).
 The independent private `OPENCLAW_CI_CONTAINER_LOG_DIR` remains available when
 watch startup fails. On failed waits,
-`tests/helpers/container-log-capture.mjs` records markers, Pod/event snapshots
+`tests/helpers/container-log-capture.ts` records markers, Pod/event snapshots
 and logs, waiting up to 60 seconds for container exit.
 `scripts/ci/k3d-diagnostics.mjs:projectContainerLog` keeps at most 1,500 lines,
 redacts environment values and secret shapes in lines and event messages, and
