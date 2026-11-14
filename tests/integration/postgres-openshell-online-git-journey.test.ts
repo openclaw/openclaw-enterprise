@@ -12,6 +12,7 @@ import {
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { within } from "../helpers/wait-for.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
@@ -371,7 +372,11 @@ test(
         assert.equal(decision.decision, 2);
         assert.equal(decision.reason_code, "route_not_ready");
       } finally {
-        quotaOwner.release(true);
+        try {
+          await quotaOwner.query("ROLLBACK");
+        } finally {
+          quotaOwner.release(true);
+        }
       }
       assert.deepEqual(await b.grant(contended.context.request_id, b.assertion()), {
         status: 403,
@@ -395,11 +400,27 @@ test(
       assert.equal(approvalA?.consumed, false);
       assert.equal(first.peer.gh.issuesOfTokens.length, 0);
 
-      const [tokenA, tokenB] = await Promise.all([
+      const pendingIssuance = second.watchPendingIssuance();
+      const grants = [
         a.grant(requestA, a.assertion()),
-        b.grant(requestB, b.assertion()),
-        first.waitForIssuance().finally(first.finishIssuance),
-      ]);
+        first.waitForIssuance().then(() => b.grant(requestB, b.assertion())),
+      ] as const;
+      try {
+        // A holds the provider response until B sees the issuing family without usable material.
+        await within(
+          Promise.race([
+            pendingIssuance,
+            ...grants.map((grant) =>
+              grant.then(() => assert.fail("grant finished before B observed pending issuance")),
+            ),
+          ]),
+          "the second Worker to observe pending shared issuance",
+        );
+      } finally {
+        first.finishIssuance();
+        await Promise.allSettled(grants);
+      }
+      const [tokenA, tokenB] = await Promise.all(grants);
       assert.equal(tokenA.status, 200);
       assert.equal(tokenB.status, 200);
       assert.ok(tokenA.value && tokenA.value === tokenB.value, "both recipients use one token");

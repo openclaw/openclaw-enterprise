@@ -26,7 +26,11 @@ import type {
   GitHubRepositoryCredentialBackendDefinition,
   ProxyRevisionContext,
 } from "../../packages/contracts/src/index.ts";
-import { InstalledDriver, PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import {
+  InstalledDriver,
+  PostgresPlatformState,
+  type PostgresPool,
+} from "../../packages/occ/src/index.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
@@ -145,12 +149,47 @@ export async function selectedReadGitJourney(
 
 type SelectedWorkerJourney = SelectedReadJourney & {
   fixture: NarrowJourney["maintenance"]["fixture"];
+  watchPendingIssuance: () => Promise<void>;
 };
+
+// Observe the shared-version read on this owner's connection, leaving the SQL and result intact.
+function observePendingIssuance(pool: Pool, observed: () => void): PostgresPool {
+  return {
+    end: () => pool.end(),
+    async connect() {
+      const client = await pool.connect();
+      return {
+        release: (discard) => client.release(discard),
+        on: (event, listener) => client.on(event, listener),
+        removeListener: (event, listener) => client.removeListener(event, listener),
+        async query(text, values) {
+          const result = await client.query<{
+            waiting?: boolean;
+            preparationAttemptId?: string | null;
+            materialVersion?: string | null;
+          }>(text, values && [...values]);
+          const [row] = result.rows;
+          if (
+            row?.waiting === true &&
+            row.preparationAttemptId === null &&
+            row.materialVersion === null
+          ) {
+            observed();
+          }
+          return result;
+        },
+      };
+    },
+  };
+}
 
 export async function selectedReadGitTwoWorkerJourney(
   t: TestContext,
   testUrl: string,
-  exercise: (first: SelectedReadJourney, second: SelectedReadJourney) => Promise<void>,
+  exercise: (
+    first: SelectedReadJourney,
+    second: SelectedReadJourney & { watchPendingIssuance: () => Promise<void> },
+  ) => Promise<void>,
 ) {
   const run = (
     selectedRead: (journey: SelectedWorkerJourney) => Promise<void>,
@@ -512,10 +551,14 @@ async function repositoryGitJourney(
   let issuanceStarted = false;
   let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
+  let observePending: (() => void) | undefined;
   const peer = await createPeer();
   async function createPeer() {
     if (previousWorker) {
-      const prepared = await previousWorker.peer.startOwner(undefined, f.observerPool);
+      const prepared = await previousWorker.peer.startOwner(
+        undefined,
+        observePendingIssuance(f.observerPool, () => observePending?.()),
+      );
       t.after(() => prepared.close());
       return { ...previousWorker.peer, prepared };
     }
@@ -1315,6 +1358,10 @@ async function repositoryGitJourney(
       assert.ok(grantPort && grantEndpoint && grantKeys);
       try {
         await selectedRead({
+          watchPendingIssuance: () =>
+            new Promise<void>((resolve) => {
+              observePending = resolve;
+            }),
           fixture: f,
           runtime,
           revision,
