@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import type { decideAdmission } from "./full-integration-admission.ts";
+
 export const fullIntegrationLanes = Object.freeze([
   "qa-matrix",
   "docker-model",
@@ -14,14 +16,42 @@ export const fullIntegrationLanes = Object.freeze([
   "logging-collector",
   "k3d-otel",
   "all",
-]);
+] as const);
 
-const lanes = new Set(fullIntegrationLanes);
+type FullIntegrationLane = (typeof fullIntegrationLanes)[number];
+type ScheduleSkipReason = Extract<ReturnType<typeof decideAdmission>, { result: "skip" }>["reason"];
+type PreflightResult =
+  | { selectedLane: "all"; runAll: true }
+  | { selectedLane: Exclude<FullIntegrationLane, "all"> | "docs"; runAll: false }
+  | { selectedLane: "skip"; runAll: false; reason: ScheduleSkipReason };
+
+type LaneInput = {
+  eventName?: string | undefined;
+  inputLane?: string | undefined;
+  ref?: string | undefined;
+  impactMode?: string;
+};
+
+type GithubRequest = {
+  repository: string | undefined;
+  token: string | undefined;
+  path: string;
+};
+
+export type GithubReader = (request: GithubRequest) => Promise<unknown>;
+
+type PreflightInput = {
+  env?: NodeJS.ProcessEnv;
+  github?: GithubReader;
+  impactMode?: string;
+};
+
+const lanes = new Set<string | undefined>(fullIntegrationLanes);
 const repository = "openclaw/openclaw-enterprise";
 const approvalEnvironment = "integration-main-approval";
 const approvalEnvironmentId = 26285522718;
 const approvedTeamId = 19674117;
-const credentialedLanes = new Set([
+const credentialedLanes = new Set<FullIntegrationLane>([
   "qa-matrix",
   "docker-model",
   "k3d-model",
@@ -32,7 +62,7 @@ const credentialedLanes = new Set([
   "openshell",
 ]);
 
-export function selectLane({ eventName, inputLane, ref, impactMode = "full" }) {
+export function selectLane({ eventName, inputLane, ref, impactMode = "full" }: LaneInput) {
   if (eventName === "push" && ref === "refs/heads/main") {
     return impactMode === "docs" ? "docs" : "all";
   }
@@ -45,13 +75,13 @@ export function selectLane({ eventName, inputLane, ref, impactMode = "full" }) {
   throw new Error(`Unsupported full integration event: ${eventName}`);
 }
 
-export function assertSourceRef(ref) {
+export function assertSourceRef(ref: string | undefined) {
   if (ref !== "refs/heads/main") {
     throw new Error("Full integration must run from main at the approved github.sha.");
   }
 }
 
-function assertRunContext(env) {
+function assertRunContext(env: NodeJS.ProcessEnv) {
   assertSourceRef(env.GITHUB_REF);
   if (env.GITHUB_REPOSITORY !== repository || env.GITHUB_REF_TYPE !== "branch") {
     throw new Error("Full integration requires this repository and the main branch.");
@@ -64,55 +94,100 @@ function assertRunContext(env) {
   }
 }
 
-export function requiredEnvironmentsForLane(selected) {
+function assertLane(selected: string | undefined): asserts selected is FullIntegrationLane {
   if (!lanes.has(selected)) {
     throw new Error(`Unknown lane: ${selected}`);
   }
-  return selected === "all" || credentialedLanes.has(selected) ? ["integration-main"] : [];
 }
 
-function requiredReviewersRule(environment) {
-  return environment.protection_rules?.find((rule) => rule.type === "required_reviewers");
+function environmentsForLane(selected: FullIntegrationLane | "docs") {
+  return selected === "all" || selected === "docs" || credentialedLanes.has(selected)
+    ? ["integration-main"]
+    : [];
 }
 
-function branchPolicies(policies) {
-  return policies?.branch_policies ?? [];
+export function requiredEnvironmentsForLane(selected: string | undefined) {
+  assertLane(selected);
+  return environmentsForLane(selected);
 }
 
-function assertMainOnlyPolicy(environmentName, environment, policies) {
-  if (environment.can_admins_bypass !== false) {
+// Read API fields at the point the policy uses them. Missing objects and
+// malformed arrays must fail in the same order as the policy checks.
+function field(value: unknown, name: string | number): unknown {
+  if (value == null) {
+    throw new TypeError(`Cannot read properties of ${value} (reading '${name}')`);
+  }
+  return Reflect.get(Object(value), String(name));
+}
+
+function optionalField(value: unknown, name: string | number): unknown {
+  return value == null ? undefined : field(value, name);
+}
+
+function array(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function assertMainOnlyPolicy(environmentName: string, environment: unknown, policies: unknown) {
+  if (field(environment, "can_admins_bypass") !== false) {
     throw new Error(`Protected environment ${environmentName} must disable administrator bypass.`);
   }
-  const policy = environment.deployment_branch_policy;
-  if (policy?.custom_branch_policies !== true || policy?.protected_branches !== false) {
+  const policy = field(environment, "deployment_branch_policy");
+  if (
+    optionalField(policy, "custom_branch_policies") !== true ||
+    optionalField(policy, "protected_branches") !== false
+  ) {
     throw new Error(`Protected environment ${environmentName} must use custom main-only policy.`);
   }
-  const branches = branchPolicies(policies);
+  const branches = optionalField(policies, "branch_policies") ?? [];
   if (
-    policies?.total_count !== 1 ||
-    branches.length !== 1 ||
-    branches[0]?.name !== "main" ||
-    branches[0]?.type !== "branch"
+    optionalField(policies, "total_count") !== 1 ||
+    field(branches, "length") !== 1 ||
+    optionalField(field(branches, 0), "name") !== "main" ||
+    optionalField(field(branches, 0), "type") !== "branch"
   ) {
     throw new Error(`Protected environment ${environmentName} must allow only the main branch.`);
   }
 }
 
-export function validateEnvironmentPolicy(environmentName, environment, policies) {
-  const reviewers = requiredReviewersRule(environment);
-  if ((reviewers?.reviewers ?? []).length > 0) {
+export function validateEnvironmentPolicy(
+  environmentName: string,
+  environment: unknown,
+  policies: unknown,
+) {
+  const rules = field(environment, "protection_rules");
+  if (rules != null && !array(rules)) {
+    throw new TypeError("environment.protection_rules?.find is not a function");
+  }
+  const reviewers = rules?.find((rule) => field(rule, "type") === "required_reviewers");
+  if (Number(field(optionalField(reviewers, "reviewers") ?? [], "length")) > 0) {
     throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
   }
   assertMainOnlyPolicy(environmentName, environment, policies);
 }
 
-function positiveId(value) {
+function positiveId(value: string | undefined) {
   return (
     typeof value === "string" && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value))
   );
 }
 
-async function validateManualApproval(env, github) {
+function hasApprovedTeam(rule: unknown) {
+  if (field(rule, "prevent_self_review") !== false) {
+    return false;
+  }
+  const reviewers = field(rule, "reviewers");
+  if (optionalField(reviewers, "length") !== 1) {
+    return false;
+  }
+  const reviewer = field(reviewers, 0);
+  return (
+    optionalField(reviewer, "type") === "Team" &&
+    optionalField(field(reviewer, "reviewer"), "id") === approvedTeamId
+  );
+}
+
+async function validateManualApproval(env: NodeJS.ProcessEnv, github: GithubReader) {
   if (
     !positiveId(env.GITHUB_ACTOR_ID) ||
     !positiveId(env.GITHUB_RUN_ID) ||
@@ -124,49 +199,65 @@ async function validateManualApproval(env, github) {
       "Manual integration requires the same identified dispatcher and triggering actor.",
     );
   }
-  const read = (path) => github({ repository, token: env.GITHUB_TOKEN, path });
+  const read = (path: string) => github({ repository, token: env.GITHUB_TOKEN, path });
   const environment = await read(`/environments/${approvalEnvironment}`);
   const policies = await read(`/environments/${approvalEnvironment}/deployment-branch-policies`);
   assertMainOnlyPolicy(approvalEnvironment, environment, policies);
-  const rules = environment.protection_rules?.filter((rule) => rule.type === "required_reviewers");
-  const rule = rules?.[0];
+  const protectionRules = field(environment, "protection_rules");
+  if (protectionRules != null && !array(protectionRules)) {
+    throw new TypeError("environment.protection_rules?.filter is not a function");
+  }
+  const rules = protectionRules?.filter((rule) => field(rule, "type") === "required_reviewers");
   if (
-    environment.id !== approvalEnvironmentId ||
-    environment.name !== approvalEnvironment ||
+    field(environment, "id") !== approvalEnvironmentId ||
+    field(environment, "name") !== approvalEnvironment ||
     rules?.length !== 1 ||
-    rule.prevent_self_review !== false ||
-    rule.reviewers?.length !== 1 ||
-    rule.reviewers[0]?.type !== "Team" ||
-    rule.reviewers[0]?.reviewer?.id !== approvedTeamId
+    !hasApprovedTeam(rules[0])
   ) {
     throw new Error(
       "Manual integration approval must use only the configured team and environment.",
     );
   }
   const reviews = await read(`/actions/runs/${env.GITHUB_RUN_ID}/approvals`);
-  if (!Array.isArray(reviews)) {
+  if (!array(reviews)) {
     throw new Error("Manual integration approval history is unavailable.");
   }
-  const targeted = reviews.filter((review) =>
-    review.environments?.some((item) => item.id === approvalEnvironmentId),
-  );
-  const review = targeted[0];
+  const targeted = reviews.flatMap((review) => {
+    const environments = field(review, "environments");
+    if (environments == null) {
+      return [];
+    }
+    if (!array(environments)) {
+      throw new TypeError("review.environments?.some is not a function");
+    }
+    return environments.some((item) => field(item, "id") === approvalEnvironmentId)
+      ? [{ review, environments }]
+      : [];
+  });
+  const [target] = targeted;
   if (
     targeted.length !== 1 ||
-    review.state !== "approved" ||
-    !review.environments.some(
-      (item) => item.id === approvalEnvironmentId && item.name === approvalEnvironment,
+    !target ||
+    field(target.review, "state") !== "approved" ||
+    !target.environments.some(
+      (item) =>
+        field(item, "id") === approvalEnvironmentId && field(item, "name") === approvalEnvironment,
     ) ||
-    review.user?.id !== Number(env.GITHUB_ACTOR_ID) ||
-    review.user?.type !== "User" ||
-    typeof review.user?.login !== "string" ||
-    review.user.login.toLowerCase() !== env.GITHUB_ACTOR.toLowerCase()
+    !matchesDispatcher(field(target.review, "user"), Number(env.GITHUB_ACTOR_ID), env.GITHUB_ACTOR)
   ) {
     throw new Error("Manual integration requires this dispatcher's approved environment review.");
   }
 }
 
-async function fetchGithubJson({ repository, token, path }) {
+function matchesDispatcher(user: unknown, actorId: number, actor: string) {
+  if (optionalField(user, "id") !== actorId || optionalField(user, "type") !== "User") {
+    return false;
+  }
+  const login = field(user, "login");
+  return typeof login === "string" && login.toLowerCase() === actor.toLowerCase();
+}
+
+async function fetchGithubJson({ repository, token, path }: GithubRequest): Promise<unknown> {
   const response = await fetch(`https://api.github.com/repos/${repository}${path}`, {
     headers: {
       Accept: "application/vnd.github+json",
@@ -192,19 +283,20 @@ export async function validateFullIntegrationPreflight({
   env = process.env,
   github = fetchGithubJson,
   impactMode = "full",
-} = {}) {
+}: PreflightInput = {}): Promise<PreflightResult> {
   assertRunContext(env);
-  const read = (path) =>
+  const read = (path: string) =>
     github({ repository: env.GITHUB_REPOSITORY, token: env.GITHUB_TOKEN, path });
   const scheduled = env.GITHUB_EVENT_NAME === "schedule";
   if (scheduled) {
     const { decideAdmission } = await import("./full-integration-admission.ts");
     const { readScheduleHistory } = await import("./full-integration-schedule-history.ts");
     const now = Date.now();
-    const history = await readScheduleHistory(read, env.GITHUB_SHA, Number(env.GITHUB_RUN_ID), now);
-    const decision = decideAdmission({ ...history, now, eventSha: env.GITHUB_SHA });
+    const eventSha = env.GITHUB_SHA ?? "";
+    const history = await readScheduleHistory(read, eventSha, Number(env.GITHUB_RUN_ID), now);
+    const decision = decideAdmission({ ...history, now, eventSha });
     if (decision.result === "hold") {
-      const failure = history.failure;
+      const failure = "failure" in history ? history.failure : undefined;
       const detail = failure ? ` (${failure.operation}: ${failure.kind})` : "";
       throw new Error(`Full Integration schedule could not verify admission metadata${detail}.`);
     }
@@ -219,7 +311,10 @@ export async function validateFullIntegrationPreflight({
     impactMode,
   });
   // Validate selection before any authorization or protected-environment reads.
-  const required = requiredEnvironmentsForLane(selected === "docs" ? "all" : selected);
+  if (selected !== "docs") {
+    assertLane(selected);
+  }
+  const required = environmentsForLane(selected);
   if (env.GITHUB_EVENT_NAME === "workflow_dispatch") {
     await validateManualApproval(env, github);
   }
@@ -238,18 +333,20 @@ export async function validateFullIntegrationPreflight({
   }
   if (scheduled) {
     const current = await read("/git/ref/heads/main");
-    if (
-      current?.ref !== "refs/heads/main" ||
-      current.object?.type !== "commit" ||
-      !/^[0-9a-f]{40}$/.test(current.object.sha ?? "")
-    ) {
+    const object =
+      optionalField(current, "ref") === "refs/heads/main" ? field(current, "object") : undefined;
+    const currentSha =
+      optionalField(object, "type") === "commit" ? field(object, "sha") : undefined;
+    if (!/^[0-9a-f]{40}$/.test(String(currentSha ?? ""))) {
       throw new Error("Full Integration schedule could not verify the current main revision.");
     }
-    if (current.object.sha !== env.GITHUB_SHA) {
+    if (currentSha !== env.GITHUB_SHA) {
       return { selectedLane: "skip", runAll: false, reason: "stale-event" };
     }
   }
-  return { selectedLane: selected, runAll: selected === "all" };
+  return selected === "all"
+    ? { selectedLane: selected, runAll: true }
+    : { selectedLane: selected, runAll: false };
 }
 
 async function main() {
@@ -278,8 +375,8 @@ async function main() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
-    console.error(error.message);
+  main().catch((error: unknown) => {
+    console.error(field(error, "message"));
     process.exit(1);
   });
 }
