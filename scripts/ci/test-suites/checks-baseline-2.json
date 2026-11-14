@@ -109,7 +109,7 @@
     "tests/integration/repository-credentials-shutdown.test.mjs",
     "tests/conformance/repository-transactions.test.mjs",
     "tests/integration/google-id-token.test.mjs",
-    "tests/integration/first-agent-startup.test.mjs",
+    "tests/integration/first-agent-startup.test.ts",
     "tests/conformance/repository-sessions-memory.test.ts",
     "tests/conformance/repository-credentials-github-token.test.ts",
     "tests/conformance/repository-credentials-registry.test.mjs",
@@ -212,7 +212,7 @@
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
     },
     {
-      "path": "tests/integration/first-agent-startup.test.mjs",
+      "path": "tests/integration/first-agent-startup.test.ts",
       "expectedTests": [
         "first-Agent starts without installed workspace dependencies",
         "first-Agent accepts current Compose-backed Kubernetes development state",

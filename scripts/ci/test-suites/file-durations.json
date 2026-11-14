@@ -220,7 +220,7 @@
     "tests/integration/egress-prepared-github-metadata.test.mjs": 1600,
     "tests/integration/egress-stock-online-authority.test.mjs": 700,
     "tests/integration/egress-stock-online-git-authority.test.mjs": 900,
-    "tests/integration/first-agent-startup.test.mjs": 1400,
+    "tests/integration/first-agent-startup.test.ts": 1400,
     "tests/integration/full-integration-coverage.test.ts": 34100,
     "tests/integration/full-integration-preflight.test.ts": 1000,
     "tests/integration/full-integration-reuse.test.ts": 6100,

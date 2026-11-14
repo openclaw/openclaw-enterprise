@@ -1459,7 +1459,7 @@ function idHash(id) {
 
 async function readyGateway(stack, agentId, revisionId) {
   const pods = await agentPods(stack, agentId);
-  // Same revision match as scripts/first-agent-model.mjs: the gateway Pod
+  // Same revision match as scripts/first-agent-model.ts: the gateway Pod
   // mounts its revision's configuration ConfigMap.
   const configMap = `gateway-${idHash(agentId)}-rev-${idHash(revisionId)}`;
   const gateways = pods.filter(

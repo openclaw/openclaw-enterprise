@@ -1,21 +1,22 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
-import { createServer } from "node:http";
-import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createServer, type RequestListener } from "node:http";
+import { cp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { runInNewContext } from "node:vm";
 
 import {
+  FirstAgentModelError,
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
   verifyFirstAgentModel,
-} from "../../scripts/first-agent-model.mjs";
+  type GatewaySelection,
+  type ModelKubectl,
+} from "../../scripts/first-agent-model.ts";
 import {
   registerFirstAgentFailureAdviceCases,
   registerFirstAgentLockAndRecordCases,
@@ -23,7 +24,11 @@ import {
 import { listen } from "../helpers/listen.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { servedAs } from "../helpers/agent-identity.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import type {
+  RuntimeLogRecord,
+  RuntimeLogStream,
+} from "../../packages/contracts/src/runtime-logs.ts";
 import {
   GATEWAY_SECURITY_DEFAULTS,
   withGatewaySecurityDefaults,
@@ -33,8 +38,19 @@ import {
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.ts");
 
-async function fixture(t, sandboxDriver) {
-  const directory = await mkdtemp(join(await realpath(tmpdir()), "oce-first-agent-startup-"));
+type Fields = Record<string, unknown>;
+
+function record(value: unknown): Fields {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+  return value as Fields;
+}
+
+async function developmentState(directory: string): Promise<Fields> {
+  return record(JSON.parse(await readFile(join(directory, "state.json"), "utf8")));
+}
+
+async function fixture(t: TestContext, sandboxDriver: string) {
+  const directory = await realpath(await temporaryDirectory(t, "oce-first-agent-startup-"));
   const tools = join(directory, "tools");
   const engineLog = join(directory, "engine.log");
   const keyPath = join(directory, "initial-admin-service-key.json");
@@ -78,8 +94,7 @@ async function fixture(t, sandboxDriver) {
       { mode: 0o600 },
     ),
   ]);
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     FIRST_AGENT_TEST_ENGINE_LOG: engineLog,
     OCC_DEVELOPMENT_STATE_DIRECTORY: directory,
@@ -91,7 +106,7 @@ async function fixture(t, sandboxDriver) {
   return { directory, engineLog, env };
 }
 
-function runFirstAgent(env, ...args) {
+function runFirstAgent(env: NodeJS.ProcessEnv, ...args: string[]): string {
   const result = spawnSync(process.execPath, [firstAgent, "state-contract-test", ...args], {
     cwd: repository,
     encoding: "utf8",
@@ -99,7 +114,7 @@ function runFirstAgent(env, ...args) {
     timeout: 10_000,
     maxBuffer: 16_384,
   });
-  assert.equal(result.status, 1, result.error?.message);
+  assert.equal(result.status, 1, result.error);
   const output = `${result.stdout}${result.stderr}`;
   assert.notEqual(
     output,
@@ -125,7 +140,7 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
     "scripts/first-agent-api.ts",
     "scripts/first-agent-database.ts",
     "scripts/first-agent-diagnostics.ts",
-    "scripts/first-agent-model.mjs",
+    "scripts/first-agent-model.ts",
     "scripts/lib/private-owned-path.ts",
   ]) {
     const target = join(directory, path);
@@ -156,7 +171,7 @@ test("first-Agent applies the Name rule before local setup", () => {
   delete env.NODE_TEST_CONTEXT;
   // A missing directory keeps a name that passes the rule from touching a real cluster.
   env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-name-rule-absent";
-  const run = (name) =>
+  const run = (name: string) =>
     spawnSync(process.execPath, [firstAgent, name], {
       cwd: repository,
       encoding: "utf8",
@@ -211,25 +226,28 @@ test("first-Agent requires dedicated Codex for OpenShell before external calls",
 });
 
 test("first-Agent recognizes the prior OpenShell PAT policy only on an identified revision", () => {
-  const record = {
+  const savedRecord = {
     name: "first-agent",
     harness: "codex",
     sandboxDriver: "openshell",
     authMethod: "codex_pat",
   };
-  const settings = (sandbox, approvalsReviewer = "user") => ({
+  const settings = (sandbox: string, approvalsReviewer = "user") => ({
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
   // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
   // the Gateway security defaults the Configuration leaves unset (all of them unless given).
-  const values = (sandbox, approvalsReviewer, defaults) =>
-    withGatewaySecurityDefaults(
-      servedAs(settings(sandbox, approvalsReviewer), record.name),
-      defaults,
-    );
+  const values = (
+    sandbox: string,
+    approvalsReviewer?: string,
+    defaults = GATEWAY_SECURITY_DEFAULTS,
+  ): Fields => {
+    const snapshot = record(servedAs(settings(sandbox, approvalsReviewer), savedRecord.name));
+    return record(withGatewaySecurityDefaults(snapshot, defaults));
+  };
   const configured = settings("read-only");
-  const matches = (snapshot, priorRevisionId) =>
-    firstAgentRevisionValuesMatch(snapshot, configured, record, "rev_saved", priorRevisionId);
+  const matches = (snapshot: Fields, priorRevisionId?: string) =>
+    firstAgentRevisionValuesMatch(snapshot, configured, savedRecord, "rev_saved", priorRevisionId);
 
   const prior = values("workspace-write");
   assert.equal(matches(prior, "rev_saved"), true, "read the saved or active prior revision");
@@ -245,7 +263,7 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     firstAgentRevisionValuesMatch(
       prior,
       configured,
-      { ...record, authMethod: "api_key" },
+      { ...savedRecord, authMethod: "api_key" },
       "rev_saved",
       "rev_saved",
     ),
@@ -280,7 +298,9 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   }
   // The fill keeps explicit values, so a prior revision with another value is still drift.
   for (const { path, explicit } of GATEWAY_SECURITY_DEFAULTS) {
-    const snapshot = withSetting(values("danger-full-access"), path, explicit);
+    const [first, ...rest] = path;
+    assert.ok(first !== undefined);
+    const snapshot = record(withSetting(values("danger-full-access"), [first, ...rest], explicit));
     assert.equal(matches(snapshot, "rev_saved"), false, `an explicit ${path.join(".")}`);
   }
   assert.equal(
@@ -296,7 +316,7 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
 });
 
 test("first-Agent flags a prior OpenShell PAT revision and points at --replace-key", () => {
-  const values = (sandbox) => ({
+  const values = (sandbox: string) => ({
     plugins: {
       entries: { codex: { config: { appServer: { sandbox, approvalsReviewer: "user" } } } },
     },
@@ -344,9 +364,10 @@ test("first-Agent admits dedicated Codex Control UI with OpenShell development s
 
 test("first-Agent validates launcher-owned HTTPS endpoints before external calls", async (t) => {
   const { directory, engineLog, env } = await fixture(t, "none");
-  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  const state = await developmentState(directory);
+  assert.ok(typeof state.browserOrigin === "string");
   // Browser settings are mandatory even when this setup disables Agent browser access.
-  for (const [label, change] of [
+  const invalidSettings = [
     ["missing origin", { browserOrigin: undefined }],
     ["missing domain", { nativeAdminDomain: undefined }],
     ["unowned domain", { nativeAdminDomain: "agents.other.oce.localhost" }],
@@ -355,7 +376,8 @@ test("first-Agent validates launcher-owned HTTPS endpoints before external calls
     ["mismatched port", { browserPort: 8444 }],
     ["missing port", { browserPort: undefined }],
     ["invalid port", { browserPort: 65536 }],
-  ]) {
+  ] as const;
+  for (const [label, change] of invalidSettings) {
     await writeFile(join(directory, "state.json"), JSON.stringify({ ...state, ...change }));
     assert.match(runFirstAgent(env), /recorded Local Setup .* is invalid/, label);
     await assert.rejects(readFile(engineLog), { code: "ENOENT" });
@@ -370,7 +392,7 @@ test("first-Agent validates launcher-owned HTTPS endpoints before external calls
 
 test("first-Agent admits a native admin origin on the default HTTPS port", async (t) => {
   const { directory, engineLog, env } = await fixture(t, "openshell");
-  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  const state = await developmentState(directory);
   const host = "console.occ-dev-first-agent-test.oce.localhost";
   // Only the canonical origin emitted by Local Setup is accepted.
   for (const [browserOrigin, admitted] of [
@@ -379,7 +401,7 @@ test("first-Agent admits a native admin origin on the default HTTPS port", async
     [`https://${host}:443/`, false],
     [`https://${host}/`, false],
     [`https://${host}:0443`, false],
-  ]) {
+  ] as const) {
     await rm(engineLog, { force: true });
     await writeFile(
       join(directory, "state.json"),
@@ -404,26 +426,27 @@ test("first-Agent admits a native admin origin on the default HTTPS port", async
 // A k3d development state whose controller answers the reads first-agent makes before it
 // touches the database: the Installation, a ready default Namespace and its (empty) Agent list.
 // kubectl records the PostgreSQL exec and fails, so a run that gets that far stops there.
-async function k3dFixture(t, sandboxDriver = "none", handleRequest) {
+async function k3dFixture(t: TestContext, sandboxDriver = "none", handleRequest?: RequestListener) {
   const fixtureState = await fixture(t, sandboxDriver);
   const { directory } = fixtureState;
   const server = createServer(
     handleRequest ??
       ((request, response) => {
-        const data = {
+        const routes: Fields = {
           "/installation": { id: "ins_test" },
           "/namespaces": [{ id: "ns_test", name: "default" }],
           "/namespaces/ns_test": { id: "ns_test", status: "ready" },
           "/namespaces/ns_test/agents": [],
-        }[request.url];
+        };
+        const data = routes[request.url ?? ""];
         response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
         response.end(
           JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }),
         );
       }),
   );
-  await listen(t, server);
-  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  const apiPort = await listen(t, server);
+  const state = await developmentState(directory);
   await writeFile(
     join(directory, "state.json"),
     `${JSON.stringify({
@@ -431,7 +454,7 @@ async function k3dFixture(t, sandboxDriver = "none", handleRequest) {
       deploymentMode: "k3d",
       composeProject: "",
       platformNamespace: "occ-system",
-      apiPort: server.address().port,
+      apiPort,
     })}\n`,
     { mode: 0o600 },
   );
@@ -481,7 +504,7 @@ esac
 }
 
 // spawnSync would block this process's fake controller, so wait asynchronously.
-async function runFirstAgentAsync(env, ...args) {
+async function runFirstAgentAsync(env: NodeJS.ProcessEnv, ...args: string[]): Promise<string> {
   const child = spawn(process.execPath, [firstAgent, "state-contract-test", ...args], {
     cwd: repository,
     env,
@@ -489,9 +512,12 @@ async function runFirstAgentAsync(env, ...args) {
     timeout: 10_000,
   });
   let output = "";
-  child.stdout.on("data", (chunk) => (output += chunk));
-  child.stderr.on("data", (chunk) => (output += chunk));
-  const [status] = await once(child, "close");
+  child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
+  child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
+  const status = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
   assert.equal(status, 1, output);
   return output;
 }
@@ -518,7 +544,7 @@ test("first-Agent counts a prompt's characters as code points", () => {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-prompt-characters";
-  const run = (prompt) =>
+  const run = (prompt: string) =>
     spawnSync(process.execPath, [firstAgent, "MyAgent", "--prompt", prompt], {
       cwd: repository,
       encoding: "utf8",
@@ -556,7 +582,7 @@ test("first-Agent does not take the next flag as the prompt or harness", () => {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-prompt-flag-absent";
-  const run = (args) =>
+  const run = (args: string[]) =>
     spawnSync(process.execPath, [firstAgent, ...args], {
       cwd: repository,
       encoding: "utf8",
@@ -582,15 +608,17 @@ test("first-Agent does not take the next flag as the prompt or harness", () => {
 
 test("model verification retains safe failure metadata without forwarding probe output", async (t) => {
   let responseStatus = 503;
-  let responseBody = "private-upstream-body";
+  let responseBody: string | ((body: unknown) => string) = "private-upstream-body";
   let requests = 0;
   const server = createServer(async (request, response) => {
     requests++;
     response.writeHead(request.headers.authorization ? responseStatus : 401);
     if (typeof responseBody === "function") {
       let body = "";
-      for await (const chunk of request) {
-        body += chunk;
+      const chunks: AsyncIterable<unknown, unknown, unknown> = request;
+      for await (const chunk of chunks) {
+        assert.ok(Buffer.isBuffer(chunk));
+        body += chunk.toString();
       }
       response.end(responseBody(JSON.parse(body)));
     } else {
@@ -598,9 +626,9 @@ test("model verification retains safe failure metadata without forwarding probe 
     }
   });
   const port = await listen(t, server);
-  const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 12);
-  let suppliedOutput;
-  const kubectl = async (...args) => {
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+  let suppliedOutput: string | undefined;
+  const kubectl: ModelKubectl = async (...args) => {
     if (args[1] === "namespaces") {
       return JSON.stringify({ items: [{ metadata: { name: "tenant" } }] });
     }
@@ -629,32 +657,43 @@ test("model verification retains safe failure metadata without forwarding probe 
     // Execute the production serialized probe. Only its transport destination is
     // adapted to an owned loopback server; this does not claim a Gateway/model run.
     let output = "";
-    const input = args.at(-1).input;
+    const options = args.at(-1);
     const program = args.at(-2);
-    const { nonce } = JSON.parse(input);
+    assert.ok(typeof options === "object" && options !== null && "input" in options);
+    const { input } = options;
+    assert.ok(typeof input === "string");
+    assert.ok(typeof program === "string");
+    const { nonce } = record(JSON.parse(input));
+    assert.ok(typeof nonce === "string");
     assert.ok(!program.includes(nonce));
-    await runInNewContext(program, {
+    const completion: unknown = runInNewContext(program, {
       AbortSignal,
       process: {
         env: { OPENCLAW_GATEWAY_PASSWORD: "synthetic-password" },
         stdin: Readable.from([input]),
         stdout: {
-          write: (value) => {
+          write: (value: string) => {
             output += value;
           },
         },
       },
-      fetch: (url, options) => {
+      fetch: (url: string, options: RequestInit) => {
         assert.equal(url, "http://127.0.0.1:8080/v1/chat/completions");
         return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, options);
       },
     });
+    await completion;
     return output;
   };
-  let sessionKey;
-  let interval;
-  let selectedGateway;
-  const verify = (code, status) =>
+  const sessionKey = "agent:main:git-withdrawal-00000000-0000-4000-8000-000000000001";
+  let interval: FirstAgentModelError["requestInterval"];
+  const readInterval = () => interval;
+  let selectedGateway: GatewaySelection | undefined;
+  const verify = (
+    code: FirstAgentModelError["code"],
+    status: number | undefined,
+    selectedSession: string | null = sessionKey,
+  ) =>
     assert.rejects(
       verifyFirstAgentModel(kubectl, {
         namespaceId: "namespace",
@@ -664,9 +703,10 @@ test("model verification retains safe failure metadata without forwarding probe 
         onGatewaySelected: (target) => {
           selectedGateway = target;
         },
-        sessionKey,
+        sessionKey: selectedSession ?? undefined,
       }),
-      (error) => {
+      (error: unknown) => {
+        assert.ok(error instanceof FirstAgentModelError);
         interval = error.requestInterval;
         assert.equal(error.code, code);
         assert.equal(error.status, status);
@@ -675,17 +715,16 @@ test("model verification retains safe failure metadata without forwarding probe 
         return true;
       },
     );
-  await verify("upstream", 503);
+  await verify("upstream", 503, null);
   assert.deepEqual(selectedGateway, { pod: "gateway", uid: "gateway-uid", restartCount: 2 });
   assert.equal(requests, 2, "one unauthenticated check and one authorized request; no replay");
   assert.equal(interval, undefined);
-  sessionKey = "agent:main:git-withdrawal-00000000-0000-4000-8000-000000000001";
   responseStatus = 500;
   const start = Date.now();
   await verify("upstream", 500);
-  assert.ok(
-    interval.start >= start && interval.end <= Date.now() && interval.start <= interval.end,
-  );
+  const timed = readInterval();
+  assert.ok(timed);
+  assert.ok(timed.start >= start && timed.end <= Date.now() && timed.start <= timed.end);
   assert.equal(requests, 4, "diagnostic timing must not replay a model request");
   assert.equal(Object.isFrozen(interval), true);
   for (const invalid of [
@@ -731,13 +770,19 @@ test("model verification retains safe failure metadata without forwarding probe 
   suppliedOutput = undefined;
   const id = "chatcmpl_20000000-0000-4000-8000-000000000001";
   let completionId = id;
-  responseBody = (body) =>
-    JSON.stringify({
+  responseBody = (body) => {
+    const { messages } = record(body);
+    assert.ok(Array.isArray(messages));
+    const prompts: unknown[] = messages;
+    const { content } = record(prompts[0]);
+    assert.ok(typeof content === "string");
+    const nonce = content.match(/FIRST_AGENT_[0-9a-f-]+/);
+    assert.ok(nonce);
+    return JSON.stringify({
       id: completionId,
-      choices: [
-        { message: { content: body.messages[0].content.match(/FIRST_AGENT_[0-9a-f-]+/)[0] } },
-      ],
+      choices: [{ message: { content: nonce[0] } }],
     });
+  };
   const before = requests;
   const proof = await verifyFirstAgentModel(kubectl, {
     namespaceId: "namespace",
@@ -760,22 +805,33 @@ test("first-Agent diagnostics bind runtime streams and bound the authenticated H
   const { collectFirstAgentDiagnostics } = await import("../../scripts/first-agent-diagnostics.ts");
   const { sanitizeRuntimeLogChunk, runtimeLogGap } =
     await import("../../packages/occ/src/runtime-logs/sanitize.ts");
-  const replay = JSON.parse(
-    await readFile(
-      join(
-        repository,
-        "tests/fixtures/runtime-logs/replay/codex-model-connection-failures.golden.json",
+  const replay = record(
+    JSON.parse(
+      await readFile(
+        join(
+          repository,
+          "tests/fixtures/runtime-logs/replay/codex-model-connection-failures.golden.json",
+        ),
+        "utf8",
       ),
-      "utf8",
     ),
   );
-  const targets = ["gateway", "agent"].map((role) => ({
+  assert.ok(Array.isArray(replay.records));
+  const replayRecords: unknown[] = replay.records;
+  const targets = (["gateway", "agent"] as const).map((role) => ({
     role,
     name: `${role}-pod`,
     uid: `${role}-uid`,
     container: role === "agent" ? "sandbox" : "gateway",
     restartCount: 0,
   }));
+  type Container = {
+    name: string;
+    state: string;
+    ready: boolean;
+    restartCount: number;
+    lastTermination?: null;
+  };
   const description = {
     revisionId: "revision",
     harness: { state: "running" },
@@ -790,7 +846,7 @@ test("first-Agent diagnostics bind runtime streams and bound the authenticated H
           restartCount: 0,
           lastTermination: null,
         },
-      ],
+      ] as Container[],
     })),
     sources: targets.map((target) => ({
       id: target.role,
@@ -800,12 +856,13 @@ test("first-Agent diagnostics bind runtime streams and bound the authenticated H
     })),
   };
   let mode = "normal";
-  let reads = [];
+  let reads: URL[] = [];
   // Exercise the real CLI HTTP reader and evidence reducer. The server supplies the
   // documented runtime API envelope; this is not a Kubernetes/OpenShell runtime proof.
   const server = createServer((request, response) => {
     assert.equal(request.headers["x-api-key"], "synthetic-service-key");
     assert.equal(request.method, "GET");
+    assert.ok(request.url);
     const url = new URL(request.url, "http://localhost");
     reads.push(url);
     response.setHeader("content-type", "application/json");
@@ -825,40 +882,44 @@ test("first-Agent diagnostics bind runtime streams and bound the authenticated H
     if (url.pathname.endsWith("/runtime")) {
       const data = structuredClone(description);
       if (mode === "pod-replaced") {
-        data.pods[0].uid = "replacement-uid";
+        data.pods[0]!.uid = "replacement-uid";
       }
       if (mode === "extra-gateway") {
-        data.pods.push({ ...data.pods[0], name: "other-gateway", uid: "other-uid" });
-        data.sources[0].pods.push({ ...targets[0], name: "other-gateway", uid: "other-uid" });
+        data.pods.push({ ...data.pods[0]!, name: "other-gateway", uid: "other-uid" });
+        data.sources[0]!.pods.push({ ...targets[0]!, name: "other-gateway", uid: "other-uid" });
       }
       if (mode === "gateway-init") {
-        data.pods[0].containers.push({
+        data.pods[0]!.containers.push({
           name: "initialize-workspace",
           state: "terminated",
           ready: false,
           restartCount: 0,
         });
-        data.sources[0].pods.push({ ...targets[0], container: "initialize-workspace" });
+        data.sources[0]!.pods.push({ ...targets[0]!, container: "initialize-workspace" });
       }
       response.end(JSON.stringify({ data }));
       return;
     }
     const target = targets.find((item) => item.role === url.searchParams.get("source"));
+    assert.ok(target);
     assert.equal(url.searchParams.get("pod"), target.name);
     assert.equal(url.searchParams.get("container"), target.container);
     assert.equal(url.searchParams.has("sensitiveContent"), false);
-    const stream = {
+    const stream: RuntimeLogStream = {
       source: target.role,
       pod: target.name,
       podUid: target.uid,
       container: target.container,
       restartCount: mode === "restarted" ? 1 : 0,
     };
-    let records = replay.records.map((record) => ({ ...record, stream }));
+    let records: (Fields | RuntimeLogRecord)[] = replayRecords.map((value) => ({
+      ...record(value),
+      stream,
+    }));
     if (mode === "private-prose") {
       // Real API sanitization removes credential patterns, but retains some free-form
       // operational prose. The CLI promises a narrower, fixed diagnostic summary.
-      records = sanitizeRuntimeLogChunk({
+      const sanitized = sanitizeRuntimeLogChunk({
         stream,
         truncated: false,
         lines: [
@@ -893,12 +954,14 @@ test("first-Agent diagnostics bind runtime streams and bound the authenticated H
         ].map((value) => ({ time: null, raw: JSON.stringify(value) })),
       }).records;
       assert.ok(
-        records.some((record) => record.type === "line" && record.message.includes("confidential")),
+        sanitized.some(
+          (record) => record.type === "line" && record.message.includes("confidential"),
+        ),
         "the real sanitizer retains prose that the CLI must omit",
       );
-      records = [...records];
+      records = [...sanitized];
     }
-    if (["truncated", "window_exceeded", "stream_replaced"].includes(mode)) {
+    if (mode === "truncated" || mode === "window_exceeded" || mode === "stream_replaced") {
       records.push(runtimeLogGap(mode, stream));
     }
     records.push({
