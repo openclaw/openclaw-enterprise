@@ -471,13 +471,13 @@ test("Compose shutdown keeps copied service keys and leaves Namespace networks t
   );
   assert.ok(browser, "expected a Compose browser state directory");
   const record = join(fixture.directory, browser, "dev-up-key-directories");
-  await assert.rejects(stat(record), { code: "ENOENT" });
   const other = join(fixture.directory, "openclaw-dev-up-key.other");
   await mkdir(other, { mode: 0o700 });
   const otherKey = join(other, "initial-admin-service-key.json");
   await writeFile(otherKey, "other project", { mode: 0o600 });
   const entries = `${join(fixture.directory, created)}\n${other}\n`;
-  await writeFile(record, entries, { mode: 0o600 });
+  // Startup must not have created the shared record. Seed it as an older launcher would.
+  await writeFile(record, entries, { flag: "wx", mode: 0o600 });
 
   const before = (await readEngineInvocations(fixture.dockerLog)).length;
   const stopped = await runCommand(fixture.cli, ["dev", "down", "--volumes", "--", ...options], {
