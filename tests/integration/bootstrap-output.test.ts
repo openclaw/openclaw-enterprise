@@ -8,7 +8,7 @@ import {
   requireAbsentBootstrapOutput,
   writeProtectedBootstrapFile,
 } from "../../apps/controller/src/composition/bootstrap-output.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 test("protected bootstrap output rejects relative paths, existing files, symlinks, and public parents", async (t) => {
   const directory = await temporaryDirectory(t, "openclaw-bootstrap-output-");
@@ -41,16 +41,17 @@ test("protected bootstrap output rejects relative paths, existing files, symlink
   );
 });
 
-test("protected bootstrap output rejects oversized basenames", () => {
-  const longBasename = "a".repeat(256);
-  assert.throws(
-    () =>
-      bootstrapOutputPath(
-        `/var/lib/openclaw/bootstrap/${longBasename}`,
-        "OCC_BOOTSTRAP_PASSWORD_FILE",
-      ),
-    /255 characters/,
-  );
+test("protected bootstrap output limits basenames to 255 UTF-8 bytes", () => {
+  const setting = "OCC_BOOTSTRAP_PASSWORD_FILE";
+  // The multibyte basename fits the old character check but exceeds the filesystem limit.
+  const atLimit = join(tmpdir(), "é".repeat(127) + "a");
+  assert.equal(bootstrapOutputPath(atLimit, setting), atLimit);
+
+  for (const basename of ["é".repeat(128), "a".repeat(256)]) {
+    assert.throws(() => bootstrapOutputPath(join(tmpdir(), basename), setting), {
+      message: `${setting} must use a basename of at most 255 bytes.`,
+    });
+  }
 });
 
 test("protected bootstrap output rejects a trailing path separator", () => {

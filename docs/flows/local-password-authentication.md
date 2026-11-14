@@ -73,7 +73,9 @@ before loading Better Auth. Success logs `installation.already-bootstrapped` wit
 `step: "fast-path"`; a miss or error runs the full Better Auth check. Both paths
 check the base URL first.
 
-For fresh setup, production creates a Better Auth account with a random password;
+Before creating credentials, `apps/controller/src/composition/bootstrap-output.ts:bootstrapOutputPath`
+rejects output basenames over 255 UTF-8 bytes. Production creates a Better Auth
+account with a random password;
 development creates the configured `OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD`
 account. `packages/iam/src/index.ts:createBootstrapAdministratorSeed` adds a
 non-Agent `spn_<uuid>` without a Namespace and a separate unrestricted binding to
@@ -317,7 +319,7 @@ rechecks the resulting proof before issuing its cookie.
   rollback, lost COMMIT replies and password-only logout under contention. Its
   fresh-bootstrap case verifies service identity, output and access, skipping
   existing Installations.
-- `node --test tests/integration/bootstrap-output.test.mjs` covers exclusive
+- `node --test tests/integration/bootstrap-output.test.ts` covers exclusive
   output and rejected unsafe paths. Failed writes retain any created file.
   Database cases require the [disposable PostgreSQL setup](../testing/postgresql.md#postgresql-test-environment);
   an unconfigured/skipped suite is not runtime proof.

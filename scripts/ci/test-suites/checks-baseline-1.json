@@ -116,7 +116,7 @@
     "tests/conformance/console-namespace-name.test.ts",
     "tests/conformance/console-agent-name-runs.test.ts",
     "tests/conformance/console-json-errors.test.ts",
-    "tests/integration/bootstrap-output.test.mjs",
+    "tests/integration/bootstrap-output.test.ts",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/integration/slack-destination.test.ts",
     "tests/conformance/console-gateway-safety.test.ts",
@@ -417,7 +417,7 @@
       ]
     },
     {
-      "path": "tests/integration/bootstrap-output.test.mjs"
+      "path": "tests/integration/bootstrap-output.test.ts"
     },
     {
       "path": "tests/integration/bootstrap-volume.test.ts"

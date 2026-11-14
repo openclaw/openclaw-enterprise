@@ -306,7 +306,7 @@ Run the `image-pair-qualification` lane using the
 current and incompatible older controller and broker images against disposable
 fixtures, checks the admission protocol, and rejects incompatible pairs. It does
 not prove credential disposal or a live Agent workflow. See the
-[qualification test](../../tests/integration/production-image-real-qualification.test.mjs)
+[qualification test](../../tests/integration/production-image-real-qualification.test.ts)
 for fixture setup and expected probe exchanges.
 
 ## Run an authorized live smoke
