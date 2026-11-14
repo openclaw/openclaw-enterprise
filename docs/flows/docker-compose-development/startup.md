@@ -9,9 +9,8 @@ last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
 ## Overview
 
 `scripts/dev-up` runs PostgreSQL, migration, bootstrap, API, and worker in Compose
-or an owned k3d cluster, by default the Kubernetes-only profile
-(`internal/occdev/profile.go:ResolveProfile`). Startup requires authenticated Installation and
-bootstrap Namespace readiness, plus Workspace readiness for OpenShell.
+or owned k3d; Kubernetes-only is the default (`internal/occdev/profile.go:ResolveProfile`).
+Readiness requires authenticated Installation, bootstrap Namespace, and, for OpenShell, Workspace readiness.
 
 ## Entry Points
 
@@ -66,19 +65,15 @@ graph TD
 [step 12](#12-select-kubernetes-development-and-preserve-cleanup-ownership).
 Without a Sandbox Driver, Compose Kubernetes startup requires Node before creating resources.
 
-Engine and Compose JSON probes select Docker or Podman independently of a
-`docker` alias. Podman requires `yq` v4 and a Compose provider. Docker Compute
-requires standalone `podman-compose`, which `scripts/dev-up` pins and `occ dev
-down` matches so the stack is stopped with the provider that started it. The
-Kubernetes-profile startup prefers `docker-compose` and falls back to
-`podman-compose` when `docker-compose` is absent. It uses absolute paths without
-`--project-directory`; shutdown uses the Podman engine directly. Rootful
-Podman on Linux must expose its API socket (for example,
-`systemctl enable --now podman.socket`); startup resolves that socket and pins
-it as `DOCKER_HOST` for the provider. Explicit `-f FILE`, `-fFILE`, `-f=FILE`, `--file FILE`, or
-`--file=FILE` overrides `COMPOSE_FILE` and the default file. Startup and cleanup
-forward attached short options as `--file=FILE` so Podman does not mistake an
-`h` in the path for help. Empty or missing file values fail before configuration rendering.
+Engine and Compose probes select Docker or Podman despite `docker` aliases.
+Podman requires `yq` v4 and a Compose provider. Docker Compute pins standalone
+`podman-compose` for startup and cleanup. Kubernetes startup prefers
+`docker-compose`, then `podman-compose`, with absolute paths and no
+`--project-directory`; shutdown uses Podman directly. Linux rootful Podman
+requires its API socket (`systemctl enable --now podman.socket`), pinned as
+`DOCKER_HOST`. Explicit `-f FILE`, `-fFILE`, `-f=FILE`, `--file FILE`, or
+`--file=FILE` overrides `COMPOSE_FILE` and defaults. Attached short options become
+`--file=FILE` to avoid Podman's help parser. Empty or missing values fail before rendering.
 
 Docker Compose renders JSON; Podman YAML is converted to JSON in private temporary
 storage. `./bin/occ dev analyze-compose` enforces loopback controller and database
@@ -103,13 +98,10 @@ after package changes. The recipe owns plugin and gateway/Codex compatibility;
 
 `compose.yaml:services.postgres`, `compose.yaml:services.migrate`
 
-Compose starts PostgreSQL with the local `occ_postgres_data` volume. Local-only
-administrator credentials initialize the database; checked-in SQL creates the
-less-privileged `occ_migrator` and `occ_app` roles.
-
-Through Compose, `dev-up` runs migration after PostgreSQL, using
-`OCC_MIGRATION_DATABASE_URL` and Drizzle. API and worker never use the migrator
-or PostgreSQL administrator URL.
+PostgreSQL initializes `occ_postgres_data` with local-only administrator credentials;
+SQL creates `occ_migrator` and `occ_app`. Migration then uses
+`OCC_MIGRATION_DATABASE_URL` and Drizzle. API and worker never use migrator or
+administrator URLs.
 
 ### 3. Initialize before starting the API or worker
 
@@ -227,9 +219,8 @@ Failure triggers cluster rollback. On readiness failure, writable stderr receive
 `OCE_CODEX_SECCOMP_READINESS_FAILURE` before cleanup with operation
 `runtime-default-pod-readiness` and a recognized waiting reason or `null`.
 
-Startup waits for the Gateway, certificate, and proxy Pods before reporting
-success. Envoy source addresses must fall inside the selected node's Pod CIDR;
-the tenant ingress policy must still admit only the Gateway's exact proxy peer.
+Startup awaits Gateway, certificate and proxy Pods. Envoy sources must match the
+node's Pod CIDR; tenant ingress admits only the Gateway's exact proxy peer.
 
 Loopback HTTPS uses a per-installation CA whose leaf covers only its console
 and Agent hosts. API and browser NodePorts publish only on host loopback; the CA
@@ -274,9 +265,6 @@ server-assigned Namespace ID, generates CA and exact-host certificates, and upgr
 Helm with Kubernetes inputs, Repo Driver and worker sidecar. Discovery only checks
 approved references and profiles. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
-`OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` for Docker Compute, else
-`kubernetes`; unsupported values fail before resource creation.
-
 ### 13. Bootstrap OCC, create k3d, and prepare runtime configuration
 
 `internal/occdev/up.go:Up`, `internal/occdev/up.go:waitCompleted`,
@@ -299,8 +287,8 @@ kubeconfig setup, alongside runtime import and OpenShell installation. Both fini
 before routing resolves PostgreSQL’s address and starts OCC. Failure cancels and
 drains siblings before rollback. Cold builds and Podman install routing afterward.
 
-Both concurrently install cert-manager and Envoy, verifying checksums, CRDs and rollout before GatewayClass acceptance or routing
-configuration. Envoy waits for k3s-owned Gateway API CRDs.
+Cert-manager and Envoy install concurrently, with checksum, CRD and rollout checks
+before GatewayClass acceptance or routing. Envoy waits for k3s-owned Gateway API CRDs.
 Without OpenShell, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
 image; its default `+v1.35` resolves the latest 1.35 patch. An explicit
 image skips lookup. OpenShell uses its pinned image in both control-plane modes.
@@ -310,19 +298,18 @@ and current context. Both Kubernetes profiles use
 (high threshold 100, low threshold 99). Disk-pressure eviction stays enabled.
 
 Host kubeconfig stays private. Non-root API/worker containers receive read-only
-configuration and kubeconfig targeting the TLS-verified internal load balancer,
-without the engine socket.
+configuration and kubeconfig targeting the TLS-verified load balancer, without engine access.
 
-Before importing a source-built runtime, `importRuntime` passes the optional
-[build CA file](../../reference/settings/development.md) to the engine as
-a build secret. Selecting an existing runtime image skips this build.
+`importRuntime` builds source runtimes with the optional
+[build CA](../../reference/settings/development.md) secret. Existing runtime selections skip building.
 
 `internal/occdev/kubernetes.go:engineImageReference` resolves engine names,
-defaults tags to `:latest`, and rejects missing or ambiguous matches.
-`internal/occdev/k3d_import.go:stageDevelopmentPlatformChild` stages a registry
-platform child for complete single-platform export of digest-pinned multi-arch
-images. Unlisted sources or failed pulls keep the original reference and filter.
-`importDevelopmentImage` resolves cluster digests. Both paths call
+including Podman `localhost/` and Docker Hub, defaults tags to `:latest`,
+and rejects missing or ambiguous matches. For multi-arch digests that Docker 29
+cannot export completely, `internal/occdev/k3d_import.go:stageDevelopmentPlatformChild`
+selects the registry's platform child for a complete archive. Unlisted sources or
+failed pulls retain the pinned reference and filter. `importDevelopmentImage`
+resolves cluster digests. Both paths call
 `internal/occdev/status_proxy_k3d.go:developmentStatusProxySource` before
 `writeInstallation`, retaining caller context for node inventory.
 
@@ -331,12 +318,11 @@ images. Unlisted sources or failed pulls keep the original reference and filter.
 `cni0` source in the Pod CIDR and returns `/32`. Errors or cancellation stop
 Installation writing and trigger cleanup.
 
-`internal/occdev/kubernetes.go:writeInstallation` then selects Kubernetes Compute,
-Configuration, and Secret Drivers with native IAM; without OpenShell,
-it adds both bundled Presets and the Codex Plugin Driver after the shared Codex
-sandbox check. Its runtime sets the transport Secret prefix, gateway
-storage class, and memory limits
-of 4 GiB per gateway and 6 GiB per Harness.
+`internal/occdev/kubernetes.go:writeInstallation` selects Kubernetes Compute,
+Configuration, Secret Drivers, and native IAM. Without OpenShell, it adds both
+Presets and the Codex Plugin Driver after the sandbox check. Runtime settings
+include the transport Secret prefix, gateway storage class, and memory limits:
+4 GiB per gateway and 6 GiB per Harness.
 
 Compose installs OpenShell in k3d operator workspace mode; see the
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
@@ -439,6 +425,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 - 2026-11-17 01:37: Remove duplicate full-access probe; retain real Agent qualification. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 
 - 2026-11-16 22:56: Add explicit container-boundary development verification without changing workspace-write defaults. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - ac72edfbf884219d7392f32fd245173dffccf922)
+
+- 2026-11-14 03:39: Remove repeated startup explanations after the Podman refresh. (authoring-run/1ced20ff-7099-45bc-9dd0-f2f3a617b2dc - f5bb87eba48ce7d8d41e520a8e9c0ccc497284ba)
 
 - 2026-11-13 17:08: Trace the resolved Compose snapshot, image retention, and provider cancellation. (authoring-run/807a71f5-237d-4e19-97e2-adeb12df0c2c - ecca730b4bf065962763f7b5aae79c89c2cb7958)
 
