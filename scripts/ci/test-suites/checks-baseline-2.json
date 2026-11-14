@@ -15,7 +15,7 @@
     "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.mjs",
     "tests/conformance/module-boundaries.test.ts",
-    "tests/integration/repository-credentials-router.test.mjs",
+    "tests/integration/repository-credentials-router.test.ts",
     "tests/conformance/module-policy.test.mjs",
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.ts",
@@ -58,7 +58,7 @@
     "tests/conformance/slack-channel-directory.test.ts",
     "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
-    "tests/integration/repository-credentials-driver.test.mjs",
+    "tests/integration/repository-credentials-driver.test.ts",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
     "tests/integration/known-device-cookie.test.ts",
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
@@ -617,7 +617,7 @@
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-router.test.mjs"
+      "path": "tests/integration/repository-credentials-router.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-package.test.ts"
@@ -658,7 +658,7 @@
       ]
     },
     {
-      "path": "tests/integration/repository-credentials-driver.test.mjs"
+      "path": "tests/integration/repository-credentials-driver.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-sender-recovery.test.ts"

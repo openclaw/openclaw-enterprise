@@ -1,131 +1,41 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { availableParallelism } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { join, relative } from "node:path";
 import { describe, it as test } from "node:test";
-import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
-import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import {
-  cleanEnvironment,
-  run,
-  temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
-import { settled as settle } from "../helpers/child-processes.mjs";
-import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
+import { selectGitPushDestination } from "../../apps/controller/src/drivers/repo/github/access/client/targets.ts";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/access/client/commands.ts";
-import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/access/client/environment.ts";
 import {
-  inheritedRepositoryBinding,
-  readRuntimeRepositoryManifest,
-} from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
-import {
-  selectGhRepository,
-  selectGitPushDestination,
-  selectImplicitGhRepository,
-} from "../../apps/controller/src/drivers/repo/github/access/client/targets.ts";
-
-// Children get an allowlisted environment, so they only share the lane's Node
-// compile cache when it is passed explicitly; outside CI the file keeps its own.
-const compileCache = await fileCompileCache("repository-credentials-router");
-const clean = (extra = {}) => cleanEnvironment({ NODE_COMPILE_CACHE: compileCache, ...extra });
-
-// Every case spawns Git or Node children, and Git starts the managed hook
-// dispatcher for most commands; at most one top-level child per CPU runs.
-const slots = Math.max(2, availableParallelism());
-const waiting = [];
-let active = 0;
-async function exec(command, args, options) {
-  if (active < slots) {
-    active += 1;
-  } else {
-    // A finishing child hands its slot straight to the oldest waiter.
-    await new Promise((resolve) => waiting.push(resolve));
-  }
-  try {
-    return await run(command, args, options);
-  } finally {
-    const next = waiting.shift();
-    if (next) {
-      next();
-    } else {
-      active -= 1;
-    }
-  }
-}
-const gitWith =
-  (defaults = {}) =>
-  (args, options = {}) =>
-    exec("/usr/bin/git", args, { ...defaults, ...options });
-const git = gitWith();
-
-const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const opened = (sessionId, { repository = "example/project", pushRefAllowlist } = {}) => ({
-  session: { sessionId, deadlineWallMs: Date.now() + 86400000 },
-  bearer: `controlled_gateway_${sessionId}_${"0".repeat(32)}`,
-  client: repositoryClientData({ repository, ...(pushRefAllowlist && { pushRefAllowlist }) }),
-});
-/** Native material from `[repositoryRef, opened]` pairs. */
-const nativeMaterial = (t, ...entries) =>
-  createNativeClientMaterial(
-    t,
-    entries.map(([repositoryRef, session]) => ({ opened: session, repositoryRef })),
-  );
-const protocol = (path = "example/project.git") =>
-  `protocol=https\nhost=credentials.example.test\npath=${path}\n\n`;
-const environment = (material, extra = {}) => {
-  const env = clean({
-    HOME: material.root,
-    GIT_CONFIG_SYSTEM: join(material.root, "gitconfig"),
-    ...extra,
-  });
-  delete env.GIT_CONFIG_NOSYSTEM;
-  return env;
-};
-const fill = (material, extra = {}, path, input = protocol(path)) =>
-  git(["credential", "fill"], { env: environment(material, extra), input, allowFailure: true });
-const pin = (material, binding) =>
-  JSON.stringify([material.manifest.generation, binding.repositoryRef, binding.sessionId]);
-const pushLine = (ref, source = "HEAD") => `${source} ${"1".repeat(40)} ${ref} ${"0".repeat(40)}\n`;
-/** The pre-push guard's refusal when it cannot check a push, with its public reason. */
-const guardFailed = (reason) =>
-  `repository-pre-push-guard-failed${reason === undefined ? "" : `: ${reason}`}\n`;
-/** Run the managed pre-push hook in `work` with `input` written to `name`. */
-const prePush = async (work, env, destination, input, name = "push-input") => {
-  await writeFile(join(work, name), input);
-  return git(
-    ["hook", "run", `--to-stdin=${join(work, name)}`, "pre-push", "--", "origin", destination],
-    { cwd: work, env, allowFailure: true },
-  );
-};
-const writeManifest = (material, manifest) =>
-  writeFile(join(material.root, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
-/** A manifest over these bindings with their exact generation digest. */
-const manifestOf = (bindings) => ({
-  version: 1,
-  generation: hash(bindings.map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId])),
-  bindings,
-});
-/** Copy another material's sessions into `material`; returns its bindings at their new paths. */
-const relocated = async (material, other) => {
-  await cp(join(other.root, "sessions"), join(material.root, "sessions"), { recursive: true });
-  return other.manifest.bindings.map((binding) => ({
-    ...binding,
-    directory: binding.directory.replace(other.root, material.root),
-  }));
-};
-/** A refused credential request releases nothing. */
-const refused = (result, message) => {
-  assert.notEqual(result.code, 0, message);
-  assert.equal(result.stdout, "", message);
-};
-const granted = (result, bearer) => assert.equal(result.stdout.includes(bearer), true);
+  clean,
+  environment,
+  fill,
+  git,
+  gitWith,
+  granted,
+  guardFailed,
+  manifestOf,
+  nativeMaterial,
+  opened,
+  pin,
+  prePush,
+  protocol,
+  pushLine,
+  refused,
+  relocated,
+  settle,
+  writeManifest,
+} from "./repository-credentials-router-fixture.ts";
+import { registerLocalGitCases } from "./repository-credentials-router-local-git-cases.ts";
+import { registerGhCases } from "./repository-credentials-router-gh-cases.ts";
 
 describe("repository credential router", { concurrency: true }, () => {
   test("manifest requires canonical reference order and its exact generation digest", async (t) => {
     const [material, reused] = await settle([
-      nativeMaterial(t, ...["a", "Z", "A"].map((ref) => [ref, opened(ref)])),
+      nativeMaterial(
+        t,
+        ...["a", "Z", "A"].map((ref): [string, ReturnType<typeof opened>] => [ref, opened(ref)]),
+      ),
       // Valid alone, but it reuses session "a" under another reference.
       nativeMaterial(t, ["b", opened("a")]),
     ]);
@@ -161,6 +71,7 @@ describe("repository credential router", { concurrency: true }, () => {
       ["write", { ...write, client: { ...write.client, gitUsername: "alternate-session" } }],
     );
     const readBinding = material.manifest.bindings[0];
+    assert.ok(readBinding);
     await settle([
       fill(material).then(refused),
       ...material.manifest.bindings.flatMap((entry, index) =>
@@ -170,7 +81,9 @@ describe("repository credential router", { concurrency: true }, () => {
         ].map(async (selection) => {
           const result = await fill(material, selection);
           assert.equal(result.code, 0, result.stderr);
-          granted(result, `password=${[read, write][index].bearer}\n`);
+          const session = [read, write][index];
+          assert.ok(session);
+          granted(result, `password=${session.bearer}\n`);
         }),
       ),
       fill(
@@ -188,19 +101,26 @@ describe("repository credential router", { concurrency: true }, () => {
         fill(material, extra).then((result) => refused(result, JSON.stringify(extra))),
       ),
     ]);
+    const otherBinding = material.manifest.bindings[1];
+    assert.ok(otherBinding);
     // Metadata validation covers the whole generation without reading unrelated bearer bytes.
-    await writeFile(
-      join(material.manifest.bindings[1].directory, "bearer"),
-      "invalid unrelated bearer",
-      { mode: 0o600 },
-    );
+    await writeFile(join(otherBinding.directory, "bearer"), "invalid unrelated bearer", {
+      mode: 0o600,
+    });
     assert.equal((await fill(material, { OCE_REPOSITORY_REF: "read" })).code, 0);
     const metadataPath = join(readBinding.directory, "client.json");
-    const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-    metadata.deadlineWallMs = 1;
-    readBinding.deadlineWallMs = 1;
-    await writeFile(metadataPath, JSON.stringify(metadata), { mode: 0o600 });
-    await writeManifest(material, material.manifest);
+    const metadata: unknown = JSON.parse(await readFile(metadataPath, "utf8"));
+    assert.ok(metadata && typeof metadata === "object" && "deadlineWallMs" in metadata);
+
+    await writeFile(metadataPath, JSON.stringify({ ...metadata, deadlineWallMs: 1 }), {
+      mode: 0o600,
+    });
+    await writeManifest(material, {
+      ...material.manifest,
+      bindings: material.manifest.bindings.map((binding) =>
+        binding === readBinding ? { ...binding, deadlineWallMs: 1 } : binding,
+      ),
+    });
     refused(await fill(material, { OCE_REPOSITORY_REF: "read" }));
   });
 
@@ -222,7 +142,7 @@ describe("repository credential router", { concurrency: true }, () => {
     const work = await temporaryDirectory(t);
     await git(["init", work]);
     // Git writes an object-name source verbatim, spaces included; refnames have none.
-    const relative = (ref) => pushLine(ref, "HEAD@{1 hour ago}");
+    const relative = (ref: string) => pushLine(ref, "HEAD@{1 hour ago}");
     const inputs = {
       topic: pushLine("refs/heads/agent/topic"),
       relativeTopic: relative("refs/heads/agent/topic"),
@@ -237,12 +157,13 @@ describe("repository credential router", { concurrency: true }, () => {
     for (const [name, input] of Object.entries(inputs)) {
       await writeFile(join(work, `push-${name}`), input);
     }
-    const ref = (repositoryRef) => ({ OCE_REPOSITORY_REF: repositoryRef });
+    const ref = (repositoryRef: string) => ({ OCE_REPOSITORY_REF: repositoryRef });
     // URL usernames constrain the selected endpoint; they cannot choose a grant.
     const named = restricted.client.gitRemote.replace("https://", "https://gateway-session@");
     const selected = material.manifest.bindings.find(
       ({ repositoryRef }) => repositoryRef === "permitted",
     );
+    assert.ok(selected);
     const stalePin = {
       OCE_REPOSITORY_SELECTION: JSON.stringify([
         "0".repeat(64),
@@ -252,7 +173,14 @@ describe("repository credential router", { concurrency: true }, () => {
     };
     const notAllowed = "repository-push-ref-not-allowed\n";
     // [environment, destination, input, exit code (undefined: any failure), stderr]
-    const cases = [
+    type PushCase = [
+      NodeJS.ProcessEnv,
+      string | undefined,
+      keyof typeof inputs,
+      number | undefined,
+      string?,
+    ];
+    const cases: PushCase[] = [
       [{}, undefined, "topic", undefined, guardFailed("name-one-repository-ref")],
       [ref("restricted"), undefined, "topic", 1, notAllowed],
       [ref("permitted"), undefined, "topic", 0],
@@ -265,7 +193,7 @@ describe("repository credential router", { concurrency: true }, () => {
       ...[
         named.replace("gateway-session@", "gateway%2Dsession@"),
         named.replace("gateway-session@", "gateway-session:secret@"),
-      ].map((destination) => [
+      ].map((destination): PushCase => [
         ref("restricted"),
         destination,
         "topic",
@@ -358,7 +286,7 @@ describe("repository credential router", { concurrency: true }, () => {
     ];
     // Gateway and canonical origins of any binding, and spellings whose host Git and
     // the URL parser could read differently, stay refused.
-    const managed = [
+    const managed: string[] = [
       policy.client.gitRemote,
       "https://credentials.example.test/example/open.git",
       "https://credentials.example.test/elsewhere/repository.git",
@@ -368,6 +296,7 @@ describe("repository credential router", { concurrency: true }, () => {
       "https://credentials%2Eexample%2Etest/example/project.git",
       syntheticCredentialUrl({
         username: "user",
+        port: undefined,
         password: "secret",
         host: "unrelated.example.test",
         pathname: "/x/y.git",
@@ -376,9 +305,14 @@ describe("repository credential router", { concurrency: true }, () => {
       "https://unrelated.example.test:443?@credentials.example.test/example/project.git",
       "https://a@b@credentials.example.test/example/project.git",
     ];
-    const push = (destination, extra = {}) =>
+    const push = (destination: string, extra: NodeJS.ProcessEnv = {}) =>
       prePush(work, environment(material, extra), destination, pushLine("refs/heads/main"));
-    const expect = async (destinations, code, stderr, extra) =>
+    const expect = async (
+      destinations: string[],
+      code: number,
+      stderr?: string,
+      extra?: NodeJS.ProcessEnv,
+    ) =>
       settle(
         destinations.map(async (destination) => {
           const result = await push(destination, extra);
@@ -413,8 +347,10 @@ describe("repository credential router", { concurrency: true }, () => {
         }),
       ),
     );
+    const otherBinding = material.manifest.bindings[1];
+    assert.ok(otherBinding);
     // One session file outside its custody rules fails the whole generation.
-    await chmod(join(material.manifest.bindings[1].directory, "bearer"), 0o640);
+    await chmod(join(otherBinding.directory, "bearer"), 0o640);
     await expect(unrelated, 0, "");
     await expect(managed, 1, guardFailed("invalid-repository-material"));
     // Without readable public origins every destination stays refused.
@@ -433,6 +369,7 @@ describe("repository credential router", { concurrency: true }, () => {
     ]);
     const manifest = await readRuntimeRepositoryManifest(material.root);
     const binding = manifest.bindings[0];
+    assert.ok(binding);
     for (const destination of [
       "https://github.com/EXAMPLE/PROJECT/",
       "https://github.com/example/project.git/",
@@ -457,7 +394,7 @@ describe("repository credential router", { concurrency: true }, () => {
       ["https://other@credentials.example.test/example/project.git/", /repository-not-admitted/],
       ["https://credentials.example.test/exa%6dple/project.git", /unsupported-push-destination/],
       ["https://credentials.example.test//example/project.git", /unsupported-push-destination/],
-    ]) {
+    ] as const) {
       assert.throws(() => selectGitPushDestination(manifest, destination), error);
     }
   });
@@ -469,6 +406,7 @@ describe("repository credential router", { concurrency: true }, () => {
     await git(["init", work]);
     // A repository may chain relative symlinks back to the managed wrapper.
     // The wrapper must reach the recursion guard, not resolve imports from .git.
+    assert.ok(material.hooks);
     await symlink(relative(work, join(material.hooks, "pre-push")), join(work, "managed-hook"));
     await symlink("../../managed-hook", join(work, ".git/hooks/pre-push"));
     const inputFile = join(work, "push-input");
@@ -509,6 +447,7 @@ describe("repository credential router", { concurrency: true }, () => {
         }),
       ),
     );
+    assert.ok(native && managed);
     assert.equal(native.code, 143, native.stderr);
     assert.equal(managed.code, native.code, managed.stderr);
     assert.match(native.stderr, /died of signal 15\n$/);
@@ -538,7 +477,7 @@ describe("repository credential router", { concurrency: true }, () => {
         await writeFile(actual, "");
         // Compare native transactions across Git versions: 2.55 invokes the hook
         // before HEAD exists, and the managed dispatcher must delegate it too.
-        const init = (directory, env) =>
+        const init = (directory: string, env: NodeJS.ProcessEnv) =>
           git(["init", "--template=" + template, ...args, directory], { env });
         await settle([
           init(ordinary, clean({ INIT_HOOK_MARKER: expected })),
@@ -562,7 +501,7 @@ describe("repository credential router", { concurrency: true }, () => {
     const source = join(root, "source");
     const target = join(root, "target");
     const native = gitWith({ env: environment(material) });
-    const tracked = (directory) => readFile(join(directory, "tracked"), "utf8");
+    const tracked = (directory: string) => readFile(join(directory, "tracked"), "utf8");
     const targetHead = async () =>
       (await native(["-C", target, "rev-parse", "HEAD"])).stdout.trim();
     await native(["init", "-b", "main", source]);
@@ -619,210 +558,6 @@ describe("repository credential router", { concurrency: true }, () => {
     }
   });
 
-  test("literal dot-git names and effective repository endpoints cannot silently switch bindings", async (t) => {
-    const a = opened("a");
-    const b = opened("b", { repository: "example/project.git" });
-    const c = opened("c", { repository: "example/other" });
-    const material = await nativeMaterial(t, ["a", a], ["b", b], ["c", c]);
-    await settle([
-      fill(material).then(refused),
-      fill(material, { OCE_REPOSITORY_REF: "a" }).then((result) => granted(result, a.bearer)),
-      fill(material, { OCE_REPOSITORY_REF: "b" }).then((result) => granted(result, b.bearer)),
-      fill(material, {}, "EXAMPLE/PROJECT.git.git").then((result) => granted(result, b.bearer)),
-      fill(material, { OCE_REPOSITORY_REF: "a" }, "example/other.git").then(refused),
-      fill(material, {}, "example/other").then((result) => granted(result, c.bearer)),
-    ]);
-  });
-
-  test("embedded generation fails closed after replacement while local stock Git retains hooks and configuration", async (t) => {
-    const replacement = opened("replacement");
-    const [material, next] = await settle([
-      nativeMaterial(t, ["project", opened("original")]),
-      // New material is valid in isolation but cannot be selected by the old emitted helper command.
-      nativeMaterial(t, ["project", replacement]),
-    ]);
-    const work = await temporaryDirectory(t);
-    const env = environment(material, {
-      OCE_REPOSITORY_SELECTION: JSON.stringify(["0".repeat(64), "project", "stale"]),
-      NATIVE_HOOK_MARKER: "normal-environment",
-    });
-    const local = gitWith({ env, cwd: work });
-    const subject = async (...args) =>
-      (await local([...args, "log", "-1", "--format=%s"])).stdout.trim();
-    await local(["init"]);
-    await local(["config", "user.name", "Native fixture"]);
-    await local(["config", "user.email", "fixture@example.test"]);
-    const marker = join(work, "hook-result");
-    await writeFile(
-      join(work, ".git/hooks/pre-commit"),
-      `#!/bin/sh\nprintf '%s' "$NATIVE_HOOK_MARKER" > '${marker}'\n`,
-      { mode: 0o700 },
-    );
-    await writeFile(join(work, "file.txt"), "native content\n");
-    await local(["add", "file.txt"]);
-    await local(["commit", "-m", "Native hook"]);
-    assert.equal(await readFile(marker, "utf8"), "normal-environment");
-    await local(["mv", "file.txt", "moved.txt"]);
-    await local(["commit", "-m", "Native move"]);
-    await local(["rm", "moved.txt"]);
-    await local(["commit", "-m", "Native removal"]);
-    await local(["config", "alias.native-status", "status --short"]);
-    assert.equal((await local(["native-status"])).stdout.trim(), "?? hook-result");
-    const linked = join(work, "linked");
-    await local(["worktree", "add", "--detach", linked]);
-    assert.equal(await subject("-C", linked), "Native removal");
-    await local(["remote", "add", "origin", "https://github.com/ExAmPlE/PrOjEcT"]);
-    await local(["remote", "set-url", "--push", "origin", "https://github.com/example/other.git"]);
-    const [fetchUrl, pushUrl, stale] = await settle([
-      local(["remote", "get-url", "origin"]),
-      local(["remote", "get-url", "--push", "origin"]),
-      fill(material, { OCE_REPOSITORY_SELECTION: env.OCE_REPOSITORY_SELECTION }),
-    ]);
-    assert.equal(fetchUrl.stdout.trim(), "https://credentials.example.test/ExAmPlE/PrOjEcT");
-    assert.equal(pushUrl.stdout.trim(), "https://credentials.example.test/example/other.git");
-    assert.notEqual(stale.code, 0);
-    const oldConfig = await readFile(join(material.root, "gitconfig"), "utf8");
-    // Install a fully valid next generation; only the old helper generation pin must reject it.
-    await writeManifest(material, manifestOf(await relocated(material, next)));
-    assert.equal(await readFile(join(material.root, "gitconfig"), "utf8"), oldConfig);
-    const current = await readRuntimeRepositoryManifest(material.root);
-    assert.equal(current.generation, next.manifest.generation);
-    const [acceptedNew, rejected, last] = await settle([
-      exec(
-        process.execPath,
-        [material.helper, "manifest", material.root, current.generation, "get"],
-        {
-          env: clean(),
-          input: protocol(),
-        },
-      ),
-      fill(material),
-      subject(),
-    ]);
-    granted(acceptedNew, replacement.bearer);
-    refused(rejected);
-    assert.equal(last, "Native removal");
-  });
-
-  test("gh selection retains private configuration and exact pins without suppressing native system Git", async (t) => {
-    const first = opened("first");
-    const second = opened("second", { repository: "example/other" });
-    const material = await nativeMaterial(t, ["first", first], ["second", second]);
-    const manifest = await readRuntimeRepositoryManifest(material.root);
-    const gh = parseGhInvocation(["api", "repos/ExAmPlE/OTHER"]);
-    const selected = selectGhRepository(manifest, gh.target.value);
-    assert.equal(selected.sessionId, "second");
-    assert.throws(
-      () => selectGhRepository(manifest, gh.target.value, manifest.bindings[0]),
-      /conflicting-repository-selection/,
-    );
-    for (const args of [
-      ["repo", "view", "github.com/project"],
-      ["api", "repos/github.com/project"],
-    ]) {
-      const invocation = parseGhInvocation(args);
-      assert.equal(invocation.target.value, "github.com/project");
-      assert.throws(() => selectGhRepository(manifest, invocation.target.value), {
-        message: "unsupported-repository-target",
-      });
-    }
-    for (const endpoint of [
-      "https://api.github.com/repos/example/project",
-      // The gateway refuses any escape in a path, so the client refuses it first.
-      "repos/example/project/%2e%2e/other",
-      "repos/example/project/contents/a%2Fb",
-    ]) {
-      assert.throws(() => parseGhInvocation(["api", endpoint]), /unsupported-client-command/);
-    }
-    assert.equal(
-      parseGhInvocation(["api", "repos/example/project/issues?labels=a%20b"]).target.value,
-      "example/project",
-    );
-    assert.throws(
-      () => parseGhInvocation(["pr", "create", "--title", "missing head"]),
-      /explicit-head-required/,
-    );
-    assert.throws(
-      () =>
-        inheritedRepositoryBinding(manifest, {
-          OCE_REPOSITORY_REF: "first",
-          OCE_REPOSITORY_SELECTION: pin(material, material.manifest.bindings[1]),
-        }),
-      /conflicting-repository-selection/,
-    );
-    const env = createClientEnvironment(selected.configuration, selected.directory, material.root);
-    assert.equal(env.HOME, material.root);
-    assert.equal(env.GH_CONFIG_DIR, join(selected.directory, "gh"));
-    for (const name of [
-      "GIT_CONFIG_NOSYSTEM",
-      "GIT_CONFIG_SYSTEM",
-      "GIT_CONFIG_GLOBAL",
-      "GH_TOKEN",
-    ]) {
-      assert.equal(env[name], undefined, name);
-    }
-    const hosts = await readFile(join(env.GH_CONFIG_DIR, "hosts.yml"), "utf8");
-    assert.equal(hosts.includes(second.bearer), true);
-    // Implicit selection reads effective remotes with the helper's path rules, so a
-    // trailing slash selects the same binding.
-    const remotes = await temporaryDirectory(t);
-    const local = gitWith({ cwd: remotes, env: clean() });
-    await local(["init"]);
-    await local(["remote", "add", "origin", "https://github.com/example/other/"]);
-    await local([
-      "remote",
-      "add",
-      "gateway",
-      "https://credentials.example.test/example/other.git/",
-    ]);
-    assert.equal(
-      selectImplicitGhRepository(manifest, clean({ GIT_DIR: join(remotes, ".git") })).sessionId,
-      "second",
-    );
-    const viewed = parseGhInvocation(["repo", "view", "github.com/example/other"]);
-    assert.equal(selectGhRepository(manifest, viewed.target.value).sessionId, "second");
-    assert.throws(
-      () => selectGhRepository(manifest, viewed.target.value, manifest.bindings[0]),
-      /conflicting-repository-selection/,
-    );
-
-    const router = resolve("apps/controller/src/drivers/repo/github/access/client/router.ts");
-    const route = (args) =>
-      exec(process.execPath, [router, ...args], { env: clean(), allowFailure: true });
-    // Rejection happens before private material is read or a native child starts.
-    // These forms could change hosts, select an implicit branch, launch a browser,
-    // mutate beyond the supported surface, or trigger gh's push/fork workflow.
-    const unsupported = [
-      ["auth", "login"],
-      ["extension", "exec", "anything"],
-      ["repo", "fork"],
-      ["repo", "view", "https://github.com/example/project"],
-      ["repo", "view", "example/project", "example/other"],
-      ["repo", "view", "-R", "example/project"],
-      ["issue", "list", "--hostname", "other.example"],
-      ["issue", "list", "--limit", "0"],
-      ["pr", "list", "--search", "repo:example/other"],
-      ["pr", "view", "https://github.com/example/other/pull/1"],
-      ["pr", "checks"],
-      ["pr", "diff", "some-branch"],
-      ["pr", "view", "1", "--web"],
-      ["pr", "view", "1", "-R", "example/project", "--repo", "example/other"],
-      ["pr", "comment", "1", "--editor"],
-      ["issue", "comment", "1", "--edit-last", "--body", "changed"],
-      ["pr", "create", "--head", "other:branch"],
-      ["pr", "create", "--fill"],
-    ];
-    await settle([
-      route(["git", "status"]).then((rejected) => {
-        assert.notEqual(rejected.code, 0);
-        assert.equal(rejected.stderr, "unsupported-client-command\n");
-      }),
-      ...unsupported.map(async (args) => {
-        const denied = await route(["gh", ...args]);
-        assert.equal(denied.code, 1, JSON.stringify(args));
-        assert.equal(denied.stdout, "");
-        assert.equal(denied.stderr, "unsupported-client-command\n", JSON.stringify(args));
-      }),
-    ]);
-  });
+  registerLocalGitCases();
+  registerGhCases();
 });
