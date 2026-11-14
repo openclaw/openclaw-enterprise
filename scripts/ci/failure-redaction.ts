@@ -188,7 +188,9 @@ function isPublicEnvName(name: string) {
 
 // Every value to redact from these environments, longest first so a value
 // containing another is replaced whole.
-export function failureSecrets(environments: Iterable<unknown>): RedactionSecrets {
+export function failureSecrets(
+  environments: Iterable<unknown, unknown, unknown>,
+): RedactionSecrets {
   const values = new Map<string, string>();
   for (const environment of environments) {
     const entries: [string, unknown][] = Object.entries(environment ?? {});

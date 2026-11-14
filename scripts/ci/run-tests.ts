@@ -780,18 +780,20 @@ async function completePhaseChild() {
       await cleaned;
       exitCode = 0;
     } else if (phase === "run") {
+      if (typeof manifestPath !== "string") {
+        throw new Error("Invalid lifecycle manifest path.");
+      }
+      const manifest = loadRunnerManifest(manifestPath, process.env.OCC_CI_SUITE_VIEW);
       if (
         typeof root !== "string" ||
         typeof lane !== "string" ||
         typeof statePath !== "string" ||
         typeof resultsPath !== "string" ||
-        typeof manifestPath !== "string" ||
         (file !== undefined && typeof file !== "string") ||
         (testName !== undefined && typeof testName !== "string")
       ) {
         throw new Error("Invalid lifecycle run request.");
       }
-      const manifest = loadRunnerManifest(manifestPath, process.env.OCC_CI_SUITE_VIEW);
       exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
       uncertain = abandonedSteps > 0;
     }
