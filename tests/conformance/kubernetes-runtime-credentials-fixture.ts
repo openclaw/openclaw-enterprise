@@ -151,7 +151,7 @@ type PrivateMethods = {
     kind: ManifestKind,
     name: string,
     ownership: Ownership,
-    target?: NamespaceTarget | undefined,
+    target?: NamespaceTarget,
   ];
   gatewayNamespaceManifest: [ownership: Ownership];
   harnessWorkspaceClaim: [agentId: string, ownership: Ownership, target: NamespaceTarget];
@@ -210,22 +210,15 @@ function fixtureObject<Method extends ResourceBuilder>(
 
 function fixtureDriver(driver: KubernetesComputeDriver) {
   return {
-    manifest: (
-      apiVersion: string,
-      kind: ManifestKind,
-      name: string,
-      ownership: Ownership,
-      target?: NamespaceTarget,
-    ) => fixtureObject(driver, "manifest", [apiVersion, kind, name, ownership, target]),
-    harnessWorkspaceClaim: (agentId: string, ownership: Ownership, target: NamespaceTarget) =>
-      fixtureObject(driver, "harnessWorkspaceClaim", [agentId, ownership, target]),
-    gatewayPrivateStateClaim: (agentId: string, ownership: Ownership, target: NamespaceTarget) =>
-      fixtureObject(driver, "gatewayPrivateStateClaim", [agentId, ownership, target]),
+    manifest: (...args: PrivateMethods["manifest"]) => fixtureObject(driver, "manifest", args),
+    harnessWorkspaceClaim: (...args: PrivateMethods["harnessWorkspaceClaim"]) =>
+      fixtureObject(driver, "harnessWorkspaceClaim", args),
+    gatewayPrivateStateClaim: (...args: PrivateMethods["gatewayPrivateStateClaim"]) =>
+      fixtureObject(driver, "gatewayPrivateStateClaim", args),
     async ensureLegacyGatewayPassword(
-      ownership: Pick<AgentRevision, "namespaceId" | "agentId">,
-      target: NamespaceTarget,
+      ...args: PrivateMethods["ensureLegacyGatewayPassword"]
     ): Promise<void> {
-      await callKubernetesFixtureMethod(driver, "ensureLegacyGatewayPassword", [ownership, target]);
+      await callKubernetesFixtureMethod(driver, "ensureLegacyGatewayPassword", args);
     },
   };
 }
