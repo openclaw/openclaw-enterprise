@@ -21,6 +21,7 @@ import {
   kubernetesHash as hash,
   productionGatewayMemoryLimit,
 } from "./kubernetes-real.ts";
+import { createCodexPolicyMetadataReader } from "./codex-policy-thread-evidence.ts";
 import { createGatewaySessionEvidence } from "./plugin-gateway-session-evidence.ts";
 import {
   createPluginRevisionFailureLogs,
@@ -694,197 +695,6 @@ function assertDiagnosticText(value, secrets) {
   return text;
 }
 
-// The native catalog is SessionMeta, not the legacy thread_dynamic_tools table.
-export function parseCodexPolicyMetadata(line, expectedThreadId) {
-  const entry = JSON.parse(line);
-  assert.equal(entry.type, "session_meta", "the rollout head must be native SessionMeta");
-  const metadata = entry.payload;
-  assert.equal(metadata?.id, expectedThreadId, "SessionMeta must identify the requested thread");
-  const specs = metadata.dynamic_tools ?? [];
-  assert.ok(Array.isArray(specs), "SessionMeta dynamic_tools must be an array");
-  const tools = specs.flatMap((spec) => {
-    assert.ok(spec.type === "namespace" || spec.type === "function", "unknown native tool spec");
-    const entries = spec.type === "namespace" ? spec.tools : [spec];
-    assert.ok(Array.isArray(entries), "native namespace must contain tools");
-    return entries.map((tool) => {
-      assert.equal(tool.type, "function");
-      assert.ok(typeof tool.name === "string" && tool.name.length > 0);
-      return { namespace: spec.type === "namespace" ? spec.name : null, name: tool.name };
-    });
-  });
-  return {
-    threadId: metadata.id,
-    parentThreadId: metadata.parent_thread_id ?? null,
-    forkedFromId: metadata.forked_from_id ?? null,
-    tools,
-  };
-}
-
-export async function readCodexPolicyRolloutHead(path) {
-  const { access } = await import("node:fs/promises");
-  const { createReadStream } = await import("node:fs");
-  const { createZstdDecompress } = await import("node:zlib");
-  assert.ok(typeof path === "string" && /\.jsonl(?:\.zst)?$/.test(path));
-  // Codex's reader prefers the plain counterpart if compression left both present.
-  const plain = path.replace(/\.zst$/, "");
-  let selected = plain;
-  try {
-    await access(plain);
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
-    selected = `${plain}.zst`;
-  }
-  const input = createReadStream(selected);
-  const stream = selected.endsWith(".zst") ? input.pipe(createZstdDecompress()) : input;
-  if (stream !== input) {
-    input.on("error", (error) => stream.destroy(error));
-  }
-  const decoder = new TextDecoder();
-  let text = "";
-  let bytes = 0;
-  try {
-    for await (const chunk of stream) {
-      bytes += chunk.length;
-      assert.ok(bytes <= 4 * 1024 * 1024, "native rollout metadata exceeds the fixture read limit");
-      text += decoder.decode(chunk, { stream: true });
-      const end = text.indexOf("\n");
-      if (end !== -1) {
-        return text.slice(0, end);
-      }
-    }
-    throw new Error("native rollout has no complete SessionMeta record");
-  } finally {
-    stream.destroy();
-    input.destroy();
-  }
-}
-
-export function findCodexPolicyChild(parent, childMarker) {
-  const completedTurns = parent.turns.filter(
-    (turn) => turn.status === "completed" && turn.error === null,
-  );
-  const completedItems = completedTurns.flatMap((turn) => turn.items);
-  const collabSpawns = completedItems.filter(
-    (item) => item.type === "collabAgentToolCall" && item.tool === "spawnAgent",
-  );
-  const completedSpawns = collabSpawns.filter((item) => item.status === "completed");
-  const senderBoundSpawns = completedSpawns.filter((item) => item.senderThreadId === parent.id);
-  const spawns = senderBoundSpawns.filter((item) => item.prompt?.includes(childMarker));
-  // V2 records the started child rather than a collaboration call with its prompt.
-  // Bind that native identity to the turn carrying this test's unique child task.
-  const activities = completedTurns.flatMap((turn) =>
-    turn.items.filter((item) => item.type === "subAgentActivity").map((item) => ({ turn, item })),
-  );
-  const startedActivities = activities.filter(({ item }) => item.kind === "started");
-  const taskActivities = startedActivities.filter(({ turn }) =>
-    turn.items.some(
-      (item) =>
-        item.type === "userMessage" &&
-        item.content.some((part) => part.type === "text" && part.text.includes(childMarker)),
-    ),
-  );
-  assert.equal(
-    spawns.length + taskActivities.length,
-    1,
-    `one completed native spawn must match the child task: ${JSON.stringify({
-      counts: {
-        turns: parent.turns.length,
-        completedErrorNullTurns: completedTurns.length,
-        collabSpawns: collabSpawns.length,
-        completedSpawns: completedSpawns.length,
-        senderBoundSpawns: senderBoundSpawns.length,
-        markerBoundSpawns: spawns.length,
-        subAgentActivities: activities.length,
-        startedSubAgents: startedActivities.length,
-        taskBoundSubAgents: taskActivities.length,
-      },
-      itemTypes: [...new Set(completedItems.map((item) => item.type))].slice(0, 20),
-      activities: activities.slice(-10).map(({ turn, item }) => ({
-        parentTurnId: turn.id,
-        childThreadId: item.agentThreadId,
-        kind: ["started", "interacted", "interrupted", "completed"].includes(item.kind)
-          ? item.kind
-          : "unknown",
-      })),
-      recentTurns: parent.turns.slice(-10).map((turn) => ({
-        status: ["completed", "inProgress", "failed", "interrupted"].includes(turn.status)
-          ? turn.status
-          : "unknown",
-        hasError: turn.error !== null && turn.error !== undefined,
-        errorIsNull: turn.error === null,
-      })),
-    })}`,
-  );
-  if (spawns.length === 1) {
-    assert.equal(
-      spawns[0].receiverThreadIds.length,
-      1,
-      "the spawn must identify exactly one child",
-    );
-    return spawns[0].receiverThreadIds[0];
-  }
-  const childId = taskActivities[0].item.agentThreadId;
-  assert.ok(
-    typeof childId === "string" && childId.length > 0,
-    "the activity must identify its child",
-  );
-  return childId;
-}
-
-export function assertCodexPolicyChild({
-  parent,
-  child,
-  parentMetadata,
-  childMetadata,
-  childMarker,
-  childResult,
-}) {
-  assert.equal(child.id, findCodexPolicyChild(parent, childMarker));
-  assert.notEqual(child.id, parent.id);
-  assert.equal(child.parentThreadId, parent.id);
-  assert.equal(child.forkedFromId, null, "this proof requires a fresh child, not forked history");
-  assert.equal(parentMetadata.threadId, parent.id);
-  assert.equal(childMetadata.threadId, child.id);
-  assert.equal(childMetadata.parentThreadId, parent.id);
-  assert.equal(childMetadata.forkedFromId, null);
-  assert.ok(
-    parentMetadata.tools.some((tool) => tool.name === "agents_list"),
-    "the parent Gateway catalog is the positive control",
-  );
-  assert.deepEqual(
-    childMetadata.tools,
-    [],
-    "the fresh child must not inherit Gateway dynamic tools",
-  );
-  const completed = child.turns.find(
-    (turn) =>
-      turn.status === "completed" &&
-      turn.error === null &&
-      turn.items.some((item) => item.type === "agentMessage" && item.text.includes(childMarker)) &&
-      turn.items.some(
-        (item) =>
-          item.type === "commandExecution" &&
-          item.status === "completed" &&
-          item.exitCode === 0 &&
-          item.aggregatedOutput?.includes(`42 ${childResult}`),
-      ),
-  );
-  assert.ok(
-    completed,
-    "the child's own completed turn must contain the successful native command and reply",
-  );
-  return {
-    parentThreadId: parent.id,
-    childThreadId: child.id,
-    childTurnId: completed.id,
-    nativeCommandSucceeded: true,
-    parentGatewayTools: parentMetadata.tools,
-    childGatewayTools: [],
-  };
-}
-
 export async function assertNativeCronRunSucceeded({ request, waitFor, jobId }) {
   const accepted = await request("cron.run", { id: jobId, mode: "force", waitTimeoutMs: 5_000 });
   assert.equal(accepted.ok, true, "human command request must succeed");
@@ -1142,28 +952,6 @@ export function createNativePluginAssertions({
     }
   }
 
-  async function readCodexThreadMetadata(agent, thread) {
-    assert.equal(proofMode, "codex");
-    assert.ok(typeof thread.id === "string" && thread.id.length > 0);
-    assert.ok(typeof thread.path === "string", "native thread/read must return its rollout path");
-    const execution = await execCodex(agent, [
-      "node",
-      "-e",
-      `
-      const assert = require("node:assert/strict");
-      ${parseCodexPolicyMetadata.toString()}
-      ${readCodexPolicyRolloutHead.toString()}
-      (async () => {
-        const line = await readCodexPolicyRolloutHead(process.argv[1]);
-        process.stdout.write(JSON.stringify(parseCodexPolicyMetadata(line, process.argv[2])));
-      })().catch(() => { process.stderr.write("Native SessionMeta evidence read failed."); process.exitCode = 1; });
-    `,
-      thread.path,
-      thread.id,
-    ]);
-    return JSON.parse(execution.stdout);
-  }
-
   async function listCodexNativeCatalog(agent, pluginIds) {
     assert.equal(proofMode, "codex", "native Codex catalog discovery requires Codex proof mode.");
     const execution = await execCodex(agent, [
@@ -1281,7 +1069,7 @@ export function createNativePluginAssertions({
     withRuntimeFailureLogs,
     readCodexSessionBinding,
     readConversationReply,
-    readCodexThreadMetadata,
+    readCodexThreadMetadata: createCodexPolicyMetadataReader(proofMode, execCodex),
     ...transcriptAssertions,
     readOpenClawPluginPolicy,
     listCodexNativeCatalog,
