@@ -185,7 +185,7 @@ with a synthetic sender. It covers one revision/work/success audit,
 receipt recovery without extra calls, ordinary and disabled-Slack deployment,
 Secret authority, Configuration/Driver drift, and late dependency failures.
 
-`tests/integration/postgres-platform-state.test.mjs` separately proves persisted
+`tests/integration/postgres-platform-state.test.ts` separately proves persisted
 recovery through a reopened adapter, reconcile counts, and one successful deploy
 audit. Its sender is synthetic.
 
@@ -193,7 +193,7 @@ Run focused Configuration conformance and integration checks:
 
 ```bash
 node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.ts tests/conformance/filesystem-configuration.test.ts
-node --test tests/integration/configuration-controller.test.mjs tests/integration/postgres-platform-state.test.mjs
+node --test tests/integration/configuration-controller.test.mjs tests/integration/postgres-platform-state.test.ts
 node --test tests/integration/postgres-platform-state-kubernetes.test.ts
 ```
 

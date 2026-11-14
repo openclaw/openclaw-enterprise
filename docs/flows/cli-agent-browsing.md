@@ -154,7 +154,7 @@ with the same Namespace. A saved-settings problem appears as
 deployment failed or succeeded.
 
 The PostgreSQL browsing case in
-`tests/integration/postgres-platform-state.test.mjs` creates healthy saved state,
+`tests/integration/postgres-platform-state.test.ts` creates healthy saved state,
 introduces a retired plugin enum using the same legacy-state fixture as the API
 contract, and exercises the compiled CLI through the shipped API listener. It
 checks list/detail/history output, structured errors, listed deployment status
