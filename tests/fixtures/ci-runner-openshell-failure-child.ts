@@ -46,7 +46,7 @@ test("original failure", async (t) => {
   assert.equal(await runOpenShellStage(t, "installation", async () => 42, "installation"), 42);
 
   // A real source path embedded in a message or custom stack cannot set provenance.
-  const reporterUrl = new URL("scripts/ci/reporter.mjs", repositoryUrl).href;
+  const reporterUrl = new URL("scripts/ci/reporter.ts", repositoryUrl).href;
   const spoof = Object.assign(new Error(canary + "\n    at " + reporterUrl + ":999999:123456"), {
     code: "ETIMEDOUT",
   });

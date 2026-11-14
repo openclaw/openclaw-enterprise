@@ -152,7 +152,7 @@ comparison ([CI guide](../testing/ci.md)).
 
 `scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and namespace
 events in ready k3d clusters before tests delete them. On pass or failure,
-`scripts/ci/k3d-diagnostics.mjs:projectAgentNamespaceActivity` records
+`scripts/ci/k3d-diagnostics.ts:projectAgentNamespaceActivity` records
 `agentNamespaces`: up to 200 Pod and 200 event records per file and cluster, retaining 40
 entries. Messages are redacted and truncated; Pod specs are omitted. Raw watches
 use separate files in the cluster directory and are removed on completion.
@@ -182,7 +182,7 @@ owns credential isolation and historical-pair limits.
 
 ### 3. Execute and account for actual cases
 
-`scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
+`scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.ts:jsonLinesReporter` and `scripts/ci/failure-redaction.ts:redactFailure`
 
 `scripts/ci/runner-inputs.ts:normalizeFile` validates `file.env`.
 `runFile` merges filtered inherited values, restored declared inputs, `lane.env`,

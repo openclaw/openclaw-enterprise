@@ -21,7 +21,7 @@ import {
   redactedQaTail,
 } from "./qa-secrets.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.mjs";
+import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.ts";
 
 function execute(command, args, options) {
   const { input, allowExitCodes = [0], timeout = 0, ...rest } = options;

@@ -1,21 +1,64 @@
+import type { TestEvent } from "node:test/reporters";
 import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
 import {
   boundedProgressLines,
   openShellProgress,
   openShellProgressPrefix,
 } from "./openshell-progress.mjs";
-import { failureInputLimit } from "./failure-redaction.mjs";
+import { failureInputLimit } from "./failure-redaction.ts";
 import { recordsCoverage } from "./full-integration-coverage.ts";
 import { parseMeasurementDiagnostic } from "./reporter-measurements.ts";
 
 export { openShellTurnoverQualification } from "./reporter-measurements.ts";
+
+type TestResult = Extract<TestEvent, { type: "test:pass" }>["data"];
+type TestCounts = Extract<TestEvent, { type: "test:summary" }>["data"]["counts"];
+type ReportedCounts = Partial<TestCounts & { failed: number }>;
+
+// Node's stream and direct callers share this subset. Direct callers can
+// supply partial events, and Node 24 does not always supply the test IDs.
+type ReporterEventData = Partial<
+  Pick<
+    TestResult,
+    "file" | "line" | "column" | "name" | "nesting" | "skip" | "todo" | "testId" | "parentId"
+  >
+> & {
+  details?: { duration_ms?: number; type?: string; error?: unknown };
+  counts?: ReportedCounts;
+  message?: string;
+  type?: string;
+};
+
+type ReporterEvent = TestEvent | { type: string; data?: ReporterEventData | undefined };
+type SerializedFailure = {
+  cause?: unknown;
+  code?: unknown;
+  exitCode?: unknown;
+  failureType?: unknown;
+  message?: unknown;
+  name?: unknown;
+  signal?: unknown;
+  stack?: unknown;
+};
+
+function failureFields(value: unknown): SerializedFailure | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  const boxed: object = Object(value);
+  return boxed;
+}
+
+type OutputStream = "stdout" | "stderr";
+type OutputTail = { lines: string[]; omitted: number };
+type WorkerField = string | number | boolean;
 
 const postTestAsyncActivityPrefix =
   "Error: A resource generated asynchronous activity after the test ended.";
 
 // The proof runs in a separate controller process. Both its test and the CI
 // reporter use this closed vocabulary; neither publishes arbitrary stage text.
-export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
+export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: unknown) {
   const stages = [
     "startup",
     "connect",
@@ -34,10 +77,10 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "exec-proof",
     "current-placement",
   ];
-  if (!stages.includes(failureStage)) {
+  if (typeof failureStage !== "string" || !stages.includes(failureStage)) {
     return undefined;
   }
-  const diagnostic = { kind: "native-first-agent-proof", failureStage };
+  const diagnostic = { kind: "native-first-agent-proof" as const, failureStage };
   if (!isRecord(worker)) {
     return diagnostic;
   }
@@ -186,12 +229,14 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     nodeLookup: ["found", "unavailable", "invalid"],
     expectedNodeWorkerBundle: ["installed", "missing"],
   };
-  const safe = {};
+  const safe: Record<string, WorkerField> = {};
   for (const [field, values] of Object.entries(vocabularies)) {
-    if (worker[field] !== undefined) {
-      safe[field] = [...values, "absent", "other"].includes(worker[field])
-        ? worker[field]
-        : "other";
+    const value = worker[field];
+    if (value !== undefined) {
+      safe[field] =
+        typeof value === "string" && (values.includes(value) || value === "absent")
+          ? value
+          : "other";
     }
   }
   for (const field of [
@@ -252,48 +297,55 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "execFailureCount",
   ]) {
     const limit = field === "elapsedMs" ? 3_600_000 : 4096;
-    if (Number.isSafeInteger(worker[field]) && worker[field] >= 0 && worker[field] <= limit) {
-      safe[field] = worker[field];
+    const value = worker[field];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= limit) {
+      safe[field] = value;
     }
   }
+  const exitCode = worker.historyExecNestedExitCode;
   if (
-    Number.isInteger(worker.historyExecNestedExitCode) &&
-    worker.historyExecNestedExitCode >= 0 &&
-    worker.historyExecNestedExitCode <= 255
+    typeof exitCode === "number" &&
+    Number.isInteger(exitCode) &&
+    exitCode >= 0 &&
+    exitCode <= 255
   ) {
-    safe.historyExecNestedExitCode = worker.historyExecNestedExitCode;
-  }
-  if (
-    safe.historyExecNestedExitCode > 0 &&
-    ["write-session-file", "read-session-file", "read-workspace-file", "emit-proof"].includes(
-      worker.historyExecFailureOperation,
-    ) &&
-    [
-      "EACCES",
-      "EPERM",
-      "ENOENT",
-      "EEXIST",
-      "EISDIR",
-      "ENOTDIR",
-      "ENOSPC",
-      "EROFS",
-      "EMFILE",
-      "EIO",
-      "other",
-    ].includes(worker.historyExecFailureCode)
-  ) {
-    safe.historyExecFailureOperation = worker.historyExecFailureOperation;
-    safe.historyExecFailureCode = worker.historyExecFailureCode;
+    safe.historyExecNestedExitCode = exitCode;
+    if (exitCode > 0) {
+      const operation = worker.historyExecFailureOperation;
+      if (
+        typeof operation === "string" &&
+        ["write-session-file", "read-session-file", "read-workspace-file", "emit-proof"].includes(
+          operation,
+        )
+      ) {
+        const code = worker.historyExecFailureCode;
+        if (
+          typeof code === "string" &&
+          [
+            "EACCES",
+            "EPERM",
+            "ENOENT",
+            "EEXIST",
+            "EISDIR",
+            "ENOTDIR",
+            "ENOSPC",
+            "EROFS",
+            "EMFILE",
+            "EIO",
+            "other",
+          ].includes(code)
+        ) {
+          safe.historyExecFailureOperation = operation;
+          safe.historyExecFailureCode = code;
+        }
+      }
+    }
   }
   return { ...diagnostic, worker: safe };
 }
 
-function failureDiagnostic(error) {
-  return projectFailureDiagnostic(error, nativeFirstAgentProofDiagnostic);
-}
-
 // Stack lines before the first frame: the "Name: message" header.
-function stackHeader(stack) {
+function stackHeader(stack: string) {
   const lines = stack.split("\n");
   const end = lines.findIndex((line) => /^\s+at\s/u.test(line));
   return lines
@@ -305,14 +357,14 @@ function stackHeader(stack) {
 // An error's first line. A DOMException (a fetch TimeoutError or AbortError)
 // crosses the test runner's process boundary as a bare stack with an empty
 // message, so its header names it; a thrown value without either is printed.
-function errorHeader(error) {
+function errorHeader(error: unknown, fields: SerializedFailure | undefined) {
   if (typeof error === "string") {
     return error;
   }
-  if (typeof error?.message === "string" && error.message) {
-    return error.message;
+  if (typeof fields?.message === "string" && fields.message) {
+    return fields.message;
   }
-  const header = typeof error?.stack === "string" ? stackHeader(error.stack) : "";
+  const header = typeof fields?.stack === "string" ? stackHeader(fields.stack) : "";
   if (header || error === undefined) {
     return header;
   }
@@ -326,11 +378,11 @@ function errorHeader(error) {
 
 // Failure messages and the top stack frame make flakes attributable. They are
 // raw here and travel only over the pipe to run-tests, which redacts and
-// truncates them (failure-redaction.mjs) before anything reaches an artifact
+// truncates them (failure-redaction.ts) before anything reaches an artifact
 // or the job log.
-function failureText(cause) {
-  const message = errorHeader(cause);
-  const stack = typeof cause?.stack === "string" ? cause.stack : "";
+function failureText(cause: unknown, fields: SerializedFailure | undefined) {
+  const message = errorHeader(cause, fields);
+  const stack = typeof fields?.stack === "string" ? fields.stack : "";
   // The stack starts with the message, which can quote another process's stack.
   const messageEnd =
     message && stack.includes(message) ? stack.indexOf(message) + message.length : 0;
@@ -354,21 +406,21 @@ function failureText(cause) {
 const outputTailLines = 400;
 
 function outputTail() {
-  const lines = [];
+  const lines: string[] = [];
   const partial = { stdout: "", stderr: "" };
   const dropping = { stdout: false, stderr: false };
   let omitted = 0;
   // A blank before a marker is its separator, even across chunks or stderr.
   // Keep its position, but do not let it evict an ordinary line until classified.
-  let pendingStdoutBlank;
+  let pendingStdoutBlank: { index: number } | undefined;
   const settleStdoutBlank = () => {
-    if (pendingStdoutBlank?.index < 0) {
+    if (pendingStdoutBlank && pendingStdoutBlank.index < 0) {
       omitted += 1;
     }
     pendingStdoutBlank = undefined;
   };
   // Trim in batches so a chatty passing file costs amortized constant time per line.
-  const trim = (limit) => {
+  const trim = (limit: number) => {
     const pendingIndex = pendingStdoutBlank?.index ?? -1;
     const count = lines.length - Number(pendingIndex >= 0);
     if (count > limit) {
@@ -381,9 +433,9 @@ function outputTail() {
       }
     }
   };
-  const push = (line) => {
+  const push = (line: string) => {
     if (line.startsWith(`stdout: ${openShellProgressPrefix}`)) {
-      if (pendingStdoutBlank?.index >= 0) {
+      if (pendingStdoutBlank && pendingStdoutBlank.index >= 0) {
         lines.splice(pendingStdoutBlank.index, 1);
       }
       pendingStdoutBlank = undefined;
@@ -399,7 +451,7 @@ function outputTail() {
     trim(2 * outputTailLines);
   };
   return {
-    add(stream, text) {
+    add(stream: OutputStream, text: string) {
       let rest = text;
       if (dropping[stream]) {
         // The rest of a line cut at the limit could start inside a secret.
@@ -411,7 +463,7 @@ function outputTail() {
         rest = rest.slice(end + 1);
       }
       const parts = (partial[stream] + rest).split("\n");
-      partial[stream] = parts.pop();
+      partial[stream] = parts.pop() ?? "";
       if (partial[stream].length >= failureInputLimit) {
         parts.push(partial[stream]);
         partial[stream] = "";
@@ -421,11 +473,11 @@ function outputTail() {
         push(`${stream}: ${line}`);
       }
     },
-    diagnostic(text) {
+    diagnostic(text: string) {
       push(`diagnostic: ${text}`);
     },
-    finish() {
-      for (const stream of ["stdout", "stderr"]) {
+    finish(): OutputTail {
+      for (const stream of ["stdout", "stderr"] as const) {
         if (partial[stream] !== "") {
           push(`${stream}: ${partial[stream]}`);
         }
@@ -444,16 +496,16 @@ const interruptedOutputBatchChars = 32 * 1024;
 // Node exits soon after an interruption and can cut what is still queued, so the
 // tail goes out in small batches, newest first: a cut loses the oldest lines and
 // at most one partial JSON line, which run-tests skips.
-function* interruptedOutput({ lines, omitted }) {
+function* interruptedOutput({ lines, omitted }: OutputTail) {
   // Measured as JSON, since escaping can grow a line several times.
   const sizes = lines.map((line) => JSON.stringify(line).length);
   let end = lines.length;
   while (end > 0) {
     let start = end - 1;
-    let chars = sizes[start];
-    while (start > 0 && chars + sizes[start - 1] <= interruptedOutputBatchChars) {
+    let chars = sizes[start]!;
+    while (start > 0 && chars + sizes[start - 1]! <= interruptedOutputBatchChars) {
       start -= 1;
-      chars += sizes[start];
+      chars += sizes[start]!;
     }
     yield `${JSON.stringify({
       type: "test:output",
@@ -464,21 +516,25 @@ function* interruptedOutput({ lines, omitted }) {
   }
 }
 
-function location(data = {}, recordCoverage = false) {
-  const error = data.details?.error;
-  const cause = error?.cause ?? error;
+function location(data: ReporterEventData = {}, recordCoverage = false) {
+  const rawError = data.details?.error;
+  const error = failureFields(rawError);
+  const cause = error?.cause ?? rawError;
+  const fields = failureFields(cause);
+  const { file } = data;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
+  const exitCode = fileFailure ? error?.exitCode : undefined;
+  const signal = fileFailure ? error?.signal : undefined;
   // Only retain coordinates in the known test file, never arbitrary stack text.
-  const frame =
-    typeof cause?.stack === "string" && typeof data.file === "string"
-      ? cause.stack.split("\n").find((line) => line.includes(`${data.file}:`))
-      : undefined;
-  const coordinates = frame
-    ?.slice(frame.indexOf(`${data.file}:`) + data.file.length + 1)
-    .match(/^(\d+):(\d+)/);
-  const failureLocation = coordinates
-    ? { file: data.file, line: Number(coordinates[1]), column: Number(coordinates[2]) }
-    : undefined;
+  let failureLocation: { file: string; line: number; column: number } | undefined;
+  if (typeof file === "string" && typeof fields?.stack === "string") {
+    const marker = `${file}:`;
+    const frame = fields.stack.split("\n").find((line) => line.includes(marker));
+    const coordinates = frame?.slice(frame.indexOf(marker) + marker.length).match(/^(\d+):(\d+)/);
+    if (coordinates) {
+      failureLocation = { file, line: Number(coordinates[1]), column: Number(coordinates[2]) };
+    }
+  }
   return {
     file: data.file,
     line: data.line,
@@ -495,8 +551,8 @@ function location(data = {}, recordCoverage = false) {
       !fileFailure &&
       data.details?.type === "test" &&
       error?.failureType === "testCodeFailure" &&
-      cause?.code === "ERR_ASSERTION" &&
-      cause?.name === "AssertionError"
+      fields?.code === "ERR_ASSERTION" &&
+      fields?.name === "AssertionError"
         ? true
         : undefined,
     caseSubtestsFailed:
@@ -506,32 +562,35 @@ function location(data = {}, recordCoverage = false) {
       error?.failureType === "subtestsFailed"
         ? true
         : undefined,
-    error: error
-      ? {
-          code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
-          name: "Error",
-          failureType:
-            fileFailure && error.failureType === "testCodeFailure" ? "testCodeFailure" : undefined,
-          exitCode:
-            fileFailure &&
-            Number.isInteger(error.exitCode) &&
-            error.exitCode >= 0 &&
-            error.exitCode <= 255
-              ? error.exitCode
-              : undefined,
-          signal:
-            fileFailure && ["SIGABRT", "SIGKILL", "SIGTERM"].includes(error.signal)
-              ? error.signal
-              : undefined,
-          cause:
-            cause?.code === "ERR_ASSERTION" && cause?.name === "AssertionError"
-              ? { code: "ERR_ASSERTION", name: "AssertionError" }
-              : undefined,
-          location: failureLocation,
-          diagnostic: failureDiagnostic(cause),
-          ...failureText(cause),
-        }
-      : undefined,
+    error:
+      rawError && error
+        ? {
+            code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
+            name: "Error",
+            failureType:
+              fileFailure && error.failureType === "testCodeFailure"
+                ? "testCodeFailure"
+                : undefined,
+            exitCode:
+              typeof exitCode === "number" &&
+              Number.isInteger(exitCode) &&
+              exitCode >= 0 &&
+              exitCode <= 255
+                ? exitCode
+                : undefined,
+            signal:
+              signal === "SIGABRT" || signal === "SIGKILL" || signal === "SIGTERM"
+                ? signal
+                : undefined,
+            cause:
+              fields?.code === "ERR_ASSERTION" && fields?.name === "AssertionError"
+                ? { code: "ERR_ASSERTION", name: "AssertionError" }
+                : undefined,
+            location: failureLocation,
+            diagnostic: projectFailureDiagnostic(cause, nativeFirstAgentProofDiagnostic),
+            ...failureText(cause, fields),
+          }
+        : undefined,
     durationMs:
       typeof data.details?.duration_ms === "number" ? data.details.duration_ms : undefined,
     testType: data.details?.type,
@@ -540,17 +599,20 @@ function location(data = {}, recordCoverage = false) {
 
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
-export default async function* jsonLinesReporter(source) {
+export default async function* jsonLinesReporter(
+  source: AsyncIterable<ReporterEvent> | Iterable<ReporterEvent>,
+): AsyncGenerator<string> {
   const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
-  const progress = [];
-  const readProgress = boundedProgressLines((line) => {
+  const progress: Record<string, unknown>[] = [];
+  const readProgress: (text: string) => void = boundedProgressLines((line: string) => {
     if (!line.startsWith(openShellProgressPrefix)) {
       return;
     }
     try {
-      const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
-      if (value) {
+      const raw: unknown = JSON.parse(line.slice(openShellProgressPrefix.length));
+      const value: unknown = openShellProgress(raw);
+      if (isRecord(value)) {
         progress.push(value);
       }
     } catch {
@@ -561,8 +623,9 @@ export default async function* jsonLinesReporter(source) {
   let outputSent = false;
   // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
   // declared in a loop can share a key, so each key counts its runs.
-  const running = new Map();
-  const runningKey = (data) => `${data.nesting}:${data.line}:${data.column}:${data.name}`;
+  const running = new Map<string, { data: ReporterEventData; count: number }>();
+  const runningKey = (data: ReporterEventData) =>
+    `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
     if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
       const key = runningKey(event.data);
@@ -572,7 +635,7 @@ export default async function* jsonLinesReporter(source) {
     if (event.type === "test:complete" && typeof event.data?.name === "string") {
       const key = runningKey(event.data);
       const entry = running.get(key);
-      if (entry?.count > 1) {
+      if (entry && entry.count > 1) {
         entry.count -= 1;
       } else {
         running.delete(key);
@@ -606,7 +669,7 @@ export default async function* jsonLinesReporter(source) {
             yield `${JSON.stringify({ type: "test:progress", data: value })}\n`;
           }
         }
-        output.add(event.type.slice(5), event.data.message);
+        output.add(event.type === "test:stdout" ? "stdout" : "stderr", event.data.message);
       }
       continue;
     }
@@ -619,7 +682,8 @@ export default async function* jsonLinesReporter(source) {
       typeof event.data?.file === "string" &&
       event.data.counts
     ) {
-      const { tests, passed, failed, cancelled, skipped, todo, suites } = event.data.counts;
+      const { tests, passed, failed, cancelled, skipped, todo, suites }: ReportedCounts =
+        event.data.counts;
       yield `${JSON.stringify({
         type: "test:summary",
         data: { tests, passed, failed, cancelled, skipped, todo, suites },
@@ -632,7 +696,7 @@ export default async function* jsonLinesReporter(source) {
         continue;
       }
       const measurement = parseMeasurementDiagnostic(message);
-      if (typeof event.data.file === "string" && measurement === undefined) {
+      if (typeof event.data?.file === "string" && measurement === undefined) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
@@ -646,7 +710,7 @@ export default async function* jsonLinesReporter(source) {
       }
       continue;
     }
-    if (!["test:pass", "test:fail", "test:start"].includes(event.type)) {
+    if (event.type !== "test:pass" && event.type !== "test:fail" && event.type !== "test:start") {
       continue;
     }
 

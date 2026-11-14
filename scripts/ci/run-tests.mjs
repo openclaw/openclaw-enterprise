@@ -21,7 +21,7 @@ import { appendFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
+import { startAgentNamespaceCapture } from "./k3d-diagnostics.ts";
 import { stopCleanupCommands } from "./cleanup.ts";
 import {
   failureInputLimit,
@@ -30,7 +30,7 @@ import {
   redactFailureDetail,
   redactLogLine,
   redactOutputLines,
-} from "./failure-redaction.mjs";
+} from "./failure-redaction.ts";
 import {
   exercisedLaneStatus,
   exercisedAssertionFailures,
@@ -63,7 +63,7 @@ import {
 } from "./runner-inputs.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
+const reporterPath = fileURLToPath(new URL("./reporter.ts", import.meta.url));
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));

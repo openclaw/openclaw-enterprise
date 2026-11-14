@@ -11,7 +11,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { verifyPreloadedAgentSandbox } from "../../scripts/ci/agent-sandbox.ts";
-import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {

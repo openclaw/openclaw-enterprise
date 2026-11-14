@@ -8,6 +8,27 @@ export const failureInputLimit = 16_384;
 const failureMessageLimit = 600;
 const failureFrameLimit = 240;
 const minimumRedactedEnvLength = 8;
+const credentialLineMarker = "[redacted credential-bearing line]";
+
+export type RedactionSecrets = readonly (readonly [value: string, name: string])[];
+type Environment = Readonly<Record<string, string | undefined>>;
+type FailureText = { message?: unknown; frame?: unknown; stack?: unknown };
+type RedactedFailure<T> = T extends
+  ((...args: never[]) => unknown) | (abstract new (...args: never[]) => object)
+  ? T
+  : T extends object
+    ? Partial<Omit<T, "message" | "frame" | "stack">> & {
+        message: string | undefined;
+        frame: string | undefined;
+      }
+    : T;
+
+type LogSelection = {
+  pattern: RegExp;
+  exclude?: RegExp | undefined;
+  budget: number;
+  lineChars: number;
+};
 // Runner and checkout metadata is public and shows up in ordinary messages
 // (owner "openclaw", paths); everything else in the env is treated as private.
 const publicEnvNames = new Set([
@@ -70,11 +91,11 @@ const assignment = new RegExp(
 // A diagnostic can pretty-print a credential across lines and quote a literal closing bracket.
 // Resume only after the matching close. If the bounded input ends first or the delimiters do not match,
 // suppress the rest rather than publish what might still be part of the credential.
-function bracketValueEnd(text, start) {
-  const closes = [];
-  let quote;
+function bracketValueEnd(text: string, start: number): number {
+  const closes: ("]" | "}")[] = [];
+  let quote: string | undefined;
   for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
+    const char = text.charAt(index);
     if (quote !== undefined) {
       if (char === "\\") {
         index += 1;
@@ -100,19 +121,19 @@ function bracketValueEnd(text, start) {
 // A quoted value can contain spaces, punctuation, or an escaped quote. When JSON has itself
 // been serialized, its opening delimiter tells us how many backslashes end the value. A value
 // that opens with "{" or "[" is redacted through its matching close.
-function redactSecretAssignments(text) {
+function redactSecretAssignments(text: string) {
   let result = "";
   let end = 0;
   assignment.lastIndex = 0;
-  for (let match; (match = assignment.exec(text));) {
-    const [value, key, keyword, separator, escapes = "", quote = "", bracket] = match;
+  for (let match = assignment.exec(text); match !== null; match = assignment.exec(text)) {
+    const [value, key, keyword = "", separator, escapes = "", quote = "", bracket] = match;
     const delimiter = escapes + quote;
     result += text.slice(end, match.index) + key + delimiter + "[redacted]";
     end = assignment.lastIndex;
     if (bracket) {
       end = bracketValueEnd(text, match.index + value.length - 1);
       // Text glued to the close (`[a]b`) is part of the same value.
-      while (end < text.length && !/[\s"',;}\]&]/u.test(text[end])) {
+      while (end < text.length && !/[\s"',;}\]&]/u.test(text.charAt(end))) {
         end += 1;
       }
       assignment.lastIndex = end;
@@ -126,8 +147,8 @@ function redactSecretAssignments(text) {
         const next = assignment.exec(text);
         const limit = next === null ? text.length : next.index;
         let phraseEnd = end;
-        for (let index = end; index < limit && !multiWordEnd.test(text[index]); index += 1) {
-          if (!/\s/u.test(text[index])) {
+        for (let index = end; index < limit && !multiWordEnd.test(text.charAt(index)); index += 1) {
+          if (!/\s/u.test(text.charAt(index))) {
             phraseEnd = index + 1;
           }
         }
@@ -143,7 +164,7 @@ function redactSecretAssignments(text) {
     const escapeWidth = 2 * delimiter.length;
     let backslashes = 0;
     while (end < text.length) {
-      const char = text[end++];
+      const char = text.charAt(end++);
       if (char === quote && backslashes % escapeWidth === escapes.length) {
         result += delimiter;
         break;
@@ -155,7 +176,7 @@ function redactSecretAssignments(text) {
   return result + text.slice(end);
 }
 
-function isPublicEnvName(name) {
+function isPublicEnvName(name: string) {
   return (
     !/TOKEN|SECRET|PASSWORD|KEY|CREDENTIAL|AUTH/iu.test(name) &&
     (publicEnvNames.has(name) ||
@@ -168,8 +189,10 @@ function isPublicEnvName(name) {
 
 // Every value to redact from these environments, longest first so a value
 // containing another is replaced whole.
-export function failureSecrets(environments) {
-  const values = new Map();
+export function failureSecrets(
+  environments: Iterable<Environment | null | undefined>,
+): RedactionSecrets {
+  const values = new Map<string, string>();
   for (const environment of environments) {
     for (const [name, value] of Object.entries(environment ?? {})) {
       if (typeof value !== "string" || isPublicEnvName(name)) {
@@ -201,7 +224,7 @@ export function failureSecrets(environments) {
   return [...values].sort(([a], [b]) => b.length - a.length);
 }
 
-function withoutStructuredLogLines(text) {
+function withoutStructuredLogLines(text: string) {
   return text
     .split("\n")
     .filter((line) => !line.includes("OCSF-JSON"))
@@ -210,13 +233,19 @@ function withoutStructuredLogLines(text) {
 
 // `cut` says the reporter cut the text at failureInputLimit (a caller may have
 // shortened it since).
-function redactText(text, limit, secrets, root, cut) {
+function redactText(
+  text: unknown,
+  limit: number,
+  secrets: RedactionSecrets,
+  root: string,
+  cut?: boolean,
+) {
   if (typeof text !== "string" || text.length === 0) {
     return undefined;
   }
   cut ??= text.length >= failureInputLimit;
-  text = withoutStructuredLogLines(text);
-  let result = stripVTControlCharacters(text.slice(0, failureInputLimit));
+  const filtered = withoutStructuredLogLines(text);
+  let result = stripVTControlCharacters(filtered.slice(0, failureInputLimit));
   if (root.length > 1) {
     result = result.replaceAll(`file://${root}/`, "").replaceAll(`${root}/`, "");
   }
@@ -226,7 +255,7 @@ function redactText(text, limit, secrets, root, cut) {
   for (const shape of secretShapes) {
     result =
       shape === authSchemeShape
-        ? result.replace(shape, (_, quote) => `${quote}[redacted]`)
+        ? result.replace(shape, (_, quote: string) => `${quote}[redacted]`)
         : result.replace(shape, "[redacted]");
   }
   result = redactSecretAssignments(result)
@@ -241,7 +270,7 @@ function redactText(text, limit, secrets, root, cut) {
 }
 
 // Redacts one captured container log line the same way, bounded to `limit`.
-export function redactLogLine(line, secrets, limit) {
+export function redactLogLine(line: unknown, secrets: RedactionSecrets, limit: number) {
   if (typeof line === "string" && line.includes("OCSF-JSON")) {
     return "";
   }
@@ -250,20 +279,26 @@ export function redactLogLine(line, secrets, limit) {
 
 // Redacts the reporter's raw `message` and `frame` in one pass over the raw text.
 // The whole `stack` stays out of results; failureDetail keeps it.
-export function redactFailure(error, secrets, root) {
+export function redactFailure<T>(
+  error: T,
+  secrets: RedactionSecrets,
+  root: string,
+): RedactedFailure<T>;
+export function redactFailure(error: unknown, secrets: RedactionSecrets, root: string): unknown {
   if (!error || typeof error !== "object") {
     return error;
   }
-  const { stack: _stack, ...rest } = error;
+  const fields: FailureText = error;
+  const { stack: _stack, ...rest } = fields;
   return {
     ...rest,
-    message: redactText(error.message, failureMessageLimit, secrets, root),
-    frame: redactText(error.frame, failureFrameLimit, secrets, root),
+    message: redactText(fields.message, failureMessageLimit, secrets, root),
+    frame: redactText(fields.frame, failureFrameLimit, secrets, root),
   };
 }
 
 // Value-level redaction cannot see every credential, so lines that name one are
-// dropped whole, as for followed container logs (k3d-diagnostics.mjs).
+// dropped whole, as for followed container logs (k3d-diagnostics.ts).
 // Any scheme's userinfo counts (postgresql://, redis://, git+ssh://).
 const credentialLine = new RegExp(
   String.raw`authorization|bearer\s|private.?key|-----BEGIN|${urlCredentialSource}`,
@@ -271,21 +306,22 @@ const credentialLine = new RegExp(
 );
 // Case-sensitive, so "Unexpected token" lines survive.
 const credentialToken = /\b(?:Basic|Token)\s+\S{8,}/;
-const namesCredential = (line) => credentialLine.test(line) || credentialToken.test(line);
+const namesCredential = (line: string) => credentialLine.test(line) || credentialToken.test(line);
 // Control characters can split a keyword or a private key header.
-const stripControl = (text) => stripVTControlCharacters(text).replace(/[^\P{Cc}\n\t]/gu, "");
+const stripControl = (text: string) =>
+  stripVTControlCharacters(text).replace(/[^\P{Cc}\n\t]/gu, "");
 
 // Whether a raw line names a credential once control characters are gone. Only
 // the part redactText can publish is tested, which bounds the URL rule's cost on a
 // huge line.
-export function isCredentialLine(line) {
+export function isCredentialLine(line: string) {
   return namesCredential(stripControl(line.slice(0, failureInputLimit)));
 }
 
-function dropCredentialLines(text) {
+function dropCredentialLines(text: string | undefined) {
   return text
     ?.split("\n")
-    .map((line) => (namesCredential(line) ? "[redacted credential-bearing line]" : line))
+    .map((line) => (namesCredential(line) ? credentialLineMarker : line))
     .join("\n");
 }
 
@@ -295,29 +331,29 @@ function dropCredentialLines(text) {
 // dropped on the raw text first, since a token shape can consume the keyword and
 // keep the rest of its line, and again after redaction. A private key spans
 // lines, so it is replaced whole before that.
-function redactDetailText(text, secrets, root) {
+function redactDetailText(text: unknown, secrets: RedactionSecrets, root: string) {
   if (typeof text !== "string") {
     return undefined;
   }
   const cut = text.length >= failureInputLimit;
-  text = withoutStructuredLogLines(text);
+  const filtered = withoutStructuredLogLines(text);
   const raw = dropCredentialLines(
-    stripControl(text.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
+    stripControl(filtered.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
   );
   return dropCredentialLines(redactText(raw, failureInputLimit, secrets, root, cut));
 }
 
-export function redactFailureDetail(error, secrets, root) {
+export function redactFailureDetail(error: unknown, secrets: RedactionSecrets, root: string) {
   if (!error || typeof error !== "object") {
     return undefined;
   }
-  const message = redactDetailText(error.message, secrets, root);
-  const stack = redactDetailText(error.stack, secrets, root);
+  const { message: rawMessage, stack: rawStack }: FailureText = error;
+  const message = redactDetailText(rawMessage, secrets, root);
+  const stack = redactDetailText(rawStack, secrets, root);
   return message === undefined && stack === undefined ? undefined : { message, stack };
 }
 
 const privateKeyEnd = /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/u;
-const privateKeyLine = "[redacted credential-bearing line]";
 // Longer than any PEM key or ordinary PGP key block; an orphan END masks at most
 // this many lines above it.
 const orphanKeyLines = 1_024;
@@ -327,22 +363,22 @@ const orphanKeyLines = 1_024;
 // the line count: privateKeyShape runs over the joined text, an unterminated key
 // runs to the end, and an END line with no BEGIN before it (a tail that starts
 // inside a key) takes the lines above it.
-export function maskPrivateKeyLines(lines) {
+export function maskPrivateKeyLines<T>(lines: readonly T[]): (T | string)[] {
   const clean = lines.map((line) => stripControl(String(line)));
   const text = clean.join("\n");
   // Each element's start offset in the joined text; an element may hold "\n" itself.
-  const starts = [];
+  const starts: number[] = [];
   let offset = 0;
   for (const line of clean) {
     starts.push(offset);
     offset += line.length + 1;
   }
-  const lineAt = (position) => {
+  const lineAt = (position: number) => {
     let low = 0;
     let high = starts.length - 1;
     while (low < high) {
       const middle = Math.ceil((low + high) / 2);
-      if (starts[middle] <= position) {
+      if (starts[middle]! <= position) {
         low = middle;
       } else {
         high = middle - 1;
@@ -352,10 +388,12 @@ export function maskPrivateKeyLines(lines) {
   };
   // Preserve array positions for key masking, but discard structured supervisor events
   // before any consumer selects, clips, or publishes these raw diagnostic lines.
-  const masked = lines.map((line, index) => (clean[index].includes("OCSF-JSON") ? "" : line));
-  const mask = (from, to) => {
+  const masked = lines.map<T | string>((line, index) =>
+    clean[index]!.includes("OCSF-JSON") ? "" : line,
+  );
+  const mask = (from: number, to: number) => {
     for (let index = Math.max(0, from); index <= to && index < masked.length; index += 1) {
-      masked[index] = privateKeyLine;
+      masked[index] = credentialLineMarker;
     }
   };
   const end = privateKeyEnd.exec(text);
@@ -375,7 +413,11 @@ export function maskPrivateKeyLines(lines) {
 // redacted and then clipped to `lineChars`, within `budget` characters, oldest first.
 // Private keys are masked across lines before the filter: a key's body line could match
 // a short pattern word, and redactLogLine sees one line at a time (finding 1551).
-export function newestMatchingLogLines(logs, secrets, { pattern, exclude, budget, lineChars }) {
+export function newestMatchingLogLines(
+  logs: string,
+  secrets: RedactionSecrets,
+  { pattern, exclude, budget, lineChars }: LogSelection,
+) {
   const kept = [];
   let length = 0;
   for (const line of maskPrivateKeyLines(logs.split("\n")).reverse()) {
@@ -395,19 +437,29 @@ export function newestMatchingLogLines(logs, secrets, { pattern, exclude, budget
 
 // Lines of a failed file's output (or a component log) for the diagnostics
 // report, with private keys removed across lines first.
-export function redactOutputLines(lines, secrets, root, limit) {
+export function redactOutputLines(
+  lines: readonly string[],
+  secrets: RedactionSecrets,
+  root: string,
+  limit: number,
+) {
   return maskPrivateKeyLines(lines).map((line) => redactOutputLine(line, secrets, root, limit));
 }
 
 // One line of a failed file's output for the diagnostics report.
-export function redactOutputLine(line, secrets, root, limit) {
+export function redactOutputLine(
+  line: string,
+  secrets: RedactionSecrets,
+  root: string,
+  limit: number,
+) {
   if (typeof line === "string" && line.includes("OCSF-JSON")) {
     return "";
   }
   // Test the raw line first, as for container logs: redaction can consume the keyword.
   if (isCredentialLine(line)) {
-    return "[redacted credential-bearing line]";
+    return credentialLineMarker;
   }
   const redacted = redactText(line, limit, secrets, root) ?? "";
-  return namesCredential(redacted) ? "[redacted credential-bearing line]" : redacted;
+  return namesCredential(redacted) ? credentialLineMarker : redacted;
 }
