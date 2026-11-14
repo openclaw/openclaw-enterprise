@@ -2020,6 +2020,7 @@ async function prepareProductionInstallation(
     gatewayManagedMode,
     withOAuthToolSources = true,
     observeReplacementNode = false,
+    measureAgentDeployment = (operation) => operation(),
     withScratch = false,
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
@@ -2687,126 +2688,130 @@ async function prepareProductionInstallation(
     scratchBinding = await createScratchBinding(agent.data.id);
     await configureScratch(scratchBinding);
   }
-  const deployed = await request(
-    "POST",
-    `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
-  );
-  if (withScratch) {
-    // Later operator configuration must not redirect an already admitted revision.
-    // The replacement name deliberately does not exist; this worker must use the
-    // saved claim, not the current Installation selection.
-    configuration.drivers.compute.configuration.runtime.scratchVolumes = [
-      {
-        ...scratchBinding,
-        claimName: `${scratchBinding.claimName}-next`,
-        claimUid: randomUUID(),
-      },
-    ];
-    await writeFile(workerStartupPath, JSON.stringify(configuration), { mode: 0o600 });
-    await resumeWorker();
-  }
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
-  assert.equal(deployed.data.harness.mode, "dedicated");
-  assert.equal(deployed.data.harness.id, harnessId);
-  if (harnessId === "codex") {
-    assert.equal(
-      deployed.data.configuration.plugins.entries.codex.config.appServer.sandbox,
-      "danger-full-access",
-      "OpenShell must own isolation for both API-key and PAT sources.",
+  const deployAgent = async () => {
+    const deployed = await request(
+      "POST",
+      `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
     );
-  } else {
-    assert.equal(
-      deployed.data.configuration.plugins?.entries?.codex,
-      undefined,
-      "OpenShell must not inject Codex configuration into a native OpenClaw revision.",
-    );
-  }
+    if (withScratch) {
+      // Later operator configuration must not redirect an already admitted revision.
+      // The replacement name deliberately does not exist; this worker must use the
+      // saved claim, not the current Installation selection.
+      configuration.drivers.compute.configuration.runtime.scratchVolumes = [
+        {
+          ...scratchBinding,
+          claimName: `${scratchBinding.claimName}-next`,
+          claimUid: randomUUID(),
+        },
+      ];
+      await writeFile(workerStartupPath, JSON.stringify(configuration), { mode: 0o600 });
+      await resumeWorker();
+    }
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+    assert.equal(deployed.data.harness.mode, "dedicated");
+    assert.equal(deployed.data.harness.id, harnessId);
+    if (harnessId === "codex") {
+      assert.equal(
+        deployed.data.configuration.plugins.entries.codex.config.appServer.sandbox,
+        "danger-full-access",
+        "OpenShell must own isolation for both API-key and PAT sources.",
+      );
+    } else {
+      assert.equal(
+        deployed.data.configuration.plugins?.entries?.codex,
+        undefined,
+        "OpenShell must not inject Codex configuration into a native OpenClaw revision.",
+      );
+    }
 
-  assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
-  try {
-    await waitForOpenShellRevisionActivation(waitFor, {
-      request,
-      agentPath: `/namespaces/${namespaceId}/agents/${agent.data.id}`,
-      revisionId: deployed.data.id,
-      workerEvents: events,
-    });
-  } catch (error) {
-    const readinessRefused =
-      error instanceof OpenShellDeploymentFailedError &&
-      (error.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
-        error.code === "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE");
-    const secrets = failureSecrets([
-      process.env,
-      {
-        APP_SERVER_TOKEN: transport.appServerToken,
-        GATEWAY_API_KEY: workspaceGateway.apiKey,
-      },
-    ]);
-    await rethrowOpenShellFailure(
-      error,
-      async () => {
-        await writeWorkerCompletionDiagnostics({
-          pool: observerPool,
-          events,
-          namespaceId,
-          agentId: agent.data.id,
-          revisionId: deployed.data.id,
-        });
-        // These refusals already identify the failing readiness check. No Pod log read is needed.
-        if (readinessRefused) {
-          return;
-        }
-        // Preserve the provider's startup error before the fixture deletes its Pods. A revision
-        // timeout alone hides failures in Landlock, credential delivery, and the model probe.
-        const startupDiagnostic = async () => {
-          for (const namespace of new Set([placement, gatewayPlacement])) {
-            try {
-              for (const pod of await diagnosticResources("pods", namespace)) {
-                for (const container of pod.spec.containers) {
-                  if (!["agent", "gateway", "supervisor"].includes(container.name)) {
-                    continue;
-                  }
-                  const logs = await diagnosticKubectl(
-                    "logs",
-                    pod.metadata.name,
-                    "--namespace",
-                    namespace,
-                    "--container",
-                    container.name,
-                    "--tail=80",
-                  ).catch(() => "Pod logs unavailable");
-                  const lines = maskPrivateKeyLines(logs.split("\n"))
-                    .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
-                    .slice(-12);
-                  for (const line of lines) {
-                    if (diagnosticDeadlinePassed()) {
-                      return false;
+    assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
+    try {
+      await waitForOpenShellRevisionActivation(waitFor, {
+        request,
+        agentPath: `/namespaces/${namespaceId}/agents/${agent.data.id}`,
+        revisionId: deployed.data.id,
+        workerEvents: events,
+      });
+    } catch (error) {
+      const readinessRefused =
+        error instanceof OpenShellDeploymentFailedError &&
+        (error.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
+          error.code === "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE");
+      const secrets = failureSecrets([
+        process.env,
+        {
+          APP_SERVER_TOKEN: transport.appServerToken,
+          GATEWAY_API_KEY: workspaceGateway.apiKey,
+        },
+      ]);
+      await rethrowOpenShellFailure(
+        error,
+        async () => {
+          await writeWorkerCompletionDiagnostics({
+            pool: observerPool,
+            events,
+            namespaceId,
+            agentId: agent.data.id,
+            revisionId: deployed.data.id,
+          });
+          // These refusals already identify the failing readiness check. No Pod log read is needed.
+          if (readinessRefused) {
+            return;
+          }
+          // Preserve the provider's startup error before the fixture deletes its Pods. A revision
+          // timeout alone hides failures in Landlock, credential delivery, and the model probe.
+          const startupDiagnostic = async () => {
+            for (const namespace of new Set([placement, gatewayPlacement])) {
+              try {
+                for (const pod of await diagnosticResources("pods", namespace)) {
+                  for (const container of pod.spec.containers) {
+                    if (!["agent", "gateway", "supervisor"].includes(container.name)) {
+                      continue;
                     }
-                    process.stderr.write(
-                      `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
-                    );
+                    const logs = await diagnosticKubectl(
+                      "logs",
+                      pod.metadata.name,
+                      "--namespace",
+                      namespace,
+                      "--container",
+                      container.name,
+                      "--tail=80",
+                    ).catch(() => "Pod logs unavailable");
+                    const lines = maskPrivateKeyLines(logs.split("\n"))
+                      .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
+                      .slice(-12);
+                    for (const line of lines) {
+                      if (diagnosticDeadlinePassed()) {
+                        return false;
+                      }
+                      process.stderr.write(
+                        `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
+                      );
+                    }
                   }
                 }
+              } catch {
+                if (diagnosticDeadlinePassed()) {
+                  return false;
+                }
+                process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
               }
-            } catch {
-              if (diagnosticDeadlinePassed()) {
-                return false;
-              }
-              process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
             }
-          }
-          return false;
-        };
-        await startupDiagnostic();
-      },
-      {
-        secrets,
-        provisioningFailure: readinessRefused
-          ? undefined
-          : createSandboxDriver.provisioningFailures.get(deployed.data.id),
-      },
-    );
-  }
+            return false;
+          };
+          await startupDiagnostic();
+        },
+        {
+          secrets,
+          provisioningFailure: readinessRefused
+            ? undefined
+            : createSandboxDriver.provisioningFailures.get(deployed.data.id),
+        },
+      );
+    }
+    return deployed;
+  };
+  const deployed = await measureAgentDeployment(deployAgent);
 
   await assertWorkerCompleted({
     description: `worker completion for ${deployed.data.id}`,
@@ -9681,7 +9686,13 @@ export function registerProviderLifecycleTest(workflow) {
             harnessId: selectedHarness,
             observeReplacementNode: workflow === "upstream" && selectedScenario === "full",
             ...(workflow === "scratch" ? { withScratch: true, withOAuthToolSources: false } : {}),
-            ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
+            ...(pluginInstallOnly
+              ? {
+                  withOAuthToolSources: false,
+                  measureAgentDeployment: (operation) =>
+                    runOpenShellStage(testContext, "agent-deploy", operation),
+                }
+              : {}),
             ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
           }),
         );
@@ -9795,7 +9806,9 @@ export function registerProviderLifecycleTest(workflow) {
           await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
         });
         if (pluginInstallOnly) {
-          await assertInstalledCodexPlugin(topology);
+          await runOpenShellStage(testContext, "plugin-check", () =>
+            assertInstalledCodexPlugin(topology),
+          );
           return;
         }
         process.stderr.write(

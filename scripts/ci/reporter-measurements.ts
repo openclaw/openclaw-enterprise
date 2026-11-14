@@ -10,6 +10,7 @@ import { isRecord } from "./reporter-diagnostics.ts";
 const measurementPrefix = "openclaw-ci-measurement ";
 const openShellStageMeasurementKind = "openshell-stage";
 const openShellPluginStageKind = "openshell-plugin-stage";
+const openShellStageMaxElapsedMs = 7_200_000;
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellPolicyCheckKind = "openshell-network-policy-check";
 const openShellFixtureTeardownKind = "openshell-fixture-teardown";
@@ -147,6 +148,35 @@ export function isOpenShellPluginStage(stage: unknown): stage is "installation" 
   return stage === "installation" || stage === "exposure-auth";
 }
 
+function safeOpenShellPluginFailureTiming(value: Record<string, unknown>) {
+  const { kind, stage, outcome, elapsedMs } = value;
+  return Object.keys(value).length === 4 &&
+    kind === openShellStageMeasurementKind &&
+    (stage === "installation" || stage === "agent-deploy" || stage === "plugin-check") &&
+    outcome === "failed" &&
+    isInteger(elapsedMs) &&
+    elapsedMs >= 0 &&
+    elapsedMs <= openShellStageMaxElapsedMs
+    ? { kind, stage, outcome, elapsedMs }
+    : undefined;
+}
+
+export function parseOpenShellPluginFailureTiming(message: string) {
+  if (message.length > 256 || !message.startsWith(measurementPrefix)) {
+    return undefined;
+  }
+  try {
+    const value: unknown = JSON.parse(message.slice(measurementPrefix.length));
+    const timing = isRecord(value) && safeOpenShellPluginFailureTiming(value);
+    if (timing && message === measurementPrefix + JSON.stringify(timing)) {
+      return timing;
+    }
+  } catch {
+    // Only closed, canonical timing records cross the nested reporter boundary.
+  }
+  return undefined;
+}
+
 // Undefined identifies ordinary diagnostics. Null keeps rejected measurements
 // out of the raw failure output, including when parsing or projection throws.
 export function parseMeasurementDiagnostic(message: string): object | null | undefined {
@@ -219,11 +249,14 @@ function safeMeasurement(value: unknown): object | undefined {
   }
   if (value.kind === openShellStageMeasurementKind) {
     const { kind, stage, outcome } = value;
+    if (stage === "agent-deploy" || stage === "plugin-check") {
+      return safeOpenShellPluginFailureTiming(value);
+    }
     const allowedStage =
       typeof stage === "string" &&
       stage !== "exposure-auth" &&
       Boolean(openShellProgress({ kind, stage, outcome }));
-    return safeStageMeasurement(value, allowedStage, 7_200_000);
+    return safeStageMeasurement(value, allowedStage, openShellStageMaxElapsedMs);
   }
   if (value.kind === openShellPluginStageKind) {
     const { kind, stage, outcome } = value;

@@ -24,8 +24,22 @@ const sentinel = "invented-plugin-diagnostic-sentinel";
 const incomplete =
   "OpenShell plugin installation did not complete one exact passing case; child details withheld.";
 
-for (const scenario of ["installation-failure", "no-frame", "invalid-frame"] as const) {
-  test(`plugin wrapper reports the latest validated stage for ${scenario}`, async (t) => {
+const failureScenarios = {
+  "installation-failure": { checkpoint: ["installation", "failed"], failedStage: "installation" },
+  "deployment-failure": { checkpoint: ["installation", "failed"], failedStage: "agent-deploy" },
+  "plugin-failure": { checkpoint: ["exposure-auth", "passed"], failedStage: "plugin-check" },
+  "exposure-failure": { checkpoint: ["exposure-auth", "failed"] },
+  "ambiguous-timing": { checkpoint: ["exposure-auth", "passed"] },
+  "foreign-timing": {},
+  "no-frame": {},
+  "invalid-frame": {},
+} satisfies Record<string, { checkpoint?: readonly [string, string]; failedStage?: string }>;
+
+for (const [scenario, expected] of Object.entries<{
+  checkpoint?: readonly [string, string];
+  failedStage?: string;
+}>(failureScenarios)) {
+  test(`plugin wrapper normalizes the checkpoint and failed timing for ${scenario}`, async (t) => {
     const root = await createRunnerFixture(t);
     const file = "tests/integration/openshell-plugin-install-real.test.ts";
     const child = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
@@ -69,7 +83,26 @@ test(${JSON.stringify(caseName)}, async (t) => {
   if (scenario === "installation-failure") {
     await runOpenShellStage(t, "installation", fail);
   }
+  if (scenario === "deployment-failure") {
+    await runOpenShellStage(t, "installation", () => runOpenShellStage(t, "agent-deploy", fail));
+  }
+  if (["plugin-failure", "exposure-failure", "ambiguous-timing"].includes(scenario)) {
+    await runOpenShellStage(t, "installation", () => {});
+    await runOpenShellStage(t, "exposure-auth", scenario === "exposure-failure" ? fail : () => {});
+    if (scenario === "ambiguous-timing") {
+      await runOpenShellStage(t, "agent-deploy", fail).catch(() => {});
+    }
+    await runOpenShellStage(t, "plugin-check", fail);
+  }
+  if (scenario === "foreign-timing") {
+    await t.test("unrelated child diagnostic", (subtest) => {
+      subtest.diagnostic('openclaw-ci-measurement {"kind":"openshell-stage","stage":"plugin-check","outcome":"failed","elapsedMs":1}');
+    });
+  }
   if (scenario === "invalid-frame") {
+    t.diagnostic('openclaw-ci-measurement {malformed');
+    t.diagnostic('openclaw-ci-measurement {"kind":"openshell-stage","stage":"installation","outcome":"failed","elapsedMs":1.5}');
+    t.diagnostic('openclaw-ci-measurement {"kind":"openshell-stage","stage":"installation","outcome":"failed","elapsedMs":1,"extra":' + JSON.stringify(${JSON.stringify(sentinel)}) + '}');
     console.log(openShellProgressPrefix + "{malformed");
     console.log(openShellProgressPrefix + JSON.stringify({kind: "openshell-stage", stage: "unrecognized-stage", outcome: "started"}));
     console.log(openShellProgressPrefix + JSON.stringify({kind: "openshell-stage", stage: "installation", outcome: "started", extra: ${JSON.stringify(sentinel)}}));
@@ -93,22 +126,43 @@ test(${JSON.stringify(caseName)}, async (t) => {
     assert.equal(run.status, 1, run.stderr);
     assert.equal(result.exitCode, 1);
     assert.equal(fileResult.nodeExitCode, 1);
-    assert.deepEqual(result.counts, { passed: 0, failed: 1, skipped: 0, todo: 0, total: 1 });
+    assert.equal(fileResult.path, file);
+    assert.equal(fileResult.status, "failed");
+    assert.equal(fileResult.signal, null);
+    assert.equal(fileResult.fileFailure, undefined);
+    const counts = { passed: 0, failed: 1, skipped: 0, todo: 0, total: 1 };
+    assert.deepEqual(result.counts, counts);
+    assert.deepEqual(fileResult.counts, counts);
     assert.deepEqual(fileResult.cleanup, { status: "passed" });
     assert.equal(await readFile(childMarker, "utf8"), "completed");
     await assert.rejects(readFile(prepareMarker), { code: "ENOENT" });
     assert.doesNotMatch(run.stdout + run.stderr + resultText, new RegExp(sentinel));
     assert.deepEqual(fileResult.installationPhases, { phases: [], truncated: false });
-    const measured = scenario === "installation-failure";
     const summary = "OpenShell plugin installation case failed; child details withheld.";
-    const stage = "\nLast reported OpenShell stage was installation (failed).";
-    assert.equal(fileResult.tests[0].error.message, measured ? summary + stage : summary);
-    assert.deepEqual(
-      fileResult.measurements,
-      measured
-        ? [{ kind: "openshell-plugin-stage", stage: "installation", outcome: "failed" }]
-        : undefined,
-    );
+    const measurements = [];
+    let failure = summary;
+    if (expected.checkpoint) {
+      const [stage, outcome] = expected.checkpoint;
+      measurements.push({ kind: "openshell-plugin-stage", stage, outcome });
+      failure += `\nLast reported OpenShell stage was ${stage} (${outcome}).`;
+    }
+    if (expected.failedStage) {
+      const elapsedMs = fileResult.measurements?.[1]?.elapsedMs;
+      assert.ok(Number.isInteger(elapsedMs) && elapsedMs >= 0 && elapsedMs <= 7_200_000);
+      measurements.push({
+        kind: "openshell-stage",
+        stage: expected.failedStage,
+        outcome: "failed",
+        elapsedMs,
+      });
+    }
+    assert.equal(fileResult.tests.length, 1);
+    const [resultCase] = fileResult.tests;
+    assert.equal(resultCase.name, outerCaseName);
+    assert.equal(resultCase.status, "failed");
+    assert.equal(resultCase.file, file);
+    assert.equal(resultCase.error.message, failure);
+    assert.deepEqual(fileResult.measurements, measurements.length > 0 ? measurements : undefined);
   });
 }
 
@@ -285,4 +339,87 @@ test("plugin progress framing never relaxes terminal admission", () => {
   }
   assert.equal(pluginInstallResult(stage + '"passed"', false).failure, incomplete);
   assert.match(pluginInstallResult(stage + '"passed"', true, true).failure!, /timed out/);
+});
+
+test("failed timing requires an intact ordinary failure response", () => {
+  const checkpoint = stageFrame("installation", "started") + stageFrame("installation", "failed");
+  const timing =
+    'openclaw-ci-measurement {"kind":"openshell-stage","stage":"installation","outcome":"failed","elapsedMs":1}';
+  const terminal = JSON.stringify({
+    primary: "OpenShell plugin installation case failed; child details withheld.",
+    teardown: false,
+  });
+  assert.equal(
+    pluginInstallResult(checkpoint + timing + "\n" + terminal, false).failedTiming,
+    timing,
+  );
+  for (const [tail, cleanExit, timedOut] of [
+    [timing + "\n" + terminal.slice(0, -1), false, false],
+    [timing + terminal, false, false],
+    [timing + "\n" + timing + "\n" + terminal, false, false],
+    [timing + "\n" + terminal, true, false],
+    [timing + "\n" + terminal, false, true],
+  ] as const) {
+    const result = pluginInstallResult(checkpoint + tail, cleanExit, timedOut);
+    assert.equal(result.failedTiming, undefined);
+    assert.deepEqual(result.progress, {
+      kind: "openshell-stage",
+      stage: "installation",
+      outcome: "failed",
+    });
+  }
+});
+
+test("a diagnostic from another registration cannot label the exact child failure", async () => {
+  const location = {
+    nesting: 0,
+    entryFile: "child.test.ts",
+    file: "child.test.ts",
+    line: 4,
+    column: 1,
+  };
+  const events = async function* () {
+    yield {
+      type: "test:fail",
+      data: {
+        ...location,
+        name: caseName,
+        details: { type: "test", error: { failureType: "testCodeFailure" } },
+      },
+    };
+    yield {
+      type: "test:diagnostic",
+      data: {
+        ...location,
+        line: 10,
+        message:
+          'openclaw-ci-measurement {"kind":"openshell-stage","stage":"plugin-check","outcome":"failed","elapsedMs":1}',
+      },
+    };
+    yield {
+      type: "test:summary",
+      data: {
+        success: false,
+        counts: {
+          topLevel: 1,
+          tests: 1,
+          passed: 0,
+          failed: 1,
+          cancelled: 0,
+          skipped: 0,
+          todo: 0,
+          suites: 0,
+        },
+      },
+    };
+  };
+  let output = "";
+  for await (const frame of pluginInstallReporter(events())) {
+    output += frame;
+  }
+  assert.equal(pluginInstallResult(output, false).failedTiming, undefined);
+  assert.equal(
+    pluginInstallResult(output, false).failure,
+    "OpenShell plugin installation case failed; child details withheld.",
+  );
 });
