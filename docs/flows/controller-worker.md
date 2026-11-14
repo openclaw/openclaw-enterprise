@@ -188,9 +188,9 @@ When Compute's `requiresStoppedPredecessors` capability is set,
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
 under the live claim, it commits the stop boundary, closes credentials and stops
-earlier revisions, including failed candidates. Stop failure blocks preparation.
-Drains yield `PREDECESSOR_STOP_YIELDED`; failing, superseded and stopped Work must
-finish that stop. Maintenance cannot recreate a stopped predecessor.
+earlier revisions. Stop failure blocks preparation. After the sweep, the worker
+rechecks lifecycle and deploy authority. Yielded stops resume before Work ends.
+Maintenance cannot recreate a stopped predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the

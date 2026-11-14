@@ -5163,7 +5163,8 @@ export class ControllerWorker {
             error instanceof RepositoryCredentialAuthorityError ||
             error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
-            error instanceof ComputePreparationFailedError
+            error instanceof ComputePreparationFailedError ||
+            error instanceof RevisionPreparationBlocked
           ) {
             throw error;
           }

@@ -1874,6 +1874,67 @@ for (const recovery of [
 }
 
 revisionTest(
+  "a published replacement keeps a deploy denial discovered during its recovery sweep",
+  async (fixture) => {
+    const owner = await fixture.agent("published-sweep-denial", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    await fixture.start(driver.compute);
+    const predecessor = await fixture.revision(owner, 1);
+    await fixture.work(predecessor, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+    await fixture.state.transact(async (unit) => {
+      await unit.namespaces.lockNamespace(fixture.namespace.id);
+      await unit.agents.lockAgent(fixture.namespace.id, owner.id);
+      const published = await unit.agents.compareAndSetActiveRevision(
+        fixture.namespace.id,
+        owner.id,
+        predecessor.id,
+        candidate.id,
+      );
+      assert.equal(published?.activeRevisionId, candidate.id);
+    });
+
+    const stop = driver.compute.stopRevision.bind(driver.compute);
+    driver.compute.stopRevision = async (revision) => {
+      if (revision.id === predecessor.id) {
+        await denyDeploy(fixture, owner);
+      }
+      await stop(revision);
+    };
+    const events = [];
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    const first = await waitFor("first published recovery outcome", () =>
+      events.find(
+        (event) => event.event === "worker.completed" && event.workId === candidate.idempotencyKey,
+      ),
+    );
+    assert.equal(first.code, "AUTHORIZATION_DENIED");
+    await assertWorkEnds(fixture, candidate, "failed_permanent", "AUTHORIZATION_DENIED");
+    assert.equal(driver.preparations(candidate), 0);
+    const { rows } = await fixture.observerPool.query(
+      `SELECT actor_id, details->'__occAuditMetadata'->>'reasonCode' AS reason_code,
+              details->'__occAuditMetadata'->'authorization' AS authorization
+       FROM occ.audit_events
+       WHERE namespace_id = $1 AND kind = 'authorization_denial' AND outcome = 'denied'
+         AND action = 'openclaw.agents.deploy' AND resource_id = $2`,
+      [fixture.namespace.id, owner.id],
+    );
+    assert.deepEqual(rows, [
+      {
+        actor_id: fixture.actor.id,
+        reason_code: "AUTHORIZATION_DENIED",
+        authorization: {
+          action: "deploy",
+          principalId: fixture.actor.id,
+          resource: { kind: "agent", id: owner.id, namespaceId: fixture.namespace.id },
+        },
+      },
+    ]);
+  },
+);
+
+revisionTest(
   "an expired planned-completion cutoff forces the shared stop before preparing the successor",
   async (fixture) => {
     const owner = await fixture.agent("completion-expired", { executionMode: "dedicated" });
