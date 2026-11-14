@@ -19,7 +19,7 @@
     "tests/conformance/protected-codex-artifact-policy.test.ts",
     "tests/integration/openshell-quickstart-policy.test.ts",
     "tests/conformance/codex-native-startup.test.mjs",
-    "tests/conformance/occ-api-security.test.mjs",
+    "tests/conformance/occ-api-security.test.ts",
     "tests/conformance/occ-runtime-logs-security.test.ts",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
@@ -299,7 +299,7 @@
       "path": "tests/conformance/kubernetes-secret-driver.test.ts"
     },
     {
-      "path": "tests/conformance/occ-api-security.test.mjs"
+      "path": "tests/conformance/occ-api-security.test.ts"
     },
     {
       "path": "tests/conformance/occ-runtime-logs-security.test.ts",

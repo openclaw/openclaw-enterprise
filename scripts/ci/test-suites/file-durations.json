@@ -93,7 +93,7 @@
     "tests/conformance/native-admin-websocket-relay.test.ts": 1200,
     "tests/conformance/node-enrollment-client.test.mjs": 2800,
     "tests/conformance/node-test-summary.test.ts": 100,
-    "tests/conformance/occ-api-security.test.mjs": 2100,
+    "tests/conformance/occ-api-security.test.ts": 2100,
     "tests/conformance/occ-read.test.mjs": 300,
     "tests/conformance/occ-runtime-logs-security.test.ts": 1600,
     "tests/conformance/openshell-codex-device.test.mjs": 400,
