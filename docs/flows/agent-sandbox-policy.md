@@ -97,7 +97,7 @@ lacks this capability.
    limits. HTTP on port 80 requires a listed mirror.
 2. Choose **Allow download** to let approved clients read from this destination.
    Edits require Agent `manage_policy` and SandboxPolicy `read` and `update`.
-   Approving a new hostname for this Agent also requires Installation `administer`.
+   Approving a new destination for this Agent also requires Installation `administer`.
    Delegated editors can enable or disable approved destinations.
 3. Wait for confirmation. OCC saves the desired change and queues one operation on the
    active revision. The Console shows the previous confirmed destinations until both
