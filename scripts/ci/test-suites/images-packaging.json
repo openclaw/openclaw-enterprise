@@ -35,7 +35,8 @@
     "tests/integration/development-packaging.test.mjs",
     "tests/integration/container-publication-workflow.test.ts",
     "tests/integration/oidc-ca-trust.test.mjs",
-    "tests/integration/ci-runtime-artifact.test.ts"
+    "tests/integration/ci-runtime-artifact.test.ts",
+    "tests/integration/production-kubernetes-numeric-values.test.ts"
   ],
   "files": [
     {
@@ -173,6 +174,16 @@
       "path": "tests/integration/ci-runtime-artifact.test.ts",
       "expectedTests": [
         "same-run runtime artifact prepares an owned image and supplies a real OCI build context"
+      ]
+    },
+    {
+      "path": "tests/integration/production-kubernetes-numeric-values.test.ts",
+      "expectedTests": [
+        "Helm rejects worker timings the worker process rejects",
+        "Helm refuses worker timer settings a Node.js timer cannot wait for",
+        "Helm renders a values-file worker timeout of 1800000 as digits",
+        "Helm refuses unknown resource names and negative quantities",
+        "Helm rejects obvious malformed quantity syntax"
       ]
     }
   ]

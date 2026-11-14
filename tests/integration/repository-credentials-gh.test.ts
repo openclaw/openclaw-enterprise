@@ -23,21 +23,27 @@ import {
   startCredentialServiceFixture as startService,
   gatewayRequest as requestGateway,
 } from "../fixtures/repository-credentials/service.mjs";
-import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.mjs";
+import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
 import {
   registerResourceCleanup,
   type ResourceCleanup,
 } from "../fixtures/repository-credentials/cleanup.ts";
 
-const startCredentialServiceFixture = startService as StartCredentialClientFixture;
+type GhFixture = Pick<CredentialClientFixture, "tls" | "github"> &
+  Parameters<typeof exerciseGit>[1] &
+  Parameters<typeof exerciseGh>[0];
+const startCredentialServiceFixture: (
+  ...args: Parameters<StartCredentialClientFixture>
+) => Promise<GhFixture | undefined> = startService;
+
 type GatewayOptions = {
   method?: string;
   body?: JsonValue | undefined;
   headers?: Record<string, string>;
 };
 const gatewayRequest: (
-  fixture: CredentialClientFixture,
+  fixture: GhFixture,
   target: string,
   options?: GatewayOptions,
 ) => Promise<{ status: number; body: string }> = requestGateway;
@@ -69,8 +75,7 @@ test("pinned gh uses selected development token routing for repository, issue an
   const originalSingleHosts = await readFile(singleHostsPath);
   const { client, checkout } = await exerciseGit(t, fixture);
   await client.git(["push", "origin", "HEAD:refs/heads/native-feature"], { cwd: checkout });
-  const { issue: issuedIssue }: { issue: unknown } = await exerciseGh(fixture, client);
-  const issue = jsonObject(issuedIssue);
+  const issueNumber = await exerciseGh(fixture, client);
   // GitHub returns repository-ID links, and issue collections also carry opaque cursors.
   // The actual CLI must follow those links through the canonical gateway route.
   const issueInput = await client.json("pagination-issue.json", { title: "Second issue" });
@@ -86,6 +91,8 @@ test("pinned gh uses selected development token routing for repository, issue an
       ])
     ).stdout,
   );
+  const secondIssueNumber = secondIssue.number;
+  assert.ok(typeof secondIssueNumber === "number" && Number.isSafeInteger(secondIssueNumber));
   const pages: unknown = JSON.parse(
     (
       await client.gh([
@@ -102,7 +109,7 @@ test("pinned gh uses selected development token routing for repository, issue an
       assert.ok(Array.isArray(page));
       return page.map((entry: unknown) => jsonObject(entry).number);
     }),
-    [[issue.number], [secondIssue.number]],
+    [[issueNumber], [secondIssueNumber]],
   );
   assert.ok(
     fixture.github.trace.some((entry) => {

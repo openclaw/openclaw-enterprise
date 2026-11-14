@@ -10,7 +10,7 @@ import { fixtureFetch, retainedCatalog } from "./custody-probes.mjs";
 import { tcpControlCommand, tcpProbeCommand } from "./network-probe.ts";
 import { runtimeProof } from "./runtime.mjs";
 import { trafficGate } from "./traffic-gate.mjs";
-import { runTransition } from "./transition.mjs";
+import { runTransition } from "./transition.ts";
 import { writerFence } from "./writer-fence.mjs";
 
 const origin = "https://console.signin-rehearsal.test";

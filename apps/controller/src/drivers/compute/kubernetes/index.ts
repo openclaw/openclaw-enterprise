@@ -1719,10 +1719,9 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string, path?:
   );
 }
 
-// ValidateResourceQuotaResourceName: a quota resource name without a "/" must be a standard
-// quota resource.
-const STANDARD_QUOTA_RESOURCE =
-  /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+|pods|services|services\.nodeports|services\.loadbalancers|replicationcontrollers|resourcequotas|secrets|configmaps|persistentvolumeclaims)$/;
+// Standard quota names for compute, storage, and hugepage quantities.
+const STANDARD_QUOTA_QUANTITY_RESOURCE =
+  /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+)$/;
 
 // Kubernetes core/helper IsIntegerResourceName: the standard object counts and
 // extended resources, excluding requests.* and the native kubernetes.io/ namespace.
@@ -3685,7 +3684,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // The API server refuses the Namespace's ResourceQuota otherwise, at the first deploy.
         if (
           !isKubernetesQualifiedName(key) ||
-          (!key.includes("/") && !STANDARD_QUOTA_RESOURCE.test(key))
+          (!key.includes("/") &&
+            !INTEGER_QUOTA_RESOURCES.has(key) &&
+            !STANDARD_QUOTA_QUANTITY_RESOURCE.test(key))
         ) {
           throw configurationConstraintFailure(
             `Namespace quota resource ${JSON.stringify(key)} must be a Kubernetes resource name, such as requests.cpu or count/pods.`,
@@ -4325,7 +4326,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 throw new ConfigurationFailure(
                   "Existing split-layout Gateway storage prevents this single-cluster upgrade. " +
                     "Keep the previous controller version and adopt each storage namespace as " +
-                    "its tenant namespace first (scripts/split-layout-adopt.mjs). See the " +
+                    "its tenant namespace first (scripts/split-layout-adopt.ts). See the " +
                     "Kubernetes Compute upgrade requirements.",
                 );
               }

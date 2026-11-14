@@ -31,7 +31,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_PORT`                                 | Decimal integer from `1` through `65535`.                                                                          | Selects the internal listener port exposed by the operator's Service.                                                        |
 | `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
 | `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
-| `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                      |
+| `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret with at least 32 characters.                                               | Signs and verifies session material without logging it.                                                                      |
 | `OCC_AUTH_BASE_URL`                        | HTTPS DNS origin without path, query, fragment or user info; must share a non-public suffix with the Agent domain. | Defines the Better Auth base URL and cookie origin.                                                                          |
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
 | `OCC_PREPROVISIONED_NAMESPACE`             | Optional JSON `{"namespaceId","uid"}` binding one operator-created namespace; set by Helm.                         | API and worker. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).                   |
@@ -116,10 +116,20 @@ Sessions and service keys grant no rights without IAM; see
 scope, and revocation, and the [deployment guide](../../guides/deploy/service-keys.md#service-api-keys-for-automation)
 for the procedure. Normal issuance and verification require no additional
 settings; initial-key delivery uses the bootstrap settings below.
+The API refuses a shorter auth secret with `AUTH_SECRET_INVALID` before it
+constructs Drivers, opens PostgreSQL, or changes configured IAM policy.
 Auth-secret rotation takes effect after
 replacing the mounted Secret and restarting; it also invalidates every
 [known-device cookie](../authentication.md#known-devices) until each browser's next sign-in.
 Revoking one account's cookies needs no rotation: reset its password.
+
+### Control Plane audit
+
+Control Plane audit is off by default. Restrict API access to approved clients and
+[check ledger capacity](../../guides/topics/audit-log.md) before enabling it.
+Rejected requests can fill the ledger and block audited actions.
+Set Helm `controlPlaneAudit.enabled: true` or set
+`OCC_CONTROL_PLANE_AUDIT_ENABLED=true` on the API and worker.
 
 ### External sign-in and trusted proxies
 

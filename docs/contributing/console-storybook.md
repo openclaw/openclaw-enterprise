@@ -41,9 +41,10 @@ Node 24 to remove types, preserve line numbers, and serve JavaScript at the same
 URL as before.
 
 Node resolves imports literally, including imports inside an `.mts` file. Point
-Node callers of a standalone module directly at its `.mts` source. For example,
-when the starter model moves, change the first-agent scripts and test helpers to
-import `agents/starter-model.mts`.
+Node callers of a standalone module directly at its `.mts` source. The first-agent
+CLI (`scripts/first-agent.ts`), model helper (`scripts/first-agent-model.mjs`), and CI
+smoke script (`scripts/ci/first-agent-smoke.mjs`) all import
+`agents/starter-model.mts` directly.
 Test browser behavior through the served `.mjs` URLs, where the controller
 resolves the whole module graph.
 

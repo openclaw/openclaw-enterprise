@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadTestSuites } from "./test-suites.mjs";
-import { prepareRuntimeImageSmoke } from "./prepare.mjs";
 
 export const repository = "openclaw/openclaw-enterprise";
 export const publishWorkflow = ".github/workflows/container-publish.yml";
@@ -38,14 +37,14 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-codex-readiness.test.ts",
   "tests/integration/runtime-image-startup-termination.test.ts",
   "tests/integration/runtime-image-gateway-unclean-restart.test.ts",
-  "tests/integration/runtime-image-gateway-retained-state.test.mjs",
+  "tests/integration/runtime-image-gateway-retained-state.test.ts",
   "tests/integration/runtime-image-workspace-setup-lock.test.ts",
-  "tests/integration/runtime-image-gateway-peer.test.mjs",
+  "tests/integration/runtime-image-gateway-peer.test.ts",
   "tests/integration/runtime-image-native-worker.test.mjs",
   "tests/integration/runtime-image-node-state-permissions.test.ts",
   "tests/integration/runtime-image-node-state-lock.test.ts",
   "tests/integration/runtime-image-codex-local-plugins.test.ts",
-  "tests/integration/sandbox-driver-startup.test.mjs",
+  "tests/integration/sandbox-driver-startup.test.ts",
   "tests/integration/sandbox-driver-workspace-admission.test.ts",
   "tests/integration/sandbox-driver-startup-validation.test.ts",
   "tests/integration/sandbox-driver-installation-configuration.test.ts",
@@ -598,6 +597,8 @@ async function smoke(directory, env) {
   const arch = process.arch === "x64" ? "amd64" : process.arch;
   assert.ok(["amd64", "arm64"].includes(arch));
   assert.equal(env.PLATFORM, `linux/${arch}`, "Smoke requires the target's native runner.");
+  // Resolve native runtime tooling before loading an image that would need cleanup.
+  const runtimePreparation = env.IMAGE === "runtime" ? await import("./prepare.mjs") : undefined;
   assert.equal(inspectDigest(`oci:${directory}`), env.IMAGE_DIGEST);
   const root = JSON.parse(await readFile(join(directory, "index.json"), "utf8"));
   assert.equal(root.manifests.length, 1);
@@ -643,8 +644,8 @@ async function smoke(directory, env) {
     }
     assert.equal(loaded.Os, "linux");
     assert.equal(loaded.Architecture, arch);
-    if (env.IMAGE === "runtime") {
-      prepared = await prepareRuntimeImageSmoke({
+    if (runtimePreparation) {
+      prepared = await runtimePreparation.prepareRuntimeImageSmoke({
         image: loaded.Id,
         statePath: join(env.RUNNER_TEMP ?? tmpdir(), `runtime-smoke-${arch}.json`),
       });

@@ -2,8 +2,8 @@
 // (runtime-image-startup.test.mjs, runtime-image-startup-probe.test.mjs,
 // runtime-image-startup-termination.test.ts,
 // runtime-image-gateway-unclean-restart.test.ts,
-// runtime-image-gateway-retained-state.test.mjs,
-// runtime-image-gateway-peer.test.mjs, runtime-image-native-worker.test.mjs,
+// runtime-image-gateway-retained-state.test.ts,
+// runtime-image-gateway-peer.test.ts, runtime-image-native-worker.test.mjs,
 // runtime-image-state-migration.test.mjs,
 // runtime-image-managed-files.test.ts,
 // runtime-image-native-listener.test.mjs and
@@ -119,7 +119,7 @@ export async function assertGatewayFirstTurnMemory(t, measurement) {
         `${gibibytes(gatewayFirstTurnMemoryBudgetBytes)} budget under a ${gibibytes(gatewayMemoryLimitBytes)} limit. ` +
         "If the OpenClaw pin moved, re-measure the first turn without swap (finding 2700) and update the " +
         "documented Gateway sizing (deploy/examples/production/installation.yaml, " +
-        "scripts/render-installation-profile.mjs, docs/guides/deploy/installation-profiles.md) and this " +
+        "scripts/render-installation-profile.ts, docs/guides/deploy/installation-profiles.md) and this " +
         "test's limit before raising gatewayFirstTurnMemoryBudgetBytes.",
     );
     subtest.diagnostic(`Gateway memory.peak through the first turn: ${gibibytes(peakBytes)}`);

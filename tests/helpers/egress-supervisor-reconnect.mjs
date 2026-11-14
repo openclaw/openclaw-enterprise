@@ -1,79 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { isDeepStrictEqual, stripVTControlCharacters } from "node:util";
+import { isDeepStrictEqual } from "node:util";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { wirePolicy } from "../../apps/controller/src/drivers/egress-proxy/openshell-wire-policy.ts";
 import { openShellExchangeCapabilities as capabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { connectedReceiptRevision } from "./egress-connected-inputs.mjs";
+import {
+  acceptedSupervisorSessions,
+  isSupervisorUuid,
+  supervisorSessionLifecycle,
+} from "./egress-supervisor-sessions.ts";
 import { createKubernetesClient, withinDiagnosticDeadline } from "./kubernetes-real.mjs";
 
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const hash = (value) => createHash("sha256").update(value).digest("hex");
-
-// Only this authenticated server event proves acceptance. Attempts, readiness,
-// duplicate log lines and other Sandboxes cannot establish a new session.
-export function acceptedSupervisorSessions(text, sandboxId, instanceId) {
-  const sessions = new Map();
-  for (const raw of text.split("\n")) {
-    const line = stripVTControlCharacters(raw);
-    if (
-      !/^\S+ \S+ +INFO +openshell_server::supervisor_session: supervisor session: accepted /.test(
-        line,
-      )
-    ) {
-      continue;
-    }
-    const fields = Object.fromEntries(
-      [...line.matchAll(/\b(sandbox_id|session_id|instance_id|connection_epoch)=([^\s]+)/g)].map(
-        ([, name, value]) => [name, value],
-      ),
-    );
-    if (fields.sandbox_id !== sandboxId) {
-      continue;
-    }
-    assert.equal(fields.instance_id, instanceId, "accepted supervisor instance changed");
-    assert.ok(uuid.test(fields.session_id), "invalid accepted session ID");
-    const epoch = connectedReceiptRevision(fields.connection_epoch);
-    assert.ok(BigInt(epoch) > 0n, "accepted session needs a positive connection epoch");
-    const at = line.split(" ")[0];
-    assert.ok(Number.isFinite(Date.parse(at)), "accepted event needs a Kubernetes timestamp");
-    const event = { sessionId: fields.session_id, epoch, at };
-    const prior = sessions.get(event.sessionId);
-    assert.ok(!prior || isDeepStrictEqual(prior, event), "conflicting accepted session event");
-    sessions.set(event.sessionId, event);
-  }
-  return [...sessions.values()];
-}
-
-// Fixed server events only. These identify observed sessions, not the session
-// used by a custody request (the custody event does not carry that association).
-export function supervisorSessionLifecycle(text, sandboxId, instanceId) {
-  const events = [];
-  const endings = new Map([
-    ["stream closed by supervisor", "inbound_eof"],
-    ["superseded or closed by the gateway, shutting down", "gateway_closed"],
-    ["ended", "ended"],
-  ]);
-  for (const raw of text.split("\n")) {
-    const line = stripVTControlCharacters(raw);
-    const accepted = acceptedSupervisorSessions(line, sandboxId, instanceId);
-    if (accepted.length) {
-      events.push({ ...accepted[0], event: "accepted" });
-      continue;
-    }
-    const match = line.match(
-      /^\S+ \S+ +INFO +openshell_server::supervisor_session: supervisor session: (stream closed by supervisor|superseded or closed by the gateway, shutting down|ended) sandbox_id=(\S+) session_id=(\S+)$/,
-    );
-    if (!match || match[2] !== sandboxId) {
-      continue;
-    }
-    assert.ok(uuid.test(match[3]), "invalid lifecycle session ID");
-    const at = line.split(" ")[0];
-    assert.ok(Number.isFinite(Date.parse(at)), "lifecycle event needs a timestamp");
-    events.push({ sessionId: match[3], at, event: endings.get(match[1]) });
-  }
-  return { total: events.length, truncated: events.length > 9, events: events.slice(-9) };
-}
 
 // Failure-only bounded observation. No readiness, replay, renewal or authority
 // decision depends on these logs, and failure here must preserve the turn error.
@@ -174,7 +113,7 @@ function liveEnforcement(status, committed, sandboxId) {
     "authenticated loaded policy required",
   );
   assert.equal(evidence.sandbox_id, sandboxId);
-  assert.ok(uuid.test(evidence.instance_id));
+  assert.ok(isSupervisorUuid(evidence.instance_id));
   assert.equal(status.active_version, committed.plan.generation);
   assert.equal(revision.version, status.active_version);
   assert.equal(evidence.policy_version, status.active_version);

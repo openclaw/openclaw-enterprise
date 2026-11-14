@@ -6,7 +6,7 @@ import test from "node:test";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
-const script = join(repository, "scripts", "prepare-development-codex-seccomp.mjs");
+const script = join(repository, "scripts", "prepare-development-codex-seccomp.ts");
 const image = `registry.invalid/runtime@sha256:${"a".repeat(64)}`;
 const dockerHost = "unix:///tmp/dev-codex-seccomp-failure.sock";
 

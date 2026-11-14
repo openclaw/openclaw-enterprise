@@ -85,6 +85,25 @@ export function parseArgs(argv: readonly string[]) {
       continue;
     }
     const key = token.slice(2);
+    if (
+      ![
+        "manifest",
+        "root",
+        "file",
+        "test-name",
+        "state",
+        "results",
+        "lifecycle",
+        "attempt",
+        "results-dir",
+        "needs",
+        "lanes",
+        "release-selection",
+        "full-coverage-marker",
+      ].includes(key)
+    ) {
+      throw new Error(`Unsupported option: ${token}`);
+    }
     const value = tokens.next().value;
     if (!value || value.startsWith("--")) {
       throw new Error(`Missing value for --${key}`);

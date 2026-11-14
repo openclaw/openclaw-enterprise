@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import {
   ComputeStopYieldedError,
   computeStopShouldYield,
@@ -11,11 +10,11 @@ import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revisio
 import {
   failingStop,
   waitForRefusedStopWaits,
-} from "../helpers/postgres-worker-refused-candidate.mjs";
-import {
   refusedStopWaits,
   startRefusedCandidate,
-} from "../helpers/postgres-worker-refused-fixture.ts";
+  type RevisionFixture,
+  type WorkerEvent,
+} from "../helpers/postgres-worker-refused-candidate.ts";
 
 // A refused candidate's stop: a failing stop's status, its recheck backoff across slow stops,
 // restarts and shutdowns, and yields to other Work. A stored refusal's wait (its failures, a lift
@@ -27,11 +26,6 @@ import {
 
 const { cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
-
-type RevisionFixture = Awaited<
-  ReturnType<ReturnType<typeof createWorkerRevisionFixtures>["setup"]>
->;
-type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
 
 function numberAt(values: readonly unknown[], index: number): number {
   const value = values[index];

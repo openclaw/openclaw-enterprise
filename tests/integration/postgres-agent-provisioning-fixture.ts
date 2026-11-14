@@ -463,9 +463,11 @@ export async function createProvisioningFixture(
     workerCompletion = undefined;
   }
 
-  async function restartApi() {
+  async function restartApi(
+    overrides: Pick<PostgresDevelopmentConfig, "controlPlaneAuditEnabled"> = {},
+  ) {
     await app.close();
-    app = await composePostgresDevelopment(settings, drivers);
+    app = await composePostgresDevelopment({ ...settings, ...overrides }, drivers);
   }
 
   // The signed-in administrator's Principal, whose subject is its account: a test may add

@@ -2900,12 +2900,15 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const qaSelection = selectQaMatrix(qaRunnerEnv);
   assert.equal(qaSelection.scope, "partial:selected");
   assert.deepEqual(qaSelection.installations, ["compose", "kubernetes"]);
-  for (const cell of qaSelection.cells) {
-    assert.deepEqual(
-      cell.scenarios,
-      cell.preset === "OpenClaw" ? ["model-ui", "console-secrets"] : ["console-secrets"],
-    );
-  }
+  assert.deepEqual(
+    qaSelection.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
+    [
+      { cell: "compose/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
+      { cell: "compose/Codex", scenarios: ["console-secrets", "agent-audit"] },
+      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
+      { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
+    ],
+  );
   assert.equal(qaSelection.exclusions.length, 2);
   assert.deepEqual(qaSelection.requiredEnv, [
     "OCC_TEST_QA_OPENAI_KEY_FILE",

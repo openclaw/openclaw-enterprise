@@ -42,7 +42,7 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
 import { createK3dNodeImages } from "./k3d-node-images.ts";
-import { prepareGatewayRouting } from "./routing.mjs";
+import { prepareGatewayRouting } from "./routing.ts";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
@@ -62,13 +62,13 @@ import {
   prepareRepositoryCredentials,
   prepareRepositoryCredentialsFile,
 } from "./repository-credentials.mjs";
-import { prepareCodexSeccompProfile } from "./codex-seccomp.mjs";
+import { prepareCodexSeccompProfile } from "../lib/codex-seccomp-k3d.ts";
 import {
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   prepareOpenShellPodSecurityAdmission,
   validateOpenShellSelection,
-} from "./openshell.mjs";
+} from "./openshell.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -93,7 +93,7 @@ const fixtureLanes = new Set([
 // metrics-server add-ons, which would otherwise pull and start on every node
 // while the lane imports its images. Lanes that set up gateway routing need
 // Traefik: K3s installs the Gateway API CRDs with it, and prepareGatewayRouting
-// refuses a cluster without it (routing.mjs). Every lane here runs in PR CI;
+// refuses a cluster without it (routing.ts). Every lane here runs in PR CI;
 // full-integration lanes keep K3s's defaults.
 const lanesWithoutK3sAddons = new Set([
   ...fixtureLanes,
@@ -3947,6 +3947,15 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     }
     if (relativeFile.endsWith("occ-metrics.test.mjs")) {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
+    if (relativeFile === "tests/integration/postgres-api-request-audit.test.ts") {
+      env.OCC_TEST_API_REQUEST_AUDIT_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
+    if (relativeFile === "tests/integration/postgres-agent-audit-read.test.ts") {
+      env.OCC_TEST_AGENT_AUDIT_READ_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
+    if (relativeFile === "tests/integration/postgres-worker-audit.test.ts") {
+      env.OCC_TEST_WORKER_AUDIT_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (
       relativeFile === "tests/integration/auth-maintain.test.ts" ||

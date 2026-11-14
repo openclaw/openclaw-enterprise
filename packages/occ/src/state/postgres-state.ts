@@ -3,6 +3,7 @@ import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
+  CONTROLLER_WORK_AUDIT_ACTIONS,
   isConfiguredRoleId,
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -14,6 +15,7 @@ import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
 
 import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
@@ -21,6 +23,7 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import { postgresSavedConnections } from "./postgres-saved-connections.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
+import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
 import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
@@ -78,6 +81,7 @@ import {
 import {
   CallerStateDeniedError,
   AGENT_NAME_CONFLICT,
+  AuditAppendUnavailableError,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
@@ -179,6 +183,8 @@ export interface PostgresPlatformStateOptions {
     ((transaction: PostgresQueryClient) => PreparedTokenCurrentProof) | undefined;
   readonly bootstrapNativeIAM?: PersistedNativeIAMState;
   readonly workQueue?: PostgresWorkQueueOptions;
+  /** Server-side deadline for statements in standalone audit writes. */
+  readonly auditWriteTimeoutMs?: number;
 }
 
 export interface PersistedNativeIAMPrincipalSeed {
@@ -915,6 +921,12 @@ const NAME_CONFLICTS: Readonly<Record<string, string>> = Object.freeze({
   egress_installations_namespace_id_revision_id_key: EGRESS_REVISION_INSTALLED_CONFLICT,
 });
 
+const AUDIT_ROW_CHECKS = new Set([
+  "audit_events_id_format",
+  "audit_events_outcome_valid",
+  "audit_events_details_object",
+]);
+
 function databaseError(error: unknown): Error {
   if (
     error instanceof ScopeViolationError ||
@@ -927,23 +939,27 @@ function databaseError(error: unknown): Error {
   }
 
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  const constraint =
+    "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
+  if (constraint === "control_plane_audit_capacity") {
+    return new AuditAppendUnavailableError("AUDIT_CAPACITY_EXCEEDED");
+  }
+  // Preserve the existing scope error for an audit row that violates the ledger schema.
+  const invalidAuditRow =
+    code === "23502" || (constraint !== undefined && AUDIT_ROW_CHECKS.has(constraint));
   if (
-    code === "23514" &&
-    "constraint" in error &&
-    error.constraint === "held_authentication_session_is_current"
+    ("table" in error && error.table === "audit_events" && !invalidAuditRow) ||
+    constraint === "control_plane_audit_event_size"
   ) {
+    return new AuditAppendUnavailableError();
+  }
+  if (code === "23514" && constraint === "held_authentication_session_is_current") {
     return new CallerStateDeniedError("The assigning session is no longer current.");
   }
-  if (
-    code === "23514" &&
-    "constraint" in error &&
-    error.constraint === "repository_session_admission_not_withdrawn"
-  ) {
+  if (code === "23514" && constraint === "repository_session_admission_not_withdrawn") {
     return new RepositorySessionWithdrawnError();
   }
   if (code === "23505") {
-    const constraint =
-      "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
     const nameConflict =
       constraint !== undefined && Object.hasOwn(NAME_CONFLICTS, constraint)
         ? NAME_CONFLICTS[constraint]
@@ -963,6 +979,9 @@ function databaseError(error: unknown): Error {
     code === "55000"
   ) {
     return new ScopeViolationError("The resource violates its exact platform ownership or state.");
+  }
+  if (queryAbandonedByClient(error)) {
+    return new DependencyUnavailableError("The platform persistence query timeout expired.");
   }
   if (code === "55P03") {
     // A lock timeout is transient contention, retryable like a statement timeout (57014).
@@ -1048,7 +1067,7 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
   if (
     !RESOURCE_KINDS.has(resourceKind) ||
     !["success", "denied", "failure"].includes(outcome) ||
-    !["bootstrap", "mutation", "access", "authorization_denial"].includes(kind)
+    !["bootstrap", "mutation", "access", "authorization_denial", "api_request"].includes(kind)
   ) {
     throw new PersistedStateInvalidError("Persisted audit evidence contains an invalid event.");
   }
@@ -1278,8 +1297,22 @@ export class PostgresPlatformState implements PlatformStateStore {
       options.preparedTokenProof ?? (() => ({ current: async () => false }));
     this.queueOptions = Object.freeze({ ...(options.workQueue ?? {}) });
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
+    const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
     this.auditSink = {
-      append: async (event) => this.transact(async (state) => state.audit.append(event)),
+      append: async (event) =>
+        this.execute(false, async (state, context) => {
+          if (auditWriteTimeoutMs !== undefined) {
+            // A local setting leaves other transactions on the pooled connection unaffected.
+            await context.client.query(
+              `SELECT pg_catalog.set_config(name,
+                 CASE WHEN setting::integer = 0 THEN $1::text
+                      ELSE LEAST(setting::integer, $1::integer)::text END, true)
+               FROM pg_catalog.pg_settings WHERE name IN ('statement_timeout', 'lock_timeout')`,
+              [String(auditWriteTimeoutMs)],
+            );
+          }
+          await state.audit.append(event);
+        }),
     };
   }
 
@@ -1712,6 +1745,65 @@ export class PostgresPlatformState implements PlatformStateStore {
       throw new DependencyUnavailableError("The platform transaction is unavailable.");
     }
     return context.lifetime.run(() => context.client.query(statement, parameters));
+  }
+
+  async boundAgentAuditTransaction(unit: PlatformUnitOfWork): Promise<void> {
+    // A caller can configure a lower timeout. Keep it for this transaction too.
+    await this.queryInTransaction(
+      unit,
+      `SELECT pg_catalog.set_config(name,
+          CASE WHEN setting::integer = 0 THEN maximum::text
+               ELSE LEAST(setting::integer, maximum)::text END, true)
+        FROM pg_catalog.pg_settings JOIN (VALUES
+          ('lock_timeout', 1000), ('statement_timeout', 3000), ('transaction_timeout', 5000)
+        ) AS limits(name, maximum) USING (name)`,
+    );
+  }
+
+  async holdAgentAuditResource(
+    unit: PlatformUnitOfWork,
+    installationId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<boolean> {
+    const namespace = await this.queryInTransaction(
+      unit,
+      `SELECT id FROM occ.namespaces
+        WHERE id = $1 AND status = 'ready' AND deleted_at IS NULL FOR SHARE NOWAIT`,
+      [namespaceId],
+    );
+    if (namespace.rowCount !== 1) {
+      return false;
+    }
+    const agent = await this.queryInTransaction(
+      unit,
+      `SELECT id FROM occ.agents
+        WHERE namespace_id = $1 AND id = $2 AND status = 'active' FOR SHARE NOWAIT`,
+      [namespaceId, agentId],
+    );
+    if (agent.rowCount !== 1) {
+      return false;
+    }
+    await this.queryInTransaction(unit, "SELECT occ.hold_agent_audit_policy($1)", [installationId]);
+    return true;
+  }
+
+  async listAgentAuditInTransaction(
+    unit: PlatformUnitOfWork,
+    namespaceId: string,
+    agentId: string,
+    selection: AgentAuditSelection,
+  ) {
+    const result = await this.queryInTransaction(unit, SELECT_AGENT_AUDIT, [
+      namespaceId,
+      agentId,
+      selection.start,
+      selection.end,
+      selection.after?.occurredAt ?? null,
+      selection.after?.id ?? null,
+      selection.limit + 1,
+    ]);
+    return rows(result.rows).map(projectAgentAuditRow);
   }
 
   /**
@@ -4683,15 +4775,18 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
-        create: async (input: CreateAgentProvisioningRecord) => {
+        create: async (input: CreateAgentProvisioningRecord, requestId) => {
           const record = validateProvisioningCreate(input);
           await this.requireInitialized(context);
-          await queue.enqueue({
-            kind: "provisioning",
-            idempotencyKey: record.workId,
-            namespaceId: record.namespaceId,
-            actorId: record.actorId,
-          });
+          await queue.enqueue(
+            {
+              kind: "provisioning",
+              idempotencyKey: record.workId,
+              namespaceId: record.namespaceId,
+              actorId: record.actorId,
+            },
+            requestId,
+          );
           const inserted = rows(
             (
               await client.query(
@@ -4878,7 +4973,22 @@ export class PostgresPlatformState implements PlatformStateStore {
                      AND $3::text = 'handoff'
                      AND work.idempotency_key = $1
                      AND EXISTS (SELECT 1 FROM updated_provisioning)
-                   RETURNING work.idempotency_key
+                   RETURNING work.*
+                 ), completed_evidence AS (
+                   INSERT INTO occ.audit_events (
+                     id, occurred_at, kind, actor_id, action, namespace_id,
+                     resource_kind, resource_id, outcome, details
+                   )
+                   SELECT 'aud_' || gen_random_uuid()::text, clock_timestamp(), 'mutation',
+                     work.actor_id, '${CONTROLLER_WORK_AUDIT_ACTIONS.completed}', work.namespace_id,
+                     'agent', provisioning.agent_id, 'success',
+                     jsonb_build_object('workId', work.idempotency_key,
+                       'attemptId', 'aud_' || work.audit_attempt_id::text,
+                       'attemptCount', work.attempt_count, 'reasonCode', 'PROVISIONING_HANDOFF',
+                       'workState', work.state, 'agentId', provisioning.agent_id)
+                   FROM completed_work AS work
+                   JOIN updated_provisioning AS provisioning ON provisioning.work_id = work.idempotency_key
+                   WHERE work.audit_attempt_id IS NOT NULL
                  )
                  SELECT * FROM updated_provisioning`,
                 [
@@ -5185,14 +5295,22 @@ export class PostgresPlatformState implements PlatformStateStore {
                    FROM owner
                    WHERE work.idempotency_key = owner.idempotency_key
                      AND EXISTS (SELECT 1 FROM updated_provisioning)
-                   RETURNING work.idempotency_key
+                   RETURNING work.idempotency_key, CASE WHEN owner.state = 'claimed'
+                     THEN 'aud_' || owner.audit_attempt_id::text END AS attempt_id
                  )
-                 SELECT * FROM updated_provisioning`,
+                 SELECT idempotency_key, attempt_id FROM completed_work`,
                 [namespaceId, agentId, code, message],
               )
             ).rows,
           );
-          return cancelled[0] === undefined ? undefined : provisioningRecordFromRow(cancelled[0]);
+          if (cancelled[0] === undefined) {
+            return undefined;
+          }
+          const attemptId = optionalText(cancelled[0], "attempt_id");
+          return {
+            workId: text(cancelled[0], "idempotency_key"),
+            ...(attemptId === undefined ? {} : { attemptId }),
+          };
         },
         settleAbandonedEffect: async (namespaceId, agentId) => {
           // A cancelled job never runs again (finding 1384). Once the claim that began its
@@ -5320,24 +5438,53 @@ export class PostgresPlatformState implements PlatformStateStore {
             throw new ScopeViolationError("The audit event and resource scopes do not match.");
           }
           const details = auditDetails(event);
-          await client.query(
-            `INSERT INTO occ.audit_events
-             (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
-              outcome, details)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
-            [
-              event.id,
-              event.occurredAt,
-              event.kind,
-              event.actorId,
-              event.action,
-              event.namespaceId ?? null,
-              event.resource.kind,
-              event.resource.id,
-              event.outcome,
-              details === undefined ? null : JSON.stringify(details),
-            ],
-          );
+          const values = [
+            event.id,
+            event.occurredAt,
+            event.kind,
+            event.actorId,
+            event.action,
+            event.namespaceId ?? null,
+            event.resource.kind,
+            event.resource.id,
+            event.outcome,
+            details === undefined ? null : JSON.stringify(details),
+          ];
+          let inserted;
+          try {
+            // Skip known IDs before the insert trigger checks capacity. A concurrent
+            // delivery may still win the insert, so read the stored row on either conflict.
+            inserted = await client.query(
+              `INSERT INTO occ.audit_events
+               (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
+                outcome, details)
+               SELECT $1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10::jsonb
+               WHERE NOT EXISTS (SELECT 1 FROM occ.audit_events WHERE id = $1)
+               ON CONFLICT (id) DO NOTHING`,
+              values,
+            );
+          } catch (error) {
+            const mapped = databaseError(error);
+            throw mapped instanceof AuditAppendUnavailableError ||
+              mapped instanceof ScopeViolationError
+              ? mapped
+              : new AuditAppendUnavailableError();
+          }
+          if (inserted.rowCount === 0) {
+            const sameEvent = await client.query(
+              `SELECT id FROM occ.audit_events
+               WHERE id = $1 AND occurred_at = $2::timestamptz AND kind = $3
+                 AND actor_id = $4 AND action = $5 AND namespace_id IS NOT DISTINCT FROM $6
+                 AND resource_kind = $7 AND resource_id = $8 AND outcome = $9
+                 AND details IS NOT DISTINCT FROM $10::jsonb`,
+              values,
+            );
+            if (sameEvent.rowCount !== 1) {
+              throw new ResourceConflictError(
+                "The audit event ID already identifies different evidence.",
+              );
+            }
+          }
         },
         list: async () => {
           const installation = await this.currentInstallation(context);
@@ -5357,7 +5504,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
       },
       operations: {
-        append: async (operation) => {
+        append: async (operation, requestId) => {
           await this.requireInitialized(context);
           const namespaceId = operation.namespaceId;
           if (namespaceId === undefined) {
@@ -5415,25 +5562,28 @@ export class PostgresPlatformState implements PlatformStateStore {
             throw new ScopeViolationError("Unsupported controller work resource kind.");
           }
 
-          await queue.enqueue({
-            idempotencyKey:
-              operation.kind === "agent"
-                ? operation.target !== "deleted"
-                  ? `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`
-                  : `agent:${operation.resourceId}:${operation.action}:${operation.target}`
-                : operation.kind === "agent_revision" &&
-                    operation.target === CREDENTIAL_WITHDRAWAL_TARGET
-                  ? credentialWithdrawalWorkKey(operation.resourceId, operation.operationId)
-                  : `${operation.kind}:${operation.resourceId}:${operation.action}${
-                      namespaceTarget === undefined ? "" : `:${namespaceTarget}`
-                    }`,
-            namespaceId,
-            ...(agentId === undefined ? {} : { agentId }),
-            ...(revisionId === undefined ? {} : { revisionId }),
-            ...(namespaceTarget === undefined ? {} : { namespaceTarget }),
-            ...(agentTarget === undefined ? {} : { agentTarget }),
-            actorId: operation.actorId,
-          });
+          await queue.enqueue(
+            {
+              idempotencyKey:
+                operation.kind === "agent"
+                  ? operation.target !== "deleted"
+                    ? `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`
+                    : `agent:${operation.resourceId}:${operation.action}:${operation.target}`
+                  : operation.kind === "agent_revision" &&
+                      operation.target === CREDENTIAL_WITHDRAWAL_TARGET
+                    ? credentialWithdrawalWorkKey(operation.resourceId, operation.operationId)
+                    : `${operation.kind}:${operation.resourceId}:${operation.action}${
+                        namespaceTarget === undefined ? "" : `:${namespaceTarget}`
+                      }`,
+              namespaceId,
+              ...(agentId === undefined ? {} : { agentId }),
+              ...(revisionId === undefined ? {} : { revisionId }),
+              ...(namespaceTarget === undefined ? {} : { namespaceTarget }),
+              ...(agentTarget === undefined ? {} : { agentTarget }),
+              actorId: operation.actorId,
+            },
+            requestId,
+          );
         },
         list: async () => {
           await this.requireInitialized(context);

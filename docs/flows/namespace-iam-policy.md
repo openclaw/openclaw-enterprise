@@ -265,7 +265,7 @@ behavior.
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.mjs` checks
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.
-- `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
+- `node --test tests/conformance/postgres-transaction-unknown-commit.test.ts`
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
   `tests/integration/postgres-production-wireup.test.ts` checks revocation after

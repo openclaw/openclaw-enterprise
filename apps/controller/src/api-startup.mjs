@@ -2,6 +2,7 @@ import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
   isDevelopmentBrowserOrigin,
+  validateAuthSecret,
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
 } from "./auth/configuration.ts";
@@ -14,6 +15,7 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
+import { controlPlaneAuditEnabled } from "./composition/control-plane-audit.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
@@ -231,6 +233,7 @@ function configuration(env) {
   }
 
   const nativeAdminEnabled = optionalBooleanEnvironment(env, "OCC_AGENT_NATIVE_ADMIN_ENABLED");
+  const auditEnabled = controlPlaneAuditEnabled(mode, env.OCC_CONTROL_PLANE_AUDIT_ENABLED);
   // Default on: the routes are IAM-gated and audited; the chart value turns them off.
   const agentRuntimeLogsEnabled =
     env.OCC_AGENT_RUNTIME_LOGS_ENABLED === undefined ||
@@ -274,10 +277,19 @@ function configuration(env) {
   // { google?, oidc? }: each configured provider carries the recovery user ID.
   const humanLogin = humanLoginConfiguration(env);
   const clientAddress = clientAddressConfiguration(env);
+  const authSecret =
+    mode === "production"
+      ? requiredEnvironment(env, "OCC_AUTH_SECRET")
+      : optionalEnvironment(
+          env,
+          "OCC_AUTH_SECRET",
+          "openclaw-development-auth-secret-minimum-32-bytes",
+        );
+  validateAuthSecret(authSecret);
   if (mode === "production") {
     return Object.freeze({
       ...settings,
-      authSecret: requiredEnvironment(env, "OCC_AUTH_SECRET"),
+      authSecret,
       authBaseURL,
       ...humanLogin,
       ...(clientAddress === undefined ? {} : { clientAddress }),
@@ -288,6 +300,7 @@ function configuration(env) {
         : { channelDirectoryManagedProxyHost }),
       nativeAdmin,
       agentRuntimeLogsEnabled,
+      controlPlaneAuditEnabled: auditEnabled,
       // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
       apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
@@ -295,14 +308,6 @@ function configuration(env) {
 
   if (clientAddress !== undefined) {
     throw new Error("OCC_AUTH_TRUSTED_PROXY_* settings are production-only.");
-  }
-  const authSecret = optionalEnvironment(
-    env,
-    "OCC_AUTH_SECRET",
-    "openclaw-development-auth-secret-minimum-32-bytes",
-  );
-  if (authSecret.length < 32) {
-    throw new Error("OCC_AUTH_SECRET must be at least 32 characters.");
   }
   return Object.freeze({
     ...settings,
@@ -312,6 +317,7 @@ function configuration(env) {
     ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
     nativeAdmin,
     agentRuntimeLogsEnabled,
+    controlPlaneAuditEnabled: auditEnabled,
     ...(trustedDevelopmentBridgeCidr === undefined ? {} : { trustedDevelopmentBridgeCidr }),
     ...(trustedDevelopmentForwarderCidr === undefined || trustedDevelopmentForwarderCidr === ""
       ? {}

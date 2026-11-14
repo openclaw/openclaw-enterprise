@@ -6,6 +6,7 @@ import {
   isDevelopmentBrowserOrigin,
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
+  validateAuthSecret,
   validHttpBaseURL,
 } from "../../apps/controller/src/auth/configuration.ts";
 
@@ -102,9 +103,7 @@ export function bootstrapConfiguration(mode, env) {
   }
   authConfig.agentDomain = required(env, "OCC_AGENT_NATIVE_ADMIN_DOMAIN");
   deriveSharedCookieDomain(authConfig.baseURL, authConfig.agentDomain);
-  if (authConfig.secret.length < 32) {
-    throw new Error("OCC_AUTH_SECRET must be at least 32 characters.");
-  }
+  validateAuthSecret(authConfig.secret);
 
   if (mode === "production") {
     return {
