@@ -2543,7 +2543,19 @@ test(
     assert.equal(migration.name, "migration");
     assert.deepEqual(migration.args, ["scripts/migrate-production.mjs", "--expect-empty"]);
     assert.equal(pod.containers[0].name, "bootstrap");
-    assert.deepEqual(pod.containers[0].args, ["scripts/bootstrap-installation.mjs"]);
+    assert.deepEqual(pod.containers[0].args, ["--run", "db:bootstrap:production"]);
+    assert.equal(pod.containers[0].command, undefined);
+
+    // Upgrade runs the same image task while the migration can use an initialized database.
+    const upgrade = findResourceByComponent(
+      await renderObjects(controlPlaneSelectorValues, { isUpgrade: true }),
+      "Job",
+      "initialization",
+    ).spec.template.spec;
+    assert.deepEqual(upgrade.initContainers[1].args, ["scripts/migrate-production.mjs"]);
+    assert.equal(upgrade.containers[0].name, "bootstrap");
+    assert.deepEqual(upgrade.containers[0].args, ["--run", "db:bootstrap:production"]);
+    assert.equal(upgrade.containers[0].command, undefined);
     assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
     assert.ok(!migration.env.some(({ name }) => name === "OCC_DATABASE_URL"));
     assert.ok(pod.containers[0].env.some(({ name }) => name === "OCC_DATABASE_URL"));

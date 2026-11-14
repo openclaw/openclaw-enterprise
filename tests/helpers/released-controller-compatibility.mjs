@@ -13,18 +13,49 @@ const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 const legacyOrigin = "http://127.0.0.1";
 const sharedCookieOrigin = "https://console.oce.localhost";
 const agentDomain = "agents.oce.localhost";
-const bootstrapProgram = "/app/scripts/bootstrap-installation.mjs";
+const bootstrapPrograms = [
+  "scripts/bootstrap-installation.mjs",
+  "scripts/bootstrap-installation.ts",
+];
 const processProgram = "released-controller-process.mts";
 const bootstrapProbe = `
+  import { lstatSync, readFileSync } from "node:fs";
+  const manifest = JSON.parse(readFileSync("/app/package.json", "utf8"));
+  const program = ${JSON.stringify(bootstrapPrograms)}.find((path) =>
+    manifest?.name === "openclaw-enterprise" &&
+    manifest.scripts?.["db:bootstrap"] === "NODE_ENV=development node " + path &&
+    manifest.scripts?.["db:bootstrap:production"] === "NODE_ENV=production node " + path
+  );
+  console.log(JSON.stringify(
+    program && lstatSync("/app/" + program, { throwIfNoEntry: false })?.isFile() ? program : null
+  ));
+`;
+const authProbe = `
   import { existsSync } from "node:fs";
   const configuration = "/app/apps/controller/src/auth/configuration.ts";
-  console.log(JSON.stringify({
-    bootstrap: existsSync(${JSON.stringify(bootstrapProgram)}),
-    sharedCookies: existsSync(configuration) &&
-      typeof (await import(configuration)).deriveSharedCookieDomain === "function",
-  }));
+  console.log(JSON.stringify(
+    existsSync(configuration) &&
+    typeof (await import(configuration)).deriveSharedCookieDomain === "function"
+  ));
 `;
 const authSecret = "local-compatibility-session-secret-32-bytes";
+
+function normalizedRepositoryDigest(reference) {
+  const match = /^([^@]+)@(sha256:[a-f0-9]{64})$/.exec(reference);
+  if (!match) {
+    return undefined;
+  }
+  const [, name, digest] = match;
+  const tagSeparator = name.lastIndexOf(":");
+  const repository = tagSeparator > name.lastIndexOf("/") ? name.slice(0, tagSeparator) : name;
+  const slash = repository.indexOf("/");
+  const first = slash === -1 ? "" : repository.slice(0, slash);
+  const hasRegistry = first === "localhost" || /[.:A-Z]/.test(first);
+  const registry = hasRegistry && first !== "index.docker.io" ? first : "docker.io";
+  const path = hasRegistry ? repository.slice(slash + 1) : repository;
+  const qualifiedPath = registry === "docker.io" && !path.includes("/") ? `library/${path}` : path;
+  return `${registry}/${qualifiedPath}@${digest}`;
+}
 
 async function withReleasedControllerFixture(t, images, createDatabase, scenario) {
   const owner = `controller-compatibility-${randomUUID()}`;
@@ -45,17 +76,22 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     }
   }
   for (const image of Object.values(images)) {
-    assert.match(image.reference, /@sha256:[a-f0-9]{64}$/);
+    const selectedIdentity = normalizedRepositoryDigest(image.reference);
+    assert.ok(selectedIdentity, "Controller selection must include an immutable SHA-256 digest.");
     assert.match(image.revision, /^[a-f0-9]{40}$/);
     const inspected = JSON.parse((await command(["image", "inspect", image.reference])).stdout);
     assert.equal(inspected.length, 1);
+    // Docker can shorten Docker Hub names and omit the tag in RepoDigests.
+    assert.ok(
+      inspected[0].RepoDigests.some(
+        (value) => normalizedRepositoryDigest(value) === selectedIdentity,
+      ),
+      "Inspected controller digest differs from selection.",
+    );
     assert.equal(inspected[0].Config.Labels["org.opencontainers.image.revision"], image.revision);
   }
-  // Select auth inputs from each image before creating the database. Never retry
-  // bootstrap after it might have written an Installation.
-  const authByImage = new Map();
-  for (const image of new Set(Object.values(images).map(({ reference }) => reference))) {
-    const probe = await command([
+  async function probe(image, source) {
+    const result = await command([
       "run",
       "--rm",
       "--pull",
@@ -72,18 +108,26 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
       image,
       "--input-type=module",
       "--eval",
-      bootstrapProbe,
+      source,
     ]);
-    const { bootstrap, sharedCookies } = JSON.parse(probe.stdout);
+    return JSON.parse(result.stdout);
+  }
+  // Only the released image bootstraps. Validate its direct entry point before
+  // provisioning the database, so no discovery or retry can follow a write.
+  const bootstrapProgram = await probe(images.released.reference, bootstrapProbe);
+  assert.ok(
+    bootstrapPrograms.includes(bootstrapProgram),
+    "The released image must declare both Installation bootstrap tasks for the same supported regular file.",
+  );
+  const authByImage = new Map();
+  for (const image of new Set(Object.values(images).map(({ reference }) => reference))) {
+    const sharedCookies = await probe(image, authProbe);
     assert.equal(typeof sharedCookies, "boolean");
     authByImage.set(image, {
-      bootstrap,
       OCC_AUTH_BASE_URL: sharedCookies ? sharedCookieOrigin : legacyOrigin,
       OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     });
   }
-  const { bootstrap, ...bootstrapAuth } = authByImage.get(images.released.reference);
-  assert.equal(bootstrap, true, "The released image must ship the Installation bootstrap command.");
   const db = await createDatabase();
   const migrationUrl = new URL(db.migrationUrl);
   migrationUrl.hostname = "127.0.0.1";
@@ -286,16 +330,17 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     const before = await history();
     assert.ok(before.length > 0);
     await command(
-      args(images.released, bootstrapProgram, {
+      args(images.released, `/app/${bootstrapProgram}`, {
         NODE_ENV: "development",
         OCC_DATABASE_URL: applicationUrl.toString(),
         OCC_AUTH_SECRET: authSecret,
-        ...bootstrapAuth,
+        ...authByImage.get(images.released.reference),
         OPENCLAW_DEV_EMAIL: "postgres-admin@openclaw.local",
         OPENCLAW_DEV_PASSWORD: "postgres-development-password",
         OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/service-key.json",
       }),
     );
+    t.diagnostic(JSON.stringify({ phase: "released-bootstrap", program: bootstrapProgram }));
     await scenario({
       start,
       migrate,

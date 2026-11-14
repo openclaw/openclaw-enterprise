@@ -208,22 +208,20 @@ same guarded sign-in profile and recovery user and Google.
 
 ### Production Installation bootstrap environment
 
-Both environments run `node scripts/bootstrap-installation.mjs` after migration.
-`NODE_ENV` selects `development` or `production`; no other mode is accepted.
-The initializer uses the application-role database and Better Auth settings.
-Development consumes the [`OPENCLAW_DEV_*` defaults](development.md#required-development-controller-environment) and only the private
-service-key output path; it never writes a password file. API/worker startup
-requires the resulting Installation and does not create credentials.
+Compose runs `node scripts/bootstrap-installation.ts` in development. After the
+Installation check and migration, the Helm Job runs `node --run db:bootstrap:production`.
+The task starts the TypeScript script in production mode. For direct runs, set
+`NODE_ENV` to `development` or `production`. Development uses the
+[`OPENCLAW_DEV_*` defaults](development.md#required-development-controller-environment)
+and writes only the service-key file.
 
-The packaged Helm initialization Job creates the singleton Installation,
-human and service administrators, and initial [`default` Namespace](../namespaces.md#initial-namespace)
-before starting the API or worker. Namespace provisioning completes asynchronously
-through the worker. Its separate migration
-init container receives only `OCC_MIGRATION_DATABASE_URL`; the bootstrap
-container receives the application-role `OCC_DATABASE_URL`, Better Auth
-settings, and the following bootstrap settings. The Job sets `backoffLimit: 0`;
-failed initialization requires [manual repair](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
-before another attempt.
+Bootstrap creates the singleton Installation, administrators, and initial
+[`default` Namespace](../namespaces.md#initial-namespace) before API and worker
+startup. The worker completes Namespace provisioning. Only the migration init
+container receives `OCC_MIGRATION_DATABASE_URL`. Bootstrap uses application-role
+`OCC_DATABASE_URL`, Better Auth, and the settings below. The Helm Job sets
+`backoffLimit: 0`. [Repair failed initialization](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
+before retrying.
 
 | Variable                          | Required value or format                                                                                |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
@@ -241,7 +239,7 @@ Existing Namespaces and their configuration remain unchanged; no initial
 Namespace is backfilled or recreated.
 For a read-only check of a populated candidate database, set the usual production
 database, authentication and administrator settings, then run
-`node scripts/bootstrap-installation.mjs --verify-existing "$incumbent_installation_id"`.
+`NODE_ENV=production node scripts/bootstrap-installation.ts --verify-existing "$incumbent_installation_id"`.
 Obtain the ID independently from the authenticated incumbent Installation before
 selecting the candidate database. The command checks the singleton ID and the
 ordinary bootstrap administrator account, Principal and direct role binding in

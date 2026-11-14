@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-13"
-last_updated_session: "authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c"
+updated: "2026-11-14"
+last_updated_session: "authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7"
 ---
 
 # Production Startup Flow
@@ -166,13 +166,14 @@ and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
 not `.` or a `..` prefix.
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
-`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies receipt
-namespace/release/cluster connection before reading the named Job.
-`initializationEvidence` checks marker, captured UID, chart steps, controller and
-terminal status. Missing UID, replacement, refusal or inconclusive status leaves
-the checkpoint unknown. Doctor separately reports Helm's outcome; plan adds
-read-only recovery. Both check the buffered report's `WriteTo` before returning
-Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and exit `1`.
+`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the
+receipt target before reading the named Job. `initializationEvidence` checks
+the attempt marker, captured UID, chart steps, controller, and terminal status.
+It accepts the fixed bootstrap task or the historical chart's exact direct
+command. Missing UID, replacement, refusal, or inconclusive status leaves the
+checkpoint unknown. Doctor reports Helm's outcome separately. Plan adds read-only
+recovery. Both report `WriteTo` failures through `cmd/occ/main.go:main` on stderr
+and exit `1`.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -190,18 +191,18 @@ Otherwise Drizzle retains pending migration and read-only refusal.
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
 Console origin before database access, including during `--verify-existing`.
 
-`scripts/bootstrap-installation.mjs` creates or verifies Installation,
-human/service administrators, IAM seed, audit evidence, and initial service key.
-Fresh bootstrap creates `default` via `OpenClawController.createNamespace`
-as the bootstrap Principal. Queued reconciliation commits with Installation/IAM
-state and audit. Existing Installations add no Namespace; this is not Kubernetes'
-`default`. The worker provisions Driver-owned infrastructure; operators provide
-tenant RoleBindings. The bootstrap container alone writes protected PVC password/service-key files.
-Operators can invoke the same command with [`--verify-existing`](../reference/settings/production.md#production-installation-bootstrap-environment)
-to check a populated candidate using the incumbent ID and a read-only database
-snapshot. The Helm initialization Job continues to use ordinary bootstrap.
-Existing output, unsafe permissions, or inconsistent accounts/IAM identity fail
-the Job. Helm failure does not imply database-hook rollback.
+After both init containers succeed, the image's Node entrypoint runs
+`node --run db:bootstrap:production`. The task starts
+`scripts/bootstrap-installation.ts:bootstrapInstallation` in production mode.
+Fresh bootstrap creates the Installation, administrators, IAM seed, audit
+evidence, and initial service key. `OpenClawController.createNamespace` queues
+reconciliation for the OCE `default` Namespace in the same commit. The worker
+provisions Driver-owned infrastructure. Operators provide tenant RoleBindings.
+Only bootstrap writes the protected PVC credential files.
+For read-only incumbent verification, run the script directly with
+[`--verify-existing`](../reference/settings/production.md#production-installation-bootstrap-environment).
+Existing output on a fresh run, unsafe permissions, or inconsistent IAM identity
+fails the Job. Helm failure does not imply database rollback.
 
 ### 4. Start private API and worker Deployments
 
@@ -392,6 +393,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 09:29: Trace the fixed Helm bootstrap task and receipt matching. (authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7 - e23d8854d8eec8701c29e4067e7899cb04fff97c)
 
 - 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
 

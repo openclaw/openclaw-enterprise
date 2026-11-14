@@ -884,7 +884,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       assert.equal(jobRefusal(baseUrl), refused, baseUrl);
       assert.equal(
         await entrypointCode(
-          "scripts/bootstrap-installation.mjs",
+          "scripts/bootstrap-installation.ts",
           "installation.bootstrap-failed",
           jobEnvironment(baseUrl),
         ),

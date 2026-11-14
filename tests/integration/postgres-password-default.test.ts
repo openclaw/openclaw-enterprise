@@ -424,7 +424,7 @@ test(
         const adminId = text(
           record(record(await currentSession(production, headers.cookie)).user).id,
         );
-        // The initialization Job's administrator (scripts/bootstrap-installation.mjs) and an
+        // The initialization Job's administrator (scripts/bootstrap-installation.ts) and an
         // account the API created: both stored as Better Auth's `<salt>:<key>` scrypt hash.
         for (const [id, secret] of [
           [adminId, adminPassword],

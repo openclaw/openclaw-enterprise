@@ -360,7 +360,7 @@ export OCC_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openc
 export OCC_DATABASE_POOL_MAX=10
 export OCC_DEVELOPMENT_CONFIGURATION_ROOT="$(pwd)/.development/configurations"
 export OCC_BOOTSTRAP_SERVICE_KEY_FILE='/absolute/private-directory/initial-admin-service-key.json'
-NODE_ENV=development node scripts/bootstrap-installation.mjs
+NODE_ENV=development node scripts/bootstrap-installation.ts
 NODE_ENV=development node apps/controller/src/server.mjs
 ```
 

@@ -572,7 +572,9 @@ test(
         authBaseURL: signinSelected
           ? "https://console.signin-rehearsal.test"
           : `https://console.oce.localhost:${port}`,
-        agentNativeAdminDomain: "agents.oce.localhost",
+        agentNativeAdminDomain: signinSelected
+          ? "agents.signin-rehearsal.test"
+          : "agents.oce.localhost",
         installationName: `Production TUI ${suffix}`,
         apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
         channelDirectoryProxyUrl: returnSelected ? "http://198.51.100.25:3128" : undefined,

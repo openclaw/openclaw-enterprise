@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-12 09:36"
-last_updated_session: "authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37"
+updated: "2026-11-14"
+last_updated_session: "authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7"
 ---
 
 # Bootstrap and human authentication flow
@@ -15,11 +15,11 @@ rotation and revocation.
 
 ## Entry Points
 
-- Trigger: `node scripts/bootstrap-installation.mjs` with `NODE_ENV=development`
+- Trigger: `node scripts/bootstrap-installation.ts` with `NODE_ENV=development`
   or `production`, `POST /api/auth/sign-in/email`, `POST /api/auth/providers/oidc/start`,
   `GET /api/auth/providers/oidc/callback`, the matching `google` routes, or a protected
   controller request.
-- Source: [`scripts/bootstrap-installation.mjs`](../../scripts/bootstrap-installation.mjs),
+- Source: [`scripts/bootstrap-installation.ts`](../../scripts/bootstrap-installation.ts),
   [`apps/controller/src/auth/index.ts:createControllerAuth`](../../apps/controller/src/auth/index.ts),
   and [`apps/controller/src/index.ts:createFastifyApp`](../../apps/controller/src/index.ts).
 - Assumptions: Migrated PostgreSQL, configured Better Auth, native IAM bootstrap,
@@ -64,7 +64,7 @@ graph TD
 
 ### 1. Load state and create the fresh administrator identities
 
-[`scripts/bootstrap-installation.mjs`](../../scripts/bootstrap-installation.mjs)
+[`scripts/bootstrap-installation.ts`](../../scripts/bootstrap-installation.ts)
 loads the singleton Installation. Existing Installations verify the administrator's
 immutable account/IAM identity without issuing keys, changing output, or repairing
 grants, including Installations predating service-administrator bootstrap.
@@ -352,6 +352,8 @@ rechecks the resulting proof before issuing its cookie.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 09:29: Update the bootstrap entry point and source pointers. (authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7 - e23d8854d8eec8701c29e4067e7899cb04fff97c)
 
 - 2026-11-12 09:36: Clarify the Native IAM account-creation guarantee. (authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37 - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
 - 2026-11-12 09:25: Retain account authority through commit. (authoring-run/276118f6-2838-4088-8f68-2deba06ca89d - affc6f39cf54a1da65b7f1121c83fb74f55c433e)

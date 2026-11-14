@@ -172,8 +172,10 @@ staging installation; no application, model or operator-cluster credentials are 
 Both controllers and the unchanged runtime must be reachable by their verified
 public digest from the node. The job also checks the exact PostgreSQL and Node
 support images. It builds the fixture CLI and selects the chart from the trusted
-workflow checkout. The two image generations share a populated database and
-one issuer across replacements.
+workflow checkout. The fresh install and same-image OIDC upgrade use that
+chart's fixed production bootstrap task with the previous controller image.
+The two image generations share a populated database and one issuer across
+replacements.
 
 For two compatible v3 releases, the case checks forward and return replacement
 with live, one-use collection and replay refusal. The job refuses unreviewed
