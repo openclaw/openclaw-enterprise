@@ -22,9 +22,8 @@ export interface ProvisioningProgressView {
   /** Reports one poll's answer, advancing steps only as far as the job's own phase does. */
   report(job: ProvisioningJob): void;
   /**
-   * Reports the terminal answer and stops the meter. A failure names the step it failed on
-   * and the job's own safe reason, so the sticky bar shows the outcome without scrolling; the
-   * form's error line below keeps the recovery action and its links (finding 2423).
+   * Reports the terminal answer and stops the meter. The bar shows the safe failure reason
+   * and names the failed step when the reply identifies it. The form keeps the recovery action.
    */
   finish(job: ProvisioningJob, outcome: ProvisioningProgressOutcome): void;
   /** Hides the meter when no job answer can drive it. */
@@ -114,16 +113,12 @@ export function createProvisioningProgress(): ProvisioningProgressView {
   // move the heading backward — the heading goes generic and the steps stay.
   let confirmedStep = 0;
 
-  function paint(step: number, outcome?: ProvisioningProgressOutcome) {
+  function paint(
+    step: number,
+    marker: Exclude<ProvisioningProgressOutcome, "succeeded"> | "current" | "pending" = "current",
+  ) {
     steps.forEach((item, index) => {
-      const state =
-        outcome === "succeeded" || index < step
-          ? "done"
-          : index === step && outcome !== undefined
-            ? outcome
-            : index === step
-              ? "current"
-              : "pending";
+      const state = index < step ? "done" : index === step ? marker : "pending";
       if (item.dataset.state !== state) {
         item.dataset.state = state;
       }
@@ -148,6 +143,10 @@ export function createProvisioningProgress(): ProvisioningProgressView {
       setText(elapsed, elapsedText(0));
     },
     report(job: ProvisioningJob) {
+      // Admission can return a previously finished job. Only finish() interprets its checkpoint.
+      if (job.status !== "queued" && job.status !== "running") {
+        return;
+      }
       setHidden(section, false);
       const step = stepOf(job);
       if (step >= confirmedStep) {
@@ -169,9 +168,16 @@ export function createProvisioningProgress(): ProvisioningProgressView {
         setHidden(reason, true);
         return;
       }
-      const step = Math.max(stepOf(job), confirmedStep);
-      paint(step, outcome);
-      setText(phase, outcomeHeading(stepLabel(step), outcome));
+      const step = stepOf(job);
+      if (outcome === "failed" && (job.phase === undefined || step < confirmedStep)) {
+        // A revision confirms handoff even when the reply omits its phase.
+        paint(Math.max(confirmedStep, job.revisionId === undefined ? 0 : step), "pending");
+        setText(phase, "Agent provisioning failed.");
+      } else {
+        const lastStep = Math.max(step, confirmedStep);
+        paint(lastStep, outcome);
+        setText(phase, outcomeHeading(stepLabel(lastStep), outcome));
+      }
       // Only a failure carries its reason in the bar; a stop is the owner's choice and a
       // supersession means a newer deployment took over, and the form's line below already
       // says what to do next.
