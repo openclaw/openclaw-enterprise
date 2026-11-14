@@ -105,7 +105,7 @@ graph TD
 
 ### 1. Compose discovery metadata and serve public assets
 
-`apps/controller/src/api-startup.mjs:startApi` loads the [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
+`apps/controller/src/api-startup.ts:startApi` loads the [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
 ConfigMap links stay inside the bundle. `renderConsoleThemeShell` escapes branding;
 `console/shell.mts:brandContents` renders names as text. `/console/theme/` serves
 images and generated CSS with `no-store`; missing assets return 404.

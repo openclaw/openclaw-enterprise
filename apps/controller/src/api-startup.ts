@@ -1,3 +1,4 @@
+import type { ChatGPTBackendDefinition, ComputeDriver } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
@@ -10,19 +11,29 @@ import {
   clientAddressConfiguration,
   deriveSharedCookieDomain,
   humanLoginConfiguration,
+  type HumanLoginConfiguration,
 } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import { isAbsolute } from "node:path";
 import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
 import { controlPlaneAuditEnabled } from "./composition/control-plane-audit.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
+  type ServiceAccountDriverFactory,
 } from "./composition/installation-config.ts";
 import { PresetFileError } from "./composition/installation-presets.ts";
-import { composeProduction } from "./composition/production.ts";
-import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
+import type { PostgresDevelopmentConfig } from "./composition/development-postgres.ts";
+import {
+  composeProduction,
+  type ProductionConfig,
+  type ProductionStartupPhase,
+} from "./composition/production.ts";
+import {
+  validateGatewayApiKeyPath,
+  validateWorkspaceFilesApiKeyPath,
+} from "./composition/workspace-files.ts";
+import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
 import {
@@ -33,9 +44,58 @@ import {
 } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
-const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
+type ApiEnvironment = Readonly<NodeJS.ProcessEnv>;
 
-function startupFailureCode(error) {
+type SharedApiSettings = HumanLoginConfiguration & {
+  readonly port: number;
+  readonly databaseUrl?: string;
+  readonly poolMax?: number;
+  readonly gatewayApiKeyPath?: string;
+  readonly authSecret: string;
+  readonly authBaseURL: string;
+  readonly nativeAdmin: NativeAdminAccessConfig;
+  readonly agentRuntimeLogsEnabled: boolean;
+  readonly controlPlaneAuditEnabled: boolean;
+};
+
+type ApiSettings = SharedApiSettings &
+  (
+    | Pick<
+        ProductionConfig,
+        | "mode"
+        | "host"
+        | "clientAddress"
+        | "channelDirectoryProxyUrl"
+        | "channelDirectoryManagedProxyHost"
+        | "apiHttpsEgressOpen"
+      >
+    | Pick<
+        PostgresDevelopmentConfig,
+        "mode" | "host" | "trustedDevelopmentBridgeCidr" | "trustedDevelopmentForwarderCidr"
+      >
+  );
+
+type MeasuredStartupPhase =
+  "modules" | "configuration" | "composition" | "ready" | "listen" | ProductionStartupPhase;
+
+type ServiceAccountCompute = Parameters<
+  typeof import("./drivers/service-account/chatgpt.ts").createChatGPTServiceAccountDriverFactory
+>[1];
+
+function supportsServiceAccountCredentials(
+  compute: ComputeDriver & {
+    readonly storeServiceAccountCredential?: unknown;
+    readonly findServiceAccountCredential?: unknown;
+  },
+): compute is ComputeDriver & ServiceAccountCompute {
+  return (
+    typeof compute.storeServiceAccountCredential === "function" &&
+    typeof compute.findServiceAccountCredential === "function" &&
+    typeof compute.deleteServiceAccountCredential === "function"
+  );
+}
+
+function startupFailureCode(error: unknown): string {
   if (error instanceof ConsoleThemeError) {
     return "CONSOLE_THEME_INVALID";
   }
@@ -97,7 +157,7 @@ function startupFailureCode(error) {
 }
 
 /** The log fields that name a startup failure: its `code`, and for some causes, more. */
-export function startupFailureFields(error) {
+export function startupFailureFields(error: unknown) {
   if (
     error instanceof ScopeViolationError &&
     error.message === "Enrollment requires an existing Installation Role."
@@ -115,15 +175,7 @@ export function startupFailureFields(error) {
   );
 }
 
-function requiredEnvironment(env, name) {
-  const value = env[name];
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${name} must be explicitly configured.`);
-  }
-  return value;
-}
-
-function optionalEnvironment(env, name, fallback) {
+function stringEnvironment(env: ApiEnvironment, name: string, fallback?: string): string {
   const value = env[name] ?? fallback;
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`${name} must be explicitly configured.`);
@@ -131,7 +183,7 @@ function optionalEnvironment(env, name, fallback) {
   return value;
 }
 
-function optionalBooleanEnvironment(env, name) {
+function optionalBooleanEnvironment(env: ApiEnvironment, name: string): boolean {
   const value = env[name];
   if (value === undefined || value.trim().length === 0) {
     return false;
@@ -145,39 +197,44 @@ function optionalBooleanEnvironment(env, name) {
   throw new Error(`${name} must be true or false.`);
 }
 
-function configuration(env) {
+function configuration(env: ApiEnvironment): ApiSettings {
   const mode = env.NODE_ENV;
   if (mode !== "development" && mode !== "production") {
     throw new Error("NODE_ENV must explicitly select development or production mode.");
   }
 
-  const host = requiredEnvironment(env, "OCC_HOST");
+  const host = stringEnvironment(env, "OCC_HOST");
   const trustedDevelopmentBridgeCidr = env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR;
   const trustedDevelopmentForwarderCidr = env.OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR;
-  if (
-    mode === "development" &&
-    (!developmentBindHosts.has(host) ||
+  let listener:
+    Pick<ProductionConfig, "mode" | "host"> | Pick<PostgresDevelopmentConfig, "mode" | "host">;
+  if (mode === "development") {
+    if (
+      (host !== "127.0.0.1" && host !== "::1" && host !== "0.0.0.0") ||
       (host === "0.0.0.0" &&
         (trustedDevelopmentBridgeCidr === undefined ||
-          trustedDevelopmentBridgeCidr.trim().length === 0)))
-  ) {
-    throw new Error(
-      "Development OCC_HOST must be 127.0.0.1 or ::1, or 0.0.0.0 with OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR.",
-    );
-  }
-  if (
-    mode === "production" &&
-    (isIP(host) === 0 ||
+          trustedDevelopmentBridgeCidr.trim().length === 0))
+    ) {
+      throw new Error(
+        "Development OCC_HOST must be 127.0.0.1 or ::1, or 0.0.0.0 with OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR.",
+      );
+    }
+    listener = { mode, host };
+  } else {
+    if (
+      isIP(host) === 0 ||
       host === "0.0.0.0" ||
       host === "::" ||
       host === "::1" ||
       /^127\./.test(host) ||
-      /^::ffff:127\./i.test(host))
-  ) {
-    throw new Error("Production OCC_HOST must identify one explicit Pod interface address.");
+      /^::ffff:127\./i.test(host)
+    ) {
+      throw new Error("Production OCC_HOST must identify one explicit Pod interface address.");
+    }
+    listener = { mode, host };
   }
 
-  const rawPort = requiredEnvironment(env, "OCC_PORT");
+  const rawPort = stringEnvironment(env, "OCC_PORT");
   if (!/^\d+$/.test(rawPort)) {
     throw new Error("OCC_PORT must be a valid TCP port.");
   }
@@ -203,21 +260,13 @@ function configuration(env) {
   }
 
   const rawPoolMax = env.OCC_DATABASE_POOL_MAX;
-  const poolMax = rawPoolMax === undefined ? undefined : Number(rawPoolMax);
-  if (
-    rawPoolMax !== undefined &&
-    (!/^\d+$/.test(rawPoolMax) || !Number.isSafeInteger(poolMax) || poolMax < 1)
-  ) {
-    throw new Error("OCC_DATABASE_POOL_MAX must be a positive integer.");
+  let poolMax: number | undefined;
+  if (rawPoolMax !== undefined) {
+    poolMax = Number(rawPoolMax);
+    if (!/^\d+$/.test(rawPoolMax) || !Number.isSafeInteger(poolMax) || poolMax < 1) {
+      throw new Error("OCC_DATABASE_POOL_MAX must be a positive integer.");
+    }
   }
-
-  const settings = {
-    mode,
-    host,
-    port,
-    ...(databaseUrl === undefined ? {} : { databaseUrl }),
-    ...(poolMax === undefined ? {} : { poolMax }),
-  };
 
   if (env.OCC_WORKSPACE_FILES_CONFIG_PATH !== undefined) {
     throw new Error("OCC_WORKSPACE_FILES_CONFIG_PATH has been removed.");
@@ -227,9 +276,7 @@ function configuration(env) {
   const channelDirectoryProxyUrl = env.OCC_CHANNEL_DIRECTORY_PROXY_URL;
   const channelDirectoryManagedProxyHost = env.OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST;
   if (gatewayApiKeyPath !== undefined) {
-    if (gatewayApiKeyPath.trim().length === 0 || !isAbsolute(gatewayApiKeyPath)) {
-      throw new Error("OCC_GATEWAY_API_KEY_PATH must identify an absolute mounted-file path.");
-    }
+    validateGatewayApiKeyPath(gatewayApiKeyPath);
   }
 
   const nativeAdminEnabled = optionalBooleanEnvironment(env, "OCC_AGENT_NATIVE_ADMIN_ENABLED");
@@ -249,14 +296,18 @@ function configuration(env) {
   }
   const nativeAdminDomain = env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
   const sessionMode = env.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE ?? "shared-cookie";
-  if (!["shared-cookie", "host-only-exchange"].includes(sessionMode)) {
+  if (sessionMode !== "shared-cookie" && sessionMode !== "host-only-exchange") {
     throw new Error(
       "OCC_AGENT_NATIVE_ADMIN_SESSION_MODE must be shared-cookie or host-only-exchange.",
     );
   }
-  const nativeAdmin = { enabled: nativeAdminEnabled, domain: nativeAdminDomain, sessionMode };
+  const nativeAdmin: NativeAdminAccessConfig = {
+    enabled: nativeAdminEnabled,
+    ...(nativeAdminDomain === undefined ? {} : { domain: nativeAdminDomain }),
+    sessionMode,
+  };
 
-  const configuredAuthBaseURL = requiredEnvironment(env, "OCC_AUTH_BASE_URL");
+  const configuredAuthBaseURL = stringEnvironment(env, "OCC_AUTH_BASE_URL");
   let parsedAuthBaseURL;
   try {
     parsedAuthBaseURL = new URL(configuredAuthBaseURL);
@@ -279,28 +330,34 @@ function configuration(env) {
   const clientAddress = clientAddressConfiguration(env);
   const authSecret =
     mode === "production"
-      ? requiredEnvironment(env, "OCC_AUTH_SECRET")
-      : optionalEnvironment(
+      ? stringEnvironment(env, "OCC_AUTH_SECRET")
+      : stringEnvironment(
           env,
           "OCC_AUTH_SECRET",
           "openclaw-development-auth-secret-minimum-32-bytes",
         );
   validateAuthSecret(authSecret);
-  if (mode === "production") {
+  const settings: SharedApiSettings = {
+    port,
+    ...(databaseUrl === undefined ? {} : { databaseUrl }),
+    ...(poolMax === undefined ? {} : { poolMax }),
+    authSecret,
+    authBaseURL,
+    ...humanLogin,
+    ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
+    nativeAdmin,
+    agentRuntimeLogsEnabled,
+    controlPlaneAuditEnabled: auditEnabled,
+  };
+  if (listener.mode === "production") {
     return Object.freeze({
       ...settings,
-      authSecret,
-      authBaseURL,
-      ...humanLogin,
+      ...listener,
       ...(clientAddress === undefined ? {} : { clientAddress }),
-      ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
       ...(channelDirectoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl }),
       ...(channelDirectoryManagedProxyHost === undefined
         ? {}
         : { channelDirectoryManagedProxyHost }),
-      nativeAdmin,
-      agentRuntimeLogsEnabled,
-      controlPlaneAuditEnabled: auditEnabled,
       // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
       apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
@@ -311,13 +368,7 @@ function configuration(env) {
   }
   return Object.freeze({
     ...settings,
-    authSecret,
-    authBaseURL,
-    ...humanLogin,
-    ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
-    nativeAdmin,
-    agentRuntimeLogsEnabled,
-    controlPlaneAuditEnabled: auditEnabled,
+    ...listener,
     ...(trustedDevelopmentBridgeCidr === undefined ? {} : { trustedDevelopmentBridgeCidr }),
     ...(trustedDevelopmentForwarderCidr === undefined || trustedDevelopmentForwarderCidr === ""
       ? {}
@@ -333,11 +384,13 @@ function configuration(env) {
  * pool. It throws on a refused setting or an unavailable dependency, and startupFailureFields
  * names the failure.
  */
-export async function startApi(env) {
+export async function startApi(env: ApiEnvironment): Promise<void> {
   // Time since process start: Node bootstrap and loading the module graph before startApi().
-  const phasesMs = { modules: Math.round(performance.now()) };
+  const phasesMs: Partial<Record<MeasuredStartupPhase, number>> = {
+    modules: Math.round(performance.now()),
+  };
   let phaseStartedAt = performance.now();
-  const phaseCompleted = (phase) => {
+  const phaseCompleted = (phase: MeasuredStartupPhase) => {
     const now = performance.now();
     phasesMs[phase] = Math.round(now - phaseStartedAt);
     phaseStartedAt = now;
@@ -356,11 +409,10 @@ export async function startApi(env) {
     await validateWorkspaceFilesApiKeyPath(settings.gatewayApiKeyPath);
   }
   const compositionSettings = {
-    ...settings,
     ...(consoleTheme === undefined ? {} : { consoleTheme }),
     logger,
     logging,
-    metrics,
+    ...(metrics === undefined ? {} : { metrics }),
     ...(startupConfiguration.observability === undefined
       ? {}
       : { observabilityUrl: startupConfiguration.observability.url }),
@@ -370,21 +422,18 @@ export async function startApi(env) {
     environment: env,
     startupConfiguration,
   });
-  let serviceAccountDriverFactory;
+  let serviceAccountDriverFactory: ServiceAccountDriverFactory | undefined;
   const selectedServiceAccountDriver = drivers?.installation.drivers.service_account;
-  if (selectedServiceAccountDriver !== undefined) {
+  if (drivers !== undefined && selectedServiceAccountDriver !== undefined) {
     if (settings.databaseUrl === undefined) {
       throw new Error("Backend-managed ServiceAccounts require PostgreSQL persistence.");
     }
-    if (
-      typeof drivers.computeDriver.storeServiceAccountCredential !== "function" ||
-      typeof drivers.computeDriver.findServiceAccountCredential !== "function" ||
-      typeof drivers.computeDriver.deleteServiceAccountCredential !== "function"
-    ) {
+    const compute = drivers.computeDriver;
+    if (!supportsServiceAccountCredentials(compute)) {
       throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");
     }
     const backendDefinition = drivers.installation.backend.find(
-      (backend) =>
+      (backend): backend is ChatGPTBackendDefinition =>
         backend.type === "chatgpt" &&
         backend.drivers.service_account === selectedServiceAccountDriver.id,
     );
@@ -415,24 +464,23 @@ export async function startApi(env) {
           : { credentialTtlSeconds: configuration.credentialTtlSeconds }),
       }),
     };
-    serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(
-      backend,
-      drivers.computeDriver,
-    );
+    serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(backend, compute);
   }
-  if (settings.mode === "development" && settings.databaseUrl === undefined) {
+  const databaseUrl = settings.databaseUrl;
+  if (databaseUrl === undefined) {
     throw new Error("OCC_DATABASE_URL must be explicitly configured in development.");
   }
   phaseCompleted("configuration");
-  let app;
+  let app: Awaited<ReturnType<typeof composeProduction>>;
   if (settings.mode === "production") {
     if (drivers === undefined) {
       throw new Error("Production Driver configuration is unavailable.");
     }
     app = await composeProduction({
+      ...settings,
       ...compositionSettings,
+      databaseUrl,
       drivers,
-      logger,
       ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
       onStartupPhase: (phase, durationMs) => {
         phasesMs[phase] = durationMs;
@@ -442,7 +490,7 @@ export async function startApi(env) {
   } else {
     const { composePostgresDevelopment } = await import("./composition/development-postgres.ts");
     app = await composePostgresDevelopment(
-      compositionSettings,
+      { ...settings, ...compositionSettings, databaseUrl },
       drivers,
       serviceAccountDriverFactory,
     );
@@ -450,11 +498,11 @@ export async function startApi(env) {
   }
 
   let closing = false;
-  let metricsListener;
+  let metricsListener: Awaited<ReturnType<typeof startMetricsListener>> | undefined;
   app.addHook("onClose", async () => {
     await metricsListener?.close();
   });
-  async function shutdown(signal) {
+  async function shutdown(signal: NodeJS.Signals) {
     if (closing) {
       return;
     }
@@ -487,7 +535,7 @@ export async function startApi(env) {
     // Fastify compiles route validators and response serializers here.
     await app.ready();
     phaseCompleted("ready");
-    if (metrics !== undefined) {
+    if (metrics !== undefined && metricsSettings !== undefined) {
       metricsListener = await startMetricsListener(metrics, metricsSettings);
     }
     await app.listen({ host: settings.host, port: settings.port });

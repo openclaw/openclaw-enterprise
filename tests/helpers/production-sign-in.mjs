@@ -177,7 +177,7 @@ function resolveSettings(settings, secrets) {
 
 /**
  * The production composition's configuration for rendered API Pod settings, parsing the
- * sign-in and native-admin names the way apps/controller/src/api-startup.mjs does.
+ * sign-in and native-admin names the way apps/controller/src/api-startup.ts does.
  */
 export async function productionSignInConfiguration(
   context,

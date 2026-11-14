@@ -158,7 +158,7 @@ required stage becomes unavailable.
 
 ### 3. Construct the API-only Backend branch
 
-[`api-startup.mjs:startApi`](../../apps/controller/src/api-startup.mjs) handles a selected
+[`api-startup.ts:startApi`](../../apps/controller/src/api-startup.ts) handles a selected
 ServiceAccount Driver after loading the common bundle. It requires PostgreSQL,
 Compute credential-storage methods, and an owning Backend definition. It reads
 that Backend's `apiKeyPath`, constructs `ChatGPTClient`, and supplies the
