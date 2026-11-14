@@ -524,15 +524,10 @@ function workEvidenceExistsSql(code: string): string {
 
 // A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
 // serving revision's Gateway; only a worker pass finishes that stop before the deployment fails
-// (finding 1090). A planned handoff can commit the same stop before any yielded-stop attempt.
-// Recovery that would end either deployment at its attempt limit instead grants one more pass,
-// so the predecessor is not left with its Harness, workspace and credentials and no Gateway
-// (finding 1107). PREDECESSOR_STOP_RECOVERY evidence bounds this to once per deployment, so a
-// pass that keeps crashing cannot requeue it forever: the next limit ends it as before. It never
-// follows an ACTIVE_REVISION_RECOVERY grant (the pointer was published, so the predecessors were
-// already stopped); that recovery keeps its own once-only grant, so a deployment gets at most
-// two. `candidates` holds locked work keys and `excluded` keys another recovery owns; `$2` is
-// maxAttempts.
+// (finding 1090). Yielded sweeps get one more pass (finding 1107). The Agent's exact
+// committed planned stop stays recoverable until the worker confirms it or the Agent selects
+// another predecessor. An already published candidate uses the separate activation recovery.
+// `candidates` holds locked work keys and `excluded` keys another recovery owns; `$2` is maxAttempts.
 function recoveringPredecessorStopsSql(candidates: string, excluded: string): string {
   return `
     recovering_predecessor_stops AS MATERIALIZED (
@@ -545,7 +540,8 @@ function recoveringPredecessorStopsSql(candidates: string, excluded: string): st
         AND work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
         AND ${excluded}
         AND (
-          ${workEvidenceExistsSql("PREDECESSOR_STOP_YIELDED")}
+          (${workEvidenceExistsSql("PREDECESSOR_STOP_YIELDED")}
+           AND NOT ${workEvidenceExistsSql(PREDECESSOR_STOP_RECOVERY)})
           OR EXISTS (
             SELECT 1
             FROM occ.agents AS agent
@@ -555,9 +551,9 @@ function recoveringPredecessorStopsSql(candidates: string, excluded: string): st
               AND agent.predecessor_replacement->>'predecessorRevisionId' = agent.active_revision_id
               AND agent.predecessor_replacement->>'executionIdentity' IS NOT NULL
               AND agent.predecessor_replacement->>'completionStartedAt' IS NOT NULL
+              AND agent.predecessor_replacement->'stopCompleted' IS DISTINCT FROM 'true'::jsonb
           )
         )
-        AND NOT ${workEvidenceExistsSql(PREDECESSOR_STOP_RECOVERY)}
         AND NOT ${workEvidenceExistsSql(ACTIVE_REVISION_RECOVERY)}
     ),`;
 }

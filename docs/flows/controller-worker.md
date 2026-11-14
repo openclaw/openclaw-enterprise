@@ -367,10 +367,10 @@ On `SIGTERM` or `SIGINT`, shutdown aborts in-flight work, waits for the loop,
 removes readiness, closes the other parts and then PostgreSQL, and emits `worker.stopped`.
 
 `PostgresWorkQueue.recoverStale()` atomically fails exhausted Work and affected
-provisioning Namespaces with audit evidence. One extra attempt protects a published
-version (`ACTIVE_REVISION_RECOVERY`) or finishes a yielded stop or committed planned
-handoff (`PREDECESSOR_STOP_RECOVERY`). Handoff recovery stops the recorded selected
-predecessor even if the worker denies candidate preparation.
+provisioning Namespaces with audit evidence. Published versions and yielded stops
+get one recovery attempt. A committed planned handoff stays recoverable until the
+worker confirms its exact predecessor stopped. The current candidate owns retries;
+the worker then rechecks permission to deploy.
 
 ## Debugging and Verification
 

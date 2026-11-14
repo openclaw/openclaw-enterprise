@@ -188,6 +188,7 @@ function predecessorReplacementFromJson(
     phase: record.phase,
     startedAt: record.startedAt,
     ...(typeof record.stoppingAt === "string" ? { stoppingAt: record.stoppingAt } : {}),
+    ...(record.stopCompleted === true ? { stopCompleted: true } : {}),
     ...(typeof record.completionStartedAt === "string"
       ? { completionStartedAt: record.completionStartedAt }
       : {}),
@@ -3590,6 +3591,17 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         )[0];
         return predecessorReplacementFromJson(row?.predecessor_replacement);
+      },
+      confirmPredecessorStop: async (namespaceId, agentId, predecessorRevisionId, stoppingAt) => {
+        await client.query(
+          `UPDATE occ.agents
+           SET predecessor_replacement = predecessor_replacement || '{"stopCompleted": true}'::jsonb
+           WHERE namespace_id = $1 AND id = $2
+             AND predecessor_replacement->>'phase' = 'stopping'
+             AND predecessor_replacement->>'predecessorRevisionId' = $3
+             AND predecessor_replacement->>'stoppingAt' = $4`,
+          [namespaceId, agentId, predecessorRevisionId, stoppingAt],
+        );
       },
       setSandboxPolicyEditing: async (namespaceId, agentId, enabled) => {
         await client.query(

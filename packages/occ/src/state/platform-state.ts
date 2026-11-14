@@ -242,6 +242,13 @@ export interface AgentRepository extends AgentReadRepository {
       readonly executionIdentity?: string;
     },
   ): Promise<Readonly<PredecessorReplacement> | undefined>;
+  /** Caller holds the Namespace and Agent locks. Confirm only the same committed stop. */
+  confirmPredecessorStop(
+    namespaceId: string,
+    agentId: string,
+    predecessorRevisionId: string,
+    stoppingAt: string,
+  ): Promise<void>;
   createAgent(
     agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
   ): Promise<Readonly<Agent>>;
@@ -306,6 +313,7 @@ export interface PredecessorReplacement {
   readonly phase: "pre-stop" | "stopping";
   readonly startedAt: string;
   readonly stoppingAt?: string;
+  readonly stopCompleted?: true;
   readonly completionStartedAt?: string;
   readonly executionIdentity?: string;
 }
@@ -3453,6 +3461,7 @@ function repositories(
         startedAt: previous?.startedAt ?? now,
         ...(completionStartedAt === undefined ? {} : { completionStartedAt }),
         ...(executionIdentity === undefined ? {} : { executionIdentity }),
+        ...(previous?.stopCompleted === true ? { stopCompleted: true as const } : {}),
         ...(previous?.stoppingAt
           ? { stoppingAt: previous.stoppingAt }
           : input.phase === "stopping"
@@ -3461,6 +3470,20 @@ function repositories(
       });
       snapshot.predecessorReplacements.set(key, saved);
       return saved;
+    },
+    confirmPredecessorStop: async (namespaceId, agentId, predecessorRevisionId, stoppingAt) => {
+      const key = agentKey(namespaceId, agentId);
+      const current = snapshot.predecessorReplacements.get(key);
+      if (
+        current?.phase === "stopping" &&
+        current.predecessorRevisionId === predecessorRevisionId &&
+        current.stoppingAt === stoppingAt
+      ) {
+        snapshot.predecessorReplacements.set(
+          key,
+          immutableCopy({ ...current, stopCompleted: true }),
+        );
+      }
     },
     findAgentForBrowsing: async (namespaceId, agentId) => agents.findAgent(namespaceId, agentId),
     listAgentsForBrowsing: async (namespaceId) => agents.listAgents(namespaceId),
