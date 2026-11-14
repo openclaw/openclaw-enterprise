@@ -1,4 +1,4 @@
-import { redactedQaTail } from "./qa-secrets.mjs";
+import { redactedQaTail, redactQaError } from "./qa-secrets.mjs";
 
 const stageSummaries = new WeakMap();
 
@@ -39,7 +39,7 @@ export async function withSkillPolicyRestore(run, restore, combinedMessage) {
       const message = `${combinedMessage}\nExercise: ${exercise.join(" | ")}\nRestoration: ${restoration.join(" | ")}`;
       const combined = new AggregateError(errors, message, { cause });
       stageSummaries.set(combined, [...exercise, ...restoration]);
-      throw combined;
+      throw redactQaError(combined);
     }
     throw cause;
   }

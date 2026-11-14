@@ -4,7 +4,7 @@ import {
   openShellProgress,
   openShellProgressPrefix,
 } from "./openshell-progress.mjs";
-import { failureInputLimit } from "./failure-redaction.mjs";
+import { captureFailureText, failureInputLimit, failureSecrets } from "./failure-redaction.mjs";
 import { recordsCoverage } from "./full-integration-coverage.ts";
 import { parseMeasurementDiagnostic } from "./reporter-measurements.ts";
 
@@ -305,14 +305,14 @@ function stackHeader(stack) {
 // An error's first line. A DOMException (a fetch TimeoutError or AbortError)
 // crosses the test runner's process boundary as a bare stack with an empty
 // message, so its header names it; a thrown value without either is printed.
-function errorHeader(error) {
+function errorHeader(error, message, stack) {
   if (typeof error === "string") {
     return error;
   }
-  if (typeof error?.message === "string" && error.message) {
-    return error.message;
+  if (typeof message === "string" && message) {
+    return message;
   }
-  const header = typeof error?.stack === "string" ? stackHeader(error.stack) : "";
+  const header = typeof stack === "string" ? stackHeader(stack) : "";
   if (header || error === undefined) {
     return header;
   }
@@ -328,9 +328,31 @@ function errorHeader(error) {
 // raw here and travel only over the pipe to run-tests, which redacts and
 // truncates them (failure-redaction.mjs) before anything reaches an artifact
 // or the job log.
-function failureText(cause) {
-  const message = errorHeader(cause);
-  const stack = typeof cause?.stack === "string" ? cause.stack : "";
+const unreadableErrorProperty = Symbol("unreadable error property");
+const unreadableErrorText = "[error details omitted: unreadable property]";
+
+function readErrorProperty(value, key) {
+  try {
+    return value?.[key];
+  } catch {
+    return unreadableErrorProperty;
+  }
+}
+
+function errorText(cause, nested = false, secrets = []) {
+  const rawMessage = typeof cause === "string" ? cause : readErrorProperty(cause, "message");
+  // Node serializes child-process messages, including captured output, without
+  // preserving their cmd/stdout/stderr metadata. Keep the owning summary only.
+  if (nested && typeof rawMessage === "string" && rawMessage.startsWith("Command failed:")) {
+    return { message: "Subprocess command failed; see the owning operation summary" };
+  }
+  const rawStack = readErrorProperty(cause, "stack");
+  const message = errorHeader(cause, rawMessage, rawStack);
+  const stack = typeof rawStack === "string" ? rawStack : "";
+  const unreadable = rawMessage === unreadableErrorProperty || rawStack === unreadableErrorProperty;
+  const detailMessage = unreadable
+    ? `${message}${message ? "\n" : ""}${unreadableErrorText}`
+    : message;
   // The stack starts with the message, which can quote another process's stack.
   const messageEnd =
     message && stack.includes(message) ? stack.indexOf(message) + message.length : 0;
@@ -342,11 +364,97 @@ function failureText(cause) {
   // A DOMException's constructor and Node's own frames do not locate a failure.
   const frame = frames.find((line) => !/^at (?:.* \()?node:internal\//u.test(line)) ?? frames[0];
   return {
-    message: message ? message.slice(0, failureInputLimit) : undefined,
+    message: detailMessage ? captureFailureText(detailMessage, secrets) : undefined,
+    // Internal transport flags are generated here, never copied from the Error.
+    messageCompleteLines: true,
     frame: frame?.slice(0, failureInputLimit),
     // The whole stack goes only to the failure details in the diagnostics report.
-    stack: frames.length > 0 ? frames.join("\n").slice(0, failureInputLimit) : undefined,
+    stack: frames.length > 0 ? captureFailureText(frames.join("\n"), secrets) : undefined,
+    stackCompleteLines: true,
   };
+}
+
+function failureText(error, secrets) {
+  const first = errorText(error, false, secrets);
+  let message = first.message ?? "";
+  let stack = first.stack ?? "";
+  let count = 1;
+  const ancestors = new Set();
+  const append = (path, detail) => {
+    if (detail.message) {
+      message = captureFailureText(
+        `${message}${message ? "\n" : ""}${path}: ${detail.message}`,
+        secrets,
+      );
+    }
+    if (detail.stack) {
+      stack = captureFailureText(`${stack}${stack ? "\n" : ""}${path}:\n${detail.stack}`, secrets);
+    }
+  };
+  const visit = (value, path, depth) => {
+    if (count >= 32) {
+      append(path, { message: "[error details omitted: traversal limit]" });
+      return;
+    }
+    count += 1;
+    if (depth > 8) {
+      append(path, { message: "[error details omitted: traversal limit]" });
+      return;
+    }
+    if (value === unreadableErrorProperty) {
+      append(path, { message: unreadableErrorText });
+      return;
+    }
+    if (ancestors.has(value)) {
+      append(path, { message: "[error details omitted: circular reference]" });
+      return;
+    }
+    append(path, errorText(value, true, secrets));
+    children(value, path, depth);
+  };
+  const children = (value, path, depth) => {
+    if (value === null || typeof value !== "object") {
+      return;
+    }
+    ancestors.add(value);
+    try {
+      const causePath = path ? `${path}.cause` : "cause";
+      const cause = readErrorProperty(value, "cause");
+      if (cause !== undefined) {
+        visit(cause, causePath, depth + 1);
+      }
+      const errorsPath = path ? `${path}.errors` : "errors";
+      const errors = readErrorProperty(value, "errors");
+      let isArray = false;
+      try {
+        isArray = Array.isArray(errors);
+      } catch {
+        visit(unreadableErrorProperty, errorsPath, depth + 1);
+        return;
+      }
+      if (errors === unreadableErrorProperty) {
+        visit(errors, errorsPath, depth + 1);
+      } else if (isArray) {
+        const length = readErrorProperty(errors, "length");
+        if (!Number.isSafeInteger(length) || length < 0) {
+          visit(unreadableErrorProperty, errorsPath, depth + 1);
+          return;
+        }
+        for (let index = 0; index < length; index += 1) {
+          const nextPath = `${errorsPath}[${index}]`;
+          if (count >= 32) {
+            append(nextPath, { message: "[error details omitted: traversal limit]" });
+            break;
+          }
+          visit(readErrorProperty(errors, index), nextPath, depth + 1);
+        }
+      }
+    } finally {
+      ancestors.delete(value);
+    }
+  };
+  children(error, "", 0);
+  return { ...first, message: message || undefined, stack: stack || undefined };
 }
 
 // A failed file's last output lines (test stdout, stderr and diagnostics), raw
@@ -464,7 +572,7 @@ function* interruptedOutput({ lines, omitted }) {
   }
 }
 
-function location(data = {}, recordCoverage = false) {
+function location(data = {}, recordCoverage = false, secrets = []) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
@@ -529,7 +637,7 @@ function location(data = {}, recordCoverage = false) {
               : undefined,
           location: failureLocation,
           diagnostic: failureDiagnostic(cause),
-          ...failureText(cause),
+          ...failureText(cause, secrets),
         }
       : undefined,
     durationMs:
@@ -541,6 +649,7 @@ function location(data = {}, recordCoverage = false) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const secrets = failureSecrets([process.env]);
   const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
   const progress = [];
@@ -652,7 +761,7 @@ export default async function* jsonLinesReporter(source) {
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data, recordCoverage),
+      data: location(event.data, recordCoverage, secrets),
     })}\n`;
   }
   // Passing files send nothing extra.
