@@ -9,10 +9,11 @@ import { listen } from "../helpers/listen.ts";
 
 const writeBudgetMs = 100;
 const reply = Buffer.alloc(4_096, "r");
+const smallReply = Buffer.from("small-body");
 const testOptions = { timeout: 10_000 };
 
-// Hold actual Writable callbacks to model a full TCP send buffer without relying on
-// kernel buffer sizes. The production CONNECT handler and native pipe/drain behavior run.
+// Hold actual Writable callbacks to model a pending TCP write without relying on
+// kernel buffer sizes. The production CONNECT handler and Writable backpressure run.
 class HeldClient extends Duplex {
   holdWrites = false;
   reset = false;
@@ -32,6 +33,7 @@ class HeldClient extends Duplex {
   ): void {
     if (this.holdWrites) {
       this.pending.push({ chunk: Buffer.from(chunk), callback });
+      this.emit("held");
       return;
     }
     this.received.push(Buffer.from(chunk));
@@ -98,6 +100,17 @@ async function blockReply(client: HeldClient, peer: net.Socket, upstream: net.So
   assert.equal(upstream.destroyed, false, "the upstream is still open");
 }
 
+async function holdSmallReply(client: HeldClient, peer: net.Socket, upstream: net.Socket) {
+  client.holdWrites = true;
+  const held = once(client, "held");
+  peer.write(smallReply);
+  await held;
+  assert.equal(client.writableLength, 10);
+  assert.equal(client.writableNeedDrain, false, "the write is below the high-water mark");
+  assert.equal(upstream.readableEnded, false);
+  assert.equal(upstream.destroyed, false, "the upstream stays open without sending more bytes");
+}
+
 test(
   "an active CONNECT client that cannot drain is reset at the write budget",
   testOptions,
@@ -108,6 +121,31 @@ test(
     assert.equal(client.destroyed, false, "the client gets its whole write budget");
     t.mock.timers.tick(1);
     assert.equal(client.destroyed, true, "active blocked output expires without upstream EOF");
+    assert.equal(client.reset, true, "a cut reply must not look complete");
+    assert.equal(client.writableFinished, false);
+    assert.equal(upstream.destroyed, true, "expiry closes both sides");
+  },
+);
+
+test(
+  "small pending CONNECT writes get a fresh write budget after completion",
+  testOptions,
+  async (t) => {
+    const { client, peer, upstream } = await tunnel(t);
+    await holdSmallReply(client, peer, upstream);
+    t.mock.timers.tick(writeBudgetMs - 1);
+    client.release();
+    await nextTurn();
+    assert.deepEqual(client.body(), smallReply);
+
+    // Completion must clear the deadline even though this write never emitted drain.
+    await holdSmallReply(client, peer, upstream);
+    t.mock.timers.tick(1);
+    assert.equal(client.destroyed, false, "the completed write cannot shorten the next budget");
+    t.mock.timers.tick(writeBudgetMs - 2);
+    assert.equal(client.destroyed, false, "the client gets its whole new write budget");
+    t.mock.timers.tick(1);
+    assert.equal(client.destroyed, true, "a pending write expires without a drain event");
     assert.equal(client.reset, true, "a cut reply must not look complete");
     assert.equal(client.writableFinished, false);
     assert.equal(upstream.destroyed, true, "expiry closes both sides");
@@ -126,13 +164,13 @@ test(
     const drained = once(client, "drain");
     client.release();
     await drained;
-    t.mock.timers.tick(writeBudgetMs * 2);
-    assert.equal(client.destroyed, false, "drain clears the old deadline");
 
-    // A later blocked write gets a new budget; the first wait must not cut it short.
+    // Start again before the first deadline, so a stale timer would cut this reply short.
     await blockReply(client, peer, upstream);
-    t.mock.timers.tick(writeBudgetMs - 1);
-    assert.equal(client.destroyed, false);
+    t.mock.timers.tick(1);
+    assert.equal(client.destroyed, false, "the first deadline cannot cut the second wait");
+    t.mock.timers.tick(writeBudgetMs - 2);
+    assert.equal(client.destroyed, false, "the second wait gets its whole write budget");
     const drainedAgain = once(client, "drain");
     client.release();
     await drainedAgain;
@@ -148,13 +186,28 @@ test(
   },
 );
 
-test("client cancellation clears a pending CONNECT write wait", testOptions, async (t) => {
-  const { client, peer, upstream } = await tunnel(t);
-  await blockReply(client, peer, upstream);
-  const closed = once(upstream, "close");
-  client.destroy();
-  await closed;
-  t.mock.timers.tick(writeBudgetMs * 2);
-  assert.equal(upstream.destroyed, true);
-  assert.equal(client.reset, false, "the abandoned wait does not reset a closed client");
-});
+test(
+  "upstream EOF gives a pending CONNECT write a separate drain budget",
+  testOptions,
+  async (t) => {
+    const { client, peer, upstream } = await tunnel(t);
+    await holdSmallReply(client, peer, upstream);
+    t.mock.timers.tick(writeBudgetMs - 1);
+    const closed = once(upstream, "close");
+    peer.end();
+    await closed;
+    assert.equal(client.writableEnded, true, "upstream EOF ends client output");
+    assert.equal(client.writableLength, 10, "the complete reply is still queued");
+    t.mock.timers.tick(writeBudgetMs - 1);
+    assert.equal(client.destroyed, false, "the post-EOF drain has its own full budget");
+    const finished = once(client, "finish");
+    client.release();
+    await finished;
+    assert.deepEqual(client.body(), smallReply);
+    const clientClosed = once(client, "close");
+    client.push(null);
+    await clientClosed;
+    t.mock.timers.tick(writeBudgetMs * 2);
+    assert.equal(client.reset, false, "completed output closes without a stale reset");
+  },
+);
