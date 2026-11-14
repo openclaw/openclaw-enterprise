@@ -694,7 +694,8 @@ test("installed Skipper failure retention preserves known checkpoints and withho
     "failed chat carries only its own receiver observations through the workflow",
     async (t) => {
       const canary = "private-canary";
-      const marker = "skipper-" + canary;
+      const requestMarker = "skipper-" + canary;
+      let marker = requestMarker;
       const prior = "skipper-earlier";
       const commandFile = join(directory, "skipper-command.json");
       const model = createSkipperPreparedComputeEvents(commandFile);
@@ -714,11 +715,33 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         assert.equal(req.method, "POST");
         assert.equal(req.url, "/v1/chat/completions");
         requests++;
-        if (mode === "success" || mode === "observed" || mode === "other-request") {
+        if (["success", "observed", "other-request", "terminal"].includes(mode)) {
           const input = mode === "other-request" ? [{ role: "user", content: prior }] : messages;
           assert.ok(
             model({ model: "synthetic", request: JSON.stringify({ input }), emit, answerEvents }),
           );
+        }
+        if (mode === "terminal") {
+          const answer = "SKIPPER_COMPUTE_DONE_" + marker;
+          const input = [
+            {
+              type: "function_call_output",
+              call_id: marker,
+              output: "Wall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n" + answer,
+            },
+          ];
+          // Supply inert tool output and check the answer the fixture actually selected.
+          let selected: string | undefined;
+          model({
+            model: "synthetic",
+            request: JSON.stringify({ input }),
+            emit,
+            answerEvents: (_model: string, text: string) => {
+              selected = text;
+              return [];
+            },
+          });
+          assert.equal(selected, answer);
         }
         if (mode === "prewarm-only") {
           emit({ event: "prewarm", transport: "websocket" });
@@ -780,9 +803,11 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         ["truncated", "unavailable"],
         ["observed", "observed"],
         ["stale-marker", "unavailable"],
+        ["terminal", "observed"],
       ] as const) {
         await t.test(scenario, async () => {
           mode = scenario;
+          marker = scenario === "terminal" ? requestMarker + "-terminal" : requestMarker;
           await prepare(scenario === "other-request" ? prior : marker);
           completedBeforeFailure = requests;
           await writeFile(stageOutput, "");
@@ -841,6 +866,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
             gatewayTransportCause: "socket-closed",
             runtimeSignal: "thread-start",
             modelRequestObservation: expected,
+            ...(scenario === "terminal" ? { modelFixtureSelectedTerminalSuccess: true } : {}),
             lastTestCheckpoint: refused,
             installedCleanup: "passed",
           });
@@ -1409,6 +1435,35 @@ test("installed Skipper failure retention preserves known checkpoints and withho
   assert.equal(filtered.gatewayTransportCause, undefined);
   assert.equal(filtered.installedCleanup, "failed");
 
+  // Exercise one changed input at a time against an otherwise eligible workflow receipt.
+  for (const [key, value] of [
+    ["SKIPPER_STAGE", "finish-fixture"],
+    ["SKIPPER_TEST_OPERATION", "command-cleanup"],
+    ["SKIPPER_GATEWAY_CHAT_PHASE", "before-private-git"],
+    ["SKIPPER_GATEWAY_CATEGORY", "client-deadline"],
+    ["SKIPPER_HTTP_STATUS", "503"],
+    ["SKIPPER_MODEL_REQUEST_OBSERVATION", "unavailable"],
+    ["SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS", "1"],
+  ] as const) {
+    const path = join(directory, key + ".json");
+    assert.equal(
+      outcome(path, "failure", "selected-test", "passed", {
+        SKIPPER_TEST_OPERATION: "gateway-chat",
+        SKIPPER_GATEWAY_CHAT_PHASE: "native-git",
+        SKIPPER_GATEWAY_CATEGORY: "transport",
+        SKIPPER_HTTP_STATUS: "0",
+        SKIPPER_MODEL_REQUEST_OBSERVATION: "observed",
+        SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS: "true",
+        [key]: value,
+      }).status,
+      0,
+    );
+    assert.equal(
+      JSON.parse(await readFile(path, "utf8")).modelFixtureSelectedTerminalSuccess,
+      undefined,
+    );
+  }
+
   // The writer independently validates the values received through the workflow environment.
   const injected = [
     ...[undefined, "", "0200", "2e2", " 200", "200.5", "-0", "99", "600", "200\n"].map(
@@ -1577,6 +1632,42 @@ test("installed Skipper retains only attributed evidence on rejected gateway req
           ...(observed ? { modelRequestObservation: "observed" } : {}),
         },
       });
+    });
+  }
+  const result = {
+    event: "skipper-native-result",
+    id: marker,
+    modelFixtureSelectedTerminalSuccess: true,
+  };
+  for (const [name, first, second, observation] of [
+    ["prior result", [listening, result], [listening, result, matched, result], "observed"],
+    ["ambiguous request", before, [...after, matched, result], "observed"],
+    ["foreign result", before, [...after, { ...result, id: marker + "-other" }], "observed"],
+    ["replaced prefix", before, [matched, result], "unavailable"],
+    ["restart with result", before, [listening, listening, matched, result], "unavailable"],
+    ["result before request", before, [listening, result, matched], "observed"],
+    [
+      "wrong decision type",
+      before,
+      [...after, { ...result, modelFixtureSelectedTerminalSuccess: "true" }],
+      "observed",
+    ],
+  ] as const) {
+    await t.test(name, async () => {
+      const snapshots = [first, second];
+      await assert.rejects(
+        sendSkipperChat({
+          ...options,
+          enter: async () => JSON.stringify({ status: 0, category: "transport" }),
+          modelEvents: async () => snapshots.shift(),
+        }),
+        (error: Error & { openclawCiDiagnostic: Record<string, unknown> }) => {
+          assert.equal(error.openclawCiDiagnostic.modelRequestObservation, observation);
+          assert.equal(error.openclawCiDiagnostic.modelFixtureSelectedTerminalSuccess, undefined);
+          return error.message === "Gateway chat failed";
+        },
+      );
+      assert.equal(snapshots.length, 0);
     });
   }
   for (const [name, error, cause] of [

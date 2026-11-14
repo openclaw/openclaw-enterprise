@@ -120,6 +120,7 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           event: "skipper-native-result",
           id,
           markerSeen,
+          ...(ok ? { modelFixtureSelectedTerminalSuccess: true } : {}),
           sha,
           status,
           exitCode: current?.exitCode ?? null,
