@@ -17,6 +17,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { restartInventory } from "./production-upgrade-retained-fleet-preflight.ts";
+import { field, type RecoveryState } from "./production-upgrade-recovery-state.ts";
 
 type UpgradeFixture = {
   directory: string;
@@ -25,13 +26,7 @@ type UpgradeFixture = {
   deploy(namespaceId: string, agentId: string): Promise<{ stdout: string }>;
   run(...args: string[]): Promise<{ stderr: string }>;
   failNext(fault: string): Promise<void>;
-  state(): Promise<{
-    dispatches: number;
-    activeRevision?: string;
-    deployFailures?: Record<string, string>;
-    deployNotices?: Record<string, string>;
-    inventoryReadCount?: number;
-  }>;
+  state(): Promise<RecoveryState>;
   events(): Promise<string[]>;
 };
 
@@ -88,7 +83,7 @@ export function registerDispatchRestoreTests(
       const operatorDeploy = async (id: string, status: "succeeded" | "failed") => {
         await selectNextDeployment(id, status);
         const response = await f.deploy(namespaceId, agentId);
-        assert.equal(JSON.parse(response.stdout).id, id);
+        assert.equal(field(JSON.parse(response.stdout), "id"), id);
       };
       const recordReplacement = async (id: string, replacesDeploymentId: string) => {
         const temporary = receipt + ".replacement";
@@ -98,8 +93,11 @@ export function registerDispatchRestoreTests(
         await rename(temporary, receipt);
       };
       const projectedRevision = async () =>
-        JSON.parse(await readFile(join(f.evidence, "deployments.jsonl"), "utf8")).deploymentId;
-      const lastEntry = async () =>
+        field(
+          JSON.parse(await readFile(join(f.evidence, "deployments.jsonl"), "utf8")),
+          "deploymentId",
+        );
+      const lastEntry = async (): Promise<unknown> =>
         JSON.parse((await readFile(journal, "utf8")).trimEnd().split("\n").at(-1)!);
 
       await selectNextDeployment(revisionA, "failed");
@@ -368,9 +366,9 @@ export function registerDispatchRestoreTests(
   });
 
   test("a concurrent resume cannot take over while the native deploy is in flight", async (t) => {
-    const pause = new EventEmitter();
-    const entered = once(pause, "entered");
-    const release = once(pause, "release");
+    const pause = new EventEmitter<{ entered: []; release: [] }>();
+    const entered = once(pause, "entered").then(() => undefined);
+    const release = once(pause, "release").then(() => undefined);
     const f = await fixture(t, {
       agent: true,
       afterDeploy: async () => {

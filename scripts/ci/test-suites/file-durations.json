@@ -324,7 +324,7 @@
     "tests/integration/production-healthcheck.test.ts": 200,
     "tests/integration/production-image-qualification.test.ts": 1900,
     "tests/integration/production-image-startup.test.mjs": 5200,
-    "tests/integration/production-image-upgrade-recovery.test.mjs": 41000,
+    "tests/integration/production-image-upgrade-recovery.test.ts": 41000,
     "tests/integration/production-image-upgrade.test.ts": 5600,
     "tests/integration/production-kubernetes-packaging.test.mjs": 26900,
     "tests/integration/profile-preflight-chart-parity.test.ts": 4900,
