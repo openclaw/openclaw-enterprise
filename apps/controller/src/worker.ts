@@ -140,6 +140,7 @@ import {
   withYieldingComputeStop,
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
+import { DeploymentTimings } from "./worker/deployment-timing.ts";
 import {
   isStopYieldedCode,
   PredecessorStopYieldedError,
@@ -860,18 +861,6 @@ function workOperation(claim: ControllerWork): string {
   return "work.reconcile";
 }
 
-// Worker-local phase timing for one deployment work item. It spans the passes
-// this process observes; a restart or eviction starts a new record.
-interface DeployTiming {
-  passes: number;
-  passStartedAt: number;
-  prepareMs: number;
-  firstUnreadyAt: number | undefined;
-  readinessWaitMs: number | undefined;
-  readyAt: number | undefined;
-}
-
-const MAX_DEPLOY_TIMINGS = 256;
 const SAFE_COMPUTE_FAILURE_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const SAFE_COMPUTE_FAILURE_STAGE = /^[a-z][a-z0-9_]{0,63}$/;
 const SAFE_COMPUTE_FAILURE_CLASS = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
@@ -1267,7 +1256,7 @@ export class ControllerWorker {
     string,
     { readonly stoppedAt: number; readonly restopAfterMs: number }
   >();
-  private readonly deployTimings = new Map<string, DeployTiming>();
+  private readonly deployTimings = new DeploymentTimings();
   /** The last stuck-cleanup cause logged per repository cleanup work item. */
   private readonly repositoryCleanupCauses = new Map<string, string>();
   /**
@@ -2080,21 +2069,10 @@ export class ControllerWorker {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
     }
     this.validateExecutionAdmission(revision);
-    const timing = this.deployTimings.get(claim.idempotencyKey);
-    const started = Date.now();
+    const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
       const prepared = await this.prepareRevisionPass(claim, revision, context);
-      if (timing !== undefined) {
-        const now = Date.now();
-        if (!prepared.observation.ready) {
-          timing.firstUnreadyAt ??= now;
-        } else {
-          timing.readyAt = now;
-          if (timing.readinessWaitMs === undefined && timing.firstUnreadyAt !== undefined) {
-            timing.readinessWaitMs = now - timing.firstUnreadyAt;
-          }
-        }
-      }
+      timing?.observeReadiness(prepared.observation);
       return prepared;
     } catch (failure) {
       const error = primaryComputeFailure(failure);
@@ -2130,9 +2108,7 @@ export class ControllerWorker {
       }
       throw error;
     } finally {
-      if (timing !== undefined) {
-        timing.prepareMs += Date.now() - started;
-      }
+      timing?.finish();
     }
   }
 
@@ -4430,64 +4406,19 @@ export class ControllerWorker {
     });
   }
 
-  private beginDeployPass(claim: ClaimedWork): void {
-    // Maintenance, cleanup and stop work are not deployments.
-    if (claim.idempotencyKey !== `agent_revision:${claim.revisionId}:reconcile`) {
-      return;
-    }
-    let timing = this.deployTimings.get(claim.idempotencyKey);
-    if (timing === undefined) {
-      if (this.deployTimings.size >= MAX_DEPLOY_TIMINGS) {
-        this.deployTimings.delete(this.deployTimings.keys().next().value!);
-      }
-      timing = {
-        passes: 0,
-        passStartedAt: 0,
-        prepareMs: 0,
-        firstUnreadyAt: undefined,
-        readinessWaitMs: undefined,
-        readyAt: undefined,
-      };
-      this.deployTimings.set(claim.idempotencyKey, timing);
-    }
-    timing.passes += 1;
-    timing.passStartedAt = Date.now();
-    timing.readyAt = undefined;
-  }
-
-  /**
-   * Phase timing for the deployment pass that is finishing. Milliseconds are
-   * worker wall clock: `durationMs` is this pass, `prepareMs` sums Compute
-   * preparation across passes, `readinessWaitMs` runs from the first unready
-   * observation to the first ready one (or now), `activationMs` runs from this
-   * pass's ready observation to completion, and `elapsedMs` is since admission,
-   * by the database clock (`workAgeMs`).
-   */
   private deployTimingFields(claim: ClaimedWork): Readonly<Record<string, number>> {
-    const timing = this.deployTimings.get(claim.idempotencyKey);
-    if (timing === undefined) {
-      return {};
-    }
-    const now = Date.now();
-    if (this.passOutcome === "success" || this.passOutcome === "permanent") {
-      this.deployTimings.delete(claim.idempotencyKey);
-    }
-    let readinessWaitMs = timing.readinessWaitMs ?? 0;
-    if (timing.readinessWaitMs === undefined && timing.firstUnreadyAt !== undefined) {
-      readinessWaitMs = now - timing.firstUnreadyAt;
-    }
-    return {
-      durationMs: now - timing.passStartedAt,
-      deployPasses: timing.passes,
-      prepareMs: timing.prepareMs,
-      readinessWaitMs,
-      ...(timing.readyAt === undefined ? {} : { activationMs: now - timing.readyAt }),
-      elapsedMs: this.workAgeMs(claim),
-    };
+    return this.deployTimings.completionFields(
+      claim.idempotencyKey,
+      this.passOutcome === "success" || this.passOutcome === "permanent",
+      () => this.workAgeMs(claim),
+    );
   }
 
   private async processRevision(claim: ClaimedWork): Promise<void> {
-    this.beginDeployPass(claim);
+    // Maintenance, cleanup and stop work are not deployments.
+    if (claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`) {
+      this.deployTimings.beginPass(claim.idempotencyKey);
+    }
     let result: RevisionDispatchResult;
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
     let refusalWaitRead = false;
