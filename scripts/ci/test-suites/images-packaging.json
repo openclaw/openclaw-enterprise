@@ -170,6 +170,7 @@
     {
       "path": "tests/integration/oidc-ca-trust.test.ts",
       "expectedTests": [
+        "packaged OIDC CA programs match their TypeScript sources and chart commands",
         "OIDC CA chart wiring adds trust only to the API and preserves Gateway selection",
         "OIDC CA chart refuses partial, malformed and disabled configuration",
         "OIDC CA reserves the assembled API CA mount from database.caMountPath",
