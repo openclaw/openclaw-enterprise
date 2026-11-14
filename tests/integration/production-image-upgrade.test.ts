@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:https";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
+import { selfSigned } from "../helpers/certificates.mjs";
 import { writeCommand } from "../helpers/fake-commands.ts";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
@@ -410,11 +413,14 @@ esac
   await writeCommand(
     bin,
     "python3",
-    `if [[ "$1" == scripts/upgrade-dispatch-state.py || "$1" == scripts/upgrade-helm-state.py ||
+    `if [[ "$1" == - && "$2" =~ ^[1-9][0-9]*$ && "$4" == "$(dirname "$0")/occ" ]]; then
+  if [[ " $* " == *" agent deployment-status "* ]]; then
+    printf 'replacement-status-budget %s\\n' "$2" >>"$COMMAND_LOG"
+  fi
+  command -p python3 "$@"
+elif [[ "$1" == scripts/upgrade-dispatch-state.py || "$1" == scripts/upgrade-helm-state.py ||
       "$1" == scripts/upgrade-preflight-state.py ||
       ( "$1" == - && "$4" == */oce-upgrade-preflight-* ) ||
-      ( "$1" == - && "$2" =~ ^[1-9][0-9]*$ && "$4" == "$(dirname "$0")/occ" &&
-        "$5" == --output && "$6" == json && "$7" == --timeout-seconds && "$8" == "$2" ) ||
       ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
         "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
   command -p python3 "$@"
@@ -686,6 +692,9 @@ fi
     bin,
     "jq",
     `${dispatchJson}if [[ "$*" == *'resourceAttributes'* ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
+fi
+if [[ "$1" == -c && ( "$2" == .namespaceId,* || "$2" == *'baselineRevisionId: .activeRevisionId'* ) ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
@@ -1031,9 +1040,7 @@ esac
   const runtimeCommands = await readFile(commandLog, "utf8");
   // The runner passes the remaining replacement budget, so a clock tick can
   // reduce it below the 3,600-second default before the first poll starts.
-  const statusRead = runtimeCommands.match(
-    /^occ --output json --timeout-seconds ([0-9]+) --namespace ns_test agent deployment-status agt_test rev_candidate$/mu,
-  );
+  const statusRead = runtimeCommands.match(/^replacement-status-budget ([0-9]+)$/mu);
   assert.ok(statusRead, "replacement status must use the deadline runner");
   const remainingSeconds = Number(statusRead[1]);
   assert.ok(
@@ -1047,6 +1054,108 @@ esac
   const journal = await readFile(readyEvidence + ".dispatch-state");
   await assertCompletedRunCannotResume(readyEvidence, ["runtime"], runtimeOptions);
   assert.deepEqual(await readFile(readyEvidence + ".dispatch-state"), journal);
+
+  await t.test(
+    "a stalled optional Agent read preserves terminal deployment observations",
+    async (t) => {
+      const namespaceId = `ns_${randomUUID()}`;
+      const fleet = ["failed", "succeeded"].map((status) => ({
+        agentId: `agt_${randomUUID()}`,
+        deploymentId: `rev_${randomUUID()}`,
+        namespaceId,
+        status,
+      }));
+      const inventory = {
+        installationId: environment.CLUSTER_INSTALLATION_ID,
+        namespaces: [
+          {
+            id: namespaceId,
+            status: "ready",
+            agents: fleet.map(({ agentId }) => ({
+              id: agentId,
+              status: "active",
+              desiredRuntimeState: "running",
+              executionMode: "dedicated",
+              activeRevisionId: "rev_test",
+              deploymentInProgress: false,
+              repositoryWorkerRestart: "reverification-supported",
+            })),
+          },
+        ],
+      };
+      const cli = join(directory, "native-occ");
+      await execute("go", ["build", "-o", cli, "./cmd/occ"], { cwd: repository });
+      // Keep cluster preparation simulated. Every status command uses the real
+      // CLI, including its best-effort Agent GET after it reads the deployment.
+      await rename(occ, occ + "-fixture");
+      await writeCommand(
+        bin,
+        "occ",
+        `case " $* " in
+  *" deployment-inventory "*) printf '%s\\n' '${JSON.stringify(inventory)}' ;;
+  ${fleet.map(({ agentId, deploymentId }) => `*" agent deploy ${agentId} "*) printf '%s\\n' '{"id":"${deploymentId}"}' ;;`).join("\n  ")}
+  *" agent deployment-status "*) exec "$NATIVE_OCC" "$@" ;;
+  *) exec "$0-fixture" "$@" ;;
+esac`,
+        { interpreter: "bash" },
+      );
+      const tls = await selfSigned(directory);
+      const agentPaths = fleet.map(({ agentId }) => `/namespaces/${namespaceId}/agents/${agentId}`);
+      const deploymentPaths = fleet.map(
+        ({ deploymentId }, i) => `${agentPaths[i]}/deployments/${deploymentId}`,
+      );
+      const requests: string[] = [];
+      const server = createServer(tls, (request, response) => {
+        const path = request.url ?? "";
+        requests.push(`${request.method} ${path}`);
+        if (path === agentPaths[0]) {
+          return; // Leave only the first Agent lookup pending until the client closes it.
+        }
+        const data = path === agentPaths[1] ? {} : fleet[deploymentPaths.indexOf(path)];
+        if (data === undefined) {
+          response.writeHead(404).end();
+          return;
+        }
+        response
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ data, meta: { requestId: "fixture-read" } }));
+      });
+      const port = await listen(t, server);
+      const evidence = join(directory, "terminal-status-evidence");
+      const key = join(directory, "loopback-key");
+      await writeFile(key, JSON.stringify({ data: { key: randomUUID() } }), { mode: 0o600 });
+      await assert.rejects(
+        execute(
+          upgradeScript,
+          [...upgradeArguments(evidence, ["runtime"]), "--timeout-seconds", "8"],
+          {
+            cwd: repository,
+            env: {
+              ...runtimeOptions.env,
+              NATIVE_OCC: cli,
+              OCC_URL: `https://127.0.0.1:${port}`,
+              OCC_CA_BUNDLE: tls.certPath,
+              OCC_SERVICE_KEY_FILE: key,
+              OCC_TIMEOUT_SECONDS: "1",
+            },
+          },
+        ),
+        /at least one Agent deployment failed/u,
+      );
+      assert.deepEqual(
+        requests,
+        fleet.flatMap((_, i) => [`GET ${deploymentPaths[i]}`, `GET ${agentPaths[i]}`]),
+      );
+      for (const deployment of fleet) {
+        const name =
+          [namespaceId, deployment.agentId, deployment.deploymentId].join("--") + ".json";
+        assert.deepEqual(
+          parseJson(await readFile(join(evidence, "status", name), "utf8")),
+          deployment,
+        );
+      }
+    },
+  );
 });
 
 // Argument validation precedes file and cluster access. Keep the kubeconfig

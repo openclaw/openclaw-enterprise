@@ -2446,10 +2446,9 @@ replacement_occ_read() {
   local timeout_message=$1 remaining_seconds=$((deadline - SECONDS))
   shift
   ((remaining_seconds > 0)) || die "$timeout_message"
-  # OCC applies --timeout-seconds per HTTP request. Deployment status can make
-  # multiple requests, so bound the whole CLI process as well.
-  python3 - "$remaining_seconds" "$timeout_message" "${occ_json[@]}" \
-    --timeout-seconds "$remaining_seconds" "$@" <<'PYTHON'
+  # Keep OCC's per-request timeout. A deployment status read may make several
+  # requests, so the remaining replacement window bounds the whole process.
+  python3 - "$remaining_seconds" "$timeout_message" "${occ_json[@]}" "$@" <<'PYTHON'
 import os
 import signal
 import subprocess
