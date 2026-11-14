@@ -170,7 +170,7 @@
     "tests/integration/ci-impact.test.ts": 19600,
     "tests/integration/ci-logging.test.ts": 100,
     "tests/integration/ci-openshell.test.mjs": 10600,
-    "tests/integration/ci-prepare-k3d.test.mjs": 7500,
+    "tests/integration/ci-prepare-k3d.test.ts": 7500,
     "tests/integration/ci-prepare.test.mjs": 25900,
     "tests/integration/ci-runner.test.mjs": 17900,
     "tests/integration/cli-release.test.ts": 4800,
