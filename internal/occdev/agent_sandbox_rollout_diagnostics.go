@@ -111,12 +111,13 @@ type agentSandboxDiagnostic struct {
 	Warnings    agentSandboxStage `json:"warnings"`
 }
 
-// A fresh, finite budget permits capture after cancellation of startup. Run
-// awaits each direct child; WaitDelay bounds inherited-pipe draining, not the
+// A finite budget bounds capture. Startup supplies a fresh context so rollback
+// can retain diagnostics; interactive callers preserve cancellation. Run awaits
+// each direct child; WaitDelay bounds inherited-pipe draining, not the
 // lifetime of arbitrary descendants. Writing to the caller's io.Writer is best
 // effort: its latency and durable storage are outside this subprocess budget.
-func (r *runner) captureAgentSandboxRollout(state *developmentState) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func (r *runner) captureAgentSandboxRollout(ctx context.Context, state *developmentState) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	record := agentSandboxDiagnostic{Diagnostic: "agent-sandbox-rollout", ReplicaSets: agentSandboxStage{Status: "unavailable"}, Pods: agentSandboxStage{Status: "unavailable"}, Warnings: agentSandboxStage{Status: "unavailable"}}
 	record.Deployment = r.agentSandboxRead(ctx, state, "deployment", agentSandboxDeploymentTemplate, 1)

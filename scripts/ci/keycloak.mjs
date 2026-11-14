@@ -71,7 +71,7 @@ async function writePrivate(path, data) {
 }
 
 // A two-day private CA and its server leaves: one for Keycloak's DNS name, one for the
-// test's HTTPS Console DNS origin on loopback. Same openssl recipe as routing.mjs.
+// test's HTTPS Console DNS origin on loopback. Same openssl recipe as routing.ts.
 async function createCertificates(directory, execFile) {
   const ca = { certPath: join(directory, "ca.crt"), keyPath: join(directory, "ca.key") };
   await execFile("openssl", [

@@ -31,18 +31,6 @@
       "removeWhen": "Move shared runtime-entrypoint scripts into the provider-neutral compute runtime module and update both providers."
     },
     {
-      "rule": "http-to-provider",
-      "from": "apps/controller/src/http/errors.ts",
-      "to": "apps/controller/src/drivers/configuration/kubernetes/index.ts",
-      "specifier": "../drivers/configuration/kubernetes/index.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:ConfigurationOwnershipError", "value:ConfigurationValidationError"],
-      "owner": "HTTP configuration boundary",
-      "reason": "HTTP currently imports semantic Configuration errors from the selected Kubernetes implementation.",
-      "removeWhen": "Move semantic Configuration errors into the neutral contract and update the HTTP importer."
-    },
-    {
       "rule": "domain-to-implementation",
       "from": "packages/occ/src/iam-policy-cleanup.ts",
       "to": "packages/occ/src/state/platform-state.ts",
@@ -212,18 +200,26 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
-      "to": "packages/contracts/src/runtime-failure.mjs",
-      "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
-      "kind": "import",
+      "to": "packages/contracts/src/runtime-failure.ts",
+      "specifier": "../../../../../../packages/contracts/src/runtime-failure.ts",
+      "kind": "require",
       "typeOnly": false,
-      "bindings": [
-        "value:RUNTIME_DIAGNOSTIC_CHECKS",
-        "value:RUNTIME_DIAGNOSTIC_CODES",
-        "value:RUNTIME_FAILURE_CHECKS"
-      ],
+      "bindings": ["*"],
       "owner": "Kubernetes runtime programs",
-      "reason": "Image builds and the in-image supervisor proof load the runtime programs from a checkout or copy with no workspace packages installed, so they read the shared runtime failure vocabulary from its source.",
-      "removeWhen": "Image builds and the in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+      "reason": "Checkout CI and the in-image supervisor proof load this dependency-free source without workspace packages installed. The renderer reads the three vocabulary arrays and validates them at load time.",
+      "removeWhen": "The checkout and in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+    },
+    {
+      "rule": "unresolved-local-import",
+      "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+      "to": "packages/contracts/dist/runtime-failure.js",
+      "specifier": "../../../../../../packages/contracts/dist/runtime-failure.js",
+      "kind": "require",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Kubernetes runtime programs",
+      "reason": "The compiled renderer loads the emitted vocabulary from the contracts project output. The authored-source graph excludes that output.",
+      "removeWhen": "The compiled renderer uses a package export or build-output resolution is represented in the analyzer."
     },
     {
       "rule": "unresolved-local-import",
@@ -286,7 +282,7 @@
       "typeOnly": false,
       "bindings": ["*"],
       "owner": "API route compilers",
-      "reason": "The precompiled route compilers are build output (precompile-route-schemas.mjs writes them at image build and in the CI lanes that build many apps); generated dist files are intentionally outside the authored-source graph, and a missing file means every schema compiles at run time.",
+      "reason": "The precompiled route compilers are build output (precompile-route-schemas.ts writes them at image build and in the CI lanes that build many apps); generated dist files are intentionally outside the authored-source graph, and a missing file means every schema compiles at run time.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer."
     },
     {
@@ -300,7 +296,7 @@
       "owner": "API route compilers",
       "reason": "Precompiled validator and serializer code requires only the runtime helpers of ajv, ajv-formats and fast-json-stringify, resolved from the compiler package that uses them on the run-time path; any other specifier throws.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or they are generated as statically resolvable modules.",
-      "loaderIdentity": "loader:sha256:01a4418d07bf1b49352d6daaa36f0870e11b95909b4a7bdf63bd095337a3aaa3"
+      "loaderIdentity": "loader:sha256:b6cb55a65e9f787736cf2a0890d4a9aedc8b549666b0da11e955d7a0baa6ec4a"
     },
     {
       "rule": "unresolved-dynamic-import",
@@ -313,7 +309,7 @@
       "owner": "API route compilers",
       "reason": "The precompiled route compilers file is loaded only from the fixed build-output path, and only when its fingerprint matches this Node version, lockfile, compiler packages and route-compilers.ts.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer.",
-      "loaderIdentity": "loader:sha256:94107cd2981116074fd1fb7d04cad03adbee3ae72b12c1307cf48b00ac0ca5a6"
+      "loaderIdentity": "loader:sha256:a2a30ae033a222fdd13bd05455172a06b655d81700c1371d3b085b9fe854e07f"
     },
     {
       "rule": "domain-to-implementation",
@@ -381,30 +377,6 @@
       "owner": "Work status projection",
       "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State. This separately tracked edge imports types only.",
       "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-work-queue.ts",
-      "specifier": "./state/postgres-work-queue.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["type:ClaimedWork", "value:WorkClaimLostError"],
-      "owner": "Work claim lifecycle",
-      "reason": "OCC handles lost work claims using the existing shared error constructor and claim type exposed by the PostgreSQL queue module.",
-      "removeWhen": "Move the claim contract and shared lost-claim error into neutral Work ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-work-queue.ts",
-      "specifier": "./state/postgres-work-queue.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:ClaimedWork"],
-      "owner": "Work claim lifecycle",
-      "reason": "OCC handles lost work claims using the existing shared error constructor and claim type exposed by the PostgreSQL queue module. This separately tracked edge imports types only.",
-      "removeWhen": "Move the claim contract and shared lost-claim error into neutral Work ports and update this import."
     },
     {
       "rule": "domain-to-implementation",

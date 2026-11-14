@@ -122,7 +122,7 @@ validation and lockfile integrity do not establish publisher trust.
 
 Local Setup also calls the shared admission path before provisioning:
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` invokes
-`scripts/validate-sandbox-network-policy.mjs`, which uses `requireConfiguration`
+`scripts/validate-sandbox-network-policy.ts`, which uses `requireConfiguration`
 for platform structural validation and Driver semantic checks. A failure stops before creating development state
 or invoking a container engine. API and worker startup log
 `DRIVER_CONFIGURATION_INVALID` with field diagnostics that identify the setting
@@ -150,12 +150,15 @@ Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
 each configured host. Startup enforces the
 [production version-stage contract](../reference/drivers/compute.md#production-revision-stages)
-before returning any production runtime; development can use a four-operation
-Driver, and the worker still fails closed if a required stage becomes unavailable.
+before returning any production runtime. Development requires the five core
+operations: `ensureNamespace`, `deleteNamespace`, `prepareRevision`,
+`stopRevision`, and `retireRevision`. It permits Drivers without
+`activateRevision` and `deactivateRevision`. The worker still fails closed if a
+required stage becomes unavailable.
 
 ### 3. Construct the API-only Backend branch
 
-[`api-startup.mjs:startApi`](../../apps/controller/src/api-startup.mjs) handles a selected
+[`api-startup.ts:startApi`](../../apps/controller/src/api-startup.ts) handles a selected
 ServiceAccount Driver after loading the common bundle. It requires PostgreSQL,
 Compute credential-storage methods, and an owning Backend definition. It reads
 that Backend's `apiKeyPath`, constructs `ChatGPTClient`, and supplies the

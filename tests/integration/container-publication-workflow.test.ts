@@ -157,9 +157,9 @@ test("chart publication consumes the exact successful image receipt without arch
   assert.equal(record(download.with)["run-id"], undefined);
   assert.equal(record(download.with).repository, undefined);
   assert.equal(record(download.with).pattern, undefined);
-  assert.ok(images.every((step) => !optionalText(step.run)?.includes("chart-release.mjs")));
+  assert.ok(images.every((step) => !optionalText(step.run)?.includes("chart-release.ts")));
   const publishIndex = chart.findIndex((step) =>
-    optionalText(step.run)?.includes("chart-release.mjs publish"),
+    optionalText(step.run)?.includes("chart-release.ts publish"),
   );
   assert.ok(publishIndex > chart.indexOf(download));
 });

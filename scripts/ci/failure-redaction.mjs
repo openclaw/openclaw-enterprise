@@ -220,12 +220,14 @@ function redactShapes(text) {
 // After repeated nested captures, omission counts describe the current input,
 // so they only approximate how much original text was omitted.
 export function captureFailureText(text, secrets = []) {
+  // Remove whole keys and raw credential-bearing lines before a replacement can
+  // erase their marker and expose an unregistered value later on the same line.
+  let input = dropCredentialLines(stripControl(text).replace(privateKeyShape, "[redacted]"));
   // Match known multi-line values before either window can remove their context.
-  let input = text;
   for (const [value, name] of secrets) {
     input = input.replaceAll(value, `[env:${name}]`);
   }
-  const value = redactShapes(stripControl(input));
+  const value = redactShapes(input);
   if (value.length <= failureInputLimit) {
     return value;
   }

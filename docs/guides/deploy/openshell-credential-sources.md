@@ -1,14 +1,13 @@
 # Use a static credential source on the local OpenShell profile
 
-This is the static Credential Gateway setup, which remains available to existing
-Gateway owners. It does not qualify protected Credential Proxy access or transfer
+This is the static Credential Gateway setup for new and existing sources. It does not qualify protected Credential Proxy access or transfer
 source ownership. For protected setup and upgrade decisions, start with
 [Credential Proxy setup](../credential-proxy.md).
 
 Use this procedure to register an OpenAI-compatible API key with the OpenShell Credential
 Gateway and bind it to a dedicated Codex Agent on the
 [local OpenShell profile](local-kubernetes-development.md#start-the-openshell-fail-closed-profile).
-Without Credential Proxy selected, OpenShell keeps its own copy of the key and substitutes it only on requests to
+OpenShell keeps its own copy of the key, including with a Git Proxy selected, and substitutes it only on requests to
 its authorized endpoint; the Harness receives only a placeholder. By default the
 endpoint is `https://api.openai.com/v1`. The
 [credential source reference](../../reference/credential-sources.md) defines the
@@ -54,8 +53,8 @@ model ID yourself.
 If arriving from Credential Proxy setup, use only the `openai` example below,
 obtain whole-execution consent before creation, then
 [return to live-source setup](../credential-proxy.md#register-authorize-and-deploy-an-openai-static-inference-source).
-Fresh creation with Proxy selected is already live and Gateway-owned; the
-copied-key rotation and cleanup later on this page do not describe that path.
+Registration creates a Gateway copy. Live-source setup requires explicit adoption;
+the copied-key rotation and cleanup below do not describe the adopted path.
 
 Store the key as a Namespace Secret. Build the request file with owner-only
 permissions, delete it after use, and never put the key on the command line:
@@ -93,9 +92,8 @@ SOURCE_ID="$(./bin/occ credential-source create --file credential-source.json -o
 ```
 
 Expected result: `STATE` and `GATEWAY STATUS` both show `ready`. The response
-never contains the key. Without Proxy selected, changing the Secret afterward
-does not change the Gateway copy. With Proxy selected, inspect the live-source
-fields in JSON; the column label does not imply a copy was deposited.
+never contains the key. Changing the Secret afterward does not change the Gateway
+copy. Explicit live adoption follows the separate procedure linked above.
 
 ## Create the Agent and grant the source
 

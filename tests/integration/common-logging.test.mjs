@@ -34,6 +34,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { occLogLine, unloggedFields } from "../helpers/occ-log-line.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 async function fixture(t, contents) {
   const directory = await temporaryDirectory(t, "occ-common-logging-");
@@ -321,8 +322,9 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     level: "info",
     destination: output.destination,
   });
+  const emit = createWorkerLogEmitter(logger);
 
-  emitOccLogEvent(logger, {
+  emit({
     event: "worker.compute-prepare-failed",
     workId: "agent_revision:rev_test:reconcile",
     attempt: 1,
@@ -338,7 +340,7 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     status: 422,
     message: "The Kubernetes API rejected revision preparation.",
   });
-  emitOccLogEvent(logger, {
+  emit({
     event: "worker.compute-prepare-failed",
     code: "KUBERNETES_PREPARATION_FAILED",
     step: "sandbox_provision",
@@ -370,6 +372,51 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
   assert.equal(Object.hasOwn(output.lines[1], "message"), false);
   assert.equal(Object.hasOwn(output.lines[1], "candidatePreparationReached"), false);
   assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
+
+  // A trusted Driver can accidentally return a printable URI in a preparation
+  // diagnostic. The real worker emitter must contain it before writing stdout.
+  const messages = [
+    syntheticCredentialUrl({
+      protocol: "postgres",
+      username: "fixture-user",
+      password: ["invented", "fixture"].join("/"),
+      host: "database.invalid",
+      pathname: "/fixture",
+    }),
+    syntheticCredentialUrl({
+      username: "fixture-user",
+      password: "invented-fixture",
+      host: "service.invalid",
+    }),
+  ];
+  for (const message of messages) {
+    const recordCount = output.lines.length;
+    emit({
+      event: "worker.compute-prepare-failed",
+      workId: "agent_revision:rev_test:reconcile",
+      operation: "agent_revision.reconcile",
+      namespaceId: "ns_test",
+      agentId: "agt_test",
+      revisionId: "rev_test",
+      code: "KUBERNETES_API_REJECTED",
+      step: "gateway_deployment",
+      message,
+    });
+    assert.equal(output.lines.length, recordCount + 1);
+    const line = output.lines[recordCount];
+    assert.equal(line.event, "worker.compute-prepare-failed");
+    assert.equal(line.severity, "ERROR");
+    assert.equal(line.service, "occ-worker");
+    assert.equal(line.workId, "agent_revision:rev_test:reconcile");
+    assert.equal(line.operation, "agent_revision.reconcile");
+    assert.equal(line.namespaceId, "ns_test");
+    assert.equal(line.agentId, "agt_test");
+    assert.equal(line.revisionId, "rev_test");
+    assert.equal(line.code, "KUBERNETES_API_REJECTED");
+    assert.equal(line.step, "gateway_deployment");
+    assert.equal(Object.hasOwn(line, "message"), false, "unsafe URI diagnostic is absent");
+    assert.equal(JSON.stringify(output.lines).includes(message), false);
+  }
 });
 
 test("activation warning caps skipped account IDs and reports the total and truncation", () => {
@@ -586,24 +633,31 @@ test("worker emitter reports health at debug and failures at error", () => {
     namespaceId: "ns_test",
     outcome: "success",
   });
-  emit({
+  const deploymentCompletion = {
     event: "worker.completed",
     workId: "agent_revision:rev_test:reconcile",
     attempt: 1,
+    operation: "agent_revision.reconcile",
+    namespaceId: "ns_test",
+    agentId: "agt_test",
+    revisionId: "rev_test",
+    result: "success",
     outcome: "success",
-    durationMs: 120,
+    code: "REVISION_ACTIVATED",
+    durationMs: 125.25,
     deployPasses: 3,
     prepareMs: 450,
     readinessWaitMs: 2100,
     activationMs: 80,
-    elapsedMs: 2900,
-  });
+    elapsedMs: 2900.123456,
+  };
+  emit(deploymentCompletion);
   emit({
     event: "worker.error",
     code: "DEPENDENCY_UNAVAILABLE",
     method: "CreateSandbox",
-    grpcStatus: 3,
-    validationCategory: "UNKNOWN",
+    grpcStatus: 9,
+    validationCategory: "PVC_ADMISSION_LABELS",
   });
   // A graceful shutdown that aborts a pass is no failure (finding 1040).
   emit({
@@ -627,8 +681,8 @@ test("worker emitter reports health at debug and failures at error", () => {
   assert.equal(output.lines.at(-1).cause, "WorkerStopping");
   const failure = output.lines.find((line) => line.event === "worker.error");
   assert.equal(failure.method, "CreateSandbox");
-  assert.equal(failure.grpcStatus, 3);
-  assert.equal(failure.validationCategory, "UNKNOWN");
+  assert.equal(failure.grpcStatus, 9);
+  assert.equal(failure.validationCategory, "PVC_ADMISSION_LABELS");
   const completed = output.lines.find((line) => line.event === "worker.completed");
   assert.equal(completed.workId, "namespace:ns_test:reconcile:ready");
   assert.equal(completed.attempt, 1);
@@ -645,14 +699,38 @@ test("worker emitter reports health at debug and failures at error", () => {
       elapsedMs: deployed.elapsedMs,
     },
     {
-      durationMs: 120,
+      durationMs: 125.25,
       deployPasses: 3,
       prepareMs: 450,
       readinessWaitMs: 2100,
       activationMs: 80,
-      elapsedMs: 2900,
+      elapsedMs: 2900.123456,
     },
   );
+
+  // Work age advances on the monotonic clock and can retain sub-millisecond precision.
+  for (const elapsedMs of [2900, 0, Number.MAX_SAFE_INTEGER]) {
+    emit({ ...deploymentCompletion, elapsedMs });
+    assert.equal(output.lines.at(-1).elapsedMs, elapsedMs);
+    assert.equal(typeof output.lines.at(-1).elapsedMs, "number");
+  }
+  for (const elapsedMs of [-1, -0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    emit({ ...deploymentCompletion, elapsedMs });
+    assert.equal(
+      Object.hasOwn(output.lines.at(-1), "elapsedMs"),
+      false,
+      `elapsedMs: ${String(elapsedMs)}`,
+    );
+  }
+
+  // Allowing fractional work ages must not allow fractional attempt or deployment counts.
+  emit({ ...deploymentCompletion, attempt: 1.5, deployPasses: 3.5, stopYields: 1.5 });
+  const fractionalCounts = output.lines.at(-1);
+  assert.equal(Object.hasOwn(fractionalCounts, "attempt"), false);
+  assert.equal(Object.hasOwn(fractionalCounts, "deployPasses"), false);
+  assert.equal(Object.hasOwn(fractionalCounts, "stopYields"), false);
+  assert.equal(fractionalCounts.elapsedMs, 2900.123456);
+  assert.equal(fractionalCounts.durationMs, 125.25);
 });
 
 test("worker stop-yield counts survive local JSON logging on pending and completed passes", () => {

@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
-import { setImmediate } from "node:timers/promises";
-import pg from "pg";
 
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { injectJson as inject } from "../helpers/inject-json.mjs";
@@ -28,6 +25,11 @@ import {
   assertNativeWebSocketRejected,
   assertSocketClosesAfterMutation,
 } from "../helpers/native-admin-postgres.ts";
+import {
+  assertNativeBrowserLaunchAuthorityLockOrder,
+  assertNativeBrowserLaunchRechecksParentExpiry,
+  assertNativeBrowserShutdownDrainsLaunch,
+} from "./native-browser-launch-postgres-cases.ts";
 
 // Drive the real bridge protocol without claiming browser cookie or popup behavior.
 // The browser integration separately exercises those mechanics with trusted HTTPS.
@@ -788,220 +790,19 @@ test(
 test(
   "PostgreSQL native browser launch and Agent creation share a consistent authority lock order",
   { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    await ensureBootstrap(t);
-    const upstream = await startNativeHttpsUpstream(t);
-    const api = await createApi(t, "launch-lock-order", upstream.port, { exchange: true });
-    t.after(() => api.app.close());
-    const session = await signIn(api.app);
-    const { namespace, agent } = await createNativeAgent(api, session, upstream);
-    const parent = await parentSessionRow(api);
-    const observer = new pg.Pool({ connectionString: process.env.OCC_TEST_DATABASE_URL, max: 2 });
-    t.after(() => observer.end());
-    const holder = await observer.connect();
-    let creating;
-    let launching;
-    try {
-      await holder.query("BEGIN");
-      const lock = await holder.query(
-        "SELECT pg_backend_pid() AS pid FROM occ.session WHERE id = $1 FOR UPDATE",
-        [parent.id],
-      );
-      assert.equal(lock.rowCount, 1);
-      // The API write holds user SHARE before its session fence. Delay that fence
-      // so the real launch can reach the same user's conflicting authority lock.
-      creating = inject(api.app, "POST", `/namespaces/${namespace.id}/agents`, {
-        session,
-        body: {
-          name: `Concurrent native launch ${randomUUID()}`,
-          configurationId: agent.configurationId,
-          harnessAuth: agent.harnessAuth,
-          gatewayManagedMode: false,
-        },
-      }).then((response) => response);
-      const creatorPid = await waitForLockWaiter(
-        observer,
-        lock.rows[0].pid,
-        "Agent creation waiting on the parent session fence",
-        { queryLike: "%UPDATE occ.session%", timeoutMs: 5_000 },
-      );
-      launching = inject(
-        api.app,
-        "POST",
-        `/namespaces/${namespace.id}/agents/${agent.id}/native-admin/launch`,
-        { session, body: {}, headers: { "x-occ-session-key": session.sessionKey } },
-      ).then((response) => response);
-      await waitForLockWaiter(observer, creatorPid, "native launch waiting on user authority", {
-        queryLike: '%FROM occ."user"%FOR UPDATE%',
-        timeoutMs: 5_000,
-      });
-      // With resource-first launch locking, it already holds Namespace SHARE:
-      // releasing this fence then deadlocks the API's Namespace UPDATE against
-      // the launch's user UPDATE. Both supported requests must instead complete.
-      await holder.query("COMMIT");
-      const [created, launched] = await within(
-        Promise.all([creating, launching]),
-        10_000,
-        "concurrent Agent creation and native launch did not settle",
-      );
-      assert.equal(created.statusCode, 201, created.body);
-      assert.equal(launched.statusCode, 200, launched.body);
-      const retained = await observer.query(
-        `SELECT
-          (SELECT count(*)::int FROM occ.agents WHERE namespace_id = $1 AND id = $2) AS agents,
-          (SELECT count(*)::int FROM occ.native_browser_intents
-            WHERE id = $3 AND agent_id = $4 AND parent_session_id = $5) AS intents,
-          (SELECT count(*)::int FROM occ.audit_events WHERE resource_id = $4
-            AND action = 'authentication.native.launch' AND outcome = 'success') AS audits`,
-        [namespace.id, created.json().data.id, launched.json().data.intentId, agent.id, parent.id],
-      );
-      assert.deepEqual(retained.rows[0], { agents: 1, intents: 1, audits: 1 });
-      assert.equal(upstream.requests.length, 0);
-    } finally {
-      await holder.query("ROLLBACK");
-      holder.release();
-      await Promise.allSettled([creating, launching]);
-    }
-  },
+  (t) => assertNativeBrowserLaunchAuthorityLockOrder(t, parentSessionRow),
 );
 
 test(
   "PostgreSQL native browser launch rechecks parent expiry after waiting for the Namespace",
   { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    await ensureBootstrap(t);
-    const upstream = await startNativeHttpsUpstream(t);
-    const api = await createApi(t, "launch-expiry-wait", upstream.port, { exchange: true });
-    t.after(() => api.app.close());
-    const session = await signIn(api.app);
-    const { namespace, agent } = await createNativeAgent(api, session, upstream);
-    const parent = await parentSessionRow(api);
-    const observer = new pg.Pool({ connectionString: process.env.OCC_TEST_DATABASE_URL, max: 2 });
-    t.after(() => observer.end());
-    const holder = await observer.connect();
-    let launching;
-    try {
-      await holder.query("BEGIN");
-      const lock = await holder.query(
-        "SELECT pg_backend_pid() AS pid FROM occ.namespaces WHERE id = $1 FOR UPDATE",
-        [namespace.id],
-      );
-      assert.equal(lock.rowCount, 1);
-      await observer.query(
-        "UPDATE occ.session SET expires_at = clock_timestamp() + interval '5 seconds' WHERE id = $1",
-        [parent.id],
-      );
-      launching = inject(
-        api.app,
-        "POST",
-        `/namespaces/${namespace.id}/agents/${agent.id}/native-admin/launch`,
-        { session, body: {}, headers: { "x-occ-session-key": session.sessionKey } },
-      ).then((response) => response);
-      // The parent was current when launch took its authority locks. Real elapsed
-      // database time can expire it while the resource lock is still unavailable.
-      await waitForLockWaiter(observer, lock.rows[0].pid, "native launch waiting on Namespace", {
-        queryLike: "%FROM occ.namespaces%FOR SHARE%",
-        timeoutMs: 5_000,
-      });
-      await waitUntil(
-        "the held parent session to expire on the database clock",
-        async () =>
-          (
-            await observer.query(
-              "SELECT expires_at <= clock_timestamp() AS expired FROM occ.session WHERE id = $1",
-              [parent.id],
-            )
-          ).rows[0].expired,
-        { timeoutMs: 10_000, intervalMs: 25 },
-      );
-      await holder.query("COMMIT");
-      const response = await within(launching, 5_000, "expired native launch did not settle");
-      assert.equal(response.statusCode, 404, response.body);
-      assert.equal(response.json().data, undefined, "expired launch must not return a landing URL");
-      const retained = await observer.query(
-        `SELECT
-          (SELECT count(*)::int FROM occ.native_browser_intents WHERE agent_id = $1) AS intents,
-          (SELECT count(*)::int FROM occ.audit_events WHERE resource_id = $1
-            AND action = 'authentication.native.launch' AND outcome = 'success') AS audits`,
-        [agent.id],
-      );
-      assert.deepEqual(retained.rows[0], { intents: 0, audits: 0 });
-      assert.equal(upstream.requests.length, 0);
-    } finally {
-      await holder.query("ROLLBACK");
-      holder.release();
-      await Promise.allSettled([launching]);
-    }
-  },
+  (t) => assertNativeBrowserLaunchRechecksParentExpiry(t, parentSessionRow),
 );
 
 test(
   "PostgreSQL native browser shutdown drains an in-flight launch without returning access",
   { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    await ensureBootstrap(t);
-    const upstream = await startNativeHttpsUpstream(t);
-    const api = await createApi(t, "launch-shutdown", upstream.port, { exchange: true });
-    t.after(() => api.app.close());
-    const session = await signIn(api.app);
-    const { namespace, agent } = await createNativeAgent(api, session, upstream);
-    const observer = new pg.Pool({ connectionString: process.env.OCC_TEST_DATABASE_URL, max: 2 });
-    t.after(() => observer.end());
-    const holder = await observer.connect();
-    let pending;
-    let closing;
-    try {
-      await holder.query("BEGIN");
-      // Hold the store's real serialization lock. Authorization still runs through
-      // the composed API; only the PostgreSQL launch transaction is delayed.
-      const lock = await holder.query(
-        "SELECT pg_backend_pid() AS pid, pg_advisory_xact_lock(1868785007, hashtext($1))",
-        [api.controller.installation.id],
-      );
-      pending = api.app
-        .inject({
-          method: "POST",
-          url: `/namespaces/${namespace.id}/agents/${agent.id}/native-admin/launch`,
-          headers: {
-            origin: publicOrigin,
-            cookie: session.cookie,
-            "x-occ-session-key": session.sessionKey,
-          },
-          payload: {},
-        })
-        .then((response) => response);
-      await waitForLockWaiter(observer, lock.rows[0].pid, "the native launch transaction", {
-        queryLike: "%pg_advisory_xact_lock%",
-        timeoutMs: 5_000,
-      });
-      closing = api.app.close();
-      // Allow Fastify's preClose hooks to begin before releasing the database.
-      // The 503 and committed audit below, rather than elapsed time, are the oracle.
-      await setImmediate();
-      await holder.query("COMMIT");
-      const response = await within(pending, 5_000, "the launch did not settle during shutdown");
-      assert.equal(response.statusCode, 503, response.body);
-      assert.equal(response.json().data, undefined, "shutdown must not return a landing URL");
-      await within(closing, 5_000, "API shutdown did not drain the launch transaction");
-
-      // Work already admitted can commit, but its intent and attributable audit must
-      // settle before the API pool closes; it must never mint an Agent access handle.
-      const retained = await observer.query(
-        `SELECT
-          (SELECT count(*)::int FROM occ.native_browser_intents WHERE agent_id = $1) AS intents,
-          (SELECT count(*)::int FROM occ.audit_events WHERE resource_id = $1
-            AND action = 'authentication.native.launch' AND outcome = 'success') AS audits,
-          (SELECT count(*)::int FROM occ.native_browser_handles WHERE agent_id = $1) AS handles`,
-        [agent.id],
-      );
-      assert.deepEqual(retained.rows[0], { intents: 1, audits: 1, handles: 0 });
-      assert.equal(upstream.requests.length, 0);
-    } finally {
-      await holder.query("ROLLBACK");
-      holder.release();
-      await Promise.allSettled([pending, closing]);
-    }
-  },
+  assertNativeBrowserShutdownDrainsLaunch,
 );
 
 test(

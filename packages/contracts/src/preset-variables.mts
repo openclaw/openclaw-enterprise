@@ -533,6 +533,25 @@ export function renderPresetTemplate(
   return render(template, inputs, false);
 }
 
+/** Whether validated template text contains a real variable token, including one with a default. */
+export function presetValueHasVariables(
+  value: unknown,
+  definitions: Definitions,
+  path = "template",
+): boolean {
+  if (typeof value === "string") {
+    return tokens(value, definitions, path).some((part) => typeof part !== "string");
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).some(
+      ([key, child]) =>
+        presetValueHasVariables(key, definitions, path) ||
+        presetValueHasVariables(child, definitions, path + "." + key),
+    );
+  }
+  return false;
+}
+
 /** Name declared variables without defaults that the template references; rendering needs them. */
 export function requiredPresetVariables(template: PresetDraftTemplate): Set<string> {
   const definitions = template.variables ?? {};

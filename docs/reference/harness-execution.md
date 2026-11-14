@@ -71,7 +71,7 @@ An Agent draft can have an empty `harnessAuth`; deployment requires an
 | `api_key` or `codex_pat` from a Secret | The caller and Agent service principal need `operate` on the exact Secret. On Kubernetes the embedded process or dedicated Harness receives the key. PAT login is for dedicated Codex.                                                                                                                                                                                                                                  |
 | `codex_pat` from a ServiceAccount      | The caller needs `read` on the exact ServiceAccount. OCC checks the private Backend binding and records the account's credential reference. Dedicated Codex receives the PAT.                                                                                                                                                                                                                                           |
 | `credential_source`                    | The caller and Agent principal need `operate` on the source. Dedicated OpenClaw or Codex receives a placeholder for proxy-based API-key authentication; the paired Credential Gateway and OpenShell inject the key on egress. Dedicated Codex also supports [external ChatGPT authentication](drivers/credential-gateway.md#external-chatgpt-authentication). All required attachments must be ready before activation. |
-| `runtime`                              | SSH embedded OpenClaw uses operator-managed host credentials. OCC checks gateway readiness without probing model access. Kubernetes accepts it only for protected dedicated Codex with a selected Credential Proxy and an admitted egress plan that has no inference route. Agent provisioning rejects this method.                                                                                                     |
+| `runtime`                              | SSH embedded OpenClaw uses operator-managed credentials; gateway readiness excludes model probes. Kubernetes requires protected Dedicated Codex and a qualified Credential Proxy, even without sources or repositories. Deployment saves a plan with no inference route; Proxy refusal saves no revision. Agent provisioning rejects this method.                                                                       |
 
 For embedded OpenClaw, Kubernetes projects the Secret as `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, or `OCE_MODEL_API_KEY`. A custom provider must reference
@@ -192,20 +192,24 @@ Configuration takes effect on the next deployment.
 
 ### Native runtime selection
 
-Select a Configuration's primary model as `provider/model`; the model ID can contain slashes. An
-explicit `agentRuntime.id` selects `openclaw` or `codex`. Agent entries must
-agree on the primary model and Harness. Fallbacks must use the same provider and
-resolve to the same Harness. Admission preserves their order.
+Select `provider/model` (model IDs may contain slashes) and `agentRuntime.id`
+(`openclaw` or `codex`). Agent entries must agree on primary model and Harness.
+Fallbacks must use that provider and Harness; admission preserves their order.
 
 The [model policy resolver](../../packages/occ/src/configured-harness.ts) selects
-OpenClaw when there is no model candidate or an unambiguous built-in provider.
-OpenAI, Codex, custom providers, and plugin-routed providers require an explicit
-runtime policy. Catalog entries may use the full model reference or the ID after
-the first slash. Each listed provider model must be a selected primary or fallback.
-With no model selected, that refusal names `agents.defaults.model` or an
-`agents.entries` model to set.
-Codex accepts its native `codex` provider, or `openai` with the
-Codex plugin explicitly enabled for WebSocket app-server transport.
+OpenClaw for no model or an unambiguous built-in provider. OpenAI, Codex, custom
+and plugin-routed providers require explicit runtime policy. Catalog entries
+accept full references or IDs after the first slash; each must be a selected
+primary or fallback. Codex accepts `codex`, or `openai` with the Codex plugin
+enabled for WebSocket app-server transport.
+
+On Kubernetes, a dedicated Codex Gateway with a workspace-node ID or binding
+path preserves `reasoning`, `thinkingLevelMap`, and nonempty
+`compat.supportedReasoningEfforts` containing only `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`, or `ultra`. Verify against the runtime/model.
+Other `compat` fields, including `thinkingLevels`, are dropped.
+No capabilities are inferred.
+
 An embedded or dedicated Gateway cannot start when an active plugin's startup
 secret input reads an unset variable: Codex `appServer.authToken` or
 `appServer.headers`, or Google `webSearch.headers`. Kubernetes sets the

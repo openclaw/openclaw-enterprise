@@ -1,4 +1,9 @@
+// @ts-check
 import assert from "node:assert/strict";
+
+/** @import { CredentialGatewayDriver, CredentialRefreshDriver, CredentialSourceContext } from "../../packages/contracts/src/index.ts" */
+/** @typedef {{operation: string, sourceId: string}} DeviceCredentialCall */
+/** @typedef {Map<string, "pending" | "ready">} DeviceCredentialSources */
 
 export const DEVICE_ACCESS_TOKEN = "device-access-private-fixture";
 export const DEVICE_ACCOUNT_ID = "workspace-fixture";
@@ -7,6 +12,7 @@ export const DEVICE_ACCOUNT_ID = "workspace-fixture";
  * Simulates only the external Credential Gateway and Refresh contracts. OCC still owns source
  * registration, IAM, login-session fencing, and Agent bindings in the callers.
  * This fixture does not prove provider exchange, refresh, or runtime injection.
+ * @param {{ now?: () => number, approve?: () => Promise<boolean>, beforePoll?: () => Promise<void>, startError?: unknown }} [options]
  */
 export function createDeviceCredentialDrivers({
   now = () => Date.now(),
@@ -14,17 +20,26 @@ export function createDeviceCredentialDrivers({
   beforePoll = async () => {},
   startError,
 } = {}) {
+  /** @type {DeviceCredentialCall[]} */
   const calls = [];
+  /** @type {string[]} */
+  const operations = [];
+  /** @type {DeviceCredentialSources} */
   const sources = new Map();
+  /** @type {Map<string, string>} */
   const handles = new Map();
+  /** @param {string} operation @param {CredentialSourceContext} context */
   const record = (operation, context) => {
+    operations.push(operation);
     calls.push({ operation, sourceId: context.source.id });
   };
+  /** @satisfies {CredentialGatewayDriver & Record<string, unknown>} */
   const gateway = {
     id: "device-credential-gateway",
     capability: "credential_gateway",
     implementation: "test-external-device-service",
     calls,
+    operations,
     sources,
     validateSourceConfig({ type, config }) {
       assert.equal(type, "codex-device");
@@ -65,24 +80,30 @@ export function createDeviceCredentialDrivers({
       handles.delete(context.source.id);
     },
     async updateSource() {
+      operations.push("updateSource");
       assert.fail("device-login scenarios do not update source inputs");
     },
     async attachForRevision() {
+      operations.push("attachForRevision");
       assert.fail("this fixture proves API admission, not runtime attachment");
     },
     async attachmentStatus() {
+      operations.push("attachmentStatus");
       assert.fail("this fixture proves API admission, not runtime attachment");
     },
     async withdraw() {
+      operations.push("withdraw");
       assert.fail("closing a login must not withdraw runtime credentials");
     },
   };
+  /** @satisfies {CredentialRefreshDriver} */
   const refresh = {
     id: "device-credential-refresh",
     capability: "credential_refresh",
     implementation: "test-external-device-service",
     async startDeviceAuthorization(context) {
       record("startDeviceAuthorization", context);
+      /** @type {unknown} */
       const error = typeof startError === "function" ? startError() : startError;
       if (error !== undefined) {
         throw error;
@@ -109,11 +130,13 @@ export function createDeviceCredentialDrivers({
       return { status: "ready" };
     },
     async configureRefresh() {
+      operations.push("configureRefresh");
       assert.fail(
         "device registration must defer refresh setup until the external login completes",
       );
     },
     async rotate() {
+      operations.push("rotate");
       assert.fail("device login and discovery must not force refresh through OCC");
     },
     async refreshStatus(context) {

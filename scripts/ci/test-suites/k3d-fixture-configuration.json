@@ -11,11 +11,12 @@
   "prepare": {
     "postgres": true,
     "k3d": true,
-    "requiresPreparedStateForFile": true
+    "requiresPreparedStateForFile": true,
+    "selfProvisionedFiles": ["tests/integration/staged-signin-cleanup-real.test.ts"]
   },
   "fileConcurrency": 2,
   "parallelFiles": [
-    "tests/integration/kubernetes-compute-real.test.mjs",
+    "tests/integration/kubernetes-compute-real.test.ts",
     "tests/integration/kubernetes-plugin-status-real.test.mjs",
     "tests/integration/installation-handoff-k3d-real.test.ts"
   ],
@@ -28,7 +29,7 @@
       ]
     },
     {
-      "path": "tests/integration/kubernetes-compute-real.test.mjs",
+      "path": "tests/integration/kubernetes-compute-real.test.ts",
       "expectedTests": [
         "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
       ]
@@ -40,6 +41,27 @@
         "installation prerequisites report Job quota headroom, address drift and unreadable resources",
         "first install retains exact attempt evidence after a lost client"
       ]
+    },
+    {
+      "path": "tests/integration/staged-signin-cleanup-real.test.ts",
+      "env": {
+        "OCC_TEST_STAGED_SIGNIN_CLEANUP_REAL": "1"
+      },
+      "expectedTests": [
+        "staged sign-in cleans owned resources after a settled failed case",
+        "staged sign-in refuses a replacement cluster",
+        "staged sign-in refuses a newly shared volume"
+      ]
+    },
+    {
+      "path": "tests/integration/kubernetes-private-secret-create-real.test.ts",
+      "expectedTests": [
+        "real Kubernetes API enforces Installation-private create compensation and authorization"
+      ]
     }
-  ]
+  ],
+  "serialFiles": {
+    "tests/integration/staged-signin-cleanup-real.test.ts": "creates and deletes owned cleanup-authority clusters; preserve exclusive fixture resource and process environment ownership",
+    "tests/integration/kubernetes-private-secret-create-real.test.ts": "Owns a fresh PostgreSQL Installation and an isolated namespace while interposing on the real Kubernetes SDK in its test process."
+  }
 }

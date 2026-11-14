@@ -61,7 +61,10 @@ const refusalTimeout = 2 * 60_000;
 const stackLifecycleTimeout = 25 * 60_000;
 const nativeSetupExpiryTimeout = 11 * 60_000;
 const credentialVariable =
-  selectedSandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+  selectedSandboxDriver === "openshell" &&
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE
+    ? "CODEX_ACCESS_TOKEN"
+    : "OPENAI_API_KEY";
 const sensitiveValues = new Set(
   [process.env.OPENAI_API_KEY, process.env.CODEX_ACCESS_TOKEN].filter(Boolean),
 );
@@ -1150,6 +1153,13 @@ test(
       17 * 60_000,
   },
   async (context) => {
+    if (selectedSandboxDriver === "openshell") {
+      const endpoint = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+      assert.ok(
+        !endpoint || URL.parse(endpoint)?.href.replace(/\/$/u, "") === "https://api.openai.com/v1",
+        "The first-Agent installer requires the public OpenAI endpoint",
+      );
+    }
     assert.ok(
       process.env[credentialVariable],
       `${credentialVariable} is required for the first invocation`,
@@ -1160,7 +1170,9 @@ test(
     const own = ownFirstAgentWork(context);
     let finishCapacity = () => {};
     context.after(() => finishCapacity());
-    const stack = await localFirstAgentStack(context);
+    const stack = await localFirstAgentStack(context, {
+      modelCredential: credentialVariable === "OPENAI_API_KEY" ? "openai" : undefined,
+    });
     const stateDirectory = stack.directory;
     assert.ok(
       stateDirectory && isAbsolute(stateDirectory),
@@ -1202,6 +1214,7 @@ test(
     const env = { ...stack.environment, OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes" };
     delete env.OPENAI_API_KEY_FILE;
     delete env.CODEX_ACCESS_TOKEN_FILE;
+    // A custom native provider keeps its key separate from the Codex starter.
     if (credentialVariable === "CODEX_ACCESS_TOKEN") {
       delete env.OPENAI_API_KEY;
     } else {
@@ -1263,8 +1276,7 @@ test(
       assert.ok(
         installation.capabilities?.credentialSources?.types.some(({ type }) => type === "openai"),
       );
-      // Native OpenClaw uses an OpenAI API key; the first Codex Agent's PAT
-      // Source is valid only for its Codex runtime. Keep both exact bindings.
+      // Keep each Agent's source bound to its own provider destination.
       const nativeSecret = await request("POST", `${base}/secrets`, {
         name: `first-agent-native-${suffix}`,
         value: process.env.OPENAI_API_KEY,
@@ -1922,7 +1934,10 @@ test(
     );
     if (nativeTest) {
       await nativeTest;
-      await nativeWork;
+      // A timed-out subtest can finish reporting before its body stops. Drain the
+      // body before mutating the dedicated Agent, even when the native proof failed.
+      await Promise.allSettled([nativeWork]);
+      context.signal.throwIfAborted();
       assert.equal(
         first.namespaceId,
         nativeNamespace.id,
@@ -1971,11 +1986,13 @@ test(
         "GET",
         `${base}/credential-sources/${agent.harnessAuth.sourceId}`,
       );
-      assert.equal(source.type, "codex-pat");
+      const sourceType = credentialVariable === "CODEX_ACCESS_TOKEN" ? "codex-pat" : "openai";
+      const secretField = credentialVariable === "CODEX_ACCESS_TOKEN" ? "access_token" : "api_key";
+      assert.equal(source.type, sourceType);
       assert.equal(source.state, "ready");
-      assert.equal(source.secrets.access_token?.kind, "secret");
-      assert.equal(source.secrets.access_token?.namespaceId, first.namespaceId);
-      secretId = source.secrets.access_token?.id;
+      assert.equal(source.secrets[secretField]?.kind, "secret");
+      assert.equal(source.secrets[secretField]?.namespaceId, first.namespaceId);
+      secretId = source.secrets[secretField]?.id;
 
       const bindings = await requestLocalApi(
         first.origin,
@@ -2063,6 +2080,11 @@ test(
         },
       });
       assert.equal(changed.id, original.id, "The edit must preserve the Configuration ID");
+      assert.deepEqual(
+        changed.values.tools,
+        { allow: ["*"] },
+        "The public edit must replace the tool policy",
+      );
       assert.equal(
         changed.generation,
         original.generation + 1,
@@ -2093,12 +2115,13 @@ test(
         0,
         "An externally changed Configuration must block key replacement",
       );
-      // Control UI pins generation 2 and refuses drift before the content comparison.
+      // Control UI checks its pinned generation first. Other profiles use the full
+      // Configuration comparison, which also catches changes to the helper's defaults.
       assert.match(
         `${refused.stdout}\n${refused.stderr}`,
         selectedControlUi
           ? /Configuration generation changed outside this helper/
-          : /Configuration was changed outside this helper/,
+          : /Configuration does not match this version of the helper/,
       );
       assert.equal(
         refused.containedForbiddenOutput,
@@ -2116,5 +2139,7 @@ test(
         values: original.values,
       });
     }
+    // Preserve the underlying error if the native body rejected after its deadline.
+    await nativeWork;
   },
 );

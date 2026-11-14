@@ -70,7 +70,7 @@ const providerCodes = new Set([
 const responseHeaderMarkers = new Set(["none", "provider-like", "openshell-policy", "mixed"]);
 // The upfront 401 body's form and its error.code and error.type, each from a closed
 // set ("other" off-set); the message never reaches the log. They mirror the sets in
-// runtime-entrypoints.ts; runtime-model-probe-settlement.test.mjs pins that.
+// runtime-entrypoints.ts; runtime-model-probe-settlement.test.ts pins that.
 export const bodyShapes = new Set([
   "json-error-code",
   "json-error-no-code",
@@ -893,6 +893,7 @@ export async function collectNativeWorkerFailure({
   runId,
   outcome,
   error,
+  placementReadResponse = false,
 }) {
   const signal = AbortSignal.timeout(5_000);
   const read = async (method, params) => {
@@ -958,6 +959,18 @@ export async function collectNativeWorkerFailure({
     nodeLookup,
     elapsedMs,
   });
+  if (placementReadResponse && error?.code === "UNAVAILABLE") {
+    // The Gateway can reject this read before dispatch or while preparing its model catalog.
+    // Project only the two pinned signals; the message and details can contain private data.
+    worker.placementReadFailure = "other";
+    if (error.retryable === true && error.details?.reason === "request-start-timeout") {
+      worker.placementReadFailure = "request-start-timeout";
+    } else if (
+      error.message === "Error: Session model catalog is unavailable; refresh and try again."
+    ) {
+      worker.placementReadFailure = "session-model-catalog-unavailable";
+    }
+  }
   if (runId === undefined) {
     return error === undefined
       ? worker
@@ -1403,6 +1416,7 @@ async function nativeWorkerProof({
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
     collectFailure = async (error) => {
+      const proofRpcResponse = isGatewayProtocolResponseError(error);
       let proofRpcCode = "other";
       if (error?.code == null) {
         proofRpcCode = "absent";
@@ -1423,11 +1437,13 @@ async function nativeWorkerProof({
           runId,
           outcome,
           error,
+          placementReadResponse:
+            stage === "required-placement-describe-rejected" && proofRpcResponse,
         })),
         ...historyPredicates,
         historySettleExpired: historySignal?.aborted === true,
         proofRpcCode,
-        proofRpcResponse: isGatewayProtocolResponseError(error),
+        proofRpcResponse,
         placementReadRetries,
       };
     };

@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { catalogDigest, initialSchemaState, migrationCatalog } from "./migration-catalog.mjs";
+import { catalogDigest, initialSchemaState, migrationCatalog } from "./migration-catalog.ts";
 
 const directory = fileURLToPath(new URL("../migrations", import.meta.url));
 const dependency = createRequire(new URL("../packages/occ/package.json", import.meta.url));
@@ -180,6 +180,12 @@ function catalogAtMigrationCount(count, completedCount) {
   }
   if (count === 75 && completedCount > 75) {
     return "preNativeBrowserAccess";
+  }
+  if (count === 76 && completedCount > 76) {
+    return "preControlPlaneAudit";
+  }
+  if (count === 77 && completedCount > 77) {
+    return "prePendingSandboxPolicyApplication";
   }
   if (count === completedCount) {
     return "completed";
@@ -399,6 +405,14 @@ export async function migrateWithHistory(
       return history;
     }
     if (!checkOnly) {
+      if (history === "completed") {
+        // Keep Drizzle's refusal on read-only sessions, including standbys,
+        // without overriding the operator's transaction mode.
+        const { rows } = await client.query("SHOW transaction_read_only");
+        if (rows[0]?.transaction_read_only === "off") {
+          return history;
+        }
+      }
       // Pass the verified SQL to Drizzle's stock migrator without reading mutable
       // source files again. Its receipt read and transaction share this backend.
       const db = drizzle(client);
