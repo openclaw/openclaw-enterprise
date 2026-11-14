@@ -179,8 +179,8 @@ export function readCodexPolicyAgent(value: unknown): IdentifiedRecord {
   return value;
 }
 
-export function readCodexPolicyThread(value: unknown): IdentifiedRecord {
-  assert.ok(hasId(value), "native thread/read must identify the thread");
+export function readCodexPolicyThread(value: unknown, requestedId: string): IdentifiedRecord {
+  assert.ok(hasId(value) && value.id === requestedId, "native thread must match the requested ID");
   return value;
 }
 
@@ -203,13 +203,12 @@ function hasReply(turn: PolicyRecord, childMarker: string): boolean {
 }
 
 export function findCodexPolicyReplyThread(
-  value: unknown,
+  value: IdentifiedRecord,
   childMarker: string,
 ): IdentifiedRecord | undefined {
-  assert.ok(isRecord(value), "native thread/read must return a thread");
   return value.turns != null &&
     records(value.turns).some((turn) => turn.status === "completed" && hasReply(turn, childMarker))
-    ? readCodexPolicyThread(value)
+    ? value
     : undefined;
 }
 
