@@ -56,7 +56,7 @@ function rawCapability(socketPath: string) {
   });
 }
 
-async function verifyHistoricalBroker(image: string, platform: string) {
+async function expectedBrokerRefusal(image: string, platform: string) {
   const root = await mkdtemp(join(tmpdir(), "oce-old-pair-"));
   const inputs = join(root, "inputs");
   const registry = join(root, "registry");
@@ -139,12 +139,95 @@ async function verifyHistoricalBroker(image: string, platform: string) {
     return id;
   }
 
+  async function writeProjection(
+    inputGeneration: string,
+    registryGeneration: string,
+    prepared: boolean,
+  ) {
+    const profile = prepared ? "git-write" : "git-read";
+    await writeFile(
+      join(inputGeneration, "config.json"),
+      JSON.stringify({
+        gateway: { listen: "0.0.0.0:8443", controlSocket: controlMount + "/control.sock" },
+        sessionPolicy: {
+          maximumDurationSeconds: 60,
+          defaultProfile: profile,
+          allowedProfiles: [profile],
+        },
+        backend: {
+          kind: prepared ? "github-prepared-git-registry" : "github-app-registry",
+          backendId: backend,
+        },
+      }),
+      { mode: 0o600 },
+    );
+    await writeFile(
+      join(registryGeneration, "registry.json"),
+      JSON.stringify({
+        version: 1,
+        backendId: backend,
+        providerInstanceId: backend,
+        appId: "1",
+        githubInstallationId: "1",
+        maximumDurationSeconds: 60,
+        repositories: [
+          {
+            repositoryRef: backend,
+            repositoryId: "1",
+            repository: "fixture/repository",
+            namespaces: [
+              {
+                namespaceId: backend,
+                profiles: [profile],
+                ...(prepared
+                  ? { transport: "git-only", pushRefAllowlist: ["refs/heads/compatibility-probe"] }
+                  : {}),
+              },
+            ],
+          },
+        ],
+      }),
+      { mode: 0o600 },
+    );
+  }
+
+  async function readWhenReady() {
+    let socketObserved = false;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      try {
+        return await rawCapability(controlSocket);
+      } catch (error) {
+        assert.ok(error instanceof Error && "code" in error);
+        assert.ok(error.code === "ENOENT" || error.code === "ECONNREFUSED");
+        socketObserved ||= error.code === "ECONNREFUSED";
+        await delay(100);
+      }
+    }
+    assert.equal(socketObserved, false, "broker socket appeared but never served a response");
+    return undefined;
+  }
+
+  async function assertMissing(response: Awaited<ReturnType<typeof readWhenReady>>) {
+    assert.deepEqual(response, { status: 404, body: Buffer.from('{"error":"not-found"}') });
+    await assert.rejects(checkBrokerCapability(controlSocket), { message: missingCapability });
+  }
+
+  async function assertEarlyExit(id: string) {
+    assert.equal((await docker(["wait", id])).stdout, "1\n");
+    const format =
+      '{{.Id}} {{index .Config.Labels "openclaw.upgrade-probe"}} ' +
+      "{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{json .State.Error}}";
+    assert.equal(
+      (await docker(["inspect", "--type", "container", "--format", format, id])).stdout,
+      id + " " + owner + ' exited 1 false ""\n',
+    );
+    assert.deepEqual(await readdir(control), []);
+  }
+
   try {
     await mkdir(control, { mode: 0o700 });
     const inputGeneration = await project(inputs);
     const registryGeneration = await project(registry);
-    // The historical loader requires an App key. Generate a disposable,
-    // unregistered key and keep the container offline for this socket check.
     await execute(
       "openssl",
       [
@@ -166,6 +249,19 @@ async function verifyHistoricalBroker(image: string, platform: string) {
       ],
       { timeout: 30000 },
     );
+    // Observe the packaged broker independently before checking what the operator CLI reports.
+    await writeProjection(inputGeneration, registryGeneration, true);
+    const preparedAuthority = ["--authority", "prepared-git"];
+    const preparedId = await launch(preparedAuthority);
+    const response = await readWhenReady();
+    if (response) {
+      await assertMissing(response);
+      return missingCapability;
+    }
+    await assertEarlyExit(preparedId);
+    await removeContainer();
+
+    // The historical loader requires an App key. Generate an unregistered key for the offline fixture.
     await execute(
       "openssl",
       [
@@ -179,69 +275,15 @@ async function verifyHistoricalBroker(image: string, platform: string) {
       ],
       { timeout: 30000 },
     );
-    await writeFile(
-      join(inputGeneration, "config.json"),
-      JSON.stringify({
-        gateway: { listen: "0.0.0.0:8443", controlSocket: controlMount + "/control.sock" },
-        sessionPolicy: {
-          maximumDurationSeconds: 60,
-          defaultProfile: "git-read",
-          allowedProfiles: ["git-read"],
-        },
-        backend: { kind: "github-app-registry", backendId: backend },
-      }),
-      { mode: 0o600 },
-    );
-    await writeFile(
-      join(registryGeneration, "registry.json"),
-      JSON.stringify({
-        version: 1,
-        backendId: backend,
-        providerInstanceId: backend,
-        appId: "1",
-        githubInstallationId: "1",
-        maximumDurationSeconds: 60,
-        repositories: [
-          {
-            repositoryRef: backend,
-            repositoryId: "1",
-            repository: "fixture/repository",
-            namespaces: [{ namespaceId: backend, profiles: ["git-read"] }],
-          },
-        ],
-      }),
-      { mode: 0o600 },
-    );
-
+    await writeProjection(inputGeneration, registryGeneration, false);
     await launch([]);
-    let response;
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      try {
-        response = await rawCapability(controlSocket);
-        break;
-      } catch (error) {
-        assert.ok(error instanceof Error && "code" in error);
-        assert.ok(error.code === "ENOENT" || error.code === "ECONNREFUSED");
-        await delay(100);
-      }
-    }
-    assert.deepEqual(response, { status: 404, body: Buffer.from('{"error":"not-found"}') });
-    await assert.rejects(checkBrokerCapability(controlSocket), { message: missingCapability });
+    await assertMissing(await readWhenReady());
     await removeContainer();
     await rm(controlSocket, { force: true });
 
-    // Keep the working projection and image fixed. The later authority flags
-    // alone must stop the historical command before it opens a control socket.
-    const id = await launch(["--authority", "prepared-git"]);
-    assert.equal((await docker(["wait", id])).stdout, "1\n");
-    const format =
-      '{{.Id}} {{index .Config.Labels "openclaw.upgrade-probe"}} ' +
-      "{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{json .State.Error}}";
-    assert.equal(
-      (await docker(["inspect", "--type", "container", "--format", format, id])).stdout,
-      id + " " + owner + ' exited 1 false ""\n',
-    );
-    assert.deepEqual(await readdir(control), []);
+    // Only the later authority arguments change on this otherwise working historical projection.
+    await assertEarlyExit(await launch(preparedAuthority));
+    return "broker exited before its control socket was ready (exit 1)";
   } finally {
     try {
       await removeContainer();
@@ -303,25 +345,12 @@ test(
         timeout: 350000,
       });
     await t.test("current controller refuses the broker without durable admission", async () => {
-      let historicalStartup = false;
-      await assert.rejects(cli(controllerImage, oldBrokerImage), (error: unknown) => {
-        assert.ok(error instanceof Error && "stderr" in error);
-        assert.ok("code" in error && "stdout" in error);
-        assert.equal(error.code, 1);
-        assert.equal(error.stdout, "");
-        if (error.stderr === probeFailure + ": " + missingCapability + "\n") {
-          return true;
-        }
-        assert.equal(
-          error.stderr,
-          probeFailure + ": broker exited before its control socket was ready (exit 1)\n",
-        );
-        historicalStartup = true;
-        return true;
+      const detail = await expectedBrokerRefusal(oldBrokerImage, nativePlatform);
+      await assert.rejects(cli(controllerImage, oldBrokerImage), {
+        code: 1,
+        stdout: "",
+        stderr: probeFailure + ": " + detail + "\n",
       });
-      if (historicalStartup) {
-        await verifyHistoricalBroker(oldBrokerImage, nativePlatform);
-      }
     });
     for (const [name, broker] of [
       ["current", brokerImage],
