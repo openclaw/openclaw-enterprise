@@ -739,7 +739,7 @@ jobs:
           retention-days: 7
       - name: Qualify installed Skipper image selection
         timeout-minutes: 1
-        run: node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed --release-selection "$RUNNER_TEMP/skipper-release-selection.json" --results-dir "$RUNNER_TEMP/results"
+        run: node scripts/ci/run-tests.ts aggregate skipper-prepared-git-installed --release-selection "$RUNNER_TEMP/skipper-release-selection.json" --results-dir "$RUNNER_TEMP/results"
       # The runner writes only verified test metadata here, after checking proof and cleanup.
       - name: Upload selected test and cleanup outcome
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -854,12 +854,12 @@ jobs:
         if: needs.preflight.outputs.run_all != 'true'
         env:
           SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane }}
-        run: node scripts/ci/run-tests.mjs aggregate "$SELECTED_LANE" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+        run: node scripts/ci/run-tests.ts aggregate "$SELECTED_LANE" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
       - name: Aggregate full suite
         id: aggregate-full
         if: needs.preflight.outputs.run_all == 'true'
         run: >-
-          node scripts/ci/run-tests.mjs aggregate full
+          node scripts/ci/run-tests.ts aggregate full
           --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
           --full-coverage-marker "$RUNNER_TEMP/full-integration-exercised"
       - name: Upload full coverage marker

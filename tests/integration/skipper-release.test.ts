@@ -137,7 +137,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
   assert.deepEqual(JSON.parse(await readFile(control, "utf8")), selection);
   await assert.rejects(readFile(summary), { code: "ENOENT" });
   await assert.rejects(readFile(exported), { code: "ENOENT" });
-  const args = ["scripts/ci/run-tests.mjs", "aggregate", lane, "--results-dir", directory];
+  const args = ["scripts/ci/run-tests.ts", "aggregate", lane, "--results-dir", directory];
   async function aggregate(evidence: unknown, expected: unknown = selection, mode = "qualify") {
     await writeFile(join(directory, lane + ".json"), JSON.stringify(evidence));
     if (mode !== "produced") {

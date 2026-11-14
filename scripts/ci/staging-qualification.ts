@@ -866,7 +866,7 @@ async function smoke(directory: string) {
       execFileSync(
         process.execPath,
         [
-          "scripts/ci/run-tests.mjs",
+          "scripts/ci/run-tests.ts",
           "run",
           lane,
           "--file",

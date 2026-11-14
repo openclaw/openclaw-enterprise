@@ -222,7 +222,7 @@ probe and an old broker without durable-admission capability. Then run:
 ```sh
 umask 077
 pair_state_dir=$(mktemp -d)
-node scripts/ci/run-tests.mjs run image-pair-qualification \
+node scripts/ci/run-tests.ts run image-pair-qualification \
   --state "$pair_state_dir/state.json" --results "$pair_state_dir/results.json"
 ```
 

@@ -202,7 +202,7 @@ these expected values from the release selection, not from the receipt being che
 From that release checkout, run:
 
 ```sh
-node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed \
+node scripts/ci/run-tests.ts aggregate skipper-prepared-git-installed \
   --results-dir /path/to/results --release-selection /path/to/release.json
 ```
 

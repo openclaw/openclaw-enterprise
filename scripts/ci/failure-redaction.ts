@@ -11,7 +11,6 @@ const minimumRedactedEnvLength = 8;
 const credentialLineMarker = "[redacted credential-bearing line]";
 
 export type RedactionSecrets = readonly (readonly [value: string, name: string])[];
-type Environment = Readonly<Record<string, string | undefined>>;
 type FailureText = { message?: unknown; frame?: unknown; stack?: unknown };
 type RedactedFailure<T> = T extends
   ((...args: never[]) => unknown) | (abstract new (...args: never[]) => object)
@@ -190,11 +189,12 @@ function isPublicEnvName(name: string) {
 // Every value to redact from these environments, longest first so a value
 // containing another is replaced whole.
 export function failureSecrets(
-  environments: Iterable<Environment | null | undefined>,
+  environments: Iterable<unknown, unknown, unknown>,
 ): RedactionSecrets {
   const values = new Map<string, string>();
   for (const environment of environments) {
-    for (const [name, value] of Object.entries(environment ?? {})) {
+    const entries: [string, unknown][] = Object.entries(environment ?? {});
+    for (const [name, value] of entries) {
       if (typeof value !== "string" || isPublicEnvName(name)) {
         continue;
       }
@@ -275,6 +275,16 @@ export function redactLogLine(line: unknown, secrets: RedactionSecrets, limit: n
     return "";
   }
   return redactText(line, limit, secrets, "") ?? "";
+}
+
+export function sanitizeError(error: unknown) {
+  if (error == null) {
+    return { name: undefined, code: undefined };
+  }
+  const target: object = Object(error);
+  const name: unknown = Reflect.get(target, "name", error);
+  const code: unknown = Reflect.get(target, "code", error);
+  return { name, code };
 }
 
 // Redacts the reporter's raw `message` and `frame` in one pass over the raw text.

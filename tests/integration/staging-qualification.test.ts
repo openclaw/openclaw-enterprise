@@ -996,7 +996,7 @@ async function checkRuntimeChild(t: TestContext) {
     await execute(
       process.execPath,
       [
-        "scripts/ci/run-tests.mjs",
+        "scripts/ci/run-tests.ts",
         "run",
         lane,
         "--file",

@@ -44,7 +44,7 @@ provider and cluster credentials are unnecessary:
   node scripts/ci/prepare.mjs --lane postgres-platform \
     --state "$PG_PLATFORM_RUN_DIR/state.json" \
     --github-env "$PG_PLATFORM_RUN_DIR/owner.env"
-  node scripts/ci/run-tests.mjs run postgres-platform \
+  node scripts/ci/run-tests.ts run postgres-platform \
     --state "$PG_PLATFORM_RUN_DIR/state.json" \
     --results "$PG_PLATFORM_RUN_DIR/results.json"
 )
@@ -296,7 +296,7 @@ With those prerequisites ready, select a fresh result directory:
 run_dir="$PWD/.build/egress-connected/run-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$run_dir"
 node --env-file=/absolute/path/to/private/connected.env \
-  scripts/ci/run-tests.mjs run egress-connected \
+  scripts/ci/run-tests.ts run egress-connected \
   --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 
