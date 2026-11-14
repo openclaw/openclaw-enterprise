@@ -19,6 +19,7 @@ import {
   productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
 } from "./kubernetes-real.ts";
+import { readCodexPolicyThread } from "./codex-policy-thread-evidence.ts";
 import { runGatewayInstallation } from "./openshell-installation.ts";
 
 import {
@@ -2157,11 +2158,15 @@ export function createOpenShellKubernetesFixture({
 
   /**
    * @param {{ namespace: string, gatewayPod: string, threadId: string }} input
-   * @returns {Promise<unknown>}
    */
   async function readCodexThreadFromGatewayPod({ namespace, gatewayPod, threadId }) {
     assert.ok(typeof threadId === "string" && threadId.length > 0);
-    return requestCodexFromPod({ namespace, pod: gatewayPod, readThreadId: threadId });
+    const thread = await requestCodexFromPod({
+      namespace,
+      pod: gatewayPod,
+      readThreadId: threadId,
+    });
+    return readCodexPolicyThread(thread, threadId);
   }
 
   async function requestCodexTurnFromGatewayPod({

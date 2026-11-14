@@ -49,7 +49,6 @@ import {
   findCodexPolicyChild,
   findCodexPolicyReplyThread,
   readCodexPolicyAgent,
-  readCodexPolicyThread,
 } from "./codex-policy-thread-evidence.ts";
 import {
   assertAllowedCredentialRoute,
@@ -9270,13 +9269,11 @@ export function registerGatewayToolPolicyTest() {
           spawnMarker,
         );
         const binding = await native.readCodexSessionBinding(topology.agent, { sessionKey });
-        const parent = readCodexPolicyThread(
-          await readCodexThreadFromGatewayPod({
-            namespace: topology.gatewayPlacement,
-            gatewayPod: topology.gatewayPod.metadata.name,
-            threadId: binding.threadId,
-          }),
-        );
+        const parent = await readCodexThreadFromGatewayPod({
+          namespace: topology.gatewayPlacement,
+          gatewayPod: topology.gatewayPod.metadata.name,
+          threadId: binding.threadId,
+        });
         const childId = findCodexPolicyChild(parent, childMarker);
         const child = await waitFor(
           "completed fresh native Codex child",
@@ -9548,13 +9545,11 @@ export function registerGatewayToolPolicyTest() {
       let retainedDeclaration = false;
       if (selectedHarness === "codex") {
         afterBinding = await native.readCodexSessionBinding(topology.agent, { sessionKey });
-        const thread = readCodexPolicyThread(
-          await readCodexThreadFromGatewayPod({
-            namespace: topology.gatewayPlacement,
-            gatewayPod: topology.gatewayPod.metadata.name,
-            threadId: afterBinding.threadId,
-          }),
-        );
+        const thread = await readCodexThreadFromGatewayPod({
+          namespace: topology.gatewayPlacement,
+          gatewayPod: topology.gatewayPod.metadata.name,
+          threadId: afterBinding.threadId,
+        });
         const agent = readCodexPolicyAgent(topology.agent);
         const metadata = await native.readCodexThreadMetadata(agent, thread);
         retainedDeclaration = metadata.tools.some((tool) => tool.name === "agents_list");
