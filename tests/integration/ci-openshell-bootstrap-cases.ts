@@ -8,7 +8,7 @@ import {
   kubectlVersion,
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
-} from "../../scripts/ci/openshell.mjs";
+} from "../../scripts/ci/openshell.ts";
 import {
   agentSandboxControllerForNodes,
   preloadAgentSandboxController,
@@ -38,7 +38,7 @@ export function registerOpenShellBootstrapCases({ fixture, ownedCluster }: Fixtu
       return { stdout: "", stderr: "" };
     }
 
-    const result: unknown = await prepareOpenShellClusterBootstrap({
+    const result = await prepareOpenShellClusterBootstrap({
       directory: root,
       execFile,
       hostPlatform: "darwin",
@@ -69,7 +69,6 @@ export function registerOpenShellBootstrapCases({ fixture, ownedCluster }: Fixtu
   test("prepareOpenShell rejects foreign clusters before kubectl, Docker, or image registration", async (t) => {
     const root = await fixture(t, "foreign-openshell-test");
     const calls: CommandCall[] = [];
-    let registerCalls = 0;
 
     await assert.rejects(
       () =>
@@ -85,7 +84,7 @@ export function registerOpenShellBootstrapCases({ fixture, ownedCluster }: Fixtu
             return { stdout: "", stderr: "" };
           },
           registerImage: async () => {
-            registerCalls += 1;
+            assert.fail("OpenShell must refuse before image registration");
           },
           env: {},
         }),
@@ -93,14 +92,12 @@ export function registerOpenShellBootstrapCases({ fixture, ownedCluster }: Fixtu
     );
 
     assert.deepEqual(calls, []);
-    assert.equal(registerCalls, 0);
   });
 
   test("prepareOpenShell rejects mutable OpenShell image overrides before kubectl or Docker", async (t) => {
     const clusterName = "openclaw-k8s-openshell-test";
     const root = await fixture(t, clusterName);
     const calls: CommandCall[] = [];
-    let registerCalls = 0;
 
     await assert.rejects(
       () =>
@@ -111,7 +108,7 @@ export function registerOpenShellBootstrapCases({ fixture, ownedCluster }: Fixtu
             return { stdout: "", stderr: "" };
           },
           registerImage: async () => {
-            registerCalls += 1;
+            assert.fail("OpenShell must refuse before image registration");
           },
           env: {
             OCC_TEST_OPENSHELL_GATEWAY_IMAGE: "ghcr.io/nvidia/openshell/gateway:latest",
@@ -121,7 +118,6 @@ export function registerOpenShellBootstrapCases({ fixture, ownedCluster }: Fixtu
     );
 
     assert.deepEqual(calls, []);
-    assert.equal(registerCalls, 0);
   });
 }
 
@@ -130,7 +126,6 @@ export function registerOpenShellPreparationCases({ fixture, ownedCluster }: Fix
     const clusterName = "openclaw-k8s-openshell-test";
     const root = await fixture(t, clusterName);
     const calls: CommandCall[] = [];
-    let registerCalls = 0;
     const cluster = ownedCluster(root, clusterName);
     const agentImage =
       "localhost/openclaw-k8s-openshell-test/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -167,7 +162,7 @@ export function registerOpenShellPreparationCases({ fixture, ownedCluster }: Fix
           cluster,
           execFile,
           registerImage: async () => {
-            registerCalls += 1;
+            assert.fail("OpenShell must refuse before image registration");
           },
           env: {
             OCC_KUBECTL_BIN: "kubectl",
@@ -179,7 +174,6 @@ export function registerOpenShellPreparationCases({ fixture, ownedCluster }: Fix
       /FailedCreatePodSandBox runc unavailable/,
     );
 
-    assert.equal(registerCalls, 0);
     assert.equal(
       calls.some(([command]) => command === "tar"),
       false,
@@ -210,7 +204,6 @@ export function registerOpenShellPreparationCases({ fixture, ownedCluster }: Fix
     const clusterName = "openclaw-k8s-openshell-test";
     const root = await fixture(t, clusterName);
     const calls: CommandCall[] = [];
-    let registerCalls = 0;
     const cluster = ownedCluster(root, clusterName);
 
     async function execFile(command: string, args: string[]) {
@@ -227,7 +220,7 @@ export function registerOpenShellPreparationCases({ fixture, ownedCluster }: Fix
           cluster,
           execFile,
           registerImage: async () => {
-            registerCalls += 1;
+            assert.fail("OpenShell must refuse before image registration");
           },
           env: {
             OCC_KUBECTL_BIN: "kubectl",
@@ -238,7 +231,6 @@ export function registerOpenShellPreparationCases({ fixture, ownedCluster }: Fix
       /does not advertise that handler/,
     );
 
-    assert.equal(registerCalls, 0);
     assert.equal(
       calls.some(([command]) => command === "tar"),
       false,
