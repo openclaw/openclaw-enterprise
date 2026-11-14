@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { mkdir, open, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import test from "node:test";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import test, { type TestContext } from "node:test";
+
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const script = join(repository, "scripts", "prepare-development-codex-seccomp.ts");
@@ -13,7 +15,11 @@ const dockerHost = "unix:///tmp/dev-codex-seccomp-failure.sock";
 // Runs the real preparation script and seccomp library against an owned
 // development state directory. Only the external kubectl binary is a stand-in,
 // so this proves the failure report, not behavior on a real node.
-async function prepare(t, kubectlSource, inspect) {
+async function prepare(
+  t: TestContext,
+  kubectlSource?: string,
+  inspect?: (state: string) => Promise<void>,
+) {
   const directory = await realpath(await temporaryDirectory(t, "oce-dev-codex-seccomp-"));
   const state = join(directory, "state");
   const tools = join(directory, "tools");
@@ -44,22 +50,45 @@ async function prepare(t, kubectlSource, inspect) {
           mode: 0o700,
         }),
   ]);
-  const env = { ...process.env, DOCKER_HOST: dockerHost, PATH: tools };
+  const env: NodeJS.ProcessEnv = { ...process.env, DOCKER_HOST: dockerHost, PATH: tools };
   delete env.NODE_TEST_CONTEXT;
-  const stderr = await open(join(state, "stderr.log"), "w", 0o600);
-  const result = spawnSync(process.execPath, [script, state, image, "1"], {
-    cwd: repository,
-    encoding: "utf8",
-    env,
-    timeout: 30_000,
-    stdio: ["ignore", "pipe", stderr.fd],
-  });
-  await stderr.close();
-  result.stderr = await readFile(join(state, "stderr.log"), "utf8");
-  if (inspect) {
-    await inspect({ state, directory });
+  // The kubectl fixture takes a copy of stderr while the preparation process is still running.
+  const stderrPath = join(state, "stderr.log");
+  const stderrFile = await open(stderrPath, "w", 0o600);
+  let result: SpawnSyncReturns<string>;
+  try {
+    result = spawnSync(process.execPath, [script, state, image, "1"], {
+      cwd: repository,
+      encoding: "utf8",
+      env,
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", stderrFile.fd],
+    });
+  } finally {
+    await stderrFile.close();
   }
-  return result;
+  const stderr = await readFile(stderrPath, "utf8");
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  await inspect?.(state);
+  return { status: result.status, stdout: result.stdout, stderr };
+}
+
+function parseKubectlCall(line: string): string[] {
+  const call: unknown = JSON.parse(line);
+  assert.ok(Array.isArray(call), "expected kubectl argv array");
+  const argv: unknown[] = call;
+  assert.ok(
+    argv.every((arg) => typeof arg === "string"),
+    "expected string kubectl arguments",
+  );
+  return argv;
+}
+
+function jsonObject(value: unknown, label: string): Record<string, unknown> {
+  const record = asRecord(value);
+  assert.ok(record, `expected ${label}`);
+  return record;
 }
 
 test("a failed node probe command reports its stderr but never its stdout", async (t) => {
@@ -119,11 +148,11 @@ if (command === "get" && args[7] === "nodes") {
   ]}}));
 } else process.exit(90);
 `,
-      async ({ state }) => {
+      async (state) => {
         const calls = (await readFile(join(state, "calls.jsonl"), "utf8"))
           .trim()
           .split("\n")
-          .map(JSON.parse);
+          .map(parseKubectlCall);
         const observations = calls.filter(
           ([command, resource]) => command === "get" && resource === "pod",
         );
@@ -136,11 +165,17 @@ if (command === "get" && args[7] === "nodes") {
           calls.some(([command]) => command === "exec"),
           false,
         );
+        // The last call must delete the Namespace that the probe created.
+        const creation = calls.find(
+          ([command, resource]) => command === "create" && resource === "namespace",
+        );
+        const createdNamespace = creation?.[2];
+        assert.ok(typeof createdNamespace === "string", "expected a created namespace name");
         const deletion = calls.at(-1);
         assert.deepEqual(deletion, [
           "delete",
           "namespace",
-          calls.find(([command]) => command === "create")[2],
+          createdNamespace,
           "--ignore-not-found=true",
           "--wait=true",
         ]);
@@ -148,13 +183,19 @@ if (command === "get" && args[7] === "nodes") {
           (await readdir(state)).some((name) => name.startsWith("codex-seccomp-")),
           false,
         );
-        const pod = JSON.parse(await readFile(join(state, "manifest.json"), "utf8"));
-        assert.equal(pod.spec.containers[0].image, image);
-        assert.equal(pod.spec.containers[0].imagePullPolicy, "Never");
-        assert.deepEqual(pod.spec.securityContext.seccompProfile, { type: "RuntimeDefault" });
-        assert.equal(pod.spec.securityContext.runAsNonRoot, true);
-        assert.equal(pod.spec.automountServiceAccountToken, false);
-        assert.deepEqual(pod.spec.containers[0].securityContext, {
+        const manifest: unknown = JSON.parse(await readFile(join(state, "manifest.json"), "utf8"));
+        const pod = jsonObject(manifest, "a probe Pod");
+        const spec = jsonObject(pod.spec, "a Pod spec");
+        assert.ok(Array.isArray(spec.containers), "expected Pod containers");
+        const containers: unknown[] = spec.containers;
+        const probe = jsonObject(containers[0], "a probe container");
+        const securityContext = jsonObject(spec.securityContext, "Pod security context");
+        assert.equal(probe.image, image);
+        assert.equal(probe.imagePullPolicy, "Never");
+        assert.deepEqual(securityContext.seccompProfile, { type: "RuntimeDefault" });
+        assert.equal(securityContext.runAsNonRoot, true);
+        assert.equal(spec.automountServiceAccountToken, false);
+        assert.deepEqual(probe.securityContext, {
           allowPrivilegeEscalation: false,
           readOnlyRootFilesystem: true,
           capabilities: { drop: ["ALL"] },

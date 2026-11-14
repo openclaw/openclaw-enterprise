@@ -117,7 +117,7 @@
     "tests/integration/ci-openshell.test.ts",
     "tests/conformance/repository-credentials-sessions.test.ts",
     "tests/conformance/repository-credentials-admission.test.ts",
-    "tests/integration/dev-codex-seccomp-failure.test.mjs",
+    "tests/integration/dev-codex-seccomp-failure.test.ts",
     "tests/conformance/runtime-probe-cpu-counter.test.ts",
     "tests/conformance/runtime-gateway-state-migration.test.ts",
     "tests/conformance/node-test-summary.test.ts",
@@ -209,7 +209,7 @@
       "path": "tests/integration/github-app-observer.test.ts"
     },
     {
-      "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
+      "path": "tests/integration/dev-codex-seccomp-failure.test.ts"
     },
     {
       "path": "tests/integration/first-agent-startup.test.ts",
