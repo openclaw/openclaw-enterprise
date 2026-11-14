@@ -230,6 +230,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-14 11:20: Apply the maintainer's unattributed-failure correction; clear deleted credentials from the saved form state. (feat/create-agent-progress - 514b3917f)
 - 2026-11-13 15:30: Unlock recovery for deleted resources; monotonic meter steps. (feat/create-agent-progress - 3c59aee2e)
 - 2026-11-11 13:40: Follow the maintainer review: checkpoint status line, refused-read explanation, identity-preserving recovery. (feat/create-agent-progress - f4d6588b9)
 - 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
