@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import type {
+  AppsV1Api,
+  CoreV1Api,
   V1EnvVar,
   V1ObjectMeta,
 } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
@@ -12,6 +14,7 @@ import type {
   AgentRevision,
   ComputeRevisionContext,
   CredentialSource,
+  HarnessWorkloadRequirements,
   LoggingLevel,
   PluginDeploymentWarning,
   RuntimeFailureEvidence,
@@ -47,7 +50,7 @@ type GatewayConfiguration = {
   harnessNamespace?: Address;
 };
 type PreparedAuth = {
-  loginMode: "api_key" | "codex_pat" | "credential_source" | "runtime";
+  loginMode: HarnessWorkloadRequirements["loginMode"];
   environment: readonly V1EnvVar[];
   credentialSource?: Readonly<CredentialSource>;
 };
@@ -60,45 +63,68 @@ type PluginStatus = {
   successfulPluginIds: readonly string[];
   failures: readonly PluginDeploymentWarning[];
 };
-export type PodProxyRequest = { name: string; namespace: string; path: string };
-type PodListRequest = { namespace: string; labelSelector?: string };
+export type PodProxyRequest = Parameters<CoreV1Api["connectGetNamespacedPodProxyWithPath"]>[0];
+type WithFixtureBody<Request, K extends Kind> = Omit<Request, "body"> & {
+  body: KubernetesObject<K>;
+};
+
 type FixtureClients = {
-  apps?: { listNamespacedDeployment(): Promise<{ items: readonly unknown[] }> };
+  apps?: {
+    listNamespacedDeployment(
+      request: Parameters<AppsV1Api["listNamespacedDeployment"]>[0],
+    ): Promise<{ items: readonly unknown[] }>;
+  };
   core: {
-    listNamespace?(): Promise<{
+    listNamespace?(request?: Parameters<CoreV1Api["listNamespace"]>[0]): Promise<{
       apiVersion: string;
       kind: string;
       items: KubernetesObject<"Namespace">[];
     }>;
-    readNamespace?(): Promise<KubernetesObject<"Namespace">>;
+    readNamespace?(
+      request: Parameters<CoreV1Api["readNamespace"]>[0],
+    ): Promise<KubernetesObject<"Namespace">>;
     listNamespacedPod(
-      request: PodListRequest,
+      request: Parameters<CoreV1Api["listNamespacedPod"]>[0],
     ): Promise<{ apiVersion: string; kind: string; items: readonly object[] }>;
     connectGetNamespacedPodProxyWithPath?(request: PodProxyRequest): Promise<unknown>;
-    createNamespacedSecret?(request: {
-      body: KubernetesObject<"Secret">;
-    }): Promise<KubernetesObject<"Secret">>;
-    replaceNamespacedSecret?(request: {
-      body: KubernetesObject<"Secret">;
-    }): Promise<KubernetesObject<"Secret">>;
-    createNamespacedConfigMap?(request: { body: KubernetesObject<"ConfigMap"> }): Promise<object>;
-    patchNamespacedConfigMap?(request: {
-      name: string;
-      body: KubernetesObject<"ConfigMap">;
-    }): Promise<object>;
+    createNamespacedSecret?(
+      request: WithFixtureBody<Parameters<CoreV1Api["createNamespacedSecret"]>[0], "Secret">,
+    ): Promise<KubernetesObject<"Secret">>;
+    replaceNamespacedSecret?(
+      request: WithFixtureBody<Parameters<CoreV1Api["replaceNamespacedSecret"]>[0], "Secret">,
+    ): Promise<KubernetesObject<"Secret">>;
+    createNamespacedConfigMap?(
+      request: WithFixtureBody<Parameters<CoreV1Api["createNamespacedConfigMap"]>[0], "ConfigMap">,
+    ): Promise<object>;
+    patchNamespacedConfigMap?(
+      request: WithFixtureBody<Parameters<CoreV1Api["patchNamespacedConfigMap"]>[0], "ConfigMap">,
+    ): Promise<object>;
   };
 };
 
 // The published declarations erase TypeScript private members. State the subset used by these
 // fixtures and retain the production instance and method receivers at runtime.
 interface KubernetesFixtureMethods {
-  clients(): Promise<FixtureClients>;
+  clients(plane: Address["plane"]): Promise<FixtureClients>;
   apiClients: Promise<FixtureClients>;
-  resolveNamespace(): Promise<{ name: Address; external: boolean }>;
+  resolveNamespace(
+    namespaceId: string,
+    selection?: string,
+  ): Promise<{ name: Address; external: boolean }>;
   get(kind: Kind, name: string, target: Address): Promise<KubernetesObject | undefined>;
-  getOwned(kind: Kind, name: string, target: Address): Promise<KubernetesObject | undefined>;
-  reconcile(object: KubernetesObject): Promise<void>;
-  gatewayReady(): Promise<boolean>;
+  getOwned(
+    kind: Kind,
+    name: string,
+    target: Address,
+    owner: Ownership,
+  ): Promise<KubernetesObject | undefined>;
+  reconcile(object: KubernetesObject, owner: Ownership, target: Address): Promise<void>;
+  gatewayReady(
+    owner: Ownership,
+    gatewayName: string,
+    target: Address,
+    preparingRevisionId?: string,
+  ): Promise<boolean>;
   manifest<K extends Kind>(
     apiVersion: string,
     kind: K,

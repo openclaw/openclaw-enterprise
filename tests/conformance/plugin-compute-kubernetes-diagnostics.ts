@@ -9,12 +9,15 @@ import {
   tenant,
   waitForCondition,
 } from "./plugin-compute-fixtures.ts";
+import { pluginComputeDriver } from "./plugin-compute-kubernetes-fixture.ts";
 import { readStatusFromHandlerAsync } from "./plugin-compute-status.ts";
 import { startCodexGatewaySupervisor } from "./plugin-compute-supervisor.ts";
 
-import { pluginComputeDriver } from "./plugin-compute-kubernetes-fixture.ts";
-
 export function registerKubernetesDiagnostics(): void {
+  // Run diagnostics is where an operator looks first. A Gateway held on an
+  // unusable peer bridge record still answers diagnostics, but only with Slack
+  // checks it could not run; the Compute Driver reads the held failure from the
+  // same wrapper's status path and reports it first, named after the startup step.
   test("Kubernetes diagnostics name the startup step a held Gateway failed", async (t) => {
     const previous = await startCodexGatewaySupervisor(t, { writableConfig: true });
     const savedFiles = new Map(previous.files);

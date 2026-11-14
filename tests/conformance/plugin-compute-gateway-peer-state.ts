@@ -441,9 +441,4 @@ export function registerGatewayPeerState(): void {
       }
     });
   }
-
-  // Run diagnostics is where an operator looks first. A Gateway held on an
-  // unusable peer bridge record still answers diagnostics, but only with Slack
-  // checks it could not run; the Compute Driver reads the held failure from the
-  // same wrapper's status path and reports it first, named after the startup step.
 }
