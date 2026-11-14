@@ -164,7 +164,7 @@
     "tests/integration/caller-denial-api.test.ts": 1200,
     "tests/integration/ci-cleanup.test.ts": 17100,
     "tests/integration/ci-download-pinned.test.ts": 7200,
-    "tests/integration/ci-image-config-digest.test.mjs": 100,
+    "tests/integration/ci-image-config-digest.test.ts": 100,
     "tests/integration/ci-image-pull.test.ts": 1200,
     "tests/integration/ci-image-reconciliation.test.ts": 1300,
     "tests/integration/ci-impact-gate.test.ts": 2500,

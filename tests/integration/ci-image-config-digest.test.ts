@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+
 import { imageConfigDigest } from "../../scripts/ci/image-config-digest.ts";
 
-const sha = (value) => "sha256:" + createHash("sha256").update(value).digest("hex");
+const sha = (value: string) => "sha256:" + createHash("sha256").update(value).digest("hex");
 const config = sha("image config");
 const manifest = JSON.stringify({
   schemaVersion: 2,
@@ -35,8 +36,8 @@ test("Docker 29 containerd store: unannotated platform manifest is read and veri
   // docker image inspect --platform linux/amd64 on Docker 29.9 (containerd image store):
   // Id and Descriptor name the platform manifest and carry no config.digest annotation.
   const inspected = { Id: manifestDescriptor.digest, Descriptor: manifestDescriptor };
-  const reads = [];
-  const read = async (digest) => {
+  const reads: string[] = [];
+  const read = async (digest: string) => {
     reads.push(digest);
     return manifest;
   };
