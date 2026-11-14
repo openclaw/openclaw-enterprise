@@ -15,7 +15,7 @@ type History = keyof Manifest["catalogs"];
 interface MigrationReceipt {
   id: number;
   hash: string;
-  created_at: string | number;
+  created_at: string | number | null;
 }
 type HistoryError = Error & {
   code?:
