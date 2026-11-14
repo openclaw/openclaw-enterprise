@@ -276,7 +276,7 @@ export function fileConsoleApp(options = {}) {
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
  * @param {import("./console-file-app.ts").CleanupRegistrar} t
  * @template {object | Record<string, unknown>} [Options=object]
- * @param {Options & {auditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
+ * @param {Options & {auditSink?: InMemoryAuditSink, durableRequestAuditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
  */
 export async function createConsoleAppFixture(t, options = {}) {
   const auditSink = options.auditSink ?? new InMemoryAuditSink();
@@ -447,6 +447,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     auth,
     iamDriver,
     auditSink,
+    ...(options.durableRequestAuditSink === undefined
+      ? {}
+      : { durableRequestAuditSink: options.durableRequestAuditSink }),
     development: {
       enabled: true,
       installationId,

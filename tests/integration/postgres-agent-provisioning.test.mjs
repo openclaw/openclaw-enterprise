@@ -454,6 +454,23 @@ test(
     assert.equal(replay.status, 202, JSON.stringify(replay.body));
     assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
 
+    // Replaying the caller's provisioning key does not enqueue or audit a second job.
+    // The queue record identifies the original HTTP request, not the caller's key.
+    const queueAudit = await fixture.pool.query(
+      `SELECT resource_kind, resource_id, details->'__occAuditMetadata'->>'requestId' AS request_id
+       FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
+         AND details->>'workId' = $1`,
+      [admitted.data.provisioning.workId],
+    );
+    assert.notEqual(admitted.body.meta.requestId, body.requestId);
+    assert.deepEqual(queueAudit.rows, [
+      {
+        resource_kind: "namespace",
+        resource_id: namespace.id,
+        request_id: admitted.body.meta.requestId,
+      },
+    ]);
+
     assert.equal(replay.data.provisioning.requestId, body.requestId);
     // The same actor may submit the same plan twice. Each job reports the request that admitted it.
     const otherId = requestId();
@@ -2309,6 +2326,18 @@ test(
     assert.equal(retried.data.status, "queued");
     assert.equal(retried.data.phase, "admitted");
 
+    const workId = admitted.data.provisioning.workId;
+    const requeued = await fixture.pool.query(
+      `SELECT details->'__occAuditMetadata'->>'requestId' AS request_id
+       FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
+         AND details->>'workId' = $1 ORDER BY occurred_at, id`,
+      [workId],
+    );
+    assert.deepEqual(requeued.rows, [
+      { request_id: admitted.body.meta.requestId },
+      { request_id: retried.body.meta.requestId },
+    ]);
+
     await fixture.startWorker();
     const succeeded = await waitFor("retried Agent provisioning to succeed", async () => {
       const observed = await fixture.request("GET", admitted.data.provisioning.url);
@@ -2318,6 +2347,20 @@ test(
     assert.equal(succeeded.revisionId?.startsWith("rev_"), true);
     assert.match(succeeded.agentId, identifier("agt"));
     fixture.cancelProvisioningAtTeardown(namespace.id, succeeded.agentId);
+
+    // Success names the persisted Agent and the worker claim that closed provisioning.
+    const evidence = await fixture.pool.query(
+      `SELECT result.resource_kind, result.resource_id, result.details->>'workState' AS work_state
+       FROM occ.audit_events AS result
+       JOIN occ.audit_events AS claim ON claim.id = result.details->>'attemptId'
+       WHERE result.action = 'openclaw.controller_work.completed'
+         AND result.details->>'workId' = $1 AND claim.details->>'workId' = $1
+         AND claim.action = 'openclaw.controller_work.claimed'`,
+      [workId],
+    );
+    assert.deepEqual(evidence.rows, [
+      { resource_kind: "agent", resource_id: succeeded.agentId, work_state: "succeeded" },
+    ]);
 
     const agents = await fixture.pool.query("SELECT id FROM occ.agents WHERE namespace_id = $1", [
       namespace.id,
@@ -3427,6 +3470,32 @@ async function settleLateTransport(fixture, target) {
   return settled;
 }
 
+async function assertCancellationAudit(fixture, target, trigger, requestId) {
+  const workId = target.admitted.data.provisioning.workId;
+  const audit = await fixture.pool.query(
+    `SELECT actor_id, kind, outcome, resource_kind, resource_id, namespace_id,
+            details->'__occAuditMetadata'->>'source' AS source,
+            details->'__occAuditMetadata'->>'requestId' AS request_id,
+            details - '__occAuditMetadata' AS details
+     FROM occ.audit_events
+     WHERE action = 'openclaw.agents.provision.cancelled' AND details->>'workId' = $1`,
+    [workId],
+  );
+  assert.deepEqual(audit.rows, [
+    {
+      actor_id: await fixture.administratorPrincipalId(),
+      kind: "mutation",
+      outcome: "success",
+      resource_kind: "agent",
+      resource_id: target.failed.agentId,
+      namespace_id: target.namespace.id,
+      source: "occ",
+      request_id: requestId,
+      details: { reasonCode: "PROVISIONING_CANCELLED", workId, trigger },
+    },
+  ]);
+}
+
 test(
   "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
   { ...requiresPostgres, timeout: 60_000 },
@@ -3455,6 +3524,7 @@ test(
       stoppedProvisioning.data.error?.message,
       "Provisioning was cancelled because the Agent was stopped.",
     );
+    await assertCancellationAudit(stopFixture, stopTarget, "stop", stopped.body.meta.requestId);
 
     await settleLateTransport(stopFixture, stopTarget);
     reportStoredCredentials = true;
@@ -3484,6 +3554,12 @@ test(
     assert.equal(
       deletedProvisioning.data.error?.message,
       "Provisioning was cancelled because the Agent was deleted.",
+    );
+    await assertCancellationAudit(
+      deleteFixture,
+      deleteTarget,
+      "delete",
+      deleting.body.meta.requestId,
     );
 
     await settleLateTransport(deleteFixture, deleteTarget);
@@ -3759,6 +3835,20 @@ test(
       assert.equal(cancelled.data.status, "failed");
       assert.equal(cancelled.data.error?.code, "PROVISIONING_CANCELLED");
       assert.equal(cancelled.data.revisionId, undefined);
+
+      // Stop names the in-flight attempt, even though the external write has yet to finish.
+      const linked = await fixture.pool.query(
+        `SELECT cancellation.resource_id, cancellation.details->'__occAuditMetadata'->>'requestId' AS request_id
+         FROM occ.audit_events AS cancellation
+         JOIN occ.audit_events AS claim ON claim.id = cancellation.details->>'attemptId'
+         WHERE cancellation.action = 'openclaw.agents.provision.cancelled'
+           AND cancellation.details->>'workId' = $1 AND claim.details->>'workId' = $1
+           AND claim.action = 'openclaw.controller_work.claimed'`,
+        [workId],
+      );
+      assert.deepEqual(linked.rows, [
+        { resource_id: target.agentId, request_id: stopped.body.meta.requestId },
+      ]);
 
       // A Deploy right after the Stop, while the live worker's write is in flight, is refused:
       // the write's outcome is still unknown.
@@ -4184,6 +4274,8 @@ test(
       const { workId, url } = target.admitted.data.provisioning;
       configurationId = await provisioningConfigurationId(fixture.pool, workId);
       const agentPath = `/namespaces/${target.namespace.id}/agents/${target.agentId}`;
+      // Turn collection off in the API while the original worker still holds the audited claim.
+      await fixture.restartApi({ controlPlaneAuditEnabled: false });
       const deleting = await fixture.request("DELETE", agentPath);
       assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
       assert.equal(deleting.data.status, "deleting");
@@ -4196,6 +4288,25 @@ test(
         message: "Provisioning was cancelled because the Agent was deleted.",
       });
       assert.equal(cancelled.data.revisionId, undefined);
+
+      // The Delete request emits no request audit rows. It still closes the recorded claim.
+      const requestAudit = await fixture.pool.query(
+        `SELECT action FROM occ.audit_events
+         WHERE action IN ('openclaw.api.request.admitted', 'openclaw.api.request.result')
+           AND details->'__occAuditMetadata'->>'requestId' = $1`,
+        [deleting.body.meta.requestId],
+      );
+      assert.equal(requestAudit.rowCount, 0);
+      const linked = await fixture.pool.query(
+        `SELECT cancellation.resource_id, cancellation.details->'__occAuditMetadata'->>'requestId' AS request_id
+         FROM occ.audit_events AS cancellation
+         JOIN occ.audit_events AS claim ON claim.id = cancellation.details->>'attemptId'
+         WHERE cancellation.action = 'openclaw.agents.provision.cancelled'
+           AND cancellation.details->>'workId' = $1 AND claim.details->>'workId' = $1
+           AND claim.action = 'openclaw.controller_work.claimed'`,
+        [workId],
+      );
+      assert.deepEqual(linked.rows, [{ resource_id: target.agentId, request_id: null }]);
 
       // The write completes and records its receipt without the claim. The worker's next fence
       // finds the Agent deleting, so its pass ends before handoff; deletion then finishes.

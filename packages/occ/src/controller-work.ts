@@ -24,6 +24,8 @@ export interface ControllerWork {
   readonly availableAt: Date;
   readonly attemptCount: number;
   readonly claimToken?: string;
+  /** The claim's audit event ID. Independent of the lease token and the retry count. */
+  readonly auditAttemptId?: string;
   readonly leaseExpiresAt?: Date;
   /** Claim liveness judged by the State store's clock when it read this work. */
   readonly leaseActive?: boolean;

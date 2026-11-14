@@ -1371,6 +1371,7 @@ test(
   "lost PostgreSQL COMMIT acknowledgment preserves a committed issuance without replay",
   requiresPostgres,
   async () => {
+    assert.ok(databaseUrl);
     const a = await account("lost-commit");
     const proxy = await commitAckProxy(databaseUrl);
     live.proxies.push(proxy);
@@ -1400,6 +1401,7 @@ test(
   "withheld PostgreSQL COMMIT is reconciled before an explicit recovery request",
   requiresPostgres,
   async () => {
+    assert.ok(databaseUrl);
     const a = await account("withheld-commit");
     const proxy = await commitAckProxy(databaseUrl);
     live.proxies.push(proxy);

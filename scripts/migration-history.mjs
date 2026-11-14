@@ -182,6 +182,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preNativeBrowserAccess";
   }
   if (count === 76 && completedCount > 76) {
+    return "preControlPlaneAudit";
+  }
+  if (count === 77 && completedCount > 77) {
     return "prePendingSandboxPolicyApplication";
   }
   if (count === completedCount) {

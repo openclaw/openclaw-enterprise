@@ -69,7 +69,7 @@ import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createSandboxProviderProfileChecks } from "./sandbox-driver-provider-profiles-cases.ts";
-import { createSandboxCredentialContractChecks } from "./sandbox-driver-credential-contract-cases.ts";
+import { registerSandboxCredentialContractCases } from "./sandbox-driver-credential-contract-cases.ts";
 import { createCredentialGatewayContexts } from "./sandbox-driver-credential-fixture.ts";
 import { createSandboxHarnessLifecycleChecks } from "./sandbox-driver-harness-lifecycle-cases.ts";
 import { createSandboxCodexHarnessChecks } from "./sandbox-driver-codex-harness-cases.ts";
@@ -132,7 +132,7 @@ import { registerSandboxDriverWorkspaceExpiryCases } from "./sandbox-driver-work
 import { registerSandboxDriverPreparerCleanupCases } from "./sandbox-driver-preparer-cleanup-cases.ts";
 import { registerSandboxDriverNativePreparationCases } from "./sandbox-driver-native-preparation-cases.ts";
 import { createOrphanedNativePreparation } from "./sandbox-driver-preparation-cases.ts";
-import { verifySandboxScratchStorage } from "./sandbox-driver-scratch-storage-case.ts";
+import { registerSandboxDriverScratchStorageCase } from "./sandbox-driver-scratch-storage-case.ts";
 import { verifyStockExtensionRoundTrips } from "./sandbox-driver-stock-readiness-cases.ts";
 
 const harnessLifecycleChecks = createSandboxHarnessLifecycleChecks({
@@ -154,15 +154,12 @@ const harnessLifecycleChecks = createSandboxHarnessLifecycleChecks({
 });
 const codexHarnessChecks = createSandboxCodexHarnessChecks({
   agentRuntimeEntrypoint: AGENT_RUNTIME_ENTRYPOINT,
-  backendFor,
   codexRequirements,
   conformanceKubernetesOptions,
   dedicatedRevision,
   harnessRuntimeCommand,
   namespaceContext,
-  openShellDriver,
   runtimeSandboxFixture,
-  sandboxInstallation,
   workspaceGatewayClient,
 });
 
@@ -1726,9 +1723,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), false);
 });
 
-test("OpenShell keeps scratch separate from its durable data mount", async () => {
-  await verifySandboxScratchStorage({ openShellDriver, runtimeSandboxFixture });
-});
+registerSandboxDriverScratchStorageCase({ openShellDriver, runtimeSandboxFixture });
 
 test("OpenShell holds withdrawn Codex authentication after a Harness restart", async (t) => {
   await codexHarnessChecks.holdWithdrawnCodexAuthentication(t);
@@ -2187,11 +2182,6 @@ function credentialGatewayOverProviders({
   };
 }
 
-const credentialContractChecks = createSandboxCredentialContractChecks({
-  credentialGatewayOverProviders,
-  structuralRefusal,
-});
-
 createSandboxProviderProfileChecks({ credentialGatewayOverProviders, ScopeViolationError });
 
 test("Google requires an OAuth source whose effective binary list is exactly the pinned executable", async () => {
@@ -2335,20 +2325,9 @@ test("a Slack MCP source stays independent and cannot acquire a broad REST crede
   );
 });
 
-test("the OpenShell bearer-token type exists only with toolBinaries and validates its endpoint", async () => {
-  await credentialContractChecks.validatesBearerTokenTypeAndEndpoint();
-});
-
-test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on update and deployment", async () => {
-  await credentialContractChecks.narrowsExistingBearerTokenSources();
-});
-
-test("an OpenShell profile write that lost a race to the same profile still attaches", async () => {
-  await credentialContractChecks.attachesAfterMatchingProfileRace();
-});
-
-test("an OpenShell bearer-token source stays deletable after toolBinaries is removed", async () => {
-  await credentialContractChecks.removesBearerTokenSourceWithoutToolBinaries();
+registerSandboxCredentialContractCases({
+  credentialGatewayOverProviders,
+  structuralRefusal,
 });
 
 test("OpenShell observes the Codex Harness through its exact bearer-passthrough service", async () => {

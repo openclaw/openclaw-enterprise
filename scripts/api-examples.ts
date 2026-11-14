@@ -490,6 +490,22 @@ export const responseExamples = {
   },
   deployAgent: revision,
   getAgentRevision: revision,
+  listAgentAuditEvents: {
+    projectionVersion: 1,
+    window: { start: "2026-09-30T12:00:00.000Z", end: time },
+    events: [
+      {
+        id: id("aud"),
+        occurredAt: "2026-10-01T11:30:00.000000Z",
+        event: "api_request",
+        outcome: "success",
+        actorId: id("prn"),
+        requestId: id("req"),
+        operationId: "getAgent",
+      },
+    ],
+    nextCursor: null,
+  },
   listAgentRevisions: [
     {
       id: revisionId,
