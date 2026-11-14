@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+
 import { discoverHarnessModels } from "../../apps/controller/src/drivers/compute/model-discovery.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 
 // The operator catalog command for this same Codex URL keeps every visibility "list"
 // slug and ignores priority. A hidden row is not part of that list.
-async function discoverCodex(t, models) {
+async function discoverCodex(t: TestContext, models: readonly unknown[]) {
   const pages = [
     { chatgpt_account_id: "verified-account", chatgpt_account_is_fedramp: false },
     { models },
   ];
-  t.mock.method(globalThis, "fetch", async () => Response.json(pages.shift()));
+  const fetchPage: typeof fetch = async () => Response.json(pages.shift());
+  t.mock.method(globalThis, "fetch", fetchPage);
   return discoverHarnessModels({
     provider: "openai",
     authMethod: "codex_pat",
@@ -43,6 +46,9 @@ test("Codex model discovery lists the operator catalog when priority is omitted"
 
   await assert.rejects(
     discoverCodex(t, [{ slug: "bad id", display_name: "Broken", visibility: "list" }]),
-    (error) => error?.name === "ModelDiscoveryError" && error.reason === "invalid_response",
+    (error: unknown) => {
+      const failure = asRecord(error);
+      return failure?.name === "ModelDiscoveryError" && failure.reason === "invalid_response";
+    },
   );
 });
