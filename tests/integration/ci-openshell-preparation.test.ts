@@ -14,7 +14,6 @@ import {
 } from "../../scripts/ci/agent-sandbox.ts";
 import {
   k3sImage,
-  kubectlVersion,
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   selectKubectlAsset,
@@ -64,6 +63,7 @@ test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl with runc"
     },
   });
 
+  const kubectlVersion = "v1.36.4";
   const kubectl = join(root, "bin", `kubectl-darwin-arm64-${kubectlVersion}`);
   assert.deepEqual(result, {
     k3sImage,

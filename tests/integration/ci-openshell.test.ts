@@ -614,21 +614,23 @@ test("OpenShell outage proof reads the status only for work queued after an atte
     [claimed(1), undefined],
     [queued(1), "running"],
   ] as const;
+  let current: (typeof polls)[number] = polls[0];
+  const poll = outageAttemptRead({
+    readWork: async () => current[0],
+    readStatus: async () => {
+      const status = current[1];
+      assert.notEqual(
+        status,
+        undefined,
+        "status is read only once the work is queued after an attempt",
+      );
+      return status;
+    },
+  });
   const results = [];
-  for (const [work, status] of polls) {
-    results.push(
-      await outageAttemptRead({
-        readWork: async () => work,
-        readStatus: async () => {
-          assert.notEqual(
-            status,
-            undefined,
-            "status is read only once the work is queued after an attempt",
-          );
-          return status;
-        },
-      })(),
-    );
+  for (const observation of polls) {
+    current = observation;
+    results.push(await poll());
   }
   assert.deepEqual(results, [undefined, undefined, { work: queued(1), status: "running" }]);
   // A revision that failed or activated during the outage ends the wait, so the proof fails on it.
