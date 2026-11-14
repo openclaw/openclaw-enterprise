@@ -108,7 +108,7 @@ const APPLICATION_FAILURES: Readonly<Record<string, string>> = {
   SANDBOX_POLICY_PLACEMENT_UNAVAILABLE:
     "The Installation’s Compute Driver changed since this version was deployed, so the controller cannot reach its Sandbox to apply or check the policy. Deploy a new version to put the saved policy into effect.",
   SANDBOX_POLICY_PROVIDER_FAILED:
-    "The Sandbox reported that applying the policy failed. Refresh policy, then apply again; if it fails again, ask an operator to check the Sandbox gateway.",
+    "The Sandbox reported that applying the policy failed, or its version changed after a write whose response was lost. Refresh policy, then apply again; if it fails again, ask an operator to check the Sandbox gateway.",
 };
 const APPLICATION_UNCONFIRMED =
   "Application was not confirmed. The provider may have accepted part of the request; refresh and retry explicitly. No redeployment was started.";
