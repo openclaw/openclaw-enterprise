@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-12 11:00"
-last_updated_session: "authoring-run/2f421f2e-6313-4a70-a0e0-821995778b2f"
+updated: "2026-11-14 13:17"
+last_updated_session: "authoring-run/d26b1f82-7e6f-460d-97d3-6a187c060e96"
 ---
 
 # GitHub Actions testing flow
@@ -65,10 +65,9 @@ graph TD
 
 `run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
-`runner-inputs.ts:parseArgs` accepts `--test-name=<literal>` with leading dashes;
-duplicates, including empty values, fail before effects. `selectLane` validates paths/names.
-`runFile` requires one passing standalone case through an escaped, anchored Node-child pattern.
-Results retain environment, cleanup and focus/name on preparation failure.
+`runner-inputs.ts:parseArgs` rejects unknown options/repeated `--test-name` before effects. `--test-name=<literal>` accepts dashes. `selectLane` validates paths/names.
+`runFile` requires one passing standalone case via an anchored, escaped pattern.
+Preparation failures retain environment, cleanup and focus/name.
 `validateLaneEvidence` rejects focused aggregation.
 
 `CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
@@ -293,6 +292,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 13:17: Validate options. (authoring-run/d26b1f82-7e6f-460d-97d3-6a187c060e96 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 
 - 2026-11-12 11:00: Validate OpenShell cohort credentials. (authoring-run/2f421f2e-6313-4a70-a0e0-821995778b2f - 7040f7a648359a9c43d280b83efbc27be991049c)
 

@@ -273,6 +273,7 @@
     {
       "path": "tests/integration/ci-runner-case-enforcement.test.ts",
       "expectedTests": [
+        "unknown selection options fail before running tests or writing receipts",
         "focused runs retain case enforcement and cleanup but cannot complete a full lane",
         "run fails missing expected tests, skipped expected tests, skips, todos, and missing required env"
       ]
