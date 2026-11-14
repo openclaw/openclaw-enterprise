@@ -45,7 +45,7 @@
     "tests/integration/postgres-static-egress.test.mjs",
     "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
-    "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+    "tests/integration/postgres-prepared-github-lifecycle.test.ts",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
     "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
@@ -420,7 +420,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+      "path": "tests/integration/postgres-prepared-github-lifecycle.test.ts",
       "expectedTests": [
         "authorized GitHub proxy requests mint the registered grant and share one replacement",
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",

@@ -279,7 +279,7 @@
     "tests/integration/postgres-platform-state.test.ts": 12100,
     "tests/integration/postgres-prepared-git-route-selection.test.ts": 2700,
     "tests/integration/postgres-prepared-github-git-use.test.mjs": 7700,
-    "tests/integration/postgres-prepared-github-lifecycle.test.mjs": 13900,
+    "tests/integration/postgres-prepared-github-lifecycle.test.ts": 13900,
     "tests/integration/postgres-prepared-receipt-restart.test.ts": 2500,
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs": 13400,
     "tests/integration/postgres-prepared-standing-expiry.test.ts": 2900,
