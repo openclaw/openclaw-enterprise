@@ -87,7 +87,7 @@
     "tests/conformance/kubernetes-real-kubectl.test.ts": 9900,
     "tests/conformance/kubernetes-runtime-credentials.test.mjs": 1800,
     "tests/conformance/kubernetes-secret-driver.test.mjs": 400,
-    "tests/conformance/module-boundaries.test.mjs": 4000,
+    "tests/conformance/module-boundaries.test.ts": 4000,
     "tests/conformance/module-policy.test.mjs": 3700,
     "tests/conformance/native-admin-upgrade-reset.test.mjs": 6800,
     "tests/conformance/native-admin-websocket-relay.test.mjs": 1200,

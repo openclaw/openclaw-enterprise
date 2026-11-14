@@ -14,7 +14,7 @@
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.mjs",
-    "tests/conformance/module-boundaries.test.mjs",
+    "tests/conformance/module-boundaries.test.ts",
     "tests/integration/repository-credentials-router.test.mjs",
     "tests/conformance/module-policy.test.mjs",
     "tests/integration/native-admin-access.test.mjs",
@@ -688,7 +688,7 @@
       "path": "tests/integration/openclaw-source.test.ts"
     },
     {
-      "path": "tests/conformance/module-boundaries.test.mjs"
+      "path": "tests/conformance/module-boundaries.test.ts"
     },
     {
       "path": "tests/conformance/module-policy.test.mjs",
