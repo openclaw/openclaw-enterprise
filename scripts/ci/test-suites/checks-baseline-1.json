@@ -73,7 +73,7 @@
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
-    "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/openshell-gateway-wire.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-oauth-wire.test.mjs",
@@ -342,7 +342,7 @@
       "path": "tests/conformance/occ-read.test.mjs"
     },
     {
-      "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+      "path": "tests/conformance/openshell-gateway-wire.test.ts"
     },
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
