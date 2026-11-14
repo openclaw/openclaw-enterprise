@@ -27,7 +27,7 @@
     "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/codex-plugin-preparation.test.ts",
-    "tests/integration/container-release.test.mjs",
+    "tests/integration/container-release.test.ts",
     "tests/integration/password-sign-in-audit.test.ts",
     "tests/integration/ci-impact-gate.test.ts",
     "tests/integration/console-provisioning-request.test.ts",
@@ -93,7 +93,7 @@
     "tests/integration/ssh-compute-startup.test.mjs",
     "tests/integration/oidc-login-transport.test.ts",
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
-    "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/ci-cleanup.test.ts",
     "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.ts",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
@@ -113,7 +113,8 @@
     "tests/conformance/repository-sessions-memory.test.ts",
     "tests/conformance/repository-credentials-github-token.test.ts",
     "tests/conformance/repository-credentials-registry.test.mjs",
-    "tests/integration/ci-openshell.test.mjs",
+    "tests/integration/ci-openshell-preparation.test.ts",
+    "tests/integration/ci-openshell.test.ts",
     "tests/conformance/repository-credentials-sessions.test.ts",
     "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
@@ -339,7 +340,7 @@
       "path": "tests/integration/full-integration-preflight.test.mjs"
     },
     {
-      "path": "tests/integration/ci-cleanup.test.mjs"
+      "path": "tests/integration/ci-cleanup.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare-postgres.test.ts"
@@ -381,7 +382,10 @@
       "path": "tests/integration/k3d-launcher.test.mjs"
     },
     {
-      "path": "tests/integration/ci-openshell.test.mjs"
+      "path": "tests/integration/ci-openshell-preparation.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-openshell.test.ts"
     },
     {
       "path": "tests/integration/ci-logging.test.ts"
@@ -390,7 +394,7 @@
       "path": "tests/integration/ci-go-test.test.ts"
     },
     {
-      "path": "tests/integration/container-release.test.mjs"
+      "path": "tests/integration/container-release.test.ts"
     },
     {
       "path": "tests/integration/cli-release.test.ts",

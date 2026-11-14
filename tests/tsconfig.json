@@ -43,7 +43,6 @@
     "conformance/standing-approval-history-cases.ts",
     "integration/occ-api-injected-fixture.ts",
     "integration/occ-api-resource-route-cases.ts",
-    "integration/plugin-discovery-api-saved-agent-cases.ts",
     "integration/configuration-startup-validation-cases.ts",
     "integration/configuration-http-lifecycle-cases.ts",
     "integration/qa-agent-lifecycle-diagnostics-cases.ts",
@@ -57,6 +56,7 @@
     "integration/runtime-image-codex-auth-mount-case.ts",
     "integration/runtime-image-gateway-probe-cleanup-case.ts",
     "integration/egress-connected-gateway-preflight-cases.ts",
+    "integration/production-upgrade-preflight-draft-budget.ts",
     "integration/runtime-image-bundled-codex-case.ts",
     "integration/runtime-image-dedicated-assets-case.ts",
     "integration/sandbox-workspace-gateway-fixture.ts",
@@ -135,7 +135,6 @@
     "fixtures/ci-runner-openshell-failure-child.ts",
     "fixtures/ci-runner-openshell-progress-child.ts",
     "integration/first-agent-startup-lifecycle-cases.ts",
-    "integration/ci-openshell-bootstrap-cases.ts",
     "helpers/fixture-command-server.ts",
     "helpers/keycloak-enrollment-wait.ts",
     "helpers/node-test-summary.ts",
@@ -182,7 +181,8 @@
     "helpers/native-admin-postgres.ts",
     "helpers/postgres-worker-revision-queue.ts",
     "conformance/topology-launch-cases.ts",
-    "conformance/workspace-node-supervisor-cases.ts"
+    "conformance/workspace-node-supervisor-cases.ts",
+    "integration/configuration-credential-save-cases.ts"
   ],
   "references": [
     {

@@ -28,7 +28,7 @@ import {
 } from "../../scripts/ci/chart-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const sourceSha = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
@@ -40,25 +40,39 @@ const env = {
   GITHUB_WORKFLOW_SHA: sourceSha,
   GITHUB_SHA: sourceSha,
   SOURCE_SHA: sourceSha,
-};
+} satisfies NodeJS.ProcessEnv;
 const repo = { full_name: repository, private: false, default_branch: "main" };
 // Package rejections shared by the GHCR verification and package validation tests.
 const publicOnly = { message: /^GHCR package must already exist and be public\./ };
 const linkFirst = { message: /^Link the package to Enterprise first\./ };
 
-const releaseImages = ["controller", "runtime"].map((image) => ({
-  image,
-  sourceSha,
-  workflowSha: sourceSha,
-  runId: "123",
-  attempt: "1",
-  ciRunId: "456",
-  ciAttempt: "1",
-  digest: `sha256:${(image === "controller" ? "c" : "d").repeat(64)}`,
-  destination: `ghcr.io/openclaw/openclaw-enterprise-${image}`,
-  tag: `sha-${sourceSha}`,
-}));
+type Rejection = {
+  message?: RegExp;
+  operator?: string;
+  actual?: unknown;
+  expected?: unknown;
+};
 
+function releaseImage<Image extends "controller" | "runtime">(image: Image) {
+  return {
+    image,
+    sourceSha,
+    workflowSha: sourceSha,
+    runId: "123",
+    attempt: "1",
+    ciRunId: "456",
+    ciAttempt: "1",
+    digest: `sha256:${(image === "controller" ? "c" : "d").repeat(64)}`,
+    destination: `ghcr.io/openclaw/openclaw-enterprise-${image}`,
+    tag: `sha-${sourceSha}`,
+  };
+}
+
+const controllerReceipt = releaseImage("controller");
+const runtimeReceipt = releaseImage("runtime");
+const releaseImages = [controllerReceipt, runtimeReceipt];
+
+// Chart receipts and Helm packaging
 test("chart release binds one exact image publication to the OCE version", () => {
   const expected = {
     sourceSha,
@@ -66,19 +80,22 @@ test("chart release binds one exact image publication to the OCE version", () =>
     attempt: "1",
     ciRunId: "456",
     ciAttempt: "1",
-    controllerImage: releaseImages[0].destination,
-    runtimeImage: releaseImages[1].destination,
+    controllerImage: controllerReceipt.destination,
+    runtimeImage: runtimeReceipt.destination,
   };
   assert.deepEqual(
     validateImageReceipt(releaseImages, expected).map(({ image }) => image),
     ["controller", "runtime"],
   );
   // Each rejection names the guard that must refuse it, so removing any one guard fails.
-  const runtime = (patch) => [releaseImages[0], { ...releaseImages[1], ...patch }];
+  const runtime = (patch: Partial<typeof runtimeReceipt>) => [
+    controllerReceipt,
+    { ...runtimeReceipt, ...patch },
+  ];
   for (const [changed, guard] of [
-    [[releaseImages[0]], { message: /^Expected two published images\./ }],
+    [[controllerReceipt], { message: /^Expected two published images\./ }],
     [
-      [releaseImages[0], releaseImages[0]],
+      [controllerReceipt, controllerReceipt],
       { message: /^Expected controller and runtime images once each\./ },
     ],
     [runtime({ sourceSha: "b".repeat(40) }), { actual: "b".repeat(40), expected: sourceSha }],
@@ -90,7 +107,7 @@ test("chart release binds one exact image publication to the OCE version", () =>
     [runtime({ destination: "ghcr.io/openclaw/other" }), { actual: "ghcr.io/openclaw/other" }],
     [runtime({ tag: "latest" }), { actual: "latest", expected: `sha-${sourceSha}` }],
     [runtime({ digest: "latest" }), { operator: "match", actual: "latest" }],
-  ]) {
+  ] satisfies [typeof releaseImages, Rejection][]) {
     assert.throws(() => validateImageReceipt(changed, expected), guard);
   }
   assert.throws(() => validateImageReceipt(releaseImages, { ...expected, sourceSha: "main" }), {
@@ -202,7 +219,11 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
   assert.match(metadata, /^version: 0\.0\.0-bootstrap\.123\.1$/m);
   assert.throws(
     () => execFileSync(helm, ["template", "oce", archive], { stdio: "pipe" }),
-    (error) => error.stderr?.toString().includes("This bootstrap marker is not a deployable"),
+    (error: unknown) =>
+      error instanceof Error &&
+      "stderr" in error &&
+      Buffer.isBuffer(error.stderr) &&
+      error.stderr.toString().includes("This bootstrap marker is not a deployable"),
   );
 });
 
@@ -225,6 +246,7 @@ test("chart push accepts a digest on stderr only after a successful exit", async
   });
 });
 
+// Release trust and GitHub metadata
 test("container release requires manual execution of the trusted main workflow", () => {
   for (const context of [
     { env, repo },
@@ -243,13 +265,13 @@ test("container release requires manual execution of the trusted main workflow",
         { GITHUB_REPOSITORY: "other/enterprise" },
         { message: /^Only the Enterprise repository may publish\./ },
       ],
-    ]) {
+    ] satisfies [Partial<typeof env>, Rejection][]) {
       assert.throws(() => validateContext({ ...context.env, ...patch }, context.repo), guard);
     }
     for (const [patch, actual, expected] of [
       [{ full_name: "other/enterprise" }, "other/enterprise", repository],
       [{ default_branch: "other" }, "other", "main"],
-    ]) {
+    ] satisfies [Partial<typeof repo>, string, string][]) {
       assert.throws(() => validateContext(context.env, { ...context.repo, ...patch }), {
         actual,
         expected,
@@ -336,7 +358,7 @@ test("container context rejects malformed repository privacy in preparation and 
 test("post-marker metadata retries only 404 and remains bounded", async (t) => {
   setEnvironment(t, { GH_TOKEN: "test-token" });
   // Accelerate only the backoff; the real client still interprets API responses.
-  t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
+  t.mock.method(globalThis, "setTimeout", (resolve: () => void) => queueMicrotask(resolve));
   const pkg = { name: "example", package_type: "container", visibility: "public" };
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () =>
@@ -361,18 +383,25 @@ test("post-marker metadata retries only 404 and remains bounded", async (t) => {
   }
 });
 
+type PackageMetadata = {
+  name: string;
+  package_type: string;
+  visibility: string | undefined;
+  repository?: Partial<typeof repo> | null | undefined;
+};
+
 test("GHCR publication accepts omitted repository metadata without approval and rejects unsafe packages", async (t) => {
   setEnvironment(t, { GH_TOKEN: "test-token" });
   const image = "ghcr.io/openclaw/openclaw-enterprise-controller";
   // GHCR can omit repository even for connected packages. The real validator
   // must accept that response without consulting deployment review history.
-  let pkg = {
+  let pkg: PackageMetadata = {
     name: "openclaw-enterprise-controller",
     package_type: "container",
     visibility: "public",
   };
-  t.mock.method(globalThis, "fetch", async (url) => {
-    const path = new URL(url).pathname;
+  t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0]) => {
+    const path = new URL(input instanceof Request ? input.url : input).pathname;
     if (path.endsWith("/versions")) {
       return Response.json([]);
     }
@@ -391,7 +420,7 @@ test("GHCR publication accepts omitted repository metadata without approval and 
     [{ repository: { ...repo, full_name: "openclaw/other" } }, linkFirst],
     [{ repository: { ...repo, private: true } }, { actual: true, expected: false }],
     [{ repository: {} }, linkFirst],
-  ]) {
+  ] satisfies [Partial<PackageMetadata>, Rejection][]) {
     const original = pkg;
     pkg = { ...pkg, ...patch };
     await assert.rejects(verifyGhcr(image, digest, `sha-${sourceSha}`), guard);
@@ -418,9 +447,17 @@ test("container release requires exact successful CI identity and its aggregate 
     conclusion: "success",
     run_attempt: 2,
   };
-  const jobs = [
-    { name: "CI Required", head_sha: sourceSha, conclusion: "success", status: "completed" },
-  ];
+  const required = {
+    name: "CI Required",
+    head_sha: sourceSha,
+    conclusion: "success",
+    status: "completed",
+  };
+  const jobs = [required];
+  type RunPatch = Omit<Partial<typeof run>, "repository" | "head_repository"> & {
+    repository?: Pick<typeof repo, "full_name">;
+    head_repository?: Pick<typeof repo, "full_name">;
+  };
   validateCi(run, workflow, jobs, sourceSha, "456", "2");
   const pushOnly = { message: /^PR and arbitrary dispatch checks are not release evidence\./ };
   const other = { full_name: "other/enterprise" };
@@ -437,7 +474,7 @@ test("container release requires exact successful CI identity and its aggregate 
     [{ status: "in_progress" }, { actual: "in_progress", expected: "completed" }],
     [{ conclusion: "failure" }, { message: /^The entire CI run must succeed\./ }],
     [{ run_attempt: 3 }, { actual: "3", expected: "2" }],
-  ]) {
+  ] satisfies [RunPatch, Rejection][]) {
     assert.throws(
       () => validateCi({ ...run, ...patch }, workflow, jobs, sourceSha, "456", "2"),
       guard,
@@ -448,7 +485,8 @@ test("container release requires exact successful CI identity and its aggregate 
     actual: "latest",
   });
   assert.throws(
-    () => validateCi({ ...run, run_attempt: "latest" }, workflow, jobs, sourceSha, "456"),
+    () =>
+      validateCi({ ...run, run_attempt: "latest" }, workflow, jobs, sourceSha, "456", undefined),
     {
       operator: "match",
       actual: "latest",
@@ -457,7 +495,7 @@ test("container release requires exact successful CI identity and its aggregate 
   for (const [patch, actual, expected] of [
     [{ path: ".github/workflows/other.yml" }, ".github/workflows/other.yml", workflow.path],
     [{ state: "disabled_manually" }, "disabled_manually", "active"],
-  ]) {
+  ] satisfies [Partial<typeof workflow>, string, string][]) {
     assert.throws(() => validateCi(run, { ...workflow, ...patch }, jobs, sourceSha, "456", "2"), {
       actual,
       expected,
@@ -467,16 +505,21 @@ test("container release requires exact successful CI identity and its aggregate 
   for (const [invalidJobs, guard] of [
     [[], oneRequired],
     [[...jobs, ...jobs], oneRequired],
-    [[{ ...jobs[0], conclusion: "skipped" }], { actual: "skipped", expected: "success" }],
-    [[{ ...jobs[0], status: "in_progress" }], { actual: "in_progress", expected: "completed" }],
-    [[{ ...jobs[0], head_sha: "b".repeat(40) }], { actual: "b".repeat(40), expected: sourceSha }],
-  ]) {
+    [[{ ...required, conclusion: "skipped" }], { actual: "skipped", expected: "success" }],
+    [[{ ...required, status: "in_progress" }], { actual: "in_progress", expected: "completed" }],
+    [[{ ...required, head_sha: "b".repeat(40) }], { actual: "b".repeat(40), expected: sourceSha }],
+  ] satisfies [typeof jobs, Rejection][]) {
     assert.throws(() => validateCi(run, workflow, invalidJobs, sourceSha, "456", "2"), guard);
   }
 });
 
 test("container publication requires main-only environments and public matching packages", () => {
-  const environment = {
+  const environment: {
+    name: string;
+    can_admins_bypass: boolean | undefined;
+    protection_rules: unknown[];
+    deployment_branch_policy: { custom_branch_policies: boolean; protected_branches: boolean };
+  } = {
     name: "container-publish",
     can_admins_bypass: false,
     protection_rules: [],
@@ -484,7 +527,7 @@ test("container publication requires main-only environments and public matching 
   };
   const policies = [{ name: "main", type: "branch" }];
   validateEnvironment(environment, policies);
-  const branchPolicy = (patch) => ({
+  const branchPolicy = (patch: Partial<typeof environment.deployment_branch_policy>) => ({
     ...environment,
     deployment_branch_policy: { ...environment.deployment_branch_policy, ...patch },
   });
@@ -498,7 +541,7 @@ test("container publication requires main-only environments and public matching 
     [{ ...environment, can_admins_bypass: undefined }, noBypass],
     [branchPolicy({ custom_branch_policies: false }), { actual: false, expected: true }],
     [branchPolicy({ protected_branches: true }), { actual: true, expected: false }],
-  ]) {
+  ] satisfies [typeof environment, Rejection][]) {
     assert.throws(() => validateEnvironment(changed, policies), guard);
   }
   for (const changed of [[{ name: "*", type: "branch" }], [{ name: "main", type: "tag" }]]) {
@@ -533,7 +576,7 @@ test("container publication requires main-only environments and public matching 
     [{ repository: { full_name: "openclaw/openclaw" } }, linkFirst],
     [{ name: "other" }, { actual: "other", expected: "openclaw-enterprise/controller" }],
     [{ package_type: "npm" }, { actual: "npm", expected: "container" }],
-  ]) {
+  ] satisfies [Partial<PackageMetadata>, Rejection][]) {
     assert.throws(() => validatePackage({ ...pkg, ...patch }, image), guard);
   }
   for (const destination of [
@@ -567,7 +610,7 @@ test("private packages are accepted only for explicit marker bootstrap", () => {
     [{ repository: { ...repo, private: true } }, { actual: true, expected: false }],
     [{ repository: { ...repo, full_name: "other/repository" } }, linkFirst],
     [{ name: "other" }, { actual: "other", expected: "openclaw-enterprise-controller" }],
-  ]) {
+  ] satisfies [Partial<PackageMetadata>, Rejection][]) {
     assert.throws(
       () =>
         validatePackage({ ...pkg, visibility: "private", ...patch }, image, {
@@ -578,6 +621,7 @@ test("private packages are accepted only for explicit marker bootstrap", () => {
   }
 });
 
+// OCI provenance, transport, and startup coverage
 test("prepared OCI metadata cannot cross source, image, attempt, CI or base-image boundaries", () => {
   const expected = {
     sourceSha,
@@ -615,7 +659,22 @@ test("prepared OCI metadata cannot cross source, image, attempt, CI or base-imag
   }
 });
 
-async function writeOciBlob(layout, value) {
+type BlobIdentity = { digest: string; size: number };
+type PlatformDescriptor = BlobIdentity & {
+  mediaType: string;
+  platform: { os: string; architecture: string; variant?: string };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+async function writeOciBlob(layout: string, value: object): Promise<BlobIdentity> {
   const bytes = Buffer.from(JSON.stringify(value));
   const hash = createHash("sha256").update(bytes).digest("hex");
   await writeFile(join(layout, "blobs/sha256", hash), bytes);
@@ -625,32 +684,35 @@ async function writeOciBlob(layout, value) {
 test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
   const directory = await temporaryDirectory(t, "enterprise-oci-platforms-");
   await mkdir(join(directory, "blobs/sha256"), { recursive: true });
-  const blob = (value) => writeOciBlob(directory, value);
-  const manifests = [];
-  const configs = [];
+  const blob = (value: object) => writeOciBlob(directory, value);
   // These are actual OCI scratch-image configs/manifests in a tar archive.
   // No replacement tar, Docker, or registry implementation decides the outcome.
-  for (const architecture of ["amd64", "arm64"]) {
+  async function writePlatform(architecture: Architecture) {
     const config = await blob({
       architecture,
       os: "linux",
       config: {},
       rootfs: { type: "layers", diff_ids: [] },
     });
-    configs.push(config);
     const manifest = await blob({
       schemaVersion: 2,
       mediaType: "application/vnd.oci.image.manifest.v1+json",
       config: { mediaType: "application/vnd.oci.image.config.v1+json", ...config },
       layers: [],
     });
-    manifests.push({
+    const descriptor: PlatformDescriptor = {
       mediaType: "application/vnd.oci.image.manifest.v1+json",
       ...manifest,
       platform: { os: "linux", architecture },
-    });
+    };
+    return { descriptor, configDigest: config.digest };
   }
-  async function archive(entries) {
+  const amd64 = await writePlatform("amd64");
+  const arm64 = await writePlatform("arm64");
+  const manifests = [amd64.descriptor, arm64.descriptor];
+  async function archive(
+    entries: PlatformDescriptor[],
+  ): Promise<[path: string, indexDigest: string]> {
     const index = {
       schemaVersion: 2,
       mediaType: "application/vnd.oci.image.index.v1+json",
@@ -671,54 +733,60 @@ test("OCI archive validation binds both platforms to their real manifest and con
   }
   assert.deepEqual(
     readArchivePlatforms(...(await archive([...manifests].reverse()))),
-    manifests.map((manifest, index) => ({
-      platform: `linux/${manifest.platform.architecture}`,
-      digest: manifest.digest,
-      configDigest: configs[index].digest,
+    [amd64, arm64].map(({ descriptor, configDigest }) => ({
+      platform: `linux/${descriptor.platform.architecture}`,
+      digest: descriptor.digest,
+      configDigest,
     })),
   );
   const both = ["linux/amd64", "linux/arm64"];
-  const arm64 = (patch) => [manifests[0], { ...manifests[1], ...patch }];
+  const withArm64 = (patch: Partial<PlatformDescriptor>) => [
+    amd64.descriptor,
+    { ...arm64.descriptor, ...patch },
+  ];
   for (const [invalid, guard] of [
-    [[manifests[0]], { actual: ["linux/amd64"], expected: both }],
-    [[manifests[1]], { actual: ["linux/arm64"], expected: both }],
-    [[manifests[0], manifests[0]], { actual: ["linux/amd64", "linux/amd64"], expected: both }],
+    [[amd64.descriptor], { actual: ["linux/amd64"], expected: both }],
+    [[arm64.descriptor], { actual: ["linux/arm64"], expected: both }],
     [
-      arm64({ platform: { os: "linux", architecture: "s390x" } }),
+      [amd64.descriptor, amd64.descriptor],
+      { actual: ["linux/amd64", "linux/amd64"], expected: both },
+    ],
+    [
+      withArm64({ platform: { os: "linux", architecture: "s390x" } }),
       { message: /^Unexpected image platform: linux\/s390x/ },
     ],
     // The descriptor claims amd64 for the arm64 manifest; its config blob decides.
     [
-      arm64({ platform: { os: "linux", architecture: "amd64" } }),
+      withArm64({ platform: { os: "linux", architecture: "amd64" } }),
       { message: /^Config platform mismatch\./ },
     ],
     [
-      arm64({ platform: { os: "linux", architecture: "arm64", variant: "v9" } }),
+      withArm64({ platform: { os: "linux", architecture: "arm64", variant: "v9" } }),
       { message: /^Unsupported platform variant\./ },
     ],
     [
-      arm64({ mediaType: "application/vnd.docker.distribution.manifest.v2+json" }),
+      withArm64({ mediaType: "application/vnd.docker.distribution.manifest.v2+json" }),
       { actual: "application/vnd.docker.distribution.manifest.v2+json" },
     ],
-    [arm64({ digest: "sha256:arm64" }), { operator: "match", actual: "sha256:arm64" }],
-  ]) {
+    [withArm64({ digest: "sha256:arm64" }), { operator: "match", actual: "sha256:arm64" }],
+  ] satisfies [PlatformDescriptor[], Rejection][]) {
     const input = await archive(invalid);
     assert.throws(() => readArchivePlatforms(...input), guard);
   }
   // Replacing an architecture's blob without updating its digest must fail, even when the
   // replacement is a valid config for the same platform.
   const replacement = JSON.stringify({ architecture: "arm64", os: "linux", replaced: true });
-  await writeFile(join(directory, "blobs/sha256", configs[1].digest.slice(7)), replacement);
+  await writeFile(join(directory, "blobs/sha256", arm64.configDigest.slice(7)), replacement);
   const corrupt = await archive(manifests);
   assert.throws(() => readArchivePlatforms(...corrupt), {
     actual: `sha256:${createHash("sha256").update(replacement).digest("hex")}`,
-    expected: configs[1].digest,
+    expected: arm64.configDigest,
   });
 });
 
 test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {
   setEnvironment(t, { GH_TOKEN: "test-token" });
-  t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
+  t.mock.method(globalThis, "setTimeout", (resolve: () => void) => queueMicrotask(resolve));
   const path = "orgs/openclaw/packages/container/example";
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => {
@@ -727,12 +795,14 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
       throw new TypeError("fetch failed with a secret diagnostic");
     }
     if (calls === 2) {
-      return {
-        status: 200,
-        text: async () => {
-          throw new Error("body interrupted");
-        },
-      };
+      // Headers arrived, but consuming the response body must retry the GET.
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.error(new Error("body interrupted"));
+          },
+        }),
+      );
     }
     return Response.json({ visibility: "public" });
   });
@@ -743,9 +813,8 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
     calls += 1;
     throw new TypeError("fetch failed with a secret diagnostic");
   });
-  await assert.rejects(github(path), (error) => {
-    assert.equal(error.message, `GitHub GET ${path} transport failed after 3 attempts.`);
-    return true;
+  await assert.rejects(github(path), {
+    message: `GitHub GET ${path} transport failed after 3 attempts.`,
   });
   assert.equal(calls, 3);
   for (const status of [401, 403, 404, 429, 500]) {
@@ -759,9 +828,23 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
   }
 });
 
+const architectures = ["amd64", "arm64"] as const;
+type Architecture = (typeof architectures)[number];
+const exportFaults = [
+  "platform",
+  "output-digest",
+  "layer",
+  "layer-size",
+  "source",
+  "attempt",
+  "image",
+  "emulated",
+] as const;
+type ExportFault = (typeof exportFaults)[number];
+
 test("native platform exports verify offline and assemble into a digest-bound archive", async (t) => {
   const directory = await temporaryDirectory(t, "container-platform-assembly-");
-  async function prepare(name, fault, created = "2026-09-25T07:23:02Z") {
+  async function prepare(name: string, fault?: ExportFault, created = "2026-09-25T07:23:02Z") {
     const output = join(directory, name);
     const env = {
       ...process.env,
@@ -774,14 +857,12 @@ test("native platform exports verify offline and assemble into a digest-bound ar
       CI_RUN_ID: "456",
       CI_ATTEMPT: "1",
       NODE_BASE_IMAGE: `docker.io/library/node:24@sha256:${"c".repeat(64)}`,
-    };
-    const expected = [];
-    const roots = [];
-    for (const arch of ["amd64", "arm64"]) {
+    } satisfies NodeJS.ProcessEnv;
+    async function writePlatform(arch: Architecture) {
       const layout = join(output, arch);
       await mkdir(join(layout, "blobs/sha256"), { recursive: true });
       await writeFile(join(layout, "oci-layout"), '{"imageLayoutVersion":"1.0.0"}');
-      const blob = async (value, mediaType) => ({
+      const blob = async (value: object, mediaType: string) => ({
         ...(await writeOciBlob(layout, value)),
         mediaType,
       });
@@ -802,11 +883,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
         },
         "application/vnd.oci.image.manifest.v1+json",
       );
-      expected.push({
-        platform: `linux/${arch}`,
-        digest: manifest.digest,
-        configDigest: config.digest,
-      });
+
       // BuildKit may export a manifest directly or wrap it in a one-platform index.
       const platformDescriptor = {
         ...manifest,
@@ -826,7 +903,6 @@ test("native platform exports verify offline and assemble into a digest-bound ar
               },
               "application/vnd.oci.image.index.v1+json",
             );
-      roots.push(descriptor.digest);
       await writeFile(
         join(layout, "index.json"),
         JSON.stringify({ schemaVersion: 2, manifests: [descriptor] }),
@@ -848,16 +924,25 @@ test("native platform exports verify offline and assemble into a digest-bound ar
           digest: fault === "output-digest" ? `sha256:${"a".repeat(64)}` : descriptor.digest,
         }),
       );
-      if (["layer", "layer-size"].includes(fault) && arch === "arm64") {
+      if ((fault === "layer" || fault === "layer-size") && arch === "arm64") {
         await writeFile(
           join(layout, "blobs/sha256", layer.digest.slice(7)),
           fault === "layer-size" ? "short" : Buffer.alloc(layer.size),
         );
       }
+      return {
+        rootDigest: descriptor.digest,
+        expected: {
+          platform: `linux/${arch}`,
+          digest: manifest.digest,
+          configDigest: config.digest,
+        },
+      };
     }
-    return { output, env, expected, roots };
+    const platforms = { amd64: await writePlatform("amd64"), arm64: await writePlatform("arm64") };
+    return { output, env, platforms };
   }
-  function run(input) {
+  function assemble(input: Awaited<ReturnType<typeof prepare>>) {
     return execFileSync(
       process.execPath,
       ["scripts/ci/container-release.mjs", "assemble", input.output],
@@ -870,7 +955,11 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   }
   // Build handoff retains bytes and provenance but cannot qualify an image before native smoke.
   const untested = await prepare("untested");
-  function buildCommand(command, arch, overrides = {}) {
+  function buildCommand(
+    command: "record-build" | "verify-build",
+    arch: Architecture,
+    overrides: NodeJS.ProcessEnv = {},
+  ) {
     return execFileSync(
       process.execPath,
       ["scripts/ci/container-release.mjs", command, join(untested.output, arch)],
@@ -879,7 +968,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
           ...untested.env,
           PLATFORM: `linux/${arch}`,
           IMAGE_DIGEST:
-            command === "record-build" ? untested.roots[arch === "amd64" ? 0 : 1] : undefined,
+            command === "record-build" ? untested.platforms[arch].rootDigest : undefined,
           ...overrides,
         },
         encoding: "utf8",
@@ -887,12 +976,13 @@ test("native platform exports verify offline and assemble into a digest-bound ar
       },
     );
   }
-  for (const arch of ["amd64", "arm64"]) {
+  for (const arch of architectures) {
     await unlink(join(untested.output, arch, "platform.json"));
     buildCommand("record-build", arch);
     const buildPath = join(untested.output, arch, "build.json");
-    const originalBuild = await readFile(buildPath);
-    assert.equal(JSON.parse(originalBuild).native, false);
+    const originalBuild = await readFile(buildPath, "utf8");
+    const build = record(JSON.parse(originalBuild));
+    assert.equal(build.native, false);
     buildCommand("verify-build", arch);
     await assert.rejects(readFile(join(untested.output, arch, "platform.json")), {
       code: "ENOENT",
@@ -909,14 +999,14 @@ test("native platform exports verify offline and assemble into a digest-bound ar
     ]) {
       assert.throws(() => buildCommand("verify-build", arch, overrides), /mismatch/);
     }
-    await writeFile(buildPath, JSON.stringify({ ...JSON.parse(originalBuild), native: true }));
+    await writeFile(buildPath, JSON.stringify({ ...build, native: true }));
     assert.throws(() => buildCommand("verify-build", arch), /Untested builds/);
     await writeFile(buildPath, originalBuild);
     const rootPath = join(
       untested.output,
       arch,
       "blobs/sha256",
-      untested.roots[arch === "amd64" ? 0 : 1].slice(7),
+      untested.platforms[arch].rootDigest.slice(7),
     );
     const originalRoot = await readFile(rootPath);
     await writeFile(rootPath, Buffer.alloc(originalRoot.length));
@@ -926,10 +1016,10 @@ test("native platform exports verify offline and assemble into a digest-bound ar
     assert.throws(() => buildCommand("verify-build", arch), /must not contain platform.json/);
     await unlink(join(untested.output, arch, "platform.json"));
   }
-  assert.throws(() => run(untested), /platform.json/);
+  assert.throws(() => assemble(untested), /platform.json/);
   const valid = await prepare("valid");
-  function verify(arch, overrides = {}) {
-    const i = arch === "amd64" ? 0 : 1;
+  function verify(arch: Architecture, overrides: NodeJS.ProcessEnv = {}): unknown {
+    const { expected, rootDigest } = valid.platforms[arch];
     return JSON.parse(
       execFileSync(
         process.execPath,
@@ -937,8 +1027,8 @@ test("native platform exports verify offline and assemble into a digest-bound ar
         {
           env: {
             ...valid.env,
-            PLATFORM: valid.expected[i].platform,
-            IMAGE_DIGEST: valid.roots[i],
+            PLATFORM: expected.platform,
+            IMAGE_DIGEST: rootDigest,
             ...overrides,
           },
           encoding: "utf8",
@@ -951,11 +1041,14 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   execFileSync("chmod", ["-R", "a-w", valid.output]);
   try {
     const before = snapshot();
-    for (const [i, arch] of ["amd64", "arm64"].entries()) {
-      const { platform, digest, configDigest } = valid.expected[i];
+    for (const arch of architectures) {
+      const {
+        expected: { platform, digest, configDigest },
+        rootDigest,
+      } = valid.platforms[arch];
       assert.deepEqual(verify(arch), {
         platform,
-        rootDigest: valid.roots[i],
+        rootDigest,
         manifestDigest: digest,
         configDigest,
       });
@@ -967,7 +1060,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
       { GITHUB_WORKFLOW_SHA: "e".repeat(40) },
       { IMAGE: "controller" },
       { PLATFORM: "linux/arm64" },
-      { IMAGE_DIGEST: valid.roots[1] },
+      { IMAGE_DIGEST: valid.platforms.arm64.rootDigest },
     ]) {
       assert.throws(() => verify("amd64", overrides), /mismatch/);
     }
@@ -979,8 +1072,8 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   }
   const manual = { CI_RUN_ID: "", CI_ATTEMPT: "" };
   const receiptPath = join(valid.output, "amd64/platform.json");
-  const original = await readFile(receiptPath);
-  const receipt = JSON.parse(original);
+  const original = await readFile(receiptPath, "utf8");
+  const receipt = record(JSON.parse(original));
   await writeFile(receiptPath, JSON.stringify({ ...receipt, ciRunId: "", ciAttempt: "" }));
   verify("amd64", manual);
   assert.throws(() => verify("amd64", { ...manual, CI_ATTEMPT: "1" }), /Expected a CI run ID/);
@@ -1003,30 +1096,36 @@ test("native platform exports verify offline and assemble into a digest-bound ar
     await unlink(path);
     await rename(outside, path);
   }
-  run(valid);
+  assemble(valid);
   const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
   execFileSync(process.execPath, ["scripts/ci/container-release.mjs", "seal", valid.output], {
     env: { ...valid.env, IMAGE_DIGEST: digest },
   });
-  const sealed = JSON.parse(await readFile(join(valid.output, "metadata.json"), "utf8"));
-  assert.deepEqual(sealed.platformDigests, valid.expected);
-  assert.equal(sealed.digest, digest);
-  const index = JSON.parse(
-    execFileSync("tar", [
-      "-xOf",
-      join(valid.output, "image.tar"),
-      `blobs/sha256/${digest.slice(7)}`,
-    ]),
-  );
+  const sealed = record(JSON.parse(await readFile(join(valid.output, "metadata.json"), "utf8")));
   assert.deepEqual(
-    index.manifests.map((descriptor) => Object.keys(descriptor)),
+    sealed.platformDigests,
+    architectures.map((arch) => valid.platforms[arch].expected),
+  );
+  assert.equal(sealed.digest, digest);
+  const index = record(
+    JSON.parse(
+      execFileSync(
+        "tar",
+        ["-xOf", join(valid.output, "image.tar"), `blobs/sha256/${digest.slice(7)}`],
+        { encoding: "utf8" },
+      ),
+    ),
+  );
+  assert.ok(Array.isArray(index.manifests));
+  assert.deepEqual(
+    index.manifests.map((descriptor: unknown) => Object.keys(record(descriptor))),
     [
       ["mediaType", "digest", "size", "platform"],
       ["mediaType", "digest", "size", "platform"],
     ],
   );
   const repeated = await prepare("repeated", undefined, "2026-09-25T07:39:43Z");
-  run(repeated);
+  assemble(repeated);
   const repeatedDigest = (await readFile(repeated.env.GITHUB_OUTPUT, "utf8"))
     .trim()
     .slice("digest=".length);
@@ -1034,34 +1133,33 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   for (const path of ["amd64", "arm64", "combined"]) {
     await assert.rejects(readFile(join(valid.output, path, "index.json")), { code: "ENOENT" });
   }
-  for (const fault of [
-    "platform",
-    "output-digest",
-    "layer",
-    "layer-size",
-    "source",
-    "attempt",
-    "image",
-    "emulated",
-  ]) {
+  for (const fault of exportFaults) {
     const invalid = await prepare(fault, fault);
-    assert.throws(() => run(invalid), /mismatch|native runner/);
+    assert.throws(() => assemble(invalid), /mismatch|native runner/);
     await assert.rejects(readFile(invalid.env.GITHUB_OUTPUT), { code: "ENOENT" });
   }
 });
 
 test("the runtime release smoke runs every Image Runtime Startup file", () => {
-  const { lanes } = loadTestSuites(
-    fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
+  const manifest = record(
+    loadTestSuites(fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url))),
   );
+  const lanes = Object.entries(record(manifest.lanes)).map(([name, lane]) => {
+    const { files } = record(lane);
+    assert.ok(Array.isArray(files), `Expected files in ${name}.`);
+    const paths = files.map((file: unknown) => {
+      const { path } = record(file);
+      assert.ok(typeof path === "string", `Expected a file path in ${name}.`);
+      return path;
+    });
+    return { name, paths };
+  });
   // Find runtime image files by path in every lane, so a file under a lane with any name
   // cannot drop out of the smoke silently.
   const runtimeImageFiles = [
     ...new Set(
-      Object.values(lanes).flatMap((lane) =>
-        lane.files
-          .map((file) => file.path)
-          .filter((path) => path.startsWith("tests/integration/runtime-image-")),
+      lanes.flatMap(({ paths }) =>
+        paths.filter((path) => path.startsWith("tests/integration/runtime-image-")),
       ),
     ),
   ];
@@ -1076,16 +1174,15 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     "tests/integration/runtime-image-model-probe-outcomes.test.ts": "images-runtime-startup-2",
   };
   for (const [path, lane] of Object.entries(notInSmoke)) {
-    const holders = Object.keys(lanes).filter((name) =>
-      lanes[name].files.some((file) => file.path === path),
-    );
+    const holders = lanes.filter(({ paths }) => paths.includes(path)).map(({ name }) => name);
     assert.ok(
       lane === null ? holders.length > 0 : holders.includes(lane),
       `${path} is no longer in ${lane ?? "a lane"}; review whether the release smoke should run it.`,
     );
   }
-  // Image Runtime Startup files outside the runtime-image-* names.
-  const otherSmokeFiles = [
+  // Keep the non-prefixed inventory independent so simultaneous omission from
+  // the production smoke list and the startup lanes still fails.
+  const nonPrefixedSmokeFiles = [
     "tests/helpers/workspace-gateway-relay-container.test.ts",
     "tests/integration/codex-plugin-stdio-real.test.ts",
     // Its OpenShell initializer case executes the pinned native workspace initializer.
@@ -1101,21 +1198,19 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     [...runtimeImageSmokeTests].sort(),
     [
       ...runtimeImageFiles.filter((path) => !Object.hasOwn(notInSmoke, path)),
-      ...otherSmokeFiles,
+      ...nonPrefixedSmokeFiles,
     ].sort(),
     "Keep the release smoke list equal to the runtime image files; drop a notInSmoke entry once the smoke runs it.",
   );
 
   // Second check, by lane name: every Image Runtime Startup part, and every file in them.
-  const startupLanes = Object.keys(lanes).filter((lane) =>
-    /^images-runtime-startup(?:-\d+)?$/.test(lane),
-  );
-  assert.deepEqual(startupLanes.sort(), [
+  const startupLanes = lanes.filter(({ name }) => /^images-runtime-startup(?:-\d+)?$/.test(name));
+  assert.deepEqual(startupLanes.map(({ name }) => name).sort(), [
     "images-runtime-startup",
     "images-runtime-startup-2",
     "images-runtime-startup-3",
   ]);
-  const laneFiles = startupLanes.flatMap((lane) => lanes[lane].files.map((file) => file.path));
+  const laneFiles = startupLanes.flatMap(({ paths }) => paths);
   assert.deepEqual(
     [...runtimeImageSmokeTests].sort(),
     laneFiles.filter((path) => !Object.hasOwn(notInSmoke, path)).sort(),
@@ -1129,12 +1224,7 @@ test("native smoke rejects a transported image with another configuration before
   const blobs = join(directory, "blobs/sha256");
   await mkdir(binary);
   await mkdir(blobs, { recursive: true });
-  async function blob(value) {
-    const bytes = JSON.stringify(value);
-    const hash = createHash("sha256").update(bytes).digest("hex");
-    await writeFile(join(blobs, hash), bytes);
-    return { digest: `sha256:${hash}`, size: Buffer.byteLength(bytes) };
-  }
+  const blob = (value: object) => writeOciBlob(directory, value);
   const architecture = process.arch === "x64" ? "amd64" : process.arch;
   const config = {
     architecture,
@@ -1144,7 +1234,7 @@ test("native smoke rejects a transported image with another configuration before
   };
   const original = await blob(config);
   const replacement = await blob({ ...config, config: { Cmd: ["unexpected"] } });
-  const manifest = (selected) => ({
+  const manifest = (selected: BlobIdentity) => ({
     schemaVersion: 2,
     mediaType: "application/vnd.oci.image.manifest.v1+json",
     config: { mediaType: "application/vnd.oci.image.config.v1+json", ...selected },

@@ -10,7 +10,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -57,6 +56,7 @@ import {
   registerPreflightCleanupTests,
 } from "../helpers/production-upgrade-preflight-cleanup.ts";
 import { registerRetainedFleetPreflightTests } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
+import { registerUpgradePreflightDraftBudgetTest } from "./production-upgrade-preflight-draft-budget.ts";
 
 // Every case owns its command server, state, and evidence directory. Three sibling
 // cases can overlap while the existing nested groups keep their own limits.
@@ -2465,7 +2465,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         const { stdout } = await execute(
           process.execPath,
           [
-            "scripts/upgrade-startup-preflight.mjs",
+            "scripts/upgrade-startup-preflight.ts",
             action,
             join(evidence, "preflight-rendered.jsonl"),
             component,
@@ -6754,53 +6754,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     );
   });
 
-  // The drafts get the part of the Secret's 1 MiB that the candidate Installation leaves: about
-  // 700 KiB of gzipped drafts fit beside a small Installation, but not beside a 400 KiB one.
-  test("the drafts budget is the Secret limit less the candidate Installation", async (t) => {
-    const directory = await temporaryDirectory(t, "occ-upgrade-drafts-");
-    const drafts = join(directory, "agent-drafts.jsonl");
-    await writeFile(
-      drafts,
-      JSON.stringify({
-        namespaceId: "ns_test",
-        agentId: "agt_test",
-        name: "Mail triage",
-        configurationId: "cfg_agt_test",
-        values: {
-          plugins: {
-            entries: {
-              knowledge: { config: { note: randomBytes(700 * 1024).toString("base64") } },
-            },
-          },
-        },
-      }) + "\n",
-    );
-    const gather = async (installationBytes) => {
-      const installation = join(directory, `installation-${installationBytes}.yaml`);
-      await writeFile(installation, "x".repeat(installationBytes));
-      return spawnResult(
-        process.execPath,
-        [
-          "scripts/upgrade-startup-preflight.mjs",
-          "drafts",
-          drafts,
-          installation,
-          join(directory, `drafts-${installationBytes}.json.gz`),
-        ],
-        { cwd: repository },
-      );
-    };
-    const small = await gather(1024);
-    assert.equal(small.status, 0, small.stderr);
-    assert.ok(statSync(join(directory, "drafts-1024.json.gz")).size > 640 * 1024);
-    const large = await gather(400 * 1024);
-    assert.equal(large.status, 3);
-    assert.match(
-      large.stderr,
-      /1 Agent drafts take \d+ bytes gzipped; with the 409600-byte candidate Installation that is over the 1048576-byte Secret limit\./,
-    );
-    assert.equal(existsSync(join(directory, "drafts-409600.json.gz")), false);
-  });
+  registerUpgradePreflightDraftBudgetTest(repository);
 
   // An API preflight that succeeds without either draft result, as an image that ignored the
   // drafts would, is not taken as a check: the helper stops before any writer stops.

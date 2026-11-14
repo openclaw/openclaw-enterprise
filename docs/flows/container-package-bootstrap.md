@@ -148,7 +148,7 @@ without deleting the original archives or rerunning their producer.
 - `node --test tests/integration/container-resume.test.ts` exercises the recovery
   CLI with HTTP/transport fixtures; a hosted run must prove actual GHCR transfer.
 
-- `node --test tests/integration/container-release.test.mjs` checks shared gate
+- `node --test tests/integration/container-release.test.ts` checks shared gate
   behavior, bootstrap 404 handling, and stderr-only Helm push output. The
   subprocess-stream case does not publish to GHCR.
 - Inspect the hosted job summary and authenticated package metadata for both
