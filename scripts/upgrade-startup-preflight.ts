@@ -226,39 +226,229 @@ ${identityCheck}
 process.stdout.write("installation-startup-ready\\n");
 `;
 
-const labels = (release) => ({
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+type JsonObject = { [key: string]: JsonValue | undefined };
+type Labels = Record<string, string | null>;
+type AgentDraftIdentity = {
+  namespaceId: JsonValue | undefined;
+  agentId: JsonValue | undefined;
+  name: JsonValue | undefined;
+  configurationId: JsonValue | undefined;
+};
+
+type NamedReference = JsonObject & { name: string };
+type KeyPath = JsonObject & { path: string };
+type VolumeMount = NamedReference & { mountPath: string; readOnly?: boolean | null };
+type Volume = NamedReference & {
+  secret?: (JsonObject & { secretName?: string | null; items?: KeyPath[] | null }) | null;
+};
+type EnvironmentVariable = NamedReference & { value?: JsonValue };
+type Container = NamedReference & {
+  image?: string;
+  workingDir?: JsonValue;
+  command?: JsonValue;
+  args?: JsonValue;
+  env?: EnvironmentVariable[] | null;
+  envFrom?: JsonValue[] | null;
+  volumeMounts?: VolumeMount[] | null;
+  securityContext?: JsonValue;
+  resources?: JsonValue;
+};
+type PreflightPodSpec = Partial<Pick<JsonObject, (typeof podFields)[number]>> & {
+  containers: [Container];
+  initContainers?: Container[];
+  volumes: Volume[];
+  restartPolicy: "Never";
+  activeDeadlineSeconds: number;
+  enableServiceLinks: false;
+};
+type JobManifest = {
+  apiVersion: "batch/v1";
+  kind: "Job";
+  metadata: { name: string; namespace: string; labels: Labels };
+  spec: {
+    backoffLimit: 0;
+    completions: 1;
+    parallelism: 1;
+    activeDeadlineSeconds: number;
+    template: { metadata: { labels: Labels | null | undefined }; spec: PreflightPodSpec };
+  };
+};
+
+type OwnedPod = JsonObject & { metadata: JsonObject & { ownerReferences: JsonValue[] } };
+
+function isObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function arrayOf<T>(value: unknown, item: (value: unknown) => value is T): value is T[] {
+  return Array.isArray(value) && value.every(item);
+}
+
+function nullable<T>(
+  value: unknown,
+  check: (value: unknown) => value is T,
+): value is T | null | undefined {
+  return value == null || check(value);
+}
+
+function isNamedReference(value: unknown): value is NamedReference {
+  return isObject(value) && isString(value.name);
+}
+
+function isKeyPath(value: unknown): value is KeyPath {
+  return isObject(value) && isString(value.path);
+}
+
+function isSecretVolume(value: unknown): value is NonNullable<Volume["secret"]> {
+  return (
+    isObject(value) &&
+    nullable(value.secretName, isString) &&
+    nullable(value.items, (items) => arrayOf(items, isKeyPath))
+  );
+}
+
+function isVolume(value: unknown): value is Volume {
+  return isNamedReference(value) && nullable(value.secret, isSecretVolume);
+}
+
+function isVolumeMount(value: unknown): value is VolumeMount {
+  return (
+    isNamedReference(value) &&
+    isString(value.mountPath) &&
+    nullable(value.readOnly, (flag) => typeof flag === "boolean")
+  );
+}
+
+function isContainer(value: unknown): value is Container {
+  return (
+    isNamedReference(value) &&
+    (value.image === undefined || isString(value.image)) &&
+    nullable(value.env, (env) => arrayOf(env, isNamedReference)) &&
+    nullable(value.envFrom, Array.isArray) &&
+    nullable(value.volumeMounts, (mounts) => arrayOf(mounts, isVolumeMount))
+  );
+}
+
+function isLabelMap(value: unknown): value is Labels {
+  // Kubernetes decodes null label values as empty strings.
+  return (
+    isObject(value) && Object.values(value).every((label) => label === null || isString(label))
+  );
+}
+
+function podSpec(template: JsonObject | undefined): JsonObject {
+  const spec = template?.spec ?? {};
+  if (!isObject(spec)) {
+    fail("the rendered chart contains an invalid preflight Pod spec.");
+  }
+  return spec;
+}
+
+// Find candidates by name before validating the fields that survive into the Job.
+function namedReferences(value: JsonValue | undefined): NamedReference[] {
+  if (!nullable(value, (items) => arrayOf(items, isNamedReference))) {
+    fail("the rendered chart contains an invalid preflight Pod spec.");
+  }
+  return value ?? [];
+}
+
+function preflightContainer(container: NamedReference): Container {
+  if (!isContainer(container)) {
+    fail("the rendered chart contains an invalid preflight Pod spec.");
+  }
+  return container;
+}
+
+function mountedVolumes(volumes: NamedReference[], mounted: Set<string>): Volume[] {
+  const selected = volumes.filter(({ name }) => mounted.has(name));
+  if (!arrayOf(selected, isVolume)) {
+    fail("the rendered chart contains an invalid preflight Pod spec.");
+  }
+  return selected;
+}
+
+function object(value: unknown): JsonObject | undefined {
+  return isObject(value) ? value : undefined;
+}
+
+function conditions(value: JsonValue | undefined): JsonValue[] {
+  if (value == null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    fail("cannot read startup preflight conditions.");
+  }
+  return value;
+}
+
+function observedStatusEntry(value: JsonValue): JsonObject | undefined {
+  // A null entry fails the observation when reached. Earlier terminal evidence may
+  // short-circuit the read, as it did before the command used TypeScript.
+  if (value === null) {
+    fail("cannot read startup preflight status entry.");
+  }
+  return object(value);
+}
+
+function parseJson(source: string): JsonValue {
+  try {
+    // JSON.parse without a reviver yields only JSON values.
+    return JSON.parse(source) as JsonValue;
+  } catch {
+    fail("cannot read startup preflight JSON.");
+  }
+}
+
+function readObject(path: string): JsonObject {
+  const value = parseJson(readFileSync(path, "utf8"));
+  if (!isObject(value)) {
+    fail("cannot read startup preflight JSON object.");
+  }
+  return value;
+}
+
+const labels = (release: string) => ({
   "app.kubernetes.io/name": "openclaw-enterprise",
   "app.kubernetes.io/instance": release,
   "app.kubernetes.io/component": "upgrade-preflight",
 });
 
-function fail(message) {
+function fail(message: string): never {
   process.stderr.write(`upgrade-startup-preflight: ${message}\n`);
   process.exit(1);
 }
 
 // `yq -o=json -I=0 '.'` prints one compact JSON document per line.
-function documents(path) {
+function documents(path: string): JsonObject[] {
   return readFileSync(path, "utf8")
     .split("\n")
     .filter((line) => line.trim().length > 0 && line.trim() !== "---")
-    .map((line) => JSON.parse(line))
-    .filter((document) => document !== null && typeof document === "object");
+    .map(parseJson)
+    .filter(isObject);
 }
 
 // Gathers the helper's per-Agent drafts (one JSON line each: the Agent, its name and its saved
 // Configuration) into one gzipped document, each Configuration once. Exits 3 when it would not
 // fit in the preflight Secret beside the candidate Installation.
-function drafts([draftsPath, installationPath, outputPath]) {
-  const agents = [];
-  const configurations = {};
+function drafts([draftsPath, installationPath, outputPath]: [string, string, string]): number {
+  const agents: AgentDraftIdentity[] = [];
+  const configurations: JsonObject = {};
   for (const line of readFileSync(draftsPath, "utf8").split("\n")) {
     if (line.trim().length === 0) {
       continue;
     }
-    const { namespaceId, agentId, name, configurationId, values } = JSON.parse(line);
+    const draft = parseJson(line);
+    if (draft == null) {
+      fail("cannot read a recorded Agent draft.");
+    }
+    const { namespaceId, agentId, name, configurationId, values } = object(draft) ?? {};
     agents.push({ namespaceId, agentId, name, configurationId });
-    configurations[configurationId] = values;
+    configurations[String(configurationId)] = values;
   }
   const document = gzipSync(JSON.stringify({ agents, configurations }));
   const installationBytes = readFileSync(installationPath).length;
@@ -274,7 +464,14 @@ function drafts([draftsPath, installationPath, outputPath]) {
 
 // The Secret holds the candidate Installation, under the chart's key, and the gzipped Agent
 // drafts when the helper passes them (an empty path passes none).
-function secret([installationPath, key, name, namespace, release, draftsPath]) {
+function secret([installationPath, key, name, namespace, release, draftsPath]: [
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+]) {
   if (draftsPath !== "" && key === draftsKey) {
     fail(`the Installation key ${draftsKey} is reserved for the Agent drafts.`);
   }
@@ -293,17 +490,21 @@ function secret([installationPath, key, name, namespace, release, draftsPath]) {
 // The refused drafts in a failed API preflight log, one line each for the operator. Names and
 // messages come from OCC; control characters are replaced so they cannot forge lines or
 // terminal sequences.
-function refusals([logPath]) {
-  const printable = (value) => String(value).replace(/[\p{Cc}\u2028\u2029]/gu, "?");
+function refusals([logPath]: [string]): string {
+  const printable = (value: string) => value.replace(/[\p{Cc}\u2028\u2029]/gu, "?");
   return readFileSync(logPath, "utf8")
     .split("\n")
     .filter((line) => line.startsWith(`${draftRefusal} `))
     .map((line) => {
-      const agent = JSON.parse(line.slice(draftRefusal.length + 1));
+      const parsed = parseJson(line.slice(draftRefusal.length + 1));
+      if (parsed == null) {
+        fail("cannot read an Agent draft refusal.");
+      }
+      const agent = object(parsed) ?? {};
       const name =
         typeof agent.name === "string" ? JSON.stringify(agent.name) : "(name unavailable)";
       return printable(
-        `  - Agent ${agent.agentId} ${name} in Namespace ${agent.namespaceId}: ${agent.message}`,
+        `  - Agent ${String(agent.agentId)} ${name} in Namespace ${String(agent.namespaceId)}: ${String(agent.message)}`,
       ).slice(0, 800);
     })
     .join("\n");
@@ -320,7 +521,7 @@ const podFields = [
   "hostAliases",
   "dnsPolicy",
   "dnsConfig",
-];
+] as const;
 const containerFields = [
   "name",
   "image",
@@ -330,15 +531,36 @@ const containerFields = [
   "volumeMounts",
   "securityContext",
   "resources",
-];
+] as const;
+
+function selectFields<T extends object, K extends keyof T>(
+  source: T,
+  fields: readonly K[],
+): Pick<T, K> {
+  const selected = {} as Pick<T, K>;
+  for (const field of fields) {
+    if (field in source) {
+      selected[field] = source[field];
+    }
+  }
+  return selected;
+}
 
 // Only the chart-owned preload and CA assembler may survive replacing the server
 // entrypoint. Never execute an arbitrary command from a rendered Deployment.
-function connectionPlan(spec, container, component, check) {
-  const refuse = () => fail("the rendered application connection prerequisites are unsupported.");
-  const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+function connectionPlan(
+  { initContainers, volumes }: { initContainers: NamedReference[]; volumes: NamedReference[] },
+  container: Container,
+  component: string,
+  check: string,
+): { args: string[]; initContainers: Container[] } {
+  function refuse(): never {
+    return fail("the rendered application connection prerequisites are unsupported.");
+  }
+  const same = (left: JsonValue | undefined, right: string[]) =>
+    JSON.stringify(left) === JSON.stringify(right);
   const entrypoint = `apps/controller/src/${component === "api" ? "server" : "worker"}.mjs`;
-  const assemblers = (spec.initContainers ?? []).filter(({ name }) => name === "assemble-api-ca");
+  const assemblers = initContainers.filter(({ name }) => name === "assemble-api-ca");
   if (container.command !== undefined && !same(container.command, ["node"])) {
     refuse();
   }
@@ -349,35 +571,44 @@ function connectionPlan(spec, container, component, check) {
     }
     return { args: plainArgs, initContainers: [] };
   }
-  const source = (name) =>
+  const source = (name: string) =>
     readFileSync(
       new URL(`../deploy/helm/openclaw-enterprise/files/${name}`, import.meta.url),
       "utf8",
     );
   const preload = `data:text/javascript;base64,${Buffer.from(source("check-api-database-ca.mjs")).toString("base64")}`;
-  const args = container.args ?? [];
+  const args: JsonValue[] | string =
+    Array.isArray(container.args) || typeof container.args === "string" ? container.args : [];
   const caPath = args[3];
+  const [assemblerReference] = assemblers;
   const caMounts = (container.volumeMounts ?? []).filter(
     ({ name, mountPath, readOnly }) =>
       name === "database-ca" && readOnly === true && typeof mountPath === "string",
   );
+  const [caMount] = caMounts;
   if (
     component !== "api" ||
     args.length !== 4 ||
     args[0] !== "--import" ||
     args[1] !== preload ||
     args[2] !== entrypoint ||
+    typeof caPath !== "string" ||
+    !caMount ||
     caMounts.length !== 1 ||
+    !assemblerReference ||
     assemblers.length !== 1
   ) {
     refuse();
   }
-  const caVolume = (spec.volumes ?? []).find(({ name }) => name === caMounts[0].name);
-  const caDirectory = caMounts[0].mountPath.replace(/\/$/, "");
-  if (!caVolume?.secret?.items?.some(({ path }) => caPath === `${caDirectory}/${path}`)) {
+  const assembler = preflightContainer(assemblerReference);
+  const caVolume = volumes.find(({ name }) => name === caMount.name);
+  const caDirectory = caMount.mountPath.replace(/\/$/, "");
+  if (
+    !isVolume(caVolume) ||
+    !caVolume.secret?.items?.some(({ path }) => caPath === `${caDirectory}/${path}`)
+  ) {
     refuse();
   }
-  const assembler = assemblers[0];
   const output = "/etc/openclaw/api-extra-ca/ca.crt";
   const inputs = ["/etc/openclaw/oidc-ca/ca.crt"];
   if (assembler.volumeMounts?.some(({ name }) => name === "gateway-ca")) {
@@ -406,19 +637,20 @@ function connectionPlan(spec, container, component, check) {
     const mounts = (assembler.volumeMounts ?? []).filter(({ mountPath }) =>
       path.startsWith(`${mountPath}/`),
     );
-    const volume =
-      mounts.length === 1 && (spec.volumes ?? []).find(({ name }) => name === mounts[0].name);
+    const [mount] = mounts;
+    const volume = mount && mounts.length === 1 && volumes.find(({ name }) => name === mount.name);
     if (
       !volume ||
-      (path === output ? !volume.emptyDir : !volume.secret || mounts[0].readOnly !== true)
+      (path === output ? !volume.emptyDir : !volume.secret || mount?.readOnly !== true)
     ) {
       refuse();
     }
   }
-  const outputMount = assembler.volumeMounts.find(({ mountPath }) =>
+  const outputMount = assembler.volumeMounts?.find(({ mountPath }) =>
     output.startsWith(`${mountPath}/`),
   );
   if (
+    !outputMount ||
     !container.volumeMounts?.some(
       ({ name, mountPath, readOnly }) =>
         name === outputMount.name && mountPath === outputMount.mountPath && readOnly === true,
@@ -430,63 +662,74 @@ function connectionPlan(spec, container, component, check) {
   // argv[2], exactly where its preload reads it before this program executes.
   return {
     args: ["--import", preload, ...plainArgs, "--", entrypoint, caPath],
-    initContainers: [
-      Object.fromEntries(
-        [...containerFields, "command", "args"]
-          .filter((field) => field in assembler)
-          .map((field) => [field, assembler[field]]),
-      ),
-    ],
+    initContainers: [selectFields(assembler, [...containerFields, "command", "args"] as const)],
   };
 }
 
 // Reuse the initialization Job's database identity and mounted CA, but run only
 // the candidate's read-only compatibility check. Never copy bootstrap or other
 // init containers into a preflight that runs while the incumbent is serving.
-function migrationJob(renderedPath, name, namespace, release, image, timeoutSeconds) {
-  const jobs = documents(renderedPath).filter(
-    (document) =>
+function migrationJob(
+  renderedPath: string,
+  name: string,
+  namespace: string,
+  release: string,
+  image: string,
+  timeoutSeconds: number,
+): JobManifest {
+  const jobs = documents(renderedPath).filter((document) => {
+    const labels = object(object(document.metadata)?.labels);
+    return (
       document.kind === "Job" &&
-      document.metadata?.labels?.["app.kubernetes.io/instance"] === release &&
-      document.metadata?.labels?.["app.kubernetes.io/component"] === "initialization",
-  );
-  if (jobs.length !== 1) {
+      labels?.["app.kubernetes.io/instance"] === release &&
+      labels["app.kubernetes.io/component"] === "initialization"
+    );
+  });
+  const [job] = jobs;
+  if (!job || jobs.length !== 1) {
     fail("the rendered chart must contain exactly one initialization Job.");
   }
-  const template = jobs[0].spec?.template;
-  const spec = template?.spec ?? {};
-  const matches = (spec.initContainers ?? []).filter((container) => container.name === "migration");
-  if (matches.length !== 1 || matches[0].image !== image) {
+  const template = object(object(job.spec)?.template);
+  const spec = podSpec(template);
+  const matches = namedReferences(spec.initContainers).filter(({ name }) => name === "migration");
+  const [migration] = matches;
+  if (!migration || matches.length !== 1 || migration.image !== image) {
     fail("the initialization Job must contain one migration container using the selected image.");
   }
-  const container = Object.fromEntries(
-    containerFields
-      .filter((field) => field in matches[0])
-      .map((field) => [field, matches[0][field]]),
-  );
+  const jobLabels = object(job.metadata)?.labels;
+  if (!isLabelMap(jobLabels)) {
+    fail("the rendered initialization Job contains invalid labels.");
+  }
+  const templateMetadata = object(template?.metadata);
+  if (!templateMetadata) {
+    fail("the rendered initialization Job must contain Pod metadata.");
+  }
+  const podLabels = templateMetadata.labels;
+  if (podLabels != null && !isLabelMap(podLabels)) {
+    fail("the rendered initialization Job contains invalid Pod labels.");
+  }
+  const container: Container = selectFields(preflightContainer(migration), containerFields);
   container.command = ["node"];
   container.args = ["scripts/migrate-production.mjs", "--check"];
   const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
   return {
     apiVersion: "batch/v1",
     kind: "Job",
-    metadata: { name, namespace, labels: jobs[0].metadata.labels },
+    metadata: { name, namespace, labels: jobLabels },
     spec: {
       backoffLimit: 0,
       completions: 1,
       parallelism: 1,
-      activeDeadlineSeconds: Number(timeoutSeconds),
+      activeDeadlineSeconds: timeoutSeconds,
       template: {
-        metadata: { labels: template.metadata.labels },
+        metadata: { labels: podLabels },
         spec: {
-          ...Object.fromEntries(
-            podFields.filter((field) => field in spec).map((field) => [field, spec[field]]),
-          ),
+          ...selectFields(spec, podFields),
           restartPolicy: "Never",
-          activeDeadlineSeconds: Number(timeoutSeconds),
+          activeDeadlineSeconds: timeoutSeconds,
           enableServiceLinks: false,
           containers: [container],
-          volumes: (spec.volumes ?? []).filter((volume) => mounted.has(volume.name)),
+          volumes: mountedVolumes(namedReferences(spec.volumes), mounted),
         },
       },
     },
@@ -498,6 +741,20 @@ function migrationJob(renderedPath, name, namespace, release, image, timeoutSeco
 // volume pointed at the temporary candidate Secret. Probes, ports and the chart's
 // other containers are left out; the Pod runs the startup check once. The stored
 // Installation name and ID come from the helper's `occ installation get` output.
+type JobArguments = [
+  renderedPath: string,
+  component: string,
+  name: string,
+  namespace: string,
+  release: string,
+  installationSecret: string,
+  candidateSecret: string,
+  image: string,
+  timeoutSeconds: number,
+  storedInstallationPath: string,
+  withDrafts: string,
+];
+
 function job(
   [
     renderedPath,
@@ -511,15 +768,13 @@ function job(
     timeoutSeconds,
     storedInstallationPath,
     withDrafts,
-  ],
+  ]: JobArguments,
   check = startupCheck,
-) {
+): JobManifest {
   if (component === "migration") {
     return migrationJob(renderedPath, name, namespace, release, image, timeoutSeconds);
   }
-  const { name: storedName, id: storedId } = JSON.parse(
-    readFileSync(storedInstallationPath, "utf8"),
-  );
+  const { name: storedName, id: storedId } = readObject(storedInstallationPath);
   if (typeof storedName !== "string") {
     fail("OCC did not return the stored Installation name.");
   }
@@ -529,31 +784,37 @@ function job(
   const deployments = documents(renderedPath).filter(
     (document) =>
       document.kind === "Deployment" &&
-      document.metadata?.name === `openclaw-enterprise-${component}`,
+      object(document.metadata)?.name === `openclaw-enterprise-${component}`,
   );
-  if (deployments.length !== 1) {
+  const [deployment] = deployments;
+  if (!deployment || deployments.length !== 1) {
     fail(
       `the rendered chart must contain exactly one openclaw-enterprise-${component} Deployment.`,
     );
   }
-  const spec = deployments[0].spec?.template?.spec ?? {};
-  const matches = [...(spec.containers ?? []), ...(spec.initContainers ?? [])].filter(
-    (container) => container.name === component,
+  const spec = podSpec(object(object(deployment.spec)?.template));
+  const initContainers = namedReferences(spec.initContainers);
+  const matches = [...namedReferences(spec.containers), ...initContainers].filter(
+    ({ name }) => name === component,
   );
-  if (matches.length !== 1) {
+  const [applicationReference] = matches;
+  if (!applicationReference || matches.length !== 1) {
     fail(`the rendered ${component} Deployment must contain exactly one ${component} container.`);
   }
-  if (matches[0].image !== image) {
+  if (applicationReference.image !== image) {
     fail(`the rendered ${component} container does not select the selected controller image.`);
   }
-  const container = Object.fromEntries(
-    containerFields
-      .filter((field) => field in matches[0])
-      .map((field) => [field, matches[0][field]]),
-  );
+  const application = preflightContainer(applicationReference);
+  const container: Container = selectFields(application, containerFields);
   // The image entrypoint is node; name it so a chart command cannot change the check.
   container.command = ["node"];
-  const plan = connectionPlan(spec, matches[0], component, check);
+  const volumeReferences = namedReferences(spec.volumes);
+  const plan = connectionPlan(
+    { initContainers, volumes: volumeReferences },
+    application,
+    component,
+    check,
+  );
   container.args = plan.args;
   // JSON keeps any control character in the name intact through the environment.
   // Kubernetes expands $(VAR) and turns $$ into $ in env values; doubling every $
@@ -572,14 +833,13 @@ function job(
       (item.volumeMounts ?? []).map((mount) => mount.name),
     ),
   );
-  const volumes = structuredClone(
-    (spec.volumes ?? []).filter((volume) => mounted.has(volume.name)),
-  );
+  const volumes = structuredClone(mountedVolumes(volumeReferences, mounted));
   const installation = volumes.filter((volume) => volume.secret?.secretName === installationSecret);
-  if (installation.length !== 1) {
+  const [installationVolume] = installation;
+  if (!installationVolume?.secret || installation.length !== 1) {
     fail(`the rendered ${component} container must mount the Installation Secret once.`);
   }
-  installation[0].secret.secretName = candidateSecret;
+  installationVolume.secret.secretName = candidateSecret;
   // The API Pod alone checks the Agent drafts: the worker would print the same refusals.
   if (withDrafts === "drafts" && component === "api") {
     const volume = "upgrade-preflight-agent-drafts";
@@ -604,15 +864,13 @@ function job(
       backoffLimit: 0,
       completions: 1,
       parallelism: 1,
-      activeDeadlineSeconds: Number(timeoutSeconds),
+      activeDeadlineSeconds: timeoutSeconds,
       template: {
         metadata: { labels: labels(release) },
         spec: {
-          ...Object.fromEntries(
-            podFields.filter((field) => field in spec).map((field) => [field, spec[field]]),
-          ),
+          ...selectFields(spec, podFields),
           restartPolicy: "Never",
-          activeDeadlineSeconds: Number(timeoutSeconds),
+          activeDeadlineSeconds: timeoutSeconds,
           enableServiceLinks: false,
           containers: [container],
           ...(plan.initContainers.length ? { initContainers: plan.initContainers } : {}),
@@ -628,17 +886,17 @@ function job(
 // grants the API and worker for their dependencies (DNS, PostgreSQL, Kubernetes
 // API, and the execution cluster API when enabled). The chart renders that policy
 // beside its default-deny policy; prints null for a render without it.
-function networkPolicy([renderedPath, name, namespace, release]) {
+function networkPolicy([renderedPath, name, namespace, release]: [string, string, string, string]) {
   const sources = documents(renderedPath).filter(
     (document) =>
       document.kind === "NetworkPolicy" &&
-      [
-        "openclaw-enterprise-dependency-egress",
-        "openclaw-enterprise-execution-api-egress",
-      ].includes(document.metadata?.name),
+      (object(document.metadata)?.name === "openclaw-enterprise-dependency-egress" ||
+        object(document.metadata)?.name === "openclaw-enterprise-execution-api-egress"),
   );
   if (
-    !sources.some((document) => document.metadata.name === "openclaw-enterprise-dependency-egress")
+    !sources.some(
+      (document) => object(document.metadata)?.name === "openclaw-enterprise-dependency-egress",
+    )
   ) {
     return null;
   }
@@ -649,71 +907,81 @@ function networkPolicy([renderedPath, name, namespace, release]) {
     spec: {
       podSelector: { matchLabels: labels(release) },
       policyTypes: ["Egress"],
-      egress: structuredClone(sources.flatMap((document) => document.spec?.egress ?? [])),
+      egress: structuredClone(sources.flatMap(({ spec }) => object(spec)?.egress ?? [])),
     },
   };
 }
 
 // Labels discover candidates; only the actual Job controller reference establishes ownership.
-function ownedPods(document, jobUid) {
+function isOwnedPod(value: unknown): value is OwnedPod {
+  return (
+    isObject(value) && isObject(value.metadata) && Array.isArray(value.metadata.ownerReferences)
+  );
+}
+
+function jobControllerReference(owner: JsonValue, jobUid: string): owner is JsonObject {
+  if (owner === null) {
+    fail("startup preflight Pod labels do not match its controller ownership.");
+  }
+  return (
+    isObject(owner) &&
+    owner.apiVersion === "batch/v1" &&
+    owner.kind === "Job" &&
+    owner.controller === true &&
+    owner.uid === jobUid
+  );
+}
+
+function ownedPods(document: JsonObject, jobUid: string): OwnedPod[] {
   if (!Array.isArray(document.items)) {
     fail("cannot read startup preflight child Pods.");
   }
-  const pods = document.items.filter(
-    (pod) =>
-      Array.isArray(pod.metadata?.ownerReferences) &&
-      pod.metadata.ownerReferences.some(
-        (owner) =>
-          owner.apiVersion === "batch/v1" &&
-          owner.kind === "Job" &&
-          owner.controller === true &&
-          owner.uid === jobUid,
-      ),
-  );
-  if (pods.length !== document.items.length) {
-    fail("startup preflight Pod labels do not match its controller ownership.");
-  }
-  return pods;
+  const items: JsonValue[] = document.items;
+  return items.map((pod) => {
+    if (
+      !isOwnedPod(pod) ||
+      !pod.metadata.ownerReferences.some((owner) => jobControllerReference(owner, jobUid))
+    ) {
+      fail("startup preflight Pod labels do not match its controller ownership.");
+    }
+    return pod;
+  });
 }
 
-function child([jobPath, jobUid, podsPath, previousUid]) {
-  const job = JSON.parse(readFileSync(jobPath, "utf8"));
-  if (job.metadata?.uid !== jobUid) {
+function child([jobPath, jobUid, podsPath, previousUid]: [string, string, string, string]): string {
+  const job = readObject(jobPath);
+  const jobMetadata = object(job.metadata);
+  if (jobMetadata?.uid !== jobUid) {
     fail("startup preflight Job identity changed.");
   }
-  const pods = ownedPods(JSON.parse(readFileSync(podsPath, "utf8")), jobUid);
+  const pods = ownedPods(readObject(podsPath), jobUid);
   if (pods.length > 1) {
     fail("startup preflight Job created more than one child Pod.");
   }
-  if (pods.length === 0) {
+  const [pod] = pods;
+  if (!pod) {
     if (previousUid) {
       fail("startup preflight child Pod disappeared.");
     }
     if (
-      job.status?.conditions?.some(
-        (condition) =>
-          ["Failed", "Complete"].includes(condition.type) && condition.status === "True",
-      )
+      conditions(object(job.status)?.conditions).some((condition) => {
+        const entry = observedStatusEntry(condition);
+        return (entry?.type === "Failed" || entry?.type === "Complete") && entry.status === "True";
+      })
     ) {
       fail("startup preflight Job ended without its child Pod evidence.");
     }
     return "";
   }
-  const pod = pods[0];
   if (
     typeof pod.metadata.name !== "string" ||
     !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(pod.metadata.name) ||
     typeof pod.metadata.uid !== "string" ||
     !pod.metadata.uid ||
     /[\s\p{C}]/u.test(pod.metadata.uid) ||
-    pod.metadata.namespace !== job.metadata.namespace ||
+    pod.metadata.namespace !== jobMetadata.namespace ||
     !pod.metadata.ownerReferences.some(
-      (owner) =>
-        owner.apiVersion === "batch/v1" &&
-        owner.kind === "Job" &&
-        owner.controller === true &&
-        owner.uid === jobUid &&
-        owner.name === job.metadata.name,
+      (owner) => jobControllerReference(owner, jobUid) && owner.name === jobMetadata.name,
     ) ||
     (previousUid && pod.metadata.uid !== previousUid)
   ) {
@@ -722,52 +990,75 @@ function child([jobPath, jobUid, podsPath, previousUid]) {
   return JSON.stringify(pod);
 }
 
-function remaining([jobPath, jobUid, podsPath, childPath, childUid]) {
-  const jobText = readFileSync(jobPath, "utf8").trim();
-  const job = jobText ? JSON.parse(jobText) : undefined;
-  const childText = readFileSync(childPath, "utf8").trim();
-  const pod = childText ? JSON.parse(childText) : undefined;
+function readConsumer(path: string): JsonValue | undefined {
+  const text = readFileSync(path, "utf8").trim();
+  return text ? parseJson(text) : undefined;
+}
+
+function consumerUid(consumer: JsonValue | undefined): JsonValue | undefined {
+  return object(object(consumer)?.metadata)?.uid;
+}
+
+function remaining([jobPath, jobUid, podsPath, childPath, childUid]: [
+  string,
+  string,
+  string,
+  string,
+  string,
+]): string {
+  const job = readConsumer(jobPath);
+  const pod = readConsumer(childPath);
+  const observedJobUid = consumerUid(job);
+  const observedChildUid = consumerUid(pod);
   // A present replacement is not an absence receipt for the saved consumer.
-  if ((job && job.metadata?.uid !== jobUid) || (pod && pod.metadata?.uid !== childUid)) {
+  if ((job && observedJobUid !== jobUid) || (pod && observedChildUid !== childUid)) {
     fail("startup preflight consumer identity changed during cleanup.");
   }
   return String(
-    Boolean(
-      job?.metadata?.uid === jobUid ||
-      ownedPods(JSON.parse(readFileSync(podsPath, "utf8")), jobUid).length ||
-      (childUid && pod?.metadata?.uid === childUid),
-    ),
+    observedJobUid === jobUid ||
+      ownedPods(readObject(podsPath), jobUid).length > 0 ||
+      (childUid !== "" && observedChildUid === childUid),
   );
 }
 
 // Prints Succeeded only after Job completion, Failed or JobFailed on failure,
 // Stuck:<reason> when operator action is required, Pending:<reason> while the Pod
 // cannot be scheduled (an autoscaler may add capacity), or Running.
-function phase([statusPath, jobPath]) {
-  const status = JSON.parse(readFileSync(statusPath, "utf8")).status ?? {};
-  const conditions = JSON.parse(readFileSync(jobPath, "utf8")).status?.conditions ?? [];
+function phase([statusPath, jobPath]: [string, string]): string {
+  const status = object(readObject(statusPath).status);
+  const jobStatus = object(readObject(jobPath).status);
   // Preserve failed-child diagnostics, but never let a successful child override its Job.
-  if (status.phase === "Failed") {
+  if (status?.phase === "Failed") {
     return "Failed";
   }
+  const jobConditions = conditions(jobStatus?.conditions);
   if (
-    conditions.some(
-      (condition) =>
-        ["Failed", "FailureTarget"].includes(condition.type) && condition.status === "True",
-    )
+    jobConditions.some((condition) => {
+      const entry = observedStatusEntry(condition);
+      return (
+        (entry?.type === "Failed" || entry?.type === "FailureTarget") && entry.status === "True"
+      );
+    })
   ) {
     return "JobFailed";
   }
-  if (status.phase === "Succeeded") {
-    return conditions.some(
-      (condition) => condition.type === "Complete" && condition.status === "True",
-    )
+  if (status?.phase === "Succeeded") {
+    return jobConditions.some((condition) => {
+      const entry = observedStatusEntry(condition);
+      return entry?.type === "Complete" && entry.status === "True";
+    })
       ? "Succeeded"
       : "Running";
   }
-  for (const container of status.containerStatuses ?? []) {
-    const reason = container.state?.waiting?.reason;
+  const containerStatuses = status?.containerStatuses ?? [];
+  if (!Array.isArray(containerStatuses) && typeof containerStatuses !== "string") {
+    fail("cannot read startup preflight container statuses.");
+  }
+  const containers: Iterable<JsonValue> = containerStatuses;
+  for (const container of containers) {
+    const reason = object(object(observedStatusEntry(container)?.state)?.waiting)?.reason;
     if (
+      typeof reason === "string" &&
       [
         "ErrImagePull",
         "ImagePullBackOff",
@@ -779,39 +1070,128 @@ function phase([statusPath, jobPath]) {
       return `Stuck:${reason}`;
     }
   }
-  const unscheduled = (status.conditions ?? []).find(
-    (condition) => condition.type === "PodScheduled" && condition.status === "False",
+  const unscheduled = object(
+    conditions(status?.conditions).find((condition) => {
+      const entry = observedStatusEntry(condition);
+      return entry?.type === "PodScheduled" && entry.status === "False";
+    }),
   );
-  if (unscheduled !== undefined) {
+  if (unscheduled) {
     const message = String(unscheduled.message ?? "")
       .replace(/\s+/g, " ")
       .slice(0, 300);
-    return `Pending:${unscheduled.reason ?? "Unschedulable"}: ${message}`;
+    return `Pending:${String(unscheduled.reason ?? "Unschedulable")}: ${message}`;
   }
   return "Running";
 }
 
-const [action, ...input] = process.argv.slice(2);
-const actions = {
-  drafts: [3, drafts],
-  secret: [6, (values) => JSON.stringify(secret(values))],
-  job: [11, (values) => JSON.stringify(job(values))],
-  "identity-job": [
-    11,
-    (values) =>
-      JSON.stringify(
-        job(values, identityCheck + 'process.stdout.write("installation-startup-ready\\n");'),
-      ),
-  ],
-  child: [4, child],
-  remaining: [5, remaining],
-  refusals: [1, refusals],
-  networkpolicy: [4, (values) => JSON.stringify(networkPolicy(values))],
-  phase: [2, phase],
-};
-if (!(action in actions) || input.length !== actions[action][0]) {
-  fail(
+type Command =
+  | { action: "drafts"; input: Parameters<typeof drafts>[0] }
+  | { action: "secret"; input: Parameters<typeof secret>[0] }
+  | { action: "job" | "identity-job"; input: JobArguments }
+  | { action: "child"; input: Parameters<typeof child>[0] }
+  | { action: "remaining"; input: Parameters<typeof remaining>[0] }
+  | { action: "refusals"; input: Parameters<typeof refusals>[0] }
+  | { action: "networkpolicy"; input: Parameters<typeof networkPolicy>[0] }
+  | { action: "phase"; input: Parameters<typeof phase>[0] };
+
+function parseCommand([action, ...input]: string[]): Command {
+  switch (action) {
+    case "job":
+    case "identity-job": {
+      const [
+        rendered,
+        component,
+        name,
+        namespace,
+        release,
+        installation,
+        candidate,
+        image,
+        timeout,
+        stored,
+        draftSelection,
+      ] = argumentsOf(input, 11);
+      return {
+        action,
+        input: [
+          rendered,
+          component,
+          name,
+          namespace,
+          release,
+          installation,
+          candidate,
+          image,
+          Number(timeout),
+          stored,
+          draftSelection,
+        ],
+      };
+    }
+    case "drafts":
+      return { action, input: argumentsOf(input, 3) };
+    case "secret":
+      return { action, input: argumentsOf(input, 6) };
+    case "child":
+      return { action, input: argumentsOf(input, 4) };
+    case "remaining":
+      return { action, input: argumentsOf(input, 5) };
+    case "refusals":
+      return { action, input: argumentsOf(input, 1) };
+    case "networkpolicy":
+      return { action, input: argumentsOf(input, 4) };
+    case "phase":
+      return { action, input: argumentsOf(input, 2) };
+    default:
+      return failUsage();
+  }
+}
+
+function failUsage(): never {
+  return fail(
     "expected drafts, secret, job, identity-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
   );
 }
-process.stdout.write(`${actions[action][1](input)}\n`);
+
+type ArgumentsOf<
+  Length extends number,
+  Result extends string[] = [],
+> = Result["length"] extends Length ? Result : ArgumentsOf<Length, [...Result, string]>;
+
+function argumentsOf<Length extends number>(input: string[], count: Length): ArgumentsOf<Length> {
+  if (input.length !== count) {
+    failUsage();
+  }
+  return input as ArgumentsOf<Length>;
+}
+
+function run(command: Command): string | number {
+  switch (command.action) {
+    case "drafts":
+      return drafts(command.input);
+    case "secret":
+      return JSON.stringify(secret(command.input));
+    case "job":
+      return JSON.stringify(job(command.input));
+    case "identity-job":
+      return JSON.stringify(
+        job(
+          command.input,
+          identityCheck + 'process.stdout.write("installation-startup-ready\\n");',
+        ),
+      );
+    case "child":
+      return child(command.input);
+    case "remaining":
+      return remaining(command.input);
+    case "refusals":
+      return refusals(command.input);
+    case "networkpolicy":
+      return JSON.stringify(networkPolicy(command.input));
+    case "phase":
+      return phase(command.input);
+  }
+}
+
+process.stdout.write(`${run(parseCommand(process.argv.slice(2)))}\n`);

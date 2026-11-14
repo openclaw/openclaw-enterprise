@@ -43,7 +43,7 @@ function fixture(t: TestContext) {
     arguments: [kubeconfig, "fixture", "control", "team", ...Array.from({ length: 11 }, () => "")],
     kubeconfigSha256: sha256(kubeconfig),
     scriptSha256: sha256(join(repository, "scripts/upgrade-production-images")),
-    startupPreflightSha256: sha256(join(repository, "scripts/upgrade-startup-preflight.mjs")),
+    startupPreflightSha256: sha256(join(repository, "scripts/upgrade-startup-preflight.ts")),
     preflightStateSha256: sha256(script),
     preflightCleanupSha256: sha256(join(repository, "scripts/lib/upgrade-preflight-cleanup.sh")),
   };
