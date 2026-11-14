@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const fixture = fileURLToPath(new URL("../fixtures/temporary-directory-file.mjs", import.meta.url));
+const fixture = fileURLToPath(new URL("../fixtures/temporary-directory-file.ts", import.meta.url));
 
 test("file temporary directories are gone once the test file ends", (t) => {
   const base = mkdtempSync(join(tmpdir(), "temporary-directory-test-"));
@@ -15,7 +15,11 @@ test("file temporary directories are gone once the test file ends", (t) => {
   const root = join(base, "tmp");
   mkdirSync(root);
   const record = join(base, "created.txt");
-  const env = { ...process.env, TMPDIR: root, TEMPORARY_DIRECTORY_RECORD: record };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    TMPDIR: root,
+    TEMPORARY_DIRECTORY_RECORD: record,
+  };
   delete env.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, ["--test", "--test-reporter=tap", fixture], {
     encoding: "utf8",

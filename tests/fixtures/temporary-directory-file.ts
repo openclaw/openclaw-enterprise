@@ -5,17 +5,17 @@ import test from "node:test";
 
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-// A test file run by tests/conformance/temporary-directory.test.mjs. It records every
+// A test file run by tests/conformance/temporary-directory.test.ts. It records every
 // directory it creates so the parent can check that none is left once the file ends.
-function created(prefix) {
+function created(prefix: string): string {
   const directory = fileTemporaryDirectory(prefix);
   writeFileSync(join(directory, "output.txt"), "rendered output\n");
-  appendFileSync(process.env.TEMPORARY_DIRECTORY_RECORD, `${directory}\n`);
+  appendFileSync(process.env.TEMPORARY_DIRECTORY_RECORD!, `${directory}\n`);
   return directory;
 }
 
 const moduleDirectory = created("module-scope-");
-let firstTestDirectory;
+let firstTestDirectory: string;
 
 test("a test creates a directory", () => {
   firstTestDirectory = created("first-test-");
