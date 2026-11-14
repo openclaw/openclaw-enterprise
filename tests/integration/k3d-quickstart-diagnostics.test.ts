@@ -135,7 +135,7 @@ test(
       join(run, "session.sh"),
       [
         "namespace=ns_00000000-0000-4000-8000-000000000001",
-        "agent=agent_00000000-0000-4000-8000-000000000001",
+        "agent=agt_00000000-0000-4000-8000-000000000001",
         'base="/namespaces/$namespace"',
         "CONSOLE_ORIGIN=https://console.fixture.oce.localhost",
         'request() { printf \'%s\\n\' \'{"data":{"activeRevisionId":"rev_00000000-0000-4000-8000-000000000001"}}\'; }',
