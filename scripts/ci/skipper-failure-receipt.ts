@@ -40,6 +40,7 @@ type Checkpoint =
   | ["skipper_gateway_exec_exit_code", number]
   | ["skipper_gateway_exec_signal", string]
   | ["skipper_gateway_exec_code", string]
+  | ["skipper_gateway_exec_helper_entered", true]
   | ["skipper_http_status", number]
   | ["skipper_gateway_category", string]
   | ["skipper_gateway_transport_cause", string]
@@ -118,7 +119,7 @@ export async function recordSkipperTestFailure(
     );
   }
   if (diagnostic?.operation === "gateway-exec") {
-    const { exitCode, signal, code } = diagnostic;
+    const { exitCode, signal, code, helperEntered } = diagnostic;
     if (exitCode !== undefined) {
       await recordSkipperCheckpoint("skipper_gateway_exec_exit_code", exitCode);
     }
@@ -127,6 +128,9 @@ export async function recordSkipperTestFailure(
     }
     if (code !== undefined) {
       await recordSkipperCheckpoint("skipper_gateway_exec_code", code);
+    }
+    if (helperEntered) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_helper_entered", helperEntered);
     }
   }
   if (diagnostic?.operation === "gateway-chat") {
@@ -219,6 +223,7 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
             modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
             signal: process.env.SKIPPER_GATEWAY_EXEC_SIGNAL,
             code: process.env.SKIPPER_GATEWAY_EXEC_CODE,
+            helperEntered: process.env.SKIPPER_GATEWAY_EXEC_HELPER_ENTERED === "true",
           })
         : undefined;
     const gatewayExec = {
@@ -228,6 +233,7 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
       ...(execDiagnostic?.exitCode !== undefined ? { exitCode: execDiagnostic.exitCode } : {}),
       ...(execDiagnostic?.signal !== undefined ? { signal: execDiagnostic.signal } : {}),
       ...(execDiagnostic?.code !== undefined ? { code: execDiagnostic.code } : {}),
+      ...(execDiagnostic?.helperEntered ? { helperEntered: execDiagnostic.helperEntered } : {}),
     };
     const receipt = {
       version: 1,

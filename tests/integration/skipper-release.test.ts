@@ -861,7 +861,57 @@ test("installed Skipper failure retention preserves known checkpoints and withho
   assert.ok(selectedBlock.includes('assert.fail("selected test runner failed")'));
   await t.test("gateway exec diagnostics survive the selected failure receipt", async (t) => {
     const exec = promisify(execFile);
+    let requests = 0;
+    const gateway = createServer((req, res) => {
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/v1/chat/completions");
+      req.resume();
+      requests++;
+      res.end(JSON.stringify({ choices: [{ message: { content: "reply" } }] }));
+    });
+    gateway.listen(0, "127.0.0.1");
+    await once(gateway, "listening");
+    t.after(() => new Promise<void>((done) => gateway.close(() => done())));
+    const address = gateway.address();
+    assert.ok(address && typeof address !== "string");
+    const env = {
+      OPENCLAW_GATEWAY_PORT: String(address.port),
+      OPENCLAW_GATEWAY_PASSWORD: "private-canary",
+    };
+    const options = {
+      gatewayChatPhase: "native-git",
+      marker: "private-canary",
+      sessionKey: "private-canary",
+      modelEvents: async () => [],
+      runtimeLogs: async () => [],
+      checkpoint: async () => {},
+    };
+    // Keep the successful call's stderr only to replay it as foreign evidence.
+    let priorStderr = "";
+    assert.equal(
+      await sendSkipperChat({
+        ...options,
+        enter: async (_node: string, ...args: string[]) => {
+          const result = await exec(process.execPath, args, { env, timeout: 10_000 });
+          priorStderr = result.stderr;
+          assert.deepEqual(JSON.parse(result.stdout), { status: 200, content: "reply" });
+          return result.stdout;
+        },
+      }),
+      "reply",
+    );
+    assert.equal(requests, 1);
     for (const [name, script, expected] of [
+      [
+        "entered",
+        'process.stderr.write("private-canary\\n"); process.exitCode = 1;',
+        {
+          exitCode: 1,
+          helperEntered: true,
+        },
+      ],
+      ["before-entry", "process.exitCode = 1;", { exitCode: 1 }],
+      ["foreign-entry", "process.exitCode = 1;", { exitCode: 1 }],
       ["exit", 'process.stderr.write("private-canary"); process.exit(23)', { exitCode: 23 }],
       ["signal", 'process.kill(process.pid, "SIGTERM")', { signal: "SIGTERM" }],
       [
@@ -871,28 +921,54 @@ test("installed Skipper failure retention preserves known checkpoints and withho
       ],
     ] as const) {
       await t.test(name, async (t) => {
+        if (name === "foreign-entry") {
+          assert.match(priorStderr, /^\nskipper-gateway-entry:[\da-f-]{36}\n$/);
+        }
+        const before = requests;
+        let original: unknown;
         let failure: Error | undefined;
         await assert.rejects(
           sendSkipperChat({
-            gatewayChatPhase: "native-git",
-            marker: "private-canary",
-            sessionKey: "private-canary",
-            enter: async () =>
-              (
-                await exec(process.execPath, ["-e", script], {
-                  maxBuffer: name === "code" ? 1 : 1024,
-                })
-              ).stdout,
-            modelEvents: async () => [],
-            runtimeLogs: async () => [],
-            checkpoint: async () => {},
+            ...options,
+            enter: async (_node: string, flag: string, program: string, ...args: string[]) => {
+              // The local execFile replaces kubectl. For the positive case the
+              // generated receiver still runs, and the child reports exit 1.
+              let source = script;
+              if (name === "entered") {
+                source += "\n" + program;
+              }
+              if (name === "before-entry") {
+                // Echoing the invocation argument cannot supply the helper's frame.
+                source += `process.stderr.write(${JSON.stringify("\n" + args.at(-1) + "\n")});`;
+              } else if (name === "foreign-entry") {
+                source += `process.stderr.write(${JSON.stringify(priorStderr)});`;
+              }
+              const localArgs = name === "entered" ? [flag, source, ...args] : [flag, source];
+              try {
+                return (
+                  await exec(process.execPath, localArgs, {
+                    env,
+                    timeout: 10_000,
+                    maxBuffer: name === "code" ? 1 : 1024,
+                  })
+                ).stdout;
+              } catch (error) {
+                original = error;
+                throw error;
+              }
+            },
           }),
           (error: Error) => {
             failure = error;
-            return true;
+            return error === original;
           },
         );
+        assert.equal(requests, before + Number(name === "entered"));
         assert.ok(failure);
+        if (name === "entered") {
+          assert.ok("stdout" in failure && typeof failure.stdout === "string");
+          assert.deepEqual(JSON.parse(failure.stdout), { status: 200, content: "reply" });
+        }
         const { value } = await reporter([
           { type: "test:fail", data: { name, details: { error: { cause: failure } } } },
         ]).next();
@@ -943,7 +1019,10 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         );
         assert.equal(JSON.parse(published).lastTestCheckpoint, released);
         assert.equal(JSON.parse(published).gatewayChatPhase, undefined);
-        assert.doesNotMatch(published + (await readFile(stageOutput, "utf8")), /private-canary/);
+        assert.doesNotMatch(
+          published + (await readFile(stageOutput, "utf8")),
+          /private-canary|skipper-gateway-entry:|chat\/completions/,
+        );
       });
     }
 
@@ -956,8 +1035,13 @@ test("installed Skipper failure retention preserves known checkpoints and withho
             kind: "skipper-operation",
             operation,
             ...(operation === "gateway-exec"
-              ? { exitCode: "23", signal: "SIGTERM\nprivate-canary", code: "private-canary" }
-              : { exitCode: 23, signal: "SIGTERM", code: "ENOENT" }),
+              ? {
+                  exitCode: "23",
+                  signal: "SIGTERM\nprivate-canary",
+                  code: "private-canary",
+                  helperEntered: "true",
+                }
+              : { exitCode: 23, signal: "SIGTERM", code: "ENOENT", helperEntered: true }),
           },
         }),
         ledgerPath,
@@ -996,6 +1080,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
           SKIPPER_GATEWAY_EXEC_EXIT_CODE: entry.exitCode,
           SKIPPER_GATEWAY_EXEC_SIGNAL: entry.signal,
           SKIPPER_GATEWAY_EXEC_CODE: entry.code,
+          SKIPPER_GATEWAY_EXEC_HELPER_ENTERED: "true\nprivate-canary",
         }).status,
         0,
       );
@@ -1020,6 +1105,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
           SKIPPER_GATEWAY_EXEC_EXIT_CODE: "23",
           SKIPPER_GATEWAY_EXEC_SIGNAL: "SIGTERM",
           SKIPPER_GATEWAY_EXEC_CODE: "ENOENT",
+          SKIPPER_GATEWAY_EXEC_HELPER_ENTERED: "true",
         }).status,
         0,
       );
