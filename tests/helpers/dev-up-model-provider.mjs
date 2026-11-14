@@ -1,3 +1,5 @@
+// @ts-check
+
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -5,6 +7,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import { registryImage } from "../../scripts/ci/fixture-support-images.mjs";
 import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import { availablePort } from "./available-port.ts";
@@ -19,6 +23,30 @@ const ownerLabel = "dev.openclaw.model-provider-owner";
 const nodeBaseImage =
   "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a";
 
+/**
+ * @typedef {{
+ *   env?: NodeJS.ProcessEnv,
+ *   input?: string,
+ *   signal?: AbortSignal,
+ *   timeout?: number,
+ *   killSignal?: NodeJS.Signals,
+ * }} CommandOptions
+ * @typedef {import("node:child_process").ExecFileOptions & CommandOptions} LauncherCommandOptions
+ * @typedef {{stdout: string, stderr: string}} CommandOutput
+ * @typedef {(command: string, args: string[], options: CommandOptions) => Promise<CommandOutput>} RunCommand
+ * @typedef {(args: string[], options?: CommandOptions) => Promise<CommandOutput>} DockerCommand
+ * @typedef {"container" | "image" | "network"} ResourceKind
+ * @typedef {{kind: ResourceKind, name: string, uncertain?: true}} Resource
+ * @typedef {{requestAt: number, completedAt: number, transport: "https" | "websocket", status: 200}} CompletedTurn
+ * @typedef {{signal: AbortSignal, after: (cleanup: () => Promise<void>) => void}} LauncherScope
+ */
+
+/**
+ * @param {string} command
+ * @param {string[]} args
+ * @param {CommandOptions} [options]
+ * @returns {Promise<CommandOutput>}
+ */
 function execute(
   command,
   args,
@@ -26,11 +54,19 @@ function execute(
 ) {
   signal?.throwIfAborted();
   return new Promise((resolveRun, reject) => {
+    /** @type {{error: Error | null, stdout: string, stderr: string} | undefined} */
     let result;
     const child = execFile(
       command,
       args,
-      { cwd: repository, env, signal, timeout, killSignal, maxBuffer: 16 * 1024 * 1024 },
+      {
+        cwd: repository,
+        ...(env === undefined ? {} : { env }),
+        ...(signal === undefined ? {} : { signal }),
+        timeout,
+        killSignal,
+        maxBuffer: 16 * 1024 * 1024,
+      },
       (error, stdout, stderr) => {
         result = { error, stdout, stderr };
       },
@@ -39,6 +75,7 @@ function execute(
     // including the launcher's graceful cancellation, before releasing its owner.
     const deadline = setTimeout(() => child.kill("SIGKILL"), timeout + 10_000);
     deadline.unref();
+    /** @type {NodeJS.Timeout | undefined} */
     let force;
     const abort = () => {
       force = setTimeout(() => child.kill("SIGKILL"), 10_000);
@@ -49,6 +86,10 @@ function execute(
       clearTimeout(force);
       clearTimeout(deadline);
       signal?.removeEventListener("abort", abort);
+      if (!result) {
+        reject(new Error("Command closed without a result"));
+        return;
+      }
       const { error, stdout, stderr } = result;
       if (error) {
         Object.assign(error, {
@@ -61,18 +102,25 @@ function execute(
         resolveRun({ stdout, stderr });
       }
     });
+    assert.ok(child.stdin, "Command must provide a standard input stream");
     child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
 }
 
+/**
+ * @param {string} description
+ * @param {() => Promise<{done: boolean}>} operation
+ * @param {number} timeout
+ * @param {AbortSignal} signal
+ */
 async function waitFor(description, operation, timeout, signal) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     const result = await operation();
     if (result.done) {
-      return result.value;
+      return;
     }
     await delay(1_000, undefined, { signal });
   }
@@ -82,6 +130,10 @@ async function waitFor(description, operation, timeout, signal) {
 // This owner exists before any creation request. The caller registers cleanup
 // before prepare(), and retains this directory if either cluster or fixture
 // teardown fails. The journal also covers creation with a lost engine response.
+/**
+ * @param {{directory: string, cluster: string, environment: NodeJS.ProcessEnv,
+ *   signal?: AbortSignal, run?: RunCommand}} options
+ */
 export function createDevUpModelProvider({
   directory,
   cluster,
@@ -91,9 +143,16 @@ export function createDevUpModelProvider({
 }) {
   const closing = new AbortController();
   const lifetime = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;
+  /** @type {Set<Promise<unknown>>} */
   const pending = new Set();
+  /** @type {ReturnType<typeof prepare> | undefined} */
   let preparation;
+  /** @type {Promise<void> | undefined} */
   let cleaning;
+  /**
+   * @template T
+   * @param {() => Promise<T>} operation
+   */
   const admitted = async (operation) => {
     lifetime.throwIfAborted();
     const work = Promise.resolve().then(() => {
@@ -113,6 +172,7 @@ export function createDevUpModelProvider({
   };
   const owner = randomUUID();
   const prefix = `oce-dev-provider-${owner.slice(0, 8)}`;
+  /** @type {Resource[]} */
   const resources = [];
   const env = { ...environment };
   const journal = join(directory, "resources.json");
@@ -126,13 +186,16 @@ export function createDevUpModelProvider({
   const subnetBase = `11.${octets[0]}.${octets[1]}`;
   const modelAddress = `${subnetBase}.2`;
   const nodeAddress = `${subnetBase}.3`;
+  /** @param {string} program @param {string[]} args @param {CommandOptions} [options] */
   const command = (program, args, options = {}) => {
     lifetime.throwIfAborted();
     return run(program, args, { env, ...options, signal: lifetime });
   };
+  /** @type {DockerCommand} */
   const docker = (args, options) => command("docker", args, options);
   // Cleanup has its own bounded commands; the cancelled producer signal must
   // never suppress recovery. Journal writes also serialize the two image builds.
+  /** @type {DockerCommand} */
   const cleanupDocker = (args) => run("docker", args, { env });
   let recording = Promise.resolve();
   const record = (remaining = resources) => {
@@ -148,13 +211,32 @@ export function createDevUpModelProvider({
     return next;
   };
 
+  /**
+   * @param {ResourceKind} kind
+   * @param {string} name
+   * @param {DockerCommand} [invoke]
+   * @returns {Promise<unknown>}
+   */
   async function inspect(kind, name, invoke = docker) {
     try {
-      return JSON.parse((await invoke([kind, "inspect", name])).stdout)[0];
+      /** @type {unknown} */
+      const response = JSON.parse((await invoke([kind, "inspect", name])).stdout);
+      // An unusable response cannot prove absence. Keep an empty result
+      // distinct from an explicit null entry, which still blocks reservation.
+      if (response === null) {
+        throw new Error("Engine inspect returned null");
+      }
+      if (Array.isArray(response)) {
+        /** @type {readonly unknown[]} */
+        const entries = response;
+        return entries[0];
+      }
+      return typeof response === "string" ? response[0] : asRecord(response)?.[0];
     } catch (error) {
       // Match Docker's whole not-found diagnostic for this resource. Other inspect
       // failures must leave the cleanup obligation in the recovery journal.
-      const detail = error.stderr?.trim() ?? "";
+      const stderr = asRecord(error)?.stderr;
+      const detail = typeof stderr === "string" ? stderr.trim() : "";
       if (
         detail === `Error response from daemon: No such ${kind}: ${name}` ||
         (kind === "network" && detail === `Error response from daemon: network ${name} not found`)
@@ -165,9 +247,16 @@ export function createDevUpModelProvider({
     }
   }
 
+  /**
+   * @param {string} name
+   * @param {string[]} args
+   * @param {CommandOptions} [options]
+   * @param {(error: unknown) => void} [onCommandFailure]
+   */
   async function create(name, args, options, onCommandFailure) {
     lifetime.throwIfAborted();
     const resource = resources.find((entry) => entry.name === name);
+    assert.ok(resource, `Fixture resource not reserved: ${name}`);
     resource.uncertain = true;
     try {
       await record();
@@ -177,7 +266,7 @@ export function createDevUpModelProvider({
       delete resource.uncertain;
       throw error;
     }
-    await Promise.resolve(docker(args, options)).catch((error) => {
+    await Promise.resolve(docker(args, options)).catch((/** @type {unknown} */ error) => {
       onCommandFailure?.(error);
       throw error;
     });
@@ -185,6 +274,7 @@ export function createDevUpModelProvider({
     await record();
   }
 
+  /** @param {ResourceKind} kind @param {string} name */
   async function reserve(kind, name) {
     assert.equal(await inspect(kind, name), undefined, `Fixture resource already exists: ${name}`);
     lifetime.throwIfAborted();
@@ -192,17 +282,26 @@ export function createDevUpModelProvider({
     await record();
   }
 
+  /** @param {Resource} resource @param {unknown} value */
   function owned(resource, value) {
-    assert.ok(value, `Fixture resource missing: ${resource.name}`);
-    const labels = resource.kind === "network" ? value.Labels : value.Config?.Labels;
-    assert.equal(labels?.[ownerLabel], owner, `Refusing unowned ${resource.kind} ${resource.name}`);
-    return value;
+    const object = asRecord(value);
+    assert.ok(object, `Fixture resource missing: ${resource.name}`);
+    const labels = resource.kind === "network" ? object.Labels : asRecord(object.Config)?.Labels;
+    assert.equal(
+      asRecord(labels)?.[ownerLabel],
+      owner,
+      `Refusing unowned ${resource.kind} ${resource.name}`,
+    );
+    return object;
   }
 
+  /** @param {string} image */
   async function imageConfig(image) {
-    const value = await inspect("image", image);
+    const value = asRecord(await inspect("image", image));
     assert.ok(value, `Image missing: ${image}`);
-    return value.Config;
+    const config = asRecord(value.Config);
+    assert.ok(config, `Image configuration missing: ${image}`);
+    return config;
   }
 
   async function prepare() {
@@ -217,11 +316,27 @@ export function createDevUpModelProvider({
     // mutate the selected Docker context or any process-global environment.
     if (!env.DOCKER_HOST || env.DOCKER_CONTEXT) {
       const context = env.DOCKER_CONTEXT ?? (await docker(["context", "show"])).stdout.trim();
+      /** @type {unknown} */
       const contexts = JSON.parse((await docker(["context", "inspect", context])).stdout);
-      assert.equal(contexts.length, 1);
-      env.DOCKER_HOST = contexts[0].Endpoints.docker.Host;
+      /** @type {unknown} */
+      let selected;
+      if (Array.isArray(contexts)) {
+        const entries = /** @type {readonly unknown[]} */ (contexts);
+        assert.equal(entries.length, 1);
+        selected = entries[0];
+      } else {
+        const entries = asRecord(contexts);
+        assert.equal(entries?.length, 1);
+        selected = entries?.[0];
+      }
+      const endpoints = asRecord(asRecord(selected)?.Endpoints);
+      const host = asRecord(endpoints?.docker)?.Host;
+      assert.ok(typeof host === "string", "Docker context has no engine host");
+      env.DOCKER_HOST = host;
     }
-    assert.match(env.DOCKER_HOST, /^unix:\/\/\//);
+    const dockerHost = env.DOCKER_HOST;
+    assert.ok(typeof dockerHost === "string", "Docker context has no engine host");
+    assert.match(dockerHost, /^unix:\/\/\//);
     delete env.DOCKER_CONTEXT;
     delete env.DOCKER_TLS_VERIFY;
     delete env.DOCKER_CERT_PATH;
@@ -261,6 +376,7 @@ export function createDevUpModelProvider({
     for (const tag of [controllerTag, baseTag, runtimeTag]) {
       await reserve("image", tag);
     }
+    /** @param {"controller" | "runtime"} role */
     const cache = (role) =>
       env.GITHUB_ACTIONS === "true" && env.ACTIONS_RUNTIME_TOKEN && env.ACTIONS_RESULTS_URL
         ? [
@@ -270,17 +386,29 @@ export function createDevUpModelProvider({
         : // Reuse the installer's selected builder without passing hosted cache
           // credentials into the test. Local runs retain the engine builder.
           ["--builder", env.BUILDX_BUILDER || "default"];
+    /**
+     * @param {"controller" | "runtime"} role
+     * @param {string} tag
+     * @param {string[]} args
+     * @param {{timeout: number}} options
+     */
     const build = async (role, tag, args, { timeout: budgetMs }) => {
       const started = performance.now();
+      /** @type {{code?: unknown, signal?: unknown, killed?: unknown}} */
       let processFailure = {};
       try {
         await create(tag, args, { timeout: budgetMs }, (error) => {
           // Read only command-owned data fields, never accessors. Journal and
           // pre-dispatch cancellation errors do not describe a child process.
           try {
-            for (const key of ["code", "signal", "killed"]) {
+            for (const key of /** @type {const} */ (["code", "signal", "killed"])) {
+              /** @type {unknown} */
               const value = Object.getOwnPropertyDescriptor(error, key)?.value;
-              if (["string", "number", "boolean"].includes(typeof value)) {
+              if (
+                typeof value === "string" ||
+                typeof value === "number" ||
+                typeof value === "boolean"
+              ) {
                 processFailure[key] = value;
               }
             }
@@ -292,32 +420,31 @@ export function createDevUpModelProvider({
         // Only fixed labels and process metadata enter CI output. The original
         // errors retain their private command output for local inspection.
         const exit =
+          typeof processFailure.code === "number" &&
           Number.isInteger(processFailure.code) &&
           processFailure.code >= 0 &&
           processFailure.code <= 255
             ? processFailure.code
             : "unknown";
-        const code = [
-          "ENOENT",
-          "EACCES",
-          "ENOMEM",
-          "EAGAIN",
-          "ABORT_ERR",
-          "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
-        ].includes(processFailure.code)
-          ? processFailure.code
-          : "unknown";
-        const signal = [
-          "SIGTERM",
-          "SIGKILL",
-          "SIGABRT",
-          "SIGSEGV",
-          "SIGPIPE",
-          "SIGINT",
-          "SIGHUP",
-        ].includes(processFailure.signal)
-          ? processFailure.signal
-          : "unknown";
+        const code =
+          typeof processFailure.code === "string" &&
+          [
+            "ENOENT",
+            "EACCES",
+            "ENOMEM",
+            "EAGAIN",
+            "ABORT_ERR",
+            "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+          ].includes(processFailure.code)
+            ? processFailure.code
+            : "unknown";
+        const signal =
+          typeof processFailure.signal === "string" &&
+          ["SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGPIPE", "SIGINT", "SIGHUP"].includes(
+            processFailure.signal,
+          )
+            ? processFailure.signal
+            : "unknown";
         const killed =
           typeof processFailure.killed === "boolean" ? processFailure.killed : "unknown";
         const elapsedMs = Math.round(performance.now() - started);
@@ -376,10 +503,19 @@ export function createDevUpModelProvider({
     ]);
     const failures = builds
       .filter((result) => result.status === "rejected")
-      .map((result) => result.reason);
+      .map((result) => {
+        /** @type {unknown} */
+        const reason = result.reason;
+        assert.ok(reason instanceof Error);
+        return reason;
+      });
     if (failures.length) {
       throw new AggregateError(
-        failures.map((failure) => failure.cause),
+        failures.map((failure) => {
+          /** @type {unknown} */
+          const cause = failure.cause;
+          return cause;
+        }),
         `Checkout image builds failed: ${failures.map((failure) => failure.message).join("; ")}`,
       );
     }
@@ -402,14 +538,23 @@ export function createDevUpModelProvider({
     for (const key of ["Labels", "User", "Entrypoint", "Cmd", "WorkingDir"]) {
       assert.deepEqual(trusted[key], base[key], `Runtime trust layer changed ${key}`);
     }
+    /** @param {string} tag */
     const push = async (tag) => {
       await docker(["push", tag], { timeout: 120_000 });
-      const image = await inspect("image", tag);
-      assert.equal(image.Config.Labels["org.opencontainers.image.revision"], revision);
-      const digest = image.RepoDigests.find((ref) =>
-        ref.startsWith(`${tag.slice(0, tag.lastIndexOf(":"))}@`),
-      );
-      assert.match(digest ?? "", /@sha256:[a-f0-9]{64}$/);
+      const image = asRecord(await inspect("image", tag));
+      const labels = asRecord(asRecord(image?.Config)?.Labels);
+      assert.equal(labels?.["org.opencontainers.image.revision"], revision);
+      const refs = image?.RepoDigests;
+      assert.ok(Array.isArray(refs), `Image digests missing: ${tag}`);
+      const repositoryTag = tag.slice(0, tag.lastIndexOf(":"));
+      /** @type {readonly unknown[]} */
+      const digests = refs;
+      const digest = digests.find((ref) => {
+        assert.ok(typeof ref === "string", `Invalid image digest: ${tag}`);
+        return ref.startsWith(`${repositoryTag}@`);
+      });
+      assert.ok(typeof digest === "string", `Repository digest missing: ${tag}`);
+      assert.match(digest, /@sha256:[a-f0-9]{64}$/);
       return digest;
     };
     const controllerImage = await push(controllerTag);
@@ -457,20 +602,27 @@ export function createDevUpModelProvider({
       lifetime,
     );
     return {
-      DOCKER_HOST: env.DOCKER_HOST,
+      DOCKER_HOST: dockerHost,
       OCC_DEVELOPMENT_CONTROLLER_IMAGE: controllerImage,
       OCC_KUBERNETES_RUNTIME_IMAGE: runtimeImage,
     };
   }
 
+  /** @param {string} stateDirectory */
   async function route(stateDirectory) {
-    const state = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
+    const state = asRecord(JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8")));
+    assert.ok(state, "Development state is missing");
     assert.equal(state.cluster, cluster);
     assert.equal(state.containerEngine, "docker");
     assert.equal(state.dockerHost, env.DOCKER_HOST);
-    const server = await inspect("container", node);
-    assert.equal(server?.Config?.Labels?.["k3d.cluster"], cluster, "Refusing unrelated k3d node");
-    await docker(["network", "connect", "--ip", nodeAddress, network, server.Id]);
+    const server = asRecord(await inspect("container", node));
+    const labels = asRecord(asRecord(server?.Config)?.Labels);
+    assert.equal(labels?.["k3d.cluster"], cluster, "Refusing unrelated k3d node");
+    const id = server?.Id;
+    assert.ok(typeof id === "string", "k3d node has no engine ID");
+    await docker(["network", "connect", "--ip", nodeAddress, network, id]);
+    const platformNamespace = state.platformNamespace;
+    assert.ok(typeof platformNamespace === "string", "Development state has no platform namespace");
     await configureModelProviderDNS({
       kubectl: (args, options) =>
         command(
@@ -487,7 +639,7 @@ export function createDevUpModelProvider({
       waitFor: (description, operation, timeout) =>
         waitFor(description, operation, timeout, lifetime),
       modelAddress,
-      platformNamespace: state.platformNamespace,
+      platformNamespace,
       serverFile: `${prefix}.server`,
     });
   }
@@ -497,61 +649,87 @@ export function createDevUpModelProvider({
       { kind: "container", name: provider },
       await inspect("container", provider),
     );
-    const { stdout } = await docker(["logs", value.Id]);
+    const id = value.Id;
+    assert.ok(typeof id === "string", "Provider has no engine ID");
+    const { stdout } = await docker(["logs", id]);
     return stdout
       .split("\n")
       .filter((line) => line.startsWith("{"))
-      .map((line) => JSON.parse(line));
+      .map((line) => {
+        const event = asRecord(JSON.parse(line));
+        assert.ok(event, "Provider log line is not an object");
+        return event;
+      });
   }
 
+  /** @returns {Promise<CompletedTurn>} */
   async function assertAnswered() {
     const observed = await events();
-    const answer = observed.find(
-      ({ event, status, at, transport }) =>
+    /** @type {Pick<CompletedTurn, "completedAt" | "transport" | "status"> | undefined} */
+    let answer;
+    for (const { event, status, at, transport } of observed) {
+      if (
         event === "turn-answered" &&
         status === 200 &&
+        typeof at === "number" &&
         Number.isSafeInteger(at) &&
-        ["https", "websocket"].includes(transport),
-    );
-    const request = observed.find(
-      ({ event, turn, at, transport }) =>
+        (transport === "https" || transport === "websocket")
+      ) {
+        answer = { completedAt: at, transport, status };
+        break;
+      }
+    }
+    const message = "Dedicated startup did not receive a completed fixture response";
+    assert.ok(answer, message);
+    for (const { event, turn, at, transport } of observed) {
+      if (
         event === "request" &&
         turn === true &&
+        typeof at === "number" &&
         Number.isSafeInteger(at) &&
-        at <= answer?.at &&
-        transport === answer?.transport,
-    );
-    assert.ok(request && answer, "Dedicated startup did not receive a completed fixture response");
-    // Whitelist receipts: never serialize request bodies, headers or auth values.
-    return {
-      requestAt: request.at,
-      completedAt: answer.at,
-      transport: answer.transport,
-      status: answer.status,
-    };
+        at <= answer.completedAt &&
+        transport === answer.transport
+      ) {
+        // Whitelist receipts: never serialize request bodies, headers or auth values.
+        return { requestAt: at, ...answer };
+      }
+    }
+    assert.fail(message);
   }
 
   async function reconcile() {
     await stop();
+    /** @type {unknown[]} */
     const failures = [];
     for (const resource of [...resources].reverse()) {
       try {
         const value = await inspect(resource.kind, resource.name, cleanupDocker);
         if (value) {
-          owned(resource, value);
+          const object = owned(resource, value);
           delete resource.uncertain;
           if (resource.kind === "network") {
-            for (const [id, endpoint] of Object.entries(value.Containers ?? {})) {
+            const endpoints = object.Containers ?? {};
+            /** @type {[string, unknown][]} */
+            const members = Object.entries(endpoints);
+            for (const [id, endpoint] of members) {
               assert.equal(
-                endpoint.Name,
+                asRecord(endpoint)?.Name,
                 node,
                 "Refusing to disconnect an unrelated network member",
               );
-              const server = await inspect("container", id, cleanupDocker);
-              assert.equal(server?.Config?.Labels?.["k3d.cluster"], cluster);
-              await cleanupDocker(["network", "disconnect", value.Id, id]);
+              const server = asRecord(await inspect("container", id, cleanupDocker));
+              const labels = asRecord(asRecord(server?.Config)?.Labels);
+              assert.equal(labels?.["k3d.cluster"], cluster);
+              const networkId = object.Id;
+              assert.ok(typeof networkId === "string", "Fixture network has no engine ID");
+              await cleanupDocker(["network", "disconnect", networkId, id]);
             }
           }
+          const target = resource.kind === "image" ? resource.name : object.Id;
+          assert.ok(
+            typeof target === "string",
+            `Fixture resource has no engine ID: ${resource.name}`,
+          );
           // Remove owned containers with anonymous storage, and image tags
           // without forcing deletion or pruning unowned parent images.
           await cleanupDocker([
@@ -559,7 +737,7 @@ export function createDevUpModelProvider({
             "rm",
             ...(resource.kind === "container" ? ["--force", "--volumes"] : []),
             ...(resource.kind === "image" ? ["--no-prune"] : []),
-            resource.kind === "image" ? resource.name : value.Id,
+            target,
           ]);
         } else if (resource.uncertain) {
           throw new Error(`Creation outcome remains uncertain: ${resource.name}`);
@@ -583,7 +761,7 @@ export function createDevUpModelProvider({
       lifetime.throwIfAborted();
       return (preparation ??= admitted(prepare));
     },
-    route: (stateDirectory) => admitted(() => route(stateDirectory)),
+    route: (/** @type {string} */ stateDirectory) => admitted(() => route(stateDirectory)),
     assertAnswered: () => admitted(assertAnswered),
     stop,
     cleanup: () =>
@@ -593,13 +771,24 @@ export function createDevUpModelProvider({
   };
 }
 
+/**
+ * @typedef {{
+ *   provider: ReturnType<typeof createDevUpModelProvider>,
+ *   execute: (program: string, args: string[], options?: LauncherCommandOptions) => Promise<CommandOutput>,
+ *   signal: AbortSignal,
+ * }} LauncherCase
+ */
+
+/** @typedef {{root: string, cluster: string, environment: NodeJS.ProcessEnv, run?: RunCommand}} LauncherOptions */
+
 // Own the complete real launcher case, because node:test can run after hooks
 // on timeout while the async test body is still producing effects.
-export async function runDevUpModelProviderCase(
+/** @type {<T>(t: LauncherScope, options: LauncherOptions, body: (scope: LauncherCase) => T | PromiseLike<T>) => Promise<T>} */
+export const runDevUpModelProviderCase = async (
   t,
   { root, cluster, environment, run = execute },
   body,
-) {
+) => {
   const closing = new AbortController();
   const signal = AbortSignal.any([t.signal, closing.signal]);
   const stateDirectory = environment.OCC_DEVELOPMENT_STATE_DIRECTORY;
@@ -612,6 +801,11 @@ export async function runDevUpModelProviderCase(
   });
   let forcedTermination = false;
   let commandFailed = false;
+  /**
+   * @param {string} program
+   * @param {string[]} args
+   * @param {LauncherCommandOptions} [options]
+   */
   const command = async (program, args, options = {}) => {
     signal.throwIfAborted();
     try {
@@ -623,7 +817,7 @@ export async function runDevUpModelProviderCase(
       });
     } catch (error) {
       commandFailed = true;
-      forcedTermination ||= error.forcedTermination === true;
+      forcedTermination ||= asRecord(error)?.forcedTermination === true;
       throw error;
     }
   };
@@ -638,7 +832,7 @@ export async function runDevUpModelProviderCase(
     if (forcedTermination) {
       throw new Error(`Command required forced termination; recovery state preserved at ${root}.`);
     }
-    if (existsSync(stateDirectory)) {
+    if (stateDirectory !== undefined && existsSync(stateDirectory)) {
       // A failed or cancelled launcher can deliberately retain an unresolved
       // creation journal. Process closure and an absent cluster inspection do
       // not settle that obligation; automatic dev-down would erase it.
@@ -664,5 +858,5 @@ export async function runDevUpModelProviderCase(
     await provider.cleanup();
     await rm(root, { recursive: true, force: true });
   });
-  return work;
-}
+  return await work;
+};
