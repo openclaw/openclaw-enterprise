@@ -186,7 +186,7 @@
       "path": "tests/integration/controlled-tls-origin.test.ts"
     },
     {
-      "path": "tests/integration/tls-peer-certificate.test.mjs"
+      "path": "tests/integration/tls-peer-certificate.test.ts"
     },
     {
       "path": "tests/helpers/socket-relay.test.mjs"
