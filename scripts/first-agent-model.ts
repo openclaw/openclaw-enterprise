@@ -1,23 +1,48 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mts";
 import { admitGatewaySecurityDefaults } from "../packages/occ/src/gateway-security-defaults.ts";
 
-export function selectFirstAgentModel(configuredModel, existing) {
-  const model = configuredModel || existing?.model || defaultAgentModel;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(model)) {
+type Fields = Record<string, unknown>;
+
+// JavaScript property access keeps primitive boxing and required-field errors at their call sites.
+// A wire object never supplies a type for the value read from it.
+function fields(value: unknown): Fields {
+  return value as Fields;
+}
+
+function optionalFields(value: unknown): Fields | undefined {
+  return value == null ? undefined : fields(value);
+}
+
+export function selectFirstAgentModel(
+  configuredModel: string | undefined,
+  existing: unknown,
+): unknown {
+  const recorded = optionalFields(existing);
+  const model = configuredModel || recorded?.model || defaultAgentModel;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(`${model}`)) {
     throw new Error(
       "OPENCLAW_FIRST_AGENT_MODEL must be a plain OpenAI model ID, without the provider prefix.",
     );
   }
-  if (existing && configuredModel && model !== existing.model) {
+  if (existing && configuredModel && model !== recorded?.model) {
     throw new Error(
       "This Agent's recorded Namespace or model differs. Reuse its recorded model or choose a new Agent name.",
     );
   }
   return model;
 }
+
+type RecordSelection = {
+  name: string;
+  namespaceId: unknown;
+  harness: string;
+  sandboxDriver: unknown;
+  controlUi: boolean;
+};
 
 /**
  * The saved record of a repeated first-agent run, checked against this run's selection.
@@ -27,18 +52,19 @@ export function selectFirstAgentModel(configuredModel, existing) {
  * refuse it instead of claiming the selection differs (finding 1756) or that a
  * PAT needs OpenShell (finding 1798).
  */
-export function reuseFirstAgentRecord(existing, selection) {
-  if (existing.version !== 3 || existing.authMethod === undefined) {
+export function reuseFirstAgentRecord<T>(existing: T, selection: RecordSelection): T {
+  const saved = fields(existing);
+  if (saved.version !== 3 || saved.authMethod === undefined) {
     throw new Error(
       "This Agent name has a saved record this helper does not recognize. The recorded resources were not changed. To keep using that Agent, recover the record with a helper that understands it. Choosing a new Agent name starts a different Agent.",
     );
   }
   if (
-    existing.name !== selection.name ||
-    existing.namespaceId !== selection.namespaceId ||
-    existing.harness !== selection.harness ||
-    existing.sandboxDriver !== selection.sandboxDriver ||
-    existing.controlUi !== selection.controlUi
+    saved.name !== selection.name ||
+    saved.namespaceId !== selection.namespaceId ||
+    saved.harness !== selection.harness ||
+    saved.sandboxDriver !== selection.sandboxDriver ||
+    saved.controlUi !== selection.controlUi
   ) {
     throw new Error(
       "This Agent's recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs. Reuse its recorded selection or choose a new Agent name.",
@@ -49,18 +75,30 @@ export function reuseFirstAgentRecord(existing, selection) {
 
 // Only a prior PAT revision identified by the helper can have the former workspace-write
 // policy, which OpenShell's blocked nested namespaces turn into failing shell tools.
-export function firstAgentPriorPatPolicy(values, record, revisionId, priorRevisionId) {
-  return (
-    record.sandboxDriver === "openshell" &&
-    record.harness === "codex" &&
-    record.authMethod === "codex_pat" &&
-    priorRevisionId !== undefined &&
-    revisionId === priorRevisionId &&
-    values.plugins?.entries?.codex?.config?.appServer?.sandbox === "workspace-write"
-  );
+export function firstAgentPriorPatPolicy(
+  values: unknown,
+  record: unknown,
+  revisionId: unknown,
+  priorRevisionId?: unknown,
+): boolean {
+  const saved = fields(record);
+  if (
+    saved.sandboxDriver !== "openshell" ||
+    saved.harness !== "codex" ||
+    saved.authMethod !== "codex_pat" ||
+    priorRevisionId === undefined ||
+    revisionId !== priorRevisionId
+  ) {
+    return false;
+  }
+  const plugins = optionalFields(fields(values).plugins);
+  const entries = optionalFields(plugins?.entries);
+  const codex = optionalFields(entries?.codex);
+  const config = optionalFields(codex?.config);
+  return optionalFields(config?.appServer)?.sandbox === "workspace-write";
 }
 
-export function firstAgentPriorPatPolicyWarning(revisionId) {
+export function firstAgentPriorPatPolicyWarning(revisionId: unknown): string {
   return (
     `Warning: revision ${revisionId} predates OpenShell full access and keeps the Codex ` +
     "workspace-write sandbox, which OpenShell blocks: the model answers, but shell tools fail. " +
@@ -70,12 +108,12 @@ export function firstAgentPriorPatPolicyWarning(revisionId) {
 }
 
 export function firstAgentRevisionValuesMatch(
-  values,
-  configured,
-  record,
-  revisionId,
-  priorRevisionId,
-) {
+  values: Fields,
+  configured: Fields,
+  record: unknown,
+  revisionId: unknown,
+  priorRevisionId?: unknown,
+): boolean {
   // Deployment admission fills the Gateway security defaults the Configuration leaves unset.
   // A saved revision the helper identified may predate some of those fills, so fill it too
   // there: a default it lacks matches, and an explicit different value is still drift.
@@ -89,17 +127,29 @@ export function firstAgentRevisionValuesMatch(
   );
 }
 
-function snapshotValuesMatch(values, configured, record, revisionId, priorRevisionId) {
+function snapshotValuesMatch(
+  values: Fields,
+  configured: Fields,
+  record: unknown,
+  revisionId: unknown,
+  priorRevisionId: unknown,
+): boolean {
   // Reconstruct the expected snapshot; never change the revision or ignore other drift.
   // Deployment names the helper's sole main Agent after the OCC Agent.
   const expected = structuredClone(configured);
-  expected.agents = { ...expected.agents, entries: { main: { identity: { name: record.name } } } };
-  if (record.sandboxDriver !== "openshell" || record.harness !== "codex") {
+  const saved = fields(record);
+  expected.agents = {
+    ...fields(expected.agents),
+    entries: { main: { identity: { name: saved.name } } },
+  };
+  if (saved.sandboxDriver !== "openshell" || saved.harness !== "codex") {
     return isDeepStrictEqual(values, expected);
   }
 
   const priorPatPolicy = firstAgentPriorPatPolicy(values, record, revisionId, priorRevisionId);
-  const appServer = expected.plugins.entries.codex.config.appServer;
+  const entries = fields(fields(expected.plugins).entries);
+  const config = fields(fields(entries.codex).config);
+  const appServer = fields(config.appServer);
   appServer.sandbox = priorPatPolicy ? "workspace-write" : "danger-full-access";
   appServer.approvalsReviewer = "user";
   return isDeepStrictEqual(values, expected);
@@ -158,7 +208,20 @@ const modelFailureMessages = {
     "The model check returned an invalid result. Check the gateway logs and run the command again.",
 };
 
-function validProbeStatus(code, status) {
+type ProbeFailureCode = keyof typeof probeMessages;
+type ModelFailureCode = keyof typeof modelFailureMessages;
+
+type RequestInterval = Readonly<{ start: number; end: number }>;
+
+function isOwnKey<T extends object>(object: T, value: unknown): value is keyof T {
+  return typeof value === "string" && Object.hasOwn(object, value);
+}
+
+function isHttpStatus(status: unknown): status is number {
+  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599;
+}
+
+function validProbeStatus(code: ProbeFailureCode, status: unknown): boolean {
   switch (code) {
     case "authorization":
       return status === 401 || status === 403;
@@ -169,9 +232,7 @@ function validProbeStatus(code, status) {
     case "unauthenticated":
     case "upstream":
       return (
-        Number.isInteger(status) &&
-        status >= 100 &&
-        status <= 599 &&
+        isHttpStatus(status) &&
         !(code === "upstream" ? [200, 401, 403, 404, 429] : [401, 403]).includes(status)
       );
     default:
@@ -182,28 +243,27 @@ function validProbeStatus(code, status) {
 // Keep the operator explanation and machine-readable classification together.
 // Neither probe output nor an underlying command error is retained.
 export class FirstAgentModelError extends Error {
-  #code;
-  #status;
-  #requestInterval;
+  #code: ModelFailureCode;
+  #status: number | undefined;
+  #requestInterval: RequestInterval | undefined;
 
-  constructor(code, status = undefined, requestInterval = undefined) {
-    const known =
-      typeof code === "string" && Object.hasOwn(modelFailureMessages, code) ? code : "unexpected";
+  constructor(code: unknown, status?: unknown, requestInterval?: unknown) {
+    const known = isOwnKey(modelFailureMessages, code) ? code : "unexpected";
     const httpStatus =
       ["unauthenticated", "authorization", "endpoint", "rate_limit", "upstream"].includes(known) &&
-      Number.isInteger(status) &&
-      status >= 100 &&
-      status <= 599
+      isHttpStatus(status)
         ? status
         : undefined;
     super(modelFailureMessages[known].replace("{status}", String(httpStatus ?? "unknown")));
     this.#code = known;
     this.#status = httpStatus;
     // Diagnostic coordinates only: never retain arbitrary probe output or errors.
-    const { start, end } = requestInterval ?? {};
+    const { start, end } = optionalFields(requestInterval) ?? {};
     if (
       known === "upstream" &&
       httpStatus === 500 &&
+      typeof start === "number" &&
+      typeof end === "number" &&
       Number.isSafeInteger(start) &&
       Number.isSafeInteger(end) &&
       start >= 0 &&
@@ -226,11 +286,11 @@ export class FirstAgentModelError extends Error {
   }
 }
 
-function idHash(id) {
+function idHash(id: string): string {
   return createHash("sha256").update(id).digest("hex").slice(0, 12);
 }
 
-function isKubernetesLabel(value) {
+function isKubernetesLabel(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length <= 63 &&
@@ -238,15 +298,79 @@ function isKubernetesLabel(value) {
   );
 }
 
-function readItems(output) {
-  const data = JSON.parse(output);
-  if (!Array.isArray(data.items)) {
+function readItems(output: string): unknown[] {
+  const data: unknown = JSON.parse(output);
+  const { items } = fields(data);
+  if (!Array.isArray(items)) {
     throw new Error("Invalid Kubernetes list response");
   }
-  return data.items;
+  return items;
 }
 
-async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
+function optionalItems(value: unknown): unknown[] | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new TypeError("Expected a Kubernetes list field");
+  }
+  return value;
+}
+
+// Preserve the selected fields from kubectl. The command runner owns argv validation,
+// and diagnostics compares the optional coordinates to the runtime evidence it reads.
+export type GatewaySelection = { pod: unknown; uid?: unknown; restartCount?: unknown };
+type GatewayTarget = GatewaySelection & { namespace: unknown };
+
+type KubectlOptions = { input?: string; timeout: number };
+export type ModelKubectl = (
+  ...args:
+    | [
+        verb: "get",
+        resource: "namespaces",
+        flag: "-l",
+        selector: string,
+        "-o",
+        "json",
+        KubectlOptions,
+      ]
+    | [
+        verb: "get",
+        resource: "pods",
+        "--namespace",
+        namespace: unknown,
+        "-l",
+        selector: string,
+        "-o",
+        "json",
+        KubectlOptions,
+      ]
+    | [
+        verb: "exec",
+        "-i",
+        "--namespace",
+        namespace: unknown,
+        pod: unknown,
+        "-c",
+        "gateway",
+        "--",
+        ...typeof gatewayProbeCommand,
+        KubectlOptions,
+      ]
+) => Promise<string>;
+
+function liveMetadata(resource: unknown): Fields | undefined {
+  const metadata = optionalFields(fields(resource).metadata);
+  return metadata?.name && !metadata.deletionTimestamp ? metadata : undefined;
+}
+
+async function findGateway(
+  kubectl: ModelKubectl,
+  namespaceId: string,
+  agentId: string,
+  revisionId: string,
+  signal: AbortSignal | undefined,
+): Promise<GatewayTarget> {
   const deadline = Date.now() + readinessTimeout;
   const configMap = `gateway-${idHash(agentId)}-rev-${idHash(revisionId)}`;
   const selector = [
@@ -255,11 +379,11 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
     `openclaw.dev/namespace=${namespaceId}`,
     `openclaw.dev/agent=${agentId}`,
   ].join(",");
-  let state = "cluster";
+  let state: keyof typeof discoveryMessages = "cluster";
 
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
-    let namespaces;
+    let namespaces: Fields[] | undefined;
     try {
       namespaces = readItems(
         await kubectl(
@@ -273,13 +397,16 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
             timeout: Math.min(kubectlTimeout, Math.max(1, deadline - Date.now())),
           },
         ),
-      ).filter((namespace) => namespace.metadata?.name && !namespace.metadata.deletionTimestamp);
+      ).flatMap((namespace) => {
+        const metadata = liveMetadata(namespace);
+        return metadata === undefined ? [] : [metadata];
+      });
     } catch {
       state = "cluster";
     }
 
     signal?.throwIfAborted();
-    if (namespaces?.length > 1) {
+    if (namespaces && namespaces.length > 1) {
       throw new Error(
         "More than one Kubernetes namespace matches this Agent's gateway placement. Inspect their labels before retrying.",
       );
@@ -288,31 +415,48 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
       state = "namespace";
     }
     if (namespaces?.length === 1 && Date.now() < deadline) {
-      const namespace = namespaces[0].metadata.name;
+      const namespace = namespaces[0]!.name;
       try {
         const pods = readItems(
           await kubectl("get", "pods", "--namespace", namespace, "-l", selector, "-o", "json", {
             timeout: Math.min(kubectlTimeout, Math.max(1, deadline - Date.now())),
           }),
-        ).filter((pod) => pod.metadata?.name && !pod.metadata.deletionTimestamp);
-        const matching = pods.filter((pod) =>
-          pod.spec?.volumes?.some((volume) => volume.configMap?.name === configMap),
+        ).flatMap((pod) => {
+          const metadata = liveMetadata(pod);
+          return metadata === undefined ? [] : [{ pod: fields(pod), metadata }];
+        });
+        const matching = pods.filter(({ pod }) =>
+          optionalItems(optionalFields(pod.spec)?.volumes)?.some(
+            (volume) => optionalFields(fields(volume).configMap)?.name === configMap,
+          ),
         );
-        const ready = matching.filter(
-          (pod) =>
-            pod.status?.phase === "Running" &&
-            pod.status.conditions?.some(
-              (condition) => condition.type === "Ready" && condition.status === "True",
-            ),
-        );
+        const ready = matching.flatMap(({ pod, metadata }) => {
+          const status = optionalFields(pod.status);
+          const ready =
+            status?.phase === "Running" &&
+            optionalItems(status.conditions)?.some((condition) => {
+              const { type, status } = fields(condition);
+              return type === "Ready" && status === "True";
+            });
+          return ready && status ? [{ metadata, status }] : [];
+        });
         if (ready.length > 0) {
-          ready.sort((left, right) => left.metadata.name.localeCompare(right.metadata.name));
+          ready.sort((left, right) => {
+            const name = left.metadata.name;
+            if (typeof name !== "string") {
+              throw new TypeError("The Gateway Pod name is not a string");
+            }
+            return name.localeCompare(`${right.metadata.name}`);
+          });
+          const { metadata, status } = ready[0]!;
+          const gateway = optionalItems(status.containerStatuses)?.find(
+            (container) => fields(container).name === "gateway",
+          );
           return {
             namespace,
-            pod: ready[0].metadata.name,
-            uid: ready[0].metadata.uid,
-            restartCount: ready[0].status.containerStatuses?.find(({ name }) => name === "gateway")
-              ?.restartCount,
+            pod: metadata.name,
+            uid: metadata.uid,
+            restartCount: optionalFields(gateway)?.restartCount,
           };
         }
         state = pods.length === 0 ? "pod" : matching.length === 0 ? "revision" : "ready";
@@ -331,7 +475,7 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
   throw new Error(`Timed out waiting for the Agent's gateway. ${discoveryMessages[state]}`);
 }
 
-export function isGatewayCompletionId(value) {
+export function isGatewayCompletionId(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length === 45 &&
@@ -339,16 +483,43 @@ export function isGatewayCompletionId(value) {
   );
 }
 
-// Serialized with its completion-ID validator and executed inside the Gateway container.
-async function probeInGateway() {
-  const emit = (value) => process.stdout.write(JSON.stringify(value));
-  const failure = (code, status) => ({ error: code, ...(status === undefined ? {} : { status }) });
+// The wire receives a JSON string or array when includes is usable. A different type
+// fails at the same point as the original optional includes call.
+function includesCredential(value: unknown, credential: string): boolean {
+  if (typeof value === "string") {
+    return value.includes(credential);
+  }
+  if (Array.isArray(value)) {
+    const values: unknown[] = value;
+    return values.includes(credential);
+  }
+  throw new TypeError("result.response?.includes is not a function");
+}
+
+type ProbeFailure = {
+  error: ProbeFailureCode;
+  status?: number;
+  requestInterval?: RequestInterval;
+};
+
+type AssistantResult = ProbeFailure | { text: string; runId: unknown };
+type ProbeReceipt = { nonce: unknown; runId?: string; response?: string };
+
+// Serialized with its helpers and executed inside the Gateway container.
+async function probeInGateway(): Promise<void> {
+  const emit = (value: ProbeFailure | ProbeReceipt) => process.stdout.write(JSON.stringify(value));
+  const failure = (code: ProbeFailureCode, status?: number): ProbeFailure => ({
+    error: code,
+    ...(status === undefined ? {} : { status }),
+  });
   try {
     let input = "";
-    for await (const chunk of process.stdin.setEncoding("utf8")) {
+    const stdin: AsyncIterable<string, unknown, unknown> = process.stdin.setEncoding("utf8");
+    for await (const chunk of stdin) {
       input += chunk;
     }
-    const { nonce, prompt, expectProviderKey, sessionKey } = JSON.parse(input);
+    const parsed: unknown = JSON.parse(input);
+    const { nonce, prompt, expectProviderKey, sessionKey } = fields(parsed);
     const providerKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
@@ -360,20 +531,24 @@ async function probeInGateway() {
       emit(failure("missing_provider_key"));
       return;
     }
-    const credentials = [password, providerKey].filter(Boolean);
-    if (prompt !== undefined && credentials.some((credential) => prompt.includes(credential))) {
+    const credentials = providerKey ? [password, providerKey] : [password];
+    if (
+      prompt !== undefined &&
+      credentials.some((credential) => includesCredential(prompt, credential))
+    ) {
       emit(failure("credential_prompt"));
       return;
     }
     const url = "http://127.0.0.1:8080/v1/chat/completions";
     const noncePrompt = `Reply with exactly this nonce and no other text: ${nonce}`;
 
-    async function request(content, authorized) {
-      const headers = { "content-type": "application/json" };
+    async function request(content: unknown, authorized: boolean): Promise<Response | undefined> {
+      const headers: Record<string, string> = { "content-type": "application/json" };
       if (authorized) {
         headers.authorization = `Bearer ${password}`;
         if (sessionKey !== undefined) {
-          headers["x-openclaw-session-key"] = sessionKey;
+          // Leave header coercion to fetch, inside its error boundary.
+          Reflect.set(headers, "x-openclaw-session-key", sessionKey);
         }
       }
       try {
@@ -393,7 +568,7 @@ async function probeInGateway() {
       }
     }
 
-    async function getAssistant(content) {
+    async function getAssistant(content: unknown): Promise<AssistantResult> {
       const start = Date.now();
       const response = await request(content, true);
       const end = Date.now();
@@ -416,22 +591,27 @@ async function probeInGateway() {
             : {}),
         };
       }
-      let body;
+      let body: unknown;
       try {
         body = await response.json();
       } catch {
         return failure("response_format");
       }
-      const result = body.choices?.[0]?.message?.content;
-      const text =
-        typeof result === "string"
-          ? result
-          : Array.isArray(result)
-            ? result
-                .map((part) => (typeof part?.text === "string" ? part.text : part?.text?.value))
-                .filter((part) => typeof part === "string")
-                .join("")
-            : "";
+      const choice = optionalFields(fields(body).choices)?.[0];
+      const result = optionalFields(optionalFields(choice)?.message)?.content;
+      let text = "";
+      if (typeof result === "string") {
+        text = result;
+      } else if (Array.isArray(result)) {
+        const parts: unknown[] = result;
+        text = parts
+          .map((part) => {
+            const text = optionalFields(part)?.text;
+            return typeof text === "string" ? text : optionalFields(text)?.value;
+          })
+          .filter((part) => typeof part === "string")
+          .join("");
+      }
       if (!text.trim()) {
         return failure("response_format");
       }
@@ -441,7 +621,7 @@ async function probeInGateway() {
       if (text.length > 20_000) {
         return failure("response_size");
       }
-      return { text, runId: body.id };
+      return { text, runId: fields(body).id };
     }
 
     const denied = await request(noncePrompt, false);
@@ -456,16 +636,16 @@ async function probeInGateway() {
     }
 
     const proof = await getAssistant(noncePrompt);
-    if (proof.error) {
+    if ("error" in proof) {
       emit(proof);
       return;
     }
-    if (!proof.text.includes(nonce)) {
+    if (!proof.text.includes(`${nonce}`)) {
       emit(failure("nonce"));
       return;
     }
 
-    const receipt = { nonce };
+    const receipt: ProbeReceipt = { nonce };
     if (sessionKey !== undefined) {
       if (!isGatewayCompletionId(proof.runId)) {
         emit(failure("response_format"));
@@ -475,7 +655,7 @@ async function probeInGateway() {
     }
     if (prompt !== undefined) {
       const result = await getAssistant(prompt);
-      if (result.error) {
+      if ("error" in result) {
         emit(result);
         return;
       }
@@ -493,16 +673,41 @@ export const gatewayProbeCommand = Object.freeze([
   "node",
   "--input-type=module",
   "--eval",
-  `${isGatewayCompletionId.toString()}\n(${probeInGateway.toString()})();`,
-]);
+  [fields, optionalFields, includesCredential, isGatewayCompletionId]
+    .map((helper) => helper.toString())
+    .join("\n") + `\n(${probeInGateway.toString()})();`,
+] as const);
 
-/**
- * @param {{ namespaceId: string, agentId: string, revisionId: string,
- *   prompt?: string | undefined, apiKey?: string | undefined, expectProviderKey?: boolean | undefined,
- *   sessionKey?: string | undefined, signal?: AbortSignal | undefined,
- *   onGatewaySelected?: (gateway: { pod: string, uid?: string, restartCount?: number }) => void }} options
- */
-export async function verifyFirstAgentModel(kubectl, options) {
+export type ModelVerificationOptions = {
+  namespaceId: string;
+  agentId: string;
+  revisionId: string;
+  prompt?: string | undefined;
+  apiKey?: string | undefined;
+  expectProviderKey?: boolean | undefined;
+  sessionKey?: string | undefined;
+  signal?: AbortSignal | undefined;
+  onGatewaySelected?: (gateway: GatewaySelection) => void;
+};
+
+type ModelVerification = {
+  nonce: string;
+  runId?: string;
+  response?: string;
+};
+
+export function verifyFirstAgentModel(
+  kubectl: ModelKubectl,
+  options: ModelVerificationOptions & { sessionKey: string },
+): Promise<ModelVerification & { runId: string }>;
+export function verifyFirstAgentModel(
+  kubectl: ModelKubectl,
+  options: ModelVerificationOptions,
+): Promise<ModelVerification>;
+export async function verifyFirstAgentModel(
+  kubectl: ModelKubectl,
+  options: ModelVerificationOptions,
+): Promise<ModelVerification> {
   const {
     namespaceId,
     agentId,
@@ -547,7 +752,7 @@ export async function verifyFirstAgentModel(kubectl, options) {
   const { namespace, pod } = gateway;
   options.onGatewaySelected?.({ pod, uid: gateway.uid, restartCount: gateway.restartCount });
   const nonce = `FIRST_AGENT_${randomUUID()}`;
-  let output;
+  let output: string;
   try {
     output = await kubectl(
       "exec",
@@ -564,20 +769,17 @@ export async function verifyFirstAgentModel(kubectl, options) {
   } catch {
     throw new FirstAgentModelError("execution");
   }
-  let result;
+  let rawResult: unknown;
   try {
-    result = JSON.parse(output);
+    rawResult = JSON.parse(output);
   } catch {
     throw new FirstAgentModelError("invalid_result");
   }
+  const result = optionalFields(rawResult);
   if (result?.error) {
     // Wire failures must match the probe's branches. Execution/JSON failures
     // belong only to the local catches above, never to a returned payload.
-    if (
-      typeof result.error !== "string" ||
-      !Object.hasOwn(probeMessages, result.error) ||
-      !validProbeStatus(result.error, result.status)
-    ) {
+    if (!isOwnKey(probeMessages, result.error) || !validProbeStatus(result.error, result.status)) {
       throw new FirstAgentModelError("unexpected");
     }
     throw new FirstAgentModelError(
@@ -586,19 +788,31 @@ export async function verifyFirstAgentModel(kubectl, options) {
       sessionKey === undefined ? undefined : result.requestInterval,
     );
   }
-  if (
-    result?.nonce !== nonce ||
-    (sessionKey !== undefined && !isGatewayCompletionId(result.runId)) ||
-    (prompt !== undefined && (typeof result.response !== "string" || !result.response.trim()))
-  ) {
+  if (result?.nonce !== nonce) {
     throw new FirstAgentModelError("invalid_result");
   }
-  if (typeof apiKey === "string" && apiKey && result.response?.includes(apiKey)) {
+  const proof: ModelVerification = { nonce };
+  if (sessionKey !== undefined) {
+    const runId = result.runId;
+    if (!isGatewayCompletionId(runId)) {
+      throw new FirstAgentModelError("invalid_result");
+    }
+    proof.runId = runId;
+  }
+  const response = result.response;
+  if (prompt !== undefined) {
+    if (typeof response !== "string" || !response.trim()) {
+      throw new FirstAgentModelError("invalid_result");
+    }
+    proof.response = response;
+  }
+  if (
+    typeof apiKey === "string" &&
+    apiKey &&
+    response != null &&
+    includesCredential(response, apiKey)
+  ) {
     throw new FirstAgentModelError("credential");
   }
-  return {
-    nonce,
-    ...(sessionKey !== undefined && { runId: result.runId }),
-    ...(prompt !== undefined && { response: result.response }),
-  };
+  return proof;
 }

@@ -44,7 +44,7 @@ current source before running that file by itself:
 
 ```sh
 pnpm cli:build
-node --test tests/integration/first-agent-startup.test.mjs
+node --test tests/integration/first-agent-startup.test.ts
 ```
 
 ## Check packaged OpenShell Workspace resources
