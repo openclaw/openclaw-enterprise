@@ -1,4 +1,66 @@
 import { createHash } from "node:crypto";
+import type { ClientBase } from "pg";
+
+type CatalogSession = Pick<ClientBase, "query">;
+type QueryRow = Record<string, unknown>;
+type CatalogValue = string | number | boolean | null | CatalogValue[];
+
+type CatalogRow = {
+  kind: string;
+  name: string;
+  value: CatalogValue;
+};
+
+type SchemaPrivilege = [grantor: string, grantee: string, privilege: string, grantable: boolean];
+
+type InitialSchemaState = {
+  owner: string | null;
+  privileges: SchemaPrivilege[];
+  objects: number;
+  defaultPrivileges: number;
+  databaseCreate: boolean;
+};
+
+function isCatalogValue(value: unknown): value is CatalogValue {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
+    (Array.isArray(value) && value.every(isCatalogValue))
+  );
+}
+
+function isCatalogRow(row: QueryRow): row is CatalogRow {
+  return typeof row.kind === "string" && typeof row.name === "string" && isCatalogValue(row.value);
+}
+
+function isSchemaPrivilege(value: unknown): value is SchemaPrivilege {
+  return (
+    Array.isArray(value) &&
+    value.length === 4 &&
+    typeof value[0] === "string" &&
+    typeof value[1] === "string" &&
+    typeof value[2] === "string" &&
+    typeof value[3] === "boolean"
+  );
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isInitialSchemaState(row: QueryRow | undefined): row is InitialSchemaState {
+  return (
+    row !== undefined &&
+    (row.owner === null || typeof row.owner === "string") &&
+    Array.isArray(row.privileges) &&
+    row.privileges.every(isSchemaPrivilege) &&
+    isCount(row.objects) &&
+    isCount(row.defaultPrivileges) &&
+    typeof row.databaseCreate === "boolean"
+  );
+}
 
 // Compare PostgreSQL definitions and effective application privileges without
 // including instance-specific OIDs, row counts or sequence positions.
@@ -92,12 +154,19 @@ SELECT 'effective-table-acl',c.relname,to_jsonb(ARRAY(SELECT p FROM unnest(
 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
 WHERE n.nspname=$1 AND c.relkind IN ('r','p','v','m','f')`;
 
-export async function migrationCatalog(client, schema = "occ") {
-  const previous = await client.query("SHOW search_path");
+export async function migrationCatalog(
+  client: CatalogSession,
+  schema = "occ",
+): Promise<CatalogRow[]> {
+  const { rows: settings } = await client.query<QueryRow>("SHOW search_path");
+  const searchPath = settings[0]?.search_path;
+  if (settings.length !== 1 || typeof searchPath !== "string") {
+    throw new Error("Unexpected PostgreSQL search_path result.");
+  }
   await client.query("SET search_path = pg_catalog, pg_temp");
   try {
-    const { rows } = await client.query(catalogSql, [schema]);
-    const otherObjects = await client.query(
+    const { rows } = await client.query<QueryRow>(catalogSql, [schema]);
+    const otherObjects = await client.query<QueryRow>(
       `
       SELECT 'other-object' AS kind, i.identity AS name, to_jsonb(i.type) AS value
       FROM pg_catalog.pg_depend d
@@ -110,7 +179,7 @@ export async function migrationCatalog(client, schema = "occ") {
     );
     rows.push(...otherObjects.rows);
     if (rows.length > 0) {
-      const privileges = await client.query(
+      const privileges = await client.query<QueryRow>(
         `
         SELECT 'schema' AS kind, nspname::text AS name, jsonb_build_array(
           nspowner=current_user::regrole,
@@ -127,9 +196,8 @@ export async function migrationCatalog(client, schema = "occ") {
       );
       rows.push(...privileges.rows);
     }
-    {
-      const defaults = await client.query(
-        `
+    const defaults = await client.query<QueryRow>(
+      `
         SELECT 'default-acl' AS kind,
           CASE WHEN d.defaclrole=current_user::regrole THEN 'owner' ELSE d.defaclrole::regrole::text END || '.' ||
           CASE WHEN d.defaclnamespace=0 THEN '*' ELSE n.nspname END || '.' || d.defaclobjtype::text AS name,
@@ -144,29 +212,35 @@ export async function migrationCatalog(client, schema = "occ") {
         FROM pg_catalog.pg_default_acl d
         LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
         WHERE (d.defaclrole=current_user::regrole AND d.defaclnamespace=0) OR n.nspname=$1`,
-        [schema],
-      );
-      rows.push(...defaults.rows);
-    }
+      [schema],
+    );
+    rows.push(...defaults.rows);
     return rows
-      .map((row) => [JSON.stringify(row), row])
-      .sort(([a], [b]) => {
+      .map((row) => {
+        if (!isCatalogRow(row)) {
+          throw new Error("Unexpected PostgreSQL migration catalog row.");
+        }
+        // Hash the original row so its field order and nested values stay intact.
+        return { key: JSON.stringify(row), row };
+      })
+      .sort(({ key: a }, { key: b }) => {
         if (a === b) {
           return 0;
         }
         return a < b ? -1 : 1;
       })
-      .map(([, row]) => row);
+      .map(({ row }) => row);
   } finally {
-    await client.query("SELECT pg_catalog.set_config('search_path', $1, false)", [
-      previous.rows[0].search_path,
-    ]);
+    await client.query("SELECT pg_catalog.set_config('search_path', $1, false)", [searchPath]);
   }
 }
 
 // Empty schemas require an exact ACL and default-privilege check before DDL.
-export async function initialSchemaState(client, schema) {
-  const { rows } = await client.query(
+export async function initialSchemaState(
+  client: CatalogSession,
+  schema: string,
+): Promise<InitialSchemaState> {
+  const { rows } = await client.query<QueryRow>(
     `
     SELECT pg_catalog.pg_get_userbyid(n.nspowner) AS owner,
       COALESCE((
@@ -191,9 +265,13 @@ export async function initialSchemaState(client, schema) {
     LEFT JOIN pg_catalog.pg_namespace n ON n.nspname=requested.name`,
     [schema],
   );
-  return rows[0];
+  const [state] = rows;
+  if (rows.length !== 1 || !isInitialSchemaState(state)) {
+    throw new Error("Unexpected PostgreSQL initial schema state.");
+  }
+  return state;
 }
 
-export function catalogDigest(catalog) {
+export function catalogDigest(catalog: readonly CatalogRow[]): string {
   return createHash("sha256").update(JSON.stringify(catalog)).digest("hex");
 }

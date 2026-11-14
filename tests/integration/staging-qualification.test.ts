@@ -24,7 +24,9 @@ test("staging runtime lane preserves the reviewed Codex version in its child", c
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
 
-for (const change of ["compatible", "controller", "catalog", "runtime"] as const) {
+const signinChanges = ["compatible", "controller", "catalog", "runtime", "catalog-source"] as const;
+
+for (const change of signinChanges) {
   test(`staging sign-in preparation checks the current ${change} source pair`, (t) =>
     checkWorkflowCommand(t, true, change));
 }
@@ -32,7 +34,7 @@ for (const change of ["compatible", "controller", "catalog", "runtime"] as const
 async function checkWorkflowCommand(
   t: TestContext,
   pairPullOnly = false,
-  signin?: "compatible" | "controller" | "catalog" | "runtime",
+  signin?: (typeof signinChanges)[number],
 ) {
   const directory = await mkdtemp(join(process.cwd(), ".staging-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -108,6 +110,10 @@ async function checkWorkflowCommand(
     const file =
       signin === "controller" ? "apps/controller/unreviewed.txt" : "migrations/unreviewed.sql";
     await writeFile(join(root, file), "Unreviewed input\n");
+  }
+  if (signin === "catalog-source") {
+    // The catalog source alone must invalidate the reviewed reader contract.
+    await writeFile(join(root, "scripts/migration-catalog.ts"), "// Unreviewed catalog input\n");
   }
   const unrelated = (
     await git([
