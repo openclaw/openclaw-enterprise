@@ -17,7 +17,7 @@ import {
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
 type Secrets = readonly (readonly [string, string])[];
 

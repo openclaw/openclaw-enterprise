@@ -1,4 +1,3 @@
-import { boundedTeardown } from "../helpers/kubernetes-real.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -9,6 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import { createRequire } from "node:module";
+import Type from "typebox";
+import { Check } from "typebox/value";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 
 interface KubernetesObject {
@@ -26,6 +28,7 @@ import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { boundedTeardown } from "../helpers/bounded-teardown.ts";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import {
   developmentBootstrapEnvironment,
@@ -57,6 +60,54 @@ import {
 
 const execute = promisify(execFile);
 const selected = process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL === "1";
+
+const podView = Type.Object({
+  metadata: Type.Object({
+    name: Type.String(),
+    namespace: Type.Optional(Type.String()),
+    labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+  }),
+  spec: Type.Object({
+    serviceAccountName: Type.Optional(Type.String()),
+    containers: Type.Array(
+      Type.Object({
+        name: Type.String(),
+        image: Type.String(),
+        env: Type.Optional(
+          Type.Array(
+            Type.Object({
+              name: Type.String(),
+              value: Type.Optional(Type.String()),
+            }),
+          ),
+        ),
+      }),
+    ),
+  }),
+  status: Type.Optional(
+    Type.Object({
+      conditions: Type.Optional(
+        Type.Array(
+          Type.Object({
+            type: Type.String(),
+            status: Type.String(),
+          }),
+        ),
+      ),
+    }),
+  ),
+});
+
+function observedPod(value: unknown) {
+  assert.ok(Check(podView, value), "expected a Pod with container details");
+  return value;
+}
+
+function metadata(value: unknown) {
+  const observed = asRecord(asRecord(value)?.metadata);
+  assert.ok(observed, "expected Kubernetes resource metadata");
+  return observed;
+}
 
 test(
   "bootstrap reconciles OpenShell gateways and Workspaces before any Agent, then runs Agents in both Namespaces",
@@ -90,6 +141,13 @@ test(
       openShellWorkspaceHelmChart: env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART,
       openShellRuntimeClass: env.OCC_TEST_OPENSHELL_RUNTIME_CLASS,
     });
+    const resourceMetadata = async (kind: string, name: string, namespace?: string) =>
+      metadata(await fixture.resource(kind, name, namespace));
+    const observedPods = async (namespace: string) => {
+      const pods = await fixture.resources("pods", namespace);
+      assert.ok(pods, "expected a Pod list");
+      return pods.map(observedPod);
+    };
     const kubeconfig = await fixture.validateOpenShellPrerequisites();
     const directory = await mkdtemp(join(tmpdir(), "oce-namespace-bootstrap-"));
     const platformNamespace = `oce-ns-${openshellHash(randomUUID())}`;
@@ -622,7 +680,7 @@ test(
           (await pool.query("select count(*)::int as count from occ.agents")).rows[0].count,
           0,
         );
-        const signingKey = await fixture.resource("secret", `${service}-jwt-keys`, placement);
+        const signingKey = await resourceMetadata("secret", `${service}-jwt-keys`, placement);
         await worker.stop();
         for (const object of templates) {
           if (object.kind === "Deployment" || object.kind === "StatefulSet") {
@@ -633,8 +691,8 @@ test(
         worker = startWorker(await loadDrivers());
         await worker.start();
         assert.equal(
-          (await fixture.resource("secret", `${service}-jwt-keys`, placement)).metadata.uid,
-          signingKey.metadata.uid,
+          (await resourceMetadata("secret", `${service}-jwt-keys`, placement)).uid,
+          signingKey.uid,
         );
       }
       await fixture.waitFor(
@@ -652,13 +710,9 @@ test(
         0,
         "both gateway and Workspace must precede every Agent",
       );
-      const serviceResource = await fixture.resource("service", service, placement);
-      assert.equal(serviceResource.metadata.labels["openclaw.dev/namespace"], id);
-      const pods = (await fixture.resources("pods", placement)) as {
-        metadata: { labels?: Record<string, string> };
-        spec: { containers: { image: string }[] };
-        status?: { conditions?: { type: string; status: string }[] };
-      }[];
+      const serviceResource = await resourceMetadata("service", service, placement);
+      assert.equal(asRecord(serviceResource.labels)?.["openclaw.dev/namespace"], id);
+      const pods = await observedPods(placement);
       assert.ok(
         pods.some(
           (pod) =>
@@ -710,7 +764,7 @@ test(
         secrets: { api_key: modelSecret.data.ref },
       });
       if (source.status !== 201) {
-        const pod = await fixture.resource("pod", `${service}-0`, placement);
+        const pod = observedPod(await fixture.resource("pod", `${service}-0`, placement));
         const permissions: Record<string, string> = {};
         for (const verb of ["get", "list", "watch", "create", "update", "patch", "delete"]) {
           permissions[verb] = String(
@@ -827,7 +881,9 @@ test(
         );
       }
       const sandbox = await fixture.waitForSandbox(placement, deployed.data);
-      const harness = await fixture.waitForProviderHarnessPod(placement, deployed.data);
+      const harness = observedPod(
+        await fixture.waitForProviderHarnessPod(placement, deployed.data),
+      );
       assert.equal(harness.metadata.namespace, placement);
       assert.equal(harness.spec.serviceAccountName, sandboxAccount);
       // The authorized gateway-configured identity uses the maintained launcher's Namespace account.
@@ -848,21 +904,23 @@ test(
         "Agent deployment must reuse the Workspace created by Namespace reconciliation",
       );
       assert.deepEqual(workspaceAfter.labels, workspaceBefore.labels);
-      const gatewayPods = (await fixture.resources("pods", placement)).filter(
-        (pod: { metadata: { labels?: Record<string, string> } }) =>
+      const gatewayPods = (await observedPods(placement)).filter(
+        (pod) =>
           pod.metadata.labels?.["openclaw.dev/agent"] === agent.data.id &&
           pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
       );
       assert.equal(gatewayPods.length, 1);
-      assert.equal(gatewayPods[0].metadata.labels["openclaw.dev/namespace"], namespaceId);
-      assert.equal(gatewayPods[0].metadata.labels["openclaw.dev/revision"], deployed.data.id);
-      const gatewayContainer = gatewayPods[0].spec.containers.find(
-        (container: { name: string }) => container.name === "gateway",
+      const [gatewayPod] = gatewayPods;
+      assert.ok(gatewayPod);
+      assert.equal(gatewayPod.metadata.labels?.["openclaw.dev/namespace"], namespaceId);
+      assert.equal(gatewayPod.metadata.labels?.["openclaw.dev/revision"], deployed.data.id);
+      const gatewayContainer = gatewayPod.spec.containers.find(
+        (container) => container.name === "gateway",
       );
-      const workspaceNodeId = gatewayContainer.env.find(
-        (entry: { name: string; value?: string }) => entry.name === "OPENCLAW_WORKSPACE_NODE_ID",
+      const workspaceNodeId = gatewayContainer?.env?.find(
+        (entry) => entry.name === "OPENCLAW_WORKSPACE_NODE_ID",
       )?.value;
-      assert.equal(typeof workspaceNodeId, "string");
+      assert.ok(typeof workspaceNodeId === "string");
       assert.ok(workspaceNodeId.length > 0);
       const { GatewayClient } = await import(require.resolve("@openclaw/gateway-client"));
       const hello = Promise.withResolvers();
@@ -956,10 +1014,10 @@ test(
           "the real model must return the unique nonce",
         );
       } catch (error) {
-        const pods = await fixture.resources("pods", placement);
+        const pods = await observedPods(placement);
         const messages: string[] = [];
         for (const pod of pods.filter(
-          (pod: { metadata: { labels?: Record<string, string> } }) =>
+          (pod) =>
             pod.metadata.labels?.["openclaw.dev/agent"] === agent.data.id &&
             pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
         )) {
@@ -1240,10 +1298,10 @@ test(
       externalPlacement,
       "--from-literal=owner=operator",
     );
-    const externalUid = (await fixture.resource("namespace", externalPlacement)).metadata.uid;
+    const externalUid = (await resourceMetadata("namespace", externalPlacement)).uid;
     const sentinelUid = (
-      await fixture.resource("configmap", "operator-sentinel", externalPlacement)
-    ).metadata.uid;
+      await resourceMetadata("configmap", "operator-sentinel", externalPlacement)
+    ).uid;
     const external = await request("POST", "/namespaces", {
       name: "unclaimed-external",
       existingNamespace: externalPlacement,
@@ -1272,17 +1330,14 @@ test(
         : undefined;
     });
     assert.equal((await request("GET", `/namespaces/${external.data.id}`)).data.status, "failed");
-    const unclaimed = await fixture.resource("namespace", externalPlacement);
-    assert.equal(unclaimed.metadata.labels?.["openclaw.dev/namespace"], undefined);
-    assert.equal(unclaimed.metadata.annotations?.["openclaw.dev/namespace-id"], undefined);
+    const unclaimed = await resourceMetadata("namespace", externalPlacement);
+    assert.equal(asRecord(unclaimed.labels)?.["openclaw.dev/namespace"], undefined);
+    assert.equal(asRecord(unclaimed.annotations)?.["openclaw.dev/namespace-id"], undefined);
     assert.equal(await fixture.maybeResource("service", service, externalPlacement), undefined);
     await remove(external.data.id, { retainBackingNamespace: true });
+    assert.equal((await resourceMetadata("namespace", externalPlacement)).uid, externalUid);
     assert.equal(
-      (await fixture.resource("namespace", externalPlacement)).metadata.uid,
-      externalUid,
-    );
-    assert.equal(
-      (await fixture.resource("configmap", "operator-sentinel", externalPlacement)).metadata.uid,
+      (await resourceMetadata("configmap", "operator-sentinel", externalPlacement)).uid,
       sentinelUid,
     );
     const cleanupEvidence = (

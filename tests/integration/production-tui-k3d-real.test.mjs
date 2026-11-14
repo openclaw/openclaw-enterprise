@@ -20,7 +20,7 @@ import {
   kubernetesHash as hash,
   productionGatewayMemoryLimit,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import {
   assertKubernetesRuntimeOtelSettings,
   createOtelLogObservation,

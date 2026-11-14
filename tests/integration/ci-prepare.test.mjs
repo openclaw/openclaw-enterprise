@@ -26,7 +26,7 @@ import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-ima
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
-import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
+import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   assertStderrMatch,

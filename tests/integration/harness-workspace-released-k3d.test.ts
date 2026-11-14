@@ -9,7 +9,7 @@ import {
   explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 
 // Upgrade from a Harness claim written by the 2026-09-28 release (finding 752). That
 // release mounted `workspace` and `generated-images` as subPaths with no init, so the

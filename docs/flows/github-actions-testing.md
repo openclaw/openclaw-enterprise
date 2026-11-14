@@ -160,7 +160,7 @@ Cluster-wide watches can include sibling namespaces under `fileConcurrency`.
 Failed starts log `Agent namespace activity unavailable`. Each producing lane
 uploads the artifact.
 
-Before Agent Pods exist, `tests/helpers/kubernetes-real.mjs:waitForDeploymentAvailable`
+Before Agent Pods exist, `tests/helpers/kubernetes-real.ts:waitForDeploymentAvailable`
 captures Deployment logs and Pod/events, retaining the last eight `containerLogs` records.
 Without runner capture, it emits a projected diagnostic. `unavailable` means a
 failed observation; missing records do not prove healthy startup.
