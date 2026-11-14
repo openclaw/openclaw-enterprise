@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { watch } from "node:fs";
-import { mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,7 +61,7 @@ function rawCapability(socketPath: string) {
 async function expectedBrokerRefusal(image: string, platform: string) {
   const owner = randomUUID();
   const name = "oce-old-pair-" + owner;
-  const root = join(tmpdir(), name);
+  const root = await mkdtemp(join(tmpdir(), "oce-old-pair-"));
   const inputs = join(root, "inputs");
   const registry = join(root, "registry");
   const control = join(root, "control");
@@ -246,10 +246,11 @@ async function expectedBrokerRefusal(image: string, platform: string) {
     }
   }
 
-  await mkdir(root, { mode: 0o700 });
   try {
     // A killed test cannot run finally. Match the directory to the Docker process owner for recovery.
-    await writeFile(join(root, "test-owner"), testOwner, { mode: 0o600 });
+    await writeFile(join(root, "owner.json"), JSON.stringify({ testOwner, probeOwner: owner }), {
+      mode: 0o600,
+    });
     await mkdir(control, { mode: 0o700 });
     const inputGeneration = await project(inputs);
     const registryGeneration = await project(registry);
