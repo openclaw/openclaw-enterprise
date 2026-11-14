@@ -1,3 +1,4 @@
+/** @param {string} harnessId @param {string} providerModel */
 export function createHarnessConfiguration(harnessId, providerModel) {
   const modelReference = `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`;
   const reasoning = !/^gpt-4(?:o(?:-mini)?|\.1)(?:-|$)/u.test(providerModel);

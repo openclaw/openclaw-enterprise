@@ -245,7 +245,7 @@ function routeFailedRecord(
 
 // The in-memory fixture never runs deployment work, so its Versions list reports a deployment as
 // queued at most. This lists `revision` as failed with `code`, as the API does once its record
-// ended that way (finding 2422; postgres-agent-provisioning.test.mjs and
+// ended that way (finding 2422; postgres-agent-provisioning.test.ts and
 // postgres-worker-agent-revision.test.mjs list real stopped and superseded work).
 async function routeFailedListing(
   page: Page,
