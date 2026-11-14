@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setTimeout } from "node:timers/promises";
 import Type from "typebox";
 import { Check } from "typebox/value";
@@ -45,17 +45,26 @@ const packagingSuiteSchema = Type.Object({
 type Image = "controller" | "runtime";
 type Archive = { path: string; digest: string };
 type Publication = { repo: string; sourceTag: string; oldDigest: string; currentDigest: string };
-type Scratch = { directory: string; container?: string };
+type Scratch = { directory: string; registryLabel?: string };
 
 function sha256(bytes: Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-async function cleanupScratch({ directory, container }: Scratch) {
+async function cleanupScratch(t: TestContext, { directory, registryLabel }: Scratch) {
   const failures: unknown[] = [];
-  if (container !== undefined) {
+  if (registryLabel !== undefined) {
     try {
-      execFileSync("docker", ["rm", "-f", container], { stdio: "pipe" });
+      // Docker may have started the registry even if its client lost the response.
+      const id = execFileSync(
+        "docker",
+        ["ps", "--all", "--quiet", "--no-trunc", "--filter", `label=${registryLabel}`],
+        { encoding: "utf8" },
+      ).trim();
+      if (id) {
+        assert.match(id, /^[a-f0-9]{64}$/);
+        execFileSync("docker", ["rm", "-f", id], { stdio: "pipe" });
+      }
     } catch (error) {
       failures.push(error);
     }
@@ -64,6 +73,10 @@ async function cleanupScratch({ directory, container }: Scratch) {
     await rm(directory, { recursive: true, force: true });
   } catch (error) {
     failures.push(error);
+  }
+  // Node preserves the test body's error if an after hook also throws.
+  for (const error of failures) {
+    t.diagnostic(`Registry cleanup failed: ${String(error)}`);
   }
   if (failures.length === 1) {
     throw failures[0];
@@ -165,7 +178,7 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "oce-registry-test-"));
     const name = `oce-registry-test-${randomUUID()}`;
     const scratch: Scratch = { directory };
-    t.after(() => cleanupScratch(scratch));
+    t.after(() => cleanupScratch(t, scratch));
     const policy = join(directory, "policy.json");
     await writeFile(
       policy,
@@ -180,12 +193,23 @@ test(
       execFileSync(skopeo, ["--version"], { encoding: "utf8" }),
       /^skopeo version 1\.13\.3/,
     );
+    scratch.registryLabel = `oce.registry-test=${name}`;
     const container = execFileSync(
       "docker",
-      ["run", "--detach", "--rm", "--name", name, "--publish", "127.0.0.1::5000", registryImage],
+      [
+        "run",
+        "--detach",
+        "--rm",
+        "--name",
+        name,
+        "--label",
+        scratch.registryLabel,
+        "--publish",
+        "127.0.0.1::5000",
+        registryImage,
+      ],
       { encoding: "utf8" },
     ).trim();
-    scratch.container = name;
     assert.match(container, /^[a-f0-9]{64}$/);
     const address = execFileSync("docker", ["port", container, "5000/tcp"], {
       encoding: "utf8",
