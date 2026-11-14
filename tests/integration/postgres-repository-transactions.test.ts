@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import type { AuditEvent } from "../../packages/contracts/src/index.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/errors.ts";
 import { verifyRepositoryLifetime } from "../conformance/repository-lifetime.contract.mjs";
@@ -12,7 +14,8 @@ test(
   async (t) => {
     const pool = testPool(t, { connectionString: databaseUrl, max: 4 });
     const store = new PostgresPlatformState(pool);
-    (await store.loadInstallation()) ??
+    const installation =
+      (await store.loadInstallation()) ??
       (await store.transact((unit) =>
         unit.installations.createInstallation({
           id: `ins_${randomUUID()}`,
@@ -21,9 +24,8 @@ test(
         }),
       ));
     await t.test("audit metadata preserves the original PostgreSQL ledger envelope", async (t) => {
-      const installation = await store.loadInstallation();
       const occurredAt = "2026-09-24T10:00:00.123Z";
-      const baseline = {
+      const baseline: Omit<AuditEvent, "id"> = {
         installationId: installation.id,
         occurredAt,
         kind: "mutation",
@@ -33,33 +35,15 @@ test(
         outcome: "success",
       };
 
-      async function withRolledBackEvent(details, verify) {
-        const id = `aud_${randomUUID()}`;
-        const rollback = new Error("Roll back the audit regression row");
+      async function withRolledBackAudit(
+        ids: readonly string[],
+        verify: (unit: PlatformUnitOfWork) => Promise<void>,
+      ) {
+        const rollback = new Error("Roll back the audit regression rows");
         try {
           await assert.rejects(
             store.transact(async (unit) => {
-              // Raw persistence exercises the receiving decoder without letting
-              // append sanitize or reject the hostile reserved metadata first.
-              await store.queryInTransaction(
-                unit,
-                `INSERT INTO occ.audit_events
-                 (id, occurred_at, kind, actor_id, action, namespace_id,
-                  resource_kind, resource_id, outcome, details)
-                 VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9::jsonb)`,
-                [
-                  id,
-                  occurredAt,
-                  baseline.kind,
-                  baseline.actorId,
-                  baseline.action,
-                  baseline.resource.kind,
-                  baseline.resource.id,
-                  baseline.outcome,
-                  details === null ? null : JSON.stringify(details),
-                ],
-              );
-              await verify(unit, { id, ...baseline });
+              await verify(unit);
               throw rollback;
             }),
             (error) => {
@@ -70,16 +54,48 @@ test(
             },
           );
         } finally {
-          // These append-only rows must disappear on assertion failure as well
-          // as success; no DELETE or trigger bypass is needed for cleanup.
-          assert.deepEqual(
-            (await pool.query("SELECT id FROM occ.audit_events WHERE id = $1", [id])).rows,
-            [],
+          // These append-only rows must disappear even if verification fails.
+          const { rows } = await pool.query(
+            "SELECT id FROM occ.audit_events WHERE id = ANY($1::text[])",
+            [ids],
           );
+          assert.deepEqual(rows, []);
         }
       }
 
-      async function assertDecoded(unit, expected) {
+      async function withRolledBackEvent(
+        details: unknown,
+        verify: (unit: PlatformUnitOfWork, expected: AuditEvent) => Promise<void>,
+      ) {
+        const id = `aud_${randomUUID()}`;
+        await withRolledBackAudit([id], async (unit) => {
+          // Write the malformed metadata directly so it reaches the decoder.
+          await store.queryInTransaction(
+            unit,
+            `INSERT INTO occ.audit_events
+             (id, occurred_at, kind, actor_id, action, namespace_id,
+              resource_kind, resource_id, outcome, details)
+             VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9::jsonb)`,
+            [
+              id,
+              occurredAt,
+              baseline.kind,
+              baseline.actorId,
+              baseline.action,
+              baseline.resource.kind,
+              baseline.resource.id,
+              baseline.outcome,
+              details === null ? null : JSON.stringify(details),
+            ],
+          );
+          await verify(unit, { id, ...baseline });
+        });
+      }
+
+      async function assertDecoded<Expected extends Pick<AuditEvent, "id">>(
+        unit: PlatformUnitOfWork,
+        expected: Expected,
+      ) {
         const event = (await unit.audit.list()).find((event) => event.id === expected.id);
         assert.deepEqual(event, expected);
       }
@@ -121,7 +137,7 @@ test(
           { count: 2 },
         ],
         ["object encoded as metadata text", { __occAuditMetadata: "{}" }, undefined],
-      ]) {
+      ] as const) {
         await t.test(name, async () => {
           await withRolledBackEvent(details, async (unit, expected) => {
             await assertDecoded(unit, {
@@ -181,7 +197,7 @@ test(
         ["text encoding null", "null", DependencyUnavailableError],
         ["text encoding an array", "[]", DependencyUnavailableError],
         ["invalid JSON text", "{", SyntaxError],
-      ]) {
+      ] as const) {
         await t.test(`malformed ${name} retains its rejection`, async () => {
           await withRolledBackEvent({ __occAuditMetadata: metadata }, async (unit) => {
             await assert.rejects(unit.audit.list(), expectedError);
@@ -214,48 +230,24 @@ test(
             id: `aud_${randomUUID()}`,
             details: { __occAuditMetadata: {} },
           };
-          const rollback = new Error("Roll back appended audit regression rows");
-          try {
+          await withRolledBackAudit([event.id, minimal.id, rejected.id], async (unit) => {
+            await unit.audit.append(event);
+            await unit.audit.append(minimal);
+            // Redelivery keeps the stored fact and cannot use its ID for different evidence.
+            await unit.audit.append({ ...event });
             await assert.rejects(
-              store.transact(async (unit) => {
-                await unit.audit.append(event);
-                await unit.audit.append(minimal);
-                // Redelivery keeps the stored fact and cannot use its ID for different evidence.
-                await unit.audit.append({ ...event });
-                await assert.rejects(
-                  unit.audit.append({ ...event, details: { count: 2 } }),
-                  /audit event ID already identifies different evidence/,
-                );
-                await assert.rejects(unit.audit.append(rejected), ScopeViolationError);
-                await assertDecoded(unit, event);
-                await assertDecoded(unit, minimal);
-                assert.equal(
-                  (await unit.audit.list()).filter((row) => row.id === event.id).length,
-                  1,
-                );
-                assert.equal(
-                  (await unit.audit.list()).some((row) => row.id === rejected.id),
-                  false,
-                );
-                throw rollback;
-              }),
-              (error) => {
-                if (error !== rollback) {
-                  throw error;
-                }
-                return true;
-              },
+              unit.audit.append({ ...event, details: { count: 2 } }),
+              /audit event ID already identifies different evidence/,
             );
-          } finally {
-            assert.deepEqual(
-              (
-                await pool.query("SELECT id FROM occ.audit_events WHERE id = ANY($1::text[])", [
-                  [event.id, minimal.id, rejected.id],
-                ])
-              ).rows,
-              [],
+            await assert.rejects(unit.audit.append(rejected), ScopeViolationError);
+            await assertDecoded(unit, event);
+            await assertDecoded(unit, minimal);
+            assert.equal((await unit.audit.list()).filter((row) => row.id === event.id).length, 1);
+            assert.equal(
+              (await unit.audit.list()).some((row) => row.id === rejected.id),
+              false,
             );
-          }
+          });
         },
       );
     });
@@ -263,28 +255,27 @@ test(
     await t.test(
       "accepted raw SQL drains and queue/query handles close before connection reuse",
       async () => {
-        let retainedUnit;
-        let retainedQueue;
-        let accepted;
+        function assertSelectedValue(row: unknown) {
+          assert.ok(row && typeof row === "object" && "value" in row);
+          assert.equal(row.value, 1);
+        }
+
         let completed = false;
-        await store.transactWithQueue(async (unit, queue) => {
-          retainedUnit = unit;
-          retainedQueue = queue;
-          accepted = store
+        const { unit, queue, accepted } = await store.transactWithQueue(async (unit, queue) => {
+          // Leave the accepted query pending when the callback returns.
+          const accepted = store
             .queryInTransaction(unit, "SELECT pg_sleep(0.02), 1 AS value")
             .then((result) => {
               completed = true;
               return result;
             });
+          return { unit, queue, accepted };
         });
         assert.equal(completed, true);
-        assert.equal((await accepted).rows[0].value, 1);
-        await assert.rejects(retainedQueue.pending(), ScopeViolationError);
-        assert.throws(
-          () => store.queryInTransaction(retainedUnit, "SELECT 1"),
-          DependencyUnavailableError,
-        );
-        assert.equal((await pool.query("SELECT 1 AS value")).rows[0].value, 1);
+        assertSelectedValue((await accepted).rows[0]);
+        await assert.rejects(queue.pending(), ScopeViolationError);
+        assert.throws(() => store.queryInTransaction(unit, "SELECT 1"), DependencyUnavailableError);
+        assertSelectedValue((await pool.query("SELECT 1 AS value")).rows[0]);
       },
     );
   },

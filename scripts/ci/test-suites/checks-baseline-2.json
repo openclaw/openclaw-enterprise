@@ -104,7 +104,7 @@
     "tests/integration/password-sign-in-policy.test.ts",
     "tests/integration/compute-singleton-worker.test.mjs",
     "tests/integration/worker-shutdown.test.ts",
-    "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
+    "tests/conformance/postgres-transaction-unknown-commit.test.ts",
     "tests/integration/oidc-id-token.test.mjs",
     "tests/integration/repository-credentials-shutdown.test.mjs",
     "tests/conformance/repository-transactions.test.mjs",
@@ -467,8 +467,15 @@
       "path": "tests/conformance/postgres-transaction-commit.test.mjs"
     },
     {
-      "path": "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
-      "expectedTests": ["lost COMMIT response returns unknown without waiting for a hung rollback"]
+      "path": "tests/conformance/postgres-transaction-unknown-commit.test.ts",
+      "expectedTests": [
+        "lost COMMIT response returns unknown without waiting for a hung rollback",
+        "IAM work escaped from a commit transaction cannot acquire another client",
+        "IAM work escaped from a rollback transaction cannot acquire another client",
+        "IAM work escaped from a unknown transaction cannot acquire another client",
+        "a BEGIN abandoned by the client query timeout discards the connection",
+        "a SELECT abandoned by the client query timeout discards the connection"
+      ]
     },
     {
       "path": "tests/integration/native-admin-access.test.mjs",
