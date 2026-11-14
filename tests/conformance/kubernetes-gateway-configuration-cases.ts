@@ -33,7 +33,7 @@ import {
   options,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { OPENCLAW_CONFIG_ENVIRONMENT_COMMIT } from "../../apps/controller/src/drivers/compute/kubernetes/openclaw-config-environment.ts";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 
 // Keep the shared fixture's identity while recovering its JavaScript literal types.
 const apiKeyAuth = {

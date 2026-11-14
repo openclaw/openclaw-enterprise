@@ -61,7 +61,7 @@ allows one validated saved-token retry. See [node enrollment](../../docs/referen
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge when the selected source provides that contract.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
-SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
+SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
 against the Dockerfile.
 
 Dedicated Gateways require the supporting source recorded in this recipe and
@@ -141,7 +141,7 @@ verification remains required.
 From the repository root, run this in Bash with Node.js 24 or newer:
 
 ```bash
-source_args="$(node scripts/lib/openclaw-source.mjs build-args)" || exit 1
+source_args="$(node scripts/lib/openclaw-source.ts build-args)" || exit 1
 openclaw_build_args=()
 while IFS= read -r argument; do
   openclaw_build_args+=(--build-arg "$argument")

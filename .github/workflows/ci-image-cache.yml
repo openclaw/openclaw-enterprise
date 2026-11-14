@@ -31,6 +31,7 @@ on:
       - scripts/*.mjs
       - scripts/auth-maintain.ts
       - scripts/build-repository-credentials.ts
+      - scripts/build-runtime-assets.ts
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
       - scripts/ci/resource-names.ts

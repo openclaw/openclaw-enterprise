@@ -104,18 +104,15 @@ Builds export OCI directories without registry credentials. BuildKit normalizes 
 and filesystem timestamps to `SOURCE_DATE_EPOCH` from the exact OCE commit, including
 on cold-cache rebuilds.
 
-`scripts/lib/openclaw-source.mjs:readOpenclawSource` resolves the runtime's commit,
-archive checksum, and build timestamp from `deploy/runtime/openclaw-source.json`.
-The Dockerfile rejects missing, malformed, or conflicting build arguments before
-downloading source. Manifest changes invalidate build caches; credential-service
-targets remain independent.
+`scripts/lib/openclaw-source.ts` reads the commit, archive checksum, and timestamp
+from `deploy/runtime/openclaw-source.json`. The Dockerfile verifies build arguments
+against the manifest before downloading source. Manifest changes invalidate runtime
+build caches independently of credential-service targets.
 
-`deploy/runtime/Dockerfile:openclaw-source` verifies the OpenClaw source archive
-and applies the checksum-verified patches described in the
-[runtime recipe](../../deploy/runtime/README.md). Both installs use
-frozen lockfiles and upstream's selected-plugin manifests, retaining required
-bundled plugins plus Codex and Slack. The standalone Codex command links to the
-plugin's installation. Build stages use full Bookworm; final images use separately
+The `openclaw-source` stage verifies and patches the archive. Then
+`scripts/build-runtime-assets.ts inputs` copies preparation manifests and lists
+required bundled plugins, Codex, and Slack for the frozen production install.
+The standalone Codex command uses the plugin's installation. Build stages use full Bookworm; final images use separately
 pinned slim bases. The controller requires Node 24.22.1+ within the 24 series.
 The runtime requires matching Node 24.22.1 Bookworm bases. Its `node-source` stage checks
 the archive and patch digests in `deploy/runtime/node/source.json` before applying the
@@ -128,7 +125,7 @@ Every index refresh uses
 `apt-get update --error-on=any` to stop builds on incomplete downloads.
 
 `deploy/runtime/node/build.sh` records the source, patch, ABI and executable digest.
-`scripts/build-runtime-assets.mjs:inventory` checks its running executable's digest
+The `inventory` command checks its running executable's digest
 before recording `node` in final runtime provenance. Image startup compares that
 record with the checkout and installed executable. Native qualification requires
 packaged Gateway restart tests.
@@ -175,14 +172,10 @@ classify sandbox or response-shape mismatches; acceptance still requires
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
 
-`scripts/build-runtime-assets.mjs` prunes development/QA files and unreachable
-pnpm entries, retaining runtime templates, skills, help, and importer-specific
-dependencies. It writes provenance with the manifest's commit and archive
-checksum plus patch, lockfile, and inventory hashes. The runtime copies this
-tree without gzip or a second Codex installation. After permission normalization,
-inventory mode updates `contents.json`, `runtimeContentsSha256`, and Codex
-package/binary identity. Upstream import-closure and native-addon checks remain;
-see the [runtime recipe](../../deploy/runtime/README.md).
+The `package` command removes development files and unreachable pnpm entries.
+It records source, patch, lockfile, and inventory hashes. After permission
+normalization, `inventory` updates `contents.json`, its digest, and Codex identity.
+See the [runtime recipe](../../deploy/runtime/README.md) for import and native-addon checks.
 `org.openclaw.image.revision` must match packaged provenance;
 `org.opencontainers.image.revision` and receipt `sourceSha` identify OCE.
 

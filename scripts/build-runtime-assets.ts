@@ -1,7 +1,6 @@
 // Assemble the pinned upstream distribution without an intermediate compressed archive.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
 import {
   cp,
   lstat,
@@ -13,13 +12,23 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
-import { readOpenclawSource } from "./lib/openclaw-source.mjs";
+import { createRequire } from "node:module";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readOpenclawSource } from "./lib/openclaw-source.ts";
+
+interface AppliedPatch {
+  file: string;
+  sha256: string;
+  field?: string;
+}
+
+type RuntimeAsset =
+  { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
 
 // Every OpenClaw patch deploy/runtime/Dockerfile applies, in order, as provenance records it under
 // `patches` (finding 2290). runtime-assets.test.mjs checks this list against the Dockerfile.
 // `field` keeps the per-patch provenance names that existed before `patches`.
-const appliedPatches = [
+const appliedPatches: readonly AppliedPatch[] = [
   {
     file: "openclaw-codex-read-only-paths.patch",
     sha256: "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc",
@@ -51,8 +60,6 @@ const appliedPatches = [
     sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
   },
 ];
-const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);
-const root = await realpath(sourceRoot);
 const runtimePaths = [
   "dist",
   "node_modules",
@@ -87,7 +94,7 @@ const runtimePaths = [
   "README.md",
   "THIRD_PARTY_NOTICES.md",
 ];
-const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const codexPlatformByArchitecture = {
   x64: {
     targetArch: "amd64",
@@ -103,7 +110,7 @@ const codexPlatformByArchitecture = {
   },
 };
 
-function relativeRuntimePath(root, absolute, label) {
+function relativeRuntimePath(root: string, absolute: string, label: string): string {
   const path = relative(root, absolute);
   if (path === "" || path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) {
     throw new Error(`${label} must live under the runtime root.`);
@@ -111,7 +118,7 @@ function relativeRuntimePath(root, absolute, label) {
   return path;
 }
 
-function readPnpmIntegrity(lockfile, packageName, version) {
+function readPnpmIntegrity(lockfile: string, packageName: string, version: string): string {
   const key = `${" ".repeat(2)}'${packageName}@${version}':`;
   const start = lockfile.indexOf(key);
   if (start === -1) {
@@ -120,22 +127,51 @@ function readPnpmIntegrity(lockfile, packageName, version) {
   const rest = lockfile.slice(start + key.length);
   const nextPackage = rest.search(/\n {2}'[^']+@[^']+':/);
   const block = nextPackage === -1 ? rest : rest.slice(0, nextPackage);
-  const match = block.match(/\n\s+resolution: \{integrity: ([^}]+)\}/);
-  if (!match) {
+  const integrity = block.match(/\n\s+resolution: \{integrity: ([^}]+)\}/)?.[1];
+  if (!integrity) {
     throw new Error(`Missing pnpm integrity for ${packageName}@${version}`);
   }
-  return match[1];
+  return integrity;
 }
 
-async function readCodexRuntimeIdentity(root) {
-  const platform = codexPlatformByArchitecture[process.arch];
-  if (!platform) {
-    throw new Error(`Unsupported Codex runtime architecture: ${process.arch}`);
+function isMissingPath(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOENT" || error.code === "ENOTDIR")
+  );
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readJsonObject(path: string, bytes?: string): Promise<Record<string, unknown>> {
+  const value: unknown = JSON.parse(bytes ?? (await readFile(path, "utf8")));
+  if (!isJsonObject(value)) {
+    throw new Error(`Expected a JSON object in ${path}`);
   }
+  return value;
+}
+
+async function readPackageVersion(path: string): Promise<string> {
+  const { version } = await readJsonObject(path);
+  if (typeof version !== "string") {
+    throw new Error(`Expected a package version in ${path}`);
+  }
+  return version;
+}
+
+async function readCodexRuntimeIdentity(root: string) {
+  const { arch } = process;
+  if (arch !== "x64" && arch !== "arm64") {
+    throw new Error(`Unsupported Codex runtime architecture: ${arch}`);
+  }
+  const platform = codexPlatformByArchitecture[arch];
   const lockfile = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
   const require = createRequire(join(root, "dist/extensions/codex/package.json"));
   const codexPackageJson = require.resolve("@openai/codex/package.json");
-  const codexPackage = JSON.parse(await readFile(codexPackageJson, "utf8"));
+  const version = await readPackageVersion(codexPackageJson);
   const codexPackageRoot = dirname(codexPackageJson);
   const platformPackageJson = resolve(
     codexPackageRoot,
@@ -143,7 +179,7 @@ async function readCodexRuntimeIdentity(root) {
     platform.packageDirectory,
     "package.json",
   );
-  const platformPackage = JSON.parse(await readFile(platformPackageJson, "utf8"));
+  const packageVersion = await readPackageVersion(platformPackageJson);
   const installedBinary = resolve(
     codexPackageRoot,
     "..",
@@ -153,11 +189,11 @@ async function readCodexRuntimeIdentity(root) {
   const resolvedBinary = await realpath(installedBinary);
   return {
     source: "npm:@openai/codex",
-    version: codexPackage.version,
-    packageIntegrity: readPnpmIntegrity(lockfile, "@openai/codex", codexPackage.version),
+    version,
+    packageIntegrity: readPnpmIntegrity(lockfile, "@openai/codex", version),
     package: platform.packageName,
-    packageVersion: platformPackage.version,
-    platformPackageIntegrity: readPnpmIntegrity(lockfile, "@openai/codex", platformPackage.version),
+    packageVersion,
+    platformPackageIntegrity: readPnpmIntegrity(lockfile, "@openai/codex", packageVersion),
     architecture: platform.targetArch,
     installedBinary: relativeRuntimePath(root, installedBinary, "Codex platform binary"),
     resolvedBinary: relativeRuntimePath(root, resolvedBinary, "Codex platform binary target"),
@@ -165,8 +201,12 @@ async function readCodexRuntimeIdentity(root) {
   };
 }
 
-async function writeRuntimeInventory(root, output, { pruneSourceAssets = false } = {}) {
-  const inventory = [];
+async function writeRuntimeInventory(
+  root: string,
+  output: string,
+  { pruneSourceAssets = false } = {},
+): Promise<string> {
+  const inventory: RuntimeAsset[] = [];
   async function walk(relative = "") {
     for (const name of (await readdir(join(root, relative))).sort()) {
       const path = join(relative, name);
@@ -204,7 +244,7 @@ async function writeRuntimeInventory(root, output, { pruneSourceAssets = false }
   return contents;
 }
 
-if (command === "inputs") {
+async function writeDependencyInputs(root: string, output: string): Promise<void> {
   await mkdir(output, { recursive: true });
   for (const name of await readdir(root)) {
     if (
@@ -243,61 +283,60 @@ if (command === "inputs") {
       await mkdir(join(output, dir), { recursive: true });
       await writeFile(join(output, dir, "package.json"), manifest);
     } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+      if (!isMissingPath(error)) {
         throw error;
       }
     }
   }
-} else if (command === "package") {
-  if (!manifestPath) {
-    throw new Error("Runtime packaging requires the OpenClaw source manifest path");
-  }
-  const source = await readOpenclawSource(manifestPath);
-  if (process.env.GIT_COMMIT !== source.commit) {
-    throw new Error("GIT_COMMIT must match the OpenClaw source manifest");
-  }
-  // Preserve runtime templates and help text; omit upstream development/QA trees.
-  for (const name of await readdir(root)) {
-    if (!runtimePaths.includes(name)) {
-      await rm(join(root, name), { recursive: true, force: true });
+}
+
+async function readDirectoryIfPresent(path: string): Promise<string[]> {
+  try {
+    return await readdir(path);
+  } catch (error) {
+    if (!isMissingPath(error)) {
+      throw error;
     }
+    return [];
   }
-  for (const name of ["assets", "images", ".generated", ".i18n", "refactor", "releases"]) {
-    await rm(join(root, "docs", name), { recursive: true, force: true });
-  }
+}
+
+async function pruneUnusedDependencies(root: string): Promise<void> {
   // pnpm's isolated store can retain packages belonging to omitted workspaces.
   // Follow importer-relative runtime dependencies, preserving distinct versions
   // and installed optional peers, then remove only unreachable store entries.
   const store = join(root, "node_modules/.pnpm");
-  const retained = new Set();
-  const visited = new Set();
-  async function visit(importer, manifestBytes) {
+  const retained = new Set<string>();
+  const visited = new Set<string>();
+  async function visit(importer: string, manifestBytes?: string): Promise<void> {
     const canonical = await realpath(importer);
     if (visited.has(canonical)) {
       return;
     }
     visited.add(canonical);
     const packagePath = relative(store, canonical);
-    if (!packagePath.startsWith("..")) {
-      retained.add(packagePath.split("/")[0]);
+    const [storeEntry] = packagePath.split(sep, 1);
+    if (storeEntry !== undefined && !packagePath.startsWith("..")) {
+      retained.add(storeEntry);
     }
-    const manifest = JSON.parse(
-      manifestBytes ?? (await readFile(join(canonical, "package.json"), "utf8")),
+    const { dependencies, optionalDependencies, peerDependencies } = await readJsonObject(
+      join(canonical, "package.json"),
+      manifestBytes,
     );
     for (const name of Object.keys({
-      ...manifest.dependencies,
-      ...manifest.optionalDependencies,
-      ...manifest.peerDependencies,
+      ...(isJsonObject(dependencies) ? dependencies : undefined),
+      ...(isJsonObject(optionalDependencies) ? optionalDependencies : undefined),
+      ...(isJsonObject(peerDependencies) ? peerDependencies : undefined),
     })) {
       let directory = canonical;
       while (true) {
         const candidate = join(directory, "node_modules", name);
         try {
-          const manifestBytes = await readFile(join(candidate, "package.json"));
+          const manifestBytes = await readFile(join(candidate, "package.json"), "utf8");
           await visit(candidate, manifestBytes);
           break;
         } catch (error) {
-          if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+          if (!isMissingPath(error)) {
             throw error;
           }
         }
@@ -311,37 +350,47 @@ if (command === "inputs") {
   }
   await visit(root);
   for (const directory of ["extensions", "dist/extensions"]) {
-    for (const name of await readdir(join(root, directory)).catch((error) => {
-      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
-        throw error;
-      }
-      return [];
-    })) {
+    for (const name of await readDirectoryIfPresent(join(root, directory))) {
       const candidate = join(root, directory, name);
       try {
-        const manifestBytes = await readFile(join(candidate, "package.json"));
+        const manifestBytes = await readFile(join(candidate, "package.json"), "utf8");
         await visit(candidate, manifestBytes);
       } catch (error) {
-        if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+        if (!isMissingPath(error)) {
           throw error;
         }
       }
     }
   }
-  for (const name of await readdir(store).catch((error) => {
-    if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
-      throw error;
-    }
-    return [];
-  })) {
+  for (const name of await readDirectoryIfPresent(store)) {
     // Keep pnpm metadata and the hoisted resolver directory. Removing a package
     // target does not follow or delete a retained package's symlink.
     if (name.includes("@") && !retained.has(name)) {
       await rm(join(store, name), { recursive: true });
     }
   }
+}
+
+async function packageRuntime(root: string, output: string, manifestPath: string): Promise<void> {
+  const source = await readOpenclawSource(manifestPath);
+  if (process.env.GIT_COMMIT !== source.commit) {
+    throw new Error("GIT_COMMIT must match the OpenClaw source manifest");
+  }
+  // Preserve runtime templates and help text; omit upstream development/QA trees.
+  for (const name of await readdir(root)) {
+    if (!runtimePaths.includes(name)) {
+      await rm(join(root, name), { recursive: true, force: true });
+    }
+  }
+  for (const name of ["assets", "images", ".generated", ".i18n", "refactor", "releases"]) {
+    await rm(join(root, "docs", name), { recursive: true, force: true });
+  }
+  await pruneUnusedDependencies(root);
   const contents = await writeRuntimeInventory(root, output, { pruneSourceAssets: true });
-  const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const { packageManager } = await readJsonObject(join(root, "package.json"));
+  if (packageManager !== undefined && typeof packageManager !== "string") {
+    throw new Error("Expected a package manager name and version in package.json");
+  }
   await writeFile(
     join(output, "provenance.json"),
     `${JSON.stringify(
@@ -357,7 +406,7 @@ if (command === "inputs") {
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),
         codex: await readCodexRuntimeIdentity(root),
-        packageManager: pkg.packageManager,
+        packageManager,
         platform: process.platform,
         architecture: process.arch,
         plugins: ["codex", "slack"],
@@ -366,10 +415,16 @@ if (command === "inputs") {
       2,
     )}\n`,
   );
-} else if (command === "inventory") {
+}
+
+async function inventoryFinalImage(
+  root: string,
+  output: string,
+  nodeProvenancePath: string,
+): Promise<void> {
   // Final-image inventory requires the actual installed Node identity. Package-only
   // assembly has no executable and deliberately does not invent this provenance.
-  const node = JSON.parse(await readFile(manifestPath, "utf8"));
+  const node = await readJsonObject(nodeProvenancePath);
   if (
     node.version !== process.versions.node ||
     node.sha256 !== hash(await readFile(process.execPath))
@@ -378,11 +433,31 @@ if (command === "inputs") {
   }
   const contents = await writeRuntimeInventory(root, output);
   const provenancePath = join(output, "provenance.json");
-  const provenance = JSON.parse(await readFile(provenancePath, "utf8"));
+  const provenance = await readJsonObject(provenancePath);
   provenance.runtimeContentsSha256 = hash(contents);
   provenance.codex = await readCodexRuntimeIdentity(root);
   provenance.node = node;
   await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
+}
+
+const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);
+const usage = "Expected inputs, package, or inventory with source root and output directory.";
+if (sourceRoot === undefined || output === undefined) {
+  throw new Error(usage);
+}
+const root = await realpath(sourceRoot);
+if (command === "inputs") {
+  await writeDependencyInputs(root, output);
+} else if (command === "package") {
+  if (!manifestPath) {
+    throw new Error("Runtime packaging requires the OpenClaw source manifest path");
+  }
+  await packageRuntime(root, output, manifestPath);
+} else if (command === "inventory") {
+  if (manifestPath === undefined) {
+    throw new Error("Runtime inventory requires the installed Node provenance path");
+  }
+  await inventoryFinalImage(root, output, manifestPath);
 } else {
-  throw new Error("Expected inputs, package, or inventory with source root and output directory.");
+  throw new Error(usage);
 }
