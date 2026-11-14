@@ -15,7 +15,7 @@
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
     "tests/integration/postgres-backend-ownership.test.mjs",
-    "tests/integration/postgres-restart-recovery.test.mjs",
+    "tests/integration/postgres-restart-recovery.test.ts",
     "tests/integration/postgres-agent-deletion-audit.test.ts",
     "tests/integration/postgres-api-request-audit.test.ts",
     "tests/integration/postgres-agent-audit-read.test.ts",
@@ -153,7 +153,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-restart-recovery.test.mjs",
+      "path": "tests/integration/postgres-restart-recovery.test.ts",
       "expectedTests": [
         "Namespace creation and deletion retain distinct durable work targets",
         "durable work deduplicates exact ownership and rejects actor or owner collisions",
