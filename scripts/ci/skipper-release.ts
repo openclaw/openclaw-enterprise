@@ -152,6 +152,14 @@ export function skipperOperationDiagnostic(value: unknown) {
   );
   const { runtimeSignal, modelRequestObservation, gatewayTransportCause, helperEntered } =
     diagnostic;
+  const modelFixtureTerminalWriter = (
+    [
+      "https-finished",
+      "https-closed-before-finish",
+      "websocket-completed-send-ok",
+      "websocket-completed-send-error",
+    ] as const
+  ).find((writer) => writer === diagnostic.modelFixtureTerminalWriter);
   const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
   return {
     ...(attributed &&
@@ -160,7 +168,10 @@ export function skipperOperationDiagnostic(value: unknown) {
     gatewayCategory === "transport" &&
     modelRequestObservation === "observed" &&
     diagnostic.modelFixtureSelectedTerminalSuccess === true
-      ? { modelFixtureSelectedTerminalSuccess: true as const }
+      ? {
+          modelFixtureSelectedTerminalSuccess: true as const,
+          ...(modelFixtureTerminalWriter ? { modelFixtureTerminalWriter } : {}),
+        }
       : {}),
     ...(attributed &&
     typeof runtimeSignal === "string" &&

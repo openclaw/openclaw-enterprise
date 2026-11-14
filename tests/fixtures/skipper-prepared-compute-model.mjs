@@ -24,7 +24,7 @@ function nativeResult(text) {
 
 export function createSkipperPreparedComputeEvents(commandPath) {
   let active;
-  return ({ model, request, answerEvents, emit }) => {
+  return ({ model, request, answerEvents, emit }, onTerminalSuccess = undefined) => {
     if (!existsSync(commandPath)) {
       return undefined;
     }
@@ -126,6 +126,9 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           exitCode: current?.exitCode ?? null,
           sessionPresent: current?.sessionId !== undefined,
         });
+        if (ok) {
+          onTerminalSuccess?.(id);
+        }
         return answerEvents(model, ok ? marker : "SKIPPER_INCOMPLETE_" + id);
       }
     } else {

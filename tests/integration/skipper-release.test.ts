@@ -1454,14 +1454,14 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         SKIPPER_HTTP_STATUS: "0",
         SKIPPER_MODEL_REQUEST_OBSERVATION: "observed",
         SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS: "true",
+        SKIPPER_MODEL_FIXTURE_TERMINAL_WRITER: "https-finished",
         [key]: value,
       }).status,
       0,
     );
-    assert.equal(
-      JSON.parse(await readFile(path, "utf8")).modelFixtureSelectedTerminalSuccess,
-      undefined,
-    );
+    const receipt = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(receipt.modelFixtureSelectedTerminalSuccess, undefined);
+    assert.equal(receipt.modelFixtureTerminalWriter, undefined);
   }
 
   // The writer independently validates the values received through the workflow environment.
@@ -1639,7 +1639,70 @@ test("installed Skipper retains only attributed evidence on rejected gateway req
     id: marker,
     modelFixtureSelectedTerminalSuccess: true,
   };
+  const write = { event: "skipper-native-write", id: marker, writer: "https-finished" };
+  for (const [name, window, expected] of [
+    ["finish after decision", [result, write], "https-finished"],
+    [
+      "early close after decision",
+      [result, { ...write, writer: "https-closed-before-finish" }],
+      "https-closed-before-finish",
+    ],
+    [
+      "completed frame callback",
+      [result, { ...write, writer: "websocket-completed-send-ok" }],
+      "websocket-completed-send-ok",
+    ],
+    [
+      "completed frame callback error",
+      [result, { ...write, writer: "websocket-completed-send-error" }],
+      "websocket-completed-send-error",
+    ],
+    ["foreign writer", [result, { ...write, id: marker + "-other" }], undefined],
+    ["duplicate writer", [result, write, write], undefined],
+    ["writer before decision", [write, result], undefined],
+    ["unknown writer value", [result, { ...write, writer: "private-canary" }], undefined],
+  ] as const) {
+    await t.test(name, async () => {
+      const snapshots = [before, [...after, ...window]];
+      let failure: Error | undefined;
+      await assert.rejects(
+        sendSkipperChat({
+          ...options,
+          enter: async () => JSON.stringify({ status: 0, category: "transport" }),
+          modelEvents: async () => snapshots.shift(),
+        }),
+        (error: Error) => {
+          failure = error;
+          return error.message === "Gateway chat failed";
+        },
+      );
+      assert.ok(failure);
+      await verify(failure, {
+        testOperation: "gateway-chat",
+        gatewayChatPhase: "native-git",
+        gatewayCategory: "transport",
+        httpStatus: 0,
+        runtimeSignal: "no-known-signal",
+        modelRequestObservation: "observed",
+        modelFixtureSelectedTerminalSuccess: true,
+        ...(expected ? { modelFixtureTerminalWriter: expected } : {}),
+      });
+    });
+  }
   for (const [name, first, second, observation] of [
+    [
+      "late foreign writer",
+      before,
+      [...before, { ...write, id: marker + "-other" }],
+      "none-in-window",
+    ],
+    [
+      "connection and late foreign writer",
+      before,
+      [...before, { event: "connection" }, { ...write, id: marker + "-other" }],
+      "none-in-window",
+    ],
+    ["unrecognized event", before, [...before, { event: "unknown" }], "unavailable"],
     ["prior result", [listening, result], [listening, result, matched, result], "observed"],
     ["ambiguous request", before, [...after, matched, result], "observed"],
     ["foreign result", before, [...after, { ...result, id: marker + "-other" }], "observed"],

@@ -234,11 +234,14 @@ function turn(transport, model, request, respond, closed, caller) {
     if (closed()) {
       return;
     }
-    respond(
-      skipperFixture?.({ model, request, answerEvents, emit }) ??
-        publicReadEvents(model, request) ??
-        answerEvents(model, text),
-    );
+    let terminalId;
+    const events =
+      skipperFixture?.({ model, request, answerEvents, emit }, (id) => {
+        terminalId = id;
+      }) ??
+      publicReadEvents(model, request) ??
+      answerEvents(model, text);
+    respond(events, terminalId);
     emit({
       event: "turn-answered",
       transport,
@@ -306,7 +309,19 @@ const server = createServer(
         "https",
         model,
         body,
-        (events) => sseResponse(response, events),
+        (events, terminalId) => {
+          if (terminalId !== undefined) {
+            const report = (writer) =>
+              emit({ event: "skipper-native-write", id: terminalId, writer });
+            response.once("finish", () => report("https-finished"));
+            response.once("close", () => {
+              if (!response.writableFinished) {
+                report("https-closed-before-finish");
+              }
+            });
+          }
+          sseResponse(response, events);
+        },
         () => response.destroyed,
         caller,
       );
@@ -371,9 +386,20 @@ server.on("upgrade", (request, socket, head) => {
         "websocket",
         message.model ?? "unknown",
         String(data),
-        (events) => {
+        (events, terminalId) => {
           for (const event of events) {
-            webSocket.send(JSON.stringify(event));
+            const frame = JSON.stringify(event);
+            if (terminalId !== undefined && event.type === "response.completed") {
+              webSocket.send(frame, (error) =>
+                emit({
+                  event: "skipper-native-write",
+                  id: terminalId,
+                  writer: error ? "websocket-completed-send-error" : "websocket-completed-send-ok",
+                }),
+              );
+            } else {
+              webSocket.send(frame);
+            }
           }
         },
         () => !open,
