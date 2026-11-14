@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptions } from "node:child_process";
 import { cp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { availableParallelism } from "node:os";
 import { dirname, join, relative, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { describe, test } from "node:test";
+import { describe, test, type TestContext } from "node:test";
 import ts from "typescript-compiler-api";
 import {
   runModuleBoundaryCli,
@@ -17,27 +17,112 @@ import {
   diagnosticIdentity,
   validateExceptions,
 } from "../../scripts/module-boundaries/exceptions.ts";
-import { settled as settle } from "../helpers/child-processes.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { validatePolicy, type Policy } from "../../scripts/module-boundaries/evaluate-policy.ts";
+import { parseJSON } from "../../scripts/module-boundaries/workspace.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = new URL("../fixtures/module-boundaries/", import.meta.url);
 const execute = promisify(execFile);
 const cli = join(repository, "scripts/verify-module-boundaries.ts");
-const policy = JSON.parse(await readFile(new URL("policy.json", fixture), "utf8"));
+const policy = await fixturePolicy();
+
+async function fixturePolicy(): Promise<Policy> {
+  const value = parseJSON(
+    await readFile(new URL("policy.json", fixture), "utf8"),
+    "fixture policy",
+  );
+  validatePolicy(value);
+  return value;
+}
+
+type Report = Awaited<ReturnType<typeof verifyModuleBoundaries>>;
+type ReportOptions = NonNullable<Parameters<typeof verifyModuleBoundaries>[0]>;
+type NodeOptions = Omit<ExecFileOptions, "encoding">;
+type Output = { stdout: string; stderr: string };
+type ExitFailure = Error & Output & { code: number };
+type DiagnosticRow = Report["violations"][number];
+type Edge = Pick<Report["edges"][number], "from" | "to">;
+
+// Drain every operation before fixture cleanup. allSettled keeps the original input order.
+async function settle<T>(promises: Iterable<Promise<T>>): Promise<T[]> {
+  return (await Promise.allSettled(promises)).map(settledValue);
+}
+
+function settledValue<T>(result: PromiseSettledResult<T>): T {
+  if (result.status === "rejected") {
+    const reason: unknown = result.reason;
+    throw reason;
+  }
+  return result.value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function records(value: unknown): Record<string, unknown>[] {
+  assert.ok(Array.isArray(value) && value.every(isRecord));
+  return value;
+}
+
+function stringValue(value: unknown): string {
+  assert.ok(typeof value === "string", "Expected a string");
+  return value;
+}
+
+function cliReport(stdout: string) {
+  const report = parseJSON(stdout, "CLI report");
+  assert.ok(isRecord(report));
+  const edges = records(report.edges).map(({ from, to }) => ({
+    from: stringValue(from),
+    to: stringValue(to),
+  }));
+  const resolutions = records(report.resolutions).map((item) => {
+    assert.ok(isRecord(item.reference));
+    return {
+      reference: item.reference,
+      status: item.status,
+      named: item.named,
+      runtimeTarget: item.runtimeTarget,
+      typeTarget: item.typeTarget,
+    };
+  });
+  const files: unknown = report.files;
+  assert.ok(Array.isArray(files));
+  return {
+    json: report,
+    ok: report.ok,
+    edges,
+    resolutions,
+    files: files.map(stringValue),
+    violations: records(report.violations),
+    baseline: records(report.baseline),
+  };
+}
+
+// Exercise the JavaScript call boundary with records outside the TypeScript contract.
+function untypedExceptionViolations(rows: readonly unknown[]) {
+  const report: unknown = Reflect.apply(applyExceptions, undefined, [
+    rows,
+    { version: 1, exceptions: [] },
+  ]);
+  assert.ok(isRecord(report));
+  return records(report.violations);
+}
 
 // Child processes (CLI runs and native Node oracles) are most of this file's
 // cost. Tests run concurrently and share one cap of a child per CPU.
 const slots = availableParallelism();
-const waiting = [];
+const waiting: (() => void)[] = [];
 let active = 0;
-async function node(args, options) {
+async function node(args: readonly string[], options?: NodeOptions): Promise<Output> {
   while (active >= slots) {
-    await new Promise((resolve) => waiting.push(resolve));
+    await new Promise<void>((resolve) => waiting.push(resolve));
   }
   active += 1;
   try {
-    return await execute(process.execPath, args, options);
+    return await execute(process.execPath, args, { ...options, encoding: "utf8" });
   } finally {
     active -= 1;
     waiting.shift()?.();
@@ -50,54 +135,78 @@ async function node(args, options) {
 // "requires explicit valid policy...", an unreadable policy file, an unknown option,
 // NODE_PATH, and tests that resolve with Node in this process before running the CLI (its
 // resolution caches).
-async function cliInProcess(args) {
-  let stdout = "";
-  let stderr = "";
-  const code = await runModuleBoundaryCli(args, {
-    stdout: { write: (text) => (stdout += text) },
-    stderr: { write: (text) => (stderr += text) },
-  });
+function captureStreams() {
+  const output: Output = { stdout: "", stderr: "" };
+  const streams = {
+    stdout: { write: (text: string) => (output.stdout += text) },
+    stderr: { write: (text: string) => (output.stderr += text) },
+  };
+  return { output, streams };
+}
+
+async function cliInProcess(args: readonly string[]): Promise<Output> {
+  const { output, streams } = captureStreams();
+  const code = await runModuleBoundaryCli(args, streams);
   if (code !== 0) {
     throw Object.assign(new Error(`module boundary CLI exited with ${code}`), {
       code,
-      stdout,
-      stderr,
+      ...output,
     });
   }
-  return { stdout, stderr };
+  return output;
 }
 
 // Awaits a rejected child run, requires exit `code`, and returns the error.
-async function failure(promise, code) {
-  let caught;
+function exitFailure(error: unknown): error is ExitFailure {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "number" &&
+    "stdout" in error &&
+    typeof error.stdout === "string" &&
+    "stderr" in error &&
+    typeof error.stderr === "string"
+  );
+}
+
+async function failure(promise: Promise<Output>, code: number): Promise<ExitFailure> {
+  let caught: ExitFailure | undefined;
   await assert.rejects(promise, (error) => {
+    assert.ok(exitFailure(error), "Expected a failed CLI exit with captured streams");
     caught = error;
     return true;
   });
+  assert.ok(caught);
   assert.equal(caught.code, code, caught.stderr);
   return caught;
 }
 
 const dynamic = "unresolved-dynamic-import";
-const rules = (report) => report.violations.map((item) => item.rule).sort();
-const from = (report, path) => report.edges.filter((edge) => edge.from === path);
+const rules = ({ violations }: Pick<Report, "violations">) =>
+  violations.map((item) => item.rule).sort();
+function from<T extends Edge>(report: { edges: readonly T[] }, path: string): T[] {
+  return report.edges.filter((edge) => edge.from === path);
+}
 // The report's violation of `rule` from `path`, if any.
-const violation = (report, path, rule = dynamic) =>
+const violation = (report: Pick<Report, "violations">, path: string, rule = dynamic) =>
   report.violations.find((item) => item.from === path && item.rule === rule);
-const violates = (report, path, rule = dynamic) => Boolean(violation(report, path, rule));
-const reaches = (report, path, to) => from(report, path).some((edge) => edge.to === to);
+const violates = (report: Pick<Report, "violations">, path: string, rule = dynamic) =>
+  Boolean(violation(report, path, rule));
+const reaches = (report: { edges: readonly Edge[] }, path: string, to: string) =>
+  from(report, path).some((edge) => edge.to === to);
 // A reviewed exception document accepting exactly `items`.
-const exceptionsFor = (...items) => ({
+const exceptionsFor = (...items: (DiagnosticRow | undefined)[]) => ({
   version: 1,
-  exceptions: items.map((item) => ({
-    ...item,
-    owner: "fixture",
-    reason: "reviewed",
-    removeWhen: "fixed",
-  })),
+  exceptions: items.map((item) => {
+    assert.ok(item, "Expected a diagnostic to review");
+    return { ...item, owner: "fixture", reason: "reviewed", removeWhen: "fixed" };
+  }),
 });
 // A caller boundary that forbids `sources` from loading apps/app/src/private.
-const noPrivate = (sources, extra = {}) => ({
+const noPrivate = (
+  sources: string | string[],
+  extra: Partial<NonNullable<Policy["boundaries"]>[number]> = {},
+) => ({
   rule: "no-private",
   from: [sources].flat(),
   to: ["apps/app/src/private/**"],
@@ -105,21 +214,23 @@ const noPrivate = (sources, extra = {}) => ({
   ...extra,
 });
 
-async function workspace(t, overrides = {}) {
+async function workspace(t: TestContext, overrides: Partial<Policy> = {}) {
   const root = await realpath(await temporaryDirectory(t, "module-boundaries-"));
   await cp(fixture, root, { recursive: true });
-  const config = { ...policy, ...overrides };
-  const write = async (path, content) => {
+  const config: Policy = { ...policy, ...overrides };
+  const write = async (path: string, content: string) => {
     await mkdir(dirname(join(root, path)), { recursive: true });
     await writeFile(join(root, path), content);
   };
   await write("policy.json", JSON.stringify(config));
   const args = ["--root", root, "--policy", join(root, "policy.json")];
-  const check = (extra = {}) => verifyModuleBoundaries({ root, policy: config, ...extra });
+  const check = (extra: ReportOptions = {}) =>
+    verifyModuleBoundaries({ root, policy: config, ...extra });
   // Node's own output for running a workspace source: the independent oracle.
-  const native = async (path, options) => (await node([join(root, path)], options)).stdout.trim();
+  const native = async (path: string, options?: NodeOptions) =>
+    (await node([join(root, path)], options)).stdout.trim();
   // Writes `code`, requires Node to print `output`, and returns the analyzer report.
-  const observe = async (path, code, output, options) => {
+  const observe = async (path: string, code: string, output: string, options?: NodeOptions) => {
     await write(path, code);
     assert.equal(await native(path, options), output, code);
     return check();
@@ -132,7 +243,7 @@ async function workspace(t, overrides = {}) {
     native,
     observe,
     // Reviews the source's unknown loader and keeps its exception valid across a line shift.
-    reviewLoader: async (path, report) => {
+    reviewLoader: async (path: string, report?: Report) => {
       const item = violation(report ?? (await check()), path);
       assert.ok(item);
       const exceptions = exceptionsFor(item);
@@ -141,25 +252,28 @@ async function workspace(t, overrides = {}) {
       assert.equal((await check({ exceptions })).ok, true, "line shifts retain the identity");
       return { item, exceptions };
     },
-    cli: (extra = []) => cliInProcess([...args, ...extra]),
+    cli: (extra: readonly string[] = []) => cliInProcess([...args, ...extra]),
     // A real child, for exit statuses, streams, env and Node's per-process caches.
-    cliProcess: (extra = [], options) => node([cli, ...args, ...extra], options),
+    cliProcess: (extra: readonly string[] = [], options?: NodeOptions) =>
+      node([cli, ...args, ...extra], options),
     // Installs a workspace package directory at `at`, as a package manager would.
     link: async (path = "packages/library", at = "node_modules/@fixture/library") => {
       await mkdir(dirname(join(root, at)), { recursive: true });
       await symlink(join(root, path), join(root, at), "dir");
     },
     // Adds or replaces entries in the library manifest's exports.
-    exports: async (entries) => {
+    exports: async (entries: Record<string, unknown>) => {
       const path = join(root, "packages/library/package.json");
-      const manifest = JSON.parse(await readFile(path, "utf8"));
+      const manifest = parseJSON(await readFile(path, "utf8"), "fixture package manifest");
+      assert.ok(isRecord(manifest));
+      assert.ok(isRecord(manifest.exports));
       await writeFile(
         path,
         JSON.stringify({ ...manifest, exports: { ...manifest.exports, ...entries } }),
       );
     },
     // Writes a PUBLIC and a PRIVATE module of each name under public/ and private/.
-    decoys: (...names) =>
+    decoys: (...names: string[]) =>
       Promise.all(
         names.flatMap((name) =>
           ["public", "private"].map((side) => {
@@ -172,11 +286,19 @@ async function workspace(t, overrides = {}) {
         ),
       ),
     // Empty createRequire anchors under each of `sides` (public, private).
-    anchors: (...sides) =>
+    anchors: (...sides: string[]) =>
       Promise.all(sides.map((side) => write(`apps/app/src/${side}/anchor.cjs`, ""))),
     // Node loads the private module; the analyzer must report an unknown load
     // and, when `avoid` is given, must not claim the public edge.
-    closed: async (path, code, { output = "PRIVATE", avoid, options } = {}) => {
+    closed: async (
+      path: string,
+      code: string,
+      {
+        output = "PRIVATE",
+        avoid,
+        options,
+      }: { output?: string; avoid?: string; options?: NodeOptions } = {},
+    ) => {
       const report = await observe(path, code, output, options);
       assert.ok(violates(report, path), code);
       if (avoid) {
@@ -185,7 +307,11 @@ async function workspace(t, overrides = {}) {
       return report;
     },
     // Node loads the public module, and the analyzer keeps that known edge.
-    open: async (path, code, { to, output = "PUBLIC" }) => {
+    open: async (
+      path: string,
+      code: string,
+      { to, output = "PUBLIC" }: { to: string; output?: string },
+    ) => {
       const report = await observe(path, code, output);
       assert.ok(reaches(report, path, to), code);
       return report;
@@ -196,7 +322,7 @@ async function workspace(t, overrides = {}) {
 describe("module boundaries", { concurrency: true }, () => {
   test("preserves exception coercion, sparse bindings and detached frozen reports", () => {
     const hash = `loader:sha256:${"a".repeat(64)}`;
-    const bindings = Array(2);
+    const bindings = Array<string>(2);
     bindings[1] = "name";
     const entry = {
       rule: "",
@@ -229,21 +355,21 @@ describe("module boundaries", { concurrency: true }, () => {
     );
     assert.equal(diagnosticIdentity({ from: "x" }), '[null,"x",null,null,null,null,null,null]');
     const result = applyExceptions([], input);
-    assert.equal(result.violations[0].rule, "stale-exception");
-    assert.deepEqual(result.violations[0].extra, entry.extra);
-    assert.notEqual(result.violations[0].extra, entry.extra);
-    assert.equal(Object.isFrozen(result.violations[0].extra.nested), true);
+    const [stale] = result.violations;
+    assert.equal(stale?.rule, "stale-exception");
+    assert.ok(isRecord(stale.extra));
+    assert.deepEqual(stale.extra, entry.extra);
+    assert.notEqual(stale.extra, entry.extra);
+    assert.equal(Object.isFrozen(stale.extra.nested), true);
     assert.equal(Object.isFrozen(entry.extra), false);
     assert.equal(Object.isFrozen(entry.bindings), false);
-    const inherited = Object.create({ from: "src", rule: "r", bindings: [] });
+    const inherited: unknown = Object.create({ from: "src", rule: "r", bindings: [] });
     const hidden = Object.defineProperty({ from: "src", bindings: [] }, "rule", {
       value: "hidden",
       enumerable: false,
     });
-    assert.deepEqual(applyExceptions([inherited], { version: 1, exceptions: [] }).violations, [{}]);
-    assert.deepEqual(applyExceptions([hidden], { version: 1, exceptions: [] }).violations, [
-      { from: "src", bindings: [] },
-    ]);
+    assert.deepEqual(untypedExceptionViolations([inherited]), [{}]);
+    assert.deepEqual(untypedExceptionViolations([hidden]), [{ from: "src", bindings: [] }]);
     let reads = 0;
     const getter = {
       from: "src",
@@ -253,9 +379,9 @@ describe("module boundaries", { concurrency: true }, () => {
         return reads;
       },
     };
-    const copied = applyExceptions([getter], { version: 1, exceptions: [] });
+    const [copied] = untypedExceptionViolations([getter]);
     assert.equal(reads, 1);
-    assert.equal(copied.violations[0].message, 1);
+    assert.equal(copied?.message, 1);
   });
   test("sorts exception diagnostics without rereading an accessor", () => {
     for (const changing of [false, true]) {
@@ -268,33 +394,26 @@ describe("module boundaries", { concurrency: true }, () => {
           return changing && reads === 3 ? undefined : "b";
         },
       };
-      const report = applyExceptions([{ rule: "r", line: 1, from: "a" }, row], {
-        version: 1,
-        exceptions: [],
-      });
+      const [, copied] = untypedExceptionViolations([{ rule: "r", line: 1, from: "a" }, row]);
       assert.equal(reads, 3);
-      assert.equal(report.violations[1].from, changing ? undefined : "b");
+      assert.ok(copied);
+      assert.equal(copied.from, changing ? undefined : "b");
     }
     const rows = [
       { rule: "r", line: 1, from: null },
       { rule: "r", line: 1, from: "o" },
     ];
     assert.deepEqual(
-      applyExceptions(rows, { version: 1, exceptions: [] }).violations.map((item) => item.from),
+      untypedExceptionViolations(rows).map((item) => item.from),
       [null, "o"],
     );
   });
   test("CLI usage names the TypeScript entrypoint", async () => {
-    let stdout = "";
-    let stderr = "";
-    const streams = {
-      stdout: { write: (text) => (stdout += text) },
-      stderr: { write: (text) => (stderr += text) },
-    };
+    const { output, streams } = captureStreams();
     assert.equal(await runModuleBoundaryCli(["--help"], streams), 0);
-    assert.match(stdout, /scripts\/verify-module-boundaries\.ts/);
+    assert.match(output.stdout, /scripts\/verify-module-boundaries\.ts/);
     assert.equal(await runModuleBoundaryCli([], streams), 2);
-    assert.match(stderr, /scripts\/verify-module-boundaries\.ts/);
+    assert.match(output.stderr, /scripts\/verify-module-boundaries\.ts/);
   });
   test("keeps native package error diagnostics independent of the workspace path", async (t) => {
     const { root, write, cli: verify, link } = await workspace(t);
@@ -305,12 +424,13 @@ describe("module boundaries", { concurrency: true }, () => {
       failure(verify(), 1),
       failure(node([cli, "--root", root, "--policy", "missing.json"]), 2),
     ]);
-    const item = JSON.parse(json.stdout).violations.find(
+    assert.ok(json && text && missing);
+    const item = cliReport(json.stdout).violations.find(
       (entry) => entry.from === "apps/app/src/blocked.cjs",
     );
-    assert.equal(item.rule, "unsupported-package-export");
+    assert.equal(item?.rule, "unsupported-package-export");
     assert.equal(json.stdout.includes(root), false);
-    assert.match(item.message, /ERR_PACKAGE_PATH_NOT_EXPORTED/);
+    assert.match(stringValue(item.message), /ERR_PACKAGE_PATH_NOT_EXPORTED/);
     assert.match(text.stderr, /ERR_PACKAGE_PATH_NOT_EXPORTED/);
     assert.equal((text.stdout + text.stderr).includes(root), false);
     assert.match(missing.stderr, /ENOENT/);
@@ -320,7 +440,7 @@ describe("module boundaries", { concurrency: true }, () => {
   test("keeps malformed JSON content and paths out of text and JSON CLI diagnostics", async (t) => {
     const marker = "/x_path/5";
     // One workspace per malformed file, each checked through text and JSON output.
-    const cases = [
+    const cases: [string, (space: Awaited<ReturnType<typeof workspace>>) => string[]][] = [
       [
         "bad-policy.json",
         ({ root }) => ["--root", root, "--policy", join(root, "bad-policy.json")],
@@ -369,11 +489,13 @@ describe("module boundaries", { concurrency: true }, () => {
       verify(["--json"], { env: { ...process.env, NODE_PATH: "" } }),
       failure(verify(["--json"], { env }), 1),
     ]);
-    const native = JSON.parse(oracle.stdout);
+    assert.ok(oracle && normal && error);
+    const native = parseJSON(oracle.stdout, "native NODE_PATH probe");
+    assert.ok(isRecord(native));
     assert.equal(native.esm, "ERR_MODULE_NOT_FOUND");
-    assert.ok(native.cjs.startsWith(global));
-    assert.equal(JSON.parse(normal.stdout).ok, true);
-    const report = JSON.parse(error.stdout);
+    assert.ok(stringValue(native.cjs).startsWith(global));
+    assert.equal(cliReport(normal.stdout).ok, true);
+    const report = cliReport(error.stdout);
     assert.equal(
       report.violations.some((item) => item.from === "apps/app/src/global-esm.mjs"),
       false,
@@ -407,12 +529,13 @@ describe("module boundaries", { concurrency: true }, () => {
       undefined,
       ts.ModuleKind.ESNext,
     ).resolvedModule?.resolvedFileName;
+    assert.ok(native);
     assert.equal(relative(root, native), "packages/library/types/hidden.d.ts");
     const excluded = await check();
     assert.equal(excluded.ok, false);
     assert.ok(violates(excluded, source, "unresolved-local-import"));
     assert.equal(
-      excluded.resolutions.find((item) => item.reference.from === source).to,
+      excluded.resolutions.find((item) => item.reference.from === source)?.to,
       "packages/library/types/hidden.d.ts",
     );
     assert.equal(reaches(excluded, source, "packages/library/src/safe.mjs"), false);
@@ -434,7 +557,10 @@ describe("module boundaries", { concurrency: true }, () => {
   });
 
   test("checks declaration edges in mixed imports and exports without losing runtime edges", async (t) => {
-    const sources = ["apps/app/src/mixed-import.ts", "apps/app/src/mixed-export.ts"];
+    const sources: [string, string] = [
+      "apps/app/src/mixed-import.ts",
+      "apps/app/src/mixed-export.ts",
+    ];
     const boundary = {
       rule: "forbid-hidden-type",
       from: sources,
@@ -454,11 +580,11 @@ describe("module boundaries", { concurrency: true }, () => {
       'import { safe, type Private } from "@fixture/library/mixed"; export interface Marker { value: Private }; export { safe };',
     );
     await write(sources[1], 'export { safe, type Private } from "@fixture/library/mixed";');
-    const runtime = (report, source) =>
+    const runtime = (report: Report, source: string) =>
       from(report, source).some(
         (item) => !item.typeOnly && item.to === "packages/library/src/safe.mjs",
       );
-    const typeViolation = (report, source, rule) =>
+    const typeViolation = (report: Report, source: string, rule: string) =>
       report.violations.some((item) => item.from === source && item.typeOnly && item.rule === rule);
     const excluded = await check();
     for (const source of sources) {
@@ -550,10 +676,13 @@ describe("module boundaries", { concurrency: true }, () => {
       ],
       { cwd: join(root, "apps/app/src") },
     );
-    const native = JSON.parse(oracle.stdout);
+    const native = parseJSON(oracle.stdout, "native builtin resolution probe");
+    assert.ok(Array.isArray(native));
     for (const [index, name] of names.entries()) {
-      assert.equal(native[index][0], name.startsWith("node:") ? name : `node:${name}`);
-      assert.equal(native[index][1], name);
+      const pair: unknown = native[index];
+      assert.ok(Array.isArray(pair));
+      assert.equal(pair[0], name.startsWith("node:") ? name : `node:${name}`);
+      assert.equal(pair[1], name);
     }
     const report = await check();
     for (const source of ["apps/app/src/builtins.mjs", "apps/app/src/builtins.cjs"]) {
@@ -849,10 +978,14 @@ describe("module boundaries", { concurrency: true }, () => {
     await write(esm, 'export const load = (name) => import("PRIVATE_ALPHA" + name);');
     await write(cjs, 'module.exports = (name) => require("PRIVATE_BETA" + name);');
     const report = await check();
-    const violations = report.violations.filter((item) => [esm, cjs].includes(item.from));
+    const violations = report.violations.filter((item) => item.from === esm || item.from === cjs);
     assert.equal(violations.length, 2);
-    assert.notEqual(violations[0].specifier, violations[1].specifier);
-    assert.ok(violations.every((item) => item.specifier.startsWith("unknown:sha256:")));
+    const [first, second] = violations;
+    assert.ok(first && second);
+    assert.notEqual(first.specifier, second.specifier);
+    assert.ok(
+      violations.every((item) => stringValue(item.specifier).startsWith("unknown:sha256:")),
+    );
     assert.equal(JSON.stringify(report).includes("PRIVATE_"), false);
     for (const error of await settle([[], ["--json"]].map((json) => failure(verify(json), 1)))) {
       assert.equal((error.stdout + error.stderr).includes("PRIVATE_"), false);
@@ -910,7 +1043,7 @@ describe("module boundaries", { concurrency: true }, () => {
     await write("apps/app/src/new/nested.mjs", 'import "../index.ts";');
     report = await check();
     assert.ok(report.files.includes("apps/app/src/new/nested.mjs"));
-    assert.equal(from(report, "apps/app/src/new/nested.mjs")[0].to, "apps/app/src/index.ts");
+    assert.equal(from(report, "apps/app/src/new/nested.mjs")[0]?.to, "apps/app/src/index.ts");
     assert.deepEqual(await check(), report);
     assert.equal(JSON.stringify(report).includes(root), false);
   });
@@ -948,7 +1081,7 @@ describe("module boundaries", { concurrency: true }, () => {
     const report = await check();
     assert.deepEqual(rules(report), Array(3).fill("consumer-to-private"));
     assert.equal(report.violations.filter((item) => item.typeOnly).length, 1);
-    assert.ok(report.violations.every((item) => item.from.endsWith("/invalid.ts")));
+    assert.ok(report.violations.every((item) => stringValue(item.from).endsWith("/invalid.ts")));
   });
 
   test("enforces blocked package exports, cross-package sources and internal root barrels", async (t) => {
@@ -1022,13 +1155,13 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.equal(
       edges.find(
         (edge) => edge.kind === "import" && edge.specifier === "@fixture/library/conditional",
-      ).to,
+      )?.to,
       importTarget,
     );
-    assert.equal(edges.find((edge) => edge.kind === "require").to, requireTarget);
-    assert.equal(edges.find((edge) => edge.kind === "dynamic-import").to, requireTarget);
+    assert.equal(edges.find((edge) => edge.kind === "require")?.to, requireTarget);
+    assert.equal(edges.find((edge) => edge.kind === "dynamic-import")?.to, requireTarget);
     assert.equal(
-      from(report, "apps/app/src/types.ts")[0].to,
+      from(report, "apps/app/src/types.ts")[0]?.to,
       "packages/library/src/conditional.d.ts",
     );
     for (const resolution of [
@@ -1040,6 +1173,7 @@ describe("module boundaries", { concurrency: true }, () => {
       ),
       report.resolutions.find((item) => item.reference.from === "apps/app/src/types.ts"),
     ]) {
+      assert.equal(resolution?.status, "local");
       assert.equal(resolution.runtimeTarget, importTarget);
       assert.equal(resolution.typeTarget, "packages/library/src/conditional.d.ts");
     }
@@ -1134,7 +1268,7 @@ describe("module boundaries", { concurrency: true }, () => {
     const types = report.resolutions.find(
       (item) => item.reference.from === "apps/app/src/valid-types.ts",
     );
-    assert.equal(types.status, "local");
+    assert.equal(types?.status, "local");
     assert.equal(types.typeTarget, "packages/library/src/conditional.d.ts");
     assert.equal(types.runtimeTarget, null);
   });
@@ -1178,18 +1312,18 @@ describe("module boundaries", { concurrency: true }, () => {
     );
 
     const result = await failure(cli(["--json"]), 1);
-    const report = JSON.parse(result.stdout);
+    const report = cliReport(result.stdout);
     assert.equal(report.ok, false);
     assert.deepEqual(rules(report), Array(3).fill("unsupported-package-export"));
     for (const file of ["mixed.mjs", "encoded.mjs", "mixed.cjs"]) {
       assert.equal(from(report, `apps/app/src/${file}`).length, 0);
     }
     assert.equal(
-      from(report, "apps/app/src/valid.mjs")[0].to,
+      from(report, "apps/app/src/valid.mjs")[0]?.to,
       "packages/library/src/node_modules-backup/entry.mjs",
     );
     assert.equal(
-      from(report, "apps/app/src/fallback.mjs")[0].to,
+      from(report, "apps/app/src/fallback.mjs")[0]?.to,
       "packages/library/src/conditional.mjs",
     );
   });
@@ -1216,11 +1350,11 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.match(rejected.stderr, /ERR_INVALID_PACKAGE_TARGET/);
 
     const result = await failure(cli(["--json"]), 1);
-    const report = JSON.parse(result.stdout);
+    const report = cliReport(result.stdout);
     assert.deepEqual(rules(report), ["unsupported-package-export"]);
     for (const name of ["query", "fragment"]) {
       assert.equal(
-        from(report, `apps/app/src/${name}.mjs`)[0].to,
+        from(report, `apps/app/src/${name}.mjs`)[0]?.to,
         "packages/library/src/entry.mjs",
       );
     }
@@ -1243,10 +1377,10 @@ describe("module boundaries", { concurrency: true }, () => {
       (item) => item.reference.from === "apps/app/src/declaration-consumer.ts",
     );
     const runtime = references.find((item) => !item.reference.typeOnly);
-    assert.equal(runtime.status, "unresolved");
+    assert.equal(runtime?.status, "unresolved");
     assert.equal(runtime.runtimeTarget, null);
     assert.equal(runtime.typeTarget, "apps/app/src/declaration.d.ts");
-    assert.equal(references.find((item) => item.reference.typeOnly).status, "local");
+    assert.equal(references.find((item) => item.reference.typeOnly)?.status, "local");
   });
 
   test("accepts a type-only CommonJS import when no runtime export exists", async (t) => {
@@ -1260,7 +1394,7 @@ describe("module boundaries", { concurrency: true }, () => {
     });
     const report = await check();
     const item = report.resolutions.find((resolution) => resolution.reference.from === source);
-    assert.equal(item.status, "local");
+    assert.equal(item?.status, "local");
     assert.equal(item.typeTarget, "packages/library/src/conditional.d.ts");
     assert.equal(item.runtimeTarget, null);
     assert.equal(
@@ -1296,12 +1430,12 @@ describe("module boundaries", { concurrency: true }, () => {
     `,
     );
     const report = await check();
-    const targets = (path, kinds) =>
+    const targets = (path: string, kinds: Report["edges"][number]["kind"][]) =>
       from(report, `${base}/${path}`)
         .filter((edge) => kinds.includes(edge.kind))
         .map((edge) => edge.to)
         .sort();
-    const native = (loader, specifiers) =>
+    const native = (loader: ReturnType<typeof createRequire>, specifiers: string[]) =>
       specifiers.map((specifier) => relative(root, loader.resolve(specifier))).sort();
     assert.equal(report.ok, true, JSON.stringify(report.violations));
     assert.deepEqual(
@@ -1359,18 +1493,18 @@ describe("module boundaries", { concurrency: true }, () => {
     );
     assert.equal(nativeTarget, target);
     await rm(join(root, "node_modules/@fixture/legacy"));
-    const report = JSON.parse((await failure(verify(["--json"]), 1)).stdout);
+    const report = cliReport((await failure(verify(["--json"]), 1)).stdout);
     assert.deepEqual(rules(report), ["forbidden-main", "unresolved-local-import"]);
     const resolved = report.resolutions.find(
       (item) => item.reference.specifier === "@fixture/legacy",
     );
-    assert.equal(resolved.status, "local");
+    assert.equal(resolved?.status, "local");
     assert.equal(resolved.named, true);
     assert.equal(resolved.runtimeTarget, nativeTarget);
     assert.equal(resolved.typeTarget, "packages/legacy/src/entry.d.cts");
-    assert.equal(violation(report, consumer, "forbidden-main").to, target);
+    assert.equal(violation(report, consumer, "forbidden-main")?.to, target);
     assert.equal(
-      report.resolutions.find((item) => item.reference.specifier === "@fixture/outside").status,
+      report.resolutions.find((item) => item.reference.specifier === "@fixture/outside")?.status,
       "unresolved",
     );
   });
@@ -1414,7 +1548,7 @@ describe("module boundaries", { concurrency: true }, () => {
           node([cli, "--root", selectedRoot, "--policy", "policy.json", "--json"]),
           1,
         );
-        return JSON.parse(error.stdout);
+        return cliReport(error.stdout);
       }),
     );
     for (const report of reports) {
@@ -1423,14 +1557,14 @@ describe("module boundaries", { concurrency: true }, () => {
         "forbidden-canonical",
         "unresolved-local-import",
       ]);
-      assert.equal(violation(report, consumer, "forbidden-canonical").to, target);
+      assert.equal(violation(report, consumer, "forbidden-canonical")?.to, target);
       assert.deepEqual(
         from(report, consumer).map((edge) => edge.to),
         [nativeTarget, nativeTarget],
       );
       assert.equal(
         report.resolutions.find((item) => item.reference.specifier === "./skipped/hidden.cjs")
-          .status,
+          ?.status,
         "unresolved",
       );
       assert.equal(
@@ -1438,7 +1572,9 @@ describe("module boundaries", { concurrency: true }, () => {
         false,
       );
     }
-    assert.deepEqual(reports[0], reports[1]);
+    const [canonical, aliased] = reports;
+    assert.ok(canonical && aliased);
+    assert.deepEqual(canonical.json, aliased.json);
   });
 
   test("resolves anchored loads against their actual provider and checks foreign package anchors", async (t) => {
@@ -1482,7 +1618,7 @@ describe("module boundaries", { concurrency: true }, () => {
         .every((edge) => edge.to === target),
     );
     assert.equal(
-      report.violations.find((edge) => edge.rule === "cross-package-source").kind,
+      report.violations.find((edge) => edge.rule === "cross-package-source")?.kind,
       "dependency-anchor",
     );
   });
@@ -1499,10 +1635,10 @@ describe("module boundaries", { concurrency: true }, () => {
     const report = await check();
     const items = report.resolutions.filter((item) => item.reference.from === source);
     assert.equal(
-      items.find((item) => item.reference.specifier === "@fixture/library").status,
+      items.find((item) => item.reference.specifier === "@fixture/library")?.status,
       "unresolved",
     );
-    assert.equal(items.find((item) => item.reference.specifier === "node:fs").status, "external");
+    assert.equal(items.find((item) => item.reference.specifier === "node:fs")?.status, "external");
     assert.ok(violates(report, source));
   });
 
@@ -1540,9 +1676,7 @@ describe("module boundaries", { concurrency: true }, () => {
     }
     const error = await failure(verify(["--json"]), 1);
     assert.ok(
-      JSON.parse(error.stdout).violations.some(
-        (item) => item.rule === "workspace-package-mismatch",
-      ),
+      cliReport(error.stdout).violations.some((item) => item.rule === "workspace-package-mismatch"),
     );
   });
 
@@ -1557,7 +1691,7 @@ describe("module boundaries", { concurrency: true }, () => {
         },
       ],
     });
-    const known = [
+    const known: [string, string][] = [
       [
         "ts",
         'import { createRequire } from "node:module"; const factory = (createRequire); const load = (factory(import.meta.url) satisfies ReturnType<typeof createRequire>); const alias = load; (alias!)("external-driver");',
@@ -1679,16 +1813,17 @@ describe("module boundaries", { concurrency: true }, () => {
   test("uses the nearest unnamed package scope for CLI CommonJS loaders and extension overrides", async (t) => {
     const base = "apps/app/src/nested";
     const target = `${base}/secret.cjs`;
+    const variants = [
+      ["js", "module", "commonjs", true],
+      ["js", "commonjs", "module", false],
+      ["js", "module", undefined, true],
+      ["cjs", "module", "module", true],
+      ["cts", "module", "module", true],
+      ["mjs", "commonjs", "commonjs", false],
+      ["mts", "commonjs", "commonjs", false],
+    ] as const;
     await settle(
-      [
-        ["js", "module", "commonjs", true],
-        ["js", "commonjs", "module", false],
-        ["js", "module", undefined, true],
-        ["cjs", "module", "module", true],
-        ["cts", "module", "module", true],
-        ["mjs", "commonjs", "commonjs", false],
-        ["mts", "commonjs", "commonjs", false],
-      ].map(async ([extension, parentType, nestedType, commonjs]) => {
+      variants.map(async ([extension, parentType, nestedType, commonjs]) => {
         const consumer = `${base}/load.${extension}`;
         const {
           root,
@@ -1721,25 +1856,32 @@ describe("module boundaries", { concurrency: true }, () => {
           probe,
           'console.log(JSON.stringify({ loader: typeof module !== "undefined" && typeof module.require === "function", target: typeof require === "function" ? require.resolve("./secret.cjs") : null }));',
         );
-        const [output, result] = await settle([
+        const [probeRun, cliRun] = await Promise.allSettled([
           native(probe),
-          verify(["--json"]).catch((error) => {
+          verify(["--json"]).catch((error: unknown) => {
+            assert.ok(exitFailure(error));
             assert.equal(error.code, 1);
             return error;
           }),
         ]);
-        const probed = JSON.parse(output);
+        const output = settledValue(probeRun);
+        const result = settledValue(cliRun);
+        const probed = parseJSON(output, "native CommonJS scope probe");
+        assert.ok(isRecord(probed));
         assert.equal(probed.loader, commonjs);
-        assert.equal(probed.target && relative(root, probed.target), commonjs ? target : null);
-        const report = JSON.parse(result.stdout);
-        assert.equal(result.code ?? 0, commonjs ? 1 : 0);
+        assert.equal(
+          probed.target && relative(root, stringValue(probed.target)),
+          commonjs ? target : null,
+        );
+        const report = cliReport(result.stdout);
+        assert.equal(exitFailure(result) ? result.code : 0, commonjs ? 1 : 0);
         assert.deepEqual(
           from(report, consumer).map((edge) => edge.to),
           commonjs ? [target] : [],
         );
         assert.deepEqual(rules(report), commonjs ? ["forbidden-scope"] : []);
         if (commonjs) {
-          assert.equal(report.violations[0].to, target);
+          assert.equal(report.violations[0]?.to, target);
         }
       }),
     );
@@ -1884,7 +2026,7 @@ describe("module boundaries", { concurrency: true }, () => {
     for (const index of [0, 1, 2]) {
       const source = `apps/app/src/scheme-${index}-imports.mjs`;
       assert.ok(reaches(report, source, target), source);
-      assert.equal(violation(report, source, "no-private").specifier, `file:${target}`);
+      assert.equal(violation(report, source, "no-private")?.specifier, `file:${target}`);
       assert.ok(reaches(report, `apps/app/src/scheme-${index}-helpers.mjs`, target));
       assert.ok(
         reaches(
@@ -1895,7 +2037,7 @@ describe("module boundaries", { concurrency: true }, () => {
       );
     }
     const rejected = await failure(cli(["--json"]), 1);
-    assert.equal(JSON.parse(rejected.stdout).ok, false);
+    assert.equal(cliReport(rejected.stdout).ok, false);
   });
 
   test("resolves ESM literal paths with URL semantics and preserves literal CommonJS filenames", async (t) => {
@@ -1930,7 +2072,9 @@ describe("module boundaries", { concurrency: true }, () => {
       ],
       { cwd: join(root, base) },
     );
-    const esmTargets = JSON.parse(stdout).map((url) => relative(root, fileURLToPath(url)));
+    const urls = parseJSON(stdout, "native ESM resolution probe");
+    assert.ok(Array.isArray(urls));
+    const esmTargets = urls.map((url: unknown) => relative(root, fileURLToPath(stringValue(url))));
     assert.deepEqual(esmTargets, [secret, secret]);
     const loader = createRequire(join(root, base, "loads.cjs"));
     const cjsTargets = cjsSpecifiers.map((specifier) => relative(root, loader.resolve(specifier)));
@@ -2002,13 +2146,13 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.ok(source);
     const checker = program.getTypeChecker();
     const declaration = source.statements.find(
-      (statement) =>
+      (statement): statement is ts.FunctionDeclaration =>
         ts.isFunctionDeclaration(statement) && statement.name?.text === "collectSourceImports",
     );
     assert.ok(declaration);
     const signature = checker.getSignatureFromDeclaration(declaration);
     assert.ok(signature);
-    const checkType = (type, label, seen = new Set()) => {
+    const checkType = (type: ts.Type, label: string, seen = new Set<ts.Type>()) => {
       assert.equal(type.flags & ts.TypeFlags.Any, 0, `${label} must not be any`);
       if (seen.has(type)) {
         return;
@@ -2019,9 +2163,9 @@ describe("module boundaries", { concurrency: true }, () => {
           checkType(member, label, seen);
         }
       } else if (checker.isArrayType(type)) {
-        for (const element of checker.getTypeArguments(type)) {
-          checkType(element, `${label}[]`, seen);
-        }
+        const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+        assert.ok(element, `Expected an element type for ${label}`);
+        checkType(element, `${label}[]`, seen);
       } else if (type.flags & ts.TypeFlags.Object) {
         for (const property of checker.getPropertiesOfType(type)) {
           checkType(
@@ -2033,8 +2177,8 @@ describe("module boundaries", { concurrency: true }, () => {
       }
     };
     checkType(checker.getReturnTypeOfSignature(signature), "collectSourceImports return");
-    const frozenCalls = [];
-    function visit(node) {
+    const frozenCalls: ts.CallExpression[] = [];
+    function visit(node: ts.Node) {
       if (
         ts.isCallExpression(node) &&
         ts.isIdentifier(node.expression) &&
@@ -2066,14 +2210,15 @@ describe("module boundaries", { concurrency: true }, () => {
       configPath,
     );
     assert.deepEqual(parsed.errors, []);
+    const helperPath = join(repository, "scripts/module-boundaries/freeze-record.ts");
     const files = [
       "loader-provenance.ts",
       "source-mutations.ts",
       "source-imports.ts",
       "parse-diagnostics.ts",
-      "freeze-record.ts",
       "source-path.ts",
     ].map((name) => join(repository, "scripts/module-boundaries", name));
+    files.push(helperPath);
     for (const file of files) {
       assert.ok(parsed.fileNames.includes(file));
     }
@@ -2086,7 +2231,7 @@ describe("module boundaries", { concurrency: true }, () => {
     for (const file of files) {
       const source = program.getSourceFile(file);
       assert.ok(source);
-      function visit(node) {
+      const visit = (node: ts.Node) => {
         if (
           ts.isCallExpression(node) ||
           ts.isPropertyAccessExpression(node) ||
@@ -2100,13 +2245,13 @@ describe("module boundaries", { concurrency: true }, () => {
           );
         }
         ts.forEachChild(node, visit);
-      }
+      };
       visit(source);
     }
-    const helper = program.getSourceFile(files[4]);
+    const helper = program.getSourceFile(helperPath);
     assert.ok(helper);
-    const traversal = [];
-    function find(node) {
+    const traversal: [string, string][] = [];
+    function find(node: ts.Node) {
       if (
         ts.isVariableDeclaration(node) &&
         ts.isIdentifier(node.name) &&
@@ -2134,47 +2279,6 @@ describe("module boundaries", { concurrency: true }, () => {
     ]);
   });
 
-  test("scripts configuration checks the enrolled generic freeze implementation", () => {
-    const configPath = join(repository, "scripts/tsconfig.json");
-    const config = ts.readConfigFile(configPath, ts.sys.readFile);
-    assert.equal(config.error, undefined);
-    const parsed = ts.parseJsonConfigFileContent(
-      config.config,
-      ts.sys,
-      dirname(configPath),
-      undefined,
-      configPath,
-    );
-    assert.deepEqual(parsed.errors, []);
-    const helper = join(repository, "scripts/module-boundaries/freeze-record.ts");
-    assert.ok(parsed.fileNames.includes(helper));
-    const options = { ...parsed.options, composite: false, incremental: false };
-    const host = ts.createCompilerHost(options);
-    const getSourceFile = host.getSourceFile.bind(host);
-    const original = ts.sys.readFile(helper);
-    assert.ok(original);
-    const invalid = original.replace(
-      "  return Object.freeze(value);",
-      "  return value.nonexistent();",
-    );
-    assert.notEqual(invalid, original);
-    host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
-      fileName === helper
-        ? ts.createSourceFile(fileName, invalid, languageVersion, true)
-        : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
-    const program = ts.createProgram([helper], options, host);
-    const source = program.getSourceFile(helper);
-    assert.ok(source);
-    const errors = program.getSemanticDiagnostics(source);
-    assert.ok(
-      errors.some(
-        (diagnostic) =>
-          diagnostic.code === 2339 &&
-          ts.flattenDiagnosticMessageText(diagnostic.messageText, " ").includes("nonexistent"),
-      ),
-    );
-  });
-
   test("reports parse errors without adding JavaScript grammar diagnostics or losing imports", async (t) => {
     const { write, check } = await workspace(t);
     const tsPath = "apps/app/src/parse-errors.ts";
@@ -2187,7 +2291,7 @@ describe("module boundaries", { concurrency: true }, () => {
     );
     await write(validJsPath, "const x: number = 1;\ninterface Foo {}\n");
     const report = await check();
-    const syntax = (path) =>
+    const syntax = (path: string) =>
       report.violations
         .filter((item) => item.from === path && item.rule === "source-syntax")
         .map(({ line, message }) => ({ line, message }));
@@ -2239,9 +2343,9 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.ok(
       report.typeInvolvingCycles.some((group) => group.every((path) => path.includes("runtime-"))),
     );
-    assert.ok(report.runtimeCycles[0].every((path) => path.includes("runtime-")));
+    assert.ok(report.runtimeCycles[0]?.every((path) => path.includes("runtime-")));
     assert.deepEqual(rules(report), ["runtime-cycle"]);
-    assert.equal(from(report, "apps/app/src/query.ts")[0].typeOnly, true);
+    assert.equal(from(report, "apps/app/src/query.ts")[0]?.typeOnly, true);
     assert.equal(
       (await check({ policy: { ...policy, cycles: { runtime: "report", typeOnly: "report" } } }))
         .ok,
@@ -2269,7 +2373,7 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.equal((await check({ exceptions })).ok, true);
     await write("exceptions.json", JSON.stringify(exceptions));
     const { stdout } = await verify(["--exceptions", join(root, "exceptions.json"), "--json"]);
-    assert.equal(JSON.parse(stdout).baseline.length, 1);
+    assert.equal(cliReport(stdout).baseline.length, 1);
     for (const [code, expected] of [
       [
         'import type { Value, value } from "./index.ts";',
@@ -2277,7 +2381,7 @@ describe("module boundaries", { concurrency: true }, () => {
       ],
       ['import { Value } from "./index.ts";', ["internal-root-barrel", "stale-exception"]],
       ['import type { Value } from "./leaf.ts";', ["stale-exception"]],
-    ]) {
+    ] as const) {
       await write(path, code);
       assert.deepEqual(rules(await check({ exceptions })), expected, code);
     }
@@ -2289,7 +2393,7 @@ describe("module boundaries", { concurrency: true }, () => {
         "Exceptions require an exact edge, reason, removal condition and capability owner.",
       ],
       [{ version: 1, exceptions: [exception, exception] }, "Duplicate module-boundary exception."],
-    ]) {
+    ] as const) {
       await assert.rejects(check({ exceptions: invalid }), { message });
     }
   });
@@ -2371,7 +2475,7 @@ describe("module boundaries", { concurrency: true }, () => {
     // Success and violations through a real child: its exit status and output streams.
     const passed = await cliProcess(["--json"]);
     assert.equal(passed.stderr, "");
-    assert.deepEqual(JSON.parse(passed.stdout), await check());
+    assert.deepEqual(parseJSON(passed.stdout, "successful CLI report"), await check());
     await write("apps/app/src/invalid.mjs", 'import "./missing-a.mjs"; import "./missing-b.mjs";');
     await write("malformed.json", "{");
     await write("invalid.json", JSON.stringify({ ...policy, diagnosticLimit: 0 }));
@@ -2386,12 +2490,13 @@ describe("module boundaries", { concurrency: true }, () => {
       // A configuration failure without an error code, through a real child.
       failure(node([cli, ...args, "--unknown"]), 2),
     ]);
+    assert.ok(text && json);
     assert.match(text.stderr, /1 additional violations/);
     assert.equal(
       text.stderr.split("\n").filter((line) => line.includes("[unresolved-local-import]")).length,
       1,
     );
-    assert.equal(JSON.parse(json.stdout).violations.length, 2);
+    assert.equal(cliReport(json.stdout).violations.length, 2);
     for (const error of configuration) {
       assert.notEqual(error.stderr.trim(), "");
     }
@@ -2419,7 +2524,7 @@ describe("module boundaries", { concurrency: true }, () => {
       [{ boundaries: [{ ...boundary, kinds: ["eval"] }] }, "Invalid boundary field: kinds"],
       [{ packageImports: [] }, "Invalid policy field: packageImports"],
       [{ cycles: { runtime: "allow" } }, "Invalid policy field: cycles.runtime"],
-    ]) {
+    ] as const) {
       await assert.rejects(check({ policy: { ...policy, ...change } }), { message });
     }
   });
@@ -2451,7 +2556,7 @@ describe("module boundaries", { concurrency: true }, () => {
       "function",
     );
     const unresolved = violation(report, source);
-    assert.equal(unresolved.specifier, "fs");
+    assert.equal(unresolved?.specifier, "fs");
     assert.ok(violates(report, source, "no-fs"));
     const accepted = await check({ exceptions: exceptionsFor(unresolved) });
     assert.equal(accepted.ok, false);
@@ -2464,7 +2569,7 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.ok(boundaryOnly.violations.some((item) => item.rule === dynamic));
     await write(source, `${loader}\nload(process.env.PRIVATE_EXPRESSION_MARKER ?? "fs");`);
     const unknown = await check();
-    assert.match(violation(unknown, source).specifier, /^unknown:sha256:/);
+    assert.match(stringValue(violation(unknown, source)?.specifier), /^unknown:sha256:/);
     assert.equal(JSON.stringify(unknown).includes("PRIVATE_EXPRESSION_MARKER"), false);
     for (const error of await settle([[], ["--json"]].map((json) => failure(verify(json), 1)))) {
       assert.equal((error.stdout + error.stderr).includes("PRIVATE_EXPRESSION_MARKER"), false);
@@ -2489,7 +2594,7 @@ console.log(b("./secret.cjs"));
 `;
     await write(source, first);
     const { item: unresolved, exceptions } = await reviewLoader(source);
-    const count = (report) =>
+    const count = (report: Report) =>
       report.violations.filter((item) => item.from === source && item.rule === dynamic).length;
     await write(source, first + 'console.log(a("./secret.cjs"));');
     assert.equal(await native(source), "PUBLIC\nPUBLIC");
@@ -2502,10 +2607,10 @@ console.log(b("./secret.cjs"));
     assert.equal(changed.baseline.length, 1);
     assert.equal(changed.ok, false);
     assert.equal(count(changed), 1);
-    assert.notEqual(changed.violations[0].loaderIdentity, unresolved.loaderIdentity);
+    assert.notEqual(changed.violations[0]?.loaderIdentity, unresolved.loaderIdentity);
     await write(source, first.replace("./anchor.cjs", "../private/anchor.cjs"));
     assert.equal(await native(source), "PRIVATE");
-    const stale = (report) =>
+    const stale = (report: Report) =>
       ["stale-exception", dynamic].every((rule) =>
         report.violations.some((item) => item.rule === rule),
       );
@@ -2554,7 +2659,7 @@ console.log(b("./secret.cjs"));
       PUBLIC_PATH: "./secret.mjs",
       PRIVATE_PATH: "../private/secret.mjs",
     };
-    const loader = (name, variable) => `async function ${name}() {
+    const loader = (name: string, variable: string) => `async function ${name}() {
   const target = process.env.${variable};
   console.log((await import(target)).default);
 }
@@ -2579,7 +2684,7 @@ await ${name}();
     const source = "apps/app/src/public/long-chain.mjs";
     const { write, check } = await workspace(t, { boundaries: [] });
     // An unknown import whose target flows through `links` local constants.
-    const chain = (links) =>
+    const chain = (links: number) =>
       [
         'const s0 = "./secret.mjs";',
         ...Array.from({ length: links - 1 }, (_, index) => `const s${index + 1} = s${index};`),
@@ -2591,7 +2696,7 @@ await ${name}();
     for (const [links, kept] of [
       [8, true],
       [80, false],
-    ]) {
+    ] as const) {
       await write(source, chain(links));
       const exceptions = exceptionsFor(violation(await check(), source));
       assert.equal((await check({ exceptions })).ok, true, `${links} links`);
@@ -2625,11 +2730,11 @@ console.log((await import(select())).default);
 
   test("invalidates unknown-load exceptions when destructured sources change", async (t) => {
     const source = "apps/app/src/public/destructured.mjs";
-    const load = (target) => `console.log((await import(${target})).default);`;
+    const load = (target: string) => `console.log((await import(${target})).default);`;
     // After `setup`, writes MODULE_TARGET through `receiver` and imports process.env.MODULE_TARGET.
-    const viaEnv = (setup, receiver) => (path) =>
+    const viaEnv = (setup: string, receiver: string) => (path: string) =>
       `${setup}${receiver}.MODULE_TARGET = "${path}"; ${load("process.env.MODULE_TARGET")}`;
-    const forms = {
+    const forms: Record<string, (path: string) => string> = {
       object: (path) => `const { target } = { target: "${path}" };\n${load("target")}`,
       array: (path) => `const [target] = ["${path}"];\n${load("target")}`,
       nestedDefault: (path) =>
@@ -2728,7 +2833,7 @@ console.log((await import(select())).default);
     const { write, check, observe } = await workspace(t);
     await write("apps/app/src/public/secret.mjs", 'export default "PUBLIC";');
     const env = { ...process.env, MODULE_TARGET: "./secret.mjs" };
-    const makeSource = (value) =>
+    const makeSource = (value: string) =>
       `function example(process) { return { env: process.env, value: "${value}" }; }
        const holder = { process: "${value}" }; holder.process;
        const {process: ignored} = JSON.parse('{"process":0}'); void ignored;
@@ -2747,7 +2852,7 @@ console.log((await import(select())).default);
       [false, true].map(async (computed) => {
         const { write, check, native, observe, decoys, reviewLoader } = await workspace(t);
         await decoys("secret.mjs");
-        const makeSource = (property) =>
+        const makeSource = (property: string) =>
           `delete process.env${computed ? `["${property}"]` : `.${property}`};
          console.log((await import(process.env.BOUNDARY_SELECTED ?? "../private/secret.mjs")).default);`;
         const publicSource = makeSource("BOUNDARY_UNRELATED");
@@ -2834,7 +2939,7 @@ console.log((await import(select())).default);
     const source = "apps/app/src/public/typeof-module.cjs";
     const { write, check, native, observe } = await workspace(t);
     await write("apps/app/src/public/secret.cjs", 'module.exports = "PUBLIC";');
-    const quiet = (report) => !report.violations.some((item) => item.from === source);
+    const quiet = (report: Report) => !report.violations.some((item) => item.from === source);
     for (const observation of ["typeof module", "typeof (module)", "typeof (((module)))"]) {
       await write(
         source,
