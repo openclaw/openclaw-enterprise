@@ -29,7 +29,7 @@
     "tests/integration/production-kubernetes-packaging.test.mjs",
     "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
-    "tests/integration/container-registry-real.test.mjs",
+    "tests/integration/container-registry-real.test.ts",
     "tests/integration/logging-packaging.test.ts",
     "tests/integration/repository-runtime-volume.test.ts",
     "tests/integration/production-image-qualification.test.ts",
@@ -147,7 +147,7 @@
       ]
     },
     {
-      "path": "tests/integration/container-registry-real.test.mjs",
+      "path": "tests/integration/container-registry-real.test.ts",
       "expectedTests": [
         "publication updates aliases using real Skopeo and a multi-platform registry"
       ]

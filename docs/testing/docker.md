@@ -119,7 +119,7 @@ See the [Docker Compute support boundary](../reference/drivers/docker-compute.md
 With Docker and Skopeo 1.13.3, run:
 
 ```sh
-OCC_TEST_CONTAINER_REGISTRY=1 node --test tests/integration/container-registry-real.test.mjs
+OCC_TEST_CONTAINER_REGISTRY=1 node --test tests/integration/container-registry-real.test.ts
 ```
 
 The test pulls a digest-pinned registry image and removes its disposable
