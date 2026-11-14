@@ -355,15 +355,12 @@ function isRequest<Method extends keyof Requests>(
   return Check(requestSchemas[method], request);
 }
 
-function unary<Method extends keyof Requests>(
-  method: Method,
-  handler: Handlers[NoInfer<Method>],
-): Grpc.handleUnaryCall<unknown, Replies[Method]> {
-  return (call, callback) => {
+function unary<Method extends keyof Requests>(method: Method, handler: Handlers[NoInfer<Method>]) {
+  return ({ request }: { request: unknown }, callback: Grpc.sendUnaryData<Replies[Method]>) => {
     // Decode with the independent schema. Check only the fields the peer or cases read,
     // and keep the decoded object intact so its profile can round-trip with all fields.
-    assert.ok(isRequest(method, call.request), `Malformed ${method} request`);
-    handler(call.request, callback);
+    assert.ok(isRequest(method, request), `Malformed ${method} request`);
+    handler(request, callback);
   };
 }
 
