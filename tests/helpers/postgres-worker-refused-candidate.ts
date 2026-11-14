@@ -44,6 +44,19 @@ interface ExclusiveComputeOptions {
   runtimeFailure?: (revision: AgentRevision) => RuntimeFailureEvidence | undefined;
 }
 
+interface RefusedCandidateWorkerOptions {
+  emit?: ControllerWorkerOptions["emit"];
+  convergenceTimeoutMs?: ControllerWorkerOptions["convergenceTimeoutMs"];
+  transformDrivers?: TransformDrivers;
+}
+
+type RefusedCandidateFixture = Pick<
+  RevisionFixture,
+  "agent" | "compute" | "namespace" | "observerPool" | "revision" | "work"
+> & {
+  start(compute: ComputeDriver, options?: RefusedCandidateWorkerOptions): Promise<void>;
+};
+
 interface RefusedOptions {
   refuse?: string;
   stopRevision?: (revision: AgentRevision) => Promise<void> | undefined;
@@ -51,9 +64,7 @@ interface RefusedOptions {
   ready?: ReadinessCheck;
   refusing?: () => boolean;
   candidateReady?: () => boolean;
-  startOptions?: Pick<ControllerWorkerOptions, "convergenceTimeoutMs"> & {
-    transformDrivers?: TransformDrivers;
-  };
+  startOptions?: Pick<RefusedCandidateWorkerOptions, "convergenceTimeoutMs" | "transformDrivers">;
 }
 
 /**
@@ -130,7 +141,7 @@ export function denyDeploy(
  * just before the replacement was admitted.
  */
 export async function startRefusedCandidate(
-  fixture: RevisionFixture,
+  fixture: RefusedCandidateFixture,
   label: string,
   {
     refuse = "revoked",
