@@ -425,7 +425,9 @@ export async function migrateWithHistory(
       const check = migrations[index]?.sql.find((sql) =>
         sql.trimStart().startsWith("DO $check_download_upgrade$"),
       );
-      if (!check) refuse("the protected download upgrade check is missing");
+      if (!check) {
+        refuse("the protected download upgrade check is missing");
+      }
       await client.query(check);
     }
     if (!checkOnly) {
@@ -446,7 +448,9 @@ export async function migrateWithHistory(
   } catch (error) {
     // Drizzle wraps SQL failures inside its transaction; pg returns them directly during --check.
     const failure = error?.cause ?? error;
-    if (failure?.code === "P0081") refuse(failure.message);
+    if (failure?.code === "P0081") {
+      refuse(failure.message);
+    }
     throw error;
   } finally {
     try {
