@@ -17,8 +17,64 @@ import {
 } from "../fixtures/skipper-private-git-origin.mjs";
 import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
+import { createSkipperSendScript } from "../helpers/skipper-prepared-compute.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
+
+test("native command observations preserve result evidence after a writer callback", async (t) => {
+  for (const scenario of ["success", "mismatch", "unexpected event"]) {
+    await t.test(scenario, async (t) => {
+      const modelDirectory = await temporaryDirectory(t, "skipper-command-");
+      const control = join(modelDirectory, "skipper-command.json");
+      const checkpoints = new Map();
+      const completed = { commitShas: [], threadId: "thread", turnId: "turn" };
+      const sendScript = createSkipperSendScript({
+        modelDirectory,
+        checkpoint: async (name, fields) => checkpoints.set(name, fields),
+        chat: async (marker) =>
+          scenario === "mismatch" ? "different" : "SKIPPER_COMPUTE_DONE_" + marker,
+        native: async () => completed,
+        modelEvents: async () => {
+          const { id } = JSON.parse(await readFile(control, "utf8"));
+          return [
+            { event: "skipper-native-request", id },
+            { event: "skipper-native-poll", id },
+            {
+              event: "skipper-native-result",
+              id,
+              markerSeen: true,
+              status: "completed",
+              exitCode: 0,
+              sessionPresent: false,
+            },
+            { event: "skipper-native-write", id, writer: "https-finished" },
+            ...(scenario === "unexpected event" ? [{ event: "unexpected", id }] : []),
+          ];
+        },
+      });
+      if (scenario === "success") {
+        assert.equal(await sendScript("true", "control"), completed);
+        assert.ok(checkpoints.has("native-command-and-model-observed"));
+        await assert.rejects(stat(control), { code: "ENOENT" });
+      } else if (scenario === "mismatch") {
+        await assert.rejects(sendScript("true", "control"), { code: "ERR_ASSERTION" });
+        assert.deepEqual(checkpoints.get("native-command-completion-mismatch"), {
+          modelDiagnosticsAvailable: true,
+          modelRequests: 1,
+          modelResults: 1,
+          nativePolls: 1,
+          nativeStatus: "completed",
+          nativeExitCode: 0,
+          nativeSessionPresent: false,
+          markerSeen: true,
+        });
+      } else {
+        await assert.rejects(sendScript("true", "control"), { code: "ERR_ASSERTION" });
+        assert.equal(checkpoints.has("native-command-and-model-observed"), false);
+      }
+    });
+  }
+});
 
 function api(
   fixture,
@@ -744,7 +800,7 @@ function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
   ].join("\n");
 }
 
-async function controlledModel(t) {
+async function controlledModel(t, onTerminalSuccess) {
   const directory = await temporaryDirectory(t, "skipper-model-");
   const path = join(directory, "command.json");
   const command = {
@@ -757,12 +813,15 @@ async function controlledModel(t) {
   const observations = [];
   const input = [{ type: "message", role: "user", content: command.id }];
   const next = () =>
-    respond({
-      model: "test",
-      request: JSON.stringify({ input }),
-      answerEvents: (_model, text) => text,
-      emit: (event) => observations.push(event),
-    });
+    respond(
+      {
+        model: "test",
+        request: JSON.stringify({ input }),
+        answerEvents: (_model, text) => text,
+        emit: (event) => observations.push(event),
+      },
+      onTerminalSuccess,
+    );
   const result = (call, output, delta = false) => {
     if (delta) {
       input.length = 0;
@@ -835,7 +894,8 @@ test("the installed Skipper model waits for the same native session without repl
 });
 
 test("the installed Skipper model requires terminal success and keeps failure diagnostics content-free", async (t) => {
-  const completed = await controlledModel(t);
+  const selections = [];
+  const completed = await controlledModel(t, (id) => selections.push(id));
   assert.equal(
     completed.result(
       toolCall(completed.next()),
@@ -843,6 +903,7 @@ test("the installed Skipper model requires terminal success and keeps failure di
     ),
     "SKIPPER_COMPUTE_DONE_skipper-test",
   );
+  assert.deepEqual(selections, [completed.command.id]);
   for (const output of [
     nativeToolOutput({
       exit: 1,
@@ -854,7 +915,7 @@ test("the installed Skipper model requires terminal success and keeps failure di
     }),
     "private-error-canary",
   ]) {
-    const model = await controlledModel(t);
+    const model = await controlledModel(t, () => assert.fail("incomplete answer armed writer"));
     const initial = toolCall(model.next());
     assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
     assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);

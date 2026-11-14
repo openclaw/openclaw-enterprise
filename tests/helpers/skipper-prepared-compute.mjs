@@ -419,61 +419,6 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
         assert.ok(event.event !== "request" || typeof event.turn === "boolean");
         return event;
       });
-  const controlFile = join(modelDirectory, "skipper-command.json");
-  const sendScript = async (cmd, label) => {
-    const marker = "skipper-" + randomUUID();
-    const text = JSON.stringify({ cmd, id: marker, expiresAt: Date.now() + 170_000 });
-    await runSkipperOperation("command-input", async () => {
-      await writeFile(controlFile + ".next", text, { mode: 0o644 });
-      await chmod(controlFile + ".next", 0o644);
-      await rename(controlFile + ".next", controlFile);
-    });
-    await checkpoint("native-command-started", { label });
-    const reply = await runSkipperOperation("gateway-chat", () => chat(marker, "native-git"));
-    const expected = "SKIPPER_COMPUTE_DONE_" + marker;
-    if (reply !== expected) {
-      // Only counts and booleans leave the private journey log. Diagnostics must not
-      // replace the completion assertion if the model log or ledger is unavailable.
-      const observations = await modelEvents(AbortSignal.timeout(10_000))
-        .then((events) => (events.length ? events.filter((e) => e.id === marker) : undefined))
-        .catch(() => undefined);
-      await checkpoint("native-command-completion-mismatch", {
-        modelDiagnosticsAvailable: observations !== undefined,
-        ...(observations === undefined
-          ? {}
-          : {
-              modelRequests: observations.filter((e) => e.event === "skipper-native-request")
-                .length,
-              modelResults: observations.filter((e) => e.event === "skipper-native-result").length,
-              nativePolls: observations.filter((e) => e.event === "skipper-native-poll").length,
-              nativeStatus: observations.at(-1)?.status,
-              nativeExitCode: observations.at(-1)?.exitCode,
-              nativeSessionPresent: observations.at(-1)?.sessionPresent,
-              markerSeen: observations.some(
-                (e) => e.event === "skipper-native-result" && e.markerSeen === true,
-              ),
-            }),
-      }).catch(() => {});
-    }
-    assert.equal(reply, expected);
-    const completed = await runSkipperOperation("native-observation", () => native(marker));
-    const observations = (
-      await runSkipperOperation("model-observation", () => modelEvents())
-    ).filter((e) => e.id === marker);
-    assert.deepEqual(
-      observations.filter((e) => e.event !== "skipper-native-poll").map((e) => e.event),
-      ["skipper-native-request", "skipper-native-result"],
-    );
-    assert.equal(observations.at(-1).markerSeen, true);
-    await checkpoint("native-command-and-model-observed", {
-      label,
-      commitShas: completed.commitShas,
-      threadId: completed.threadId,
-      turnId: completed.turnId,
-    });
-    await runSkipperOperation("command-cleanup", () => unlink(controlFile));
-    return completed;
-  };
   async function ordinaryChat(label, gatewayChatPhase) {
     const nonce = "OCE_SMOKE_" + randomUUID();
     assert.equal(await chat(nonce, gatewayChatPhase), nonce);
@@ -498,8 +443,71 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     query,
     checkpoint,
     stable,
-    sendScript,
+    sendScript: createSkipperSendScript({ modelDirectory, chat, native, modelEvents, checkpoint }),
     ordinaryChat,
+  };
+}
+
+function isSemanticModelEvent(event) {
+  return event.event !== "skipper-native-write";
+}
+
+export function createSkipperSendScript({ modelDirectory, chat, native, modelEvents, checkpoint }) {
+  const controlFile = join(modelDirectory, "skipper-command.json");
+  return async (cmd, label) => {
+    const marker = "skipper-" + randomUUID();
+    const text = JSON.stringify({ cmd, id: marker, expiresAt: Date.now() + 170_000 });
+    await runSkipperOperation("command-input", async () => {
+      await writeFile(controlFile + ".next", text, { mode: 0o644 });
+      await chmod(controlFile + ".next", 0o644);
+      await rename(controlFile + ".next", controlFile);
+    });
+    await checkpoint("native-command-started", { label });
+    const reply = await runSkipperOperation("gateway-chat", () => chat(marker, "native-git"));
+    const expected = "SKIPPER_COMPUTE_DONE_" + marker;
+    if (reply !== expected) {
+      // Only counts and booleans leave the private journey log. Diagnostics must not
+      // replace the completion assertion if the model log or ledger is unavailable.
+      const observations = await modelEvents(AbortSignal.timeout(10_000))
+        .then((events) => events.filter(isSemanticModelEvent))
+        .then((events) => (events.length ? events.filter((e) => e.id === marker) : undefined))
+        .catch(() => undefined);
+      await checkpoint("native-command-completion-mismatch", {
+        modelDiagnosticsAvailable: observations !== undefined,
+        ...(observations === undefined
+          ? {}
+          : {
+              modelRequests: observations.filter((e) => e.event === "skipper-native-request")
+                .length,
+              modelResults: observations.filter((e) => e.event === "skipper-native-result").length,
+              nativePolls: observations.filter((e) => e.event === "skipper-native-poll").length,
+              nativeStatus: observations.at(-1)?.status,
+              nativeExitCode: observations.at(-1)?.exitCode,
+              nativeSessionPresent: observations.at(-1)?.sessionPresent,
+              markerSeen: observations.some(
+                (e) => e.event === "skipper-native-result" && e.markerSeen === true,
+              ),
+            }),
+      }).catch(() => {});
+    }
+    assert.equal(reply, expected);
+    const completed = await runSkipperOperation("native-observation", () => native(marker));
+    const observations = (
+      await runSkipperOperation("model-observation", () => modelEvents())
+    ).filter((e) => isSemanticModelEvent(e) && e.id === marker);
+    assert.deepEqual(
+      observations.filter((e) => e.event !== "skipper-native-poll").map((e) => e.event),
+      ["skipper-native-request", "skipper-native-result"],
+    );
+    assert.equal(observations.at(-1).markerSeen, true);
+    await checkpoint("native-command-and-model-observed", {
+      label,
+      commitShas: completed.commitShas,
+      threadId: completed.threadId,
+      turnId: completed.turnId,
+    });
+    await runSkipperOperation("command-cleanup", () => unlink(controlFile));
+    return completed;
   };
 }
 
@@ -527,7 +535,7 @@ function modelRequestObservation(before, after, gatewayChatPhase, marker) {
   ) {
     return "unavailable";
   }
-  const window = after.slice(before.length);
+  const window = after.slice(before.length).filter(isSemanticModelEvent);
   if (window.some((event) => event.event === "listening")) {
     return "unavailable";
   }
@@ -545,23 +553,29 @@ function modelRequestObservation(before, after, gatewayChatPhase, marker) {
 }
 
 // Called only after the request observation verified both snapshots and their common prefix.
-function modelFixtureSelectedTerminalSuccess(before, after, marker) {
+function modelFixtureTerminalDiagnostic(before, after, marker) {
   if (before.some((event) => event.id === marker)) {
-    return false;
+    return {};
   }
-  const decisions = after
-    .slice(before.length)
-    .filter(
-      (event) =>
-        event.id === marker &&
-        ["skipper-native-request", "skipper-native-result"].includes(event.event),
-    );
-  return (
-    decisions.length === 2 &&
-    decisions[0].event === "skipper-native-request" &&
-    decisions[1].event === "skipper-native-result" &&
-    decisions[1].modelFixtureSelectedTerminalSuccess === true
+  const matching = after.slice(before.length).filter((event) => event.id === marker);
+  const decisions = matching.filter((event) =>
+    ["skipper-native-request", "skipper-native-result"].includes(event.event),
   );
+  if (
+    decisions.length !== 2 ||
+    decisions[0].event !== "skipper-native-request" ||
+    decisions[1].event !== "skipper-native-result" ||
+    decisions[1].modelFixtureSelectedTerminalSuccess !== true
+  ) {
+    return {};
+  }
+  const writes = matching.filter((event) => event.event === "skipper-native-write");
+  return {
+    modelFixtureSelectedTerminalSuccess: true,
+    ...(writes.length === 1 && matching.indexOf(writes[0]) > matching.indexOf(decisions[1])
+      ? { modelFixtureTerminalWriter: writes[0].writer }
+      : {}),
+  };
 }
 
 export async function sendSkipperChat({
@@ -655,12 +669,12 @@ export async function sendSkipperChat({
       httpStatus: status,
       runtimeSignal,
       modelRequestObservation: observation,
-      modelFixtureSelectedTerminalSuccess:
-        gatewayChatPhase === "native-git" &&
-        category === "transport" &&
-        status === 0 &&
-        observation === "observed" &&
-        modelFixtureSelectedTerminalSuccess(before, after, marker),
+      ...(gatewayChatPhase === "native-git" &&
+      category === "transport" &&
+      status === 0 &&
+      observation === "observed"
+        ? modelFixtureTerminalDiagnostic(before, after, marker)
+        : {}),
     }),
   });
   await checkpoint("gateway-chat-refused", {
