@@ -98,7 +98,7 @@
     "tests/conformance/codex-seccomp-profile.test.ts",
     "tests/conformance/kubernetes-ownership.test.ts",
     "tests/conformance/service-account-driver.test.ts",
-    "tests/conformance/iam.test.mjs",
+    "tests/conformance/iam.test.ts",
     "tests/conformance/platform-state-memory.test.ts",
     "tests/conformance/sandbox-policy-persistence.test.ts",
     "tests/conformance/contracts.test.ts",
@@ -247,7 +247,7 @@
       "path": "tests/conformance/grafana-overview-dashboard.test.ts"
     },
     {
-      "path": "tests/conformance/iam.test.mjs"
+      "path": "tests/conformance/iam.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"
