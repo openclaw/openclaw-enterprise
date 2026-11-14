@@ -42,7 +42,7 @@
     "tests/conformance/kubernetes-client.test.mjs",
     "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
-    "tests/integration/configuration-body-limits.test.mjs",
+    "tests/integration/configuration-body-limits.test.ts",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.ts",
     "tests/conformance/runtime-logs-admission.test.ts",
@@ -50,7 +50,7 @@
     "tests/integration/device-authorization-api.test.ts",
     "tests/integration/device-authorization-denial-audit.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
-    "tests/integration/dependency-unavailable-log.test.mjs",
+    "tests/integration/dependency-unavailable-log.test.ts",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
     "tests/integration/profile-public-github-read.test.mjs",
@@ -445,7 +445,7 @@
       "path": "tests/integration/configuration-controller.test.mjs"
     },
     {
-      "path": "tests/integration/configuration-body-limits.test.mjs"
+      "path": "tests/integration/configuration-body-limits.test.ts"
     },
     {
       "path": "tests/integration/json-body-depth.test.mjs"
@@ -546,7 +546,7 @@
       "path": "tests/integration/openshell-device-authorization-api.test.mjs"
     },
     {
-      "path": "tests/integration/dependency-unavailable-log.test.mjs"
+      "path": "tests/integration/dependency-unavailable-log.test.ts"
     },
     {
       "path": "tests/integration/runtime-credentials-api.test.ts"
