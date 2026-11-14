@@ -5,9 +5,13 @@ Namespace's Gateways, Gateway state and canonical Secrets in a separate
 `oce-gateways-<hash>` namespace. The current controller refuses to start on that
 layout; [split-layout installations](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 says how to tell. This page moves each tenant to the shared layout before the
-[control-plane upgrade](production-upgrade.md#upgrade-the-control-plane). Adopt
-in place where you can; use the export fallback for tenants that can't be
-adopted.
+[control-plane upgrade](production-upgrade.md#upgrade-the-control-plane).
+
+Plan adoption for all split-layout tenants. Resolve refusals and rerun the
+plan before you apply it. If any refusal remains, stop before adopting a subset.
+Choose export and re-create only if you accept deletion and the recovery limits
+for every Namespace the old API credentials can see. If any of those tenants
+must stay in place, stop and agree on a recovery plan with your operations team.
 
 ## Adopt in place
 
@@ -18,80 +22,104 @@ move into it by PersistentVolume rebind, and its Agent Secrets are copied.
 
 In a three-tenant test, the moves took about 20 seconds and the old API started
 again in about 20 more; each helper release then stopped the API for about 20
-seconds. `apply` also waits for the old Pods to stop, up to 5.5 minutes for a
-Gateway that is not ready, so stop such Agents first. Dedicated Gateways keep
-serving until they are deployed again; Harnesses and embedded Gateways are down
-from `apply` until then. Run the commands from a checkout of the target
+seconds. `apply` waits for old Pods to release their claims. Its wait budget
+is five minutes plus the longest termination grace period of those Pods. Stop
+unready Agents before adoption. Dedicated Gateways keep serving until they are
+deployed again. Harnesses and embedded Gateways are down from `apply` until then. Run the commands from a checkout of the target
 release. Use Node.js in the range specified by `engines.node` in
 `package.json` (`>=24.22.1 <26 || >=26.12.1`). Use a `kubectl` identity with
-cluster-admin access. Select the cluster with `--context` or `--kubeconfig`.
+cluster-admin access. Use the same cluster for each command. Select it with
+`--context` or `--kubeconfig`. If OCC runs outside `openclaw-system`, set
+`--occ-namespace` for `apply`, `revert` and `finalize`.
 
-1. Plan. This only reads:
+1. Plan without changing the cluster. Create the private output directory
+   before you write the plan:
 
    ```bash
    node scripts/split-layout-adopt.ts plan --out /secure/occ/adopt-plan.json
    ```
 
-   It lists, per tenant, the claims, Secrets and routes to move and the Agents
-   that run. It exits `2` and names the problem when a tenant can't be adopted:
+   The plan file lists each tenant's claims, Secrets, routes and running
+   Agents. The command exits `2` and names any adoption refusals, such as
    an existing namespace selected with `existingNamespace`, an object OCE did
    not create in the old namespace, a name taken in the new one, or a missing
    [tenant RoleBinding](production-agents.md#grant-tenant-rolebindings) in the
-   `oce-gateways-*` namespace. Grant the bindings there, move or delete foreign
-   objects (`--drop-resource <resource>`, as the refusal names it, deletes a
-   kind you checked is disposable), or use the fallback below for that tenant
-   (`--namespace-id` selects tenants). Codex OAuth sign-ins are bound to the
-   old claim, so plan refuses those Agents unless you pass
-   `--accept-oauth-reconnect`. Their deploy in step 5 then fails until someone
-   connects again, and the new sign-in clears the Agent's Codex home, including
-   its earlier sessions; the export fallback loses those too.
+   `oce-gateways-*` namespace. Grant the bindings there, and move or delete
+   foreign objects. Use `--drop-resource <resource>` only for kinds you can
+   lose when `finalize` deletes the old namespace. Use `--namespace-id` for
+   inspection only in this procedure. If the plan reports a previous adoption,
+   check its journal state before you continue. Codex OAuth sign-ins are bound
+   to the old claim. The plan refuses those Agents unless you pass
+   `--accept-oauth-reconnect`. Their deploy in
+   step 5 then fails until someone connects again. The new sign-in clears
+   the Agent's Codex home, including its earlier sessions. Export and
+   re-create also loses those sessions.
 
 2. Back up the volumes the plan lists with your storage's snapshot or backup
    tool. The script does not back them up.
-3. Adopt. This stops OCC's API and worker and the old namespace's workloads,
-   moves everything, then starts the old API again for the upgrade helper. The
-   worker stays stopped:
+3. Adopt all split-layout tenants. Use a private archive directory (mode
+   0700). Repeat any accepted `--accept-oauth-reconnect` and
+   `--drop-resource` options from the plan. Adoption stops the API and worker,
+   then scales down deployments in the old tenant namespaces. It moves the
+   planned resources and starts the old API for the upgrade helper. The worker
+   stays stopped.
 
    ```bash
    node scripts/split-layout-adopt.ts apply --archive /secure/occ/adopt --yes
    ```
 
-   It records each step on the `oce-gateways-*` namespace, so running it again
-   after any failure continues. Until step 4 starts the new release,
-   the following command restores the old layout and restarts OCC.
+   Adoption records progress on the `oce-gateways-*` namespaces. If `apply`
+   fails or is interrupted, stop. Reconcile the journals and the live state
+   with your operations team before retrying, reverting or upgrading.
+
+   To undo a completed adoption before the upgrade starts the new release, run
+   `revert` with the same archive. Both deployments must still use the
+   images recorded by `apply`:
 
    ```bash
    node scripts/split-layout-adopt.ts revert --archive /secure/occ/adopt --yes
    ```
 
-   With `--namespace-id`, revert restores only those tenants and
-   restarts the old API; the worker stays stopped until the rest are reverted
-   or the new release starts. Keep the archive directory: it holds the old
-   routes. Adopt every tenant before the upgrade: once the controller runs
-   other images, `apply` refuses.
+   Keep the archive. It holds the old routes. With `--namespace-id`, `revert`
+   selects only those tenants. While any adoption journals remain, it
+   starts only the old API. When the last journal is removed, it restores the
+   recorded replica counts for both deployments. Verify that the old layout and
+   both deployments are healthy before resuming operations.
 
-   `apply` returns once the old API serves. Use it only for the upgrade
-   helper: requests that touch an adopted tenant's Secrets, Configurations or
-   Gateways fail with an ownership error until the new release starts, and
-   Agent deploys wait for the new worker.
+   Verify that the old API is serving before you run the upgrade helper.
+   Use the API only for that helper. Requests for an adopted tenant's Secrets,
+   Configurations or Gateways fail with an ownership error until the new
+   release starts. Agent deploys wait for the new worker.
 
-4. [Upgrade the control plane](production-upgrade.md#upgrade-the-control-plane)
+4. After `apply` succeeds for every split-layout tenant,
+   [upgrade the control plane](production-upgrade.md#upgrade-the-control-plane)
    and the runtime as usual.
 5. Deploy each Agent `apply` listed as running (`occ agent deploy <id>`) that is
    not running yet, and check it. A Gateway from the 2026-09-28 release
    migrates its agent database at its first start, about 15 seconds longer.
-6. Delete the old namespaces. After this there is no way back:
+6. Delete the old namespaces. After deletion, `revert` cannot restore them:
 
    ```bash
    node scripts/split-layout-adopt.ts finalize --yes
    ```
 
-   It refuses while the controller still runs the images `apply` recorded,
-   and while the old namespace holds anything that would be lost with it.
+   The command refuses while either deployment still uses the images that
+   `apply` recorded. It checks for remaining claims, unexpected resources and
+   unbound moved claims before it deletes an old namespace.
 
 ## Export and re-create
 
-Use this for tenants that can't be adopted.
+Before you export, decide whether you can delete and re-create every Namespace
+visible to the old API credentials. `discard` deletes the tenants in the entire
+bundle. `--skip` applies only to import. If any of those tenants must stay in
+place, stop and agree on a recovery plan with your operations team.
+
+If you have a completed adoption, follow the revert instructions above for
+all affected tenants before you export. If `apply` or `revert` failed, was
+interrupted, or left an uncertain state, stop and reconcile it with your
+operations team before using this procedure. Verify that the old tenant layout is in place and that
+both the old API and worker are ready. `discard` needs the worker to finish
+deleting Agents.
 
 The tenants are exported, deleted and re-created under new
 IDs. A deleted Namespace's name stays
@@ -113,13 +141,15 @@ Accounts, Installation service keys and the audit history stay in the database.
 
 Tested on a 2026-09-28 release Installation with three Namespaces
 and three Agents: the commands took about two minutes, plus the two image
-releases (about 35 seconds each). Run them from a checkout of the target
-release, with `occ` set up for the old release as an administrator (`OCC_URL`,
-`OCC_SERVICE_KEY_FILE`, `OCC_CA_BUNDLE`) and `kubectl` for the cluster. The
-script talks to OCC only. Keep every file below private: they hold
-Configurations, workspace files, transcripts and Secret values.
+releases (about 35 seconds each). Use the target release checkout and Node.js
+version described above. Configure `occ` for the old release as an administrator
+with `OCC_URL` and `OCC_SERVICE_KEY_FILE`. Set `OCC_CA_BUNDLE` if the API uses
+a custom CA. Point `kubectl` at the same Installation's cluster. Keep all
+output private. The files hold Configurations, workspace files, transcripts
+and Secret values.
 
-1. Export every Namespace from the old release:
+1. Export every Namespace visible to the old API credentials. Use a new
+   output file:
 
    ```bash
    node scripts/split-layout-tenants.ts export --out /secure/occ/tenants.json
@@ -128,7 +158,8 @@ Configurations, workspace files, transcripts and Secret values.
    If a successful API response is malformed, lacks required restoration fields,
    or reports unreadable saved Agent settings, export
    exits nonzero without writing a bundle. Restore the API response path and
-   rerun export, then check its Namespace inventory before continuing.
+   rerun export. Check the new bundle's Namespace names and IDs against the
+   tenants you intend to delete before continuing.
 
    It reads `AGENTS.md`, `SOUL.md`, `IDENTITY.md` and `USER.md` only where
    [workspace routing](workspace-routing.md) is configured and the Agent runs.
@@ -156,24 +187,29 @@ Configurations, workspace files, transcripts and Secret values.
    `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
    Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
    `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-4. Delete the tenants on the old release. The command refuses ambiguous source
-   IDs that the import map cannot represent, preserving those resources for manual
-   restoration. It also refuses if a Namespace gained an Agent or Secret after the export, or if the export could not read an
-   Agent's workspace files; once step 2 has the copy, add
-   `--allow-unread-workspace-files`:
+4. Before you run `discard`, confirm that the bundle's Namespace names and IDs
+   still match the tenants you intend to delete. Verify the contents of the
+   workspace copies you need from step 2. The command refuses ambiguous source
+   IDs that the import map cannot represent. It also refuses if a Namespace in the bundle
+   gained an Agent or Secret that the bundle lacks. If export could not read
+   workspace files, recover them and export again. Use
+   `--allow-unread-workspace-files` only if you have verified a separate copy
+   of those files for each affected Agent.
 
    ```bash
-   node scripts/split-layout-tenants.ts discard --bundle /secure/occ/tenants.json \
-     --yes --allow-unread-workspace-files
-   kubectl get namespaces -l openclaw.dev/gateway-namespace
+   node scripts/split-layout-tenants.ts discard --bundle /secure/occ/tenants.json --yes &&
+     kubectl get namespaces -l openclaw.dev/gateway-namespace
    ```
 
-   Continue when no `oce-gateways-*` namespace is left. A Configuration that no
-   Agent uses is not exported and blocks its Namespace's delete; the error says
-   how to find and delete it. Then run `discard` again.
+   If `discard` times out or reports an uncertain write, reconcile which
+   deletions started or completed before you retry. A Configuration that no Agent uses can block its
+   Namespace's deletion after Agents and other resources have been deleted.
+   The error explains how to find it. Preserve anything you need before you
+   delete the unused Configuration and resume `discard`.
 
-5. [Upgrade the control plane](production-upgrade.md#upgrade-the-control-plane)
-   and the runtime as usual. The preflight now passes.
+5. After `discard` succeeds and no `oce-gateways-*` namespace remains,
+   [upgrade the control plane](production-upgrade.md#upgrade-the-control-plane)
+   and the runtime as usual.
 6. Re-create the tenants under new Namespace names. `--skip` leaves out a
    Namespace you no longer need, such as an unused `default`:
 
