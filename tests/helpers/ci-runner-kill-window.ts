@@ -1,4 +1,4 @@
-// Preloaded into scripts/ci/run-tests.mjs (node --import) beside ci-runner-held-clock.ts by the
+// Preloaded into scripts/ci/run-tests.ts (node --import) beside ci-runner-held-clock.ts by the
 // ci-runner test that starts a process while the runner is ending its descendants (finding
 // 2182). The runner lists its process tree from /proc and then kills what it found. This module
 // holds the runner between the two steps of its first listing: once readdirSync("/proc") has

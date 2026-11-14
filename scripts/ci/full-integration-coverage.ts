@@ -17,8 +17,8 @@ type TerminalEvent = {
     testId?: unknown;
     parentId?: unknown;
     nesting?: unknown;
-    caseAssertionFailure?: true;
-    caseSubtestsFailed?: true;
+    caseAssertionFailure?: unknown;
+    caseSubtestsFailed?: unknown;
   };
 };
 

@@ -227,7 +227,7 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
 node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
-  node scripts/ci/run-tests.mjs run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
+  node scripts/ci/run-tests.ts run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
 node scripts/ci/cleanup.ts --state "$state"
 ```
 
@@ -282,7 +282,7 @@ node scripts/ci/prepare.mjs \
   --lane gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --github-env "$GITHUB_ENV" &&
-node scripts/ci/run-tests.mjs run gateway-routing \
+node scripts/ci/run-tests.ts run gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
@@ -352,7 +352,7 @@ chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
 ```sh
 run_dir="$(mktemp -d)"
 node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --state "$run_dir/state.json" && \
-  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run production-tui \
+  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 

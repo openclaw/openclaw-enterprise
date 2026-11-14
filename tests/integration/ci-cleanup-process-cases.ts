@@ -526,7 +526,7 @@ export function registerCommandOwnershipCases({
               }),
             );
             args = [
-              join(repositoryRoot, "scripts/ci/run-tests.mjs"),
+              join(repositoryRoot, "scripts/ci/run-tests.ts"),
               "run",
               "cleanup",
               "--root",

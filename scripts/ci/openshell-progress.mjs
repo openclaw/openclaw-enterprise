@@ -121,9 +121,11 @@ export function emitOpenShellStageFailure(stage, error) {
 
 // Keep at most one small partial record, even when a child never sends a newline.
 // Oversized lines are ignored through their terminator; a following record can resume.
+/** @param {(line: string) => void} onLine */
 export function boundedProgressLines(onLine) {
   let partial = "";
   let dropping = false;
+  /** @param {string} text */
   return (text) => {
     let start = 0;
     while (start < text.length) {

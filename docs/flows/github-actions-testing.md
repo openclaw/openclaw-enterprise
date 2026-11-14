@@ -1,14 +1,14 @@
 ---
 created: 2026-09-04
-updated: "2026-11-14 13:17"
-last_updated_session: "authoring-run/d26b1f82-7e6f-460d-97d3-6a187c060e96"
+updated: "2026-11-14 16:26"
+last_updated_session: "authoring-run/a666c2a4-38f8-44f8-ba0a-ab21c9a1610d"
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-[Ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only static checks do not prove credentialed integrations.
+[Ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage.
 
 ## Entry Points
 
@@ -61,14 +61,12 @@ graph TD
 `scripts/ci/full-integration-preflight.ts:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.ts:loadTestSuites`
 
-`loadTestSuites` reads ordered `scripts/ci/test-suites.json` lanes: tests, inputs, preparation.
-
-`run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
-
-`runner-inputs.ts:parseArgs` rejects unknown options/repeated `--test-name` before effects. `--test-name=<literal>` accepts dashes. `selectLane` validates paths/names.
-`runFile` requires one passing standalone case via an anchored, escaped pattern.
-Preparation failures retain environment, cleanup and focus/name.
-`validateLaneEvidence` rejects focused aggregation.
+`loadTestSuites` reads ordered test, input, and preparation definitions.
+`scripts/ci/run-tests.ts:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
+`runner-inputs.ts:parseArgs` rejects unknown options and repeated
+`--test-name` before starting work. `selectLane` validates paths and names.
+`runFile` uses an anchored, escaped pattern for one required standalone case.
+`runner-aggregate.ts:validateLaneEvidence` rejects focused results.
 
 `CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
@@ -114,7 +112,13 @@ First-attempt `all` reuse requires completed execution
 skipping lanes. Failure uses preflight’s fresh fallback.
 QA awaits Slack despite failure, stops on cancellation, and requires selected results.
 
-PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns its cluster and PostgreSQL server. Before creating k3d nodes, the shared action enables bridge netfilter in the shared runner kernel; missing filtering fails setup. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay runner-local; `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
+Migration and application suites own separate PostgreSQL servers. Kubernetes
+fixture lanes each own a cluster and PostgreSQL server. The shared action
+requires bridge netfilter before creating k3d nodes. Blacksmith runs repository
+credential HTTP, PostgreSQL, Unix-control, and credential-material checks.
+Fixture lanes verify NetworkPolicy enforcement.
+`scripts/ci/run-tests.ts:runLane` runs files sequentially except audited
+`parallelFiles`. State and cleanup stay runner-local.
 
 Only the native IAM barrier test receives its migrated PostgreSQL database and both application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
 
@@ -150,7 +154,7 @@ name-based deletion/retry. Observation failures preserve the original error.
 `nodeLogExcerpt` orders streams and retry summaries by UTC timestamp and ASCII
 comparison ([CI guide](../testing/ci.md)).
 
-`scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and namespace
+`scripts/ci/run-tests.ts:runFile` watches Compute-managed Pods and namespace
 events in ready k3d clusters before tests delete them. On pass or failure,
 `scripts/ci/k3d-diagnostics.ts:projectAgentNamespaceActivity` records
 `agentNamespaces`: up to 200 Pod and 200 event records per file and cluster, retaining 40
@@ -182,17 +186,19 @@ owns credential isolation and historical-pair limits.
 
 ### 3. Execute and account for actual cases
 
-`scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.ts:jsonLinesReporter` and `scripts/ci/failure-redaction.ts:redactFailure`
+`scripts/ci/run-tests.ts:runFile` starts Node via `runner-process.ts:runNode`.
+`runner-reporter-output.ts:readFileEvidence` accounts for the JSON Lines output
+from `reporter.ts:jsonLinesReporter`. `runner-lifecycle.ts:runCompleteLifecycle`
+forks the same entry for each phase. The selected checkout supplies the manifest,
+tests, preparation, and cleanup.
 
-`scripts/ci/runner-inputs.ts:normalizeFile` validates `file.env`.
-`runFile` merges filtered inherited values, restored declared inputs, `lane.env`,
-preparation defaults, `file.env`, then generated values; later values win.
-`scripts/ci/prepare.mjs:prepareFile` separates defaults and outputs.
-For OpenShell model selectors, `validateLaneInputsBeforeSideEffects` reads the
-manifest entry; `runFile` forwards inputs with `file.env` precedence.
-Unfocused `openshell`, `openshell-policy` and `openshell-installers` require both credentials before setup.
-`scripts/k3d` scopes preparation with `--selected-file`.
-Custom-destination/provider-file guards remain; other file values do not affect preparation.
+`runner-inputs.ts:normalizeFile` validates `file.env`. `runFile` merges filtered
+inherited values, declared inputs, `lane.env`, preparation defaults, `file.env`,
+and generated values in that order. Later values win. Before OpenShell
+preparation, `validateLaneInputsBeforeSideEffects` reads the manifest and
+`runFile` forwards model selectors with `file.env` precedence. Unfocused
+`openshell`, `openshell-policy`, and `openshell-installers` require both
+credentials. `scripts/k3d` scopes preparation with `--selected-file`.
 
 The reporter retains names, locations, outcomes, failure messages (600 characters) and top frames (240). Redaction removes repository paths, substitutes nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`. Generated values require a matching shape.
 
@@ -203,18 +209,19 @@ failed installed proof, the workflow invokes `skipper-failure-receipt.ts` to pub
 the wrapper's [checkpoints](../testing/ci/full-integration.md#results-and-limits).
 
 `scripts/ci/openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle
-categories; `run-tests.mjs:runNode` adds lane/file labels. Installation ordinals
+categories; `scripts/ci/run-tests.ts:runFile` adds lane and file labels. Installation ordinals
 and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof),
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
-Required cases must pass; skips and TODOs fail. Synthetic wrappers, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Results retain failure, timeout and cleanup outcomes.
+Skips and TODOs fail required-case checks. Coverage requires actual cases and
+final reporter output. Results retain failure, timeout, and cleanup outcomes.
 
 <a id="4-clean-up-and-publish-the-bounded-result" class="anchor-alias"></a>
 
 ### 4. Clean up and report results
 
-`scripts/ci/cleanup.ts:main` and `scripts/ci/run-tests.mjs:main`
+`scripts/ci/cleanup.ts:main` and `scripts/ci/run-tests.ts:main`
 
 `.github/actions/run-ci-lane/action.yml` replaces only the retried lane’s sanitized result.
 Separate `attempt-<run attempt>-<artifact-prefix>-<lane>` artifacts preserve failed
@@ -257,12 +264,12 @@ At [timeout](../testing/ci/configuration.md#runner-overrides), TERM then KILL st
 direct-child exit. Escaped groups are unsignaled; retained streams close after grace.
 Windows bounds streams and terminates only the direct child.
 
-`scripts/ci/run-tests.mjs:killDescendants` stops cleanup groups before sweeping descendants.
+`scripts/ci/runner-process.ts:killDescendants` stops cleanup groups before sweeping descendants.
 `tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records timeouts and continues.
 Root hooks allow two seconds for reports (immediate on cleanup failure), with a
 60-second skipped-hook backstop. Failed resources remain recorded.
 
-`scripts/ci/run-tests.mjs:aggregateGroup` checks SHA, ownership, jobs and execution.
+`scripts/ci/runner-aggregate.ts:aggregateGroup` checks SHA, ownership, jobs and execution.
 Reused lanes retain separate owners; fresh lanes retain matrix parents.
 `scripts/ci/cleanup.ts:main` records final cleanup; missing state cannot clear failure.
 Installed Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
@@ -274,7 +281,7 @@ awaits an approved resource ledger.
 
 ## Debugging and Verification
 
-- `node scripts/ci/run-tests.mjs audit` checks checkout inventory against the suite map.
+- `node scripts/ci/run-tests.ts audit` checks checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs 'tests/integration/ci-runner-{case-enforcement,file-outcomes,deadline,cleanup-allowance,preparation,failure-output,aggregate,scheduling,redaction,first-agent-startup,openshell-progress}.test.ts'` checks runner outcomes, preparation, redaction, startup, and OpenShell reporting.
 - After measured local VM disk/network instability, serialize Kubernetes lanes; GitHub Actions keeps its matrix.
 - Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
@@ -292,6 +299,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 16:26: Run the CI test runner directly from TypeScript and identify the subprocess, reporter, and lifecycle owners. (authoring-run/a666c2a4-38f8-44f8-ba0a-ab21c9a1610d - 5e9510884b5aabf79ed6a73d4362cb245eec8b05)
 
 - 2026-11-14 13:17: Validate options. (authoring-run/d26b1f82-7e6f-460d-97d3-6a187c060e96 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 

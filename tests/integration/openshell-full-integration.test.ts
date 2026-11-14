@@ -43,7 +43,7 @@ function command(script: string, args: string[], view = "default") {
   return result;
 }
 
-const runner = "scripts/ci/run-tests.mjs";
+const runner = "scripts/ci/run-tests.ts";
 const fullView = "full-integration";
 
 function assertIssue(

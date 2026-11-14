@@ -100,7 +100,7 @@ For local command coverage, run:
 
 ```sh
 node --test tests/integration/staging-qualification.test.ts
-node scripts/ci/run-tests.mjs audit
+node scripts/ci/run-tests.ts audit
 ```
 
 The command test uses local Git history and independent GitHub and Docker
@@ -212,7 +212,9 @@ publication receipt cannot supply that installation unchanged. Full Integration
 and QA Advisory retain their existing installation and provider requirements.
 
 For an installed sign-in rehearsal, use `staging-signin-qualification.json` as
-the success receipt. The pair inputs alone do not establish an installed result.
+the success receipt. If the selected case reports failure, the runner writes a
+private `case-result.json` with the case counts and the supervisor records its
+exit and descendant status. The case failure leaves qualification blocked.
 
 This workflow does not promote to production or prove staging readiness,
 installed Agent workflows, or arm64 behavior.

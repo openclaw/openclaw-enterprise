@@ -331,7 +331,7 @@ test("full integration plans fresh fallback and attributes only published reuse 
   const runner = (args: string[]) =>
     spawnSync(
       process.execPath,
-      ["scripts/ci/run-tests.mjs", ...args, "--root", directory, "--manifest", "manifest.json"],
+      ["scripts/ci/run-tests.ts", ...args, "--root", directory, "--manifest", "manifest.json"],
       {
         encoding: "utf8",
         env: { ...process.env, GITHUB_SHA: sha, GIT_CEILING_DIRECTORIES: directory },

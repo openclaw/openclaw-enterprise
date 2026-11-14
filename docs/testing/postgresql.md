@@ -39,7 +39,7 @@ release that accepts `up --wait`, such as 1.6.0. Then run:
   trap 'status=$?; node scripts/ci/cleanup.ts --state "$PG_RUN_DIR/state.json" || status=1; exit "$status"' EXIT
   node scripts/ci/prepare.mjs --lane postgres-application \
     --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/owner.env"
-  node scripts/ci/run-tests.mjs run postgres-application \
+  node scripts/ci/run-tests.ts run postgres-application \
     --state "$PG_RUN_DIR/state.json" --results "$PG_RUN_DIR/results.json"
 )
 ```
@@ -232,7 +232,7 @@ OCC_TEST_CANDIDATE_CONTROLLER_REVISION="$CANDIDATE_COMMIT" \
 
 For native runner receipts, use the prepare/run/cleanup pattern above with lane
 `postgres`. Prepare the lane without `--file`, then supply the same four inputs
-to `node scripts/ci/run-tests.mjs run postgres` with
+to `node scripts/ci/run-tests.ts run postgres` with
 `--file tests/integration/postgres-migration-compatibility.test.mjs`.
 This runs the whole migration file, including both selected compatibility cases.
 Require both selected cases to pass and inspect `releasedController` and `candidateController`
@@ -291,7 +291,7 @@ umask 077
 TEST_ENV_FILE=/absolute/path/to/private/postgres-azure-test.env
 chmod 600 "$TEST_ENV_FILE"
 PG_AZURE_DIR="$(mktemp -d)"
-node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run postgres-azure-workload-identity \
+node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run postgres-azure-workload-identity \
   --state "$PG_AZURE_DIR/state.json" --results "$PG_AZURE_DIR/results.json"
 ```
 

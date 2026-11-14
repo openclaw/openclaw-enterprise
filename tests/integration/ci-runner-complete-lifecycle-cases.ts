@@ -21,7 +21,7 @@ import {
 } from "../helpers/ci-runner-fixture.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 type FailurePhase = "prepare" | "run" | "cleanup";
 type LifecycleFixtureOptions = {

@@ -1,4 +1,4 @@
-// Preloaded into scripts/ci/run-tests.mjs (node --import) by ci-runner tests that wait out a
+// Preloaded into scripts/ci/run-tests.ts (node --import) by ci-runner tests that wait out a
 // lane deadline, so a busy host cannot make them fail (finding 2164). The runner's clock
 // (Date.now and setTimeout) runs as usual up to the `hold` time in this module's URL (Unix
 // epoch milliseconds), then stands still until every `gate` path in the URL exists, and then
