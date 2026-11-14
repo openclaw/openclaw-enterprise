@@ -34,6 +34,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { occLogLine, unloggedFields } from "../helpers/occ-log-line.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 async function fixture(t, contents) {
   const directory = await temporaryDirectory(t, "occ-common-logging-");
@@ -321,8 +322,9 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     level: "info",
     destination: output.destination,
   });
+  const emit = createWorkerLogEmitter(logger);
 
-  emitOccLogEvent(logger, {
+  emit({
     event: "worker.compute-prepare-failed",
     workId: "agent_revision:rev_test:reconcile",
     attempt: 1,
@@ -338,7 +340,7 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     status: 422,
     message: "The Kubernetes API rejected revision preparation.",
   });
-  emitOccLogEvent(logger, {
+  emit({
     event: "worker.compute-prepare-failed",
     code: "KUBERNETES_PREPARATION_FAILED",
     step: "sandbox_provision",
@@ -370,6 +372,51 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
   assert.equal(Object.hasOwn(output.lines[1], "message"), false);
   assert.equal(Object.hasOwn(output.lines[1], "candidatePreparationReached"), false);
   assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
+
+  // A trusted Driver can accidentally return a printable URI in a preparation
+  // diagnostic. The real worker emitter must contain it before writing stdout.
+  const messages = [
+    syntheticCredentialUrl({
+      protocol: "postgres",
+      username: "fixture-user",
+      password: ["invented", "fixture"].join("/"),
+      host: "database.invalid",
+      pathname: "/fixture",
+    }),
+    syntheticCredentialUrl({
+      username: "fixture-user",
+      password: "invented-fixture",
+      host: "service.invalid",
+    }),
+  ];
+  for (const message of messages) {
+    const recordCount = output.lines.length;
+    emit({
+      event: "worker.compute-prepare-failed",
+      workId: "agent_revision:rev_test:reconcile",
+      operation: "agent_revision.reconcile",
+      namespaceId: "ns_test",
+      agentId: "agt_test",
+      revisionId: "rev_test",
+      code: "KUBERNETES_API_REJECTED",
+      step: "gateway_deployment",
+      message,
+    });
+    assert.equal(output.lines.length, recordCount + 1);
+    const line = output.lines[recordCount];
+    assert.equal(line.event, "worker.compute-prepare-failed");
+    assert.equal(line.severity, "ERROR");
+    assert.equal(line.service, "occ-worker");
+    assert.equal(line.workId, "agent_revision:rev_test:reconcile");
+    assert.equal(line.operation, "agent_revision.reconcile");
+    assert.equal(line.namespaceId, "ns_test");
+    assert.equal(line.agentId, "agt_test");
+    assert.equal(line.revisionId, "rev_test");
+    assert.equal(line.code, "KUBERNETES_API_REJECTED");
+    assert.equal(line.step, "gateway_deployment");
+    assert.equal(Object.hasOwn(line, "message"), false, "unsafe URI diagnostic is absent");
+    assert.equal(JSON.stringify(output.lines).includes(message), false);
+  }
 });
 
 test("activation warning caps skipped account IDs and reports the total and truncation", () => {

@@ -17,12 +17,201 @@ import {
   selected,
   waitFor,
 } from "../helpers/logging-collector-fixture.ts";
+import {
+  exportedThroughSentinel,
+  postLogs,
+  sentinelLogs,
+  startKubernetesProcessors,
+} from "../helpers/logging-collector-pipeline.ts";
 
 function eventName(record: Record<string, unknown>): string {
   const { stringValue } = otlpObject(record.body);
   assert.ok(typeof stringValue === "string", "the exported event has a string body");
   return stringValue;
 }
+
+test(
+  "native Collector removes sensitive code values while preserving diagnostic context",
+  {
+    skip: selected
+      ? false
+      : "Set OCC_TEST_LOGGING_COLLECTOR=1 for pinned Collector code-value proof.",
+    timeout: 180_000,
+  },
+  async (t) => {
+    const fixture = await collectorFixture(t, "code-values");
+    const receiverAddress = await startKubernetesProcessors(fixture);
+    const namespaceId = `ns_${randomUUID()}`;
+    const agentId = `agt_${randomUUID()}`;
+    const revisionId = `rev_${randomUUID()}`;
+    const workId = `agent_revision:${revisionId}:reconcile`;
+    const identity = { namespaceId, agentId, revisionId };
+    const protectedIdentity = {
+      "openclaw.namespace.id": namespaceId,
+      "openclaw.agent.id": agentId,
+      "openclaw.revision.id": revisionId,
+    };
+    const resource = (service: string, containerId: string) => ({
+      attributes: Object.entries({
+        ...protectedIdentity,
+        "k8s.pod.uid": `pod-${randomUUID()}`,
+        "container.id": containerId,
+        ...(service === "occ-api" || service === "occ-worker"
+          ? {
+              "occ.application": "openclaw-enterprise",
+              "occ.component": service === "occ-api" ? "api" : "worker",
+            }
+          : {
+              "occ.managed_by": "openclaw-enterprise",
+              "occ.role": service === "openclaw-gateway" ? "gateway" : "agent",
+            }),
+      }).map(([key, value]) => ({ key, value: { stringValue: value } })),
+    });
+    const projections = [
+      {
+        event: "openclaw.model_probe",
+        service: "openclaw-gateway",
+        field: "code",
+        attribute: "occ.code",
+      },
+      {
+        event: "codex.model_probe",
+        service: "codex-app-server",
+        field: "code",
+        attribute: "occ.code",
+      },
+      {
+        event: "runtime.workspace_node",
+        service: "openclaw-gateway",
+        field: "code",
+        attribute: "occ.code",
+      },
+      {
+        event: "runtime.startup_phase",
+        service: "codex-app-server",
+        field: "code",
+        attribute: "occ.code",
+        phase: "fixture",
+        outcome: "failed",
+      },
+      {
+        event: "worker.compute-prepare-failed",
+        service: "occ-worker",
+        field: "code",
+        attribute: "occ.code",
+      },
+      {
+        event: "database.idle-client-error",
+        service: "occ-api",
+        field: "code",
+        attribute: "occ.code",
+      },
+      {
+        event: "worker.repository-cleanup-warning",
+        service: "occ-worker",
+        field: "cause",
+        attribute: "occ.worker.cause",
+      },
+    ];
+    // These invented values are assembled at runtime and never sent to a provider.
+    const sensitiveCodes = [
+      ["AK", "IA", "Q".repeat(16)].join(""),
+      ["GH", "P_", "B".repeat(16)].join(""),
+    ];
+    const cases = projections.flatMap((projection) =>
+      ["FIXTURE_UNAVAILABLE", ...sensitiveCodes].map((value, index) => ({
+        ...projection,
+        value,
+        name: `${projection.event}:${projection.field}:${index}`,
+        keep: index === 0,
+        containerId: `containerd://${randomUUID()}`,
+      })),
+    );
+    cases.push({
+      event: "database.idle-client-error",
+      service: "occ-api",
+      field: "code",
+      attribute: "occ.code",
+      value: "23505",
+      name: "database-sqlstate",
+      keep: true,
+      containerId: `containerd://${randomUUID()}`,
+    });
+    const gatewayResource = resource("openclaw-gateway", `containerd://${randomUUID()}`);
+    await postLogs(receiverAddress, [
+      ...cases.map(({ event, service, field, value, containerId, phase, outcome }) => ({
+        resource: resource(service, containerId),
+        scopeLogs: [
+          {
+            logRecords: [
+              {
+                timeUnixNano: String(BigInt(Date.now()) * 1000000n),
+                body: {
+                  stringValue: JSON.stringify({
+                    event,
+                    severity: "ERROR",
+                    ...identity,
+                    workId,
+                    operation: "agent_revision.reconcile",
+                    phase,
+                    outcome,
+                    [field]: value,
+                    message: "The fixture dependency is unavailable.",
+                  }),
+                },
+                attributes: [{ key: "log.iostream", value: { stringValue: "stderr" } }],
+              },
+            ],
+          },
+        ],
+      })),
+      sentinelLogs(gatewayResource),
+    ]);
+    const exported = await exportedThroughSentinel(fixture, (resource, record) => ({
+      resource: attributes(otlpObject(resource.resource).attributes),
+      record,
+      fields: attributes(record.attributes),
+    }));
+    assert.equal(exported.length, cases.length);
+    const unsafeAttributes: string[] = [];
+    for (const expected of cases) {
+      const actual = exported.find(
+        (entry) => entry.resource["container.id"] === expected.containerId,
+      );
+      assert.ok(actual, `${expected.name} is exported`);
+      assert.equal(actual.resource["service.name"], expected.service);
+      for (const [key, value] of Object.entries(protectedIdentity)) {
+        assert.equal(actual.resource[key], value);
+      }
+      assert.equal(eventName(actual.record), expected.event);
+      assert.equal(actual.record.severityText, "ERROR");
+      assert.equal(actual.record.severityNumber, 17);
+      assert.equal(actual.fields["event.name"], expected.event);
+      if (expected.service === "occ-worker") {
+        assert.equal(actual.fields["work.id"], workId);
+        assert.equal(actual.fields["work.operation"], "agent_revision.reconcile");
+        assert.equal(actual.fields["occ.namespace.id"], namespaceId);
+        assert.equal(actual.fields["occ.agent.id"], agentId);
+        assert.equal(actual.fields["occ.revision.id"], revisionId);
+      }
+      assert.equal(Object.hasOwn(actual.fields, "message"), false);
+      if (expected.keep) {
+        assert.equal(actual.fields[expected.attribute], expected.value);
+      } else if (Object.hasOwn(actual.fields, expected.attribute)) {
+        unsafeAttributes.push(expected.name);
+      }
+    }
+    assert.deepEqual(unsafeAttributes, [], "sensitive code attributes are absent");
+    assert.equal(
+      sensitiveCodes.some((value) => JSON.stringify(exported).includes(value)),
+      false,
+    );
+    assert.equal(
+      JSON.stringify(exported).includes("The fixture dependency is unavailable."),
+      false,
+    );
+  },
+);
 
 test(
   "native Collector filters actual Docker forwarding, binds transport identity, and survives exporter outage",
