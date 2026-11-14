@@ -560,27 +560,37 @@ export async function sendSkipperChat({
       : "Please reply with exactly ") + marker;
   const before = await snapshot();
   const since = new Date().toISOString();
+  const invocationId = randomUUID();
+  const entryFrame = "\nskipper-gateway-entry:" + invocationId + "\n";
   const text = await runSkipperOperation("gateway-exec", () =>
     enter(
       "node",
       "-e",
-      `(${inGateway.toString()})(process.argv[1], process.argv[2])`,
+      `(${inGateway.toString()})(process.argv[1], process.argv[2], process.argv[3])`,
       prompt,
       sessionKey,
+      invocationId,
     ),
   ).catch(async (error) => {
-    if (gatewayChatPhase === "native-git") {
-      try {
-        const diagnostic = error.openclawCiDiagnostic;
+    try {
+      const diagnostic = error.openclawCiDiagnostic;
+      if (diagnostic?.operation === "gateway-exec") {
+        // The same failed exec already carries stderr. Keep only the exact entry observation.
+        if (typeof error.stderr === "string" && error.stderr.includes(entryFrame)) {
+          error.openclawCiDiagnostic = { ...diagnostic, helperEntered: true };
+        }
         if (
-          diagnostic?.operation === "gateway-exec" &&
+          gatewayChatPhase === "native-git" &&
           modelRequestObservation(before, await snapshot(), gatewayChatPhase, marker) === "observed"
         ) {
-          error.openclawCiDiagnostic = { ...diagnostic, modelRequestObservation: "observed" };
+          error.openclawCiDiagnostic = {
+            ...error.openclawCiDiagnostic,
+            modelRequestObservation: "observed",
+          };
         }
-      } catch {
-        // Optional evidence must preserve even a frozen or unusual rejection.
       }
+    } catch {
+      // Optional evidence must preserve even a frozen or unusual rejection.
     }
     throw error;
   });
@@ -637,7 +647,11 @@ export async function sendSkipperChat({
 }
 
 // Use the installed Agent Gateway, as a user of that Agent would. Never exec Git on the host.
-export async function inGateway(prompt, sessionKey) {
+export async function inGateway(prompt, sessionKey, invocationId) {
+  if (invocationId) {
+    // Build the frame here so an error echoing the exec arguments cannot supply it.
+    process.stderr.write("\nskipper-gateway-entry:" + invocationId + "\n");
+  }
   if (!process.env.OPENCLAW_GATEWAY_PASSWORD) {
     process.stdout.write(JSON.stringify({ status: 0, category: "gateway-credential-unavailable" }));
     return;
