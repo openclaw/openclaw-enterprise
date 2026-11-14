@@ -825,7 +825,8 @@ function externalGitJourney(
         ...repositoryGitAuthority(drivers),
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
-    prepared = await startOwner();
+    const manualMaintenance = scope === "repository" && !artifactAdmissionOnly;
+    prepared = await startOwner(!manualMaintenance);
     transport = await bindRepositoryGitTransport(
       drivers,
       prepared.protectedGit,
@@ -1481,6 +1482,44 @@ function externalGitJourney(
           ),
         25_000,
       );
+      const cwd = await temporaryDirectory(t, "cedar-git-destination-");
+      const env = cleanEnvironment({ GIT_SSL_CAINFO: certFile });
+      const git = (args: string[], allowFailure = false) =>
+        run("git", ["-C", cwd, ...args], {
+          env,
+          allowFailure,
+          timeout: 15_000,
+        });
+      await git(["init", "--quiet"]);
+      const { traffic } = origin;
+      const remote = new URL("/" + origin.repository + ".git", peer.url).href;
+      // Actual Git credential protocol: the Driver's 401 makes Git invoke the host-scoped
+      // helper. It returns only a marker; the provider separately proves that marker is useless.
+      const auth = broad
+        ? "credential." +
+          peer.url.origin +
+          '.helper=!f() { test "$1" != get || printf \'username=x-access-token\\npassword=' +
+          peer.gitMarker +
+          "\\n'; }; f"
+        : "http.extraHeader=" + peer.clientHeader;
+      const fetch = (mayDeny = false) =>
+        git(["-c", auth, "fetch", "--no-tags", remote, "refs/heads/main"], mayDeny);
+      if (manualMaintenance) {
+        // This exact recipient and repository session exist before the issuer runs. The first
+        // Git fetch must fail closed, without issuing a token or sending to the Git origin.
+        await waitFor(
+          "recipient checks the admitted route without prepared material",
+          () => peer.delivery.stage === "read-material" || undefined,
+        );
+        const before = traffic();
+        const denied = await fetch(true);
+        assert.equal(denied.code, 128);
+        assert.match(denied.stderr.toString(), /403/);
+        assert.deepEqual(traffic(), before);
+        assert.equal(gh.issuesOfTokens.length, 0);
+        assert.equal(peer.delivery.installs, 0);
+        await prepared.maintain();
+      }
       const first = await waitFor(
         "worker installs first material",
         () => peer.delivery.settled,
@@ -1540,28 +1579,6 @@ function externalGitJourney(
         }
       }
 
-      const cwd = await temporaryDirectory(t, "cedar-git-destination-");
-      const env = cleanEnvironment({ GIT_SSL_CAINFO: certFile });
-      const git = (args: string[], allowFailure = false) =>
-        run("git", ["-C", cwd, ...args], {
-          env,
-          allowFailure,
-          timeout: 15_000,
-        });
-      await git(["init", "--quiet"]);
-      const { traffic } = origin;
-      const remote = new URL("/" + origin.repository + ".git", peer.url).href;
-      // Actual Git credential protocol: the Driver's 401 makes Git invoke the host-scoped
-      // helper. It returns only a marker; the provider separately proves that marker is useless.
-      const auth = broad
-        ? "credential." +
-          peer.url.origin +
-          '.helper=!f() { test "$1" != get || printf \'username=x-access-token\\npassword=' +
-          peer.gitMarker +
-          "\\n'; }; f"
-        : "http.extraHeader=" + peer.clientHeader;
-      const fetch = (mayDeny = false) =>
-        git(["-c", auth, "fetch", "--no-tags", remote, "refs/heads/main"], mayDeny);
       const hasObject = async (oid: string) => {
         const result = await git(["cat-file", "-t", oid], true);
         if (result.code === 128) {
@@ -1589,6 +1606,29 @@ function externalGitJourney(
         return { expectedSha: oid, beforePresent, afterSha, originRequests };
       };
       const initialFetch = await transfer(await origin.ref("main"));
+      if (manualMaintenance) {
+        // The issuer's committed attempt, recipient confirmation, and both Git operations
+        // must refer to the same attempt and material version for this revision.
+        const { rows } = await pool.query(
+          `SELECT a.id, a.material_version,
+            (SELECT count(*)::int FROM occ.prepared_repository_git_uses u
+             WHERE u.attempt_id=a.id AND u.material_version=a.material_version) AS uses
+           FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+           WHERE f.source #>> '{session,revisionId}'=$1 AND a.state='committed' AND a.custody='current'`,
+          [revision.id],
+        );
+        assert.equal(gh.issuesOfTokens.length, 1);
+        assert.equal(peer.delivery.confirmations.length, 1);
+        const [confirmed] = peer.delivery.confirmations;
+        assert.equal(confirmed?.materialVersion, first.materialVersion);
+        assert.deepEqual(rows, [
+          {
+            id: confirmed?.preparationAttemptId,
+            material_version: first.materialVersion,
+            uses: 2,
+          },
+        ]);
+      }
       rehearsal?.gitFetched(initialFetch);
       if (broad) {
         const provider = broad.installation;
@@ -1922,6 +1962,9 @@ function externalGitJourney(
           [revision.id],
         );
         assert.equal(rowCount, 1);
+        if (manualMaintenance) {
+          await prepared.maintain();
+        }
         if (!lostRotation) {
           second = await waitFor(
             "worker rotates material",
