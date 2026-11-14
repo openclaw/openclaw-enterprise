@@ -232,6 +232,15 @@ network. It checks the exact HTTP 404 response, then adds only the prepared-git
 authority arguments and verifies that the broker exits before opening the socket.
 The upgrade command uses prepared-git inputs for every invocation.
 
+If cancellation leaves an `oce-old-pair-<UUID>` fixture, read `test-owner` in
+that directory under the test's temporary directory. It records the host, PID,
+and process start time. On that host, confirm the process has exited or the PID
+now has a different start time. For a remaining container, verify its name
+matches the directory, its `org.openclaw.test.owner` label matches `test-owner`,
+and its `openclaw.upgrade-probe` label matches the UUID. Remove that container
+by ID and remove the named directory. Leave the fixture in place if ownership
+is uncertain.
+
 ## Runtime image startup test environment
 
 The Codex readiness case runs a real app-server with no model credentials or
