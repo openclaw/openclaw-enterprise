@@ -51,7 +51,7 @@ resources and verifies that `occ dev down` preserves the database volume unless
 ```sh
 node --test tests/conformance/docker-compute.test.ts
 OCC_TEST_DOCKER_TOKEN_RETRY=1 NODE_BASE_IMAGE=node:24-bookworm \
-  node --test tests/integration/docker-compute-token-retry.test.mjs
+  node --test tests/integration/docker-compute-token-retry.test.ts
 ```
 
 The first uses a local HTTP fault fixture. The second requires Docker at

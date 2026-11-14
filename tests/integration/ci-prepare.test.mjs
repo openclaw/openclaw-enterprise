@@ -3580,7 +3580,7 @@ process.exit(2);
   test("prepareFile applies the images packaging Node base default without hiding invalid overrides", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "missing-state.json");
-    const file = "tests/integration/docker-compute-token-retry.test.mjs";
+    const file = "tests/integration/docker-compute-token-retry.test.ts";
     const customNodeBaseImage =
       "docker.io/library/node:24-bookworm@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
