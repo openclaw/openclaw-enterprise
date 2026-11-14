@@ -1190,7 +1190,7 @@ test("first deployment requires Agent read and operate only when generating cred
   for (const { label, agentActions, deniedAction } of [
     { label: "without-agent-read", agentActions: [], deniedAction: "read" },
     { label: "without-agent-operate", agentActions: ["read"], deniedAction: "operate" },
-  ]) {
+  ] as const) {
     const { principal, session } = await fixture.createPrincipal(label, (identity) => {
       const roleId = `deploy-${randomUUID()}`;
       grantRole(fixture.policy, identity.id, {

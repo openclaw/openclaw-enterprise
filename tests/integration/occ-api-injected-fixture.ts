@@ -262,12 +262,13 @@ export async function createInjectedControllerFixture(
   }
 
   const app = createApp();
-  sessionsByPrincipalId.set(principal.id, await signInToControllerApp(app, authFixture));
-  app.defaultSession = sessionsByPrincipalId.get(principal.id);
+  const session = await signInToControllerApp(app, authFixture);
+  sessionsByPrincipalId.set(principal.id, session);
+  app.defaultSession = session;
 
   return {
     app,
-    session: app.defaultSession,
+    session,
     authFixture,
     auditSink,
     computeCalls,
@@ -322,12 +323,13 @@ export async function injectedRequest(
   pathname: string,
   options: InjectedRequestOptions = {},
 ) {
-  const headers: Record<string, string> = {
-    ...(options.identity === false
-      ? {}
-      : authenticatedHeaders(options.session ?? app.defaultSession)),
-    ...options.headers,
-  };
+  const session = options.session ?? app.defaultSession;
+  let sessionHeaders: Record<string, string> = {};
+  if (options.identity !== false) {
+    assert.ok(session, "an authenticated request needs a session");
+    sessionHeaders = authenticatedHeaders(session);
+  }
+  const headers: Record<string, string> = { ...sessionHeaders, ...options.headers };
   const hasBody = Object.hasOwn(options, "body");
   const hasRawBody = Object.hasOwn(options, "rawBody");
   if (hasBody || hasRawBody) {
