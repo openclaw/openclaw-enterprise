@@ -233,7 +233,7 @@
     "tests/integration/google-login-transport.test.ts": 2700,
     "tests/integration/installation-change-preflight.test.mjs": 5100,
     "tests/integration/json-body-depth.test.mjs": 1100,
-    "tests/integration/k3d-launcher.test.mjs": 2200,
+    "tests/integration/k3d-launcher.test.ts": 2200,
     "tests/integration/known-device-cookie.test.ts": 1800,
     "tests/integration/kubernetes-peer-status.test.mjs": 500,
     "tests/integration/list-summaries.test.ts": 3000,
