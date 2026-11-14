@@ -147,4 +147,4 @@ No Codex app-server change is established as necessary for this Gateway-facing P
 
 ## Remaining work
 
-[Remaining work and verification](remaining-work.md) records the runtime protection, Gateway integration and qualification still needed for this proposal.
+[Runtime qualification](remaining-work.md) continues. [Managed mode](https://github.com/openclaw/openclaw-enterprise/pull/2982) accepts operator recovery. [Harness integration](https://github.com/openclaw/openclaw-enterprise/pull/2633) implements unattended recovery for verified embedded owners. A [separate proposal](../../plans/0048-embedded-gateway-owner-recovery.md) would prevent competing writes to the retained volume during recovery.
