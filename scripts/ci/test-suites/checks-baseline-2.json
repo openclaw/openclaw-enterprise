@@ -143,7 +143,7 @@
     "tests/integration/qa-repository-materialization.test.ts",
     "tests/integration/container-promote.test.ts",
     "tests/conformance/controller-stop-yields.test.ts",
-    "tests/integration/dev-up-model-provider.test.mjs",
+    "tests/integration/dev-up-model-provider.test.ts",
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
@@ -757,7 +757,7 @@
       "path": "tests/conformance/controller-stop-yields.test.ts"
     },
     {
-      "path": "tests/integration/dev-up-model-provider.test.mjs"
+      "path": "tests/integration/dev-up-model-provider.test.ts"
     },
     {
       "path": "tests/integration/egress-connected-preflight.test.mjs",

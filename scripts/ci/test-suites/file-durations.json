@@ -208,7 +208,7 @@
     "tests/integration/dev-codex-seccomp-failure.test.mjs": 200,
     "tests/integration/dev-up-compose-startup.test.ts": 13200,
     "tests/integration/dev-up-compose.test.mjs": 4100,
-    "tests/integration/dev-up-model-provider.test.mjs": 1200,
+    "tests/integration/dev-up-model-provider.test.ts": 1200,
     "tests/integration/dev-up.test.mjs": 17900,
     "tests/integration/development-packaging.test.mjs": 100,
     "tests/integration/device-authorization-api.test.ts": 1200,

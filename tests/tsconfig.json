@@ -176,6 +176,7 @@
     "fixtures/ci-runner-k3d-kubectl.ts",
     "fixtures/ci-runner-k3d-cases.ts",
     "fixtures/ci-runner-first-agent-startup-child.ts",
+    "fixtures/dev-up-model-provider-timeout.ts",
     "fixtures/ci-runner-openshell-failure-child.ts",
     "fixtures/ci-runner-openshell-progress-child.ts",
     "integration/first-agent-startup-lifecycle-cases.ts",
