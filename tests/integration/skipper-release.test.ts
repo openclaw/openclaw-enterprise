@@ -24,7 +24,7 @@ import {
   recordSkipperCheckpoint,
   recordSkipperTestFailure,
 } from "../../scripts/ci/skipper-failure-receipt.ts";
-import reporter from "../../scripts/ci/reporter.mjs";
+import reporter from "../../scripts/ci/reporter.ts";
 import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
 import { inGateway, sendSkipperChat } from "../helpers/skipper-prepared-compute.mjs";
 

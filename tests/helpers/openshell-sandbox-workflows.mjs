@@ -2,7 +2,7 @@ import { createReplacementNodeObservation } from "./openshell-workspace-node-obs
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.mjs";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
-import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
+import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
   openShellGatewayGrpcMetadata,
@@ -20,7 +20,7 @@ import {
   maskPrivateKeyLines,
   newestMatchingLogLines,
   redactLogLine,
-} from "../../scripts/ci/failure-redaction.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import vm from "node:vm";
 
-import reporter from "../../scripts/ci/reporter.mjs";
+import reporter from "../../scripts/ci/reporter.ts";
 import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
 import type { ProbeEvent, ProbePhase } from "../helpers/runtime-model-probe-diagnostic.ts";
 import {
@@ -224,7 +224,7 @@ test(
     raw:'must-not-be-retained',url:'https://must-not-be-retained.invalid',environment:'must-not-be-retained'};
     throw error;});`,
     );
-    const reporterPath = fileURLToPath(new URL("../../scripts/ci/reporter.mjs", import.meta.url));
+    const reporterPath = fileURLToPath(new URL("../../scripts/ci/reporter.ts", import.meta.url));
     const childEnv = { ...process.env };
     delete childEnv.NODE_TEST_CONTEXT;
     delete childEnv.NODE_TEST_WORKER_ID;

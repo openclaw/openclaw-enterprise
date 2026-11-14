@@ -2117,8 +2117,8 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
 });
 
 test("failure text is bounded and redacts env values and credential shapes", async () => {
-  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
-  const { failureSecrets, redactFailure } = await import("../../scripts/ci/failure-redaction.mjs");
+  const { default: reporter } = await import("../../scripts/ci/reporter.ts");
+  const { failureSecrets, redactFailure } = await import("../../scripts/ci/failure-redaction.ts");
   const secrets = failureSecrets([
     { GITHUB_REPOSITORY_OWNER: "openclaw", JOB_ONLY_KEY: "jobonlyopaque123" },
     {
@@ -2513,7 +2513,7 @@ await registerFiniteConversationTests();
 });
 
 test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
-  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
+  const { default: reporter } = await import("../../scripts/ci/reporter.ts");
   const render = async (events) => {
     let text = "";
     for await (const chunk of reporter(events)) {

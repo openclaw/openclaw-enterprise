@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const proofPrefix = "OCE_NATIVE_FIRST_AGENT_PROOF ";
