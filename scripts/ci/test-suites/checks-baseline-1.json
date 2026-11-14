@@ -137,7 +137,7 @@
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/integration/openshell-permission-diagnostic.test.ts",
-    "tests/conformance/openshell-prepared-git-provider.test.mjs",
+    "tests/conformance/openshell-prepared-git-provider.test.ts",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -883,7 +883,7 @@
       ]
     },
     {
-      "path": "tests/conformance/openshell-prepared-git-provider.test.mjs",
+      "path": "tests/conformance/openshell-prepared-git-provider.test.ts",
       "expectedTests": [
         "prepared Git static token and rotation use released fields without returning credentials or readiness",
         "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",
