@@ -35,8 +35,8 @@ or OpenClaw. See the [testing index](README.md) for tests with real infrastructu
 Run one file or one named case:
 
 ```sh
-node --test tests/integration/secret-api.test.mjs
-node --test --test-name-pattern='part of the test name' tests/integration/secret-api.test.mjs
+node --test tests/integration/secret-api.test.ts
+node --test --test-name-pattern='part of the test name' tests/integration/secret-api.test.ts
 ```
 
 The first-Agent startup suite invokes the checkout's real CLI. Rebuild it from

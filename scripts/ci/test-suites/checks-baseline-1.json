@@ -23,7 +23,7 @@
     "tests/conformance/occ-runtime-logs-security.test.ts",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
-    "tests/conformance/kubernetes-secret-driver.test.mjs",
+    "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
@@ -34,7 +34,7 @@
     "tests/integration/plugin-discovery-api.test.ts",
     "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.ts",
-    "tests/integration/secret-api.test.mjs",
+    "tests/integration/secret-api.test.ts",
     "tests/integration/model-discovery-shipped-api.test.ts",
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
@@ -296,7 +296,7 @@
       "expectedTests": ["sealed Namespace compares SDK-deserialized ingress exactly"]
     },
     {
-      "path": "tests/conformance/kubernetes-secret-driver.test.mjs"
+      "path": "tests/conformance/kubernetes-secret-driver.test.ts"
     },
     {
       "path": "tests/conformance/occ-api-security.test.mjs"
@@ -516,7 +516,7 @@
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
     },
     {
-      "path": "tests/integration/secret-api.test.mjs"
+      "path": "tests/integration/secret-api.test.ts"
     },
     {
       "path": "tests/integration/model-discovery-shipped-api.test.ts"
