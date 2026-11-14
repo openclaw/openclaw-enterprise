@@ -140,6 +140,10 @@ function requireLine(record: RuntimeLogRecord | undefined): LineRecord {
   return record;
 }
 
+function lineMessage(record: RuntimeLogRecord) {
+  return record.type === "line" ? record.message : undefined;
+}
+
 function requireTruncationGap(record: AgentRuntimeLogPageWire["records"][number] | undefined) {
   assert.ok(record?.type === "gap");
   assert.equal(record.reason, "truncated");
@@ -193,7 +197,7 @@ function wrapperRecords({ records }: Pick<SanitizedRuntimeLogChunk, "records">) 
 // Line messages, and withheld runs as `withheld <count>`.
 function withheldSummary(page: Pick<SanitizedRuntimeLogChunk, "records">) {
   return page.records.map((record) =>
-    record.type === "withheld" ? `withheld ${record.count}` : requireLine(record).message,
+    record.type === "withheld" ? `withheld ${record.count}` : lineMessage(record),
   );
 }
 
@@ -731,10 +735,7 @@ export function registerRuntimeLogSanitizerCases() {
       first: 1,
       truncated: true,
     });
-    assert.deepEqual(
-      partial.records.map((record) => requireLine(record).message),
-      ["complete line"],
-    );
+    assert.deepEqual(partial.records.map(lineMessage), ["complete line"]);
     const oversized = sanitize(
       gatewayStream,
       [`plain ${"x".repeat(5 * 1024)}`, `{"level":"info","message":"${"y".repeat(33 * 1024)}"}`],
@@ -820,7 +821,7 @@ export function registerRuntimeLogSanitizerCases() {
     const tail = `PEMTAIL${randomString(12)}`;
     const header = `DEK-Info: AES-128-CBC,${randomBytes(8).toString("hex").toUpperCase()}`;
     const shown = (raws: readonly string[]) =>
-      sanitize(gatewayStream, raws).records.map((record) => requireLine(record).message);
+      sanitize(gatewayStream, raws).records.map(lineMessage);
     assert.deepEqual(
       shown([
         "before the key",
