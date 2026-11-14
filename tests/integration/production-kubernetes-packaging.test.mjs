@@ -26,6 +26,10 @@ import {
   goToolEnvironment,
   renderExecutionChart,
 } from "../helpers/production-chart.mjs";
+import {
+  oidcLoginValues,
+  trustedProxyRefusalCases,
+} from "../helpers/production-chart-sign-in-cases.ts";
 import { productionChartRendererRefusalCases } from "../helpers/production-chart-renderer-refusal-cases.ts";
 import {
   gatewayRoutingValues,
@@ -37,12 +41,6 @@ import {
   tooling,
 } from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
-import {
-  oidcLoginValues,
-  trustedProxyCases,
-  trustedProxyRefusalCases,
-  trustedProxyValues,
-} from "../helpers/production-chart-sign-in-cases.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
@@ -135,6 +133,10 @@ const googleLoginValues = {
 const googleEgressValues = {
   "auth.google.egressCidrs[0]": "140.82.112.0/20",
   "auth.google.egressCidrs[1]": "192.30.252.0/22",
+};
+const trustedProxyValues = {
+  "api.trustedProxy.preset": "ingress-nginx",
+  "api.trustedProxy.cidrs[0]": "10.42.0.0/16",
 };
 const databaseCaValues = {
   "database.caSecretName": "occ-rds-ca",
@@ -3505,7 +3507,57 @@ test(
   tooling,
   async () => {
     // Named presets fix x-forwarded-for in the controller; only generic renders a header.
-    for (const [overrides, preset, cidrs, header] of trustedProxyCases) {
+    for (const [overrides, preset, cidrs, header] of [
+      [trustedProxyValues, "ingress-nginx", "10.42.0.0/16", undefined],
+      [
+        { ...trustedProxyValues, "api.trustedProxy.clientAddressHeader": "X-Forwarded-For" },
+        "ingress-nginx",
+        "10.42.0.0/16",
+        undefined,
+      ],
+      [
+        {
+          "api.trustedProxy.preset": "aws",
+          "api.trustedProxy.cidrs[0]": "10.0.0.0/20",
+          "api.trustedProxy.cidrs[1]": "10.0.16.0/20",
+        },
+        "aws",
+        "10.0.0.0/20,10.0.16.0/20",
+        undefined,
+      ],
+      [
+        {
+          "api.trustedProxy.preset": "generic",
+          "api.trustedProxy.cidrs[0]": "fd00:10::/64",
+          "api.trustedProxy.clientAddressHeader": "X-Client-Address",
+        },
+        "generic",
+        "fd00:10::/64",
+        { value: "x-client-address" },
+      ],
+      [
+        // The controller's header token allows at most 64 characters.
+        {
+          "api.trustedProxy.preset": "generic",
+          "api.trustedProxy.cidrs[0]": "10.42.0.0/16",
+          "api.trustedProxy.clientAddressHeader": `x-${"a".repeat(62)}`,
+        },
+        "generic",
+        "10.42.0.0/16",
+        { value: `x-${"a".repeat(62)}` },
+      ],
+      [
+        // ::ffff:d.d.d.d is an IPv4 address after the API rewrites it, so /32 stays valid.
+        {
+          "api.trustedProxy.preset": "generic",
+          "api.trustedProxy.cidrs[0]": "::ffff:192.0.2.1/32",
+          "api.trustedProxy.clientAddressHeader": "X-Client-Address",
+        },
+        "generic",
+        "::ffff:192.0.2.1/32",
+        { value: "x-client-address" },
+      ],
+    ]) {
       const { selected, apiEnv, egress } = await signInObjects(overrides);
       assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_CIDRS, { value: cidrs });
       assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_PRESET, { value: preset });
@@ -3598,7 +3650,7 @@ test(
         { ...googleLoginValues, ...agentNativeAdminValues },
         /agentNativeAdmin\.enabled: false/,
       ],
-      ...trustedProxyRefusalCases,
+      ...trustedProxyRefusalCases(trustedProxyValues),
     ]) {
       await assert.rejects(
         render(override),
