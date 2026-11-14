@@ -161,7 +161,8 @@ export function checkResourceQuantityDiagnostics() {
       /Namespace quota resource pods must be a non-negative Kubernetes quantity string/,
     ],
     ["limits.memory", "8 Gi", /must be a non-negative Kubernetes quantity string/],
-    ["requests.cpu", "-1", /must be a non-negative Kubernetes quantity string/],
+    // Kubernetes rounds a nonzero sub-Nano quantity away from zero.
+    ["requests.cpu", "-0.00000000001", /must be a non-negative Kubernetes quantity string/],
   ] as const) {
     const configured = separateResources();
     configured.resources.namespace.quota[resource] = value;
