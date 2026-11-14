@@ -11,7 +11,7 @@ type ObservedCall = {
   name: unknown;
   mirrorIdentity: unknown;
   processSessionId?: string | undefined;
-  processAction?: unknown;
+  processAction?: string | undefined;
   operations?: unknown[];
 };
 
@@ -281,7 +281,10 @@ function readGatewaySession() {
                         block.name === "process" && typeof args?.sessionId === "string"
                           ? args.sessionId
                           : undefined,
-                      processAction: block.name === "process" ? args?.action : undefined,
+                      processAction:
+                        block.name === "process" && typeof args?.action === "string"
+                          ? args.action
+                          : undefined,
                       operations: operationsFor(block),
                     }
                   : {}),

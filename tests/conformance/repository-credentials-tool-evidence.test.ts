@@ -10,6 +10,7 @@ import {
   completedToolResult,
   expandTranscriptMessage,
 } from "../helpers/normal-agent-transcript.ts";
+import { parseGatewayObservation } from "../helpers/normal-agent-observation-receipts.ts";
 import { sessionEvidenceScript } from "../helpers/normal-agent-gateway-evidence.ts";
 import { repositoryFailureSummaryScript } from "../helpers/repository-native-journey.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
@@ -211,6 +212,20 @@ test("installed evidence reader recognizes nested push and exact process complet
         { command, workdir: "/workspace/repo" },
         { content: [], details: { status: "running", sessionId: "swift-coral" } },
       ),
+      // The runtime persists rejected tool inputs as well as successful calls.
+      // An invalid process action cannot displace the later poll of the same session.
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "invalid-process",
+            name: "process",
+            arguments: { action: 1, sessionId: "swift-coral" },
+          },
+        ],
+      },
+      { role: "toolResult", toolCallId: "invalid-process", isError: true },
       parent("poll-parent"),
       nested(
         "poll",
@@ -287,7 +302,7 @@ test("installed evidence reader recognizes nested push and exact process complet
     { encoding: "utf8" },
   );
   assert.equal(result.status, 0, result.stderr);
-  const trace: unknown = JSON.parse(result.stdout);
+  const trace: unknown = parseGatewayObservation(result.stdout);
   assert.ok(Check(sessionEvidence, trace), "invalid session evidence");
   assert.equal(trace.promptReportSource, "run");
   assert.equal(trace.userMarkerSeen, true);
