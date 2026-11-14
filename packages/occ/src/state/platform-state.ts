@@ -261,7 +261,8 @@ export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
   save(
     policy: SandboxPolicy,
     expectedVersion: number,
-    expectedPendingApplicationId?: string,
+    expectedApplicationId?: string,
+    expectedApplicationState?: "pending" | "failed",
   ): Promise<Readonly<SandboxPolicy> | undefined>;
 }
 
@@ -3460,15 +3461,20 @@ function repositories(
       const value = snapshot.sandboxPolicies.get(agentKey(namespaceId, agentId));
       return value === undefined ? undefined : immutableCopy(value);
     },
-    save: async (policy, expectedVersion, expectedPendingApplicationId) => {
+    save: async (
+      policy,
+      expectedVersion,
+      expectedApplicationId,
+      expectedApplicationState = "pending",
+    ) => {
       const key = agentKey(policy.namespaceId, policy.agentId);
       const existing = snapshot.sandboxPolicies.get(key);
       if (
         existing === undefined ||
         existing.version !== expectedVersion ||
-        (expectedPendingApplicationId !== undefined &&
-          (existing.application?.id !== expectedPendingApplicationId ||
-            existing.application.state !== "pending"))
+        (expectedApplicationId !== undefined &&
+          (existing.application?.id !== expectedApplicationId ||
+            existing.application.state !== expectedApplicationState))
       ) {
         return undefined;
       }

@@ -353,6 +353,27 @@ export function protectedDownloadPeerMatches(
   return "keyId" in peer && peer.keyId === enforcement.peerKeyId;
 }
 
+/** Admission and worker recovery need the complete protocol from the same selected owner. */
+export function protectedDownloadDriverPair(owner: InstalledDriver) {
+  const sandbox = owner.require("sandbox");
+  const proxy = owner.require("credential_proxy");
+  const sandboxPolicy = sandbox.protectedDownloadPolicy;
+  const proxyPolicy = proxy.protectedDownloadPolicy;
+  if (
+    sandboxPolicy?.version !== 1 ||
+    proxyPolicy?.version !== 1 ||
+    typeof sandboxPolicy.prepare !== "function" ||
+    typeof sandboxPolicy.apply !== "function" ||
+    typeof sandboxPolicy.readReceipt !== "function" ||
+    typeof sandboxPolicy.observe !== "function" ||
+    typeof proxyPolicy.prepare !== "function" ||
+    typeof proxyPolicy.verify !== "function"
+  ) {
+    return undefined;
+  }
+  return { sandbox, proxy, sandboxPolicy, proxyPolicy };
+}
+
 export async function prepareProtectedDownloadPair(
   context: ProtectedDownloadPolicyContext,
   sandboxPolicy: NonNullable<SandboxDriver["protectedDownloadPolicy"]>,

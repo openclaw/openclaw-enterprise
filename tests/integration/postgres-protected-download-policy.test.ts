@@ -50,7 +50,7 @@ function selected(driver: Driver, definition: DriverImplementation) {
 }
 
 test(
-  "protected download edits preserve and reconcile an unknown write across a verified revision replacement",
+  "protected download edits reconcile late writes on the running revision and across a verified replacement",
   requiresPostgres,
   async (t) => {
     const protectedDownloads = { executablePaths: ["/usr/bin/curl"] };
@@ -65,6 +65,7 @@ test(
       },
     });
     assert.ok("pool" in f && f.fixtureKind === "deployed");
+    assert.equal((await f.pool.query("SELECT current_user")).rows[0].current_user, "occ_app");
     const sandboxConfiguration = registrations?.find((entry) => entry.capability === "sandbox");
     assert.ok(sandboxConfiguration);
     assert.ok(namespaceLifecycleBindings?.length);
@@ -149,6 +150,9 @@ test(
     let operationId: string | undefined;
     let revokeBeforeApply: (() => Promise<unknown>) | undefined;
     let receipt: ProtectedDownloadPolicyWrite | undefined;
+    let lateReceipt: "missing" | "mismatched" | "available" | undefined;
+    let mismatchLateProxyFence = false;
+    const lateReceiptChecks = new Set<string>();
     assert.ok(f.installation.enforcement.peerKeyId);
     assert.ok(typeof observed.policyHash === "string");
     let fence: ProtectedDownloadPolicyFence = {
@@ -243,13 +247,35 @@ test(
       },
       async readReceipt(context, change) {
         checkContext(context);
-        return receipt?.operationId === change.operationId &&
-          receipt.sandboxId === change.expected.sandboxId
-          ? { ...receipt }
-          : { state: "unconfirmed" };
+        if (
+          lateReceipt === "missing" ||
+          receipt?.operationId !== change.operationId ||
+          receipt.sandboxId !== change.expected.sandboxId
+        ) {
+          return { state: "unconfirmed" };
+        }
+        if (lateReceipt === "mismatched") {
+          lateReceiptChecks.add("mismatched receipt");
+          return { ...receipt, sourcePolicyHash: "0".repeat(64) };
+        }
+        if (lateReceipt === "available") {
+          lateReceiptChecks.add("sandbox receipt");
+        }
+        return { ...receipt };
       },
-      observe,
+      async observe(...args) {
+        const observation = await observe(...args);
+        if (lateReceipt === "available") {
+          lateReceiptChecks.add("sandbox observation");
+        }
+        return observation;
+      },
       async apply(context, change, prepared) {
+        writes.push({
+          revisionId: context.revision.id,
+          operationId: change.operationId,
+          sandboxId: change.expected.sandboxId,
+        });
         checkContext(context);
         const current = await policy();
         assert.ok(current.application?.kind === "protected_downloads");
@@ -259,11 +285,6 @@ test(
         assert.deepEqual(prepared.source, sourceFor(change.desired));
         assert.equal(prepared.sourcePolicyHash, change.desiredSourcePolicyHash);
         assert.deepEqual(change.previous, enabled);
-        writes.push({
-          revisionId: context.revision.id,
-          operationId: change.operationId,
-          sandboxId: change.expected.sandboxId,
-        });
         enabled = structuredClone(change.desired);
         operationId = change.operationId;
         const hash = createHash("sha256")
@@ -283,14 +304,23 @@ test(
           sourcePolicyHash: hash,
           policyVersion: fence.policyVersion,
         };
-        return { ...receipt };
+        return lateReceipt === "missing" ? { state: "unconfirmed" } : { ...receipt };
       },
     };
     Object.assign(f.sandboxDriver, { protectedDownloadPolicy: sandboxPolicy });
     const proxyPolicy: NonNullable<CredentialProxyDriver["protectedDownloadPolicy"]> = {
       version: 1,
       prepare,
-      verify: observe,
+      async verify(...args) {
+        const observation = await observe(...args);
+        if (lateReceipt === "available") {
+          lateReceiptChecks.add("proxy verification");
+          if (mismatchLateProxyFence && observation.state === "confirmed") {
+            return { ...observation, effectivePolicyHash: "0".repeat(64) };
+          }
+        }
+        return observation;
+      },
     };
     Object.assign(f.egress, { protectedDownloadPolicy: proxyPolicy });
     assert.equal(
@@ -309,10 +339,11 @@ test(
     const iam = f.controller.selectedDriver("iam");
     const configurationDriver = f.controller.selectedDriver("configuration");
     const secretDriver = f.controller.selectedDriver("secret");
-    const makeWorker = () =>
+    const makeWorker = (convergenceTimeoutMs?: number) =>
       createControllerWorker({
         pool: new pg.Pool({ connectionString: databaseUrl }),
         pollIntervalMs: 20,
+        ...(convergenceTimeoutMs !== undefined && { convergenceTimeoutMs }),
         drivers: {
           installation: {
             occ: { cluster: "protected-download-test" },
@@ -343,6 +374,13 @@ test(
         emit() {},
       });
     let worker = makeWorker();
+    const workers = new Set([worker]);
+    const restartWorker = async (convergenceTimeoutMs?: number) => {
+      await worker.stopLoop();
+      worker = makeWorker(convergenceTimeoutMs);
+      workers.add(worker);
+      await worker.start();
+    };
     const queue = new PostgresWorkQueue(f.pool);
     // Setup already installed and activated this revision. SKIP LOCKED leaves its
     // outstanding lifecycle jobs untouched while the real worker claims just the edits.
@@ -496,6 +534,153 @@ test(
         assert.deepEqual(enabled, expected);
         previousId = application.id;
       }
+      // The provider withdrew a confirmed download on the serving Sandbox, but
+      // the direct reply was lost. Recovery must use its exact prior confirmation.
+      const priorPolicy = await policy();
+      assert.ok(priorPolicy.applied?.kind === "protected_downloads");
+      const servingWorkload = () =>
+        f.state.read(async (unit) => ({
+          agent: await unit.agents.findAgent(f.namespace.id, f.agent.id),
+          revision: await unit.revisions.findRevision(f.namespace.id, f.agent.id, f.revision.id),
+          installation: await unit.credentialSources.findRevisionEgressInstallation(
+            f.namespace.id,
+            f.revision.id,
+          ),
+        }));
+      const serving = await servingWorkload();
+      assert.ok(serving.agent);
+      assert.equal(serving.agent.activeRevisionId, f.revision.id);
+      assert.equal(serving.agent.desiredRuntimeState, "running");
+      assert.equal(serving.installation?.sandboxId, f.installation.sandboxId);
+      lateReceipt = "missing";
+      const late = await apply("withdraw-approval", destination);
+      assert.equal(late.status, 202, JSON.stringify(late.body));
+      const latePolicy = responseData(
+        late,
+        202,
+        SandboxPolicyResponse,
+        "edit with a lost reply",
+      ).data;
+      assert.ok(latePolicy.application);
+      const lateId = latePolicy.application.id;
+      const lateKey = `agent:${f.agent.id}:reconcile:sandbox_policy:${lateId}`;
+      await waitFor("original provider write and queue deferral", async () =>
+        writes.some((write) => write.operationId === lateId) &&
+        (await queue.findWork(lateKey))?.state === "queued"
+          ? true
+          : undefined,
+      );
+      const pending = (await policy()).application;
+      assert.ok(pending?.kind === "protected_downloads");
+      assert.equal(pending.id, lateId);
+      assert.equal(pending.writeState, "dispatched");
+      assert.equal(pending.acknowledgedWrite, undefined);
+      assert.deepEqual(
+        pending.previousDownloadDestinations,
+        priorPolicy.applied.confirmedDownloadDestinations,
+      );
+      assert.deepEqual(pending.expected, priorPolicy.applied.fence);
+
+      // A restarted worker with a deadline already exceeded by this queued operation
+      // takes the real timeout path. The wrong source hash cannot confirm the write.
+      lateReceipt = "mismatched";
+      await restartWorker(1);
+      const terminal = await waitFor("original edit times out unconfirmed", async () => {
+        const item = await queue.findWork(lateKey);
+        return item?.state === "failed_permanent" ? item : undefined;
+      });
+      assert.equal(terminal.reasonCode, "SANDBOX_POLICY_UNCONFIRMED");
+      assert.ok(lateReceiptChecks.has("mismatched receipt"));
+      const failed = await policy();
+      assert.equal(failed.application?.id, lateId);
+      assert.equal(failed.application?.state, "failed");
+      assert.deepEqual(failed.applied, priorPolicy.applied);
+
+      // The Sandbox's original receipt cannot settle a failed edit if the
+      // Credential Proxy disagrees about the effective policy.
+      assert.ok(receipt?.state === "committed");
+      const lateWrite = structuredClone(receipt);
+      lateReceipt = "available";
+      mismatchLateProxyFence = true;
+      await restartWorker();
+      await waitFor("periodic recovery checks both drivers", () =>
+        lateReceiptChecks.has("proxy verification") ? true : undefined,
+      );
+      const afterMismatch = await f.state.transact(async (unit) => {
+        await unit.agents.lockAgent(f.namespace.id, f.agent.id);
+        return unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
+      });
+      assert.deepEqual(afterMismatch, failed);
+      view = await getView();
+      assert.equal(view.protectedDownloads?.state, "unavailable");
+      assert.equal((await apply("approve-and-enable", destination)).status, 409);
+
+      // Ordinary maintenance can now settle that UUID on the serving revision.
+      lateReceiptChecks.clear();
+      mismatchLateProxyFence = false;
+      await restartWorker();
+      const settled = await waitFor("periodic recovery applies the original receipt", async () => {
+        const current = await policy();
+        return current.application?.state === "applied" ? current : undefined;
+      });
+      assert.equal(settled.version, latePolicy.version);
+      assert.ok(settled.application?.kind === "protected_downloads");
+      assert.equal(settled.application.id, lateId);
+      assert.equal(settled.application.revisionId, f.revision.id);
+      assert.equal(settled.application.reason, undefined);
+      assert.deepEqual(settled.application.expected, pending.expected);
+      assert.deepEqual(settled.application.acknowledgedWrite, lateWrite);
+      assert.ok(settled.applied?.kind === "protected_downloads");
+      assert.equal(settled.applied.operationId, lateId);
+      assert.equal(settled.applied.revisionId, f.revision.id);
+      assert.equal(settled.applied.policyVersion, latePolicy.version);
+      assert.equal(settled.applied.providerVersion, String(lateWrite.policyVersion));
+      const afterLate = [earlierDestination];
+      assert.deepEqual(settled.applied.confirmedDownloadDestinations, afterLate);
+      assert.deepEqual(settled.downloadDestinations, afterLate);
+      assert.deepEqual(settled.approvedDownloadDestinations, afterLate);
+      assert.deepEqual(
+        lateReceiptChecks,
+        new Set(["sandbox receipt", "sandbox observation", "proxy verification"]),
+      );
+      assert.deepEqual(
+        writes.filter((write) => write.operationId === lateId),
+        [{ revisionId: f.revision.id, operationId: lateId, sandboxId: f.installation.sandboxId }],
+      );
+      assert.deepEqual(await queue.findWork(lateKey), terminal);
+      assert.deepEqual(await servingWorkload(), serving);
+      const lateAudit = (await f.state.transact((unit) => unit.audit.list())).filter(
+        (event) =>
+          event.action === "openclaw.agents.sandbox_policy.application" &&
+          event.details?.operationId === lateId,
+      );
+      assert.equal(lateAudit.length, 2);
+      const success = lateAudit.find((event) => event.outcome === "success");
+      assert.equal(success?.actorId, f.principal.id);
+      assert.equal(success?.details?.policyVersion, latePolicy.version);
+      assert.equal(success?.details?.revisionId, f.revision.id);
+
+      lateReceipt = undefined;
+      view = await getView();
+      assert.equal(view.protectedDownloads?.state, "verified");
+      assert.equal(view.policy.version, latePolicy.version);
+      assert.equal(view.policy.application?.state, "applied");
+      assert.ok(view.policy.applied && "operationId" in view.policy.applied);
+      assert.equal(view.policy.applied.operationId, lateId);
+      const followup = await apply("approve-and-enable", destination);
+      assert.equal(followup.status, 202, JSON.stringify(followup.body));
+      const followupId = responseData(followup, 202, SandboxPolicyResponse, "edit after recovery")
+        .data.application?.id;
+      assert.ok(followupId);
+      assert.notEqual(followupId, lateId);
+      await waitFor("next edit uses the confirmed receipt", async () => {
+        const applied = (await policy()).applied;
+        return applied?.kind === "protected_downloads" && applied.operationId === followupId
+          ? true
+          : undefined;
+      });
+      view = await getView();
+
       hideConfirmation = true;
       const priorWitness = (await policy()).applied;
       const uncertain = await apply("approve-and-enable", uncertainDestination);
@@ -634,41 +819,38 @@ test(
         JSON.stringify(await queue.findWork(oldKey)).includes(oldEvidence.fence.instanceId),
         false,
       );
-      await worker.stopLoop();
-      const originalWorker = worker;
-      worker = makeWorker();
       hideConfirmation = false;
-      try {
-        await worker.start();
-        await waitFor("authenticated original read clears private receipt", async () =>
-          (await oldRow()).recovery === null ? true : undefined,
-        );
-        const settlement = await f.state.transact((unit) => unit.audit.list());
-        const disposition = settlement.filter(
-          (event) =>
-            event.action === "openclaw.agents.sandbox_policy.reconciliation" &&
-            event.details?.operationId === oldId,
-        );
-        assert.equal(disposition.length, 1);
-        assert.deepEqual(disposition[0]?.details, {
-          agentId: f.agent.id,
-          operationId: oldId,
-          revisionId: f.revision.id,
-          policyVersion: uncertainPolicy.version,
-          providerVersion: String(oldEvidence.fence.policyVersion),
-          disposition: "confirmed-applied",
-        });
-        const applied = (await policy()).applied;
-        assert.ok(applied?.kind === "protected_downloads");
-        assert.equal(applied.operationId, withdrawn.id);
-        assert.equal(writes.filter((write) => write.operationId === oldId).length, 1);
-      } finally {
-        await originalWorker.stop();
-      }
+      await restartWorker();
+      await waitFor("authenticated original read clears private receipt", async () =>
+        (await oldRow()).recovery === null ? true : undefined,
+      );
+      const settlement = await f.state.transact((unit) => unit.audit.list());
+      const disposition = settlement.filter(
+        (event) =>
+          event.action === "openclaw.agents.sandbox_policy.reconciliation" &&
+          event.details?.operationId === oldId,
+      );
+      assert.equal(disposition.length, 1);
+      assert.deepEqual(disposition[0]?.details, {
+        agentId: f.agent.id,
+        operationId: oldId,
+        revisionId: f.revision.id,
+        policyVersion: uncertainPolicy.version,
+        providerVersion: String(oldEvidence.fence.policyVersion),
+        disposition: "confirmed-applied",
+      });
+      const applied = (await policy()).applied;
+      assert.ok(applied?.kind === "protected_downloads");
+      assert.equal(applied.operationId, withdrawn.id);
+      assert.equal(writes.filter((write) => write.operationId === oldId).length, 1);
     } finally {
-      await worker.stop();
-      await blocker.query("ROLLBACK");
-      blocker.release();
+      try {
+        await worker.stopLoop();
+        await Promise.all([...workers].map((started) => started.stop()));
+      } finally {
+        await blocker.query("ROLLBACK");
+        blocker.release();
+      }
     }
   },
 );

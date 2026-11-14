@@ -1947,7 +1947,7 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
       "Repositories",
       "Credentials",
       "Workspace files",
-      "Policy denials",
+      "Network policy",
       "Deployment",
       "Access",
     ];
@@ -2462,7 +2462,7 @@ export function registerSharingCredentialsAndChannelsCases(
     // Policy denials on the draft: the denials live on the deployed versions, and the policy and
     // its suggestions are not read. The suggestions do not send the reader to the current
     // version, which refuses them too.
-    await page.getByRole("tab", { name: "Policy denials", exact: true }).click();
+    await page.getByRole("tab", { name: "Network policy", exact: true }).click();
     await page
       .getByText(
         "Policy denials come from deployed versions. Open the current version to see them.",

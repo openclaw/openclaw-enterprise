@@ -2366,6 +2366,12 @@ export const sandboxPolicies = occSchema.table(
   },
   (table) => [
     unique("sandbox_policies_agent_unique").on(table.namespaceId, table.agentId),
+    index("sandbox_policies_protected_download_confirmation_idx").on(
+      table.agentId,
+      table.namespaceId,
+    ).where(sql`${table.document}#>>'{application,kind}' = 'protected_downloads'
+        AND ${table.document}#>>'{application,state}' = 'failed'
+        AND ${table.document}#>>'{application,writeState}' = 'dispatched'`),
     foreignKey({
       name: "sandbox_policies_agent_owner",
       columns: [table.namespaceId, table.agentId],

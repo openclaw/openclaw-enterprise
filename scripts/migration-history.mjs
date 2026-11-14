@@ -190,6 +190,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 78 && completedCount > 78) {
     return "preProtectedDownloadRecovery";
   }
+  if (count === 79 && completedCount > 79) {
+    return "preProtectedDownloadLateConfirmation";
+  }
   if (count === completedCount) {
     return "completed";
   }

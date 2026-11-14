@@ -20,6 +20,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   protectedDownloadTargetMatches,
+  protectedDownloadDriverPair,
   protectedDownloadPeerMatches,
   protectedDownloadLimitsHash,
   SandboxNetworkPolicyConflictError,
@@ -165,12 +166,29 @@ function applicationAudit(
 async function savePolicy(
   unit: PlatformUnitOfWork,
   policy: Readonly<SandboxPolicy>,
+  expectedState: "pending" | "failed" = "pending",
 ): Promise<void> {
   if (
-    (await unit.sandboxPolicies.save(policy, policy.version, policy.application!.id)) === undefined
+    (await unit.sandboxPolicies.save(
+      policy,
+      policy.version,
+      policy.application!.id,
+      expectedState,
+    )) === undefined
   ) {
     throw new Error("Sandbox policy changed during reconciliation");
   }
+}
+
+async function recordApplicationResult(
+  unit: PlatformUnitOfWork,
+  options: Pick<PolicyWorkOptions, "installationId">,
+  work: Pick<ClaimedWork, "actorId" | "namespaceId">,
+  policy: Readonly<SandboxPolicy>,
+  expectedState: "pending" | "failed" = "pending",
+): Promise<void> {
+  await savePolicy(unit, policy, expectedState);
+  await unit.audit.append(applicationAudit(options, work, policy));
 }
 
 function failedPolicy(
@@ -238,8 +256,7 @@ async function policyPass(
     let beforeProviderCall = dispatchId === policy.application.id;
     const fail = async (reason: string) => {
       const failed = failedPolicy(policy, reason, beforeProviderCall);
-      await savePolicy(unit, failed);
-      await unit.audit.append(applicationAudit(options, claim, failed));
+      await recordApplicationResult(unit, options, claim, failed);
       await queue.fail(claim, { code: reason });
     };
     if (
@@ -284,7 +301,6 @@ async function policyPass(
           revision,
           policy,
           policy.application,
-          dispatchId,
           AbortSignal.any([
             options.signal,
             AbortSignal.timeout(
@@ -302,8 +318,11 @@ async function policyPass(
             }
             return { allowed, deadlineReached: renewed.ageMs >= options.deadlineMs };
           },
-          () => {
-            beforeProviderCall = false;
+          {
+            id: dispatchId,
+            markProviderCall() {
+              beforeProviderCall = false;
+            },
           },
         );
       } catch (error) {
@@ -323,18 +342,7 @@ async function policyPass(
         return { dispatchId: policy.application.id };
       }
       if (result.state === "applied") {
-        const applied = {
-          ...policy,
-          applied: result.receipt,
-          application: {
-            ...policy.application,
-            state: "applied" as const,
-            acknowledgedWrite: result.acknowledgedWrite,
-            providerVersion: result.receipt.providerVersion,
-          },
-        };
-        await savePolicy(unit, applied);
-        await unit.audit.append(applicationAudit(options, claim, applied));
+        await recordApplicationResult(unit, options, claim, result.policy);
         await queue.complete(claim);
         return "success";
       }
@@ -480,8 +488,7 @@ async function policyPass(
           providerVersion: observation.policyVersion,
         },
       };
-      await savePolicy(unit, applied);
-      await unit.audit.append(applicationAudit(options, claim, applied));
+      await recordApplicationResult(unit, options, claim, applied);
       await queue.complete(claim);
       return "success";
     } else if (observation.matches && observation.state === "failed") {
@@ -531,12 +538,11 @@ export async function failAbandonedSandboxPolicies(
       "SANDBOX_POLICY_UNCONFIRMED",
       false,
     );
-    await savePolicy(unit, failed);
-    await unit.audit.append(applicationAudit({ installationId }, work, failed));
+    await recordApplicationResult(unit, { installationId }, work, failed);
   }
 }
 
-/** Observe one retained original operation. The successor's policy and work are never written. */
+/** Confirm the current failed operation, or settle a superseded operation on its original work. */
 export async function settleOriginalProtectedDownload(
   options: Pick<PolicyWorkOptions, "compute" | "iam" | "installationId" | "signal" | "state"> &
     Required<Pick<PolicyWorkOptions, "protectedDriver" | "protectedDownloads">>,
@@ -546,22 +552,55 @@ export async function settleOriginalProtectedDownload(
   await options.state.transact(async (unit) => {
     const namespace = await unit.namespaces.lockNamespace(namespaceId, { includeDeleted: true });
     const agent = await unit.agents.lockAgent(namespaceId, agentId);
+    const policy = await unit.sandboxPolicies.find(namespaceId, agentId);
+    if (!policy || !namespace || !agent?.sandboxPolicyEditing) {
+      return;
+    }
+    const application = policy.application;
+    if (application && workKey === `agent:${agentId}:reconcile:sandbox_policy:${application.id}`) {
+      if (
+        application.kind !== "protected_downloads" ||
+        application.state !== "failed" ||
+        application.writeState !== "dispatched" ||
+        agent.activeRevisionId !== application.revisionId ||
+        application.requestedBy !== actorId ||
+        !(await unit.sandboxPolicies.canRetainProtectedDownloadRecovery(policy)) ||
+        !(await authority(options, work, policy, unit, application.action))
+      ) {
+        return;
+      }
+      const revision = await unit.revisions.findRevision(
+        namespaceId,
+        agentId,
+        application.revisionId,
+      );
+      // The expired lease cannot be reopened. This pass has no dispatch authority.
+      const result = await reconcileProtectedDownload(
+        options,
+        unit,
+        namespace,
+        agent,
+        revision,
+        policy,
+        application,
+        options.signal,
+        async () => ({
+          allowed: await authority(options, work, policy, unit, application.action),
+          deadlineReached: true,
+        }),
+      );
+      if (result.state === "applied") {
+        await recordApplicationResult(unit, options, work, result.policy, "failed");
+      }
+      return;
+    }
     const old = await unit.sandboxPolicies.findProtectedDownloadRecovery(
       namespaceId,
       agentId,
       workKey,
       actorId,
     );
-    if (
-      !old ||
-      !namespace ||
-      !agent ||
-      workKey !== `agent:${agentId}:reconcile:sandbox_policy:${old.operationId}`
-    ) {
-      return;
-    }
-    const policy = await unit.sandboxPolicies.find(namespaceId, agentId);
-    if (!policy || policy.application?.id === old.operationId || !agent.sandboxPolicyEditing) {
+    if (!old || workKey !== `agent:${agentId}:reconcile:sandbox_policy:${old.operationId}`) {
       return;
     }
     const revision = await unit.revisions.findRevision(namespaceId, agentId, old.revisionId);
@@ -570,13 +609,11 @@ export async function settleOriginalProtectedDownload(
       old.revisionId,
     );
     const owner = options.protectedDriver;
-    const sandbox = owner.require("sandbox").protectedDownloadPolicy;
-    const verifier = owner.require("credential_proxy").protectedDownloadPolicy;
+    const pair = protectedDownloadDriverPair(owner);
     if (
       !revision?.egressPlan ||
       !installed ||
-      sandbox?.version !== 1 ||
-      verifier?.version !== 1 ||
+      !pair ||
       !options.compute.resolveSandboxNamespace ||
       !protectedDownloadTargetMatches(
         options.installationId,
@@ -617,8 +654,8 @@ export async function settleOriginalProtectedDownload(
           desiredSourcePolicyHash: old.desiredSourcePolicyHash,
         },
         old.acknowledgedWrite,
-        sandbox,
-        verifier,
+        pair.sandboxPolicy,
+        pair.proxyPolicy,
       );
     } catch {
       // Missing evidence, including a timed-out provider, leaves this exact operation unresolved.

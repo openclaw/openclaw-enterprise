@@ -3588,9 +3588,24 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       nextProtectedDownloadRecovery: async (afterWorkKey) => {
         const result = await client.query(
-          `SELECT idempotency_key, namespace_id, agent_id, actor_id FROM occ.controller_work
-           WHERE protected_download_recovery IS NOT NULL AND idempotency_key > $1
-           ORDER BY idempotency_key LIMIT 1`,
+          `SELECT idempotency_key, namespace_id, agent_id, actor_id FROM (
+             SELECT idempotency_key, namespace_id, agent_id, actor_id FROM occ.controller_work
+             WHERE protected_download_recovery IS NOT NULL
+             UNION ALL
+             SELECT w.idempotency_key, w.namespace_id, w.agent_id, w.actor_id
+             FROM occ.sandbox_policies p
+             JOIN occ.agents a ON (a.namespace_id, a.id) = (p.namespace_id, p.agent_id)
+               AND a.active_revision_id = p.document#>>'{application,revisionId}'
+             JOIN occ.controller_work w ON (w.namespace_id, w.agent_id) = (p.namespace_id, p.agent_id)
+               AND w.idempotency_key = 'agent:' || p.agent_id || ':reconcile:sandbox_policy:' || (p.document#>>'{application,id}')
+               AND w.actor_id = p.document#>>'{application,requestedBy}'
+             WHERE p.document#>>'{application,kind}' = 'protected_downloads'
+               AND p.document#>>'{application,state}' = 'failed'
+               AND p.document#>>'{application,writeState}' = 'dispatched'
+               AND a.sandbox_policy_editing AND a.status = 'active' AND a.desired_runtime_state = 'running'
+               AND w.state = 'failed_permanent' AND w.agent_target = 'sandbox_policy'
+               AND w.protected_download_recovery IS NULL
+           ) AS candidates WHERE idempotency_key > $1 ORDER BY idempotency_key LIMIT 1`,
           [afterWorkKey ?? ""],
         );
         const row = rows(result.rows)[0];
@@ -3636,11 +3651,16 @@ export class PostgresPlatformState implements PlatformStateStore {
           ? undefined
           : immutableCopy(row.document as unknown as SandboxPolicy);
       },
-      save: async (policy, expectedVersion, expectedPendingApplicationId) => {
+      save: async (
+        policy,
+        expectedVersion,
+        expectedApplicationId,
+        expectedApplicationState = "pending",
+      ) => {
         const result = await client.query(
           `UPDATE occ.sandbox_policies SET version = $4, document = $5::jsonb
            WHERE namespace_id = $1 AND agent_id = $2 AND id = $3 AND version = $6
-             AND ($7::text IS NULL OR (document#>>'{application,id}' = $7 AND document#>>'{application,state}' = 'pending'))
+             AND ($7::text IS NULL OR (document#>>'{application,id}' = $7 AND document#>>'{application,state}' = $8))
            RETURNING document`,
           [
             policy.namespaceId,
@@ -3649,7 +3669,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             policy.version,
             JSON.stringify(policy),
             expectedVersion,
-            expectedPendingApplicationId ?? null,
+            expectedApplicationId ?? null,
+            expectedApplicationState,
           ],
         );
         const row = rows(result.rows)[0];

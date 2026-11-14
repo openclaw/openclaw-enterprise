@@ -88,33 +88,47 @@ Restrictions are removed with their policy.
 
 ## Downloads on a running protected Agent
 
-This control requires Installation-level editing limits and a Sandbox and
-Credential Proxy pair that can confirm the effective download rules on the
-running revision. Stock OpenShell 0.1.8 reports that the pair lacks this
-capability.
+Enable [Installation download settings](configuration.md#protected-downloads).
+The Sandbox and Credential Proxy must confirm effective rules on the running
+revision. Stock OpenShell 0.1.8 lacks this Driver pair.
 
-Open the Agent’s **Network policy**, turn on policy editing, and find **Downloads**.
-An Installation administrator can enter a new domain and choose **Allow download**.
-The default is HTTPS on port 443. For a shared archive host, enter the exact object
-path. Plain HTTP on port 80 is available only for a mirror explicitly named by the
-Installation operator. Keep the package manager’s signature and checksum checks enabled.
+Before production use, verify the Drivers publish the installation used for model
+access and any configured Git route. In the same protected shell, test a fresh
+download, withdraw access and verify a fresh connection is denied. Model and Git
+access should survive both changes.
 
-Wait for confirmation on the current revision, then use the download in the existing
-shell. If the connection drops while saving, refresh the policy to see whether OCE
-accepted the operation. The card distinguishes the desired destinations from those the
-running Sandbox has confirmed. Disabling a destination stops new connections after
-confirmation. Withdrawing its approval also removes the per-Agent delegation.
+Under **Network policy**, enable policy editing. In **Protected downloads**,
+choose **Add destination**, enter the hostname and choose **Allow download**.
+HTTPS defaults to port 443. For shared archive hosts specify the exact object path.
+HTTP on port 80 requires an operator-listed mirror. Keep package signature and
+checksum verification enabled.
 
-The Installation’s `protectedDownloads` settings select eligible download executables,
-reserved hosts, HTTP mirrors and exact objects on shared hosts. An administrator can
-add an eligible HTTPS hostname to one Agent in the Console without editing that
-Installation configuration. Delegated editors can enable or disable destinations
-within their approved scope.
+Search by hostname or archive path, or filter by access state. **Requested** shows
+the saved setting and Agent approval. **Confirmed access** reflects this revision’s
+last receipt. Installation administrators can approve an eligible HTTPS hostname
+for one Agent without changing Installation configuration. Delegated editors can
+enable or disable approved destinations.
+
+Disabling an exact path removes its desired rule and keeps its Agent approval.
+If the Sandbox confirms the removal and a whole-host rule remains for the same
+scheme, hostname, and port, that rule still covers the path. The approved entry
+shows **Covered by host** and the broader URL. To stop new connections, disable
+the covering rule and wait for confirmation. Choose **Withdraw approval** under
+**More actions** to remove the Agent approval and any access that depends on it.
+Existing transfers can finish.
+
+When confirmation is pending, unavailable, or failed, the outcome may still be
+unknown. **Last confirmed** describes the most recent receipt for the revision.
+After a conflict or lost response, refresh the policy. In **Receipt details**,
+match the request and receipt to your change and revision before submitting
+another edit. If a later request has replaced yours, the displayed receipt cannot
+confirm your earlier change. Test new connections from the
+running Agent to verify enforcement by the Sandbox and Credential Proxy.
 
 After a revision replacement, the Agent keeps its saved destinations and
-approvals. **Off on this revision** means the running replacement has not
-enabled that destination. Choose **Enable** to allow that destination alone,
-or **Remove from desired** to remove it from the Agent’s saved list.
+approvals. When the new revision passes verification and has no receipt,
+the card shows **Off on this revision**. Choose **Enable** to enable the
+entry, or **Remove from desired** to remove it from the Agent’s saved list.
 
 API clients use the existing networking `apply` endpoint. For example, an
 administrator who just read policy version 3 can submit the following body,
@@ -132,8 +146,36 @@ using the active revision ID returned by the service.
 ```
 
 HTTP 202 means the change was queued. Read the policy again to see whether
-the current revision confirmed it. After a version conflict, read the latest
-version and review the requested change before submitting it again.
+the current revision confirmed it.
+
+### Protected download limits
+
+The [Installation `protectedDownloads` block](configuration.md#protected-downloads)
+sets which executable paths and destinations are eligible. `executablePaths`
+accepts unique literal paths of up to 512 characters. The Driver pair must match
+the path exactly. Use letters, digits, and `_+.@-` in executable path segments.
+The five optional lists accept unique entries and can be omitted or empty.
+Unknown fields fail startup.
+
+| Field                   | What it allows or excludes                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `reservedHosts`         | Excludes these hostnames. Credential route hosts are also excluded.                                                            |
+| `httpMirrors`           | Allows HTTP on port `80` for these hosts.                                                                                      |
+| `sharedArchiveHosts`    | Restricts these hosts to the exact HTTPS objects in `sharedArchiveObjects`.                                                    |
+| `sharedArchiveObjects`  | Lists objects as `{ scheme: https, host, port: 443, path }`. The host must appear in `sharedArchiveHosts`.                     |
+| `delegatedDestinations` | Delegates eligible destinations to policy editors. Each entry has `scheme`, `host`, and `port`, with an optional exact `path`. |
+
+`reservedHosts`, `httpMirrors`, and `sharedArchiveHosts` must be disjoint. All
+hostnames must be exact lowercase public DNS names of up to 253 characters.
+Use `https` with port `443`, or `http` with port `80` for a listed mirror. A
+destination without `path` covers the entire host on that scheme and port.
+An exact `path` starts with `/` and can contain up to 2,048 characters. Use
+letters, digits, and `._~+:@-` in path segments. Omit escapes, query strings,
+fragments, and empty, `.` or `..` segments. Shared archive hosts require a
+listed exact path.
+An Agent can save up to 32 approved destinations and 32 desired destinations.
+Installation delegation permits edits within its scope. Access starts after
+the editor enables a destination and the running revision confirms it.
 
 ## Desired and applied versions
 
@@ -207,7 +249,7 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 
 ## Denials and recommendations
 
-The console's **Policy denials** tab uses the existing bounded, exact-revision
+The console's **Network policy** tab uses the existing bounded, exact-revision
 Sandbox log path and its `read_logs`/administration rules. Typed metadata is
 optional. Recognized OpenShell records are parsed by the Driver; OCC validates,
 redacts, and applies the normal output and retention limits. Unknown fields stay

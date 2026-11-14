@@ -75,6 +75,7 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   PostgresPlatformState,
+  protectedDownloadDriverPair,
   PostgresWorkQueue,
   OpenClawController,
   ActivationFailedError,
@@ -1802,6 +1803,9 @@ export class ControllerWorker {
       return;
     }
     this.nextProtectedDownloadRecovery = Date.now() + 30_000;
+    if (!protectedDownloadDriverPair(this.protectedDriver)) {
+      return;
+    }
     const work = await this.state.read((view) =>
       view.sandboxPolicies.nextProtectedDownloadRecovery(this.protectedDownloadRecoveryCursor),
     );

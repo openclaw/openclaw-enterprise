@@ -633,6 +633,14 @@
       "tag": "0079_protected_download_recovery",
       "breakpoints": true,
       "sha256": "4c959a1ad1c25635cf2c10422e7de1309a583537f958ff2fbe68ad49420f1e83"
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1787000000080,
+      "tag": "0080_protected_download_late_confirmation",
+      "breakpoints": true,
+      "sha256": "062aa66acea88389444e5fc494b5c51b113db5893f0e30eb86e3bc5fbdacebf5"
     }
   ],
   "initialSchemaStates": {
@@ -735,10 +743,17 @@
       "f1e93e0db8fbc042387a4a37fab149ef918c20be3fa60dfa9e75d223ae7d889f",
       "58432cc2a6abbc79b05aaed2a5d0ec16a7ec615a5c467aec59eaf75ccbb37d17",
       "62d7d9217d6fbb20970711755d528e73fadf3015b9c6ac18fc2a79282615d945"
+    ],
+    "ef1f037de86ebcf6614d846c202634d3f845b20305648d23d16cf6f08ca35829": [
+      "bab0c01cdfcd70f0aaf4eafe37b03deb3411c28b577f797e1f7f7bbcfc938dc0",
+      "be067037f784f6427b0abfd38f1934acf4bb14b04a5f47956859648072ff24a2",
+      "9f73a1433c4c9bac96506312e733aaa6b2d9bafaa826321a83844537f730f30c",
+      "16839f94abe022f962de58562f068880aa55200defa86ec81f7f8204f499f35d",
+      "c1d7c2a72b47e2f8e75d3db3b53b87b0ef3407956c31484e45bdd5cfd5c7a135"
     ]
   },
   "catalogs": {
-    "completed": "deb1ce083bf7f916965b3d5fd8b387e7015fbd7d76de3c1b9cb08fed7646e0b8",
+    "completed": "ef1f037de86ebcf6614d846c202634d3f845b20305648d23d16cf6f08ca35829",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -792,7 +807,8 @@
     "preFiniteRepositorySessionWithdrawal": "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33",
     "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600",
     "prePendingSandboxPolicyApplication": "025fa63491e14fb1f90c09d7405bd1fa8b39f7e1bb919d17572b58436391794e",
-    "preProtectedDownloadRecovery": "4368f8db721cd6b233dc2c65895de016de99af92f87919db5ba17153c8aba229"
+    "preProtectedDownloadRecovery": "4368f8db721cd6b233dc2c65895de016de99af92f87919db5ba17153c8aba229",
+    "preProtectedDownloadLateConfirmation": "deb1ce083bf7f916965b3d5fd8b387e7015fbd7d76de3c1b9cb08fed7646e0b8"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -801,7 +817,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle after the unchanged public 0077. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, and 77 upgraded to 0078. PostgreSQL 18.6 and stock Drizzle qualified 0079 on canonical and Provider histories. pg_dump and pg_restore qualified completed archives and upgrades from restored canonical prefixes 51 and 63 through 78. A restored prefix 63 advanced through public 0078 also qualified its distinct 0078 catalog."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle after the unchanged public 0077. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, and 77 upgraded to 0078. PostgreSQL 18.6 and stock Drizzle qualified 0079 on canonical and Provider histories. pg_dump and pg_restore qualified completed archives and upgrades from restored canonical prefixes 51 and 63 through 78. A restored prefix 63 advanced through public 0078 also qualified its distinct 0078 catalog. PostgreSQL 18.6 and stock Drizzle qualified 0080 on canonical and Provider histories. pg_dump and pg_restore qualified completed archives and upgrades from restored canonical prefixes 51 and 63 through 79."
   },
   "compatibleLineages": {
     "providerCompleted": {

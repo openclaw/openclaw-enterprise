@@ -2025,7 +2025,7 @@ async function canonicalData(db) {
 }
 
 test(
-  "Canonical migration preserves pending SandboxPolicy custody across the published 0076 through 0078 predecessors",
+  "Canonical migration preserves pending SandboxPolicy custody across the published 0076 through 0079 predecessors",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
@@ -2033,6 +2033,7 @@ test(
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
+      [79, "preProtectedDownloadLateConfirmation"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -2461,6 +2462,7 @@ test(
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
+      [79, "preProtectedDownloadLateConfirmation"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2968,6 +2970,7 @@ test(
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
+      [79, "preProtectedDownloadLateConfirmation"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3166,6 +3169,7 @@ test(
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
+      [79, "preProtectedDownloadLateConfirmation"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -3258,6 +3262,7 @@ test(
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
+      [79, "preProtectedDownloadLateConfirmation"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3282,7 +3287,9 @@ test(
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         // 0079 installs the first recovery trigger after its column, index, and functions.
+        // Abort after 0080 replaces the guard so rollback must restore its old body.
         const rollbackTag = [
+          [79, "CREATE FUNCTION"],
           [78, "CREATE TRIGGER"],
           [77, "CREATE FUNCTION"],
           [76, "CREATE INDEX"],
@@ -3305,11 +3312,12 @@ test(
           prefix >= 58
             ? "IF to_regclass('occ.credential_delivery_reductions') IS NULL THEN RETURN; END IF;"
             : "";
+        const rollbackEvent = prefix === 79 ? "ddl_command_end" : "ddl_command_start";
         await historyAdmin(
           db,
           db.name,
           `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN ${failAt} RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
-        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${rollbackTag}') EXECUTE FUNCTION public.reject_migration_ddl()`,
+        CREATE EVENT TRIGGER reject_migration_ddl ON ${rollbackEvent} WHEN TAG IN ('${rollbackTag}') EXECUTE FUNCTION public.reject_migration_ddl()`,
         );
         assert.deepEqual(
           await runHistoryMigration(

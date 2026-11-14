@@ -114,6 +114,8 @@ function workerFixture() {
     deny: AuthorizationRequest["action"] | undefined;
     observations: number;
     receiptReads: number;
+    proxyVerifications: number;
+    failedWorkKey: string | undefined;
     lease: boolean;
     renewedAgeMs?: number;
     writes: number;
@@ -130,6 +132,8 @@ function workerFixture() {
     deny: undefined,
     observations: 0,
     receiptReads: 0,
+    proxyVerifications: 0,
+    failedWorkKey: undefined,
     lease: true,
     writes: 0,
     audit: [],
@@ -213,11 +217,13 @@ function workerFixture() {
     protectedDownloadPolicy: {
       version: 1,
       prepare: async () => baseline(),
-      verify: async (_context, change, write) =>
-        change.operationId === setup.loaded?.operationId &&
-        write.sourcePolicyHash === setup.loaded.sourcePolicyHash
+      verify: async (_context, change, write) => {
+        setup.proxyVerifications++;
+        return change.operationId === setup.loaded?.operationId &&
+          write.sourcePolicyHash === setup.loaded.sourcePolicyHash
           ? { ...setup.loaded, instanceId: setup.disagree ? "replaced" : setup.loaded.instanceId }
-          : { state: "unconfirmed" },
+          : { state: "unconfirmed" };
+      },
     },
   };
   const protectedDriver = new InstalledDriver(
@@ -300,11 +306,17 @@ function workerFixture() {
   const queue = new PostgresWorkQueue({ query: unexpected });
   queue.heartbeat = async () =>
     setup.lease ? { ...claim, ageMs: setup.renewedAgeMs ?? claim.ageMs } : undefined;
-  queue.complete = queue.fail = queue.defer = async () => {};
+  queue.complete = queue.defer = async () => {};
+  queue.fail = async (work) => {
+    setup.failedWorkKey = work.idempotencyKey;
+  };
   const recovery: Pick<
     PlatformUnitOfWork["sandboxPolicies"],
-    "findProtectedDownloadRecovery" | "clearProtectedDownloadRecovery"
+    | "canRetainProtectedDownloadRecovery"
+    | "findProtectedDownloadRecovery"
+    | "clearProtectedDownloadRecovery"
   > = {
+    canRetainProtectedDownloadRecovery: unexpected,
     findProtectedDownloadRecovery: unexpected,
     clearProtectedDownloadRecovery: unexpected,
   };
@@ -321,11 +333,11 @@ function workerFixture() {
           ...recovery,
           protectedDownloadTargetAvailable: async () => !setup.retainedTarget,
           find: async () => next,
-          save: async (value, version, id) => {
+          save: async (value, version, id, expectedState: "pending" | "failed" = "pending") => {
             if (
               next.version !== version ||
-              next.application?.id !== id ||
-              next.application?.state !== "pending"
+              (id !== undefined &&
+                (next.application?.id !== id || next.application.state !== expectedState))
             ) {
               return undefined;
             }
@@ -476,15 +488,92 @@ test("protected worker refuses revoked administration, a replaced revision, chan
     });
   }
 });
-test("a persisted dispatch with no original operation evidence expires without a write", async () => {
+test("an expired protected download dispatch on the running revision settles only from the original write and both peers", async () => {
   const f = workerFixture();
-  f.application().writeState = "dispatched";
+  f.setup.loseReply = true;
+  assert.equal(await f.run(), "pending");
+  const receipt = f.setup.receipt;
+  assert.ok(receipt);
+
+  // The provider applied the policy, but the authenticated receipt is unavailable at expiry.
+  f.setup.receipt = undefined;
   f.claim.ageMs = f.options.deadlineMs;
   assert.equal(await f.run(), "permanent");
-  assert.equal(f.setup.writes, 0);
+  assert.equal(f.setup.writes, 1);
   assert.equal(f.setup.receiptReads, 1);
   assert.equal(f.setup.observations, 0);
+  assert.equal(f.application().state, "failed");
   assert.equal(f.application().reason, "SANDBOX_POLICY_UNCONFIRMED");
+  assert.equal(f.application().writeState, "dispatched");
+  assert.equal(f.policy().applied, undefined);
+
+  const expired = structuredClone(f.policy());
+  const work = {
+    workKey: f.claim.idempotencyKey,
+    actorId: f.claim.actorId,
+    namespaceId: f.agent.namespaceId,
+    agentId: f.agent.id,
+  };
+  f.recovery.findProtectedDownloadRecovery = async () => undefined;
+  f.recovery.canRetainProtectedDownloadRecovery = async (policy) =>
+    f.setup.failedWorkKey ===
+    `agent:${policy.agentId}:reconcile:sandbox_policy:${policy.application?.id}`;
+  const settle = () => settleOriginalProtectedDownload(f.options, work);
+
+  // A late receipt needs both the terminal original work marker and the actor's current authority.
+  f.setup.receipt = receipt;
+  assert.equal(f.setup.failedWorkKey, work.workKey);
+  f.setup.failedWorkKey = undefined;
+  await settle();
+  assert.equal(f.setup.receiptReads, 1);
+  assert.deepEqual(f.policy(), expired);
+  f.setup.failedWorkKey = work.workKey;
+  f.setup.deny = "administer";
+  await settle();
+  assert.equal(f.setup.receiptReads, 1);
+  assert.deepEqual(f.policy(), expired);
+
+  f.setup.deny = undefined;
+  f.setup.receipt = { ...receipt, sourcePolicyHash: "e".repeat(64) };
+  await settle();
+  assert.equal(f.setup.observations, 0);
+  assert.deepEqual(f.policy(), expired);
+
+  // The Sandbox's exact observation is insufficient if the Credential Proxy
+  // reports a different supervisor instance for the same write.
+  f.setup.receipt = receipt;
+  f.setup.disagree = true;
+  await settle();
+  assert.deepEqual(f.policy(), expired);
+
+  f.setup.disagree = false;
+  await settle();
+  assert.equal(
+    f.application().state,
+    "applied",
+    "late evidence on the original running revision must settle the failed application",
+  );
+  assert.equal(f.application().reason, undefined);
+  assert.deepEqual(f.application().acknowledgedWrite, receipt);
+  assert.equal(f.policy().version, expired.version);
+  const applied = f.policy().applied;
+  assert.equal(applied?.kind, "protected_downloads");
+  assert.equal(applied.operationId, receipt.operationId);
+  assert.equal(applied.revisionId, f.agent.activeRevisionId);
+  assert.deepEqual(applied.confirmedDownloadDestinations, [f.application().destination]);
+  assert.equal(f.setup.receiptReads, 4);
+  assert.equal(f.setup.observations, 2);
+  assert.equal(f.setup.proxyVerifications, 2);
+  assert.equal(f.setup.writes, 1);
+  assert.equal(f.setup.audit.at(-1)?.actorId, work.actorId);
+  assert.equal(f.setup.audit.at(-1)?.details?.operationId, receipt.operationId);
+
+  const confirmed = structuredClone(f.policy());
+  const auditCount = f.setup.audit.length;
+  await settle();
+  assert.deepEqual(f.policy(), confirmed);
+  assert.equal(f.setup.audit.length, auditCount);
+  assert.equal(f.setup.writes, 1);
 });
 
 test("an unconfirmed withdrawal preserves the previous operator-visible receipt", async () => {

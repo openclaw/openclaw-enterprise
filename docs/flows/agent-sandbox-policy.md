@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-14"
-last_updated_session: "authoring-run/50d40cbd-2394-47b4-b71d-dd2d713fca52"
+last_updated_session: "authoring-run/93600afa-cffe-4f18-ad2d-497f7e5fbc82"
 ---
 
 # Agent sandbox policy flow
@@ -15,7 +15,7 @@ This trace describes the implemented source; runtime proof has separate limits.
 
 ## Entry Points
 
-- Trigger: the console Policy denials tab or `occ agent policy` commands.
+- Trigger: the Console Network policy tab or `occ agent policy` commands.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
   `packages/occ/src/index.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
 - Assumptions: a ready Namespace, active Agent, exact grants, enabled editing for
@@ -88,28 +88,24 @@ repository admission can carry the Sandbox Driver's explicitly acknowledged
 identity, version and empty additions before runtime credential provisioning.
 That immutable snapshot remains ineligible for ordinary live apply.
 
-On a running protected Agent, **Network policy → Downloads** requires both the Sandbox
-and Credential Proxy Drivers to confirm the current Sandbox and policy. Stock OpenShell
-lacks this capability.
+Changing **Downloads** requires enabled editing, [Installation limits](../reference/configuration.md#protected-downloads),
+and a qualified Sandbox and Credential Proxy pair. Stock OpenShell lacks this capability.
+OCC checks Agent `manage_policy` and SandboxPolicy `read` and `update`. Granting
+or withdrawing Agent approval also requires Installation `administer`.
 
-1. With policy editing enabled, enter the hostname (HTTPS, port 443). For a shared
-   host, enter the exact archive path allowed by the Installation’s `protectedDownloads`
-   limits. HTTP on port 80 requires a listed mirror.
-2. Choose **Allow download** to let approved clients read from this destination.
-   Edits require Agent `manage_policy` and SandboxPolicy `read` and `update`.
-   Approving a new destination for this Agent also requires Installation `administer`.
-   Delegated editors can enable or disable approved destinations.
-3. Wait for confirmation. OCC saves the desired change and queues one operation on the
-   active revision. The Console shows the previous confirmed destinations until both
-   Drivers confirm the new policy on the same Sandbox and supervisor instance.
-   If the Console later shows **Unconfirmed**, choose **Refresh download status**
-   to check the running policy again without submitting another change.
+OCC saves the desired change and queues one operation on the running revision.
+For **Disable**, `packages/occ/src/protected-download-policy.ts:projectProtectedDownloadPolicy`
+removes the exact entry. `apps/controller/src/console/agents/sandbox-policy.mts:renderDownloads`
+keeps exact edit controls. When the revision’s last receipt omits a path,
+its row names any confirmed host-wide rule with the same scheme, hostname and port.
 
 The worker records intent before writing. A pre-write refusal restores the prior
-approval and desired lists. After an uncertain write, the worker retains and looks up
-the original operation. **Withdraw approval** requires Installation `administer` and
-removes access that depends on that approval. Confirmation stops new connections
-that relied on the approval. Existing transfers can finish.
+approval and desired lists. After a dispatched operation fails,
+`apps/controller/src/worker/sandbox-policy.ts:settleOriginalProtectedDownload` checks
+current authority, the original receipt and both Drivers’ evidence on the same
+running revision. It can confirm the operation without another provider write.
+Further edits on that revision wait for confirmation. **Refresh** in the
+**Protected downloads** panel reads the result. See the [operator procedure](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download).
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
@@ -239,7 +235,7 @@ descriptor after inspection, subject to current permissions, lifecycle and draft
 alerts and scrolls the reason into view after rendering. Ceiling rejection
 preserves the attempted additions for correction without changing saved state.
 `console/navigation.mts:createNavigation` admits the `policy` tab in login
-destinations, preserving an Agent's Policy denials link after sign-in.
+destinations, preserving an Agent's Network policy link after sign-in.
 
 Even without a discovery descriptor, the Console reads the policy owner to check
 capability and access. Log and suggestion reads use their own permissions.
@@ -279,6 +275,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-14 15:01: Trace host-wide coverage after an exact download edit and late receipt confirmation on the running revision. (authoring-run/93600afa-cffe-4f18-ad2d-497f7e5fbc82 - df69496a69ac34d354afeb79515ec8285789d44c)
 
 - 2026-11-14 13:59: Explain how to refresh an unconfirmed download status. (authoring-run/50d40cbd-2394-47b4-b71d-dd2d713fca52 - b5914ade8c5721f98b33b6a29c1f4cbe2a9dc465)
 

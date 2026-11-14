@@ -37,6 +37,9 @@ type PolicyState =
   | "loading"
   | "noCredential"
   | "protected"
+  | "protectedDownloadCoverage"
+  | "protectedDownloadViewer"
+  | "protectedDownloadPreviousRevision"
   | "withheldOne"
   | "withheldMany";
 
@@ -64,6 +67,9 @@ type AgentDetailPolicyScenario = {
   policyKeepPending?: boolean;
   policyAdminDenied?: true;
   policyCeiling?: SandboxNetworkGrant[];
+  readOnlyPermissionSummary?: true;
+  agentPermissionSummary?: Record<string, boolean | readonly string[]>;
+  sessionUser?: { id: string; name: string; email: string };
 };
 
 type PolicyEntry = [id: string, scenario: AgentDetailPolicyScenario];
@@ -137,6 +143,21 @@ export function createAgentDetailPolicyScenarios({
       "Policy logs unavailable without runtime credentials",
     ],
     ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
+    [
+      "protectedDownloadCoverage",
+      "protectedDownloadCoverage",
+      "Protected Downloads stay covered by a host rule",
+    ],
+    [
+      "protectedDownloadViewer",
+      "protectedDownloadViewer",
+      "Protected Downloads are read-only for a viewer",
+    ],
+    [
+      "protectedDownloadPreviousRevision",
+      "protectedDownloadPreviousRevision",
+      "Protected Downloads after revision replacement",
+    ],
     [
       "policyDenialsWithheldOne",
       "withheldOne",
@@ -242,6 +263,62 @@ export function createAgentDetailPolicyScenarios({
                   "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
                   "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
                 ],
+              }
+            : {}),
+          ...(state === "protectedDownloadCoverage"
+            ? {
+                description:
+                  "An Installation administrator can manage downloads. A confirmed host rule still covers an archive after the administrator disables its exact rule.",
+                steps: [
+                  "In Protected downloads, search for no-match and check that No destinations match your search appears. Clear the search to see the host and /releases/tool.tar.gz again. Both are Allowed under Confirmed access.",
+                  "Under Filter destinations, choose Off. The approved mirror appears with Enable. Choose All access states to return to the full list.",
+                  "Choose Disable on the archive row. Wait for Confirmed. The archive still has Agent approval and shows Covered by host with https://downloads.example.org:443. The host stays Allowed.",
+                  "Choose Add destination. Enter artifacts.example.net, keep HTTPS, leave Exact archive path empty, and choose Allow download. Wait for Confirmed and open Receipt details to see the change.",
+                  "For artifacts.example.net, open the More actions menu (⋯) and choose Withdraw approval. Wait for Confirmed. Check that the added destination disappears and downloads.example.org stays Allowed. Reset story to repeat.",
+                ],
+                gap: "Simulated Console and policy responses. Use the live workflow to verify download enforcement.",
+              }
+            : {}),
+          ...(state === "protectedDownloadViewer"
+            ? {
+                readOnlyPermissionSummary: true,
+                sessionUser: {
+                  id: "storybook-viewer",
+                  name: "Demo Viewer",
+                  email: "viewer@example.com",
+                },
+                agentPermissionSummary: {
+                  update: false,
+                  deploy: false,
+                  operate: false,
+                  delete: false,
+                  administer: false,
+                  configurationUpdate: false,
+                  configurationRead: true,
+                  configurationSecretsOperate: false,
+                  configurationSecretsOperateDeniedBindings: [],
+                  agentSourcesOperate: false,
+                  sandboxPolicyRead: true,
+                  readLogs: false,
+                },
+                description:
+                  "A viewer can read the Agent's download policy and receipts. The viewer has no policy edit or Installation administration grant.",
+                steps: [
+                  "In Protected downloads, inspect both destinations and open Receipt details. Search for tool.tar.gz to isolate the archive.",
+                  "Choose Refresh in Protected downloads. Confirm that the archive stays visible and that Protected downloads offers no Add destination, Enable, Disable, or Withdraw approval actions.",
+                ],
+                gap: "Simulated Console permission responses. The API authorizes changes in a live Installation.",
+              }
+            : {}),
+          ...(state === "protectedDownloadPreviousRevision"
+            ? {
+                description:
+                  "Revision 7 passed its readiness checks after replacing revision 6. The Agent retains its approved and desired destinations, with a receipt for revision 6.",
+                steps: [
+                  "In Protected downloads, confirm both destinations show Off on this revision. Open Receipt details and check that the receipt is from another revision.",
+                  "Choose Enable on the host row and wait for Confirmed. Check that the host shows Allowed and the archive shows Covered by host. Receipt details now shows the confirmation for revision 7.",
+                ],
+                gap: "Simulated revision replacement and policy responses. Use the live workflow to verify download enforcement.",
               }
             : {}),
           ...(state === "ceilingDenied"

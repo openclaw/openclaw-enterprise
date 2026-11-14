@@ -147,7 +147,7 @@ opens the new version's Workspace files view. Bound channel Secrets do not
 prove successful authentication or a working channel.
 
 The **Configuration**, **Plugins**, **Channels**, **Repositories**, **Credentials**,
-**Workspace files**, **Policy denials**, **Logs**, and **Access** tabs change the panel below.
+**Workspace files**, **Network policy**, **Logs**, and **Access** tabs change the panel below.
 Repositories and Credentials are available only on the new version draft; Logs only on a
 version; Access only to Installation administrators. A link to a tab that you cannot use
 shows Configuration and a note that names the tab and the reason. When a tab finds that your

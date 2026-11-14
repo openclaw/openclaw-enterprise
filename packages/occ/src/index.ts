@@ -113,6 +113,7 @@ import {
   protectedDownloadSourcesCurrent,
   protectedDownloadProfileCurrent,
   prepareProtectedDownloadPair,
+  protectedDownloadDriverPair,
   protectedDownloadChangeAdmitted,
   protectedDownloadTargetMatches,
   projectProtectedDownloadEdit,
@@ -126,6 +127,7 @@ export {
   protectedDownloadSourcesCurrent,
   protectedDownloadProfileCurrent,
   prepareProtectedDownloadPair,
+  protectedDownloadDriverPair,
   protectedDownloadLimitsHash,
   protectedDownloadPeerMatches,
   protectedDownloadBaselineMatches,
@@ -11678,22 +11680,11 @@ export class OpenClawController {
       }
       throw error;
     }
-    const sandbox = owner.require("sandbox");
-    const proxy = owner.require("credential_proxy");
-    const sandboxPolicy = sandbox.protectedDownloadPolicy;
-    const proxyPolicy = proxy.protectedDownloadPolicy;
-    if (
-      sandboxPolicy?.version !== 1 ||
-      proxyPolicy?.version !== 1 ||
-      typeof sandboxPolicy.prepare !== "function" ||
-      typeof sandboxPolicy.apply !== "function" ||
-      typeof sandboxPolicy.readReceipt !== "function" ||
-      typeof sandboxPolicy.observe !== "function" ||
-      typeof proxyPolicy.prepare !== "function" ||
-      typeof proxyPolicy.verify !== "function"
-    ) {
+    const pair = protectedDownloadDriverPair(owner);
+    if (!pair) {
       return unsupported;
     }
+    const { sandbox, proxy, sandboxPolicy, proxyPolicy } = pair;
     const plan = revision.egressPlan;
     const unresolved = unresolvedProtectedDownload(policy);
     if (

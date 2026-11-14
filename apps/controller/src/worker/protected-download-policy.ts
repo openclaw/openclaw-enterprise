@@ -17,6 +17,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   prepareProtectedDownloadPair,
+  protectedDownloadDriverPair,
   projectProtectedDownloadEdit,
   protectedDownloadLimitsHash,
   protectedDownloadPeerMatches,
@@ -38,11 +39,7 @@ type Result =
   | { state: "pending"; acknowledgedWrite?: ProtectedDownloadPolicyWrite }
   | { state: "not-applied"; reason: string }
   | { state: "dispatch" }
-  | {
-      state: "applied";
-      receipt: NonNullable<SandboxPolicy["applied"]>;
-      acknowledgedWrite: ProtectedDownloadPolicyWrite;
-    };
+  | { state: "applied"; policy: SandboxPolicy };
 
 export async function reconcileProtectedDownload(
   options: {
@@ -57,29 +54,20 @@ export async function reconcileProtectedDownload(
   revision: AgentRevision | undefined,
   policy: SandboxPolicy,
   application: Application,
-  dispatchId: string | undefined,
   signal: AbortSignal,
   authorize: () => Promise<{ allowed: boolean; deadlineReached: boolean }>,
-  markProviderCall: () => void,
+  dispatch?: { id: string | undefined; markProviderCall(): void },
 ): Promise<Result> {
   const unsupported = { state: "failed", reason: "SANDBOX_POLICY_UNSUPPORTED" } as const;
   const uncertain = { state: "pending" } as const;
   const denied = { state: "failed", reason: "AUTHORIZATION_DENIED" } as const;
   const limits = options.protectedDownloads;
   const owner = options.protectedDriver;
-  const sandbox = owner?.require("sandbox").protectedDownloadPolicy;
-  const proxy = owner?.require("credential_proxy");
-  const verifier = proxy?.protectedDownloadPolicy;
-  if (
-    !limits ||
-    !owner ||
-    !proxy ||
-    sandbox?.version !== 1 ||
-    verifier?.version !== 1 ||
-    !options.compute.resolveSandboxNamespace
-  ) {
+  const pair = owner && protectedDownloadDriverPair(owner);
+  if (!limits || !owner || !pair || !options.compute.resolveSandboxNamespace) {
     return unsupported;
   }
+  const { proxy, sandboxPolicy: sandbox, proxyPolicy: verifier } = pair;
   if (
     !revision ||
     !revision.egressPlan ||
@@ -185,7 +173,10 @@ export async function reconcileProtectedDownload(
     previous: application.previousDownloadDestinations,
     desired,
   };
-  if (application.writeState === "prepared" || dispatchId === application.id) {
+  if (application.writeState === "prepared" || dispatch?.id === application.id) {
+    if (!dispatch) {
+      return uncertain;
+    }
     if (
       !(await unit.sandboxPolicies.protectedDownloadTargetAvailable(
         namespace.id,
@@ -233,7 +224,7 @@ export async function reconcileProtectedDownload(
     if (application.writeState === "prepared") {
       return { state: "dispatch" };
     }
-    markProviderCall();
+    dispatch.markProviderCall();
     const result = await sandbox.apply(context, change, qualification.prepared);
     if (
       result.state === "not-applied" &&
@@ -281,7 +272,24 @@ export async function reconcileProtectedDownload(
     return denied;
   }
   signal.throwIfAborted();
-  return { state: "applied", receipt, acknowledgedWrite: write };
+  const current = protectedDownloadDriverPair(owner);
+  if (current?.sandboxPolicy !== sandbox || current.proxyPolicy !== verifier) {
+    return unsupported;
+  }
+  const { reason: _reason, ...operation } = application;
+  return {
+    state: "applied",
+    policy: {
+      ...policy,
+      applied: receipt,
+      application: {
+        ...operation,
+        state: "applied",
+        acknowledgedWrite: write,
+        providerVersion: receipt.providerVersion,
+      },
+    },
+  };
 }
 
 function matchesIntent(

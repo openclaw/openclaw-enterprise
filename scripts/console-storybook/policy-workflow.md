@@ -67,6 +67,45 @@ binaries and endpoints. On a phone, the long path wraps inside the code block.
     retains the draft and offers no Save action. In **Policy Unconfirmed Save**,
     use the combined action and refresh before making another change.
 
+## Manage protected downloads
+
+Open **Pages/Agent detail → Protected Downloads stay covered by a host rule**.
+
+1. In **Protected downloads**, search for `no-match` and check that
+   **No destinations match your search** appears. Clear **Search destinations**
+   to see the host and `/releases/tool.tar.gz` again. Both show **Allowed** under
+   **Confirmed access**. Under **Filter destinations**, choose **Off** to see
+   the approved mirror. Choose **All access states** to return to the full list.
+2. Paste `https://downloads.example.org/releases/tool.tar.gz` into **Search
+   destinations**. Only the exact archive appears. Choose **Disable** on that
+   row and wait for **Confirmed**. The archive keeps its Agent approval and
+   shows **Covered by host** with `https://downloads.example.org:443`.
+3. Open **More actions** (⋯) on the same archive and choose **Withdraw approval**.
+   Wait for **Confirmed**, then choose **Refresh**. The archive shows **Off**,
+   **No Agent approval**, and **Covered by host**. Clear the search to see
+   **Allowed** on the host rule that still permits the archive.
+4. Choose **Add destination**. Enter `artifacts.example.net` in **Hostname**,
+   keep HTTPS, leave **Exact archive path** empty, and choose **Allow download**.
+   Wait for **Confirmed**. Open **Receipt details** to see the change.
+5. On the new destination, open **More actions** (⋯) and choose **Withdraw approval**.
+   Wait for **Confirmed**. The added destination disappears and
+   `downloads.example.org` stays **Allowed**. Choose **Reset story** to repeat.
+
+In **Protected Downloads are read-only for a viewer**, inspect the destinations
+and receipt, filter for `tool.tar.gz`, and choose **Refresh** in **Protected downloads**.
+The archive stays visible and the Protected downloads section offers no changes.
+
+In **Protected Downloads after revision replacement**, both destinations show
+**Off on this revision**. Open **Receipt details** to find the receipt from
+revision 6. Enable the host on revision 7 and wait for **Confirmed**. The host
+shows **Allowed**, the archive shows **Covered by host**, and the new receipt names
+revision 7.
+
+These scenarios simulate policy responses. Use the live workflow to verify
+download enforcement.
+
+## Review other network policy states
+
 In **Unicode executable path remains complete**, copy the full path from the
 **View network limits** on the page, then close the limits dialog. Select
 **Review suggestion**, then paste that path into **Executable path**. Confirm it keeps the final `/tool`. The path has

@@ -1,7 +1,7 @@
 # Review policy denials and change one Agent's network access
 
 Open an Agent in the OCE console, select its running version, and choose
-**Policy denials**. You need the Agent's existing Sandbox log permissions to see
+**Network policy**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab
 says so. On an Installation that selects no Sandbox Driver, the tab says that
 instead, and policy changes, including turning editing on, are refused. Policy reads and changes have independent permissions; see the
@@ -83,6 +83,25 @@ GitHub goes only through the Git route, so save, binding, deploy and apply refus
 it and name the grant. After a timeout or unconfirmed
 application, refresh and inspect the recorded state before another explicit
 request; do not assume the provider rejected the change.
+
+## Check access after disabling a protected download
+
+On the running Agent’s **Network policy** tab, search for the hostname or archive
+path under **Protected downloads**, then choose **Disable** on the exact rule.
+Wait for **Confirmed**. **Requested** now shows **Off** for that rule. If
+**Confirmed access** shows **Covered by host**, the current revision’s receipt
+still includes a rule for all paths on the named host. Withdrawing the archive’s
+approval also leaves that broader rule in effect.
+
+To stop access, review the other downloads that depend on the host rule before
+disabling it. Wait for confirmation. On a supporting Sandbox and Credential
+Proxy pair, try a fresh connection from the same shell to verify the outcome.
+An existing transfer may finish.
+
+For **Pending confirmation**, **Unconfirmed**, or **Confirmation failed**, choose
+**Refresh**, then open **Receipt details**. Match the latest request and its receipt
+to the change and revision you submitted. If you cannot match them, the outcome of
+your change is still unknown. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
 
 ## CLI
 
