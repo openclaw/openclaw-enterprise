@@ -63,7 +63,7 @@ test(
         cert: tls.certFile,
         adapter: pathToFileURL(
           fileURLToPath(
-            new URL("../fixtures/repository-credentials/alternate.mjs", import.meta.url),
+            new URL("../fixtures/repository-credentials/alternate.ts", import.meta.url),
           ),
         ).href,
       }),
