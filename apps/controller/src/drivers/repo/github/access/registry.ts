@@ -1,4 +1,5 @@
 import {
+  createRepositorySlugPattern,
   isGitHubRepositoryPermissions,
   parseGitHubNumericId,
   type GitHubRepositoryGrant,
@@ -71,7 +72,7 @@ export interface GitHubRepositoryRegistry {
 
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const backendPattern = /^(?!\s)(?!.*\s$).{1,200}$/;
-const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const repositoryPattern = createRepositorySlugPattern();
 
 function invalid(): never {
   throw new Error("invalid-repository-registry");
