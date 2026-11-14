@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import net from "node:net";
-import { createRequire } from "node:module";
 import test from "node:test";
+import {
+  Agent,
+  fetch as undiciFetch,
+  type Response as UndiciResponse,
+} from "../../apps/controller/node_modules/undici/index.js";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -16,29 +20,22 @@ import {
 } from "../helpers/slack-proxy.mjs";
 import { within } from "../helpers/wait-for.mjs";
 
-const { Agent, fetch: undiciFetch } = createRequire(
-  new URL("../../apps/controller/package.json", import.meta.url),
-)("undici");
-
 const token = "xoxb-fixture";
 
 test("Slack directory sends HTTPS requests through its selected CONNECT proxy", async (t) => {
-  const targets = [];
+  const tunnels: { target: string | undefined; authorization: string | undefined }[] = [];
   const proxy = createServer();
   proxy.on("connect", (request, socket) => {
-    targets.push(request.url);
-    assert.equal(request.headers.authorization, undefined);
+    tunnels.push({ target: request.url, authorization: request.headers.authorization });
     socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
   });
-  await listen(t, proxy);
-  const address = proxy.address();
-  assert.ok(address && typeof address !== "string");
-  const driver = new SlackChannelDriver(globalThis.fetch, `http://127.0.0.1:${address.port}`);
+  const port = await listen(t, proxy);
+  const driver = new SlackChannelDriver(globalThis.fetch, `http://127.0.0.1:${port}`);
 
   await assert.rejects(driver.lookupDirectory({ token, kind: "users" }), {
     reason: "unavailable",
   });
-  assert.deepEqual(targets, ["slack.com:443"]);
+  assert.deepEqual(tunnels, [{ target: "slack.com:443", authorization: undefined }]);
 });
 
 test("Slack directory accepts only literal IP or managed Service proxy endpoints", () => {
@@ -83,12 +80,11 @@ test("bundled Slack proxy process restricts methods and CONNECT targets", async 
     socket.on("error", () => {});
     socket.write("fixture-upstream");
   });
-  await listen(t, upstream);
+  const upstreamPort = await listen(t, upstream);
   // A fixed proxy port, so the test proves the proxy honours OCC_SLACK_PROXY_PORT.
-  const { port: proxyPort } = await startSlackProxy(t, {
-    fixedPort: true,
-    upstreamPort: upstream.address().port,
-  });
+  const proxyOptions = { fixedPort: true, upstreamPort };
+  const { port: proxyPort } = await startSlackProxy(t, proxyOptions);
+  assert.ok(typeof proxyPort === "number");
 
   assert.match(
     await requestThroughProxy(proxyPort, "GET / HTTP/1.1\r\nHost: slack.com\r\n\r\n"),
@@ -115,20 +111,20 @@ test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", asy
   const upstream = net.createServer((socket) => {
     socket.on("error", () => {});
   });
-  await listen(t, upstream);
-  const { child, port: proxyPort } = await startSlackProxy(t, {
-    upstreamPort: upstream.address().port,
-  });
+  const upstreamPort = await listen(t, upstream);
+  const proxyOptions = { fixedPort: false, upstreamPort };
+  const { child, port: proxyPort } = await startSlackProxy(t, proxyOptions);
+  assert.ok(typeof proxyPort === "number");
   t.after(() => child.kill("SIGKILL"));
-  const exited = new Promise((resolve) =>
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
     child.once("exit", (code, signal) => resolve({ code, signal })),
   );
 
   const tunnel = net.connect({ host: "127.0.0.1", port: proxyPort });
   tunnel.on("error", () => {});
   t.after(() => tunnel.destroy());
-  const tunnelClosed = new Promise((resolve) => tunnel.once("close", resolve));
-  await new Promise((resolve, reject) => {
+  const tunnelClosed = new Promise<void>((resolve) => tunnel.once("close", () => resolve()));
+  const connected = new Promise<void>((resolve, reject) => {
     let response = "";
     tunnel.once("connect", () =>
       tunnel.write("CONNECT slack.com:443 HTTP/1.1\r\nHost: slack.com:443\r\n\r\n"),
@@ -146,6 +142,7 @@ test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", asy
     tunnel.once("close", () => reject(new Error("tunnel closed before it was established")));
   });
 
+  await within(connected, "establish CONNECT tunnel", 5_000);
   child.kill("SIGTERM");
   assert.deepEqual(await within(exited, "proxy exit", 5_000), { code: 0, signal: null });
   await within(tunnelClosed, "tunnel close", 5_000);
@@ -164,9 +161,9 @@ const workspace = { workspaceId: "TWORKSPACE", workspaceName: "Fixture Workspace
 
 // Answers auth.test with the fixture workspace and passes every other Slack
 // API request to `lookup`.
-function directoryDriver(lookup) {
+function directoryDriver(lookup: (request: URL) => Response) {
   return new SlackChannelDriver(async (url) => {
-    const request = new URL(url);
+    const request = new URL(url instanceof Request ? url.url : url);
     return request.pathname.endsWith("/auth.test") ? auth() : lookup(request);
   });
 }
@@ -184,10 +181,13 @@ test("Slack directory rejects a user token before listing names", async () => {
 });
 
 test("Slack directory searches paginated user names and qualifies results with workspace identity", async () => {
-  const calls = [];
+  const calls: { origin: string; authorization: string | null }[] = [];
   const driver = new SlackChannelDriver(async (url, options) => {
-    const request = new URL(url);
-    calls.push({ request, options });
+    const request = new URL(url instanceof Request ? url.url : url);
+    calls.push({
+      origin: request.origin,
+      authorization: new Headers(options?.headers).get("authorization"),
+    });
     if (request.pathname.endsWith("/auth.test")) {
       return auth();
     }
@@ -219,12 +219,11 @@ test("Slack directory searches paginated user names and qualifies results with w
     candidates: [{ id: "UALICE", name: "alice", displayName: "Alice" }],
     complete: true,
   });
-  assert.equal(calls.length, 3);
   assert.deepEqual(
-    calls.map(({ request }) => request.origin),
+    calls.map(({ origin }) => origin),
     ["https://slack.com", "https://slack.com", "https://slack.com"],
   );
-  assert.ok(calls.every(({ options }) => options.headers.authorization === `Bearer ${token}`));
+  assert.ok(calls.every(({ authorization }) => authorization === `Bearer ${token}`));
 });
 
 test("Slack channel lookup includes private channels and preserves an incomplete cursor", async () => {
@@ -291,11 +290,12 @@ test("Slack search stays incomplete when the bounded page budget finds no match"
 });
 
 test("Slack resolves saved IDs directly while leaving inaccessible IDs unlabeled", async () => {
-  const calls = [];
+  const channels: (string | null)[] = [];
   const driver = directoryDriver((request) => {
-    calls.push(request);
+    const channel = request.searchParams.get("channel");
+    channels.push(channel);
     assert.equal(request.pathname, "/api/conversations.info");
-    if (request.searchParams.get("channel") === "CFOUND") {
+    if (channel === "CFOUND") {
       return Response.json({ ok: true, channel: { id: "CFOUND", name: "project-room" } });
     }
     return Response.json({ ok: false, error: "channel_not_found" });
@@ -309,7 +309,7 @@ test("Slack resolves saved IDs directly while leaving inaccessible IDs unlabeled
       complete: true,
     },
   );
-  assert.equal(calls.length, 2);
+  assert.deepEqual(channels, ["CFOUND", "GMISSING"]);
 });
 
 test("Slack resolves a saved user ID from users.info", async () => {
@@ -333,7 +333,7 @@ test("Slack directory returns safe scope and rate-limit errors without exposing 
   for (const [reply, reason] of [
     [Response.json({ ok: false, error: "missing_scope" }), "missing_scope"],
     [new Response(null, { status: 429 }), "rate_limited"],
-  ]) {
+  ] as const) {
     const driver = directoryDriver(() => reply);
     await assert.rejects(
       driver.lookupDirectory({ token, kind: "users" }),
@@ -356,7 +356,7 @@ test("Slack HTTP errors release the connection for a subsequent directory lookup
   for (const [status, reason] of [
     [429, "rate_limited"],
     [503, "unavailable"],
-  ]) {
+  ] as const) {
     await t.test(`HTTP ${status}`, async (t) => {
       let calls = 0;
       const server = createServer((request, response) => {
@@ -370,7 +370,7 @@ test("Slack HTTP errors release the connection for a subsequent directory lookup
         response.setHeader("content-type", "application/json");
         response.end(
           JSON.stringify(
-            request.url.endsWith("/auth.test")
+            request.url === "/api/auth.test"
               ? { ok: true, bot_id: "BBOT123", team_id: "TWORKSPACE" }
               : {
                   ok: true,
@@ -382,16 +382,32 @@ test("Slack HTTP errors release the connection for a subsequent directory lookup
       });
       // A single real connection makes leaked response ownership observable without GC.
       const agent = new Agent({ connections: 1, pipelining: 1 });
+      // Undici can cancel an unread response on collection, which would mask a pool leak.
+      const responses: UndiciResponse[] = [];
       t.after(async () => {
         await agent.destroy();
-        server.closeAllConnections();
-        await new Promise((resolve) => server.close(resolve));
+        responses.length = 0;
       });
-      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-      const origin = `http://127.0.0.1:${server.address().port}`;
-      const driver = new SlackChannelDriver((url, options) =>
-        undiciFetch(new URL(new URL(url).pathname, origin), { ...options, dispatcher: agent }),
-      );
+      const origin = `http://127.0.0.1:${await listen(t, server)}`;
+      const driver = new SlackChannelDriver(async (url, options) => {
+        const request = new URL(url instanceof Request ? url.url : url);
+        const response = await undiciFetch(new URL(request.pathname, origin), {
+          method: options?.method ?? "GET",
+          headers: [...new Headers(options?.headers)],
+          redirect: options?.redirect ?? "follow",
+          signal: options?.signal ?? null,
+          dispatcher: agent,
+        });
+        responses.push(response);
+        // Keep the real body stream so cancelling it releases the Undici connection.
+        const body: unknown = response.body;
+        assert.ok(body === null || body instanceof ReadableStream);
+        return new Response(body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: [...response.headers],
+        });
+      });
 
       await assert.rejects(driver.lookupDirectory({ token, kind: "users" }), { reason });
       // This deadline is shorter than the first request's eight-second timeout.
@@ -411,7 +427,7 @@ test("Slack credential checks refuse redirects instead of resending the bot toke
   // a redirect to an {ok:true} body then passed the check (finding 1349).
   for (const status of [301, 302, 307, 308]) {
     await t.test(`HTTP ${status}`, async (t) => {
-      const requests = [];
+      const requests: (string | undefined)[] = [];
       const server = createServer((request, response) => {
         requests.push(request.url);
         if (request.url === "/api/auth.test") {
@@ -422,15 +438,11 @@ test("Slack credential checks refuse redirects instead of resending the bot toke
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({ ok: true, bot_id: "BBOT123", team_id: "TWORKSPACE" }));
       });
-      t.after(async () => {
-        server.closeAllConnections();
-        await new Promise((resolve) => server.close(resolve));
+      const origin = `http://127.0.0.1:${await listen(t, server)}`;
+      const driver = new SlackChannelDriver((url, options) => {
+        const request = new URL(url instanceof Request ? url.url : url);
+        return globalThis.fetch(new URL(request.pathname, origin), options);
       });
-      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-      const origin = `http://127.0.0.1:${server.address().port}`;
-      const driver = new SlackChannelDriver((url, options) =>
-        globalThis.fetch(new URL(new URL(url).pathname, origin), options),
-      );
 
       await assert.rejects(
         driver.validateCredentials(
@@ -448,8 +460,8 @@ test("Slack credential checks read only a whole ${NAME} token string as an env r
   const driver = new SlackChannelDriver(
     async () => new Response(JSON.stringify({ ok: true, bot_id: "BBOT123", team_id: "TTEAM" })),
   );
-  const read = [];
-  const check = (botToken) =>
+  const read: string[] = [];
+  const check = (botToken: string) =>
     driver.validateCredentials(
       { channels: { slack: { mode: "http", botToken } } },
       async (id, _field, use) => {
@@ -486,7 +498,7 @@ test("Slack credential checks name the missing proxy only when production expect
   // Finding 2521: production composition passes expectProxy. With no proxy URL, an auth.test
   // that Slack never answers usually means the Installation has no Slack route, so the refusal
   // names the Helm setting and still allows a retry for an open route that timed out (2531).
-  const check = (driver, value = token) =>
+  const check = (driver: SlackChannelDriver, value = token) =>
     driver.validateCredentials(
       { channels: { slack: { mode: "http", botToken: "${SLACK_BOT_TOKEN}" } } },
       async (_id, _field, use) => use(value),
@@ -497,12 +509,10 @@ test("Slack credential checks name the missing proxy only when production expect
   };
   const unavailable = { reason: "unavailable", path: "/channels/slack/botToken" };
   // Node's own fetch sends the request to local endpoints, so each failure has the real shape.
-  const listen = async (server) => {
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => server.close());
-    return `http://127.0.0.1:${server.address().port}/`;
-  };
-  const sendTo = (url) => (_slack, options) => globalThis.fetch(url, options);
+  const sendTo =
+    (url: string): typeof fetch =>
+    (_slack, options) =>
+      globalThis.fetch(url, options);
   // A released port could be taken by a parallel listener; this one refuses until released.
   const refusing = await refusingPort();
   t.after(() => refusing.release());
@@ -521,18 +531,18 @@ test("Slack credential checks name the missing proxy only when production expect
   );
   // Finding 2532: a redirect refused by redirect: "error" and an invalid header value are fetch
   // rejections after or without a connection attempt, not a missing route: they stay transient.
-  const redirectRequests = [];
-  const redirectUrl = await listen(
-    createServer(async (request, response) => {
-      redirectRequests.push(request.url);
-      if (request.url === "/redirect-target") {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(await auth().text());
-        return;
-      }
-      response.writeHead(302, { location: "/redirect-target" }).end();
-    }),
-  );
+  const redirectRequests: (string | undefined)[] = [];
+  const redirectTargetBody = await auth().text();
+  const redirectServer = createServer((request, response) => {
+    redirectRequests.push(request.url);
+    if (request.url === "/redirect-target") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(redirectTargetBody);
+      return;
+    }
+    response.writeHead(302, { location: "/redirect-target" }).end();
+  });
+  const redirectUrl = `http://127.0.0.1:${await listen(t, redirectServer)}`;
   await assert.rejects(
     check(new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true })),
     unavailable,
@@ -545,6 +555,7 @@ test("Slack credential checks name the missing proxy only when production expect
     ),
     unavailable,
   );
+  assert.deepEqual(redirectRequests, ["/"]);
   // Development composition expects no proxy: the same failure stays the transient outage.
   await assert.rejects(check(new SlackChannelDriver(sendTo(closedUrl))), unavailable);
   // With a proxy configured, a refused tunnel is an outage of that route, not a missing setting.
@@ -552,7 +563,8 @@ test("Slack credential checks name the missing proxy only when production expect
   proxy.on("connect", (_request, socket) => {
     socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
   });
-  const proxied = new SlackChannelDriver(globalThis.fetch, (await listen(proxy)).slice(0, -1), {
+  const proxyUrl = `http://127.0.0.1:${await listen(t, proxy)}`;
+  const proxied = new SlackChannelDriver(globalThis.fetch, proxyUrl, {
     expectProxy: true,
   });
   await assert.rejects(check(proxied), unavailable);

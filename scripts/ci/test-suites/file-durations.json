@@ -137,7 +137,7 @@
     "tests/conformance/secret-gateway-delivery.test.mjs": 400,
     "tests/conformance/secret-occ.test.ts": 300,
     "tests/conformance/service-account-driver.test.ts": 600,
-    "tests/conformance/slack-channel-directory.test.mjs": 2400,
+    "tests/conformance/slack-channel-directory.test.ts": 2400,
     "tests/conformance/slack-configuration.test.mjs": 100,
     "tests/conformance/slack-proxy-reset.test.mjs": 100,
     "tests/conformance/slack-proxy-tunnel.test.mjs": 2000,
