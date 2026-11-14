@@ -472,10 +472,13 @@ function stateWithDeploymentWork(state, deploymentWorks) {
     ...view,
     operations: {
       ...view.operations,
-      findWork: async (requestedKey) =>
-        deploymentWorks.has(requestedKey)
-          ? Object.freeze({ ...deploymentWorks.get(requestedKey) })
-          : view.operations.findWork(requestedKey),
+      findWork: async (requestedKey) => {
+        if (!deploymentWorks.has(requestedKey)) {
+          return view.operations.findWork(requestedKey);
+        }
+        const work = deploymentWorks.get(requestedKey);
+        return work === undefined ? undefined : Object.freeze({ ...work });
+      },
     },
   });
   return {
@@ -4924,11 +4927,20 @@ test("Installation deployment inventory fails closed on incomplete authorization
     ?.agents.find((candidate) => candidate.id === agent.id);
   assert.equal(inProgressAgent?.deploymentInProgress, true);
 
+  // Work belonging to a different Namespace cannot establish this deployment's state.
+  const otherNamespace = inventory.data.namespaces.find(
+    (candidate) => candidate.id !== namespace.id,
+  );
+  assert.ok(otherNamespace);
+  deploymentWorks.set(workKey, { ...completedWork, namespaceId: otherNamespace.id });
+  const wrongOwner = await controller.request("GET", inventoryPath);
+  assertApiError(wrongOwner, 503, "DEPENDENCY_UNAVAILABLE", "wrong-owner deployment work");
+
   // Missing durable work makes completeness unknowable and must fail the whole operation.
   deploymentWorks.set(workKey, undefined);
   const incomplete = await controller.request("GET", inventoryPath);
-  assert.equal(incomplete.status, 503);
-  assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(incomplete, 503, "DEPENDENCY_UNAVAILABLE", "missing deployment work");
+  assert.deepEqual(Object.keys(incomplete.body).sort(), ["error", "meta"]);
 });
 
 test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
