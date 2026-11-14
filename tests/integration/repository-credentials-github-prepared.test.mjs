@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { get } from "node:https";
+import https, { get } from "node:https";
+import { syncBuiltinESMExports } from "node:module";
 import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/access/origin.ts";
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
 import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
@@ -97,6 +98,7 @@ async function setup(t, options = {}) {
     database,
     store,
     github,
+    key,
     owner,
     reader,
     bounds,
@@ -372,6 +374,19 @@ test("quarantining this attempt during key lookup prevents any GitHub issuance",
   assert.equal(await owner().run("replacement", bounds()), "blocked");
 });
 
+test("closing the signing key after minting preserves cleanup custody without publishing", async (t) => {
+  let closeKey;
+  const f = await setup(t, { beforeIssueResponse: () => closeKey() });
+  closeKey = () => f.key.close();
+  await assertQuarantined(f);
+  assert.equal(f.diagnostics.length, 1);
+  assert.equal(f.diagnostics[0].validationKind, "validated");
+  assert.equal(f.diagnostics[0].candidateIdentified, true);
+  assert.equal(f.diagnostics[0].requestEndCalled, true);
+  assert.equal(f.diagnostics[0].outcome, "quarantined");
+  assert.equal(f.clock.pendingTimers(), 0);
+});
+
 test("warm reader wipes its detached selection when it cannot return it", async (t) => {
   const { admission, store, owner, reader, github, clock, bounds, keyReads } = await setup(t);
   assert.equal(await owner().run("reader-custody", bounds()), "committed");
@@ -453,6 +468,153 @@ test("ambiguous issuance retains only identifiable cleanup material and never re
         },
       });
       await assertQuarantined(f, variation === "permissions");
+    });
+  }
+});
+
+test("prepared issuance settles only at request close and preserves earlier evidence", async (t) => {
+  for (const expected of [
+    {
+      name: "success",
+      fault: "none",
+      candidate: true,
+      validation: "validated",
+      notIssued: false,
+      issued: 1,
+    },
+    {
+      name: "deadline after consumption",
+      fault: "deadline",
+      candidate: true,
+      validation: "validated",
+      notIssued: false,
+      issued: 1,
+    },
+    {
+      name: "captured token then error",
+      fault: "error",
+      candidate: true,
+      validation: "validated",
+      notIssued: false,
+      issued: 1,
+    },
+    {
+      name: "definite refusal then error",
+      fault: "error",
+      candidate: false,
+      validation: "reauthorization-required",
+      notIssued: true,
+      issued: 0,
+    },
+    {
+      name: "ambiguous refusal then error",
+      fault: "error",
+      candidate: false,
+      validation: "reauthorization-required",
+      notIssued: false,
+      issued: 0,
+    },
+  ]) {
+    await t.test(expected.name, async (t) => {
+      const f = await setup(t, expected.issued === 0 ? { issueStatus: 401 } : {});
+      if (expected.name === "ambiguous refusal then error") {
+        f.github.setIssueStatus(401, '{"message":"refused","token":null}');
+      }
+      const events = [];
+      let returned = false;
+      let returnedAtClose;
+      let publicationAtClose;
+      let deadlineAtConsumption;
+      let advancing;
+      const originalRequest = https.request;
+      t.mock.method(https, "request", (...args) => {
+        const request = originalRequest(...args);
+        request.once("socket", () =>
+          request.once("response", (response) => {
+            response.once("error", () => events.push("response-error"));
+            // This listener follows the actual consumer. Inspect the other end of
+            // the interval in the original request's close listener, before settlement.
+            response.once("end", () => {
+              events.push("response-end");
+              if (expected.fault === "error") {
+                response.destroy(new Error("fixture response error after consumption"));
+              } else if (expected.fault === "deadline") {
+                deadlineAtConsumption = f.clock.deadlines();
+                advancing = f.clock.advance(30001);
+              }
+            });
+          }),
+        );
+        request.once("close", () => {
+          returnedAtClose = returned;
+          publicationAtClose = f.store.readCurrent(
+            f.admission.familyId,
+            (row) => row.committed !== undefined,
+          );
+          events.push("request-close");
+        });
+        return request;
+      });
+      syncBuiltinESMExports();
+      t.after(() => {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      });
+      const outcome = await f.run("interval").then((outcome) => {
+        returned = true;
+        events.push("owner-return");
+        return outcome;
+      });
+      await advancing;
+      t.diagnostic(JSON.stringify({ scenario: expected.name, events, outcome, returnedAtClose }));
+      assert.equal(returnedAtClose, false, "owner must remain pending until actual request close");
+      assert.deepEqual(events, [
+        "response-end",
+        ...(expected.fault === "error" ? ["response-error"] : []),
+        "request-close",
+        "owner-return",
+      ]);
+      assert.equal(
+        await publicationAtClose,
+        false,
+        "publication must wait for actual request close",
+      );
+      if (expected.fault === "deadline") {
+        assert.deepEqual(deadlineAtConsumption, [30000]);
+        assert.equal(f.diagnostics[0].error, "deadline");
+      }
+      const row = await f.store.readCurrent(f.admission.familyId, (row) => row);
+      assert.equal(row.attempts.length, 1);
+      const attempt = row.attempts[0];
+      assert.equal(attempt.id, "interval");
+      if (expected.fault === "none") {
+        assert.equal(outcome, "committed");
+        assert.ok(row.committed);
+      } else {
+        assert.equal(outcome, "quarantined");
+        assert.equal(row.committed, undefined);
+        assert.equal(attempt.state, "quarantined");
+        assert.equal(attempt.notIssued === true, expected.notIssued);
+        assert.equal(attempt.candidate !== undefined, expected.candidate);
+        if (attempt.candidate) {
+          assert.equal(
+            f.github.authorize(`Bearer ${Buffer.from(attempt.candidate).toString()}`),
+            true,
+          );
+          attempt.candidate.fill(0);
+        }
+        assert.equal(
+          f.diagnostics[0].firstFailureStage,
+          expected.issued ? "complete" : "validation",
+        );
+        assert.equal(await f.run("replacement"), "blocked");
+      }
+      assert.equal(f.diagnostics[0].candidateIdentified, expected.candidate);
+      assert.equal(f.diagnostics[0].validationKind, expected.validation);
+      assert.equal(f.github.trace.length, 1);
+      assert.equal(f.github.issuesOfTokens.length, expected.issued);
+      assert.equal(f.clock.pendingTimers(), 0);
+      assert.deepEqual(f.github.errors, []);
     });
   }
 });

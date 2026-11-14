@@ -31,18 +31,6 @@
       "removeWhen": "Move shared runtime-entrypoint scripts into the provider-neutral compute runtime module and update both providers."
     },
     {
-      "rule": "http-to-provider",
-      "from": "apps/controller/src/http/errors.ts",
-      "to": "apps/controller/src/drivers/configuration/kubernetes/index.ts",
-      "specifier": "../drivers/configuration/kubernetes/index.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:ConfigurationOwnershipError", "value:ConfigurationValidationError"],
-      "owner": "HTTP configuration boundary",
-      "reason": "HTTP currently imports semantic Configuration errors from the selected Kubernetes implementation.",
-      "removeWhen": "Move semantic Configuration errors into the neutral contract and update the HTTP importer."
-    },
-    {
       "rule": "domain-to-implementation",
       "from": "packages/occ/src/iam-policy-cleanup.ts",
       "to": "packages/occ/src/state/platform-state.ts",
@@ -381,30 +369,6 @@
       "owner": "Work status projection",
       "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State. This separately tracked edge imports types only.",
       "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-work-queue.ts",
-      "specifier": "./state/postgres-work-queue.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["type:ClaimedWork", "value:WorkClaimLostError"],
-      "owner": "Work claim lifecycle",
-      "reason": "OCC handles lost work claims using the existing shared error constructor and claim type exposed by the PostgreSQL queue module.",
-      "removeWhen": "Move the claim contract and shared lost-claim error into neutral Work ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-work-queue.ts",
-      "specifier": "./state/postgres-work-queue.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:ClaimedWork"],
-      "owner": "Work claim lifecycle",
-      "reason": "OCC handles lost work claims using the existing shared error constructor and claim type exposed by the PostgreSQL queue module. This separately tracked edge imports types only.",
-      "removeWhen": "Move the claim contract and shared lost-claim error into neutral Work ports and update this import."
     },
     {
       "rule": "domain-to-implementation",

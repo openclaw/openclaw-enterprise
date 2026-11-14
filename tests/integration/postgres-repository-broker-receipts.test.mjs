@@ -22,7 +22,7 @@ import {
   sessionAttempt,
 } from "../conformance/repository-sessions.contract.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
-import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.mjs";
+import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";

@@ -3,6 +3,7 @@ import test from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
 import type { Fixtures } from "./sandbox-driver-workspace-expiry-cases.ts";
+import { overrideWorkspaceSetupSecretRead } from "./sandbox-driver-workspace-expiry-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 type SetupScenario = {
@@ -143,29 +144,29 @@ export function registerSandboxDriverWorkspaceExpiryRefusalCases({
             envelope[envelope.indexOf(setup.bootstrapToken)] = 0xff;
           }
           const setupCode = malformed ? "not-a-setup-code" : envelope.toString("base64url");
-          const originalRead = context.kubernetes.read;
-          context.kubernetes.read = async (request) => {
-            const secret = asRecord(await originalRead(request));
-            assert.ok(secret);
-            const metadata = asRecord(secret.metadata);
-            assert.ok(metadata);
-            const labels = asRecord(metadata.labels);
-            assert.ok(labels);
-            return {
-              ...secret,
-              metadata: {
-                ...metadata,
-                labels: {
-                  ...labels,
-                  ...(foreignOwner ? { "openclaw.dev/agent": "other-agent" } : {}),
-                },
+          overrideWorkspaceSetupSecretRead(
+            context.kubernetes,
+            {
+              setupCode: encode(setupCode),
+              ...(deviceId === undefined ? {} : { deviceId }),
+            },
+            {
+              overrideNonSecretReads: true,
+              rewriteMetadata: (value) => {
+                const metadata = asRecord(value);
+                assert.ok(metadata);
+                const labels = asRecord(metadata.labels);
+                assert.ok(labels);
+                return {
+                  ...metadata,
+                  labels: {
+                    ...labels,
+                    ...(foreignOwner ? { "openclaw.dev/agent": "other-agent" } : {}),
+                  },
+                };
               },
-              data: {
-                setupCode: encode(setupCode),
-                ...(deviceId === undefined ? {} : { deviceId }),
-              },
-            };
-          };
+            },
+          );
 
           // A recorded identifier permits only the expired-envelope handoff; it
           // cannot excuse malformed setup or another Agent's Secret ownership.

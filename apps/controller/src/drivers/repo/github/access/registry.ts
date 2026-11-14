@@ -1,4 +1,9 @@
-import { isGitHubRepositoryPermissions, type GitHubRepositoryGrant } from "./repository-grant.ts";
+import {
+  createRepositorySlugPattern,
+  isGitHubRepositoryPermissions,
+  parseGitHubNumericId,
+  type GitHubRepositoryGrant,
+} from "./repository-grant.ts";
 import type { RepositoryGitDeliveryResolver } from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
@@ -67,7 +72,7 @@ export interface GitHubRepositoryRegistry {
 
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const backendPattern = /^(?!\s)(?!.*\s$).{1,200}$/;
-const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const repositoryPattern = createRepositorySlugPattern();
 
 function invalid(): never {
   throw new Error("invalid-repository-registry");
@@ -91,11 +96,10 @@ function text(value: unknown, pattern = selectorPattern): string {
 }
 
 function numericId(value: unknown): string {
-  const id = text(value, /^[1-9][0-9]{0,15}$/);
-  if (!Number.isSafeInteger(Number(id))) {
+  if (typeof value !== "string" || parseGitHubNumericId(value) === undefined) {
     return invalid();
   }
-  return id;
+  return value;
 }
 
 function profile(value: unknown): GitHubProfile | "github-repository" {

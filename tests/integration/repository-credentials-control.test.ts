@@ -5,6 +5,7 @@ import { createServer as createNetServer, connect, Socket } from "node:net";
 import { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   defaultRegistryRepositories,
   startRegistryCredentialServiceFixture,
@@ -13,7 +14,12 @@ import {
   createResourceScope,
   createTestResourceScope,
 } from "../fixtures/repository-credentials/resources.mjs";
-import { createServer as createTlsServer, request as tlsRequest } from "node:https";
+import {
+  createServer as createTlsServer,
+  request as tlsRequest,
+  type RequestOptions,
+} from "node:https";
+import { startRegistryProviderFixtures } from "../fixtures/repository-credentials/registry/provider.ts";
 import { chmod, lstat, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { startAlternateUpstream } from "../fixtures/repository-credentials/alternate.mjs";
@@ -873,6 +879,120 @@ test(
       assert.deepEqual(await settled(next), { kind: "completed", status: 200 });
       assert.equal(received.filter((entry) => entry.method === "POST").length, 1);
     });
+  },
+);
+
+test(
+  "registry provider transports reject origin overrides and preserve valid requests",
+  { timeout: 15000 },
+  async (t) => {
+    const resources = createTestResourceScope(t);
+    const tls = await createTlsMaterial(resources);
+    const definition = defaultRegistryRepositories[0];
+    assert.ok(definition);
+    const { apiOrigin, gitOrigin, repositories } = await startRegistryProviderFixtures(resources, {
+      definitions: [definition],
+      clock: createControlledClock(),
+      tls,
+    });
+    const [repository] = repositories;
+    assert.ok(repository);
+    const outsideRequests: (string | undefined)[] = [];
+    const outside = createTlsServer(tls, (request, response) => {
+      outsideRequests.push(request.url);
+      response.writeHead(204).end();
+    });
+    let outsideConnections = 0;
+    outside.on("connection", () => outsideConnections++);
+    // The proxy trusts this listener's certificate too, so TLS alone cannot prevent a misroute.
+    const outsideOrigin = new URL(await listen(resources, outside));
+    const send = (origin: string, path: string, options: RequestOptions = {}, body?: string) =>
+      new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+        const outgoing = tlsRequest(
+          new URL(origin),
+          { ...options, path, ca: tls.ca, agent: false, signal: t.signal },
+          (incoming) => {
+            let body = "";
+            incoming.setEncoding("utf8");
+            incoming.on("data", (chunk: string) => (body += chunk));
+            incoming.once("error", reject);
+            incoming.once("end", () => resolve({ status: incoming.statusCode, body }));
+          },
+        );
+        outgoing.once("error", reject);
+        outgoing.end(body);
+      });
+    const apiPath = `/repos/${repository.repository}/issues`;
+    const gitPath = `/${repository.repository}.git/git-upload-pack`;
+    const refusals = [];
+    for (const [origin, path] of [
+      [apiOrigin, `${apiPath}?per_page=1`],
+      [gitOrigin, gitPath],
+    ] as const) {
+      // Each invalid target still has a registered repository path after URL parsing.
+      for (const target of [
+        `${outsideOrigin.origin}${path}`,
+        `//${outsideOrigin.host}${path}`,
+        `/\\${outsideOrigin.host}${path}`,
+        `/%2e%2e${path}`,
+      ]) {
+        refusals.push({ target, status: (await send(origin, target)).status });
+      }
+    }
+    assert.deepEqual(outsideRequests, []);
+    assert.equal(outsideConnections, 0);
+    for (const { target, status } of refusals) {
+      assert.equal(status, 400, target);
+    }
+    assert.equal(repository.github.trace.length, 0);
+    assert.deepEqual(repository.git.traffic(), { connections: 0, requests: 0 });
+
+    // The real API fixture echoes the issue body, and Git needs the protocol packet to list refs.
+    const token = randomUUID();
+    repository.github.acceptStatic(token);
+    const issue = { title: "Registry proxy fixture", body: "Synthetic issue body" };
+    const created = await send(
+      apiOrigin,
+      apiPath,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      },
+      JSON.stringify(issue),
+    );
+    assert.equal(created.status, 201);
+    const createdIssue = record(JSON.parse(created.body));
+    assert.equal(createdIssue.title, issue.title);
+    assert.equal(createdIssue.body, issue.body);
+    assert.equal(repository.github.trace[0]?.method, "POST");
+    assert.equal(repository.github.trace[0]?.target, apiPath);
+    const listing = `${apiPath}?per_page=1&labels=needs%20review`;
+    const listed = await send(apiOrigin, listing, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(listed.status, 200);
+    assert.deepEqual(JSON.parse(listed.body), [createdIssue]);
+    assert.equal(repository.github.trace[1]?.target, listing);
+
+    const gitBody = "0014command=ls-refs\n00010000";
+    const refs = await send(
+      gitOrigin,
+      gitPath,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Basic ${Buffer.from(`fixture:${token}`).toString("base64")}`,
+          "content-type": "application/x-git-upload-pack-request",
+          "content-length": Buffer.byteLength(gitBody),
+          "git-protocol": "version=2",
+        },
+      },
+      gitBody,
+    );
+    assert.equal(refs.status, 200);
+    assert.match(refs.body, / refs\/heads\/main\n/);
+    assert.equal(repository.git.trace[0]?.method, "POST");
+    assert.equal(repository.git.trace[0]?.path, gitPath);
   },
 );
 

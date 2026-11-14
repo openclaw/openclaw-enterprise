@@ -73,7 +73,7 @@
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
-    "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+    "tests/conformance/repository-credentials-fixture-ownership.test.ts",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
@@ -94,10 +94,10 @@
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/ci-prepare-postgres.test.ts",
-    "tests/integration/runtime-image-failure-output.test.mjs",
+    "tests/integration/runtime-image-failure-output.test.ts",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.ts",
-    "tests/integration/plugin-driver-real-preflight.test.mjs",
+    "tests/integration/plugin-driver-real-preflight.test.ts",
     "tests/conformance/postgres-transaction-commit.test.mjs",
     "tests/conformance/plugin-runtime-policy.test.mjs",
     "tests/integration/password-sign-in-policy.test.ts",
@@ -109,8 +109,8 @@
     "tests/conformance/repository-transactions.test.mjs",
     "tests/integration/google-id-token.test.mjs",
     "tests/integration/first-agent-startup.test.mjs",
-    "tests/conformance/repository-sessions-memory.test.mjs",
-    "tests/conformance/repository-credentials-github-token.test.mjs",
+    "tests/conformance/repository-sessions-memory.test.ts",
+    "tests/conformance/repository-credentials-github-token.test.ts",
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
     "tests/conformance/repository-credentials-sessions.test.ts",
@@ -139,9 +139,10 @@
     "tests/conformance/controller-stop-yields.test.ts",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
+    "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
-    "tests/integration/gateway-workspace-readiness.test.mjs",
+    "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
@@ -150,8 +151,8 @@
     "tests/integration/workspace-gateway-host-route.test.ts"
   ],
   "serialFiles": {
-    "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
-    "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
+    "tests/conformance/postgres-auth-binding.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
+    "tests/conformance/schema-auth-boundary-v1.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
     {
@@ -199,7 +200,7 @@
       "path": "tests/integration/qa-repository-installation.test.ts"
     },
     {
-      "path": "tests/integration/github-app-observer.test.mjs"
+      "path": "tests/integration/github-app-observer.test.ts"
     },
     {
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
@@ -265,7 +266,8 @@
       "path": "tests/integration/ci-runner-openshell-progress.test.ts",
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
-        "run reports bounded OpenShell progress before the test file finishes"
+        "run reports bounded OpenShell progress before the test file finishes",
+        "CI retains the unfinished upstream stage without changing the failed case"
       ]
     },
     {
@@ -282,7 +284,8 @@
         "run annotates the first failed file before the lane finishes",
         "run finishes file accounting and cleanup after a reporter pipe read error",
         "run records a sanitized file failure after all reported cases pass",
-        "run records failed, skipped, todo, and passed dispositions separately"
+        "run records failed, skipped, todo, and passed dispositions separately",
+        "run keeps the enrollment operation pending when the parent is interrupted"
       ]
     },
     {
@@ -341,7 +344,7 @@
       "path": "tests/integration/ci-prepare-postgres.test.ts"
     },
     {
-      "path": "tests/integration/runtime-image-failure-output.test.mjs"
+      "path": "tests/integration/runtime-image-failure-output.test.ts"
     },
     {
       "path": "tests/integration/ci-image-reconciliation.test.ts"
@@ -452,7 +455,7 @@
       "path": "tests/integration/plugin-driver-startup.test.ts"
     },
     {
-      "path": "tests/integration/plugin-driver-real-preflight.test.mjs"
+      "path": "tests/integration/plugin-driver-real-preflight.test.ts"
     },
     {
       "path": "tests/conformance/repository-transactions.test.mjs"
@@ -504,7 +507,7 @@
       "path": "tests/conformance/repository-credentials-github.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-github-token.test.mjs"
+      "path": "tests/conformance/repository-credentials-github-token.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
@@ -528,7 +531,7 @@
       "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+      "path": "tests/conformance/repository-credentials-fixture-ownership.test.ts",
       "expectedTests": [
         "runner timeout cancels and joins commands before teardown admits cleanup",
         "accepted network creation with a lost response stays owned until verified absent",
@@ -611,7 +614,7 @@
       "path": "tests/conformance/repository-runtime-material.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-sessions-memory.test.mjs"
+      "path": "tests/conformance/repository-sessions-memory.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-admission.test.mjs"
@@ -710,13 +713,13 @@
       "path": "tests/integration/known-device-cookie.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-auth-binding.test.mjs"
+      "path": "tests/conformance/postgres-auth-binding.test.ts"
     },
     {
       "path": "tests/conformance/postgres-controller-auth-binding.test.mjs"
     },
     {
-      "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
+      "path": "tests/conformance/schema-auth-boundary-v1.test.ts"
     },
     {
       "path": "tests/conformance/controller-stop-yields.test.ts"
@@ -737,7 +740,13 @@
         "synthetic provider separates TLS handshakes from partial HTTP bytes",
         "connected adversarial wire carries split and nested-JSON material without raw reflection",
         "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
-        "failed custody deployment preserves worker event order across a reused attempt budget",
+        "failed custody deployment preserves worker event order across a reused attempt budget"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-connected-lifecycle-preflight.test.ts",
+      "expectedTests": [
+        "reconnect observer counts accepted sessions once and preserves uint64 epochs",
         "reconnect checkpoints keep correlation in the private ledger on success and failure",
         "unexpected retirement creates require new, read-back run ownership before cleanup",
         "upgrade and retirement quiet windows reject TCP arrivals without HTTP",
@@ -760,7 +769,7 @@
       "path": "tests/integration/staging-qualification.test.ts"
     },
     {
-      "path": "tests/integration/gateway-workspace-readiness.test.mjs"
+      "path": "tests/integration/gateway-workspace-readiness.test.ts"
     },
     {
       "path": "tests/integration/openshell-full-integration.test.ts"

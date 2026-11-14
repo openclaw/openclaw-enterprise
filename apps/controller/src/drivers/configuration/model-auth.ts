@@ -16,7 +16,7 @@ import {
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createUrlCredentialChecks } from "./url-credentials.ts";
 
-export class ConfigurationValidationError extends Error {}
+export { ConfigurationValidationError } from "../../configuration-errors.ts";
 
 // A setting's location, as `options.unresolved` takes it: a list index is a number.
 type SettingPath = readonly (string | number)[];

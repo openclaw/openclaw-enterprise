@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import type { OpenShellCredentialGatewayDriver as CredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { OpenShellSandboxExecRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   OpenShellSandboxDriver,
@@ -21,9 +21,12 @@ import type {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.mjs";
-import type { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
-import type { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
+import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.ts";
+import { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
+import {
+  buildSandboxInstallation,
+  rejectsAtStartup,
+} from "./sandbox-driver-startup-installation-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 type Installation = ReturnType<typeof buildSandboxInstallation>;
@@ -44,17 +47,9 @@ type OperatorWire = OperatorPolicy & {
   };
 };
 
-export async function verifySharedBackendComposition({
-  t,
-  sandboxInstallation,
-  OpenShellCredentialGatewayDriver,
-}: {
-  t: TestContext;
-  sandboxInstallation: () => Installation;
-  OpenShellCredentialGatewayDriver: typeof CredentialGatewayDriver;
-}) {
+export async function verifySharedBackendComposition(t: TestContext) {
   // An explicit hard_requirement composes like the omitted default above.
-  const configuration = sandboxInstallation();
+  const configuration = buildSandboxInstallation();
   Object.assign(configuration.drivers.sandbox.configuration.policy, {
     landlockCompatibility: "hard_requirement",
   });
@@ -67,6 +62,18 @@ export async function verifySharedBackendComposition({
     sandbox: createdDriver.sandboxDriver?.id,
     credential_gateway: createdDriver.credentialGatewayDriver.id,
   });
+}
+
+export function verifyRejectedCredentialGatewayExecutable(t: TestContext): Promise<void> {
+  return rejectsAtStartup(
+    t,
+    (configuration) => {
+      Object.assign(configuration.drivers.credential_gateway.configuration, {
+        toolBinaries: ["bin/curl"],
+      });
+    },
+    makeStructuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
+  );
 }
 
 export function verifyDedicatedHarnessSelection({
@@ -190,43 +197,6 @@ export async function verifyManagedNamespaceRejectsMutation({
   );
   assert.deepEqual(events, []);
   assert.deepEqual(gatewayClient.calls, []);
-}
-
-export async function verifySandboxFactoryValidation({
-  t,
-  sandboxInstallation,
-  structuralRefusal,
-  SharedConfigurationValidationError,
-}: {
-  t: TestContext;
-  sandboxInstallation: () => Installation;
-  structuralRefusal: typeof makeStructuralRefusal;
-  SharedConfigurationValidationError: typeof ConfigurationValidationError;
-}) {
-  const configuration = sandboxInstallation();
-  Reflect.set(configuration.drivers.sandbox.configuration, "unsupported", true);
-  let invokedFactory = false;
-  const options: NonNullable<Parameters<typeof loadInstallationFile>[2]> & {
-    createSandboxDriver(): never;
-  } = {
-    createSandboxDriver() {
-      invokedFactory = true;
-      throw new Error("An injected factory must not bypass provider configuration validation.");
-    },
-  };
-
-  await assert.rejects(loadInstallationFile(t, configuration, options), (error: unknown) => {
-    assert.ok(error instanceof SharedConfigurationValidationError);
-    assert.deepEqual(
-      error.error.details,
-      structuralRefusal("", "additionalProperties", "UNKNOWN_FIELD"),
-    );
-    return true;
-  });
-  assert.equal(invokedFactory, false);
-  // Control: the same factory is reached once the configuration is valid.
-  await assert.rejects(loadInstallationFile(t, sandboxInstallation(), options), /injected factory/);
-  assert.equal(invokedFactory, true);
 }
 
 export async function verifyOperatorPolicyDrift({

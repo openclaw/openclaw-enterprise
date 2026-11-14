@@ -146,6 +146,19 @@ export function writeRunnerManifest(
   return writeJson(join(root, filename), { version: 1, fileDurations, lanes, groups });
 }
 
+export async function writeRunnerLaneFiles(
+  root: string,
+  lane: string,
+  names: readonly string[],
+  source: string,
+) {
+  const files = names.map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
+  for (const { path } of files) {
+    await writeFile(join(root, path), source);
+  }
+  await writeRunnerManifest(root, { lanes: { [lane]: { files } } });
+}
+
 export async function writeSingleFileRunnerLane(
   root: string,
   lane: string,
@@ -173,6 +186,15 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
     await readFile(new URL("../../scripts/ci/failure-redaction.mjs", import.meta.url)),
   );
   await writeFile(join(root, "bin/occ"), `#!${process.execPath}\n${cliBody}`, { mode: 0o700 });
+}
+
+export function requireTestResult<T extends { name: string }>(
+  results: readonly T[],
+  name: string,
+): T {
+  const result = results.find((entry) => entry.name === name);
+  assert.ok(result, `Missing test result: ${name}`);
+  return result;
 }
 
 export function runnerArtifactPaths(root: string, name: string) {
@@ -248,7 +270,7 @@ export function procStat(pid: number) {
     const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
       .replace(/^.*\) /su, "")
       .split(" ");
-    return { state: fields[0], pgid: Number(fields[2]) };
+    return { state: fields[0], pgid: Number(fields[2]), start: fields[19] };
   } catch {
     return undefined;
   }
@@ -279,4 +301,40 @@ export function killRecordedProcessGroupMembers(
       // Already gone.
     }
   }
+}
+
+// The recorded fixture processes still in group `pgid` that nothing has killed. A process
+// counts as killed once it is gone, a zombie (Z) or dead and being reaped (X), or SIGKILL
+// is pending for its whole thread group. kill(-pgid, "SIGKILL") queues that shared signal
+// before it returns and the kernel clears it only when it releases the process, so this
+// needs no deadline. Waiting for the processes to disappear did: on a busy host a killed
+// multithreaded Node process can take seconds to finish exiting (a zombie leader with
+// another thread still running its exit, or a process still being reaped).
+export function unkilled(pids: readonly number[], pgid: number) {
+  return pids.filter((pid) => {
+    const stat = procStat(pid);
+    if (stat === undefined || stat.pgid !== pgid || stat.state === "Z" || stat.state === "X") {
+      return false;
+    }
+    let status;
+    try {
+      status = readFileSync(`/proc/${pid}/status`, "utf8");
+    } catch {
+      return false;
+    }
+    // Signal masks are hexadecimal with bit (signal number - 1) set; SIGKILL is 9.
+    const sharedPending = /^ShdPnd:\s*([0-9a-f]+)$/mu.exec(status);
+    return sharedPending === null || (BigInt(`0x${sharedPending[1]}`) & (1n << 8n)) === 0n;
+  });
+}
+
+// Polls until check() is truthy or the deadline passes; returns check()'s last value.
+export async function waitFor<T>(check: () => T, timeoutMs: number): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let value = check();
+  while (!value && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    value = check();
+  }
+  return value;
 }

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-12"
-last_updated_session: "authoring-run/eedb034b-cdad-4526-af11-0ce3490e267a"
+updated: "2026-11-13"
+last_updated_session: "authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c"
 ---
 
 # Production Startup Flow
@@ -43,8 +43,8 @@ graph TD
     end
     subgraph Helm["Helm-owned startup"]
         RD --> E["Run Helm install once with attempt marker"]
-        E --> F["Run initialization Job with migrator and application roles"]
-        F --> V{"PostgreSQL before 17?"}
+        E --> F["Initialization Job validates mounted Installation"]
+        F -->|Startup checks pass| V{"PostgreSQL before 17?"}
         V -->|Yes| P["Refuse initialization before migration DDL"]
         V -->|No| O{"Canonical migration history?"}
         O -->|No| P
@@ -85,7 +85,7 @@ The process continues; the next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
-`scripts/diagnose-kubernetes-prerequisites.mjs:diagnose` reads CRDs, controllers,
+`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` reads CRDs, controllers,
 addresses and object quota headroom. EKS binds account, ARN, endpoint and CA.
 [Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 
@@ -145,9 +145,9 @@ Database/API ports accept 1–65535 without leading zeros; worker metrics/reposi
 ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
 numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
-On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
-Installation without database/Kubernetes access; refusal stops migration and API
-replacement. It uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
+On install and upgrade, `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
+validates Installation offline before migration, bootstrap and API rollout.
+It uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
 and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
 diagnostics, without submitted values, except
 `apps/controller/src/composition/installation-fields.ts:requireChartListener`:
@@ -198,6 +198,9 @@ as the bootstrap Principal. Queued reconciliation commits with Installation/IAM
 state and audit. Existing Installations add no Namespace; this is not Kubernetes'
 `default`. The worker provisions Driver-owned infrastructure; operators provide
 tenant RoleBindings. The bootstrap container alone writes protected PVC password/service-key files.
+Operators can invoke the same command with [`--verify-existing`](../reference/settings/production.md#production-installation-bootstrap-environment)
+to check a populated candidate using the incumbent ID and a read-only database
+snapshot. The Helm initialization Job continues to use ordinary bootstrap.
 Existing output, unsafe permissions, or inconsistent accounts/IAM identity fail
 the Job. Helm failure does not imply database-hook rollback.
 
@@ -213,9 +216,9 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to that CA.
 
-Startup validates the listener, Better Auth, database, Installation YAML,
-Drivers, Backend membership, and Compute preflight. The operator-managed endpoint
-serves private routes, `/healthz`, and `/readyz`.
+`apps/controller/src/auth/configuration.ts:validateAuthSecret` rejects short
+secrets before Driver construction or PostgreSQL access. `composeProduction` and
+the auth factory repeat it. Endpoints include `/healthz` and `/readyz`.
 `apps/controller/src/composition/postgres-readiness.ts:createPostgresReadinessCheck`
 shares one application-pool `SELECT 1` per instance across overlapping `GET` and
 implicit `HEAD` probes until PostgreSQL settles. Disconnects cannot release it;
@@ -391,6 +394,10 @@ until tenant deployment/TUI procedures run.
 
 ## Changelog
 
+- 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
+
+- 2026-11-13: Document the opt-in check of an existing Installation and its bootstrap administrator. (authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94 - 3c8ee8b97066d1e82a4ba9f95ad6d6f6afea5df8)
+
 - 2026-11-12 09:45: Skip completed writable DDL; preserve read-only refusal. (authoring-run/eedb034b-cdad-4526-af11-0ce3490e267a - 11e22a5dc95b54a4fd7eb05e68a06f732033e7f8)
 
 - 2026-11-12 06:35: Document static Helm template refusal guidance without changing recovery. (authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973 - 64358aae61847dea8a3834fbe06bed079b5727cc)
@@ -414,13 +421,5 @@ until tenant deployment/TUI procedures run.
 - 2026-11-04 23:05: Trace durable first-install receipts and read-only attempt reconciliation. (authoring-run/1b2cbf33-0aef-45e7-bac1-2b40f26eeb3e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-11-04 22:57: Trace prerequisite diagnosis. (authoring-run/9ad2db0a-6b05-4873-aeda-52d96af2405e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
-
-- 2026-11-04 07:10: Trace read-only initialization handoff and exact current chart recognition. (authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446 - 0c39ae057d294e7c1a244666fb6b98a1200b7f52)
-
-- 2026-11-04 00:26: Check chart-managed private Gateway identity and hostname before rollout. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
-
-- 2026-11-03 18:03: Separate managed MCP discovery egress from model discovery. (authoring-run/0e69d668-c39a-4a60-b4ce-5556acb848b0 - c6be564e9f8b6186c53874ea26833a36f037c3db)
-
-- 2026-11-03 11:28: Reconcile PostgreSQL compatibility checks with default Helm private routing. (authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83 - ccc8f0359924ed62b12e619b2ef9f3ef57a3dd7a)
 
 [Production startup documentation history](production-startup/history.md) preserves the older dated entries.

@@ -146,8 +146,8 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-codex-readiness.test.ts \
     tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \
-    tests/integration/runtime-image-gateway-retained-state.test.mjs \
-    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-gateway-retained-state.test.ts \
+    tests/integration/runtime-image-gateway-peer.test.ts \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-managed-files.test.ts \
@@ -161,9 +161,19 @@ GitHub read case uses stock Codex to read a pull request title from a local fixt
 
 The [native release workflow](../release/containers.md#check-native-images-without-publication)
 runs a larger suite and prepares the Envoy image and reviewed Codex seccomp profile.
-Use the reviewed `OCC_TEST_CODEX_SECCOMP_PROFILE` in CI and when the Docker default
-blocks the Codex sandbox. The [Image Runtime Startup lane](../../scripts/ci/test-suites/images-runtime-startup.json)
-selects this preparation. The controller check expects an unreachable database; it does
+For a prepared [Image Runtime Startup lane](../../scripts/ci/test-suites/images-runtime-startup.json),
+[run the tests with the original state file](ci/run-lanes.md#keep-an-owned-service-between-file-runs)
+before cleanup. The runner supplies the profile, and the tests check its path and SHA-256
+against the preparation record. Cleanup removes the file with the run-owned cluster directory.
+
+For a standalone run of the default Codex version where Docker's default profile blocks
+the sandbox, obtain the reviewed manual file separately from the image export and set
+`OCC_TEST_CODEX_SECCOMP_PROFILE` to its path. The [smoke helper](../../tests/helpers/runtime-image-startup.mjs)
+checks the versioned filename and the file's SHA-256 against its manual pin.
+Use the prepared lane when the manual file is unavailable or when testing a supported
+historical Codex version.
+
+The controller check expects an unreachable database; it does
 not prove connectivity. Runtime checks do not prove a model turn or Slack delivery.
 
 ### Build images from the checkout
@@ -178,7 +188,8 @@ suite above, omitting the `docker pull` commands.
 With Helm and `yq` supporting `eval-all -o=json`:
 
 ```sh
-node --test tests/integration/production-kubernetes-packaging.test.mjs
+node --test tests/integration/production-kubernetes-packaging.test.mjs \
+  tests/integration/production-kubernetes-network-policy.test.ts
 ```
 
 Missing Helm or `yq` skips cases. Rendering does not install the chart or prove
@@ -189,7 +200,7 @@ live admission or NetworkPolicy enforcement. `OCC_HELM_BIN` can select Helm.
 With a Compose provider on `PATH`, run:
 
 ```sh
-node --test tests/integration/development-packaging.test.mjs tests/integration/logging-packaging.test.mjs
+node --test tests/integration/development-packaging.test.mjs tests/integration/logging-packaging.test.ts
 ```
 
 The tests inspect configuration without starting containers. Missing Compose or

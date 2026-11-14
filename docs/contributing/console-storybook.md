@@ -109,8 +109,7 @@ Pending-read stories use the real client's 15-second timeout; reset them to repl
 loading.
 
 In **Pages → Create Agent → Repository-only Credential Proxy**, check that the
-model-only Dedicated OpenClaw form explains the deployment requirement beside
-**Create Agent**. Choose Codex, select the repository, and turn off issue
+model-only Dedicated OpenClaw form permits creation without a repository selection. Choose Codex, select the repository, and turn off issue
 management under **Customize access** to use its approved access level.
 
 ## Return navigation

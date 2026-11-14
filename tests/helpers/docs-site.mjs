@@ -67,7 +67,7 @@ export async function writeComputeMatrixReadme(directory, matrix) {
 export function buildDocs(directory, ...args) {
   return spawnSync(
     process.execPath,
-    [join(repositoryRoot, "scripts/docs-site/build.mjs"), ...args],
+    [join(repositoryRoot, "scripts/docs-site/build.ts"), ...args],
     { cwd: directory, encoding: "utf8", timeout: 30_000 },
   );
 }

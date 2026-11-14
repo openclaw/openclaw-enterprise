@@ -1718,10 +1718,9 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string, path?:
   );
 }
 
-// ValidateResourceQuotaResourceName: a quota resource name without a "/" must be a standard
-// quota resource.
-const STANDARD_QUOTA_RESOURCE =
-  /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+|pods|services|services\.nodeports|services\.loadbalancers|replicationcontrollers|resourcequotas|secrets|configmaps|persistentvolumeclaims)$/;
+// Standard quota names for compute, storage, and hugepage quantities.
+const STANDARD_QUOTA_QUANTITY_RESOURCE =
+  /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+)$/;
 
 // Kubernetes core/helper IsIntegerResourceName: the standard object counts and
 // extended resources, excluding requests.* and the native kubernetes.io/ namespace.
@@ -3684,7 +3683,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // The API server refuses the Namespace's ResourceQuota otherwise, at the first deploy.
         if (
           !isKubernetesQualifiedName(key) ||
-          (!key.includes("/") && !STANDARD_QUOTA_RESOURCE.test(key))
+          (!key.includes("/") &&
+            !INTEGER_QUOTA_RESOURCES.has(key) &&
+            !STANDARD_QUOTA_QUANTITY_RESOURCE.test(key))
         ) {
           throw configurationConstraintFailure(
             `Namespace quota resource ${JSON.stringify(key)} must be a Kubernetes resource name, such as requests.cpu or count/pods.`,
@@ -6278,12 +6279,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   validateExecutionAdmission(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan"> &
+      Partial<Pick<AgentRevision, "harnessAuth" | "credentialSources" | "repositoryCredentials">>,
     source?: SelectedDriverRegistration | "stored",
   ): void {
     assertExecutionAdmission(revision);
     const plan = revision.egressPlan;
-    if (plan === undefined && this.proxyDriver === undefined) {
+    const auth = revision.harnessAuth;
+    const binding = revision.credentialSources?.[0];
+    const ordinaryModelOnly =
+      this.protectedExecution?.owner.allowsOrdinaryCredentialGateway() &&
+      revision.repositoryCredentials === undefined &&
+      auth?.method === "credential_source" &&
+      auth.credentialGatewayId === this.credentialGatewayDriver?.id &&
+      revision.credentialSources?.length === 1 &&
+      binding?.credentialProxyId === undefined &&
+      binding?.credentialGatewayId === auth.credentialGatewayId &&
+      binding?.sourceId === auth.sourceId &&
+      binding?.sourceType === auth.sourceType;
+    if (plan === undefined && (this.proxyDriver === undefined || ordinaryModelOnly)) {
       return;
     }
     if (
@@ -6558,24 +6572,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
       materialInput === undefined ? undefined : this.repositoryConsumer(revision);
-    const nativeConfiguration =
-      repositoryConsumer?.role !== "gateway"
-        ? revision.configuration
-        : repositoryNativeConfiguration(revision.configuration);
-    const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
+    const { nativeConfiguration, admittedRevision } = this.projectGatewayRevision(
       revision,
-      this.gatewaySandboxConfiguration(
-        revision,
-        this.kubernetesGatewayConfigurationDocument(
-          modelProviderConfiguration(
-            nativeConfiguration,
-            revision.harness,
-            savedModelProvider(revision.harness.configuration),
-          ),
-        ),
-      ),
+      repositoryConsumer?.role,
     );
-    const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
     const embedded = revision.harness.mode === "embedded";
     if (
       (embedded && revision.harness.id !== "openclaw") ||
@@ -7875,24 +7875,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
       materialInput === undefined ? undefined : this.repositoryConsumer(revision);
-    const nativeConfiguration =
-      repositoryConsumer?.role !== "gateway"
-        ? revision.configuration
-        : repositoryNativeConfiguration(revision.configuration);
-    const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
-      revision,
-      this.gatewaySandboxConfiguration(
-        revision,
-        this.kubernetesGatewayConfigurationDocument(
-          modelProviderConfiguration(
-            nativeConfiguration,
-            revision.harness,
-            savedModelProvider(revision.harness.configuration),
-          ),
-        ),
-      ),
-    );
-    const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
+    const { admittedRevision } = this.projectGatewayRevision(revision, repositoryConsumer?.role);
     if (this.options.runtime === undefined) {
       return;
     }
@@ -11469,7 +11452,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const catalog = await gateway.listSourceTypes({
       signal: this.operationSignal(),
     });
-    return catalog.find((entry) => entry.type === sourceType);
+    const type = catalog.find((entry) => entry.type === sourceType);
+    // The Git-only exception must still hold when an admitted revision is released.
+    // Gateway-only installations and protected plans retain their own lifecycle rules.
+    if (
+      this.protectedExecution?.owner.allowsOrdinaryCredentialGateway() &&
+      revision.executionAdmission.mode === "unprotected" &&
+      revision.egressPlan === undefined &&
+      revision.repositoryCredentials === undefined &&
+      type !== undefined &&
+      (type.rotation === "refresh" ||
+        type.deviceAuthorization !== undefined ||
+        type.harnessAuth?.loginMode === "chatgptAuthTokens")
+    ) {
+      throw new ConfigurationFailure(
+        "The selected Credential Proxy cannot preserve this credential source's lifecycle.",
+      );
+    }
+    return type;
   }
 
   /** Admission selects the route; a changed or missing live source cannot change that route. */
@@ -13586,6 +13586,33 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.options.runtime !== undefined &&
       this.options.gatewayRouting !== undefined
     );
+  }
+
+  private projectGatewayRevision(
+    revision: AgentRevision,
+    repositoryRole: "gateway" | "agent" | undefined,
+  ): { nativeConfiguration: OpenClawConfigurationDocument; admittedRevision: AgentRevision } {
+    const nativeConfiguration =
+      repositoryRole !== "gateway"
+        ? revision.configuration
+        : repositoryNativeConfiguration(revision.configuration);
+    const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
+      revision,
+      this.gatewaySandboxConfiguration(
+        revision,
+        this.kubernetesGatewayConfigurationDocument(
+          modelProviderConfiguration(
+            nativeConfiguration,
+            revision.harness,
+            savedModelProvider(revision.harness.configuration),
+          ),
+        ),
+      ),
+    );
+    return {
+      nativeConfiguration,
+      admittedRevision: { ...revision, configuration: admittedNativeConfiguration },
+    };
   }
 
   private gatewayNativeHookRelayConfiguration(

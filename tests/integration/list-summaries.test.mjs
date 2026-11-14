@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
@@ -153,6 +154,104 @@ test("Preset and revision lists return summaries, not the stored documents", asy
     listedRevisions.data.map(({ deploymentStatus }) => deploymentStatus),
     [null, null, null, null, null],
   );
+});
+
+test("resource lists keep readable siblings in repository order", async (t) => {
+  const state = new InMemoryPlatformState();
+  const fixture = await createConsoleAppFixture(t, { state });
+  await fixture.bootstrap("Readable siblings");
+  const namespace = await fixture.createNamespace("Readable siblings", { ready: true });
+  const namespaceId = namespace.id;
+  const path = `/namespaces/${namespaceId}`;
+
+  const agents = [];
+  const accounts = [];
+  const presets = [];
+  // Use names out of order. The memory repositories order Agents by insertion, ServiceAccounts
+  // by name and Presets by ID.
+  for (const [suffix, name] of [
+    [1, "Zulu"],
+    [2, "Middle"],
+    [3, "Alpha"],
+  ]) {
+    agents.push(
+      await fixture.createAgent(
+        namespaceId,
+        name,
+        createHarnessConfiguration("openclaw", "gpt-4.1"),
+      ),
+    );
+    const idSuffix = `00000000-0000-4000-8000-00000000000${suffix}`;
+    const account = { id: `sa_${idSuffix}`, namespaceId, name };
+    const preset = {
+      id: `pre_${idSuffix}`,
+      namespaceId,
+      name,
+      createdAt: new Date().toISOString(),
+    };
+    // Seed stored rows without provisioning an external ServiceAccount.
+    await state.transact(async (transaction) => {
+      await transaction.serviceAccounts.createServiceAccount(account);
+      await transaction.presets.createPreset({
+        ...preset,
+        template: { configuration: { values: {} } },
+      });
+    });
+    accounts.push(account);
+    presets.push(preset);
+  }
+
+  const emptyReader = await fixture.createNamespaceMember("empty-reader", namespaceId, [
+    ["read", "namespace"],
+  ]);
+  const emptySession = await fixture.signIn(emptyReader.credentials);
+  for (const { kind, collection, rows } of [
+    { kind: "agent", collection: "agents", rows: agents },
+    { kind: "service_account", collection: "service-accounts", rows: accounts.toReversed() },
+    { kind: "preset", collection: "presets", rows: presets },
+  ]) {
+    await t.test(collection, async () => {
+      const [first, hidden, last] = rows;
+      const reader = await fixture.createNamespaceMember(`${collection}-reader`, namespaceId, [
+        ["read", "namespace"],
+      ]);
+      // Grant the later row first to distinguish repository order from grant order.
+      for (const { id } of [last, first]) {
+        grantRole(fixture.policy, reader.principal.id, {
+          id: `${collection}-reader-${id}`,
+          namespaceId,
+          permissions: { [kind]: ["read"] },
+          resource: { kind, id },
+        });
+      }
+      const session = await fixture.signIn(reader.credentials);
+      const listPath = `${path}/${collection}`;
+      const listed = await fixture.request("GET", listPath, { session });
+      assert.equal(listed.status, 200);
+      assert.deepEqual(listed.data, [first, last]);
+
+      const denied = await fixture.request("GET", `${listPath}/${hidden.id}`, { session });
+      assert.equal(denied.status, 403);
+      const empty = await fixture.request("GET", listPath, { session: emptySession });
+      assert.equal(empty.status, 200);
+      assert.deepEqual(empty.data, []);
+
+      // An outage on the middle row aborts the list before checking the final row.
+      const checked = [];
+      const outage = await fixture.withIamOutage(
+        ({ action, resource }) => {
+          if (action !== "read" || resource.kind !== kind) {
+            return false;
+          }
+          checked.push(resource.id);
+          return resource.id === hidden.id;
+        },
+        () => fixture.request("GET", listPath, { session }),
+      );
+      assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
+      assert.deepEqual(checked, [first.id, hidden.id]);
+    });
+  }
 });
 
 test("revision pages run newest first and a cursor continues below a deploy between pages", async (t) => {

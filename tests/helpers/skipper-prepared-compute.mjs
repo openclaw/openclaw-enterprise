@@ -506,14 +506,22 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
 // A complete prefix from the same model process bounds this single chat. A generic
 // turn alone cannot distinguish its request from another turn in the same window.
 function modelRequestObservation(before, after, gatewayChatPhase, marker) {
+  const valid = (events) =>
+    Array.isArray(events) &&
+    events.every(
+      (event) =>
+        typeof event?.event === "string" &&
+        (event.event !== "request" || typeof event.turn === "boolean"),
+    );
   const matches = (event) =>
     gatewayChatPhase === "native-git"
       ? event.event === "skipper-native-request" && event.id === marker
       : event.event === "turn-answered" && event.status === 200 && event.text === marker;
   if (
     !marker ||
-    !before?.some((event) => event.event === "listening") ||
-    !after ||
+    !valid(before) ||
+    !valid(after) ||
+    !before.some((event) => event.event === "listening") ||
     !isDeepStrictEqual(after.slice(0, before.length), before) ||
     before.some(matches)
   ) {
@@ -560,8 +568,23 @@ export async function sendSkipperChat({
       prompt,
       sessionKey,
     ),
-  );
-  const { status, category, content } = JSON.parse(text);
+  ).catch(async (error) => {
+    if (gatewayChatPhase === "native-git") {
+      try {
+        const diagnostic = error.openclawCiDiagnostic;
+        if (
+          diagnostic?.operation === "gateway-exec" &&
+          modelRequestObservation(before, await snapshot(), gatewayChatPhase, marker) === "observed"
+        ) {
+          error.openclawCiDiagnostic = { ...diagnostic, modelRequestObservation: "observed" };
+        }
+      } catch {
+        // Optional evidence must preserve even a frozen or unusual rejection.
+      }
+    }
+    throw error;
+  });
+  const { status, category, content, gatewayTransportCause } = JSON.parse(text);
   if (status === 200 && category === undefined) {
     return content;
   }
@@ -598,6 +621,7 @@ export async function sendSkipperChat({
       operation: "gateway-chat",
       gatewayChatPhase,
       gatewayCategory: category,
+      gatewayTransportCause,
       httpStatus: status,
       runtimeSignal,
       modelRequestObservation: observation,
@@ -641,7 +665,24 @@ export async function inGateway(prompt, sessionKey) {
     );
   } catch (error) {
     const category = signal.aborted && error === signal.reason ? "client-deadline" : "transport";
-    process.stdout.write(JSON.stringify({ status: 0, category }));
+    let gatewayTransportCause;
+    if (category === "transport") {
+      const code = error?.cause?.code ?? error?.code;
+      switch (code) {
+        case "UND_ERR_SOCKET":
+          gatewayTransportCause = "socket-closed";
+          break;
+        case "ECONNRESET":
+          gatewayTransportCause = "connection-reset";
+          break;
+        case "UND_ERR_HEADERS_TIMEOUT":
+          gatewayTransportCause = "headers-timeout";
+          break;
+        default:
+          gatewayTransportCause = "other";
+      }
+    }
+    process.stdout.write(JSON.stringify({ status: 0, category, gatewayTransportCause }));
     return;
   }
   let raw;

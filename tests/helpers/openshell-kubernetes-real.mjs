@@ -233,9 +233,22 @@ export class OpenShellDeploymentFailedError extends Error {
 
 export function waitForOpenShellRevisionActivation(
   waitFor,
-  { request, agentPath, revisionId, workerEvents = [], checkDeploymentBeforeActivation = false },
+  {
+    request,
+    agentPath,
+    revisionId,
+    workerEvents = [],
+    checkDeploymentBeforeActivation = false,
+    reportDeploymentStatusOnTimeout = false,
+  },
 ) {
-  return waitFor(`OpenShell revision ${revisionId} activation`, async () => {
+  const description = `OpenShell revision ${revisionId} activation`;
+  let lastDeploymentStatus;
+  const describeTimeout = () =>
+    lastDeploymentStatus === undefined
+      ? description
+      : `${description} (last deployment status: ${lastDeploymentStatus})`;
+  return waitFor(reportDeploymentStatusOnTimeout ? describeTimeout : description, async () => {
     const observed = await request("GET", agentPath);
     assert.equal(observed.status, 200, "OpenShell Agent status read failed.");
     if (observed.data.activeRevisionId === revisionId && !checkDeploymentBeforeActivation) {
@@ -243,12 +256,18 @@ export function waitForOpenShellRevisionActivation(
     }
     const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
     assert.equal(deployment.status, 200, "OpenShell deployment status read failed.");
-    if (deployment.data.status === "failed") {
+    const status = deployment.data.status;
+    if (status === "failed") {
       throw new OpenShellDeploymentFailedError(
         revisionId,
         deployment.data.error?.code,
         workerEvents,
       );
+    }
+    if (reportDeploymentStatusOnTimeout) {
+      // Each completed read replaces the observation, including an unknown status.
+      lastDeploymentStatus =
+        status === "queued" || status === "running" || status === "succeeded" ? status : undefined;
     }
     return observed.data.activeRevisionId === revisionId ? observed.data : undefined;
   });
