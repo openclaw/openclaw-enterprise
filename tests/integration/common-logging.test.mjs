@@ -390,6 +390,7 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     }),
   ];
   for (const message of messages) {
+    const recordCount = output.lines.length;
     emit({
       event: "worker.compute-prepare-failed",
       workId: "agent_revision:rev_test:reconcile",
@@ -401,7 +402,8 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
       step: "gateway_deployment",
       message,
     });
-    const line = output.lines.at(-1);
+    assert.equal(output.lines.length, recordCount + 1);
+    const line = output.lines[recordCount];
     assert.equal(line.event, "worker.compute-prepare-failed");
     assert.equal(line.severity, "ERROR");
     assert.equal(line.service, "occ-worker");
