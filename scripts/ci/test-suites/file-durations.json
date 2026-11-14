@@ -362,7 +362,7 @@
     "tests/integration/ssh-compute-startup.test.mjs": 800,
     "tests/integration/startup-ipv6-loopback.test.ts": 4700,
     "tests/integration/static-egress.test.mjs": 11600,
-    "tests/integration/stored-document-serialization.test.mjs": 1300,
+    "tests/integration/stored-document-serialization.test.ts": 1300,
     "tests/integration/workspace-setup-api.test.mjs": 1400,
     "tests/integration/workspace-setup-runtime.test.ts": 15000,
     "tests/integration/workspace-setup-worker.test.ts": 1500,
