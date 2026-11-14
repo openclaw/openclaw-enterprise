@@ -31,13 +31,14 @@ func TestAgentStopReturnsNoticeDeliveryErrors(t *testing.T) {
 					"status":              "active",
 					"createdAt":           "2026-11-14T00:00:00Z",
 				}
-				if r.Method == http.MethodGet {
-					if state == "running" {
-						agent["desiredRuntimeState"] = "running"
-					}
-					if state != "idle" {
-						agent["activeRevisionId"] = "rev_00000000-0000-4000-8000-000000000001"
-					}
+				if state != "idle" {
+					agent["activeRevisionId"] = testRevision1ID
+				}
+				if r.Method == http.MethodGet && state == "running" {
+					agent["desiredRuntimeState"] = "running"
+				}
+				if r.Method == http.MethodPost {
+					w.WriteHeader(http.StatusAccepted)
 				}
 				if err := json.MarshalWrite(w, map[string]any{"data": agent, "meta": map[string]any{"requestId": "req_stop_output"}}); err != nil {
 					t.Error(err)
@@ -60,6 +61,9 @@ func TestAgentStopReturnsNoticeDeliveryErrors(t *testing.T) {
 			var agent map[string]any
 			if err := json.Unmarshal([]byte(out.String()), &agent); err != nil || agent["id"] != testAgentID || agent["desiredRuntimeState"] != "stopped" {
 				t.Fatalf("stdout = %q, error = %v", out.String(), err)
+			}
+			if state != "idle" && agent["activeRevisionId"] != testRevision1ID {
+				t.Fatalf("stdout lost the active revision while stop is pending: %q", out.String())
 			}
 		})
 	}

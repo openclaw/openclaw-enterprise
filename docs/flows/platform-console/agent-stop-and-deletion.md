@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-14
-last_updated_session: authoring-run/c5c66aa1-465a-4455-a0f9-af869106da84
+last_updated_session: authoring-run/790a9874-f0fa-46f8-9cce-c9ca1b76a938
 ---
 
 # Console Agent stop and deletion
@@ -30,20 +30,28 @@ graph TD
     L["Agents list row icon"] --> E
     L --> S
   end
-  CLI["CLI agent stop"] --> T
-  T -->|CLI accepted| OUT["Print Agent and advice"]
-  OUT -->|write failure| ERR["Return output error without retry"]
   subgraph API["Controller API"]
     E --> G["DELETE exact Agent"]
     S --> T["POST exact Agent stop"]
-    T -->|accepted or uncertain| U["Refresh desired state and selected version"]
-    T -->|denied| I
+    T -->|Console accepted or uncertain| U["Console refreshes desired state and selected version"]
+    T -->|Console denied| I
     G -->|accepted or uncertain| H["Refresh exact Agent"]
     G -->|denied| I["Show access denied"]
     H -->|exists| J["Show current Agent state"]
     J -->|known deleting and manual request| E
     H -->|not found| K["Return to Agents list"]
   end
+```
+
+The CLI uses a separate request and output path:
+
+```mermaid
+graph TD
+  CLI["CLI agent stop"] --> READ["Try advisory Agent GET"]
+  READ -->|read succeeds or fails| POST["Submit exact Agent stop POST"]
+  POST -->|accepted| OUT["Validate and print Agent and advice"]
+  OUT -->|write failure| ERR["Exit nonzero without readback or retry"]
+  ERR -->|manual operator action| GET["occ --namespace NAMESPACE agent get ID"]
 ```
 
 ## Execution Trace
@@ -157,8 +165,10 @@ intent, then prints that Agent to stdout and the advice to stderr.
 Each advice branch returns its write error. `cmd/occ/main.go:main` exits nonzero
 when stderr cannot receive the notice. The stop has already been admitted and
 stdout may contain the Agent; this output failure does not undo or retry the
-stop. Read the Agent's state before deciding whether to submit another request.
-A successful notice still means requested intent, not completed shutdown.
+stop. The CLI does not automatically read the Agent again after this failure.
+Run `occ --namespace NAMESPACE agent get ID` manually to inspect the Agent's
+state before deciding whether to submit another request. A successful notice
+still means requested intent, not completed shutdown.
 
 ## Debugging and Verification
 
@@ -186,6 +196,8 @@ controller persistence or Compute shutdown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 15:17: Distinguish the CLI advisory read and manual recovery from Console readback. (authoring-run/790a9874-f0fa-46f8-9cce-c9ca1b76a938 - 5453be17728e9b813227b73072de700e40a742a6)
 
 - 2026-11-14 13:18: Trace CLI stop output failure after admission without retrying the stop. (authoring-run/c5c66aa1-465a-4455-a0f9-af869106da84 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 
