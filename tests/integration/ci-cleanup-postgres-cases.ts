@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { cleanupState } from "../../scripts/ci/cleanup.mjs";
@@ -468,8 +468,9 @@ export function registerChildJournalCases(): void {
     assert.deepEqual(await readState(childPath), child);
     await writeState(childPath, { ...child, resources: [] });
     await cleanupState(statePath);
-    await assert.rejects(stat(statePath), { code: "ENOENT" });
-    await assert.rejects(stat(childPath), { code: "ENOENT" });
+    const remaining = await readdir(root);
+    assert.ok(!remaining.includes(basename(statePath)), "cleanup left the parent journal");
+    assert.ok(!remaining.includes(basename(childPath)), "cleanup left the child journal");
 
     // A correctly named file is not custody: preserve a replaced or foreign journal.
     for (const cleanupOwner of [undefined, "another-owner"]) {
