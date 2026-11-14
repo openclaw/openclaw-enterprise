@@ -2,6 +2,13 @@ import {
   registerStartupDiagnosticsCases,
   registerStartupPresetCases,
 } from "./configuration-startup-validation-cases.ts";
+import {
+  checkExternalObservabilityUrl,
+  checkNativeWorkerSupport,
+  registerDevelopmentMetricsStartupCase,
+  registerStartupInstallationInputCases,
+  registerStartupYamlInputCases,
+} from "./configuration-startup-input-cases.ts";
 import { reconcileNamespaceLifecycle } from "../../packages/occ/src/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import {
@@ -47,7 +54,6 @@ import {
 } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function jsonLines(text) {
@@ -63,6 +69,13 @@ function startupDiagnostic(stderr, event) {
   assert.ok(diagnostic, stderr);
   return diagnostic;
 }
+
+const startupInputs = {
+  fixture,
+  loadInstallationConfiguration,
+  loadStartupConfigurationSnapshot,
+  ConfigurationValidationError,
+};
 
 // The startup cases boot the real API and worker processes with an allowlisted environment,
 // which drops NODE_COMPILE_CACHE, so it is passed explicitly: the lane's cache in CI, otherwise
@@ -136,6 +149,10 @@ before(async () => {
   }
 });
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {Readonly<Record<string, unknown>>} configuration
+ */
 async function fixture(t, configuration = installation()) {
   const directory = await temporaryDirectory(t, "occ-installation-startup-");
   const path = join(directory, "installation.yaml");
@@ -255,163 +272,15 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
 });
 
 test("Installation startup validates the optional external observability URL", async (t) => {
-  const configuration = installation();
-  configuration.observability = { url: "https://metrics.example.test/d/operations" };
-  const path = await fixture(t, configuration);
-  const loaded = await loadInstallationConfiguration({
-    mode: "development",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.equal(loaded.installation.observability.url, configuration.observability.url);
-
-  const url = configuration.observability.url;
-  const rewrittenIpv4ObservabilityUrl =
-    /observability\.url IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address\./;
-  for (const [observability, message] of [
-    ...[
-      "javascript:alert(1)",
-      syntheticCredentialUrl({
-        username: "user",
-        password: "pass",
-        host: "example.test",
-      }),
-      "relative",
-      "https://x.example/#f",
-    ].map((invalid) => [{ url: invalid }, /observability\.url/]),
-    [{ url, extra: 1 }, /observability contains unsupported option extra/],
-  ]) {
-    configuration.observability = observability;
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "development",
-        environment: { OCC_CONFIG_PATH: path },
-      }),
-      (error) => {
-        assert.match(error.message, message);
-        assert.doesNotMatch(error.message, rewrittenIpv4ObservabilityUrl);
-        return true;
-      },
-    );
-  }
-  // URL parsing drops an empty user info and keeps the host alone; profile preflight refuses
-  // any @ before the host, and so does startup.
-  for (const userinfo of [
-    "http://@grafana.example.internal/d",
-    "https://:@grafana.example.internal/d",
-    "http:@grafana.example.internal/d",
-    "http:\t//@grafana.example.internal/d",
-    "http://@192.0.2.10:3000/d",
-  ]) {
-    configuration.observability = { url: userinfo };
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "development",
-        environment: { OCC_CONFIG_PATH: path },
-      }),
-      /observability\.url must not contain user info or an @ before the host\./,
-      JSON.stringify(userinfo),
-    );
-  }
-  for (const shorthand of ["http://192.168.1", "http://2130706433"]) {
-    configuration.observability = { url: shorthand };
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "development",
-        environment: { OCC_CONFIG_PATH: path },
-      }),
-      (error) => {
-        assert.match(error.message, rewrittenIpv4ObservabilityUrl);
-        assert.doesNotMatch(error.message, /must be an absolute HTTP or HTTPS URL/);
-        return true;
-      },
-    );
-  }
-  for (const raw of [
-    "http://good.example\tevil.com/x",
-    "http://evil.com\\.good.example/path",
-    "http://good.example\nevil.com/x",
-    "http://good.example\revil.com/x",
-  ]) {
-    configuration.observability = { url: raw };
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "development",
-        environment: { OCC_CONFIG_PATH: path },
-      }),
-      /observability\.url must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host\./,
-      JSON.stringify(raw),
-    );
-  }
-  configuration.observability = { url: "http://192.168.1.1" };
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  const canonical = await loadInstallationConfiguration({
-    mode: "development",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.equal(canonical.installation.observability.url, "http://192.168.1.1/");
-  assert.equal(new URL(canonical.installation.observability.url).hostname, "192.168.1.1");
-  configuration.observability = {
-    url: "https://grafana.example.test/d/operations?var-pattern=\\d+",
-  };
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  const queryBackslash = await loadInstallationConfiguration({
-    mode: "development",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.equal(
-    new URL(queryBackslash.installation.observability.url).hostname,
-    "grafana.example.test",
-  );
+  await checkExternalObservabilityUrl(t, startupInputs);
 });
 
 registerStartupDiagnosticsCases({ boot, fixture, readFile, settled });
 test("Installation startup declares native worker support only as a custom runtime image", async (t) => {
-  const configuration = installation();
-  const path = await fixture(t, configuration);
-  const load = () =>
-    loadInstallationConfiguration({ mode: "development", environment: { OCC_CONFIG_PATH: path } });
-  // The pinned runtime needs no operator declaration in the Installation file.
-  assert.equal((await load()).installation.runtime, undefined);
-  configuration.runtime = { nativeWorkerSupport: "custom-image" };
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  assert.deepEqual((await load()).installation.runtime, { nativeWorkerSupport: "custom-image" });
-  for (const [runtime, message] of [
-    [{ nativeWorkerSupport: true }, /runtime\.nativeWorkerSupport must be "custom-image"/],
-    [
-      { nativeWorkerSupport: "pinned-runtime" },
-      /runtime\.nativeWorkerSupport must be "custom-image"/,
-    ],
-    [{}, /runtime\.nativeWorkerSupport must be "custom-image"/],
-    [
-      { nativeWorkerSupport: "custom-image", image: "x" },
-      /runtime contains unsupported option image/,
-    ],
-  ]) {
-    configuration.runtime = runtime;
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    await assert.rejects(load(), message);
-  }
+  await checkNativeWorkerSupport(t, startupInputs);
 });
 
-test("development accepts a Metrics URL with its default Compose Drivers", async (t) => {
-  const url = "https://metrics.example.test/d/operations";
-  const path = await fixture(t, { observability: { url } });
-  const environment = { OCC_CONFIG_PATH: path };
-  const snapshot = await loadStartupConfigurationSnapshot({ mode: "development", environment });
-  assert.equal(snapshot.observability.url, url);
-  assert.equal(
-    await loadInstallationConfiguration({
-      mode: "development",
-      environment,
-      startupConfiguration: snapshot,
-    }),
-    undefined,
-  );
-});
+registerDevelopmentMetricsStartupCase(startupInputs);
 
 function chatgptInstallation() {
   const configuration = installation();
@@ -1341,47 +1210,7 @@ test("production embedded replacements preserve their active Service across fail
   heartbeat.mock.restore();
 });
 
-test("startup accepts actual block-style YAML instead of requiring JSON", async (t) => {
-  const path = await fixture(t);
-  const configuration = installation();
-  const yaml = `occ:\n  cluster: production-west\ndrivers:\n  configuration: ${JSON.stringify(configuration.drivers.configuration)}\n  iam: ${JSON.stringify(configuration.drivers.iam)}\n  compute: ${JSON.stringify(configuration.drivers.compute)}\n  secret: ${JSON.stringify(configuration.drivers.secret)}\n`;
-  await writeFile(path, yaml, "utf8");
-  const loaded = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.equal(loaded.installation.occ.cluster, "production-west");
-});
-
-test("production requires one YAML while development may start without a ConfigurationDriver", async (t) => {
-  await assert.rejects(
-    loadInstallationConfiguration({ mode: "production", environment: {} }),
-    /OCC_CONFIG_PATH/,
-  );
-  assert.equal(
-    await loadInstallationConfiguration({ mode: "development", environment: {} }),
-    undefined,
-  );
-  // Unusable paths and unparsable files get fixed messages that never echo the path or the
-  // filesystem or parser error.
-  const invalidYaml = await fixture(t);
-  await writeFile(invalidYaml, "drivers: [\n", "utf8");
-  for (const [path, message] of [
-    [" ", "OCC_CONFIG_PATH must identify the Installation startup YAML."],
-    [
-      "relative/installation.yaml",
-      "OCC_CONFIG_PATH must identify an absolute Installation startup YAML path.",
-    ],
-    [`${invalidYaml}.missing`, "The configured Installation startup YAML is unavailable."],
-    [invalidYaml, "The configured Installation startup file must contain valid YAML."],
-  ]) {
-    await assert.rejects(
-      loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
-      { message },
-      JSON.stringify(path),
-    );
-  }
-});
+registerStartupYamlInputCases(startupInputs);
 
 test("development OCC_AUTH_BASE_URL must be a loopback origin or an HTTPS localhost subdomain", async (t) => {
   for (const accepted of [
@@ -1570,136 +1399,7 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
   );
 });
 
-test("startup rejects caller-selected Installation IDs and obsolete Driver selectors", async (t) => {
-  const path = await fixture(t);
-  for (const [name, value] of [
-    ["OCC_INSTALLATION_ID", "ins_untrusted"],
-    ["OCC_COMPUTE_DRIVER", "kubernetes"],
-    ["OCC_KUBERNETES_CONFIG_PATH", "/tmp/obsolete.json"],
-    ["OCC_NATIVE_IAM_DRIVER_ID", "native-iam"],
-  ]) {
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: path, [name]: value },
-      }),
-      new RegExp(name),
-    );
-  }
-
-  const injected = installation();
-  injected.drivers.compute.configuration.authentication.installation_id = "ins_untrusted";
-  await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, injected) },
-    }),
-    /must not contain an Installation ID/,
-  );
-});
-
-test("startup rejects plaintext secrets, caller-authored identities, and unsupported schema options", async (t) => {
-  const refusal = (path, code, message) => [{ path, code, message }];
-  const structural = (path, keyword, code = "INVALID_VALUE") =>
-    refusal(path, code, `Configuration does not satisfy ${keyword}.`);
-  for (const [mutate, expected] of [
-    [(value) => (value.drivers.compute.configuration.apiKey = "plaintext"), /plaintext credential/],
-    [
-      (value) => (value.drivers.configuration.implementation = "occ/docker-config"),
-      /unsupported option.*implementation/,
-    ],
-    [
-      (value) =>
-        (value.drivers.configuration.configuration.authentication = { mode: "kubeconfig" }),
-      [
-        ...structural("/authentication/mode", "const"),
-        ...refusal(
-          "/authentication/kubeconfigPath",
-          "REQUIRED",
-          "This configuration field is required.",
-        ),
-        ...refusal("/authentication/context", "REQUIRED", "This configuration field is required."),
-        ...structural("/authentication", "oneOf"),
-      ],
-    ],
-    [
-      (value) => (value.drivers.iam.configuration.unexpected = true),
-      structural("", "additionalProperties", "UNKNOWN_FIELD"),
-    ],
-    [
-      (value) => (value.drivers.compute.configuration.resources.gateway.unexpected = true),
-      structural("/resources/gateway", "additionalProperties", "UNKNOWN_FIELD"),
-    ],
-    [
-      (value) => (value.drivers.compute.configuration.images.requireImmutableDigest = false),
-      /immutable image digests/,
-    ],
-    [
-      (value) =>
-        (value.drivers.compute.configuration.network.gatewayPort = Number.MAX_SAFE_INTEGER + 1),
-      /network\.gatewayPort must be a safe integer\.$/,
-    ],
-    [
-      (value) =>
-        (value.drivers.compute.configuration.images.gateway = "registry.example/gateway:latest"),
-      refusal(
-        "/images/gateway",
-        "INVALID_FORMAT",
-        "Gateway image must use an immutable SHA-256 digest.",
-      ),
-    ],
-    [
-      (value) =>
-        (value.drivers.compute.configuration.images.agent = "registry.example/agent:latest"),
-      refusal(
-        "/images/agent",
-        "INVALID_FORMAT",
-        "Agent image must use an immutable SHA-256 digest.",
-      ),
-    ],
-    [
-      (value) => delete value.drivers.compute.configuration.runtime,
-      /explicitly configured Codex runtime/,
-    ],
-    [
-      (value) =>
-        (value.drivers.compute.configuration.runtime.modelSecretPrefix =
-          value.drivers.compute.configuration.runtime.transportSecretPrefix),
-      structural("/runtime", "additionalProperties", "UNKNOWN_FIELD"),
-    ],
-    // The reader refuses these anywhere in the file, before any Driver schema runs.
-    [
-      (value) => (value.drivers.compute.configuration.unexpected = 2 ** 53 + 2),
-      /\.unexpected must be a safe integer\.$/,
-    ],
-    [
-      (value) => (value.drivers.compute.configuration.constructor = {}),
-      /contains an unsafe configuration key\.$/,
-    ],
-    [
-      (value) => (value.drivers.compute.configuration.secretRef = "installation-secret"),
-      /Installation-scoped secret references cannot be resolved safely\.$/,
-    ],
-  ]) {
-    const configuration = installation();
-    mutate(configuration);
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      }),
-      (error) => {
-        if (expected instanceof RegExp) {
-          assert.match(error.message, expected);
-        } else {
-          assert.ok(error instanceof ConfigurationValidationError);
-          assert.deepEqual(error.error.details, expected);
-        }
-        return true;
-      },
-    );
-  }
-});
+registerStartupInstallationInputCases(startupInputs);
 
 registerStartupPresetCases({
   boot,
