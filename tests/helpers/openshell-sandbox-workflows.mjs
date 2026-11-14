@@ -42,10 +42,14 @@ import { selectPolicyProbeCommand } from "./openshell-policy-probe.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertNativeCronRunSucceeded,
-  assertCodexPolicyChild,
-  findCodexPolicyChild,
   createNativePluginAssertions,
 } from "../helpers/plugin-driver-real.mjs";
+import {
+  assertCodexPolicyChild,
+  findCodexPolicyChild,
+  findCodexPolicyReplyThread,
+  readCodexPolicyAgent,
+} from "./codex-policy-thread-evidence.ts";
 import {
   assertAllowedCredentialRoute,
   assertExposedCodexInitializes,
@@ -9279,20 +9283,13 @@ export function registerGatewayToolPolicyTest() {
               gatewayPod: topology.gatewayPod.metadata.name,
               threadId: childId,
             });
-            return observed.turns?.some(
-              (turn) =>
-                turn.status === "completed" &&
-                turn.items.some(
-                  (item) => item.type === "agentMessage" && item.text.includes(childMarker),
-                ),
-            )
-              ? observed
-              : undefined;
+            return findCodexPolicyReplyThread(observed, childMarker);
           },
           600_000,
         );
-        const parentMetadata = await native.readCodexThreadMetadata(topology.agent, parent);
-        const childMetadata = await native.readCodexThreadMetadata(topology.agent, child);
+        const agent = readCodexPolicyAgent(topology.agent);
+        const parentMetadata = await native.readCodexThreadMetadata(agent, parent);
+        const childMetadata = await native.readCodexThreadMetadata(agent, child);
         proof.modelTurns.push({
           kind: "fresh-native-child",
           ...assertCodexPolicyChild({
@@ -9553,7 +9550,8 @@ export function registerGatewayToolPolicyTest() {
           gatewayPod: topology.gatewayPod.metadata.name,
           threadId: afterBinding.threadId,
         });
-        const metadata = await native.readCodexThreadMetadata(topology.agent, thread);
+        const agent = readCodexPolicyAgent(topology.agent);
+        const metadata = await native.readCodexThreadMetadata(agent, thread);
         retainedDeclaration = metadata.tools.some((tool) => tool.name === "agents_list");
       }
       if (retainedDeclaration) {

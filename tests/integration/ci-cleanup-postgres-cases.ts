@@ -8,7 +8,7 @@ import { cleanupState } from "../../scripts/ci/cleanup.ts";
 import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
-import { startFakePostgres, type FakePostgresQuery } from "../helpers/fake-postgres-server.mjs";
+import { startFakePostgres, type FakePostgresQuery } from "../helpers/fake-postgres-server.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { cleanupPath, fixture, repositoryRoot, writeState } from "./ci-cleanup-fixture.ts";

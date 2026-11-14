@@ -39,7 +39,7 @@
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.ts",
-    "tests/conformance/kubernetes-client.test.mjs",
+    "tests/conformance/kubernetes-client.test.ts",
     "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
@@ -137,7 +137,7 @@
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/integration/openshell-permission-diagnostic.test.ts",
-    "tests/conformance/openshell-prepared-git-provider.test.mjs",
+    "tests/conformance/openshell-prepared-git-provider.test.ts",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -271,7 +271,7 @@
       "path": "tests/conformance/kubernetes-preflight.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-client.test.mjs"
+      "path": "tests/conformance/kubernetes-client.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-network-policy.test.mjs"
@@ -883,7 +883,7 @@
       ]
     },
     {
-      "path": "tests/conformance/openshell-prepared-git-provider.test.mjs",
+      "path": "tests/conformance/openshell-prepared-git-provider.test.ts",
       "expectedTests": [
         "prepared Git static token and rotation use released fields without returning credentials or readiness",
         "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",

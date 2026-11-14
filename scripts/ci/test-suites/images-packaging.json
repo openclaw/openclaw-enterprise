@@ -21,7 +21,7 @@
   "parallelFiles": [
     "tests/integration/production-upgrade-signal-lock.test.ts",
     "tests/integration/codex-model-probe.test.mjs",
-    "tests/integration/production-image-upgrade-recovery.test.mjs",
+    "tests/integration/production-image-upgrade-recovery.test.ts",
     "tests/integration/production-upgrade-migration-preflight.test.ts",
     "tests/integration/upgrade-preflight-state.test.ts",
     "tests/integration/docker-compute-token-retry.test.mjs",
@@ -75,7 +75,7 @@
       ]
     },
     {
-      "path": "tests/integration/production-image-upgrade-recovery.test.mjs"
+      "path": "tests/integration/production-image-upgrade-recovery.test.ts"
     },
     {
       "path": "tests/integration/production-upgrade-migration-preflight.test.ts",

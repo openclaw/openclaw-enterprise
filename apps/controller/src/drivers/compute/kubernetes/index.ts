@@ -37,6 +37,7 @@ import {
   compareResourceQuantities,
   hasIntegerQuotaPrecision,
   isNonNegativeResourceQuantity,
+  resourceQuantityPairProblem,
 } from "./resource-quantities.ts";
 import {
   asRecord,
@@ -1596,25 +1597,21 @@ function validateResources(value: V1ResourceRequirements, description: string, p
       `${description} ${kind} limit`,
       `${path}.limits.${resource}`,
     );
-    for (const [field, quantity] of [
-      ["requests", request],
-      ["limits", limit],
-    ] as const) {
-      if ((compareResourceQuantities(quantity, "0") ?? 0) < 0) {
-        throw configurationConstraintFailure(
-          `${description} ${kind} ${field} must be non-negative Kubernetes quantity strings, such as ${resource === "cpu" ? "500m" : "128Mi"}.`,
-          `/${path.replaceAll(".", "/")}/${field}/${resource}`,
-        );
-      }
+    const problem = resourceQuantityPairProblem(request, limit);
+    if (problem === "negative-request" || problem === "negative-limit") {
+      const field = problem === "negative-request" ? "requests" : "limits";
+      throw configurationConstraintFailure(
+        `${description} ${kind} ${field} must be non-negative Kubernetes quantity strings, such as ${resource === "cpu" ? "500m" : "128Mi"}.`,
+        `/${path.replaceAll(".", "/")}/${field}/${resource}`,
+      );
     }
-    const compared = compareResourceQuantities(request, limit);
-    if (compared === undefined) {
+    if (problem === "malformed") {
       throw configurationConstraintFailure(
         `${description} ${kind} requests and limits must be Kubernetes quantity strings.`,
         `/${path.replaceAll(".", "/")}`,
       );
     }
-    if (compared > 0) {
+    if (problem === "request-exceeds-limit") {
       throw new ConfigurationValidationError([
         {
           path: `/${path.replaceAll(".", "/")}/requests/${resource}`,

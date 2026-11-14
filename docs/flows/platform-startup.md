@@ -246,8 +246,9 @@ execution begins in the adjacent
 
 ## Debugging and Verification
 
-- Verify matching selection and process-local instances with
-  `node --test --test-name-pattern='independent API and worker startup construct the same selected runtime Drivers' tests/integration/configuration-startup.test.mjs`.
+- Check the startup errors reported when no Installation ID is set with
+  `node --test --test-name-pattern='production server and worker resolve singleton startup without an Installation ID' tests/integration/configuration-startup.test.mjs`.
+  The API rejects the missing authentication base URL before it loads Drivers. The worker reports the unavailable PostgreSQL connection.
 - Expect API `{"event":"listening",...}` and worker
   `{"event":"worker.started","computeDriverId":"..."}` events, followed by
   `worker.health`. Startup failures emit `startup-error` or

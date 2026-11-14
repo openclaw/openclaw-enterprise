@@ -36,8 +36,8 @@ export async function stageSigninChart({
   directory: string;
   plan: {
     fixture: string;
-    previous: { reviewedSource: string };
-    candidate: { reviewedSource: string };
+    previous: { reviewedSource?: unknown };
+    candidate: { reviewedSource?: unknown };
   };
 }): Promise<string> {
   assert.equal(plan.fixture, "v3-to-v3");
