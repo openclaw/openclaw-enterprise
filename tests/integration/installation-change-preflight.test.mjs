@@ -80,17 +80,9 @@ async function render(values, isUpgrade) {
 }
 
 test(
-  "the upgrade hook loads the Installation with the API's files before migration",
+  "install and upgrade hooks load the Installation with the API's files before migration",
   tooling,
   async () => {
-    // A fresh install has no running API to protect and may create the Secret alongside.
-    const install = await render({}, false);
-    assert.deepEqual(
-      install.hook.initContainers.map(({ name }) => name),
-      ["migration"],
-    );
-    assert.ok(!install.hook.volumes.some(({ name }) => name === "installation-startup"));
-
     for (const values of [
       {},
       repositoryCredentialValues,
@@ -101,6 +93,18 @@ test(
       issuerCaValues,
     ]) {
       const { job, hook, api } = await render(values, true);
+      const install = await render(values, false);
+      assert.deepEqual(install.hook.initContainers[0], hook.initContainers[0]);
+      assert.deepEqual(install.hook.volumes, hook.volumes);
+      assert.deepEqual(
+        install.hook.initContainers.map(({ name }) => name),
+        ["installation-check", "migration"],
+      );
+      assert.deepEqual(install.hook.initContainers[1].args, [
+        "scripts/migrate-production.mjs",
+        "--expect-empty",
+      ]);
+      assert.deepEqual(install.hook.containers, hook.containers);
       // Pre-upgrade hooks finish before Helm updates the Deployments.
       assert.match(job.metadata.annotations["helm.sh/hook"], /(^|,)pre-upgrade(,|$)/);
       assert.equal(job.spec.backoffLimit, 0);
@@ -251,6 +255,35 @@ async function runHook(t, configuration, { files = {}, environment, refusal }) {
   }
   return { ...result, directory };
 }
+
+test(
+  "the first-install check refuses malformed Compute configuration before migration",
+  tooling,
+  async (t) => {
+    const { hook } = await render({}, false);
+    const [check] = hook.initContainers;
+    assert.equal(check.name, "installation-check");
+    assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
+    const environment = () =>
+      Object.fromEntries(
+        check.env
+          .filter(({ name }) => name !== "OCC_CONFIG_PATH")
+          .map(({ name, value }) => [name, value]),
+      );
+    const configuration = installation();
+    const accepted = await runCheck(t, configuration, {}, environment);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(accepted.stdout, "installation-startup-ready\n");
+    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = [];
+    const refused = await runCheck(t, configuration, {}, environment);
+    assert.equal(refused.status, 1);
+    assert.match(
+      refused.stderr,
+      /DRIVER_CONFIGURATION_INVALID.*\/network\/gatewayTrustedProxyCidrs.*INVALID_FORMAT/,
+    );
+    assert.equal(refused.stdout, "");
+  },
+);
 
 test("the upgrade hook check passes an Installation API startup accepts", async (t) => {
   const configuration = installation();

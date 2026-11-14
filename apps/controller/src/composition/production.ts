@@ -1,4 +1,5 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { validateAuthSecret } from "../auth/configuration.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
   controlPlaneAuditDatabaseOptions,
@@ -99,6 +100,7 @@ export async function composeProduction(
   if (config.mode !== "production") {
     throw new Error("Production OCC composition requires explicit production mode.");
   }
+  validateAuthSecret(config.authSecret);
   const {
     installation,
     computeDriver,

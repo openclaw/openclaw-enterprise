@@ -83,6 +83,7 @@ import { stopProcess } from "../helpers/stop-process.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
@@ -133,14 +134,35 @@ function startChild(port, overrides = {}) {
 // firing would still exit nonzero once startup tried the database (PERSISTENCE_UNAVAILABLE).
 // The startup-error code proves startup refused it before that. STARTUP_FAILED is the
 // catch-all code, so the bind and production cases prove only that much.
-async function assertUnsafeStartupRejected() {
+async function assertUnsafeStartupRejected(t) {
   const configuredDatabase = { OCC_DATABASE_URL: "postgresql://127.0.0.1:1/openclaw" };
+  const installationPath = join(
+    await temporaryDirectory(t, "openclaw-enterprise-startup-refusal-"),
+    "installation.json",
+  );
+  await writeFile(installationPath, JSON.stringify(createInstallationDriverConfiguration()));
+  const productionEnvironment = {
+    ...configuredDatabase,
+    NODE_ENV: "production",
+    OCC_HOST: "192.0.2.10",
+    OCC_CONFIG_PATH: installationPath,
+  };
   for (const [description, overrides, code] of [
     ["missing development database", {}, "DATABASE_CONFIGURATION_INVALID"],
     [
       "production mode",
       { ...configuredDatabase, NODE_ENV: "production", OCC_HOST: "192.0.2.10" },
       "STARTUP_FAILED",
+    ],
+    [
+      "complete production configuration reaches the database",
+      productionEnvironment,
+      "PERSISTENCE_UNAVAILABLE",
+    ],
+    [
+      "short production auth secret",
+      { ...productionEnvironment, OCC_AUTH_SECRET: "insecure" },
+      "AUTH_SECRET_INVALID",
     ],
     ["nonloopback bind", { ...configuredDatabase, OCC_HOST: "192.0.2.10" }, "STARTUP_FAILED"],
     ["unsafe container bind", { ...configuredDatabase, OCC_HOST: "0.0.0.0" }, "STARTUP_FAILED"],
@@ -8407,8 +8429,8 @@ test("bootstrap fails closed when IAM omits structured authorization evidence", 
   assert.deepEqual(fixture.auditSink.events, []);
 });
 
-test("OCC development subprocess requires PostgreSQL-backed startup", async () => {
-  await assertUnsafeStartupRejected();
+test("OCC development subprocess requires PostgreSQL-backed startup", async (t) => {
+  await assertUnsafeStartupRejected(t);
 });
 
 test("bodyless OCC routes reject request payloads before IAM or domain side effects", () =>

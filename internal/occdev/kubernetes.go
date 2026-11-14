@@ -604,7 +604,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 // control-plane profile selects a dedicated Codex runtime.
 func (r *runner) prepareDevelopmentCodexSandbox(ctx context.Context, state *developmentState, runtimeImage string, timeoutSeconds int) (string, error) {
 	fmt.Fprintln(r.opts.Out, "Verifying the dedicated Codex sandbox on the owned k3d node...")
-	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.mjs", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
+	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.ts", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
 	command.Stderr = r.opts.Err
 	output, err := command.Output()
 	if err != nil {

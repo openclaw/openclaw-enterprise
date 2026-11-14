@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import type { Dirent } from "node:fs";
 import GithubSlugger from "github-slugger";
 import path from "node:path";
+import { stripTypeScriptTypes } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createMarkdownRenderer, renderMdxish } from "./vendor/mdx-ish.mjs";
@@ -11,7 +13,72 @@ import {
   resolveDocsFragment,
 } from "./vendor/docs-markdown.mjs";
 import { createGithubAnchorReader, githubHeadingVisibleText } from "./github-anchors.ts";
-import { publicMarkdown } from "./public-markdown.mjs";
+import { publicMarkdown } from "./public-markdown.ts";
+
+interface ParsedMarkdown {
+  tokens: ReturnType<ReturnType<typeof createMarkdownRenderer>["parse"]>;
+  ids: string[];
+  links: string[];
+}
+
+interface Frontmatter {
+  published?: unknown;
+  tags?: unknown;
+  last_verified?: unknown;
+  title?: unknown;
+  searchable?: unknown;
+}
+
+interface HeadingId {
+  id: string;
+  alias: string | undefined;
+  droppedMint: string | undefined;
+}
+
+type PageEntry = string | { page: string; label?: string };
+type GroupEntry = { group: string; pages: (GroupEntry | PageEntry)[] };
+interface TabEntry {
+  tab: string;
+  groups: GroupEntry[];
+  hidden?: PageEntry[];
+}
+
+interface DocsConfig {
+  navigation: { languages: { language: string; tabs: TabEntry[] }[] };
+  redirects?: { from: string; to: string; anchors?: Record<string, string> }[];
+}
+
+interface PageSource {
+  source: string;
+  file: string;
+}
+
+interface Page extends PageSource {
+  text: string;
+  title: unknown;
+  route: string;
+  searchable: boolean;
+  humanVerified: boolean;
+  lastVerified: unknown;
+  ids: Set<string>;
+  headingIds: Map<string, HeadingId>;
+  parsed: ParsedMarkdown;
+  html: string;
+  navigation?: { tab: NavigationTab; groups: NavigationGroup[]; label: unknown };
+}
+
+interface NavigationGroup {
+  group: string;
+  pages: (NavigationGroup | Page)[];
+  landing: Page | undefined;
+}
+
+interface NavigationTab {
+  tab: string;
+  groups: NavigationGroup[];
+  landing: Page | undefined;
+  linksHtml: string;
+}
 
 const { values } = parseArgs({
   options: { check: { type: "boolean" }, output: { type: "string" } },
@@ -37,13 +104,13 @@ const assets = path.dirname(fileURLToPath(import.meta.url));
 const repository = "https://github.com/openclaw/openclaw-enterprise";
 const themeBootstrap =
   '<script>try{const theme=localStorage.getItem("enterprise-docs-theme");if(theme==="light"||theme==="dark"){document.documentElement.dataset.theme=theme}}catch{}</script>';
-const config = JSON.parse(fs.readFileSync(path.join(docs, "docs.json"), "utf8"));
+const config: DocsConfig = JSON.parse(fs.readFileSync(path.join(docs, "docs.json"), "utf8"));
 const md = createMarkdownRenderer();
 const githubAnchors = createGithubAnchorReader(md);
-const pages = new Map();
-const unpublished = new Set();
-const escape = (value) => md.utils.escapeHtml(String(value));
-const route = (source) =>
+const pages = new Map<string, Page>();
+const unpublished = new Set<string>();
+const escape = (value: unknown) => md.utils.escapeHtml(String(value));
+const route = (source: string) =>
   "/" +
   source
     .replace(/(?:^|\/)README\.md$/, "")
@@ -53,16 +120,16 @@ const route = (source) =>
 
 // GitHub's heading slug is the canonical heading ID, so permalinks, the table of
 // contents, and source links agree. The renderer's own ID stays as an alias.
-function githubHeadingIds(parsed, ids) {
+function githubHeadingIds(parsed: ParsedMarkdown, ids: Set<string>) {
   const github = new GithubSlugger();
-  const headingIds = new Map();
+  const headingIds = new Map<string, HeadingId>();
   for (let i = 0; i < parsed.tokens.length; i++) {
-    const token = parsed.tokens[i];
+    const token = parsed.tokens[i]!;
     if (token.type !== "heading_open") {
       continue;
     }
-    const id = token.attrGet("id");
-    const mint = token.meta?.anchorAlias;
+    const id = token.attrGet("id") as string;
+    const mint = token.meta?.anchorAlias as string | undefined;
     const slug = github.slug(githubHeadingVisibleText(parsed.tokens[i + 1]));
     // Existing IDs keep their owner: a heading takes its slug only if nobody else has it,
     // and an empty slug keeps the renderer's ID.
@@ -78,11 +145,11 @@ function githubHeadingIds(parsed, ids) {
   return headingIds;
 }
 
-function useGithubHeadingIds(html, headingIds) {
-  const span = (id, attributes = "") =>
+function useGithubHeadingIds(html: string, headingIds: Map<string, HeadingId>) {
+  const span = (id: string, attributes = "") =>
     '<span id="' + escape(id) + '" class="anchor-alias"' + attributes + "></span>";
   return html.replace(/<h[1-6]\b[^>]*\bid="[^"]*"[^>]*>[\s\S]*?<\/h[1-6]>/g, (heading) => {
-    const previous = md.utils.unescapeAll(heading.match(/\bid="([^"]*)"/)[1]);
+    const previous = md.utils.unescapeAll(heading.match(/\bid="([^"]*)"/)![1]!);
     const target = headingIds.get(previous);
     if (!target) {
       return heading;
@@ -92,12 +159,18 @@ function useGithubHeadingIds(html, headingIds) {
       result = result.replace(span(target.droppedMint, ' aria-hidden="true"'), "");
     }
     return result
-      .replace(/^(<h[1-6]\b[^>]*\bid=")[^"]*"/, (_, open) => open + escape(target.id) + '"')
+      .replace(
+        /^(<h[1-6]\b[^>]*\bid=")[^"]*"/,
+        (_match: string, open: string) => open + escape(target.id) + '"',
+      )
       .replace(/^<h[1-6]\b[^>]*>/, (open) => open + (target.alias ? span(target.alias) : ""));
   });
 }
 
-function walk(directory, acceptsFile = (entry) => entry.name.endsWith(".md")) {
+function walk(
+  directory: string,
+  acceptsFile = (entry: Dirent) => entry.name.endsWith(".md"),
+): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const file = path.join(directory, entry.name);
     return entry.isDirectory()
@@ -108,13 +181,13 @@ function walk(directory, acceptsFile = (entry) => entry.name.endsWith(".md")) {
   });
 }
 
-function yamlCommentMarkdownBlocks(file) {
+function yamlCommentMarkdownBlocks(file: string) {
   const blocks = [];
-  let block = [];
+  let block: string[] = [];
   for (const line of fs.readFileSync(file, "utf8").split("\n")) {
     const match = line.match(/^\s*# ?(.*)$/);
     if (match) {
-      block.push(match[1]);
+      block.push(match[1]!);
       continue;
     }
     if (block.length) {
@@ -131,7 +204,7 @@ function yamlCommentMarkdownBlocks(file) {
 for (const file of walk(docs)) {
   const source = path.relative(docs, file).split(path.sep).join("/");
   const authored = fs.readFileSync(file, "utf8");
-  const frontmatter = parseFrontmatter(authored).data;
+  const frontmatter: Frontmatter = parseFrontmatter(authored).data;
   if (frontmatter?.published !== undefined && typeof frontmatter.published !== "boolean") {
     throw new Error(source + ": published frontmatter must be true or false");
   }
@@ -155,7 +228,7 @@ for (const file of walk(docs)) {
     }
   }
   const text = publicMarkdown(authored, md);
-  const parsed = parseDocsDocument(text, md, { sourceFile: file, root: docs });
+  const parsed: ParsedMarkdown = parseDocsDocument(text, md, { sourceFile: file, root: docs });
   const ids = new Set(parsed.ids);
   const headingIds = githubHeadingIds(parsed, ids);
   const firstHeading = parsed.tokens.findIndex(
@@ -174,6 +247,7 @@ for (const file of walk(docs)) {
     ids,
     headingIds,
     parsed,
+    html: "",
   });
 }
 // Former published routes remain usable without retaining duplicate source pages.
@@ -181,8 +255,8 @@ const redirects = config.redirects ?? [];
 if (!Array.isArray(redirects)) {
   throw new Error("docs/docs.json redirects must be an array");
 }
-const redirectSources = new Set();
-function checkRedirectTarget(target) {
+const redirectSources = new Set<string>();
+function checkRedirectTarget(target: unknown) {
   if (typeof target !== "string" || !target.startsWith("/") || target.startsWith("//")) {
     throw new Error("Invalid redirect target: " + target);
   }
@@ -225,9 +299,9 @@ const configuredTabs = config.navigation.languages.find(
 if (!configuredTabs?.length) {
   throw new Error("docs/docs.json must declare English navigation tabs");
 }
-const covered = new Set();
+const covered = new Set<string>();
 
-function navigationPage(entry, tab, groups) {
+function navigationPage(entry: PageEntry, tab: NavigationTab, groups: NavigationGroup[]): Page {
   const slug = typeof entry === "string" ? entry : entry?.page;
   if (typeof slug !== "string" || !slug || (typeof entry === "object" && "group" in entry)) {
     throw new Error("Invalid navigation page in " + tab.tab + ": " + JSON.stringify(entry));
@@ -248,15 +322,19 @@ function navigationPage(entry, tab, groups) {
     throw new Error("Duplicate navigation page: " + source);
   }
   covered.add(source);
-  Object.assign(page, {
+  page.navigation = {
     tab,
     groups,
-    navigationLabel: typeof entry === "string" ? page.title : (entry.label ?? page.title),
-  });
+    label: typeof entry === "string" ? page.title : (entry.label ?? page.title),
+  };
   return page;
 }
 
-function navigationGroup(entry, tab, ancestors = []) {
+function navigationGroup(
+  entry: GroupEntry,
+  tab: NavigationTab,
+  ancestors: NavigationGroup[] = [],
+): NavigationGroup {
   if (
     typeof entry?.group !== "string" ||
     !entry.group.trim() ||
@@ -266,14 +344,15 @@ function navigationGroup(entry, tab, ancestors = []) {
   ) {
     throw new Error("Invalid navigation group in " + tab.tab + ": " + JSON.stringify(entry));
   }
-  const group = { group: entry.group };
+  const group: NavigationGroup = { group: entry.group, pages: [], landing: undefined };
   const groups = [...ancestors, group];
   group.pages = entry.pages.map((child) =>
     child && typeof child === "object" && "group" in child
       ? navigationGroup(child, tab, groups)
       : navigationPage(child, tab, groups),
   );
-  group.landing = group.pages[0].landing ?? group.pages[0];
+  const firstPage = group.pages[0]!;
+  group.landing = "group" in firstPage ? firstPage.landing : firstPage;
   return group;
 }
 
@@ -289,9 +368,9 @@ const tabs = configuredTabs.map((entry) => {
   if (entry.hidden !== undefined && !Array.isArray(entry.hidden)) {
     throw new Error("Invalid hidden navigation pages in " + entry.tab);
   }
-  const tab = { tab: entry.tab };
+  const tab: NavigationTab = { tab: entry.tab, groups: [], landing: undefined, linksHtml: "" };
   tab.groups = entry.groups.map((group) => navigationGroup(group, tab));
-  tab.landing = tab.groups[0].landing;
+  tab.landing = tab.groups[0]!.landing;
   for (const hidden of entry.hidden ?? []) {
     navigationPage(hidden, tab, []);
   }
@@ -305,13 +384,13 @@ for (const page of pages.values()) {
 
 // Resolve links against their Markdown source, including README indexes and
 // parent-directory links, before emitting browser routes.
-function resolveLink(page, href) {
+function resolveLink(page: PageSource, href: string): string {
   if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) {
     return href;
   }
   const url = new URL(href, "https://local.invalid/" + page.source);
   const pathname = decodeURIComponent(url.pathname);
-  let target;
+  let target: string;
   if (href.startsWith("#") || href.startsWith("?") || href === "") {
     target = page.file;
   } else if (href.startsWith("/")) {
@@ -320,7 +399,7 @@ function resolveLink(page, href) {
     );
     target = linked?.file ?? path.join(docs, pathname);
   } else {
-    const sourcePath = href.split(/[?#]/, 1)[0];
+    const sourcePath = href.split(/[?#]/, 1)[0]!;
     target = path.resolve(path.dirname(page.file), decodeURIComponent(sourcePath));
   }
   const relative = path.relative(root, target);
@@ -372,7 +451,7 @@ function resolveLink(page, href) {
 let linkCount = 0;
 for (const page of pages.values()) {
   // Reuse validated targets while rendering this page from the same build inputs.
-  const resolvedLinks = new Map();
+  const resolvedLinks = new Map<string, string>();
   for (const href of page.parsed.links) {
     resolvedLinks.set(href, resolveLink(page, href));
     linkCount++;
@@ -386,11 +465,14 @@ for (const page of pages.values()) {
     }),
     page.headingIds,
   ).replace(/<(?:a|img|source|span)\b[^>]*>/g, (tag) =>
-    tag.replace(/\b(href|src|data-href)=(['"])(.*?)\2/g, (_, name, quote, href) => {
-      const sourceHref = md.utils.unescapeAll(href);
-      const resolved = resolvedLinks.get(sourceHref) ?? resolveLink(page, sourceHref);
-      return name + "=" + quote + escape(resolved) + quote;
-    }),
+    tag.replace(
+      /\b(href|src|data-href)=(['"])(.*?)\2/g,
+      (_match: string, name: string, quote: string, href: string) => {
+        const sourceHref = md.utils.unescapeAll(href);
+        const resolved = resolvedLinks.get(sourceHref) ?? resolveLink(page, sourceHref);
+        return name + "=" + quote + escape(resolved) + quote;
+      },
+    ),
   );
 }
 const deploymentExamples = path.join(root, "deploy/examples");
@@ -398,11 +480,11 @@ if (fs.existsSync(deploymentExamples)) {
   for (const file of walk(deploymentExamples, (entry) => /\.(?:ya?ml)$/i.test(entry.name))) {
     const source = path.relative(root, file).split(path.sep).join("/");
     for (const block of yamlCommentMarkdownBlocks(file)) {
-      const commentLinks = parseDocsDocument(block, md, {
+      const parsed: ParsedMarkdown = parseDocsDocument(block, md, {
         sourceFile: file,
         root: path.dirname(file),
-      }).links;
-      for (const href of commentLinks) {
+      });
+      for (const href of parsed.links) {
         resolveLink({ source, file }, href);
         linkCount++;
       }
@@ -468,16 +550,15 @@ fs.writeFileSync(
   path.join(output, "assets/site.css"),
   carapaceCss + "\n" + fs.readFileSync(path.join(assets, "site.css"), "utf8"),
 );
-fs.copyFileSync(path.join(assets, "site.mjs"), path.join(output, "assets/site.mjs"));
-fs.copyFileSync(
-  path.join(assets, "compute-matrix-browser.mjs"),
-  path.join(output, "assets/compute-matrix-browser.mjs"),
-);
+function writeBrowserModule(name: string) {
+  const source = fs.readFileSync(path.join(assets, name + ".mts"), "utf8");
+  fs.writeFileSync(path.join(output, "assets", name + ".mjs"), stripTypeScriptTypes(source));
+}
+
+writeBrowserModule("site");
+writeBrowserModule("compute-matrix-browser");
 if (pages.has("reference/api-explorer.md")) {
-  fs.copyFileSync(
-    path.join(assets, "api-explorer.mjs"),
-    path.join(output, "assets/api-explorer.mjs"),
-  );
+  writeBrowserModule("api-explorer");
   const scalar = path.dirname(fileURLToPath(import.meta.resolve("@scalar/api-reference")));
   fs.copyFileSync(
     path.join(scalar, "browser/standalone.js"),
@@ -494,13 +575,13 @@ fs.cpSync(mermaid, path.join(output, "assets/mermaid"), {
   filter: (source) => !source.endsWith(".map"),
 });
 
-function renderSidebarPages(entries, page) {
+function renderSidebarPages(entries: (NavigationGroup | Page)[], page: Page): string {
   return (
     '<ul class="sidebar-pages" role="list">' +
     entries
       .map((entry) => {
         if ("group" in entry) {
-          const active = page.groups.includes(entry);
+          const active = page.navigation!.groups.includes(entry);
           return (
             '<li><details class="sidebar-group"' +
             (active ? " open data-active" : "") +
@@ -517,7 +598,7 @@ function renderSidebarPages(entries, page) {
           '"' +
           (page === entry ? ' aria-current="page"' : "") +
           ">" +
-          escape(entry.navigationLabel) +
+          escape(entry.navigation!.label) +
           "</a></li>"
         );
       })
@@ -526,18 +607,19 @@ function renderSidebarPages(entries, page) {
   );
 }
 
-function renderBreadcrumb(page) {
+function renderBreadcrumb(page: Page): string {
+  const { tab, groups, label } = page.navigation!;
   const ancestors = [
-    { label: page.tab.tab, target: page.tab.landing },
-    ...page.groups.map((group) => ({
-      label: group.group,
-      target: "source" in group.pages[0] ? group.pages[0] : null,
-    })),
-  ].filter((item, index, items) => index === 0 || item.label !== items[index - 1].label);
-  if (ancestors.at(-1)?.label === page.navigationLabel) {
+    { label: tab.tab, target: tab.landing },
+    ...groups.map((group) => {
+      const firstPage = group.pages[0]!;
+      return { label: group.group, target: "source" in firstPage ? firstPage : null };
+    }),
+  ].filter((item, index, items) => index === 0 || item.label !== items[index - 1]!.label);
+  if (ancestors.at(-1)?.label === label) {
     ancestors.pop();
   }
-  const linkedRoutes = new Set();
+  const linkedRoutes = new Set<string>();
   const items = ancestors.map(({ label, target }) => {
     if (!target || target === page || linkedRoutes.has(target.route)) {
       return "<li><span>" + escape(label) + "</span></li>";
@@ -545,7 +627,7 @@ function renderBreadcrumb(page) {
     linkedRoutes.add(target.route);
     return '<li><a href="' + escape(target.route) + '">' + escape(label) + "</a></li>";
   });
-  items.push('<li><span aria-current="page">' + escape(page.navigationLabel) + "</span></li>");
+  items.push('<li><span aria-current="page">' + escape(label) + "</span></li>");
   return (
     '<nav class="breadcrumb" aria-label="Breadcrumb" data-pagefind-ignore><ol role="list">' +
     items.join("") +
@@ -560,7 +642,7 @@ for (const activeTab of tabs) {
         "<a" +
         (tab === activeTab ? ' aria-current="location"' : "") +
         ' href="' +
-        escape(tab.landing.route) +
+        escape(tab.landing!.route) +
         '">' +
         escape(tab.tab) +
         "</a>",
@@ -568,7 +650,8 @@ for (const activeTab of tabs) {
     .join("");
 }
 for (const page of pages.values()) {
-  const sidebar = page.tab.groups
+  const { tab } = page.navigation!;
+  const sidebar = tab.groups
     .map(
       (group) =>
         "<section><h2>" +
@@ -583,9 +666,11 @@ for (const page of pages.values()) {
       token.type === "heading_open" && token.tag === "h2"
         ? [
             '<a href="#' +
-              escape(page.headingIds.get(token.attrGet("id"))?.id ?? token.attrGet("id")) +
+              escape(
+                page.headingIds.get(token.attrGet("id") as string)?.id ?? token.attrGet("id"),
+              ) +
               '">' +
-              escape(tokens[index + 1].content) +
+              escape(tokens[index + 1]!.content) +
               "</a>",
           ]
         : [],
@@ -608,10 +693,10 @@ for (const page of pages.values()) {
     repository +
     '">GitHub</a><button id="theme" type="button" aria-label="Toggle theme">◐</button></div>' +
     '<nav class="tabs" aria-label="Documentation sections">' +
-    page.tab.linksHtml +
+    tab.linksHtml +
     "</nav></header>" +
     '<div class="layout"><button id="menu" type="button" aria-expanded="false" aria-controls="sidebar">Browse pages</button><nav id="sidebar" aria-label="' +
-    escape(page.tab.tab) +
+    escape(tab.tab) +
     ' pages">' +
     sidebar +
     "</nav>" +

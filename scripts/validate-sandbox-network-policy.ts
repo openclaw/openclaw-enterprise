@@ -9,11 +9,11 @@ import {
 } from "../apps/controller/src/drivers/sandbox/openshell.ts";
 
 try {
-  const chunks = [];
-  for await (const chunk of process.stdin) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin as AsyncIterable<Buffer>) {
     chunks.push(chunk);
   }
-  const configuration = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  const configuration: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (process.argv[2] === "--ceiling") {
     validateSandboxNetworkGrants(configuration, "/grants");
   } else {

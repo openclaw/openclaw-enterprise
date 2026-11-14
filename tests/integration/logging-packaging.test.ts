@@ -123,7 +123,7 @@ interface CollectorConfig {
 type HelmOverrides = Record<string, string | null>;
 const render: (
   overrides?: HelmOverrides,
-  options?: { release?: string },
+  options?: { release?: string; isUpgrade?: boolean },
 ) => Promise<{ stdout: string }> = renderProductionChart;
 
 async function chartResources(manifests: string): Promise<ChartResource[]> {
@@ -330,18 +330,33 @@ test(
     const collected = (path: string) =>
       includes.some((include) => include.test(path)) &&
       !excludes.some((exclude) => exclude.test(path));
-    const initializationContainers = [
-      ...initialization.spec.template.spec.initContainers,
-      ...initialization.spec.template.spec.containers,
-    ].map(({ name }) => name);
-    assert.deepEqual(initializationContainers, ["migration", "bootstrap"]);
-    const initializationLogs = (jobName: string) =>
-      initializationContainers.map(
-        (container) =>
-          `/var/log/pods/openclaw-system_${jobPodName(jobName)}_0b5c7e1e-2f4a-4c1e-9d8b-3a6f5e4d2c10/${container}/0.log`,
+    const upgrade = await render(loggingValues, { isUpgrade: true });
+    const upgradeJob = findResource(
+      await chartResources(upgrade.stdout),
+      "Job",
+      ({ metadata }) => metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+    );
+    // The initialization-specific CRI globs collect structured migration and bootstrap events.
+    // The startup check writes a plain-text result for the operator.
+    const checkInitializationLogs = (jobName: string) => {
+      const path = (container: string) =>
+        `/var/log/pods/openclaw-system_${jobPodName(jobName)}_0b5c7e1e-2f4a-4c1e-9d8b-3a6f5e4d2c10/${container}/0.log`;
+      for (const container of ["migration", "bootstrap"]) {
+        assert.ok(collected(path(container)), path(container));
+      }
+      assert.equal(collected(path("installation-check")), false, path("installation-check"));
+    };
+    for (const job of [initialization, upgradeJob]) {
+      const { initContainers, containers } = job.spec.template.spec;
+      assert.deepEqual(
+        initContainers.map(({ name }) => name),
+        ["installation-check", "migration"],
       );
-    for (const path of initializationLogs(initialization.metadata.name)) {
-      assert.ok(collected(path), path);
+      assert.deepEqual(
+        containers.map(({ name }) => name),
+        ["bootstrap"],
+      );
+      checkInitializationLogs(job.metadata.name);
     }
     // Helm allows release names up to 53 characters; past 42 the generated Pod
     // name loses part of `-initialization-`. The Job name is checked both as
@@ -349,9 +364,7 @@ test(
     for (let length = 1; length <= 53; length += 1) {
       const jobName = `${"r".repeat(length)}-initialization`;
       for (const name of new Set([jobName, jobName.slice(0, 63).replace(/-+$/, "")])) {
-        for (const path of initializationLogs(name)) {
-          assert.ok(collected(path), `release length ${length}: ${path}`);
-        }
+        checkInitializationLogs(name);
       }
     }
     const longRelease = await render(loggingValues, { release: "r".repeat(53) });
@@ -360,13 +373,12 @@ test(
       "Job",
       ({ metadata }) => metadata.labels?.["app.kubernetes.io/component"] === "initialization",
     );
-    for (const path of initializationLogs(longInitialization.metadata.name.slice(0, 63))) {
-      assert.ok(collected(path), path);
-    }
+    checkInitializationLogs(longInitialization.metadata.name.slice(0, 63));
     // Other workloads' containers stay out, and the Collector never reads itself.
     for (const path of [
       "/var/log/pods/openclaw-system_openclaw-enterprise-collector-x7k2q_uid/collector/0.log",
       "/var/log/pods/other_postgres-initdb-x7k2q_uid/postgres/0.log",
+      "/var/log/pods/other_postgres-initdb-x7k2q_uid/installation-check/0.log",
       "/var/log/pods/other_keycloak-7d9f_uid/bootstrap/0.log",
     ]) {
       assert.equal(collected(path), false, path);

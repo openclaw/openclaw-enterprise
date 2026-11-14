@@ -108,6 +108,7 @@
     "integration/ci-runner-complete-lifecycle-cases.ts",
     "integration/ci-runner-k3d-diagnostics-cases.ts",
     "integration/ci-runner-measurements-case.ts",
+    "integration/ci-runner-native-worker-proof-cases.ts",
     "helpers/ci-runner-held-clock.ts",
     "helpers/ci-runner-kill-window.ts",
     "fixtures/docker-token-retry/*.mts",

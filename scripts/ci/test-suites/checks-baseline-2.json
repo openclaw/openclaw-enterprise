@@ -73,7 +73,7 @@
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
-    "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+    "tests/conformance/repository-credentials-fixture-ownership.test.ts",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
@@ -109,8 +109,8 @@
     "tests/conformance/repository-transactions.test.mjs",
     "tests/integration/google-id-token.test.mjs",
     "tests/integration/first-agent-startup.test.mjs",
-    "tests/conformance/repository-sessions-memory.test.mjs",
-    "tests/conformance/repository-credentials-github-token.test.mjs",
+    "tests/conformance/repository-sessions-memory.test.ts",
+    "tests/conformance/repository-credentials-github-token.test.ts",
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
     "tests/conformance/repository-credentials-sessions.test.ts",
@@ -151,8 +151,8 @@
     "tests/integration/workspace-gateway-host-route.test.ts"
   ],
   "serialFiles": {
-    "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
-    "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
+    "tests/conformance/postgres-auth-binding.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
+    "tests/conformance/schema-auth-boundary-v1.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
     {
@@ -507,7 +507,7 @@
       "path": "tests/conformance/repository-credentials-github.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-github-token.test.mjs"
+      "path": "tests/conformance/repository-credentials-github-token.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
@@ -531,7 +531,7 @@
       "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+      "path": "tests/conformance/repository-credentials-fixture-ownership.test.ts",
       "expectedTests": [
         "runner timeout cancels and joins commands before teardown admits cleanup",
         "accepted network creation with a lost response stays owned until verified absent",
@@ -614,7 +614,7 @@
       "path": "tests/conformance/repository-runtime-material.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-sessions-memory.test.mjs"
+      "path": "tests/conformance/repository-sessions-memory.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-admission.test.mjs"
@@ -713,13 +713,13 @@
       "path": "tests/integration/known-device-cookie.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-auth-binding.test.mjs"
+      "path": "tests/conformance/postgres-auth-binding.test.ts"
     },
     {
       "path": "tests/conformance/postgres-controller-auth-binding.test.mjs"
     },
     {
-      "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
+      "path": "tests/conformance/schema-auth-boundary-v1.test.ts"
     },
     {
       "path": "tests/conformance/controller-stop-yields.test.ts"

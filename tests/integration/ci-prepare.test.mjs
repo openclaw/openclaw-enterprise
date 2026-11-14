@@ -21,7 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
-import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
+import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.ts";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";

@@ -1,24 +1,28 @@
+import type { createMarkdownRenderer } from "./vendor/mdx-ish.mjs";
 import { parseFrontmatter } from "./vendor/docs-markdown.mjs";
 
-export function publicMarkdown(markdown, md) {
+export function publicMarkdown(
+  markdown: string,
+  md: Pick<ReturnType<typeof createMarkdownRenderer>, "parse">,
+): string {
   const { content } = parseFrontmatter(markdown);
   const frontmatter = markdown.slice(0, markdown.length - content.length);
   const lines = content.split("\n");
   const tokens = md.parse(content, {});
-  const headings = [];
-  const placeholders = [];
+  const headings: { title: string; depth: number; start: number; end: number }[] = [];
+  const placeholders: [number, number][] = [];
   const placeholder =
     /^\[keep\s+this\s+for\s+the\s+user\s+to\s+add\s+notes\.\s+do\s+not\s+change\s+between\s+edits\]$/i;
 
   for (let index = 0; index < tokens.length; index++) {
-    const token = tokens[index];
+    const token = tokens[index]!;
     if (token.level !== 0 || !token.map) {
       continue;
     }
-    const inline = tokens[index + 1];
+    const inline = tokens[index + 1]!;
     if (token.type === "heading_open") {
-      const title = inline.children
-        .map((child) => (child.type === "softbreak" ? " " : child.content))
+      const title = inline
+        .children!.map((child) => (child.type === "softbreak" ? " " : child.content))
         .join("")
         .trim();
       headings.push({
@@ -32,7 +36,7 @@ export function publicMarkdown(markdown, md) {
     }
   }
 
-  const hidden = Array(lines.length).fill(false);
+  const hidden = Array<boolean>(lines.length).fill(false);
   const sections = headings.flatMap((heading, index) =>
     heading.depth > 1 && /^(?:change\s*log|manual\s+notes)$/i.test(heading.title)
       ? [
