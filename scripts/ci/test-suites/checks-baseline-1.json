@@ -10,7 +10,7 @@
     "tests/integration/occ-api.test.mjs",
     "tests/integration/occ-api-joint-plugin-deployment.test.ts",
     "tests/integration/occ-service-account-lifecycle.test.ts",
-    "tests/integration/stored-document-serialization.test.mjs",
+    "tests/integration/stored-document-serialization.test.ts",
     "tests/integration/precompiled-route-compilers.test.ts",
     "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.ts",
@@ -492,7 +492,7 @@
       ]
     },
     {
-      "path": "tests/integration/stored-document-serialization.test.mjs"
+      "path": "tests/integration/stored-document-serialization.test.ts"
     },
     {
       "path": "tests/integration/precompiled-route-compilers.test.ts"
