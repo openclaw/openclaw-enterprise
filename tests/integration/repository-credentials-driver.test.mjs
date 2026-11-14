@@ -1,6 +1,6 @@
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
-import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
+import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
