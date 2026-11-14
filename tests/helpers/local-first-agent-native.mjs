@@ -1071,11 +1071,23 @@ export function nativeWorkerHistoryEvidence({
           .filter((part) => part?.type === "text" && typeof part.text === "string")
           .map((part) => part.text)
           .join("\n");
-  const execOutput = (content) => {
+  const execOutput = (content, { requireCompleted = false } = {}) => {
     const output = text(content);
     try {
       const result = JSON.parse(output);
       if (typeof result?.value?.aggregated === "string") {
+        if (requireCompleted) {
+          // Legacy wrappers can carry only output. Once a result declares a
+          // process status, partial output is proof only after a successful exit.
+          const shell = result.value;
+          const hasStatus = Object.hasOwn(result, "status") || Object.hasOwn(shell, "status");
+          if (hasStatus && (result.status !== "completed" || shell.status !== "completed")) {
+            return "";
+          }
+          if ((hasStatus || Object.hasOwn(shell, "exitCode")) && shell.exitCode !== 0) {
+            return "";
+          }
+        }
         return result.value.aggregated;
       }
     } catch {
@@ -1091,7 +1103,7 @@ export function nativeWorkerHistoryEvidence({
       message.isError === false &&
       // A failed command can echo the marker in its source. Only a
       // standalone proof line identifies the command's actual output.
-      execOutput(message.content)
+      execOutput(message.content, { requireCompleted: true })
         .split(/\r?\n/)
         .some((line) => line.startsWith(toolPrefix)),
   );
