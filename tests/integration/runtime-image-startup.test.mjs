@@ -3,6 +3,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import {
+  parseRuntimeDownloadClientSelection,
+  readReleaseDownloadClientSelection,
+} from "../../scripts/lib/runtime-download-clients.ts";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import {
   cpuScaledImageTimeoutMs,
@@ -1494,6 +1498,44 @@ const timeout = setTimeout(() => {
   },
 );
 
+async function verifyRuntimeDownloadClients() {
+  const revision = process.env.EXPECTED_OCC_REVISION ?? process.env.SOURCE_SHA;
+  const selection = revision
+    ? await readReleaseDownloadClientSelection(revision)
+    : parseRuntimeDownloadClientSelection(
+        await readFile(
+          new URL("../../deploy/runtime/additional-download-clients.json", import.meta.url),
+          "utf8",
+        ),
+      );
+  const probe = await readFile(
+    new URL("../helpers/runtime-image-native-download-clients.ts", import.meta.url),
+    "utf8",
+  );
+  await runDocker(
+    [
+      "run",
+      "--rm",
+      "-i",
+      "--pull=never",
+      "--network",
+      "none",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--entrypoint",
+      "node",
+      image,
+      "--input-type=module-typescript",
+      "-",
+      JSON.stringify([...selection]),
+    ],
+    { timeout: cpuScaledImageTimeoutMs(60_000) },
+    probe,
+  );
+}
+
 test(
   "runtime image shares the reviewed Codex version between the plugin and Dedicated command",
   imageTestOptions,
@@ -1775,6 +1817,9 @@ const deadline = setTimeout(() => {
       JSON.stringify(nodeSource),
     ]);
     assert.match(stdout, /shared-reviewed-codex-ready/);
+    if (!historicalCodex) {
+      await verifyRuntimeDownloadClients();
+    }
   },
 );
 

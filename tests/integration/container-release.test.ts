@@ -27,7 +27,7 @@ import {
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
-import { writeCommand } from "../helpers/fake-commands.ts";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const sourceSha = "a".repeat(40);
@@ -680,6 +680,246 @@ async function writeOciBlob(layout: string, value: object): Promise<BlobIdentity
   await writeFile(join(layout, "blobs/sha256", hash), bytes);
   return { digest: `sha256:${hash}`, size: bytes.length };
 }
+
+test("offline download client projection binds image metadata to the selected publication platform", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-runtime-download-projection-");
+  await mkdir(join(directory, "blobs/sha256"), { recursive: true });
+  const selectedPath = "/opt/tools/bin/example";
+  const selectionFile = "deploy/runtime/additional-download-clients.json";
+  await mkdir(join(directory, "deploy/runtime"), { recursive: true });
+  const selectionPath = join(directory, selectionFile);
+  await writeFile(selectionPath, JSON.stringify([selectedPath]));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
+  git("init", "--quiet", "--template=");
+  git("add", selectionFile);
+  git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "commit",
+    "--quiet",
+    "-m",
+    "Select the runtime clients",
+  );
+  const selectedSource = git("rev-parse", "HEAD");
+  // A local edit must not change the selection from the authenticated publication.
+  await writeFile(selectionPath, JSON.stringify(["/opt/tools/bin/unreviewed"]));
+  const nodeBaseImage = `docker.io/library/node:24.22.1@sha256:${"a".repeat(64)}`;
+  const platformRecords = await Promise.all(
+    (["amd64", "arm64"] as const).map(async (architecture) => {
+      const config = await writeOciBlob(directory, {
+        os: "linux",
+        architecture,
+        config: { Labels: { "org.opencontainers.image.revision": selectedSource } },
+        rootfs: { type: "layers", diff_ids: [] },
+      });
+      const mediaType = "application/vnd.oci.image.manifest.v1+json";
+      const manifest = await writeOciBlob(directory, {
+        schemaVersion: 2,
+        mediaType,
+        config: { ...config, mediaType: "application/vnd.oci.image.config.v1+json" },
+        layers: [],
+      });
+      return {
+        manifest: { ...manifest, mediaType, platform: { os: "linux", architecture } },
+        seal: {
+          platform: `linux/${architecture}`,
+          digest: manifest.digest,
+          configDigest: config.digest,
+        },
+      };
+    }),
+  );
+  const index = await writeOciBlob(directory, {
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests: platformRecords.map(({ manifest }) => manifest),
+  });
+  const platformDigests = platformRecords.map(({ seal }) => seal);
+  const [amd64, platform] = platformDigests;
+  assert.ok(amd64 && platform);
+  const image = `${runtimeReceipt.destination}@${index.digest}`;
+  const platformImage = `${runtimeReceipt.destination}@${platform.digest}`;
+  const publication = {
+    sourceSha: selectedSource,
+    workflowSha: selectedSource,
+    tag: `sha-${selectedSource}`,
+    nodeBaseImage,
+    platforms: platformDigests.map((row) => row.platform),
+    archiveSha256: "f".repeat(64),
+  };
+  const controller = { ...controllerReceipt, ...publication };
+  const runtime = { ...runtimeReceipt, ...publication, digest: index.digest, platformDigests };
+  const receipt = [controller, runtime];
+  const receiptPath = join(directory, "publication.json");
+  const metadataPath = join(directory, "provenance.json");
+  const metadataTar = join(directory, "metadata.tar");
+  const imageTar = join(directory, "image.tar");
+  execFileSync("tar", ["-cf", imageTar, "-C", directory, "blobs"]);
+  const apt = { resolvedBinary: "/usr/lib/apt/methods/http", binarySha256: "3".repeat(64) };
+  const downloadClients = {
+    [selectedPath]: { resolvedBinary: selectedPath, binarySha256: "6".repeat(64) },
+    "/usr/bin/curl": { resolvedBinary: "/usr/bin/curl", binarySha256: "2".repeat(64) },
+    "/usr/lib/apt/methods/http": apt,
+    "/usr/lib/apt/methods/https": apt,
+    "/usr/local/bin/node": { resolvedBinary: "/usr/local/bin/node", binarySha256: "4".repeat(64) },
+  };
+  async function archiveMetadata(clients: Record<string, typeof apt>) {
+    await writeFile(
+      metadataPath,
+      JSON.stringify({ platform: "linux", architecture: "arm64", downloadClients: clients }),
+    );
+    execFileSync("tar", ["--format=ustar", "-cf", metadataTar, "-C", directory, "provenance.json"]);
+  }
+  await writeFile(receiptPath, JSON.stringify(receipt));
+  await archiveMetadata(downloadClients);
+  // Replace only Docker I/O. The real verifier parses the hashed OCI export,
+  // and the real extractor parses the tar returned for the exact image path.
+  const container = "9".repeat(64);
+  const extractLog = join(directory, "create.log");
+  await writeCommand(
+    directory,
+    "docker",
+    `
+import json, os, pathlib, signal, sys
+root = pathlib.Path(__file__).parent
+args = sys.argv[1:]
+owned = root / "container-label"
+if args[:2] == ["image", "inspect"]:
+    assert args[2:] in [["${image}"], ["--platform", "linux/arm64", "${image}"]]
+    selected = "--platform" in args
+    digest = "${platform.digest}" if selected else "${index.digest}"
+    print(json.dumps([{"Descriptor": {"digest": digest}, "Os": "linux", "Architecture": "arm64"}]))
+elif args == ["image", "save", "--platform", "linux/arm64", "${image}"]:
+    sys.stdout.buffer.write((root / "image.tar").read_bytes())
+elif args[0] == "create":
+    assert args[-5:] == ["--platform", "linux/arm64", "--pull=never", "${image}", "/bin/true"]
+    with (root / "create.log").open("a") as log:
+        log.write("create\\n")
+    owned.write_text(args[args.index("--label") + 1].split("=", 1)[1])
+    if os.environ.get("INTERRUPT_CREATE") == "1":
+        os.kill(os.getppid(), signal.SIGTERM)
+        signal.pause()
+    print("${container}")
+elif args == ["cp", "${container}:/opt/oce/runtime/provenance.json", "-"]:
+    sys.stdout.buffer.write((root / "metadata.tar").read_bytes())
+elif args[0] == "ps":
+    if owned.exists():
+        print("${container}")
+elif args[:2] == ["container", "inspect"] and args[-1] == "${container}":
+    print(owned.read_text())
+elif args == ["rm", "--volumes", "${container}"]:
+    owned.unlink()
+else:
+    sys.exit(2)
+`,
+    { interpreter: "python3" },
+  );
+  const project = (extraEnv: NodeJS.ProcessEnv = {}) =>
+    spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(
+          new URL("../../scripts/ci/runtime-download-client-projection.ts", import.meta.url),
+        ),
+        receiptPath,
+        platform.platform,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 15_000,
+        cwd: directory,
+        env: {
+          ...process.env,
+          PATH: commandPath(directory),
+          SOURCE_SHA: selectedSource,
+          PUBLICATION_RUN_ID: "123",
+          PUBLICATION_ATTEMPT: "1",
+          NODE_BASE_IMAGE: nodeBaseImage,
+          GHCR_RUNTIME_IMAGE: runtimeReceipt.destination,
+          ...extraEnv,
+        },
+      },
+    );
+  const projected = project();
+  assert.equal(projected.status, 0, projected.stderr);
+  assert.deepEqual(JSON.parse(projected.stdout), {
+    sourceImage: image,
+    platformImage,
+    platform: platform.platform,
+    downloadClients,
+  });
+
+  // An incorrect platform seal must fail before a container can be created.
+  const mismatchedSeal = [
+    controller,
+    { ...runtime, platformDigests: [amd64, { ...platform, configDigest: digest }] },
+  ];
+  await writeFile(receiptPath, JSON.stringify(mismatchedSeal));
+  const rejectedSeal = project();
+  assert.equal(rejectedSeal.status, 1, rejectedSeal.stderr);
+  assert.match(rejectedSeal.stderr, /differs from the publication platform seal/);
+  assert.equal(rejectedSeal.stdout, "");
+  assert.equal(await readFile(extractLog, "utf8"), "create\n");
+
+  await writeFile(receiptPath, JSON.stringify(receipt));
+  // Valid provenance in the first member must not admit an unexpected second member.
+  execFileSync("tar", [
+    "--format=ustar",
+    "-cf",
+    metadataTar,
+    "-C",
+    directory,
+    "provenance.json",
+    selectionFile,
+  ]);
+  const rejectedArchive = project();
+  assert.equal(rejectedArchive.status, 1, rejectedArchive.stderr);
+  assert.match(
+    rejectedArchive.stderr,
+    /Image file archive contains nonzero padding or additional data/,
+  );
+  assert.equal(rejectedArchive.stdout, "");
+  await assert.rejects(readFile(join(directory, "container-label")), { code: "ENOENT" });
+
+  await archiveMetadata({
+    ...downloadClients,
+    "/usr/lib/apt/methods/https": { ...apt, binarySha256: "5".repeat(64) },
+  });
+  const rejectedMetadata = project();
+  assert.equal(rejectedMetadata.status, 1, rejectedMetadata.stderr);
+  assert.match(rejectedMetadata.stderr, /Executable aliases disagree/);
+  assert.equal(rejectedMetadata.stdout, "");
+
+  const { [selectedPath]: selectedClient, ...remainingClients } = downloadClients;
+  await archiveMetadata({ ...remainingClients, "/opt/tools/bin/unreviewed": selectedClient });
+  const substituted = project();
+  assert.equal(substituted.status, 1);
+  assert.match(substituted.stderr, /Missing runtime download client provenance/);
+  assert.equal(substituted.stdout, "");
+
+  await archiveMetadata({
+    ...downloadClients,
+    [selectedPath]: { ...selectedClient, resolvedBinary: "/usr/local/bin/node" },
+  });
+  const redirected = project();
+  assert.equal(redirected.status, 1);
+  assert.match(redirected.stderr, /resolves to an unexpected path/);
+  assert.equal(redirected.stdout, "");
+
+  // Simulate Docker creating the resource while the CLI loses its create reply.
+  // Shutdown must reconcile the owned container before exiting without a projection.
+  const interrupted = project({ INTERRUPT_CREATE: "1" });
+  assert.equal(interrupted.status, 143, interrupted.stderr);
+  assert.equal(interrupted.stdout, "");
+  await assert.rejects(readFile(join(directory, "container-label")), { code: "ENOENT" });
+});
 
 test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
   const directory = await temporaryDirectory(t, "enterprise-oci-platforms-");
