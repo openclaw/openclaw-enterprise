@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type openShellLane from "../../scripts/ci/test-suites/openshell.json";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import {
   createRunnerFixture as fixture,
   laneArgs,
@@ -35,6 +35,39 @@ type FocusedSelection = {
     }
 );
 
+function readSelectedOpenShellLane(name: string, view = "default") {
+  const suite = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view);
+  const lanes = field(suite, "lanes");
+  const lane = field(lanes, name);
+  assert.ok(typeof lane === "object" && lane !== null);
+  const requiredEnv = field(lane, "requiredEnv");
+  const files = field(lane, "files");
+  assert.ok(isStrings(requiredEnv));
+  assert.ok(Array.isArray(files));
+  return {
+    ...lane,
+    requiredEnv,
+    files: files.map((entry: unknown) => {
+      assert.ok(typeof entry === "object" && entry !== null);
+      const path = field(entry, "path");
+      const expectedTests = field(entry, "expectedTests");
+      const requiredEnv = field(entry, "requiredEnv");
+      assert.ok(typeof path === "string");
+      assert.ok(isStrings(expectedTests));
+      assert.ok(requiredEnv === undefined || isStrings(requiredEnv));
+      return { ...entry, path, expectedTests, requiredEnv };
+    }),
+  };
+}
+
+function field(value: unknown, key: string): unknown {
+  return value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined;
+}
+
+function isStrings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item: unknown) => typeof item === "string");
+}
+
 async function readOpenShellLane(): Promise<OpenShellLane> {
   return JSON.parse(
     await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
@@ -43,7 +76,7 @@ async function readOpenShellLane(): Promise<OpenShellLane> {
 
 async function copyBrowserFixture(root: string) {
   await writeFile(join(root, browserFile), await readFile(join(repositoryRoot, browserFile)));
-  for (const path of ["scripts/ci/failure-redaction.mjs", "scripts/ci/agent-sandbox.ts"]) {
+  for (const path of ["scripts/ci/failure-redaction.ts", "scripts/ci/agent-sandbox.ts"]) {
     await symlink(join(repositoryRoot, path), join(root, path));
   }
   for (const path of ["apps", "node_modules", "tests/helpers"]) {
@@ -146,8 +179,7 @@ export function registerOpenShellAdmissionCases() {
     for (const focused of [false, true]) {
       test(`the Namespace runner selects file model inputs before setup (${selection.name}, focused: ${focused})`, async (t) => {
         const root = await fixture(t);
-        const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
-        const lane: OpenShellLane = suites.lanes.openshell;
+        const lane = readSelectedOpenShellLane("openshell");
         const file = lane.files.find(({ path }) =>
           path.endsWith("/namespace-driver-openshell-k3d-real.test.ts"),
         );
@@ -284,8 +316,7 @@ export function registerOpenShellAdmissionCases() {
   for (const workflow of apiKeyWorkflows) {
     test(`the ${workflow} runner preserves the selected provider URL with its API key`, async (t) => {
       const root = await fixture(t);
-      const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
-      const lane: OpenShellLane = suites.lanes.openshell;
+      const lane = readSelectedOpenShellLane("openshell");
       const file = lane.files.find(({ path }) =>
         path.endsWith(`/openshell-${workflow}-real.test.ts`),
       );
@@ -326,9 +357,8 @@ export function registerOpenShellAdmissionCases() {
     for (const selection of ["compose prepared", "compose default", "kubernetes"]) {
       test(`the ${view} guided installer runner scopes prepared controller inputs (${selection})`, async (t) => {
         const root = await fixture(t);
-        const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view);
         const laneName = view === "default" ? "openshell" : "openshell-installers";
-        const lane: OpenShellLane = suites.lanes[laneName];
+        const lane = readSelectedOpenShellLane(laneName, view);
         const path =
           selection === "kubernetes"
             ? "tests/integration/local-first-agent-openshell-k3d-real.test.mjs"

@@ -395,7 +395,7 @@ export async function checkBoundedAgentNamespaceActivity(t: TestContext) {
 }
 
 export async function checkMixedPrecisionEventOrder() {
-  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.mjs");
+  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.ts");
   const { older, newer } = mixedPrecisionEventBoundary({
     namespace: "occ-agent-a",
     pod: "harness-0",

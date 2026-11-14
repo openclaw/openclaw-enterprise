@@ -98,6 +98,8 @@
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
+        "the staged sign-in chart preserves the historical worker probes for both Helm operations",
+        "the production image executes the chart worker probes as the worker user",
         "the plugin request guard installs beside OpenShell without control-plane access",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",

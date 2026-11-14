@@ -838,7 +838,7 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   const consumerBlobs = await f.git("rev-parse", "HEAD:" + storybookWorkflow, "HEAD:" + preparer);
   const knownConsumer =
     consumerBlobs ===
-    "08676f57d84dcdec23bb01aae2ebed6c1882f9f2\n47cc6129264ecdfb5271be15c51441e48e990323";
+    "ad55f3c6ecfb551d76984ffd901abe3dfeb9c170\n47cc6129264ecdfb5271be15c51441e48e990323";
   const mode = knownConsumer ? "candidate" : "broad";
   const artifact = join(f.dir, "receipt.json");
   assert.match(

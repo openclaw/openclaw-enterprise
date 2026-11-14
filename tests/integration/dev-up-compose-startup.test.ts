@@ -173,7 +173,7 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
         entry.args[0] === "compose" &&
         entry.args.includes("exec") &&
         entry.args.includes("worker") &&
-        entry.args.includes("scripts/production-healthcheck.mjs") &&
+        entry.args.includes("scripts/production-healthcheck.ts") &&
         entry.args.at(-1) === "ready",
     ),
   );

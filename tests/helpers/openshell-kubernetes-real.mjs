@@ -18,7 +18,7 @@ import {
   diagnosticDeadlineMs,
   productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 import { runGatewayInstallation } from "./openshell-installation.ts";
 
 import {

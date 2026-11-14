@@ -6,7 +6,7 @@ import {
   failureSecrets,
   maskPrivateKeyLines,
   redactOutputLine,
-} from "../../scripts/ci/failure-redaction.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
 
 const protectedValues = new Set();
 

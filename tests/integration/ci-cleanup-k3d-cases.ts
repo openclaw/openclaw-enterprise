@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { cleanupState, deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
+import { cleanupState, deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import {
   createK3dClusterResource,

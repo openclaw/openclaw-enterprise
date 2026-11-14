@@ -5,7 +5,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 
 import { basename, isAbsolute, join, posix, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { assertInsideDirectory } from "./assert-inside-directory.ts";
-import { privateOwned } from "./private-owned-path.mjs";
+import { privateOwned } from "./private-owned-path.ts";
 import {
   assertReviewedCodexVersion,
   codexBwrapSourceProvenance,

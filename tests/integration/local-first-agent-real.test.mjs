@@ -8,12 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { redactFailure } from "../../scripts/ci/failure-redaction.mjs";
+import { redactFailure } from "../../scripts/ci/failure-redaction.ts";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
-import {
-  WORKSPACE_DEFAULTS,
-  WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
+import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -40,7 +37,7 @@ import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
-const firstAgentScript = fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url));
+const firstAgentScript = fileURLToPath(new URL("../../scripts/first-agent.ts", import.meta.url));
 const selected = process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL === "1";
 const selectedHarness = process.env.OCC_TEST_LOCAL_FIRST_AGENT_HARNESS ?? "openclaw";
 assert.match(selectedHarness, /^(?:openclaw|codex)$/);

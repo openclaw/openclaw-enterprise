@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { createManagedWorkloadExec } from "./egress-managed-workload-exec.mjs";
 import { enforcementCapabilities } from "./egress-installed-agent.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { createRealKubernetesFixture } from "./kubernetes-real.mjs";
+import { createRealKubernetesFixture } from "./kubernetes-real.ts";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
 import {
   assertConnectedResponse,

@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { openShellHarnessError } from "./openshell-model-inputs.mjs";
-import { loadTestSuites } from "./test-suites.mjs";
+import { loadTestSuites } from "./test-suites.ts";
 
 type IssueDetails = {
   file?: string;

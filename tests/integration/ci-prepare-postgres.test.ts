@@ -114,7 +114,7 @@ esac`,
     assert.equal(file.status, 1);
     assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).resources, state.resources);
     assert.match(file.stderr, /PostgreSQL server is not ready/);
-    const cleaned = spawnSync(process.execPath, ["scripts/ci/cleanup.mjs", "--state", statePath], {
+    const cleaned = spawnSync(process.execPath, ["scripts/ci/cleanup.ts", "--state", statePath], {
       cwd: repositoryRoot,
       encoding: "utf8",
       env,
@@ -177,7 +177,7 @@ esac`,
     // Run the printed command to check quoting and the teardown of the recorded project.
     const cleanupCommand = prepared.stderr
       .split("\n")
-      .find((line) => line.startsWith("node scripts/ci/cleanup.mjs --state "));
+      .find((line) => line.startsWith("node scripts/ci/cleanup.ts --state "));
     assert.ok(cleanupCommand, prepared.stderr);
     const cleaned = spawnSync("/bin/sh", ["-c", cleanupCommand], {
       cwd: repositoryRoot,

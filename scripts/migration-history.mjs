@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { catalogDigest, initialSchemaState, migrationCatalog } from "./migration-catalog.mjs";
+import { catalogDigest, initialSchemaState, migrationCatalog } from "./migration-catalog.ts";
 
 const directory = fileURLToPath(new URL("../migrations", import.meta.url));
 const dependency = createRequire(new URL("../packages/occ/package.json", import.meta.url));

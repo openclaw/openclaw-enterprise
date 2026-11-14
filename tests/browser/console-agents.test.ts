@@ -35,12 +35,12 @@ import type {
   IAMRoleWire,
   SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
-import type { IAMDriver } from "../../packages/contracts/src/index.ts";
-
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
+  type IAMDriver,
+} from "../../packages/contracts/src/index.ts";
+
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";

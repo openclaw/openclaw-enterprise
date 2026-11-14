@@ -79,7 +79,7 @@ jobs:
         if: ${{ matrix.image == 'runtime' }}
         id: openclaw-source
         run: |
-          values="$(node scripts/lib/openclaw-source.mjs build-args)"
+          values="$(node scripts/lib/openclaw-source.ts build-args)"
           {
             echo 'build-args<<EOF'
             printf '%s\n' "$values"
@@ -233,7 +233,7 @@ jobs:
           IMAGE: runtime
           PLATFORM: linux/${{ matrix.arch }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: node scripts/ci/container-release.mjs record-build "$RUNNER_TEMP/oci"
+        run: node scripts/ci/container-release.ts record-build "$RUNNER_TEMP/oci"
       - name: Retain untested runtime for a fresh native runner
         if: ${{ matrix.image == 'runtime' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -258,7 +258,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           CI_ATTEMPT: ${{ env.CI_ATTEMPT }}
         run: |
-          node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
+          node scripts/ci/container-release.ts smoke "$RUNNER_TEMP/oci"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ matrix.image == 'controller' }}
         with:
@@ -306,7 +306,7 @@ jobs:
           path: ${{ runner.temp }}/oci
       - name: Verify the runtime build and referenced OCI blobs
         id: verified
-        run: node scripts/ci/container-release.mjs verify-build "$RUNNER_TEMP/oci"
+        run: node scripts/ci/container-release.ts verify-build "$RUNNER_TEMP/oci"
       - name: Install existing smoke test prerequisites
         run: |
           sudo apt-get -o Acquire::Retries=3 update
@@ -320,10 +320,10 @@ jobs:
           bash scripts/ci/setup-tools.sh k3d
           export PATH="$RUNNER_TEMP/bin:$PATH"
           export OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY=1
-          node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
+          node scripts/ci/container-release.ts smoke "$RUNNER_TEMP/oci"
       - name: Clean up runtime smoke resources
         if: always()
-        run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/runtime-smoke-${{ matrix.arch }}.json"
+        run: node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/runtime-smoke-${{ matrix.arch }}.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: platform-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}

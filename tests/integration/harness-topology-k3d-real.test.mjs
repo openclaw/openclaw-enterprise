@@ -34,7 +34,7 @@ import {
   resources,
   secretRotationProbe,
 } from "../helpers/harness-topology-k3d-real.mjs";
-import { boundedTeardown } from "../helpers/kubernetes-real.mjs";
+import { boundedTeardown } from "../helpers/bounded-teardown.ts";
 
 // The runner hands the capability to this file, not to other cases or descendants.
 const case2ReceiptBinding = process.env.OCC_TEST_K3D_CASE2_PHASE_FILE;

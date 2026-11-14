@@ -7,7 +7,7 @@ import {
   createKubernetesClient,
   explicitK3dSelection,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import { parseProductionChart, productionValues } from "../helpers/production-chart.mjs";
 
 const execute = promisify(execFile);

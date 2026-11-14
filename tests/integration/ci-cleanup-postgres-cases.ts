@@ -4,8 +4,8 @@ import { mkdir, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import { basename, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
-import { cleanupState } from "../../scripts/ci/cleanup.mjs";
-import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
+import { cleanupState } from "../../scripts/ci/cleanup.ts";
+import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres, type FakePostgresQuery } from "../helpers/fake-postgres-server.mjs";
@@ -53,7 +53,7 @@ function runAsync(
 }
 
 // A fake lane PostgreSQL server for one case, stopped after it. Database drops reach it
-// over the lane server's published port (scripts/ci/postgres-admin.mjs).
+// over the lane server's published port (scripts/ci/postgres-admin.ts).
 async function laneFakePostgres(t: TestContext, onQuery?: FakePostgresQuery) {
   const postgres = await startFakePostgres(onQuery ? { onQuery } : undefined);
   t.after(() => postgres.close());

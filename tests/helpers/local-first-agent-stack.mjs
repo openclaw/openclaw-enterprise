@@ -10,7 +10,7 @@ import {
   failureSecrets,
   redactFailureDetail,
   redactLogLine,
-} from "../../scripts/ci/failure-redaction.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
 import { selectComposeSubnet } from "./compose-network.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));

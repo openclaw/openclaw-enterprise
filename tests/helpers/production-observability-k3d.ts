@@ -20,7 +20,7 @@ import {
   explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
 type CommandOptions = {
   cwd?: string;
@@ -41,15 +41,6 @@ type Images = {
 };
 
 type Labels = Record<string, string>;
-type KubernetesClient = {
-  resource(kind: string, name: string, namespace?: string): Promise<unknown>;
-  resources(kind: string, namespace: string, ...args: string[]): Promise<unknown>;
-  waitFor<T>(
-    description: string | (() => string),
-    probe: () => Promise<T | false | undefined>,
-    timeoutMs?: number,
-  ): Promise<T>;
-};
 
 type InstallationOptions = {
   modelTurns?: boolean;
@@ -179,7 +170,7 @@ export async function installObservabilityControlPlane(
     return readString(stdout, "command stdout");
   };
   const kubectl = (...args: string[]) => run("kubectl", kubectlArguments(selection, args));
-  const kubernetes: KubernetesClient = createKubernetesClient({
+  const kubernetes = createKubernetesClient({
     selection,
     kubectl,
     waitTimeoutMs: 180_000,

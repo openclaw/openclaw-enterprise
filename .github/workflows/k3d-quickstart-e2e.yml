@@ -98,7 +98,7 @@ jobs:
           OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: ${{ needs.runtime-artifact.outputs.source-sha }}
           OCC_CI_RUNTIME_ARTIFACT_RUN_ID: ${{ needs.runtime-artifact.outputs.run-id }}
           OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ needs.runtime-artifact.outputs.producer-attempt }}
-        run: node scripts/ci/k3d-quickstart/images.mjs
+        run: node scripts/ci/k3d-quickstart/images.ts
       - name: Stage run-private inputs
         id: inputs
         env:

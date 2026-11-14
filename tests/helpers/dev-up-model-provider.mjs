@@ -6,7 +6,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { registryImage } from "../../scripts/ci/fixture-support-images.mjs";
-import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
+import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import { availablePort } from "./available-port.ts";
 import {
   configureModelProviderDNS,

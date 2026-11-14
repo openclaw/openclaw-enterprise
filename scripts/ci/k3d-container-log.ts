@@ -1,9 +1,12 @@
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { isCredentialLine, redactLogLine, redactOutputLine } from "./failure-redaction.mjs";
+import {
+  isCredentialLine,
+  redactLogLine,
+  redactOutputLine,
+  type RedactionSecrets,
+} from "./failure-redaction.ts";
 import { compareEventTimes, eventObservedTime } from "./kubernetes-event-time.ts";
 import { maskPrivateKeyLogLines, redactCredentialLine } from "./k3d-node-log.ts";
-
-type RedactionSecrets = readonly (readonly [value: string, name: string])[];
 
 const MAX_ACTIVITY_RECORDS = 200;
 const CONTAINER_LOG_LINES = 1_500;

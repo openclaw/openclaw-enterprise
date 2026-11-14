@@ -213,7 +213,7 @@ async function lifecycleFixture(
     ].join("\n"),
   );
   await writeFile(
-    join(root, "scripts/ci/cleanup.mjs"),
+    join(root, "scripts/ci/cleanup.ts"),
     [
       'import { appendFile, readFile, rm, writeFile } from "node:fs/promises";',
       shared,
@@ -227,7 +227,7 @@ async function lifecycleFixture(
       "  }",
       `  if (${JSON.stringify(failure)} === "cleanup") {`,
       "    process.env.OCC_DOCKER_BIN = paths.engine;",
-      `    const { cleanupState } = await import(${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/cleanup.mjs")).href)});`,
+      `    const { cleanupState } = await import(${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/cleanup.ts")).href)});`,
       "    return cleanupState(statePath);",
       "  }",
       "  await rm(paths.owned);",

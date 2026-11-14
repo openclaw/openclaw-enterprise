@@ -18,7 +18,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
-import { productionGatewayMemoryLimitGi } from "./kubernetes-real.mjs";
+import { productionGatewayMemoryLimitGi } from "./kubernetes-real.ts";
 import { commandOutput, failureTail, runDocker } from "./runtime-image-docker.ts";
 import {
   listGatewayPlugins,

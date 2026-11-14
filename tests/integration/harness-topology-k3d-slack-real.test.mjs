@@ -16,7 +16,7 @@ import {
   slackApi,
   waitFor,
 } from "../helpers/harness-topology-k3d-real.mjs";
-import { boundedTeardown } from "../helpers/kubernetes-real.mjs";
+import { boundedTeardown } from "../helpers/bounded-teardown.ts";
 
 // The topology registers its platform Namespace delete before the worker and port-forward stops.
 // Run them newest-first, each bounded and all attempted (finding 1711).

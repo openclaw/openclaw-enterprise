@@ -14,7 +14,7 @@ import {
   redactLogLine,
   redactOutputLine,
   redactFailureDetail,
-} from "../../scripts/ci/failure-redaction.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { prependPath } from "../helpers/fake-commands.ts";
 import {

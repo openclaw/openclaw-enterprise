@@ -23,7 +23,7 @@ import {
   inlineProbeCommand,
   retryKubectlRead,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import { kubectlGetJson } from "../helpers/kubernetes-api-read.ts";
 import { waitForResult } from "../helpers/wait-for.mjs";
 
@@ -141,7 +141,7 @@ export async function waitForDeletedClaim(name, namespace) {
 // them, and each deletion waits out namespace-controller passes (5 s each, longer while Pods
 // terminate). local-path removes a deleted claim's volume directory with a helper Pod, maybe
 // after the file ends; lane cleanup removes whatever such volumes leave in the shared storage
-// (scripts/ci/cleanup.mjs), so no file waits for them.
+// (scripts/ci/cleanup.ts), so no file waits for them.
 export function deleteNamespaces(...names) {
   return kubectl("delete", "namespace", ...names, "--ignore-not-found=true", "--wait=false");
 }

@@ -12,10 +12,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   abandonedTeardownExitGraceMs,
-  assertProbeDenied,
   boundedTeardown,
+  teardownStepLimitMs,
+  withBoundedTeardown,
+} from "../helpers/bounded-teardown.ts";
+import {
+  assertProbeDenied,
   createKubernetesClient,
-  deleteNamespaceExplained as deleteNamespaceExplainedJs,
+  deleteNamespaceExplained,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   inlineProbeCommand,
@@ -23,12 +27,10 @@ import {
   namespaceAlreadyTerminating,
   PROBE_DENIED_EXIT_CODE,
   probeDenial,
-  retryKubectlRead as retryKubectlReadJs,
-  retryKubectlWrite as retryKubectlWriteJs,
-  teardownStepLimitMs,
-  withBoundedTeardown,
+  retryKubectlRead,
+  retryKubectlWrite,
   withinDiagnosticDeadline,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { withEnvironment } from "../helpers/environment.ts";
@@ -55,26 +57,13 @@ type RetryOptions = {
   log: (message: string) => void;
 };
 type RetryOperation = <T>(operation: () => Promise<T>, options: RetryOptions) => Promise<T>;
-type Kubectl = (...args: string[]) => Promise<string>;
 type DiagnosticSleep = (
   ms: number,
   value: undefined,
   options: { signal: AbortSignal },
 ) => Promise<undefined>;
 
-// The JavaScript helpers accept these fixture inputs at runtime; inference from their defaults
-// otherwise narrows callback return values and treats unused fixture settings as required.
-const retryKubectlRead = retryKubectlReadJs as RetryOperation;
-const retryKubectlWrite = retryKubectlWriteJs as <T>(
-  operation: () => Promise<T>,
-  options: RetryOptions & { applied?: RegExp },
-) => Promise<T | "">;
 const retryModelAtCapacity = retryModelAtCapacityJs as RetryOperation;
-const deleteNamespaceExplained = deleteNamespaceExplainedJs as (
-  kubectl: Kubectl,
-  namespace: string,
-  options?: { timeout?: string; listTimeoutMs?: number; sleep?: DiagnosticSleep },
-) => Promise<unknown>;
 const createOpenShellKubernetesFixture = createOpenShellKubernetesFixtureJs as (options: {
   kubeconfigPath: string;
   kubernetesContext: string;
@@ -1256,7 +1245,7 @@ test(
   },
 );
 
-const kubernetesHelperUrl = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
+const teardownHelperUrl = new URL("../helpers/bounded-teardown.ts", import.meta.url).href;
 const openShellHelperUrl = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
   .href;
 const topologyHelperUrl = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url).href;
@@ -1287,7 +1276,7 @@ test(
     // Registering all six as one cleanup would attempt only the worker stop.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelperUrl)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       test("proof", async (testContext) => {
@@ -1530,7 +1519,7 @@ test(
     const exited = await runFailingTestScript(`
       import test from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       test("setup outlives its timeout", { timeout: 200 }, async (testContext) => {
         const { context } = boundedTeardown(testContext, { stepLimitMs: 1000, exitGraceMs: 100 });
         context.after(() => process.stdout.write("attempted early cleanup\\n"));
@@ -1565,7 +1554,7 @@ test(
     const exited = await runFailingTestScript(`
       import { after, beforeEach, describe, it } from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       after(async () => {
         await delay(500);
         process.stdout.write("attempted file after\\n");
@@ -1626,7 +1615,7 @@ test(
       import test from "node:test";
       import { rm, writeFile } from "node:fs/promises";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       const acquire = async (path) => {
         await writeFile(path, "held");
         process.stdout.write("acquired " + path + "\\n");
@@ -1664,7 +1653,7 @@ test(
     // which waits for that setup only to its limit.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       test("never stops", { timeout: 200 }, async (testContext) => {
         boundedTeardown(testContext, { label: "setup", stepLimitMs: 1_000, exitGraceMs: 200 });
         await new Promise(() => setInterval(() => {}, 50));
@@ -1688,7 +1677,7 @@ test(
     // A late registration throws to stop the setup; a list that stopped at its first entry would
     // leave every resource behind the later entries (the pools, Namespaces and directories).
     const exited = await runTestScript(`
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import {
         productionTopologyCleanupOrder,
         registerProductionTopologyCleanups,
@@ -1793,7 +1782,7 @@ test(
     // cleanup, as before, would attempt only the gateway forward and the worker stop.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { withBoundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { withBoundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import {
         productionTopologyCleanupOrder,
         registerProductionTopologyCleanups,

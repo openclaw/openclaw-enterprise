@@ -9,13 +9,14 @@ import { promisify } from "node:util";
 import Type from "typebox";
 import { Check } from "typebox/value";
 
+import type { KubernetesAuthentication } from "../../apps/controller/src/drivers/kubernetes/authentication.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   createKubernetesInstallationConfiguration,
   kubectlArguments,
   kubernetesHash,
   validateExplicitK3dLoopbackContext,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 import { waitFor } from "./wait-for.mjs";
 
 const execute = promisify(execFile);
@@ -172,7 +173,7 @@ export async function createKubernetesStartupEnvironment(context: TestContext) {
     mode: "kubeconfig",
     kubeconfigPath: scopedKubeconfig,
     context: scopedContext,
-  };
+  } satisfies KubernetesAuthentication;
   const installation = createKubernetesInstallationConfiguration({
     authentication,
     platformNamespace,

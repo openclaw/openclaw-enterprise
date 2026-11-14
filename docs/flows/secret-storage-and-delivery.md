@@ -152,9 +152,9 @@ execution topology.
 `scripts/first-agent.ts:main`;
 `scripts/first-agent.ts:assertManagedRevision`;
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
-`scripts/first-agent-database.mjs:grantFirstAgentSecret`
+`scripts/first-agent-database.ts:grantFirstAgentSecret`
 
-The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up`
+The [tool](../../scripts/first-agent.ts) uses the persistent `./bin/occ dev up`
 installation. Before Kubernetes or OCC calls, it requires same-checkout v3
 Kubernetes development state and marker. Both Sandbox Drivers require the
 recorded canonical HTTPS Console origin, browser port, and cluster Agent domain.

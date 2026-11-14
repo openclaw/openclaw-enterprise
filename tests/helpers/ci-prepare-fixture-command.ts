@@ -13,7 +13,7 @@ import {
 // The external commands preparation runs (docker, podman, k3d, kubectl, helm, yq,
 // corepack), faked for ci-prepare*.test.mjs through fixture-command-server.ts: each is
 // a bash script answered by the test's command server. scripts/ci/prepare.mjs and
-// cleanup.mjs still start every command as a real process and own its timeouts, signals
+// cleanup.ts still start every command as a real process and own its timeouts, signals
 // and pipes; only the scenario logic below runs in the test process. A command sends
 // the environment variables below. The fixture directory the scenarios write to is the
 // server's, never the client's. `compose up` starts a fake PostgreSQL server

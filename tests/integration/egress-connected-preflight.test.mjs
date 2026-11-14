@@ -26,7 +26,7 @@ import { createCustodyTransitions } from "../helpers/egress-supplier-custody-tra
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
-import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
+import { createKubernetesClient } from "../helpers/kubernetes-real.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   encodeSyntheticEvents,

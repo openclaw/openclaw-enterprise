@@ -16,7 +16,7 @@ import {
   verifyEnvironment,
   verifyGhcr,
   verifyMainSource,
-} from "./container-release.mjs";
+} from "./container-release.ts";
 
 const promoteWorkflow = ".github/workflows/container-promote.yml";
 

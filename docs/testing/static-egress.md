@@ -39,7 +39,7 @@ provider and cluster credentials are unnecessary:
   umask 077
   PG_PLATFORM_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-postgres-platform.XXXXXX")"
   printf 'PostgreSQL run directory: %s\n' "$PG_PLATFORM_RUN_DIR"
-  trap 'pg_run_status=$?; node scripts/ci/cleanup.mjs --state "$PG_PLATFORM_RUN_DIR/state.json" || pg_run_status=1; exit "$pg_run_status"' EXIT
+  trap 'pg_run_status=$?; node scripts/ci/cleanup.ts --state "$PG_PLATFORM_RUN_DIR/state.json" || pg_run_status=1; exit "$pg_run_status"' EXIT
 
   node scripts/ci/prepare.mjs --lane postgres-platform \
     --state "$PG_PLATFORM_RUN_DIR/state.json" \

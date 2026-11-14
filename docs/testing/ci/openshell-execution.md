@@ -199,7 +199,7 @@ node comes from the selected revision's Gateway Pod. Failure reads of
 budget. A matching session response is labeled `fresh`. If the refresh fails,
 placement is labeled `fallback` when an earlier observation exists, or `absent`
 otherwise.
-`scripts/ci/reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
+`scripts/ci/reporter.ts:nativeFirstAgentProofDiagnostic` validates the fixed categories,
 booleans and counters again. Raw errors and identifiers do not enter the record.
 Public RPCs do not expose workspace-binding readiness or restoration; a workspace
 reference does not prove either state.

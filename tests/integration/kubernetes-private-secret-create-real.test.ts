@@ -19,7 +19,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
   explicitK3dSelection,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 
 const requested = process.env.OCC_TEST_KUBERNETES_CONFIGURATION === "1";

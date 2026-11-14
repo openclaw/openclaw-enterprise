@@ -157,7 +157,7 @@ test("Preset and revision lists return summaries, not the stored documents", asy
   const { state, fixture, namespace, agent, first, revisionsPath, seedRevisions } =
     await listFixture(t, "Heavy lists");
   // Documents of about 0.9 MB. This in-memory run proves response shape and
-  // size; the 64-document timing runs against PostgreSQL in postgres-platform-state.test.mjs.
+  // size; the 64-document timing runs against PostgreSQL in postgres-platform-state.test.ts.
   const large = Object.fromEntries(
     Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"] as const),
   );

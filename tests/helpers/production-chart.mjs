@@ -61,7 +61,7 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   const args = [
     "template",
     options.release ?? "oce",
-    "deploy/helm/openclaw-enterprise",
+    options.chartDirectory ?? "deploy/helm/openclaw-enterprise",
     "--namespace",
     options.namespace ?? "openclaw-system",
   ];

@@ -354,11 +354,11 @@ export function buildControllerTopologyManifests({
               ],
               readinessProbe: {
                 exec: {
-                  command: ["node", "scripts/production-healthcheck.mjs", "worker", "ready"],
+                  command: ["node", "scripts/production-healthcheck.ts", "worker", "ready"],
                 },
               },
               livenessProbe: {
-                exec: { command: ["node", "scripts/production-healthcheck.mjs", "worker"] },
+                exec: { command: ["node", "scripts/production-healthcheck.ts", "worker"] },
               },
             },
           ],

@@ -79,6 +79,10 @@ such as `drivers/compute/index.ts` or `drivers/iam/index.ts`, containing that
 Driver's interface, request, context, and result types. The root `index.ts` retains
 shared resource definitions and the public package exports.
 
+The container release command starts at `scripts/ci/container-release.ts`.
+Its modules under `scripts/ci/container-release/` own release admission,
+receipt validation, OCI verification, native smoke, and registry publication.
+
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
 

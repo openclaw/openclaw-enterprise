@@ -7,7 +7,7 @@ const timeoutMs = 2_500;
 // A connection attempt that a NetworkPolicy blocks is refused, unreachable, or
 // never answered. Only those outcomes, before any connection opens, exit with
 // this code and print {"denied":true,...}; every other failure exits 1.
-// tests/helpers/kubernetes-real.mjs (PROBE_DENIED_EXIT_CODE) must match.
+// Keep this exit code in sync with PROBE_DENIED_EXIT_CODE in the Kubernetes fixture helper.
 const deniedExitCode = 42;
 const deniedCodes = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"]);
 // The resolver reports an unanswered or refused UDP query with its own codes.

@@ -378,7 +378,7 @@ globalThis.fetch = async (url) => {
         "--eval",
         `
 import assert from "node:assert/strict";
-import { remoteTagDigest } from "./scripts/ci/container-release.mjs";
+import { remoteTagDigest } from "./scripts/ci/container-release.ts";
 const image = ${JSON.stringify(`${address}/${record.repo}`)};
 assert.equal(remoteTagDigest(image, "absent", undefined, false), null);
 assert.throws(() => remoteTagDigest(image, "absent", undefined, true), { status: 1 });
@@ -391,7 +391,7 @@ assert.equal(remoteTagDigest(image, ${JSON.stringify(record.sourceTag)}, undefin
     function publish(tag: string) {
       execFileSync(
         process.execPath,
-        ["--import", preload, "scripts/ci/container-release.mjs", "publish", directory],
+        ["--import", preload, "scripts/ci/container-release.ts", "publish", directory],
         { env: { ...env, IMAGE_TAG: tag }, stdio: "pipe" },
       );
     }

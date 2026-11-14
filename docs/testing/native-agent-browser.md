@@ -25,7 +25,7 @@ node scripts/ci/run-tests.mjs check-selection gateway-routing --file "$file"
 node scripts/ci/prepare.mjs --lane gateway-routing --selected-file "$file" --state "$state"
 node scripts/ci/run-tests.mjs run gateway-routing --file "$file" --state "$state" \
   --results "$PWD/.ci-state/oidc-agent-chat-results.json"
-node scripts/ci/cleanup.mjs --state "$state"
+node scripts/ci/cleanup.ts --state "$state"
 ```
 
 Run cleanup after a preparation or test failure too. Preserve the private state

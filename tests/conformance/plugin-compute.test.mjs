@@ -38,7 +38,7 @@ import {
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { validateConfigurationSettings } from "../../packages/occ/src/configuration-settings.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 
 import { startCodexGatewaySupervisor as startGatewaySupervisor } from "../helpers/codex-gateway-supervisor.ts";
 import { CODEX_LINEAR_NATIVE_ID } from "../helpers/codex-runtime-helper-fixture.ts";

@@ -15,7 +15,7 @@ import {
   verifyCi,
   verifyEnvironment,
   verifyMainSource,
-} from "./container-release.mjs";
+} from "./container-release.ts";
 
 const workflow = ".github/workflows/container-bootstrap.yml";
 

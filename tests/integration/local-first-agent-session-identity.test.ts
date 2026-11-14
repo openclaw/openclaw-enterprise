@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 
-import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
 import {
   collectNativeWorkerFailure,
   nativePlacementReadRetryable,

@@ -19,7 +19,7 @@ OCE version and publishes a Helm chart. Image-only publication is the default.
 - `.github/workflows/container-publish.yml:jobs.validate`: manual dispatch on
   `main` with its exact source SHA, successful main-push CI run ID, publish flag,
   optional mutable image tag, and opt-in chart flag.
-- `scripts/ci/container-release.mjs:main`: validation, smoke, seal, and publication
+- `scripts/ci/container-release.ts:main`: validation, smoke, seal, and publication
   commands called by the workflow.
 - `scripts/ci/chart-release.ts:publish`: version-tag and chart publication after
   the image receipt exists.
@@ -57,7 +57,7 @@ Source review does not prove a hosted build or registry transfer succeeded.
 
 ### 1. Admit the source and initialize preparation
 
-`scripts/ci/container-release.mjs:validate` checks the trusted workflow, exact
+`scripts/ci/container-release/admission.ts:validate` checks the trusted workflow, exact
 main SHA, successful CI identity, approved Node base digest, and [optional image alias](../release/containers.md#prepare-and-publish).
 A blank alias selects `latest`. Invalid or reserved aliases stop preparation.
 No-push preparation accepts private and public source only when `PUBLISH` is
@@ -104,18 +104,15 @@ Builds export OCI directories without registry credentials. BuildKit normalizes 
 and filesystem timestamps to `SOURCE_DATE_EPOCH` from the exact OCE commit, including
 on cold-cache rebuilds.
 
-`scripts/lib/openclaw-source.mjs:readOpenclawSource` resolves the runtime's commit,
-archive checksum, and build timestamp from `deploy/runtime/openclaw-source.json`.
-The Dockerfile rejects missing, malformed, or conflicting build arguments before
-downloading source. Manifest changes invalidate build caches; credential-service
-targets remain independent.
+`scripts/lib/openclaw-source.ts` reads the commit, archive checksum, and timestamp
+from `deploy/runtime/openclaw-source.json`. The Dockerfile verifies build arguments
+against the manifest before downloading source. Manifest changes invalidate runtime
+build caches independently of credential-service targets.
 
-`deploy/runtime/Dockerfile:openclaw-source` verifies the OpenClaw source archive
-and applies the checksum-verified patches described in the
-[runtime recipe](../../deploy/runtime/README.md). Both installs use
-frozen lockfiles and upstream's selected-plugin manifests, retaining required
-bundled plugins plus Codex and Slack. The standalone Codex command links to the
-plugin's installation. Build stages use full Bookworm; final images use separately
+The `openclaw-source` stage verifies and patches the archive. Then
+`scripts/build-runtime-assets.ts inputs` copies preparation manifests and lists
+required bundled plugins, Codex, and Slack for the frozen production install.
+The standalone Codex command uses the plugin's installation. Build stages use full Bookworm; final images use separately
 pinned slim bases. The controller requires Node 24.22.1+ within the 24 series.
 The runtime requires matching Node 24.22.1 Bookworm bases. Its `node-source` stage checks
 the archive and patch digests in `deploy/runtime/node/source.json` before applying the
@@ -128,7 +125,7 @@ Every index refresh uses
 `apt-get update --error-on=any` to stop builds on incomplete downloads.
 
 `deploy/runtime/node/build.sh` records the source, patch, ABI and executable digest.
-`scripts/build-runtime-assets.mjs:inventory` checks its running executable's digest
+The `inventory` command checks its running executable's digest
 before recording `node` in final runtime provenance. Image startup compares that
 record with the checkout and installed executable. Native qualification requires
 packaged Gateway restart tests.
@@ -175,14 +172,10 @@ classify sandbox or response-shape mismatches; acceptance still requires
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
 
-`scripts/build-runtime-assets.mjs` prunes development/QA files and unreachable
-pnpm entries, retaining runtime templates, skills, help, and importer-specific
-dependencies. It writes provenance with the manifest's commit and archive
-checksum plus patch, lockfile, and inventory hashes. The runtime copies this
-tree without gzip or a second Codex installation. After permission normalization,
-inventory mode updates `contents.json`, `runtimeContentsSha256`, and Codex
-package/binary identity. Upstream import-closure and native-addon checks remain;
-see the [runtime recipe](../../deploy/runtime/README.md).
+The `package` command removes development files and unreachable pnpm entries.
+It records source, patch, lockfile, and inventory hashes. After permission
+normalization, `inventory` updates `contents.json`, its digest, and Codex identity.
+See the [runtime recipe](../../deploy/runtime/README.md) for import and native-addon checks.
 `org.openclaw.image.revision` must match packaged provenance;
 `org.opencontainers.image.revision` and receipt `sourceSha` identify OCE.
 
@@ -192,12 +185,12 @@ Final image checks require `@openclaw/proc-safe/reaper` to return true from
 ### 2. Verify and assemble both platform variants
 
 Fresh native runners execute `.github/workflows/container-check.yml:jobs.runtime-smoke`.
-`container-release.mjs:runtimeBuild` binds `build.json` (`native: false`) to source,
+`scripts/ci/container-release/oci.ts:runtimeBuild` binds `build.json` (`native: false`) to source,
 workflow, run/attempt, CI, base, platform and digest. Receivers verify that identity
 and referenced OCI blobs, rejecting preexisting `platform.json`.
 `built-runtime-*` cannot qualify for publication. Controllers retain one-job build/smoke.
 
-`scripts/ci/container-release.mjs:smoke` requires the selected native architecture.
+`scripts/ci/container-release/native-smoke.ts:smoke` requires the selected native architecture.
 It binds the OCI export to the build digest, loads it with Skopeo, checks the
 loaded config and architecture, and runs startup tests by immutable image ID
 with native deadlines. For containerd, `scripts/upgrade-image-identity.py` exports
@@ -208,7 +201,7 @@ run/attempt, CI, image, base and platform digest. Failed smoke cannot upload
 `platform-*` artifacts; recovery requires both runtime smoke jobs to succeed.
 
 `.github/workflows/container-publish.yml:jobs.assemble` downloads both qualified
-platform artifacts from this run/attempt. `container-release.mjs:assemble`
+platform artifacts from this run/attempt. `scripts/ci/container-release/oci.ts:assemble`
 rejects receipt, platform, size or hash mismatches before linking blobs into one
 OCI layout. Descriptors retain media type, digest, size and platform, excluding
 exporter annotations such as timestamps and local names. Assembly writes the
@@ -224,7 +217,7 @@ the runner remains available; runner loss can prevent cleanup.
 
 ### 3. Seal and enter publication
 
-`scripts/ci/container-release.mjs:seal` rechecks the platform contents and records
+`scripts/ci/container-release/publication.ts:seal` rechecks the platform contents and records
 the archive hash, index digest, each platform’s manifest and config digests,
 source, workflow run and attempt, CI identity, and approved base. Both prepared artifacts must exist
 before `.github/workflows/container-publish.yml:jobs.publish` can start. The
@@ -235,7 +228,7 @@ for retention and package access.
 
 ### 4. Publish and hand off immutable references
 
-`scripts/ci/container-release.mjs:publishPrepared` checks the selected alias,
+`scripts/ci/container-release/publication.ts:publishPrepared` checks the selected alias,
 both seals, archive hashes, index digests, and destinations before either copy.
 During transfer it rechecks source, CI, environment branch policy, and packages.
 It keeps matching source tags and fails on conflicts or ambiguous registry errors.

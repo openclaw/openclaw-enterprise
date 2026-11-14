@@ -1,5 +1,5 @@
 import test from "node:test";
-import { explicitK3dSelection } from "../helpers/kubernetes-real.mjs";
+import { explicitK3dSelection } from "../helpers/kubernetes-real.ts";
 import { createProductionNetworkAccess } from "../helpers/production-network-access.mjs";
 
 const selection = explicitK3dSelection();

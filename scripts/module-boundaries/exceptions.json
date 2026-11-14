@@ -263,18 +263,6 @@
     },
     {
       "rule": "unresolved-local-import",
-      "from": "apps/controller/src/repository-credentials.mjs",
-      "to": "apps/controller/dist/repository-credentials.js",
-      "specifier": "../dist/repository-credentials.js",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:main"],
-      "owner": "Repository credential service packaging",
-      "reason": "The source launcher executes the compiled service entrypoint after the workspace build; generated dist files are intentionally outside the authored-source graph.",
-      "removeWhen": "Remove this exception when the launcher no longer imports the compiled entrypoint or build-output resolution is represented in the analyzer."
-    },
-    {
-      "rule": "unresolved-local-import",
       "from": "apps/controller/src/http/route-compilers.ts",
       "to": "apps/controller/dist/route-compilers.cjs",
       "specifier": "file:apps/controller/dist/route-compilers.cjs",

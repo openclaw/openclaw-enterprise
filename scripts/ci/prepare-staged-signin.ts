@@ -97,7 +97,7 @@ async function prepare(expectedPlanHash: string | undefined) {
     });
   assert.equal((await run("git", ["rev-parse", "HEAD"])).trim(), e.GITHUB_WORKFLOW_SHA);
   assert.equal(await run("git", ["status", "--porcelain", "--untracked-files=no"]), "");
-  const { ghcrPackageName } = await import("./container-release.mjs");
+  const { ghcrPackageName } = await import("./container-release.ts");
   const refs = await signinSupportReferences();
   const release = [picked.previous, picked.candidate, picked.fixedRuntime].map((item, i) => {
     const repository = i < 2 ? e.GHCR_CONTROLLER_IMAGE : e.GHCR_RUNTIME_IMAGE;

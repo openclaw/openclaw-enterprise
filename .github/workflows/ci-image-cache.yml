@@ -31,11 +31,16 @@ on:
       - scripts/*.mjs
       - scripts/auth-maintain.ts
       - scripts/build-repository-credentials.ts
+      - scripts/build-runtime-assets.ts
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
+      - scripts/ci/test-suites.ts
+      - scripts/ci/openshell-full-integration.ts
       - scripts/ci/resource-names.ts
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
+      - scripts/migration-catalog.ts
+      - scripts/production-healthcheck.ts
       - tsconfig.base.json
       - tsconfig.json
   # The kept runtime image reaches Blacksmith's shared Docker store only if this
@@ -139,4 +144,4 @@ jobs:
           echo "source-sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Cleanup
         if: always()
-        run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/image-cache-warm.json"
+        run: node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/image-cache-warm.json"

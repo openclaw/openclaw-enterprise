@@ -240,7 +240,7 @@ export async function checkEmbeddedGatewayRecoveryKey() {
 }
 
 export async function checkProductionExampleWorkloadResources() {
-  // The example carries the profile renderer's values (profile-renderer.test.mjs keeps them equal).
+  // The example carries the profile renderer's values (profile-renderer.test.ts keeps them equal).
   const { loadYaml }: Pick<KubernetesSdk, "loadYaml"> = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");

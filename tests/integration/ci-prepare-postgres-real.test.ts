@@ -87,7 +87,7 @@ test(
       for (const state of started) {
         try {
           node([
-            "scripts/ci/cleanup.mjs",
+            "scripts/ci/cleanup.ts",
             "--state",
             state.path,
             "--cleanup-owner",

@@ -15,7 +15,7 @@
     "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.mjs",
     "tests/conformance/module-boundaries.test.ts",
-    "tests/integration/repository-credentials-router.test.mjs",
+    "tests/integration/repository-credentials-router.test.ts",
     "tests/conformance/module-policy.test.mjs",
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.ts",
@@ -52,13 +52,13 @@
     "tests/integration/ci-runner-first-agent-startup.test.ts",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
-    "tests/integration/k3d-launcher.test.mjs",
+    "tests/integration/k3d-launcher.test.ts",
     "tests/integration/password-sign-in-admission.test.ts",
     "tests/integration/google-login-transport.test.ts",
     "tests/conformance/slack-channel-directory.test.ts",
     "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
-    "tests/integration/repository-credentials-driver.test.mjs",
+    "tests/integration/repository-credentials-driver.test.ts",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
     "tests/integration/known-device-cookie.test.ts",
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
@@ -80,7 +80,7 @@
     "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/slack-proxy-backpressure.test.ts",
-    "tests/conformance/native-admin-websocket-relay.test.mjs",
+    "tests/conformance/native-admin-websocket-relay.test.ts",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
@@ -135,7 +135,12 @@
     "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-credentials-tool-evidence.test.ts",
     "tests/integration/client-address.test.ts",
-    "tests/integration/full-integration-preflight.test.mjs",
+    "tests/integration/full-integration-preflight.test.ts",
+    "tests/integration/full-integration-schedule.test.ts",
+    "tests/integration/full-integration-reuse.test.ts",
+    "tests/integration/full-integration-coverage.test.ts",
+    "tests/integration/full-integration-workflow.test.ts",
+    "tests/integration/qa-repository-materialization.test.ts",
     "tests/integration/container-promote.test.ts",
     "tests/conformance/controller-stop-yields.test.ts",
     "tests/integration/dev-up-model-provider.test.mjs",
@@ -337,7 +342,22 @@
       ]
     },
     {
-      "path": "tests/integration/full-integration-preflight.test.mjs"
+      "path": "tests/integration/full-integration-preflight.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-schedule.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-reuse.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-coverage.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-workflow.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-repository-materialization.test.ts"
     },
     {
       "path": "tests/integration/ci-cleanup.test.ts"
@@ -361,7 +381,7 @@
       "path": "tests/integration/ci-image-pull.test.ts"
     },
     {
-      "path": "tests/integration/ci-image-config-digest.test.mjs"
+      "path": "tests/integration/ci-image-config-digest.test.ts"
     },
     {
       "path": "tests/integration/skipper-release.test.ts"
@@ -379,7 +399,7 @@
       "path": "tests/integration/ci-registry-transport.test.ts"
     },
     {
-      "path": "tests/integration/k3d-launcher.test.mjs"
+      "path": "tests/integration/k3d-launcher.test.ts"
     },
     {
       "path": "tests/integration/ci-openshell-preparation.test.ts"
@@ -451,7 +471,7 @@
       "path": "tests/conformance/slack-proxy-backpressure.test.ts"
     },
     {
-      "path": "tests/conformance/native-admin-websocket-relay.test.mjs"
+      "path": "tests/conformance/native-admin-websocket-relay.test.ts"
     },
     {
       "path": "tests/conformance/hosted-plugin-discovery.test.ts"
@@ -597,7 +617,7 @@
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-router.test.mjs"
+      "path": "tests/integration/repository-credentials-router.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-package.test.ts"
@@ -638,7 +658,7 @@
       ]
     },
     {
-      "path": "tests/integration/repository-credentials-driver.test.mjs"
+      "path": "tests/integration/repository-credentials-driver.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-sender-recovery.test.ts"

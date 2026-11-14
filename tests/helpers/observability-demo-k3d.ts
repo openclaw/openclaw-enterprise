@@ -12,7 +12,7 @@ import {
   createRealKubernetesFixture,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
 type CommandResult = { code: number | null; stdout: string; stderr: string };
 type CommandOptions = { timeout?: number; input?: string };

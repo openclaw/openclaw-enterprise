@@ -12,8 +12,8 @@ ref=application
 APP_SLUG=oce-test-repo-access
 WRITE_REGISTRY=qa-git-write
 READ_REGISTRY=qa-git-read
-node "$dir/git-fixture.mjs" issue read
-trap 'node "$dir/git-fixture.mjs" revoke read || exit 1' EXIT
+node "$dir/git-fixture.ts" issue read
+trap 'node "$dir/git-fixture.ts" revoke read || exit 1' EXIT
 GH_TOKEN=$(cat "$RUN_DIR/git-read.token")
 export GH_TOKEN
 test "$(gh api "repos/$repo" --jq .id)" = "$repo_id"
@@ -48,7 +48,7 @@ kube -n "$PLATFORM_NS" create configmap qa-git-ca --from-file="ca.crt=$RUN_DIR/g
 kube -n "$PLATFORM_NS" create configmap qa-git-issuer --from-file="gateway-public.pem=$RUN_DIR/gateway-public.pem"
 helmopts=(--kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS")
 helm get values openshell-gateway "${helmopts[@]}" --all -o json > "$RUN_DIR/openshell-values.json"
-node "$dir/git-configure.mjs"
+node "$dir/git-configure.ts"
 
 request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop.json"
 stopped() { request GET "$base/agents/$agent" | jq -e '.data.desiredRuntimeState=="stopped" and .data.activeRevisionId==null' >/dev/null; }

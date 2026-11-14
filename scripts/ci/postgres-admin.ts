@@ -1,4 +1,4 @@
-// Administrative SQL on a lane's PostgreSQL server (scripts/ci/prepare.mjs and cleanup.mjs):
+// Administrative SQL on a lane's PostgreSQL server (scripts/ci/prepare.mjs and scripts/ci/cleanup.ts):
 // creating, copying and dropping databases and the server's settings. It connects straight
 // to the port the server publishes on 127.0.0.1, as the superuser compose.postgres.yaml
 // creates. Each test's database copy and drop used to run `docker compose exec -T postgres

@@ -26,6 +26,7 @@ import {
   createTopologyPresetTemplate,
 } from "./topology-launch-configuration.ts";
 import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
+import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
 import {
   assertGatewayModelTurn,
   createKubernetesInstallationConfiguration,
@@ -34,10 +35,9 @@ import {
   kubernetesHash as hash,
   productionGatewayMemoryLimit,
   productionGatewayMemoryLimitGi,
-  withBoundedTeardown,
   withinDiagnosticDeadline,
   waitForDeploymentAvailable,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import {
   ensureEnvoyGatewayControllers,
   createEnvoyWorkspaceGatewayPlan,

@@ -11,7 +11,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const prepare = join(root, "scripts/ci/prepare.mjs");
-const cleanup = join(root, "scripts/ci/cleanup.mjs");
+const cleanup = join(root, "scripts/ci/cleanup.ts");
 const exporter = join(root, "scripts/ci/export-image-reconciliation.ts");
 
 type ImageResource = { id: string; name: string; status: string };

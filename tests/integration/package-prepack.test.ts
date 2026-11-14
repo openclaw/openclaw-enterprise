@@ -142,13 +142,18 @@ test("cold contracts prepack builds from workspace source without writing to uti
         for (const artifact of [
           "runtime-failure.js",
           "runtime-failure.d.ts",
-          "workspace-defaults.mjs",
-          "workspace-defaults.d.mts",
+          "workspace-defaults.js",
+          "workspace-defaults.d.ts",
         ]) {
           const output = join(contracts, "dist", artifact);
           assert.ok(existsSync(output), `Missing output: ${artifact}`);
         }
-        for (const artifact of ["runtime-failure.mjs", "runtime-failure.d.mts"]) {
+        for (const artifact of [
+          "runtime-failure.mjs",
+          "runtime-failure.d.mts",
+          "workspace-defaults.mjs",
+          "workspace-defaults.d.mts",
+        ]) {
           const output = join(contracts, "dist", artifact);
           assert.equal(existsSync(output), false, `Unexpected output: ${artifact}`);
         }

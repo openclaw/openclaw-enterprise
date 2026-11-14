@@ -10,7 +10,7 @@ import {
   isSupervisorUuid,
   supervisorSessionLifecycle,
 } from "./egress-supervisor-sessions.ts";
-import { createKubernetesClient, withinDiagnosticDeadline } from "./kubernetes-real.mjs";
+import { createKubernetesClient, withinDiagnosticDeadline } from "./kubernetes-real.ts";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 

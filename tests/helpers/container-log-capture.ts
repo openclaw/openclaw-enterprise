@@ -4,10 +4,10 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
-import { projectContainerLog } from "../../scripts/ci/k3d-diagnostics.mjs";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
+import { projectContainerLog } from "../../scripts/ci/k3d-diagnostics.ts";
 
-// The CI runner sets this for k3d lanes (scripts/ci/k3d-diagnostics.mjs) and
+// The CI runner sets this for k3d lanes (scripts/ci/k3d-diagnostics.ts) and
 // publishes a redacted projection of each record in the lane's diagnostics
 // artifact. Without it, a failure prints the record as a test diagnostic.
 export const containerLogDirectoryVariable = "OPENCLAW_CI_CONTAINER_LOG_DIR";

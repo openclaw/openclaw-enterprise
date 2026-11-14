@@ -18,9 +18,9 @@ import {
   validatePackage,
   validatePreparedImage,
   verifyGhcr,
-} from "../../scripts/ci/container-release.mjs";
+} from "../../scripts/ci/container-release.ts";
 import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.ts";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import {
   chartArchiveContent,
   stageReleaseChart,
@@ -945,7 +945,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   function assemble(input: Awaited<ReturnType<typeof prepare>>) {
     return execFileSync(
       process.execPath,
-      ["scripts/ci/container-release.mjs", "assemble", input.output],
+      ["scripts/ci/container-release.ts", "assemble", input.output],
       {
         env: input.env,
         encoding: "utf8",
@@ -962,7 +962,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   ) {
     return execFileSync(
       process.execPath,
-      ["scripts/ci/container-release.mjs", command, join(untested.output, arch)],
+      ["scripts/ci/container-release.ts", command, join(untested.output, arch)],
       {
         env: {
           ...untested.env,
@@ -1023,7 +1023,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
     return JSON.parse(
       execFileSync(
         process.execPath,
-        ["scripts/ci/container-release.mjs", "verify-platform", join(valid.output, arch)],
+        ["scripts/ci/container-release.ts", "verify-platform", join(valid.output, arch)],
         {
           env: {
             ...valid.env,
@@ -1098,7 +1098,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   }
   assemble(valid);
   const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
-  execFileSync(process.execPath, ["scripts/ci/container-release.mjs", "seal", valid.output], {
+  execFileSync(process.execPath, ["scripts/ci/container-release.ts", "seal", valid.output], {
     env: { ...valid.env, IMAGE_DIGEST: digest },
   });
   const sealed = record(JSON.parse(await readFile(join(valid.output, "metadata.json"), "utf8")));
@@ -1280,7 +1280,7 @@ esac`,
   );
   const result = spawnSync(
     process.execPath,
-    ["scripts/ci/container-release.mjs", "smoke", directory],
+    ["scripts/ci/container-release.ts", "smoke", directory],
     {
       env: {
         ...process.env,

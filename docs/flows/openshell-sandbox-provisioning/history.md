@@ -8,6 +8,14 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-10 12:45: Record fixed Codex permission denial categories in worker diagnostics. (authoring-run/bc23cb27-0cf1-40d2-9361-93726c5de660 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
+
+- 2026-11-10 12:22: Clarify Gateway authority. (authoring-run/64da6dd5-9c32-4858-b176-ff11e8c8ae92 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
+
+- 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
+
+- 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
+
 - 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
 
 - 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
