@@ -1,5 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 
+export const controlRequestBodyMaxBytes = 16_384;
+
 export const clientSessionFileMaxBytes = Object.freeze({
   bearer: 256,
   "client.json": 16 * 1024,
