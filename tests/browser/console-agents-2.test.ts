@@ -31,6 +31,10 @@ import type {
   PresetSummaryWire,
 } from "../../packages/contracts/src/api/resources.ts";
 
+import type { CredentialGatewayDriver } from "../../packages/contracts/src/index.ts";
+import { Check } from "typebox/value";
+import { CredentialSourceResponse } from "../../packages/contracts/src/api/resources.ts";
+import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
@@ -65,6 +69,7 @@ import {
   waitForIdleFetches,
 } from "./console-fetch-accounting.ts";
 import {
+  nativeSandboxDriver,
   configurationPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
@@ -3508,7 +3513,7 @@ test("Dedicated Agent creation clears a deleted saved Secret for a fresh request
             requestId: body.requestId,
             workId: `work_${work}`,
             status: "queued",
-            phase: "accepted",
+            phase: "admitted",
             attemptCount: 0,
             updatedAt,
             url: jobUrl(work),
@@ -3528,7 +3533,7 @@ test("Dedicated Agent creation clears a deleted saved Secret for a fresh request
             requestIds[Number(new URL(route.request().url()).pathname.split("_").at(-1)) - 1],
           workId: `work_${Number(new URL(route.request().url()).pathname.split("_").at(-1))}`,
           status: "failed",
-          phase: "accepted",
+          phase: "admitted",
           attemptCount: 1,
           updatedAt,
           url: jobUrl(Number(new URL(route.request().url()).pathname.split("_").at(-1))),
@@ -3597,7 +3602,7 @@ test("Dedicated Agent creation clears a deleted saved Secret for a fresh request
       contentType: "application/json",
       body: JSON.stringify({
         error: {
-          code: "RESOURCE_STATE_CONFLICT",
+          code: "RESOURCE_CONFLICT",
           message: `Secret ${savedSecretId}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`,
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
@@ -3630,4 +3635,135 @@ test("Dedicated Agent creation clears a deleted saved Secret for a fresh request
   await page
     .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
     .waitFor();
+});
+
+test("Dedicated Agent creation registers a replacement for a deleted Credential Source", async (t) => {
+  let now = Date.now();
+  const registrations: string[] = [];
+  const unused = async () => assert.fail("Unexpected Gateway operation before deployment");
+  const gateway: CredentialGatewayDriver = {
+    id: "model-source-gateway",
+    implementation: "test-model-source",
+    capability: "credential_gateway",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource(context) {
+      registrations.push(context.source.id);
+      return { state: "ready" };
+    },
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    async removeSource() {},
+    updateSource: unused,
+    attachForRevision: unused,
+    attachmentStatus: unused,
+    withdraw: unused,
+  };
+  const fixture = await createConsoleAppFixture(t, {
+    now: () => new Date(now),
+    agentProvisioning: true,
+    configurationDriver: new KubernetesConfigurationDriver({
+      authentication: { mode: "inCluster" },
+    }),
+    sandboxDriver: { ...nativeSandboxDriver(), validateWorkspaceSetup() {} },
+    credentialGatewayDriver: gateway,
+  });
+  await fixture.bootstrap();
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const namespace = await fixture.createNamespace("Credential Source recovery", { ready: true });
+  const root = `/namespaces/${namespace.id}`;
+  const sources = root + "/credential-sources";
+  const nextSecret = await fixture.createSecret(
+    namespace.id,
+    "Replacement model key",
+    "synthetic-replacement-key",
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const post = (path: string) =>
+    page.waitForResponse(
+      (r) => r.url() === fixture.origin + path && r.request().method() === "POST",
+    );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByLabel("Authentication method").selectOption("api_key");
+  await page.getByLabel("Agent name").fill("Source recovery");
+  const originalSecret = await enterManualModel(page, "synthetic-original-model-key", "gpt-5");
+  assert.ok(originalSecret);
+  const picker = page.getByLabel("API key Secret", { exact: true });
+
+  // Registration and removal use the controller. Only the durable job responses are simulated.
+  const firstJob = provisioningJob(namespace.id, "work_source_original");
+  const first = await routeProvisioningJob(page, fixture, firstJob, [firstJob.failed()]);
+  const submit = async () => {
+    const registered = post(sources);
+    const admission = await submitCreateAgent(page, fixture, namespace.id, {
+      path: "agents/provision",
+      status: 202,
+    });
+    const response = await registered;
+    assert.equal(response.status(), 201);
+    const result: unknown = await response.json();
+    assert.ok(Check(CredentialSourceResponse, result));
+    assert.equal(result.data.state, "ready");
+    const plan: ProvisionAgentBody = admission.request().postDataJSON();
+    assert.deepEqual(plan.harnessAuth, { method: "credential_source", sourceId: result.data.id });
+    return { source: result.data, plan };
+  };
+  const original = await submit();
+  assert.deepEqual(original.source.secrets, { api_key: originalSecret.ref });
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  assert.equal(await picker.isDisabled(), true);
+
+  // Move the controller clock past its registration fence before removing the source.
+  now += 120_000;
+  const sourcePath = `${sources}/${original.source.id}`;
+  assert.equal((await fixture.request("DELETE", sourcePath)).status, 204);
+  assert.equal((await fixture.request("GET", sourcePath)).status, 404);
+  const refusal = `Credential source ${original.source.id}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`;
+  const retryPath = firstJob.url + "/retry";
+  await page.route(fixture.origin + retryPath, (route) =>
+    route.fulfill(apiErrorResponse(409, "RESOURCE_CONFLICT", refusal)),
+  );
+  const refused = post(retryPath);
+  await page.getByRole("button", { name: "Retry provisioning request" }).click();
+  assert.equal((await refused).status(), 409);
+  await page.getByRole("alert").filter({ hasText: refusal }).waitFor();
+  await waitForEnabled(picker);
+  await selectSecret(page, "API key Secret", nextSecret);
+  const nextJob = provisioningJob(namespace.id, "work_source_replacement");
+  const next = await routeProvisioningJob(page, fixture, nextJob, [nextJob.failed()]);
+  const replacement = await submit();
+  assert.notEqual(replacement.source.id, original.source.id);
+  assert.deepEqual(registrations, [original.source.id, replacement.source.id]);
+  assert.deepEqual(replacement.source.secrets, { api_key: nextSecret.ref });
+  assert.notEqual(replacement.plan.requestId, original.plan.requestId);
+  assert.deepEqual(replacement.plan, {
+    ...original.plan,
+    requestId: replacement.plan.requestId,
+    harnessAuth: replacement.plan.harnessAuth,
+  });
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  assert.equal(first.submitted, 1);
+  assert.equal(next.submitted, 1);
+  assert.equal(pathRequests(requests, "POST", retryPath).length, 1);
+  assert.equal(pathRequests(requests, "POST", sources).length, 2);
+  assert.equal(pathRequests(requests, "POST", root + "/agents/provision").length, 2);
 });

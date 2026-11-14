@@ -144,13 +144,12 @@ attempt. If the read is unavailable or times out, Create shows any wait reported
 rechecks the deployment on the next poll. A 401 sends the caller to sign in again. If Create
 sees job success before opening Deployment, it opens Configuration.
 
-The status line carries the last pre-deployment checkpoint the job's `phase` confirms, and
-keeps the generic wording when the phase is missing or unreadable. While the job is in flight, the step meter
-(`apps/controller/src/console/agents/provisioning-progress.mts`) pins in the sticky action bar
-beside Create Agent: one step per reported phase, marked done only when that `phase` says it
-completed, an indeterminate throbber on the current step (static under reduced motion) and a
-silent elapsed line. A failure names its step and the job's safe reason in the bar; the form's
-error line keeps the recovery action.
+The status line shows the last checkpoint confirmed by the job's phase. The sticky action bar
+keeps Create Agent beside the step meter
+(`apps/controller/src/console/agents/provisioning-progress.mts`). It marks confirmed steps done
+and shows elapsed time silently. The current step pulses unless the reader prefers reduced motion.
+On failure the meter shows the job's safe reason. It names the failed step when the phase identifies
+one and shows “Agent provisioning failed.” otherwise. The form's error line gives the recovery action.
 
 The **Latest visible deployment** summary shows the version's recorded wait, even with Deployment
 details folded. A temporary read failure labels a retained wait as last recorded. A refused read
