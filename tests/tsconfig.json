@@ -112,6 +112,7 @@
     "integration/ci-runner-openshell-input-cases.ts",
     "helpers/ci-runner-held-clock.ts",
     "helpers/ci-runner-kill-window.ts",
+    "fixtures/temporary-directory-file.ts",
     "fixtures/docker-token-retry/*.mts",
     "fixtures/kubernetes/*.mts",
     "fixtures/ci-runner-finite-conversation.ts",

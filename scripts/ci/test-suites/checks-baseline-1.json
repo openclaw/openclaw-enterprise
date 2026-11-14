@@ -67,7 +67,7 @@
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
-    "tests/conformance/temporary-directory.test.mjs",
+    "tests/conformance/temporary-directory.test.ts",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
@@ -376,7 +376,7 @@
       "path": "tests/conformance/socket-directory.test.ts"
     },
     {
-      "path": "tests/conformance/temporary-directory.test.mjs"
+      "path": "tests/conformance/temporary-directory.test.ts"
     },
     {
       "path": "tests/conformance/utils.test.ts"
