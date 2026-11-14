@@ -15,7 +15,6 @@ import {
   readFile,
   rename,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -1574,20 +1573,11 @@ async function buildRuntimeImages(
       : state.prefix;
   const tagBase =
     registryOutput ?? `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
-  const openclawSource = runtime ? process.env.OCC_K3D_OPENCLAW_SOURCE : undefined;
-  if (runtimeArtifact && (!runtime || registryOutput || cacheWarm || openclawSource)) {
+  if (runtimeArtifact && (!runtime || registryOutput || cacheWarm)) {
     throw new Error("A selected runtime artifact requires ordinary runtime image preparation.");
   }
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
-  }
-  if (openclawSource !== undefined) {
-    if (!isAbsolute(openclawSource) || !(await stat(join(openclawSource, "Dockerfile"))).isFile()) {
-      throw new Error("OCC_K3D_OPENCLAW_SOURCE must select an absolute OpenClaw source checkout");
-    }
-    if (!/^[a-f0-9]{40,64}$/u.test(process.env.OCC_K3D_OPENCLAW_COMMIT ?? "")) {
-      throw new Error("OCC_K3D_OPENCLAW_COMMIT must identify the selected OpenClaw source");
-    }
   }
   const builds = [];
   if (controller) {
@@ -1619,9 +1609,6 @@ async function buildRuntimeImages(
       OCC_DOCKER_GATEWAY_IMAGE: tag,
       OCC_DOCKER_AGENT_IMAGE: tag,
       OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
-      ...(openclawSource === undefined
-        ? {}
-        : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
     };
     if (runtimeArtifact) {
       assertRuntimeArtifactTagAvailable(tag, importDeadlineMs);
@@ -1636,37 +1623,21 @@ async function buildRuntimeImages(
         await loaded.cleanup();
       }
     } else {
-      const sourceArguments =
-        openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
       builds.push({
         role: "runtime",
         tag,
-        args:
-          openclawSource === undefined
-            ? [
-                ...imageBuildArgs(state, "runtime", localStore),
-                ...plainProgress,
-                ...revisionArgs,
-                ...sourceArguments,
-                "--pull=false",
-                "-f",
-                runtimeDockerfile,
-                "-t",
-                tag,
-                repositoryRoot,
-              ]
-            : [
-                "build",
-                ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
-                  ? ["--builder", "default", "--load"]
-                  : []),
-                ...plainProgress,
-                "--build-arg",
-                "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
-                "-t",
-                tag,
-                openclawSource,
-              ],
+        args: [
+          ...imageBuildArgs(state, "runtime", localStore),
+          ...plainProgress,
+          ...revisionArgs,
+          ...openclawBuildArguments(await readOpenclawSource()),
+          "--pull=false",
+          "-f",
+          runtimeDockerfile,
+          "-t",
+          tag,
+          repositoryRoot,
+        ],
         env: runtimeEnv,
       });
     }
@@ -1727,9 +1698,6 @@ async function buildRuntimeImages(
 // installation, Agent workflow and teardown. The loopback registry is CI-owned.
 async function prepareFirstAgentImages(statePath, state, env, file) {
   imageBuildArgs(state, "runtime", false); // Validate the hosted cache boundary before resources.
-  if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
-    throw new Error("First-Agent image preparation requires the checkout's pinned runtime source.");
-  }
   const builder = process.env.OCC_CI_FIRST_AGENT_BUILDER;
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
     throw new Error("First-Agent image preparation requires its selected job builder.");
@@ -2841,11 +2809,7 @@ async function prepareK3dRuntimeImages(
   if (needsController || needsRuntime) {
     const images = [
       needsController ? "controller" : undefined,
-      needsRuntime
-        ? process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
-          ? "gateway and Codex runtime"
-          : "gateway and native OpenClaw runtime"
-        : undefined,
+      needsRuntime ? "gateway and Codex runtime" : undefined,
     ]
       .filter(Boolean)
       .join(", ");
@@ -2882,12 +2846,7 @@ async function prepareK3dRuntimeImages(
       env.OCC_TEST_KUBERNETES_AGENT_IMAGE ?? process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
   };
   requireEnv(Object.keys(inputs), inputs);
-  progress(
-    state.lane,
-    process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
-      ? "Importing the gateway and Codex runtime images into k3d."
-      : "Importing the native OpenClaw runtime image into k3d.",
-  );
+  progress(state.lane, "Importing the gateway and Codex runtime images into k3d.");
   for (const [name, value] of Object.entries(inputs)) {
     const image = await registerImageInK3d(statePath, state, cluster, value, name);
     env[name] = image.reference;
@@ -2914,11 +2873,7 @@ async function prepareK3dRuntimeImages(
   const embeddedOidcOnly =
     state.lane === "gateway-routing" &&
     state.selectedFile === "tests/integration/oidc-agent-chat-k3d-real.test.ts";
-  if (
-    lanePrepare(state.lane).codexSeccomp &&
-    !embeddedOidcOnly &&
-    process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
-  ) {
+  if (lanePrepare(state.lane).codexSeccomp && !embeddedOidcOnly) {
     progress(state.lane, "Deriving and installing the dedicated Codex seccomp profile.");
     const seccomp = await prepareCodexSeccompProfile({
       cluster,
@@ -3162,9 +3117,6 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
       throw new Error(
         "A runtime artifact cannot be combined with selected Gateway or TUI upgrade images.",
       );
-    }
-    if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
-      throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
     }
   }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });

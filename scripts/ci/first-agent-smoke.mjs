@@ -593,9 +593,6 @@ async function writeReleaseSelection(file) {
 
 async function buildImages({ preparedGit = false } = {}) {
   const selection = runtimeArtifactSelection(process.env);
-  if (selection && process.env.OCC_K3D_OPENCLAW_SOURCE) {
-    throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
-  }
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
   if (selection) {

@@ -133,61 +133,6 @@ export function registerBuildKitCases() {
     }));
   test("Gateway Routing prepares checkout images with read-only BuildKit caches", (t) =>
     assertReadOnlyBuildKitCache(t, "gateway-routing", {}));
-
-  test("alternate OpenClaw source preparation requests plain progress for runtime cache observations", async (t) => {
-    const source = await fixture(t);
-    await writeFile(join(source, "Dockerfile"), "FROM scratch AS native-build\n");
-    const commands = await fixtureImageCommands(t, "success", "gateway-routing", {
-      GITHUB_ACTIONS: "true",
-      OCC_CI_IMAGE_CACHE: "1",
-      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
-      ACTIONS_RESULTS_URL: "https://cache.example.test/",
-      NODE_BASE_IMAGE: nodeBaseImage,
-      OPENAI_API_KEY: "synthetic-model-key",
-      OCC_TEST_OPENAI_MODEL: "synthetic-model",
-      OCC_K3D_OPENCLAW_SOURCE: source,
-      OCC_K3D_OPENCLAW_COMMIT: "a".repeat(40),
-    });
-    // Stop after the real CLI has built both images, before importing into k3d.
-    // The external command is controlled; no Docker or source build is claimed.
-    await interceptFixtureDocker(t, commands, (args) => {
-      if (args.length === 3 && args[0] === "image" && args[1] === "inspect") {
-        return "printf 'synthetic import stop\\n' >&2; exit 1";
-      }
-    });
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 1);
-    assertStderrMatch(prepared.stderr, /synthetic import stop/);
-    const builds = (await commands.commands()).filter(({ args }) =>
-      args.includes("OPENCLAW_DOCKER_BUILD_SKIP_DTS=1"),
-    );
-    assert.equal(builds.length, 1);
-    const [build] = builds;
-    assert.ok(build);
-    assert.equal(build.args.at(-1), source);
-    assert.ok(build.args.includes("--progress=plain"));
-    assert.deepEqual(
-      imageCacheObservations(prepared.stderr, "gateway-routing").filter(
-        (record) => record.role === "runtime",
-      ),
-      [
-        {
-          stage: "image-cache",
-          role: "runtime",
-          phase: "load",
-          cacheImports: 0,
-          cachedSteps: 1,
-          openclawBuildSteps: 0,
-          openclawBuildCached: 0,
-        },
-      ],
-    );
-    assert.doesNotMatch(
-      prepared.stdout + prepared.stderr,
-      /synthetic-native-command|synthetic-cache-credential/,
-    );
-    await commands.cleanupSuccessfully();
-  });
 }
 
 export function registerVerifiedRuntimePublicationCase() {
