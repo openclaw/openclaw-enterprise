@@ -35,7 +35,7 @@ export function liveNativeRequest(
   path: string,
   options: LiveNativeRequestOptions = {},
 ): Promise<NativeHttpResponse> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const result: NativeHttpResponse = {
       statusCode: null,
       headers: {},
@@ -101,9 +101,9 @@ export function liveNativeRequest(
       },
     );
     const deadline = setTimeout(() => {
-      result.error = "request-deadline";
+      settled = true;
       request.destroy();
-      finish();
+      reject(new Error("native HTTP request deadline exceeded"));
     }, 6_000);
     request.once("error", (error: NodeJS.ErrnoException) => {
       result.error ??= error.code ?? error.name;

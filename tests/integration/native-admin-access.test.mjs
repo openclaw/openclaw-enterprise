@@ -125,6 +125,7 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
     const control = {
       closed: false,
       finished: false,
+      watchdogExpired: false,
       writes: 0,
       close: new Promise((resolve) => {
         resolveClosed = resolve;
@@ -135,7 +136,10 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
     const prefix = `native-${name}-prefix\n`;
     /** @type {NodeJS.Timeout | undefined} */
     let interval;
-    const deadline = setTimeout(() => response.destroy(), 4_000);
+    const deadline = setTimeout(() => {
+      control.watchdogExpired = true;
+      response.destroy();
+    }, 4_000);
     response.once("close", () => {
       clearTimeout(deadline);
       clearInterval(interval);
