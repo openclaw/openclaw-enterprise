@@ -1073,13 +1073,13 @@ function codexSessionBindingInGateway() {
   }
 }
 
-type AgentSelection = {
+export type AgentSelection = {
   id?: string | undefined;
   namespaceId?: string | undefined;
   revision?: { id?: string | undefined } | undefined;
 };
 
-type SessionEvidenceOptions = {
+export type SessionEvidenceOptions = {
   sessionKey: string;
   turnMarker: string;
   toolName?: string;
@@ -1088,6 +1088,10 @@ type SessionEvidenceOptions = {
   expectedCatalog?: Catalog;
   codeModeCall?: CodeModeCall;
 };
+
+// Missing sessions have no transcript fields. Assertions narrow the fields they need
+// after checking the marker window and preserve the raw evidence for diagnostics.
+type HostSessionEvidence = Record<string, unknown> & { runtime: string };
 
 type GatewayCommand = [node: "node", evalFlag: "-e", script: string, ...args: string[]];
 type GatewayExecution = { label: string; stdout: string };
@@ -1154,7 +1158,7 @@ export function createGatewaySessionEvidence({
       expectedCatalog,
       codeModeCall,
     }: SessionEvidenceOptions,
-  ) {
+  ): Promise<HostSessionEvidence> {
     if (codeModeCall !== undefined) {
       assert.equal(proofMode, "openclaw");
       assert.equal(toolName, "exec");
