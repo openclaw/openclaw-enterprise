@@ -32,6 +32,7 @@ const bashExecutable = "/bin/bash";
 // Callers isolate scenario environments in fixture.env and leave the parent PATH,
 // cwd and provider executables unchanged. Reuse discovery, never scenario renders.
 let configurationProvider;
+/** @type {Promise<string> | undefined} */
 let cliBuild;
 let cliDirectory;
 after(async () => {
