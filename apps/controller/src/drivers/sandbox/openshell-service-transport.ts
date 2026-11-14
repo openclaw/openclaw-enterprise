@@ -17,6 +17,8 @@ export interface OpenShellServiceDocument {
   readonly status: number;
   /** Parsed only for an `application/json` answer within the size bound. */
   readonly json?: unknown;
+  /** The service started a JSON response but the bounded read ended before the response did. */
+  readonly jsonInterrupted?: true;
 }
 
 interface ServiceTransportOptions {
@@ -29,7 +31,9 @@ interface ServiceTransportOptions {
 export class OpenShellServiceTransportError extends DependencyUnavailableError {
   readonly reason: "timeout" | "unreachable";
 
-  constructor(reason: "timeout" | "unreachable") {
+  readonly partialResponse: OpenShellServiceDocument | undefined;
+
+  constructor(reason: "timeout" | "unreachable", partialResponse?: OpenShellServiceDocument) {
     super(
       reason === "timeout"
         ? "OpenShell service request timed out."
@@ -37,6 +41,7 @@ export class OpenShellServiceTransportError extends DependencyUnavailableError {
     );
     this.name = "OpenShellServiceTransportError";
     this.reason = reason;
+    this.partialResponse = partialResponse;
   }
 }
 
@@ -205,6 +210,7 @@ async function serviceDocument(
   if (!path.startsWith("/") || path.startsWith("//")) {
     throw new OpenShellGatewayFailure("OpenShell service path must be absolute.");
   }
+  let partial: OpenShellServiceDocument | undefined;
   return (await send(
     options,
     serviceUrl,
@@ -219,18 +225,22 @@ async function serviceDocument(
       request.on("response", (response: IncomingMessage) => {
         const status = response.statusCode ?? 0;
         const json = /^application\/json(?:\s*;|$)/i.test(response.headers["content-type"] ?? "");
+        const interrupted: OpenShellServiceDocument = json
+          ? { status, jsonInterrupted: true }
+          : { status };
+        partial = interrupted;
         const chunks: Buffer[] = [];
         let bytes = 0;
         response.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
           if (bytes > MAX_SERVICE_RESPONSE_BYTES) {
-            response.destroy();
             resolve({ status });
+            response.destroy();
             return;
           }
           chunks.push(chunk);
         });
-        response.on("error", () => resolve({ status }));
+        response.on("error", () => resolve(interrupted));
         response.on("end", () => {
           if (!json) {
             resolve({ status });
@@ -245,7 +255,14 @@ async function serviceDocument(
       });
     },
     body,
-  )) as OpenShellServiceDocument;
+  ).catch((error: unknown) => {
+    signal.throwIfAborted();
+    if (partial && error instanceof OpenShellServiceTransportError) {
+      // Keep the bounded transport failure and the headers already observed.
+      throw new OpenShellServiceTransportError(error.reason, partial);
+    }
+    throw error;
+  })) as OpenShellServiceDocument;
 }
 
 export function getServiceDocument(

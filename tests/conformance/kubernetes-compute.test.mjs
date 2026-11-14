@@ -1912,12 +1912,16 @@ test(
 );
 
 test("native Compute resumes signed startup across preparation passes", (t) =>
-  exerciseNativeComputeEnrollment(t, false));
+  exerciseNativeComputeEnrollment(t, "acknowledged"));
 
 test("native Compute observes the accepted release after bootstrap connections drop", (t) =>
-  exerciseNativeComputeEnrollment(t, true));
+  exerciseNativeComputeEnrollment(t, "disconnected"));
 
-async function exerciseNativeComputeEnrollment(t, dropConnections) {
+test("native Compute observes the accepted release after an incomplete HTTP reply", (t) =>
+  exerciseNativeComputeEnrollment(t, "incomplete"));
+
+async function exerciseNativeComputeEnrollment(t, releaseResponse) {
+  const dropConnections = releaseResponse === "disconnected";
   const { InstalledDriver } = await import("../../packages/occ/src/index.ts");
   const { createOpenAiRequestProvider } =
     await import("../../apps/controller/src/drivers/egress-proxy/openai-provider.ts");
@@ -2052,6 +2056,7 @@ async function exerciseNativeComputeEnrollment(t, dropConnections) {
     await import("../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts");
   const { HARNESS_EGRESS_ENROLLMENT_PATH } =
     await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
+  let refuseRelease;
   let dropPath;
   const exchanges = [];
   const server = createServer(async (request, response) => {
@@ -2065,6 +2070,11 @@ async function exerciseNativeComputeEnrollment(t, dropConnections) {
     } else {
       assert.equal(request.url, HARNESS_EGRESS_ENROLLMENT_PATH);
     }
+    if (request.method === "POST" && refuseRelease) {
+      request.resume();
+      refuseRelease(response);
+      return;
+    }
     if (request.method === "POST") {
       posts++;
       const chunks = [];
@@ -2073,6 +2083,11 @@ async function exerciseNativeComputeEnrollment(t, dropConnections) {
       }
       receipt = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       exchanges.push("applied release");
+      if (releaseResponse === "incomplete") {
+        response.writeHead(200, { "content-type": "application/json", "content-length": 120 });
+        response.end('{"enrolled":');
+        return;
+      }
       if (dropConnections) {
         request.socket.destroy();
         return;
@@ -2239,6 +2254,33 @@ async function exerciseNativeComputeEnrollment(t, dropConnections) {
   await assert.rejects(prepare(), /does not match this execution/);
   assertNoNodeAccepted();
   liveProcess = installed.enforcement.instanceId;
+  if (releaseResponse === "incomplete") {
+    const acknowledgment = JSON.stringify({ enrolled: true, startupId });
+    for (const [name, code, type, body, length = body.length] of [
+      ["stalled 401", 401, "application/json", "{", 120],
+      ["incomplete 403", 403, "application/json", "{", 120],
+      ["stale challenge", 409, "application/json", "{}"],
+      ["complete malformed JSON", 200, "application/json", "{"],
+      ["wrong content type", 200, "text/plain", acknowledgment],
+      ["oversized acknowledgment", 200, "application/json", acknowledgment.padEnd(20_000)],
+    ]) {
+      await t.test(`a release with ${name} fails enrollment`, async () => {
+        refuseRelease = (response) => {
+          response.writeHead(code, { "content-type": type, "content-length": length });
+          if (name === "stalled 401") {
+            response.write(body);
+          } else {
+            response.end(body);
+          }
+        };
+        const expected = code === 409 ? /requires a fresh challenge/ : /was not acknowledged/;
+        await assert.rejects(prepare(), expected);
+        assertNoNodeAccepted();
+        assert.deepEqual(withdrawals, []);
+      });
+    }
+    refuseRelease = undefined;
+  }
   const originalStartupId = challenge.startupId;
   challenge.startupId = "malformed";
   await assert.rejects(prepare(), /challenge does not match the admitted execution/);

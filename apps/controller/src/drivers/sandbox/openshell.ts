@@ -161,7 +161,10 @@ import {
   OpenShellWorkspaceAlreadyExistsError,
   toProtobufStruct,
 } from "./openshell-gateway-client.ts";
-import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
+import {
+  type OpenShellServiceDocument,
+  OpenShellServiceTransportError,
+} from "./openshell-service-transport.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/harness-workspace-preparation.ts";
 import {
@@ -4102,14 +4105,27 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       throw error;
     };
-    const document = await client
-      .getServiceDocument(
+    const enrollmentDocument = async (request: Promise<OpenShellServiceDocument>) => {
+      const document = await request.catch((error: unknown) => {
+        if (native && error instanceof OpenShellServiceTransportError && error.partialResponse) {
+          return error.partialResponse;
+        }
+        return enrollmentTransportFailure(error);
+      });
+      context.signal.throwIfAborted();
+      if (native && document.status === 200 && document.jsonInterrupted) {
+        throw new NativeEnrollmentPending();
+      }
+      return document;
+    };
+    const document = await enrollmentDocument(
+      client.getServiceDocument(
         service.url,
         HARNESS_EGRESS_ENROLLMENT_PATH,
         context.transportToken,
         context.signal,
-      )
-      .catch(enrollmentTransportFailure);
+      ),
+    );
     // A service may still be starting, or may already serve Codex/a held failure.
     // Normal Harness observation decides readiness; none of these answers releases startup.
     const preview =
@@ -4181,15 +4197,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const deliver = async (): Promise<boolean> => {
-      const released = await client
-        .postServiceDocument(
+      const released = await enrollmentDocument(
+        client.postServiceDocument(
           service.url,
           HARNESS_EGRESS_ENROLLMENT_PATH,
           context.transportToken,
           await release(startupId),
           context.signal,
-        )
-        .catch(enrollmentTransportFailure);
+        ),
+      );
       // A restarted Harness refuses the old challenge. The next reconcile observes
       // fresh evidence; the observed preview instead ends this route and does not replay.
       if (released.status === 409 || released.status === 410) {
