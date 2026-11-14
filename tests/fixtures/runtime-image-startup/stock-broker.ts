@@ -454,6 +454,9 @@ export async function probeStockBroker(
     process.stdout.write(
       "stock-codex-repository-broker-ready " + JSON.stringify({ commit }) + "\n",
     );
+  } catch (error) {
+    console.error(stderr);
+    throw error;
   } finally {
     clearTimeout(timeout);
     lines.close();
