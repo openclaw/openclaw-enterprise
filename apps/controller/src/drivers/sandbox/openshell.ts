@@ -168,7 +168,7 @@ import {
   WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS,
   WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS,
   WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
-  WORKSPACE_SETUP_RUNTIME,
+  WORKSPACE_SETUP_RUNTIME_WITH_VERIFY_EXISTING,
 } from "../compute/workspace-setup-runtime.ts";
 import {
   COMPUTE_RELEASE_PROFILE,
@@ -1410,7 +1410,7 @@ try {
   if (remainingMs <= 0) throw new Error();
   // Only verify an existing marker if a fresh initializer can no longer receive
   // its full budget. Otherwise a nested writer could outlive this lock holder.
-  const args = ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME)}];
+  const args = ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME_WITH_VERIFY_EXISTING)}];
   if (remainingMs < 250000) args.push("verify-existing");
   const result = spawnSync(process.execPath, args, {
     input: fs.readFileSync(0),
