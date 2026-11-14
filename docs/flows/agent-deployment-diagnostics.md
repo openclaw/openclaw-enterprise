@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-12
-last_updated_session: authoring-run/610ff967-1248-450d-a432-c62fe1e8ac7a
+updated: 2026-11-14
+last_updated_session: authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260
 ---
 
 # Agent deployment diagnostics flow
@@ -70,6 +70,12 @@ name, UID, and container ID again before using the decoded evidence. Missing or
 replaced Pods produce `unknown` checks. Invalid diagnostics data fails the
 request. When concurrent reads reach the shared deadline, the Driver can still
 classify a rejected Gateway diagnostics request before reporting a generic timeout.
+
+Before it generates the runtime programs, the Kubernetes renderer loads the
+shared failure vocabulary. `runtime-entrypoints.ts:isStringArray` requires a
+string at each position in the diagnostic check, code, and startup failure lists.
+An empty position or a value of another type stops the renderer from loading
+with `Invalid runtime failure vocabulary.`
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:PLUGIN_RUNTIME_HELPERS`
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
@@ -235,6 +241,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 11:06: Reject missing positions in the lists embedded in generated runtime programs. (authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260 - 08f8640d5503df1c98e9939ea5cce2763e9c4085)
 
 - 2026-11-12 20:29: Distinguish runtime image provenance failures from tool policy refusals in both generated launchers. (authoring-run/610ff967-1248-450d-a432-c62fe1e8ac7a - a627e44694987459dbbf9aa59a3d76b9a97f48a7)
 

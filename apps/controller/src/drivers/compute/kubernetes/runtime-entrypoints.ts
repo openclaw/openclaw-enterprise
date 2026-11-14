@@ -26,7 +26,15 @@ type RuntimeVocabulary = Pick<
 >;
 
 function isStringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index) || typeof value[index] !== "string") {
+      return false;
+    }
+  }
+  return true;
 }
 
 function isRuntimeVocabulary(value: unknown): value is RuntimeVocabulary {
