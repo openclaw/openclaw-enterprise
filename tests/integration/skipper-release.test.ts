@@ -101,7 +101,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
   function produce(file: string, overrides: NodeJS.ProcessEnv = {}) {
     const result = spawnSync(
       process.execPath,
-      ["scripts/ci/first-agent-smoke.mjs", "release-selection", file],
+      ["scripts/ci/first-agent-smoke.ts", "release-selection", file],
       {
         encoding: "utf8",
         timeout: 30_000,

@@ -207,7 +207,7 @@ success receipt or invented suite results.
 The single-release job provides **container startup qualification on amd64**,
 not an installation or rollout. The installed private Git test lane builds a
 separate repository-service image and a runtime with a test CA through
-[first-agent-smoke](../../scripts/ci/first-agent-smoke.mjs); the two-image
+[first-agent-smoke](../../scripts/ci/first-agent-smoke.ts); the two-image
 publication receipt cannot supply that installation unchanged. Full Integration
 and QA Advisory retain their existing installation and provider requirements.
 
