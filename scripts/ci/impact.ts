@@ -663,7 +663,15 @@ function main() {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === "--main-test-advisory") {
     const result = process.env.GITHUB_EVENT_NAME === "push" ? classify(true) : undefined;
-    console.log(JSON.stringify(result?.mode === "tests" ? result.lanes : []));
+    const lanes = new Set(result?.mode === "tests" ? result.lanes : []);
+    if (
+      ["postgres", "postgres-application", "postgres-auth", "postgres-platform"].some((lane) =>
+        lanes.has(lane),
+      )
+    ) {
+      lanes.add("postgres-application");
+    }
+    console.log(JSON.stringify([...lanes].sort()));
     return;
   }
   checkArguments(args);
