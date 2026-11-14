@@ -1,5 +1,4 @@
--- Proposed migration for protected download approvals and recovery.
--- The production migration journal does not include this proposal.
+-- Protect download approval, confirmation, and recovery for the original sandbox target.
 CREATE FUNCTION occ.sandbox_policy_legacy_is_valid(document jsonb, id text, namespace_id text, agent_id text, version integer) RETURNS boolean
 LANGUAGE sql IMMUTABLE AS $$ SELECT COALESCE(
   jsonb_typeof(document) = 'object' AND document ?& ARRAY['id','namespaceId','agentId','version','additions']

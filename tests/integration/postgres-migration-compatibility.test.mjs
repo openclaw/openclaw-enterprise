@@ -1402,12 +1402,22 @@ async function assertCompletedHistory(db, previous = []) {
     ).rows,
     [
       ["occ.check_connection_registration_scope()", false, "search_path=pg_catalog, pg_temp"],
+      [
+        "occ.clear_protected_download_recovery(text,text,text,text,jsonb)",
+        true,
+        "search_path=pg_catalog, pg_temp",
+      ],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.hold_account_administration_policy(text)", true],
       ["occ.hold_agent_audit_policy(text)", true],
+      [
+        "occ.preserve_protected_download_recovery(text,text,text,text,jsonb)",
+        true,
+        "search_path=pg_catalog, pg_temp",
+      ],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1831,6 +1841,15 @@ async function assertSignInResultStorage(app) {
   );
 }
 
+function upgradedWorkRow(row) {
+  return {
+    work_kind: "lifecycle",
+    audit_attempt_id: null,
+    protected_download_recovery: null,
+    ...row,
+  };
+}
+
 const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 
 // A revision admitted before 0060 carries no execution admission. The upgrade records
@@ -1839,6 +1858,9 @@ const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 function upgradedCanonicalData(data) {
   return {
     ...data,
+    controller_work: data.controller_work.map(({ value }) => ({
+      value: upgradedWorkRow(value),
+    })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
         ...value,
@@ -1968,7 +1990,6 @@ async function canonicalData(db) {
       "gateway_managed_mode",
     ],
     agent_revisions: ["gateway_managed_mode"],
-    controller_work: ["work_kind", "audit_attempt_id"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -2004,13 +2025,14 @@ async function canonicalData(db) {
 }
 
 test(
-  "Canonical migration preserves pending SandboxPolicy custody across the published 0076 and 0077 predecessors",
+  "Canonical migration preserves pending SandboxPolicy custody across the published 0076 through 0078 predecessors",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const [prefix, history] of [
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preProtectedDownloadRecovery"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -2037,20 +2059,20 @@ test(
           requestedAt: new Date().toISOString(),
         };
         const workKey = `agent:${agent}:reconcile:sandbox_policy:${applicationId}`;
-        // Persist the same policy/queue ownership shape used by normal application admission.
+        // Seed the predecessor's persisted enqueue contract. The current queue projects
+        // audit_attempt_id, which did not exist on the 0076 schema.
         await db.app.query("BEGIN");
         try {
           await db.app.query(
             "UPDATE occ.sandbox_policies SET document=document || jsonb_build_object('application',$1::jsonb) WHERE agent_id=$2",
             [application, agent],
           );
-          await new PostgresWorkQueue(db.app).enqueue({
-            idempotencyKey: workKey,
-            namespaceId: namespace,
-            agentId: agent,
-            agentTarget: "sandbox_policy",
-            actorId: application.requestedBy,
-          });
+          await db.app.query(
+            `INSERT INTO occ.controller_work (idempotency_key,namespace_id,agent_id,agent_target,
+               actor_id,state,available_at,created_at,updated_at)
+             VALUES ($1,$2,$3,'sandbox_policy',$4,'queued',now(),now(),now())`,
+            [workKey, namespace, agent, application.requestedBy],
+          );
           await db.app.query("COMMIT");
         } catch (error) {
           await db.app.query("ROLLBACK");
@@ -2099,13 +2121,9 @@ test(
           history,
         });
         await assertCompletedHistory(db, receipts);
-        // Public 0077 adds the audit-attempt column without changing queued work.
         const upgradedCustody = {
           ...before,
-          work:
-            prefix === 76
-              ? before.work.map((row) => ({ ...row, audit_attempt_id: null }))
-              : before.work,
+          work: before.work.map(upgradedWorkRow),
         };
         const manifest = JSON.parse(
           await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
@@ -2117,6 +2135,7 @@ test(
           manifest.entries.slice(prefix).map(({ sha256, when }) => [sha256, when]),
         );
         assert.equal(manifest.entries[77].tag, "0078_preserve_pending_sandbox_policy_application");
+        assert.equal(manifest.entries[78].tag, "0079_protected_download_recovery");
         assert.deepEqual(await custody(), upgradedCustody);
         assert.deepEqual(await binding(), beforeBinding);
         await assert.rejects(
@@ -2133,11 +2152,15 @@ test(
         });
 
         // An unrelated receipt in the same slot is not an upgradeable canonical prefix.
-        const unknown = await historyDatabase(child, fixture, "unknown_policy_slot", { prefix });
-        await unknown.migrator.query(
-          "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(repeat('0',64),$1)",
+        const unknown = await historyDatabase(child, fixture, "unknown_policy_slot", {
+          prefix: prefix + 1,
+        });
+        // Retain the valid catalog and receipt timestamp to isolate the divergent hash.
+        const changed = await unknown.migrator.query(
+          "UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE created_at=$1",
           [manifest.entries[prefix].when],
         );
+        assert.equal(changed.rowCount, 1);
         const unknownBefore = await historySnapshot(unknown);
         for (const flag of ["--check", undefined]) {
           assert.deepEqual(
@@ -2437,6 +2460,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preProtectedDownloadRecovery"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2452,6 +2476,17 @@ test(
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
             : undefined;
+        if (prefix >= 77) {
+          // Retain the claim and its actual audit events across the upgrade.
+          const queue = new PostgresWorkQueue(db.app, { controlPlaneAuditEnabled: true });
+          await queue.enqueue({
+            idempotencyKey: `audited-work-${randomUUID()}`,
+            namespaceId,
+            namespaceTarget: "ready",
+            actorId: "migration-fixture",
+          });
+          assert.ok((await queue.claim())?.auditAttemptId);
+        }
         const before = await canonicalData(db);
         const receipts = await historyReceipts(db.migrator);
         assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
@@ -2932,6 +2967,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preProtectedDownloadRecovery"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3129,6 +3165,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preProtectedDownloadRecovery"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -3220,6 +3257,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preProtectedDownloadRecovery"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3243,7 +3281,9 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
+        // 0079 installs the first recovery trigger after its column, index, and functions.
         const rollbackTag = [
+          [78, "CREATE TRIGGER"],
           [77, "CREATE FUNCTION"],
           [76, "CREATE INDEX"],
           [75, "CREATE TRIGGER"],
