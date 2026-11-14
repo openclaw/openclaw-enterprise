@@ -1,10 +1,27 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
+import {
+  AgentListResponse,
+  AgentReadResponse,
+  AgentRevisionListResponse,
+  AgentRevisionReadResponse,
+  ErrorResponse,
+  PresetListResponse,
+  PresetResponse,
+  ServiceAccountListResponse,
+  type AgentRevision,
+  type AgentWire,
+  type OpenClawConfigurationDocument,
+  type Preset,
+  type PresetSummaryWire,
+  type ResourceRef,
+  type ServiceAccountWire,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { consoleFixtureClient } from "../helpers/console-fixture-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 
@@ -25,28 +42,56 @@ const REVISION_SUMMARY_KEYS = [
   "revision",
 ];
 
-async function listFixture(t, name) {
+type Fixture = ReturnType<typeof consoleFixtureClient>;
+type RequestOptions = NonNullable<Parameters<Fixture["request"]>[2]>;
+type RevisionIdentity = Pick<AgentRevision, "id">;
+
+function openClawConfiguration(): OpenClawConfigurationDocument {
+  return createHarnessConfiguration("openclaw", "gpt-4.1");
+}
+
+function grantRead(
+  policy: Fixture["policy"],
+  principalId: string,
+  namespaceId: string,
+  bindingId: string,
+  resource: Pick<ResourceRef, "kind" | "id">,
+) {
+  grantRole(policy, principalId, {
+    id: bindingId,
+    namespaceId,
+    permissions: { [resource.kind]: ["read"] },
+    resource,
+  });
+}
+
+function configurationVariables(configuration: object | undefined) {
+  assert.ok(configuration && "env" in configuration);
+  const { env } = configuration;
+  assert.ok(env && typeof env === "object" && "vars" in env);
+  assert.ok(env.vars && typeof env.vars === "object");
+  return env.vars;
+}
+
+async function listFixture(t: TestContext, name: string) {
   const state = new InMemoryPlatformState();
-  const fixture = await createConsoleAppFixture(t, { state });
+  const fixture = consoleFixtureClient(await createConsoleAppFixture(t, { state }));
   await fixture.bootstrap(name);
   const namespace = await fixture.createNamespace(name, { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Listed Agent",
-    createHarnessConfiguration("openclaw", "gpt-4.1"),
-  );
+  const agent = await fixture.createAgent(namespace.id, "Listed Agent", openClawConfiguration());
   const first = await fixture.deployAgent(namespace.id, agent.id);
   const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
   // Later revisions of the same Agent, as repeated deploys leave them: copies of the admitted
   // snapshot under new identities and numbers, with `configuration` replaced when given.
-  const seedRevisions = async (count, configuration) => {
+  const seedRevisions = async (count: number, configuration?: AgentRevision["configuration"]) => {
     const admitted = await state.read((view) =>
       view.revisions.findRevision(namespace.id, agent.id, first.id),
     );
+    assert.ok(admitted, "the first admitted revision is stored");
     const latest = await state.read((view) =>
       view.revisions.listRevisionMetadata(namespace.id, agent.id),
     );
-    const seeded = [];
+    const seeded: Readonly<AgentRevision>[] = [];
     await state.transact(async (transaction) => {
       for (let offset = 1; offset <= count; offset += 1) {
         seeded.push(
@@ -61,26 +106,64 @@ async function listFixture(t, name) {
     });
     return seeded;
   };
-  const page = async (query = "", options = {}) => {
+  const page = async (query = "", options: RequestOptions = {}) => {
     const response = await fixture.request("GET", `${revisionsPath}${query}`, options);
-    assert.equal(response.status, 200, JSON.stringify(response.body));
+    const { data, meta } = fixture.fixtureResponse(
+      response,
+      200,
+      AgentRevisionListResponse,
+      "list revisions",
+    );
     return {
-      numbers: response.data.map(({ revision }) => revision),
-      nextCursor: response.body.meta.nextCursor,
-      data: response.data,
+      numbers: data.map(({ revision }) => revision),
+      nextCursor: meta.nextCursor,
+      data,
     };
   };
-  return { state, fixture, namespace, agent, first, revisionsPath, seedRevisions, page };
+  const revisionReader = async (
+    label: string,
+    prefix: string,
+    revisions: readonly RevisionIdentity[],
+  ) => {
+    const bindings = revisions.map(({ id }) => ({ id, bindingId: `${prefix}-${id}` }));
+    const reader = await fixture.createAccountWithPolicy(label, (principal) => {
+      grantRead(fixture.policy, principal.id, namespace.id, `agent-reader-${randomUUID()}`, {
+        kind: "agent",
+        id: agent.id,
+      });
+      for (const { id, bindingId } of bindings) {
+        grantRead(fixture.policy, principal.id, namespace.id, bindingId, {
+          kind: "agent_revision",
+          id,
+        });
+      }
+    });
+    return { session: await fixture.signIn(reader.credentials), bindings };
+  };
+  return {
+    state,
+    fixture,
+    namespace,
+    agent,
+    first,
+    revisionsPath,
+    seedRevisions,
+    page,
+    revisionReader,
+  };
 }
 
 test("Preset and revision lists return summaries, not the stored documents", async (t) => {
   const { state, fixture, namespace, agent, first, revisionsPath, seedRevisions } =
     await listFixture(t, "Heavy lists");
-  // Documents of about 0.9 MB, bughunt-69's size. This in-memory run proves response shape and
+  // Documents of about 0.9 MB. This in-memory run proves response shape and
   // size; the 64-document timing runs against PostgreSQL in postgres-platform-state.test.mjs.
-  const large = Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"]));
-  const heavy = await seedRevisions(4, { ...first.configuration, env: { vars: large } });
-  const presets = [];
+  const large = Object.fromEntries(
+    Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"] as const),
+  );
+  const heavy = (await seedRevisions(4, { ...first.configuration, env: { vars: large } })).at(-1);
+  assert.ok(heavy);
+  const presets: Readonly<Preset>[] = [];
   await state.transact(async (transaction) => {
     for (let index = 0; index < 4; index += 1) {
       presets.push(
@@ -95,8 +178,12 @@ test("Preset and revision lists return summaries, not the stored documents", asy
     }
   });
 
-  const listedPresets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-  assert.equal(listedPresets.status, 200);
+  const listedPresets = fixture.fixtureResponse(
+    await fixture.request("GET", `/namespaces/${namespace.id}/presets`),
+    200,
+    PresetListResponse,
+    "list presets",
+  );
   assert.deepEqual(
     listedPresets.data.map(({ id }) => id).sort(),
     presets.map(({ id }) => id).sort(),
@@ -106,12 +193,16 @@ test("Preset and revision lists return summaries, not the stored documents", asy
     assert.deepEqual(Object.keys(summary).sort(), PRESET_SUMMARY_KEYS);
   }
   assert.ok(
-    JSON.stringify(listedPresets.body).length < 4 * 300,
+    Buffer.byteLength(JSON.stringify(listedPresets)) < 4 * 300,
     "Preset summaries stay a few hundred bytes each",
   );
 
-  const listedRevisions = await fixture.request("GET", revisionsPath);
-  assert.equal(listedRevisions.status, 200);
+  const listedRevisions = fixture.fixtureResponse(
+    await fixture.request("GET", revisionsPath),
+    200,
+    AgentRevisionListResponse,
+    "list revisions",
+  );
   assert.deepEqual(
     listedRevisions.data.map(({ revision }) => revision),
     [5, 4, 3, 2, 1],
@@ -121,18 +212,31 @@ test("Preset and revision lists return summaries, not the stored documents", asy
     assert.equal(summary.agentId, agent.id);
   }
   assert.ok(
-    JSON.stringify(listedRevisions.body).length < 5 * 1024,
+    Buffer.byteLength(JSON.stringify(listedRevisions)) < 5 * 1024,
     "revision summaries include Harness settings without the large native documents",
   );
 
   // The full documents stay on the exact reads, and a summary repeats the exact read's fields.
-  const preset = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/presets/${presets[0].id}`,
+  const firstPreset = presets[0];
+  assert.ok(firstPreset);
+  const preset = fixture.fixtureResponse(
+    await fixture.request("GET", `/namespaces/${namespace.id}/presets/${firstPreset.id}`),
+    200,
+    PresetResponse,
+    "read preset",
   );
-  assert.equal(Object.keys(preset.data.template.configuration.values.env.vars).length, 70_000);
-  const revision = await fixture.request("GET", `${revisionsPath}/${heavy.at(-1).id}`);
-  assert.equal(Object.keys(revision.data.configuration.env.vars).length, 70_000);
+  assert.equal(
+    Object.keys(configurationVariables(preset.data.template.configuration?.values)).length,
+    70_000,
+  );
+  const revision = fixture.fixtureResponse(
+    await fixture.request("GET", `${revisionsPath}/${heavy.id}`),
+    200,
+    AgentRevisionReadResponse,
+    "read revision",
+  );
+  assert.ok("configuration" in revision.data);
+  assert.equal(Object.keys(configurationVariables(revision.data.configuration)).length, 70_000);
   assert.deepEqual(listedRevisions.data[0], {
     id: revision.data.id,
     namespaceId: revision.data.namespaceId,
@@ -158,29 +262,23 @@ test("Preset and revision lists return summaries, not the stored documents", asy
 
 test("resource lists keep readable siblings in repository order", async (t) => {
   const state = new InMemoryPlatformState();
-  const fixture = await createConsoleAppFixture(t, { state });
+  const fixture = consoleFixtureClient(await createConsoleAppFixture(t, { state }));
   await fixture.bootstrap("Readable siblings");
   const namespace = await fixture.createNamespace("Readable siblings", { ready: true });
   const namespaceId = namespace.id;
   const path = `/namespaces/${namespaceId}`;
 
-  const agents = [];
-  const accounts = [];
-  const presets = [];
+  const agents: AgentWire[] = [];
+  const accounts: ServiceAccountWire[] = [];
+  const presets: PresetSummaryWire[] = [];
   // Use names out of order. The memory repositories order Agents by insertion, ServiceAccounts
   // by name and Presets by ID.
   for (const [suffix, name] of [
     [1, "Zulu"],
     [2, "Middle"],
     [3, "Alpha"],
-  ]) {
-    agents.push(
-      await fixture.createAgent(
-        namespaceId,
-        name,
-        createHarnessConfiguration("openclaw", "gpt-4.1"),
-      ),
-    );
+  ] as const) {
+    agents.push(await fixture.createAgent(namespaceId, name, openClawConfiguration()));
     const idSuffix = `00000000-0000-4000-8000-00000000000${suffix}`;
     const account = { id: `sa_${idSuffix}`, namespaceId, name };
     const preset = {
@@ -205,39 +303,64 @@ test("resource lists keep readable siblings in repository order", async (t) => {
     ["read", "namespace"],
   ]);
   const emptySession = await fixture.signIn(emptyReader.credentials);
-  for (const { kind, collection, rows } of [
-    { kind: "agent", collection: "agents", rows: agents },
-    { kind: "service_account", collection: "service-accounts", rows: accounts.toReversed() },
-    { kind: "preset", collection: "presets", rows: presets },
-  ]) {
+  const forbiddenReader = await fixture.createAccountWithPolicy("forbidden-reader", () => {});
+  const forbiddenSession = await fixture.signIn(forbiddenReader.credentials);
+  for (const { kind, collection, rows, schema } of [
+    { kind: "agent", collection: "agents", rows: agents, schema: AgentListResponse },
+    {
+      kind: "service_account",
+      collection: "service-accounts",
+      rows: [...accounts].reverse(),
+      schema: ServiceAccountListResponse,
+    },
+    { kind: "preset", collection: "presets", rows: presets, schema: PresetListResponse },
+  ] as const) {
     await t.test(collection, async () => {
       const [first, hidden, last] = rows;
+      assert.ok(first && hidden && last);
       const reader = await fixture.createNamespaceMember(`${collection}-reader`, namespaceId, [
         ["read", "namespace"],
       ]);
       // Grant the later row first to distinguish repository order from grant order.
       for (const { id } of [last, first]) {
-        grantRole(fixture.policy, reader.principal.id, {
-          id: `${collection}-reader-${id}`,
-          namespaceId,
-          permissions: { [kind]: ["read"] },
-          resource: { kind, id },
+        grantRead(fixture.policy, reader.principal.id, namespaceId, `${collection}-reader-${id}`, {
+          kind,
+          id,
         });
       }
       const session = await fixture.signIn(reader.credentials);
       const listPath = `${path}/${collection}`;
-      const listed = await fixture.request("GET", listPath, { session });
-      assert.equal(listed.status, 200);
+      const listed = fixture.fixtureResponse(
+        await fixture.request("GET", listPath, { session }),
+        200,
+        schema,
+        collection,
+      );
       assert.deepEqual(listed.data, [first, last]);
 
       const denied = await fixture.request("GET", `${listPath}/${hidden.id}`, { session });
-      assert.equal(denied.status, 403);
-      const empty = await fixture.request("GET", listPath, { session: emptySession });
-      assert.equal(empty.status, 200);
+      assert.equal(
+        fixture.fixtureResponse(denied, 403, ErrorResponse, `read hidden ${kind}`).error.code,
+        "FORBIDDEN",
+      );
+      const empty = fixture.fixtureResponse(
+        await fixture.request("GET", listPath, { session: emptySession }),
+        200,
+        schema,
+        collection,
+      );
       assert.deepEqual(empty.data, []);
 
+      // An empty result requires Namespace access. Without it the list itself is forbidden.
+      const forbidden = await fixture.request("GET", listPath, { session: forbiddenSession });
+      assert.equal(
+        fixture.fixtureResponse(forbidden, 403, ErrorResponse, `list forbidden ${collection}`).error
+          .code,
+        "FORBIDDEN",
+      );
+
       // An outage on the middle row aborts the list before checking the final row.
-      const checked = [];
+      const checked: string[] = [];
       const outage = await fixture.withIamOutage(
         ({ action, resource }) => {
           if (action !== "read" || resource.kind !== kind) {
@@ -248,7 +371,11 @@ test("resource lists keep readable siblings in repository order", async (t) => {
         },
         () => fixture.request("GET", listPath, { session }),
       );
-      assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(
+        fixture.fixtureResponse(outage, 503, ErrorResponse, `list ${collection} during IAM outage`)
+          .error.code,
+        "DEPENDENCY_UNAVAILABLE",
+      );
       assert.deepEqual(checked, [first.id, hidden.id]);
     });
   }
@@ -260,17 +387,14 @@ test("revision pages run newest first and a cursor continues below a deploy betw
     "Revision pages",
   );
   // An Agent with no revision lists one empty last page.
-  const empty = await fixture.createAgent(
-    namespace.id,
-    "Undeployed",
-    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  const empty = await fixture.createAgent(namespace.id, "Undeployed", openClawConfiguration());
+  const none = fixture.fixtureResponse(
+    await fixture.request("GET", `/namespaces/${namespace.id}/agents/${empty.id}/revisions`),
+    200,
+    AgentRevisionListResponse,
+    "list undeployed revisions",
   );
-  const none = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${empty.id}/revisions`,
-  );
-  assert.equal(none.status, 200);
-  assert.deepEqual([none.data, none.body.meta.nextCursor], [[], null]);
+  assert.deepEqual([none.data, none.meta.nextCursor], [[], null]);
   // One revision fits one page.
   const single = await page();
   assert.deepEqual([single.numbers, single.nextCursor], [[1], null]);
@@ -315,34 +439,21 @@ test("revision pages run newest first and a cursor continues below a deploy betw
     "?cursor=v1.4&extra=1",
   ]) {
     const refused = await fixture.request("GET", `${revisionsPath}${query}`);
-    assert.equal(refused.status, 400, `${query}: ${JSON.stringify(refused.body)}`);
+    assert.equal(
+      fixture.fixtureResponse(refused, 400, ErrorResponse, `list revisions with ${query}`).error
+        .code,
+      "INVALID_REQUEST",
+    );
   }
 });
 
 test("a revision page leaves out revisions the caller cannot read and still continues", async (t) => {
-  const { fixture, namespace, agent, first, seedRevisions, page } = await listFixture(
-    t,
-    "Partial revision reads",
-  );
+  const { fixture, namespace, agent, first, seedRevisions, page, revisionReader } =
+    await listFixture(t, "Partial revision reads");
   const [second, third] = await seedRevisions(4);
+  assert.ok(second && third);
   // Read on the Agent opens its revision list; each revision still needs its own read grant.
-  const reader = await fixture.createAccountWithPolicy("revision-reader", (principal) => {
-    grantRole(fixture.policy, principal.id, {
-      id: `agent-reader-${randomUUID()}`,
-      namespaceId: namespace.id,
-      permissions: { agent: ["read"] },
-      resource: { kind: "agent", id: agent.id },
-    });
-    for (const revision of [first, third]) {
-      grantRole(fixture.policy, principal.id, {
-        id: `revision-reader-${revision.id}`,
-        namespaceId: namespace.id,
-        permissions: { agent_revision: ["read"] },
-        resource: { kind: "agent_revision", id: revision.id },
-      });
-    }
-  });
-  const session = await fixture.signIn(reader.credentials);
+  const { session } = await revisionReader("revision-reader", "revision-reader", [first, third]);
   // Revisions 5, 4 and 2 are unreadable. A page scans past them, so it fills with readable
   // revisions and its cursor names only a readable one: nothing about the hidden revisions,
   // not even their numbers, reaches the caller.
@@ -350,7 +461,7 @@ test("a revision page leaves out revisions the caller cannot read and still cont
   assert.deepEqual([both.numbers, both.nextCursor], [[3, 1], null]);
   const newest = await page("?limit=1", { session });
   assert.deepEqual([newest.numbers, newest.nextCursor], [[3], "v1.3"]);
-  assert.equal(newest.data[0].id, third.id);
+  assert.equal(newest.data[0]?.id, third.id);
   const last = await page(`?limit=1&cursor=${newest.nextCursor}`, { session });
   assert.deepEqual([last.numbers, last.nextCursor], [[1], null]);
   // Below the oldest revision the page is empty and ends the walk.
@@ -363,80 +474,61 @@ test("a revision page leaves out revisions the caller cannot read and still cont
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${second.id}`,
     { session },
   );
-  assert.equal(refused.status, 403);
+  assert.equal(
+    fixture.fixtureResponse(refused, 403, ErrorResponse, "read hidden revision").error.code,
+    "FORBIDDEN",
+  );
 });
 
 test("a revision cursor can lead to an empty page after access is revoked", async (t) => {
-  const { fixture, namespace, agent, first, revisionsPath, seedRevisions, page } =
+  const { fixture, namespace, agent, first, revisionsPath, seedRevisions, page, revisionReader } =
     await listFixture(t, "Revoked revision access");
   const [newer] = await seedRevisions(1);
-  let olderBinding;
-  const reader = await fixture.createAccountWithPolicy("revoked-revision-reader", (principal) => {
-    grantRole(fixture.policy, principal.id, {
-      id: `agent-reader-${randomUUID()}`,
-      namespaceId: namespace.id,
-      permissions: { agent: ["read"] },
-      resource: { kind: "agent", id: agent.id },
-    });
-    for (const revision of [first, newer]) {
-      const { binding } = grantRole(fixture.policy, principal.id, {
-        id: `revision-reader-${revision.id}`,
-        namespaceId: namespace.id,
-        permissions: { agent_revision: ["read"] },
-        resource: { kind: "agent_revision", id: revision.id },
-      });
-      if (revision.id === first.id) {
-        olderBinding = binding;
-      }
-    }
-  });
-  const session = await fixture.signIn(reader.credentials);
+  assert.ok(newer);
+  const {
+    session,
+    bindings: [olderBinding],
+  } = await revisionReader("revoked-revision-reader", "revision-reader", [first, newer]);
+  assert.ok(olderBinding);
   const olderPath = `${revisionsPath}/${first.id}`;
-  assert.equal((await fixture.request("GET", olderPath, { session })).status, 200);
+  fixture.fixtureResponse(
+    await fixture.request("GET", olderPath, { session }),
+    200,
+    AgentRevisionReadResponse,
+    "read older revision before revocation",
+  );
   const top = await page("?limit=1", { session });
-  assert.deepEqual([top.numbers, top.data[0].id, top.nextCursor], [[2], newer.id, "v1.2"]);
+  assert.deepEqual([top.numbers, top.data[0]?.id, top.nextCursor], [[2], newer.id, "v1.2"]);
 
   // Remove only the older revision binding; the Agent and newer revision grants remain.
-  const bindingIndex = fixture.policy.bindings.indexOf(olderBinding);
+  const bindingIndex = fixture.policy.bindings.findIndex(({ id }) => id === olderBinding.bindingId);
   assert.notEqual(bindingIndex, -1);
   fixture.policy.bindings.splice(bindingIndex, 1);
-  assert.equal(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`, { session }))
-      .status,
+  fixture.fixtureResponse(
+    await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`, { session }),
     200,
+    AgentReadResponse,
+    "read Agent after revocation",
   );
   const next = await page(`?limit=1&cursor=${top.nextCursor}`, { session });
   assert.deepEqual([next.data, next.nextCursor], [[], null]);
-  assert.equal((await fixture.request("GET", olderPath, { session })).status, 403);
+  const revoked = await fixture.request("GET", olderPath, { session });
+  assert.equal(
+    fixture.fixtureResponse(revoked, 403, ErrorResponse, "read older revision after revocation")
+      .error.code,
+    "FORBIDDEN",
+  );
 });
 
 test("a revision cursor needs a readable revision below it, and the scan reads in batches", async (t) => {
-  const { state, fixture, namespace, agent, first, seedRevisions, page } = await listFixture(
+  const { state, first, seedRevisions, page, revisionReader } = await listFixture(
     t,
     "Revision scan batches",
   );
   const seeded = await seedRevisions(250);
   const newest = seeded.at(-1);
+  assert.ok(newest);
   assert.equal(newest.revision, 251);
-  const reader = async (name, revisions) => {
-    const account = await fixture.createAccountWithPolicy(name, (principal) => {
-      grantRole(fixture.policy, principal.id, {
-        id: `agent-reader-${randomUUID()}`,
-        namespaceId: namespace.id,
-        permissions: { agent: ["read"] },
-        resource: { kind: "agent", id: agent.id },
-      });
-      for (const revision of revisions) {
-        grantRole(fixture.policy, principal.id, {
-          id: `${name}-${revision.id}`,
-          namespaceId: namespace.id,
-          permissions: { agent_revision: ["read"] },
-          resource: { kind: "agent_revision", id: revision.id },
-        });
-      }
-    });
-    return fixture.signIn(account.credentials);
-  };
   // Count store pages the list asks for, through the in-memory store's read views.
   let storePages = 0;
   const read = state.read.bind(state);
@@ -453,7 +545,7 @@ test("a revision cursor needs a readable revision below it, and the scan reads i
         },
       }),
     );
-  const counted = async (query, options) => {
+  const counted = async (query: string, options?: RequestOptions) => {
     storePages = 0;
     const result = await page(query, options);
     return { ...result, storePages };
@@ -461,13 +553,13 @@ test("a revision cursor needs a readable revision below it, and the scan reads i
 
   // Finding 1334: a full page whose remaining revisions are all unreadable carries no cursor,
   // so no cursor is issued when no older revision was found readable when checked.
-  const onlyNewest = await reader("newest-reader", [newest]);
+  const { session: onlyNewest } = await revisionReader("newest-reader", "newest-reader", [newest]);
   const alone = await counted("?limit=1", { session: onlyNewest });
   assert.deepEqual([alone.numbers, alone.nextCursor], [[251], null]);
   // A small page scans 250 unreadable revisions in batches of 100, not one query per revision.
   assert.ok(alone.storePages >= 1 && alone.storePages <= 3, `store pages: ${alone.storePages}`);
 
-  const ends = await reader("ends-reader", [newest, first]);
+  const { session: ends } = await revisionReader("ends-reader", "ends-reader", [newest, first]);
   const top = await counted("?limit=1", { session: ends });
   assert.deepEqual([top.numbers, top.nextCursor], [[251], "v1.251"]);
   assert.ok(top.storePages >= 1 && top.storePages <= 3, `store pages: ${top.storePages}`);
