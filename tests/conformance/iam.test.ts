@@ -1,28 +1,51 @@
-import {
-  requireConfiguration,
-  ConfigurationValidationError as SharedConfigurationValidationError,
-} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AGENT_CHILD_RESOURCE_KINDS,
   PERMISSION_ACTIONS,
   RESOURCE_KINDS,
+  type AccessBinding,
+  type AccessBindingSubjectKind,
+  type AuthorizationDecision,
+  type AuthorizationEvidence,
+  type AuthorizationRequest,
+  type Group,
+  type GroupMembership,
+  type IAMManagedAccessBindingInput,
+  type IAMManagedRoleInput,
+  type Identity,
+  type IdentityAccessCoverageRequest,
+  type IdentityLookup,
+  type Permission,
+  type PermissionAction,
+  type Principal,
+  type ResourceKind,
+  type Restriction,
+  type Role,
+  type ServicePrincipal,
 } from "../../packages/contracts/src/index.ts";
-import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import {
+  InMemoryPlatformState,
+  type PlatformUnitOfWork,
+} from "../../packages/occ/src/state/platform-state.ts";
 import { immutableSnapshot } from "../../packages/utils/src/index.ts";
 import {
   AuthAccountRoleInvalidError,
   AuthAccountRoleNotFoundError,
   createAuthPrincipalSeed,
   createBootstrapAdministratorSeed,
-  evaluateAuthorization,
   NativeIAMDriver,
   validateAuthAccountPrincipalSeed,
   validateNativeIAMState,
+  type AuthPrincipalSeedOptions,
+  type NativeIAMState,
 } from "../../packages/iam/src/index.ts";
+import { registerAuthorizationCases } from "./iam-authorization-cases.ts";
+import { createInstallationNamespaces } from "./iam-case-fixture.ts";
+import { registerIdentityCases } from "./iam-identity-cases.ts";
+import { registerPolicyStateCases } from "./iam-policy-state-cases.ts";
 
-const identities = [
+const identities: Identity[] = [
   {
     kind: "principal",
     id: "principal-reader-a",
@@ -66,7 +89,7 @@ const identities = [
   },
 ];
 
-const groups = [
+const groups: Group[] = [
   {
     id: "group-readers-a",
     namespaceId: "namespace-a",
@@ -74,7 +97,7 @@ const groups = [
   },
 ];
 
-const memberships = [
+const memberships: GroupMembership[] = [
   {
     namespaceId: "namespace-a",
     groupId: "group-readers-a",
@@ -82,7 +105,7 @@ const memberships = [
   },
 ];
 
-const roles = [
+const roles: Role[] = [
   {
     id: "role-reader-a",
     namespaceId: "namespace-a",
@@ -95,7 +118,7 @@ const roles = [
   },
 ];
 
-const bindings = [
+const bindings: AccessBinding[] = [
   {
     id: "binding-exact-agent-a",
     namespaceId: "namespace-a",
@@ -142,33 +165,29 @@ const bindings = [
   },
 ];
 
-const state = { identities, groups, memberships, roles, bindings, restrictions: [] };
+const state = {
+  identities,
+  groups,
+  memberships,
+  roles,
+  bindings,
+  restrictions: [],
+} satisfies NativeIAMState;
 
 // Unusable subjects, Roles and targets are input errors (a ScopeViolationError subclass);
 // an unavailable Namespace stays a plain ScopeViolationError.
-const rejectedPolicyInput = (error) =>
-  error.name === "IAMPolicyValidationError" || error.name === "ScopeViolationError";
-
-// Creates the Installation and the ready Namespaces (id -> name) in one State transaction.
-async function createInstallationNamespaces(unit, namespaces = { "namespace-a": "local" }) {
-  await unit.installations.createInstallation({
-    id: "installation",
-    name: "Test",
-    createdAt: new Date().toISOString(),
-  });
-  for (const [id, name] of Object.entries(namespaces)) {
-    await unit.namespaces.createNamespace({
-      id,
-      name,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    });
-  }
-}
+const rejectedPolicyInput = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  "name" in error &&
+  (error.name === "IAMPolicyValidationError" || error.name === "ScopeViolationError");
 
 // A Driver that evaluates namespace-a's managed Roles and bindings in `platform` for the
 // identities `currentIdentities()` returns at each authorization.
-function managedNamespaceDriver(platform, currentIdentities) {
+function managedNamespaceDriver(
+  platform: InMemoryPlatformState,
+  currentIdentities: () => readonly Identity[],
+) {
   return new NativeIAMDriver({
     loadNativeIAMState: async () =>
       platform.read(async (unit) => ({
@@ -183,7 +202,7 @@ function managedNamespaceDriver(platform, currentIdentities) {
 }
 
 // The managed "namespace-reader" Role: Namespace read, scoped to namespace-a.
-function createNamespaceReaderRole(native, unit) {
+function createNamespaceReaderRole(native: NativeIAMDriver, unit: PlatformUnitOfWork) {
   return native.createNamespaceRole(
     { policy: unit.iamPolicy },
     {
@@ -195,7 +214,10 @@ function createNamespaceReaderRole(native, unit) {
 }
 
 // A namespace-reader binding of one identity to a Namespace (namespace-a by default).
-const namespaceReaderBinding = (subjectId, resourceId = "namespace-a") => ({
+const namespaceReaderBinding = (
+  subjectId: string,
+  resourceId = "namespace-a",
+): IAMManagedAccessBindingInput => ({
   id: `binding-${subjectId}-${resourceId}`,
   namespaceId: "namespace-a",
   subjectKind: "identity",
@@ -276,7 +298,7 @@ test("managed memory policy binds provisioned humans and local services to only 
 });
 
 test("managed memory policy resolves identities enrolled after construction with the exact subject rule", async () => {
-  const enrolled = [];
+  const enrolled: Identity[] = [];
   const bindable = new Set(["principal-late", "service-late-a"]);
   const platform = new InMemoryPlatformState({
     resolveIAMIdentity: (identityId) => enrolled.find((identity) => identity.id === identityId),
@@ -292,7 +314,7 @@ test("managed memory policy resolves identities enrolled after construction with
     });
     await createNamespaceReaderRole(native, unit);
   });
-  const bindLate = (subject) =>
+  const bindLate = (subject: string) =>
     platform.transact((unit) =>
       native.createNamespaceAccessBinding(
         { policy: unit.iamPolicy },
@@ -301,6 +323,14 @@ test("managed memory policy resolves identities enrolled after construction with
     );
   await assert.rejects(bindLate("principal-late"), { name: "IAMPolicyValidationError" });
 
+  // This invalid Principal must reach the State resolver unchanged.
+  const scopedPrincipal: unknown = {
+    kind: "principal",
+    id: "principal-late-scoped",
+    issuer: "x",
+    subject: "y",
+    namespaceId: "namespace-a",
+  };
   enrolled.push(
     { kind: "principal", id: "principal-late", issuer: "https://id.example.com", subject: "late" },
     { kind: "service_principal", id: "service-late-a", namespaceId: "namespace-a" },
@@ -312,13 +342,7 @@ test("managed memory policy resolves identities enrolled after construction with
       namespaceId: "namespace-a",
       agentId: "a",
     },
-    {
-      kind: "principal",
-      id: "principal-late-scoped",
-      issuer: "x",
-      subject: "y",
-      namespaceId: "namespace-a",
-    },
+    scopedPrincipal as Principal,
   );
   for (const subject of bindable) {
     await bindLate(subject);
@@ -356,7 +380,11 @@ test("managed Namespace Roles grant only Namespace read so a Namespace binding c
   const platform = new InMemoryPlatformState({ iamIdentities: identities });
   const native = managedNamespaceDriver(platform, () => identities);
   await platform.transact((unit) => createInstallationNamespaces(unit));
-  const role = (id, permissions) => ({ id, namespaceId: "namespace-a", permissions });
+  const role = (id: string, permissions: readonly Permission[]): IAMManagedRoleInput => ({
+    id,
+    namespaceId: "namespace-a",
+    permissions,
+  });
   for (const action of [
     "create",
     "update",
@@ -365,8 +393,8 @@ test("managed Namespace Roles grant only Namespace read so a Namespace binding c
     "operate",
     "administer",
     "read_logs",
-  ]) {
-    const permissions = [
+  ] as const) {
+    const permissions: Permission[] = [
       { action: "read", resourceKind: "namespace" },
       { action, resourceKind: "namespace" },
     ];
@@ -413,7 +441,7 @@ test("managed Namespace Roles grant only Namespace read so a Namespace binding c
       },
     ),
   );
-  const decide = async (action) =>
+  const decide = async (action: PermissionAction) =>
     (
       await native.authorize({
         principalId: "principal-unbound",
@@ -426,17 +454,19 @@ test("managed Namespace Roles grant only Namespace read so a Namespace binding c
 });
 
 test("auth Principal seeds fail closed unless a Role id or explicit grant is given", () => {
-  const seed = (options) =>
+  const seed = (options: AuthPrincipalSeedOptions) =>
     createAuthPrincipalSeed("ins_seed", "issuer", { id: "user-seed" }, options);
+  // Exercise the runtime checks with the values untyped callers can pass.
+  const seedInvalid = (options: unknown) => seed(options as AuthPrincipalSeedOptions);
   for (const options of [undefined, null, {}, { grant: "admin" }, { grant: undefined }]) {
-    assert.throws(() => seed(options), /require a Role id or an explicit grant/);
+    assert.throws(() => seedInvalid(options), /require a Role id or an explicit grant/);
   }
   for (const roleId of ["", null, 42]) {
-    assert.throws(() => seed({ roleId }), /require a Role id/);
+    assert.throws(() => seedInvalid({ roleId }), /require a Role id/);
   }
   for (const grant of ["none", "administrator"]) {
     assert.throws(
-      () => seed({ roleId: "role-existing", grant }),
+      () => seedInvalid({ roleId: "role-existing", grant }),
       /Role binding and an explicit grant are mutually exclusive/,
     );
   }
@@ -459,12 +489,15 @@ test("auth Principal seeds fail closed unless a Role id or explicit grant is giv
   const administrator = seed({ grant: "administrator" });
   assert.equal(administrator.roles.length, 1);
   assert.equal(administrator.bindings.length, 1);
-  assert.equal(administrator.bindings[0].roleId, administrator.roles[0].id);
+  const [binding] = administrator.bindings;
+  const [role] = administrator.roles;
+  assert.ok(binding && role);
+  assert.equal(binding.roleId, role.id);
 });
 
 test("auth account seeds reject unknown and Namespace-scoped Roles with typed errors", () => {
-  const permissions = [{ action: "read", resourceKind: "installation" }];
-  const state = {
+  const permissions: Permission[] = [{ action: "read", resourceKind: "installation" }];
+  const state: Pick<NativeIAMState, "roles"> = {
     roles: [
       { id: "role-installation", name: "Installation reader", permissions },
       {
@@ -475,7 +508,7 @@ test("auth account seeds reject unknown and Namespace-scoped Roles with typed er
       },
     ],
   };
-  const validate = (options) =>
+  const validate = (options: AuthPrincipalSeedOptions) =>
     validateAuthAccountPrincipalSeed(
       createAuthPrincipalSeed("ins_seed", "issuer", { id: "user-seed" }, options),
       state,
@@ -493,11 +526,17 @@ test("auth account seeds reject unknown and Namespace-scoped Roles with typed er
     { id: "user-seed" },
     { roleId: "role-installation" },
   );
-  const malformed = { ...seed, bindings: [{ ...seed.bindings[0], resourceId: "ins_other" }] };
+  const [binding] = seed.bindings;
+  assert.ok(binding);
+  const malformed = { ...seed, bindings: [{ ...binding, resourceId: "ins_other" }] };
   assert.throws(
     () => validateAuthAccountPrincipalSeed(malformed, state, "ins_seed"),
-    (error) =>
+    (error: unknown) =>
       !(error instanceof AuthAccountRoleInvalidError) &&
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string" &&
       /must bind an existing Installation IAM Role/.test(error.message),
   );
 });
@@ -515,10 +554,12 @@ test("fresh bootstrap seed creates human and service administrators on one share
   });
   assert.equal(seed.roles.length, 1);
   assert.equal(seed.bindings.length, 2);
+  const [role] = seed.roles;
+  assert.ok(role);
   assert.ok(
     seed.bindings.every(
       (binding) =>
-        binding.roleId === seed.roles[0].id &&
+        binding.roleId === role.id &&
         binding.subjectKind === "identity" &&
         binding.namespaceId === undefined &&
         binding.resourceKind === undefined &&
@@ -562,895 +603,53 @@ test("fresh bootstrap seed creates human and service administrators on one share
   }
 });
 
-test("service identity lookup uses exact IAM scope and cannot resolve a human identity", async () => {
-  const driver = createDriver();
-  assert.equal(
-    (
-      await driver.lookupIdentity({
-        servicePrincipalId: "service-principal-reader-a",
-        namespaceId: "namespace-a",
-      })
-    )?.id,
-    "service-principal-reader-a",
-  );
-  for (const lookup of [
-    { servicePrincipalId: "principal-reader-a", namespaceId: "namespace-a" },
-    { servicePrincipalId: "missing", namespaceId: "namespace-a" },
-    { servicePrincipalId: "service-principal-reader-a" },
-    { servicePrincipalId: "service-principal-reader-a", namespaceId: "namespace-b" },
-    {
-      servicePrincipalId: "service-principal-reader-a",
-      namespaceId: "namespace-a",
-      issuer: "forged",
-      subject: "forged",
-    },
-  ]) {
-    assert.equal(await driver.lookupIdentity(lookup), undefined);
-  }
-});
+registerIdentityCases(state, createDriver);
+registerAuthorizationCases(state, createDriver);
+registerPolicyStateCases(state);
 
-function agentResource(id, namespaceId = "namespace-a") {
-  return { kind: "agent", id, namespaceId };
-}
-
-function createDriver(overrides = {}) {
+function createDriver(overrides: Partial<NativeIAMState> = {}) {
   return new NativeIAMDriver({ loadNativeIAMState: async () => ({ ...state, ...overrides }) });
 }
 
-test("the native IAM implementation exposes a closed pre-construction configuration schema", () => {
-  assert.deepEqual(NativeIAMDriver.configurationSchema, {
-    type: "object",
-    properties: {},
-    additionalProperties: false,
-  });
-  assert.equal(Object.isFrozen(NativeIAMDriver.configurationSchema), true);
-  assert.equal(Object.isFrozen(NativeIAMDriver.configurationSchema.properties), true);
-  assert.doesNotThrow(() => requireConfiguration(NativeIAMDriver, {}));
+type BindingScope = Pick<AccessBinding, "namespaceId" | "resourceKind" | "resourceId">;
 
-  for (const configuration of [undefined, null, [], "native", { unsupported: true }, new Date()]) {
-    assert.throws(
-      () => requireConfiguration(NativeIAMDriver, configuration),
-      SharedConfigurationValidationError,
-    );
-  }
-
-  const driver = new NativeIAMDriver(
-    { loadNativeIAMState: async () => state },
-    {
-      id: "iam-configured",
-      implementation: "native",
-    },
-  );
-  assert.equal(driver.id, "iam-configured");
-  assert.equal(driver.implementation, "native");
-  assert.equal(driver.namespacePolicyTransaction, "platform-unit-of-work");
-});
-
-test("the IAM Driver resolves only explicitly provisioned issuer and subject identities", async () => {
-  const driver = createDriver();
-  assert.equal(driver.capability, "iam");
-  assert.equal(typeof driver.id, "string");
-  assert.equal(typeof driver.implementation, "string");
-
-  const known = await driver.lookupIdentity({
-    issuer: "https://identity.example.com",
-    subject: "reader-a",
-  });
-  assert.equal(known?.id, "principal-reader-a");
-  assert.equal(Object.isFrozen(known), true);
-
-  for (const lookup of [
-    {
-      issuer: "https://identity.example.com",
-      subject: "unknown",
-    },
-    {
-      issuer: "https://untrusted.example.com",
-      subject: "reader-a",
-    },
-    {
-      installationId: "installation-legacy",
-      issuer: "https://identity.example.com",
-      subject: "reader-a",
-    },
-  ]) {
-    assert.equal(await driver.lookupIdentity(lookup), undefined);
-  }
-});
-
-test("ordinary service principals keep explicitly scoped platform grants", async () => {
-  const driver = createDriver();
-
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "service-principal-reader-a",
-        action: "read",
-        resource: agentResource("agent-a"),
-      })
-    ).allowed,
-    true,
-  );
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "service-principal-reader-a",
-        action: "read",
-        resource: agentResource("agent-b", "namespace-b"),
-      })
-    ).allowed,
-    false,
-  );
-});
-
-test("Agent-owned service principals can use every explicitly granted platform action", async () => {
-  const actions = [
-    "create",
-    "read",
-    "update",
-    "delete",
-    "deploy",
-    "operate",
-    "administer",
-    "read_logs",
-  ];
-  const driver = createDriver({
-    roles: [
-      ...roles,
-      {
-        id: "role-agent-broad",
-        namespaceId: "namespace-a",
-        permissions: actions.map((action) => ({ action, resourceKind: "agent" })),
-      },
-    ],
-    bindings: [
-      ...bindings,
-      {
-        id: "binding-agent-broad",
-        namespaceId: "namespace-a",
-        subjectKind: "identity",
-        subjectId: "service-principal-agent-a",
-        roleId: "role-agent-broad",
-      },
-    ],
-  });
-
-  for (const action of actions) {
-    // Agent ownership does not reduce the permissions explicitly granted to its service principal.
-    const decision = await driver.authorize({
-      principalId: "service-principal-agent-a",
-      action,
-      resource: agentResource("agent-a"),
-    });
-    assert.equal(decision.allowed, true);
-    assert.equal(decision.evidence.identityId, "service-principal-agent-a");
-    assert.ok(decision.evidence.bindingIds.includes("binding-agent-broad"));
-  }
-
-  // A Namespace-wide grant applies to sibling Agents, just as it does for a human principal.
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "service-principal-agent-a",
-        action: "deploy",
-        resource: agentResource("agent-sibling"),
-      })
-    ).allowed,
-    true,
-  );
-
-  // Ordinary Namespace isolation applies equally to every kind of scoped service principal.
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "service-principal-agent-a",
-        action: "read",
-        resource: agentResource("agent-b", "namespace-b"),
-      })
-    ).allowed,
-    false,
-  );
-
-  const unboundDriver = createDriver({
-    bindings: bindings.filter((binding) => binding.subjectId !== "service-principal-agent-a"),
-  });
-
-  for (const action of actions) {
-    // Agent-owned service principals receive no implicit permission without an explicit grant.
-    const decision = await unboundDriver.authorize({
-      principalId: "service-principal-agent-a",
-      action,
-      resource: agentResource("agent-a"),
-    });
-    assert.equal(decision.allowed, false);
-    assert.match(decision.reason, /No explicit scoped binding/);
-  }
-});
-
-test("authorization defaults to denial for unknown and unbound principals", async () => {
-  const driver = createDriver();
-  for (const principalId of ["principal-unknown", "principal-unbound"]) {
-    const authorization = await driver.authorize({
-      principalId,
-      action: "read",
-      resource: agentResource("agent-a"),
-    });
-    assert.equal(authorization.allowed, false);
-    assert.equal(authorization.driverId, driver.id);
-    assert.equal(typeof authorization.reason, "string");
-    assert.equal(Object.isFrozen(authorization), true);
-    assert.equal(Object.isFrozen(authorization.evidence), true);
-  }
-});
-
-test("an exact-resource grant allows only its granted action and named Agent", async () => {
-  const driver = createDriver();
-  const allowed = await driver.authorize({
-    principalId: "principal-reader-a",
-    action: "read",
-    resource: agentResource("agent-a"),
-  });
-  assert.equal(allowed.allowed, true);
-  assert.deepEqual(allowed.evidence, {
-    identityId: "principal-reader-a",
-    groupIds: [],
-    bindingIds: ["binding-exact-agent-a"],
-    roleIds: ["role-reader-a"],
-    restrictionIds: [],
-  });
-
-  for (const request of [
-    {
-      principalId: "principal-reader-a",
-      action: "deploy",
-      resource: agentResource("agent-a"),
-    },
-    {
-      principalId: "principal-reader-a",
-      action: "read",
-      resource: agentResource("agent-other"),
-    },
-    {
-      principalId: "principal-reader-a",
-      action: "read",
-      resource: agentResource("agent-a", "namespace-b"),
-    },
-    {
-      principalId: "principal-reader-a",
-      action: "read",
-      resource: { ...agentResource("agent-a"), installationId: "installation-legacy" },
-    },
-  ]) {
-    assert.equal((await driver.authorize(request)).allowed, false);
-  }
-});
-
-// Namespace-scoped resource kinds bound to one exact resource: each grant allows only its
-// own actions on that resource in its Namespace, and an unscoped exact binding is invalid.
-for (const { label, kind, slug, actions, deniedAction } of [
-  {
-    label: "Configuration",
-    kind: "configuration",
-    slug: "configuration",
-    actions: ["create", "read", "update"],
-    deniedAction: "delete",
-  },
-  {
-    label: "ServiceAccount",
-    kind: "service_account",
-    slug: "service-account",
-    actions: ["create", "read", "update", "delete"],
-    deniedAction: "deploy",
-  },
-]) {
-  const resourceA = `${slug}-a`;
-
-  test(`${label} permissions authorize only their exact scoped resource and action`, async () => {
-    const driver = createDriver({
-      roles: [
-        ...roles,
-        {
-          id: `role-${slug}-editor-a`,
-          namespaceId: "namespace-a",
-          permissions: actions.map((action) => ({ action, resourceKind: kind })),
-        },
-      ],
-      bindings: [
-        ...bindings,
-        // Creation is granted on the Namespace; the other actions on the named resource.
-        ...[resourceA, "namespace-a"].map((resourceId) => ({
-          id: `binding-${slug}-${resourceId}`,
-          namespaceId: "namespace-a",
-          subjectKind: "identity",
-          subjectId: "principal-reader-a",
-          roleId: `role-${slug}-editor-a`,
-          resourceKind: kind,
-          resourceId,
-        })),
-      ],
-    });
-
-    for (const action of actions) {
-      const id = action === "create" ? "namespace-a" : resourceA;
-      const decision = await driver.authorize({
-        principalId: "principal-reader-a",
-        action,
-        resource: { kind, id, namespaceId: "namespace-a" },
-      });
-      assert.equal(decision.allowed, true, action);
-      assert.deepEqual(decision.evidence.bindingIds, [`binding-${slug}-${id}`]);
-    }
-
-    for (const request of [
-      { action: deniedAction, resource: { kind, id: resourceA, namespaceId: "namespace-a" } },
-      { action: "read", resource: { kind, id: `${slug}-other`, namespaceId: "namespace-a" } },
-      { action: "read", resource: { kind, id: resourceA, namespaceId: "namespace-b" } },
-      { action: "read", resource: { kind, id: resourceA } },
-    ]) {
-      const decision = await driver.authorize({ principalId: "principal-reader-a", ...request });
-      assert.equal(decision.allowed, false, JSON.stringify(request));
-    }
-  });
-
-  test(`an exact ${label} binding without a Namespace fails closed`, async () => {
-    const driver = createDriver({
-      roles: [
-        ...roles,
-        { id: `role-${slug}-global`, permissions: [{ action: "read", resourceKind: kind }] },
-      ],
-      bindings: [
-        ...bindings,
-        {
-          id: `binding-${slug}-unscoped`,
-          subjectKind: "identity",
-          subjectId: "principal-reader-a",
-          roleId: `role-${slug}-global`,
-          resourceKind: kind,
-          resourceId: resourceA,
-        },
-      ],
-    });
-
-    const decision = await driver.authorize({
-      principalId: "principal-reader-a",
-      action: "read",
-      resource: { kind, id: resourceA, namespaceId: "namespace-a" },
-    });
-    assert.equal(decision.allowed, false);
-    assert.match(decision.reason, /policy is invalid/);
-  });
+function coveragePrincipal(id: string): Principal {
+  return { kind: "principal", id, issuer: "https://idp.example", subject: id };
 }
 
-test("an Installation-wide grant still refuses malformed or unscoped requests", async () => {
-  const kinds = [
-    "configuration",
-    "preset",
-    "service_account",
-    "secret",
-    "credential_source",
-    "sandbox_policy",
-  ];
-  const driver = createDriver({
-    roles: [
-      ...roles,
-      {
-        id: "role-installation-reader",
-        permissions: ["agent", ...kinds].map((resourceKind) => ({ action: "read", resourceKind })),
-      },
-    ],
-    bindings: [
-      ...bindings,
-      {
-        id: "binding-foreign-everywhere",
-        subjectKind: "identity",
-        subjectId: "principal-foreign",
-        roleId: "role-installation-reader",
-      },
-    ],
-  });
-  const read = (resource, extra = {}) =>
-    driver.authorize({ principalId: "principal-foreign", action: "read", resource, ...extra });
-
-  for (const kind of kinds) {
-    assert.equal((await read({ kind, id: "x", namespaceId: "namespace-a" })).allowed, true, kind);
-    const unscoped = await read({ kind, id: "x" });
-    assert.equal(unscoped.allowed, false, kind);
-    assert.match(unscoped.reason, /request is invalid/);
-  }
-  // Installation scope comes from the controller, never from the caller's request.
-  assert.equal((await read(agentResource("agent-a"))).allowed, true);
-  const scoped = await read(agentResource("agent-a"), { installationId: "ins" });
-  assert.equal(scoped.allowed, false);
-  assert.match(scoped.reason, /request is invalid/);
-});
-
-test("direct Group membership grants only inside the Group Namespace", async () => {
-  const driver = createDriver();
-  const allowed = await driver.authorize({
-    principalId: "principal-group-reader",
-    action: "read",
-    resource: agentResource("agent-a"),
-  });
-
-  assert.equal(allowed.allowed, true);
-  assert.deepEqual(allowed.evidence, {
-    identityId: "principal-group-reader",
-    groupIds: ["group-readers-a"],
-    bindingIds: ["binding-group-a-a", "binding-group-a-z"],
-    roleIds: ["role-reader-a"],
-    restrictionIds: [],
-  });
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "principal-group-reader",
-        action: "read",
-        resource: agentResource("agent-b", "namespace-b"),
-      })
-    ).allowed,
-    false,
-  );
-});
-
-test("a namespace grant never grants another tenant access or enumeration", async () => {
-  const driver = createDriver();
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "principal-reader-b",
-        action: "read",
-        resource: agentResource("agent-b", "namespace-b"),
-      })
-    ).allowed,
-    true,
-  );
-
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "principal-reader-b",
-        action: "read",
-        resource: agentResource("agent-a", "namespace-a"),
-      })
-    ).allowed,
-    false,
-  );
-
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "principal-foreign",
-        action: "read",
-        resource: agentResource("agent-a", "namespace-a"),
-      })
-    ).allowed,
-    false,
-  );
-});
-
-test("a Namespace binding of an Installation-scoped Role grants only inside its Namespace", async () => {
-  const driver = createDriver({
-    roles: [
-      ...roles,
-      { id: "role-installation-reader", permissions: [{ action: "read", resourceKind: "agent" }] },
-    ],
-    bindings: [
-      ...bindings,
-      {
-        id: "binding-foreign-in-a",
-        namespaceId: "namespace-a",
-        subjectKind: "identity",
-        subjectId: "principal-foreign",
-        roleId: "role-installation-reader",
-      },
-    ],
-  });
-  const read = (resource) =>
-    driver.authorize({ principalId: "principal-foreign", action: "read", resource });
-
-  const allowed = await read(agentResource("agent-a"));
-  assert.equal(allowed.allowed, true);
-  assert.deepEqual(allowed.evidence.bindingIds, ["binding-foreign-in-a"]);
-  for (const resource of [agentResource("agent-b", "namespace-b"), { kind: "agent", id: "x" }]) {
-    const denied = await read(resource);
-    assert.equal(denied.allowed, false);
-    assert.deepEqual(denied.evidence.bindingIds, []);
-  }
-});
-
-test("every applicable deny-only Restriction overrides direct and Group grants", async () => {
-  const restrictions = [
-    {
-      id: "restriction-z",
-      action: "read",
-      resourceKind: "agent",
-      resourceId: "agent-a",
-      effect: "deny",
-    },
-    {
-      id: "restriction-a",
-      namespaceId: "namespace-a",
-      action: "read",
-      resourceKind: "agent",
-      effect: "deny",
-    },
-    {
-      id: "restriction-other-namespace",
-      namespaceId: "namespace-b",
-      action: "read",
-      resourceKind: "agent",
-      effect: "deny",
-    },
-  ];
-  const driver = createDriver({ restrictions });
-
-  for (const principalId of [
-    "principal-reader-a",
-    "principal-group-reader",
-    "service-principal-reader-a",
-    "service-principal-agent-a",
-  ]) {
-    const denied = await driver.authorize({
-      principalId,
-      action: "read",
-      resource: agentResource("agent-a"),
-    });
-    assert.equal(denied.allowed, false);
-    assert.match(denied.reason, /Restriction/);
-    assert.deepEqual(denied.evidence.restrictionIds, ["restriction-a", "restriction-z"]);
-  }
-
-  assert.equal(
-    (
-      await driver.authorize({
-        principalId: "principal-reader-b",
-        action: "read",
-        resource: agentResource("agent-b", "namespace-b"),
-      })
-    ).allowed,
-    false,
-  );
-
-  const exactRestrictionOnly = createDriver({ restrictions: [restrictions[0]] });
-  assert.equal(
-    (
-      await exactRestrictionOnly.authorize({
-        principalId: "principal-group-reader",
-        action: "read",
-        resource: agentResource("agent-not-restricted"),
-      })
-    ).allowed,
-    true,
-  );
-});
-
-test("read_logs is a delegable Agent action that neither implies nor follows from administer", async () => {
-  const exactAgentRole = (id, action) => ({
-    id,
-    namespaceId: "namespace-a",
-    permissions: [
-      { action: "read", resourceKind: "agent" },
-      { action, resourceKind: "agent" },
-    ],
-  });
-  const exactAgentBinding = (roleId, subjectId) => ({
-    id: `binding-${roleId}`,
-    namespaceId: "namespace-a",
-    subjectKind: "identity",
-    subjectId,
-    roleId,
-    resourceKind: "agent",
-    resourceId: "agent-a",
-  });
-  const policy = (restrictions = []) =>
-    createDriver({
-      roles: [
-        exactAgentRole("role-log-reader", "read_logs"),
-        exactAgentRole("role-agent-administrator", "administer"),
-      ],
-      bindings: [
-        exactAgentBinding("role-log-reader", "principal-reader-a"),
-        exactAgentBinding("role-agent-administrator", "principal-reader-b"),
-      ],
-      restrictions,
-    });
-  const decide = async (driver, principalId, action, agentId = "agent-a") =>
-    driver.authorize({ principalId, action, resource: agentResource(agentId) });
-
-  const driver = policy();
-  const delegated = await decide(driver, "principal-reader-a", "read_logs");
-  assert.equal(delegated.allowed, true);
-  assert.deepEqual(delegated.evidence.roleIds, ["role-log-reader"]);
-  // The delegated reader holds no administer, and the grant stays on its exact Agent.
-  assert.equal((await decide(driver, "principal-reader-a", "administer")).allowed, false);
-  assert.equal((await decide(driver, "principal-reader-a", "read_logs", "agent-b")).allowed, false);
-  // Existing administer grants are unchanged and do not imply read_logs.
-  assert.equal((await decide(driver, "principal-reader-b", "administer")).allowed, true);
-  assert.equal((await decide(driver, "principal-reader-b", "read_logs")).allowed, false);
-
-  // A deny-only Restriction on read_logs overrides the delegated grant and nothing else.
-  const restricted = policy([
-    {
-      id: "restriction-read-logs",
-      namespaceId: "namespace-a",
-      action: "read_logs",
-      resourceKind: "agent",
-      resourceId: "agent-a",
-      effect: "deny",
-    },
-  ]);
-  const denied = await decide(restricted, "principal-reader-a", "read_logs");
-  assert.equal(denied.allowed, false);
-  assert.deepEqual(denied.evidence.restrictionIds, ["restriction-read-logs"]);
-  assert.equal((await decide(restricted, "principal-reader-a", "read")).allowed, true);
-
-  // The managed Role path behind the Namespace policy API accepts the action, and State
-  // persists it unchanged.
-  const platform = new InMemoryPlatformState({ iamIdentities: identities });
-  await platform.transact(async (unit) => {
-    await createInstallationNamespaces(unit);
-    await driver.createNamespaceRole(
-      { policy: unit.iamPolicy },
-      exactAgentRole("role-managed-log-reader", "read_logs"),
-    );
-  });
-  assert.deepEqual(
-    (await platform.read((unit) => unit.iamPolicy.listRoles("namespace-a"))).map(
-      (role) => role.permissions,
-    ),
-    [
-      [
-        { action: "read", resourceKind: "agent" },
-        { action: "read_logs", resourceKind: "agent" },
-      ],
-    ],
-  );
-});
-
-test("invalid loaded IAM state fails closed", async () => {
-  const invalidStates = [
-    { ...state, groups: undefined },
-    { ...state, roles: [...roles, { ...roles[0], permissions: [] }] },
-    {
-      ...state,
-      bindings: [{ ...bindings[0], subjectKind: undefined }],
-    },
-    {
-      ...state,
-      bindings: [{ ...bindings[0], roleId: "role-unknown" }],
-    },
-    {
-      ...state,
-      memberships: [{ ...memberships[0], namespaceId: "namespace-b" }],
-    },
-    // An Installation Group may be bound in a Namespace (RFC-0026 Default users); a Namespace
-    // Group bound in another Namespace still fails closed.
-    {
-      ...state,
-      bindings: [
-        {
-          ...bindings[0],
-          subjectKind: "group",
-          subjectId: "group-readers-a",
-          namespaceId: "namespace-b",
-          roleId: "role-reader-b",
-          resourceKind: undefined,
-          resourceId: undefined,
-        },
-      ],
-    },
-    {
-      ...state,
-      restrictions: [
-        {
-          id: "restriction-invalid",
-          action: "read",
-          resourceKind: "agent",
-          effect: "allow",
-        },
-      ],
-    },
-    {
-      ...state,
-      restrictions: [
-        {
-          id: "restriction-installation-inside-namespace",
-          namespaceId: "namespace-a",
-          action: "read",
-          resourceKind: "installation",
-          effect: "deny",
-        },
-      ],
-    },
-    {
-      ...state,
-      restrictions: [
-        {
-          id: "restriction-cross-namespace",
-          namespaceId: "namespace-a",
-          action: "read",
-          resourceKind: "namespace",
-          resourceId: "namespace-b",
-          effect: "deny",
-        },
-      ],
-    },
-    {
-      ...state,
-      identities: [identities[0], { ...identities[0], id: "principal-duplicate-external" }],
-    },
-    {
-      ...state,
-      identities: [{ ...identities[0], installationId: "installation-legacy" }],
-    },
-    {
-      ...state,
-      identities: [
-        ...identities,
-        {
-          id: "workload-agent-legacy",
-          kind: "workload_identity",
-          namespaceId: "namespace-a",
-          agentId: "agent-legacy",
-        },
-      ],
-    },
-    {
-      ...state,
-      identities: [
-        ...identities,
-        { id: "service-principal-unscoped-agent", kind: "service_principal", agentId: "agent-b" },
-      ],
-    },
-    {
-      ...state,
-      identities: [
-        ...identities,
-        {
-          id: "service-principal-empty-agent",
-          kind: "service_principal",
-          namespaceId: "namespace-a",
-          agentId: "",
-        },
-      ],
-    },
-    {
-      ...state,
-      identities: [
-        ...identities,
-        {
-          id: "service-principal-duplicate-agent",
-          kind: "service_principal",
-          namespaceId: "namespace-a",
-          agentId: "agent-a",
-        },
-      ],
-    },
-  ];
-
-  for (const invalidState of invalidStates) {
-    const driver = new NativeIAMDriver({ loadNativeIAMState: async () => invalidState });
-    assert.equal(
-      await driver.lookupIdentity({
-        issuer: "https://identity.example.com",
-        subject: "reader-a",
-      }),
-      undefined,
-    );
-
-    const decision = await driver.authorize({
-      principalId: "principal-reader-a",
-      action: "read",
-      resource: agentResource("agent-a"),
-    });
-    assert.equal(decision.allowed, false);
-    assert.match(decision.reason, /policy is invalid/);
-
-    const evaluated = evaluateAuthorization(
-      {
-        principalId: "principal-reader-a",
-        action: "read",
-        resource: agentResource("agent-a"),
-      },
-      invalidState,
-    );
-    assert.equal(evaluated.allowed, false);
-    assert.match(evaluated.reason, /policy is invalid/);
-  }
-});
-
-test("the Driver uses current IAM state for every lookup and authorization", async () => {
-  const mutable = structuredClone(state);
-  const driver = new NativeIAMDriver({ loadNativeIAMState: async () => mutable });
-  const request = {
-    principalId: "principal-reader-a",
-    action: "read",
-    resource: agentResource("agent-a"),
-  };
-  const identity = { issuer: "https://identity.example.com", subject: "reader-a" };
-
-  assert.equal((await driver.authorize(request)).allowed, true);
-  assert.equal((await driver.lookupIdentity(identity))?.id, "principal-reader-a");
-
-  // A replacement Role with the same ID must take effect on the next decision.
-  const readerRole = mutable.roles[0];
-  mutable.roles[0] = { ...readerRole, permissions: [] };
-  const revoked = await driver.authorize(request);
-  assert.equal(revoked.allowed, false);
-  assert.deepEqual(revoked.evidence.roleIds, []);
-  mutable.roles[0] = readerRole;
-  assert.equal((await driver.authorize(request)).allowed, true);
-
-  mutable.roles[0].permissions.length = 0;
-  mutable.bindings[0].subjectId = "principal-unbound";
-  mutable.identities[0].subject = "changed-after-construction";
-
-  assert.equal((await driver.authorize(request)).allowed, false);
-  assert.equal(await driver.lookupIdentity(identity), undefined);
-  assert.equal(
-    (
-      await driver.lookupIdentity({
-        issuer: "https://identity.example.com",
-        subject: "changed-after-construction",
-      })
-    )?.id,
-    "principal-reader-a",
-  );
-});
-
-test("platform state failures surface as dependency failures", async () => {
-  const driver = new NativeIAMDriver({
-    async loadNativeIAMState() {
-      throw new Error("state unavailable");
-    },
-  });
-
-  await assert.rejects(
-    () =>
-      driver.lookupIdentity({
-        issuer: "https://identity.example.com",
-        subject: "reader-a",
-      }),
-    /state unavailable/,
-  );
-  await assert.rejects(
-    () =>
-      driver.authorize({
-        principalId: "principal-reader-a",
-        action: "read",
-        resource: agentResource("agent-a"),
-      }),
-    /state unavailable/,
-  );
-});
+function coverageBinding(
+  id: string,
+  subjectId: string,
+  roleId: string,
+  scope: BindingScope = {},
+  subjectKind: AccessBindingSubjectKind = "identity",
+): AccessBinding {
+  return { id, subjectKind, subjectId, roleId, ...scope };
+}
 
 test("identity access coverage requires every target grant at the same or a broader scope", async () => {
-  const principal = (id) => ({ kind: "principal", id, issuer: "https://idp.example", subject: id });
-  const service = (id, namespaceId) => ({
+  const service = (id: string, namespaceId?: string): ServicePrincipal => ({
     kind: "service_principal",
     id,
     ...(namespaceId === undefined ? {} : { namespaceId }),
   });
-  const bind = (id, subjectId, roleId, scope = {}, subjectKind = "identity") => ({
-    id,
-    subjectKind,
-    subjectId,
-    roleId,
-    ...scope,
+  const readNamespace: Permission = { action: "read", resourceKind: "namespace" };
+  const administer: Permission = { action: "administer", resourceKind: "installation" };
+  const agent = (resourceId: string): BindingScope => ({
+    namespaceId: "tenant-a",
+    resourceKind: "agent",
+    resourceId,
   });
-  const readNamespace = { action: "read", resourceKind: "namespace" };
-  const administer = { action: "administer", resourceKind: "installation" };
-  const agent = (resourceId) => ({ namespaceId: "tenant-a", resourceKind: "agent", resourceId });
-  const policy = {
+  const policy: NativeIAMState = {
     identities: [
-      principal("exact-admin"),
-      principal("broad-admin"),
-      principal("tenant-a-member"),
+      coveragePrincipal("exact-admin"),
+      coveragePrincipal("broad-admin"),
+      coveragePrincipal("tenant-a-member"),
       service("unscoped-service"),
       service("tenant-a-service", "tenant-a"),
       service("tenant-b-service", "tenant-b"),
       service("exact-service"),
-      principal("agent-a-reader"),
+      coveragePrincipal("agent-a-reader"),
       service("tenant-a-agent-reader", "tenant-a"),
       service("agent-a-service", "tenant-a"),
       service("agent-b-service", "tenant-a"),
@@ -1466,24 +665,30 @@ test("identity access coverage requires every target grant at the same or a broa
       { id: "agent-reader", permissions: [{ action: "read", resourceKind: "agent" }] },
     ],
     bindings: [
-      bind("b1", "exact-admin", "admin", { resourceKind: "installation", resourceId: "ins" }),
-      bind("b2", "broad-admin", "admin"),
-      bind("b3", "tenant-a-readers", "reader", { namespaceId: "tenant-a" }, "group"),
-      bind("b4", "unscoped-service", "admin"),
-      bind("b5", "tenant-a-service", "reader", { namespaceId: "tenant-a" }),
-      bind("b6", "tenant-b-service", "reader", { namespaceId: "tenant-b" }),
-      bind("b7", "exact-service", "admin", { resourceKind: "installation", resourceId: "ins" }),
-      bind("b8", "agent-a-reader", "agent-reader", agent("agent-a")),
-      bind("b9", "tenant-a-agent-reader", "agent-reader", { namespaceId: "tenant-a" }),
-      bind("b10", "agent-a-service", "agent-reader", agent("agent-a")),
-      bind("b11", "agent-b-service", "agent-reader", agent("agent-b")),
-      bind("b12", "agent-ab-service", "agent-reader", agent("agent-a")),
-      bind("b13", "agent-ab-service", "agent-reader", agent("agent-b")),
+      coverageBinding("b1", "exact-admin", "admin", {
+        resourceKind: "installation",
+        resourceId: "ins",
+      }),
+      coverageBinding("b2", "broad-admin", "admin"),
+      coverageBinding("b3", "tenant-a-readers", "reader", { namespaceId: "tenant-a" }, "group"),
+      coverageBinding("b4", "unscoped-service", "admin"),
+      coverageBinding("b5", "tenant-a-service", "reader", { namespaceId: "tenant-a" }),
+      coverageBinding("b6", "tenant-b-service", "reader", { namespaceId: "tenant-b" }),
+      coverageBinding("b7", "exact-service", "admin", {
+        resourceKind: "installation",
+        resourceId: "ins",
+      }),
+      coverageBinding("b8", "agent-a-reader", "agent-reader", agent("agent-a")),
+      coverageBinding("b9", "tenant-a-agent-reader", "agent-reader", { namespaceId: "tenant-a" }),
+      coverageBinding("b10", "agent-a-service", "agent-reader", agent("agent-a")),
+      coverageBinding("b11", "agent-b-service", "agent-reader", agent("agent-b")),
+      coverageBinding("b12", "agent-ab-service", "agent-reader", agent("agent-a")),
+      coverageBinding("b13", "agent-ab-service", "agent-reader", agent("agent-b")),
     ],
     restrictions: [],
   };
   const driver = new NativeIAMDriver({ loadNativeIAMState: async () => policy });
-  const covers = (principalId, targetIdentityId) =>
+  const covers = (principalId: string, targetIdentityId: string) =>
     driver.coversIdentityAccess({ principalId, targetIdentityId });
 
   assert.equal(await covers("exact-admin", "unscoped-service"), false);
@@ -1507,29 +712,33 @@ test("identity access coverage requires every target grant at the same or a broa
   assert.equal(await covers("tenant-a-agent-reader", "agent-ab-service"), true);
   assert.equal(await covers("unknown", "exact-service"), false);
   assert.equal(await covers("broad-admin", "unknown"), false);
-  assert.equal(await covers("broad-admin", undefined), false);
+  // An untyped caller can omit the target ID. The Driver must refuse coverage.
+  const malformed: unknown = { principalId: "broad-admin", targetIdentityId: undefined };
+  assert.equal(
+    await driver.coversIdentityAccess(malformed as IdentityAccessCoverageRequest),
+    false,
+  );
 });
 
 test("identity access coverage counts Agent administer for a delegated read_logs grant", async () => {
-  const principal = (id) => ({ kind: "principal", id, issuer: "https://idp.example", subject: id });
-  const agentPermission = (action) => ({ action, resourceKind: "agent" });
-  const bind = (id, subjectId, roleId, scope = {}) => ({
-    id,
-    subjectKind: "identity",
-    subjectId,
-    roleId,
-    ...scope,
+  const agentPermission = (action: PermissionAction): Permission => ({
+    action,
+    resourceKind: "agent",
   });
-  const agentA = { namespaceId: "tenant-a", resourceKind: "agent", resourceId: "agent-a" };
-  const policy = {
+  const agentA: BindingScope = {
+    namespaceId: "tenant-a",
+    resourceKind: "agent",
+    resourceId: "agent-a",
+  };
+  const policy: NativeIAMState = {
     identities: [
-      principal("installation-admin"),
-      principal("tenant-a-admin"),
-      principal("tenant-b-admin"),
-      principal("agent-reader"),
-      principal("log-reader"),
-      principal("log-reader-without-read"),
-      principal("agent-administrator"),
+      coveragePrincipal("installation-admin"),
+      coveragePrincipal("tenant-a-admin"),
+      coveragePrincipal("tenant-b-admin"),
+      coveragePrincipal("agent-reader"),
+      coveragePrincipal("log-reader"),
+      coveragePrincipal("log-reader-without-read"),
+      coveragePrincipal("agent-administrator"),
     ],
     groups: [],
     memberships: [],
@@ -1568,18 +777,18 @@ test("identity access coverage counts Agent administer for a delegated read_logs
       },
     ],
     bindings: [
-      bind("b1", "installation-admin", "admin"),
-      bind("b2", "tenant-a-admin", "tenant-a-admin", { namespaceId: "tenant-a" }),
-      bind("b3", "tenant-b-admin", "tenant-b-admin", { namespaceId: "tenant-b" }),
-      bind("b4", "agent-reader", "agent-reader", agentA),
-      bind("b5", "log-reader", "log-reader", agentA),
-      bind("b6", "log-reader-without-read", "logs-only", agentA),
-      bind("b7", "agent-administrator", "administer-only", { namespaceId: "tenant-a" }),
+      coverageBinding("b1", "installation-admin", "admin"),
+      coverageBinding("b2", "tenant-a-admin", "tenant-a-admin", { namespaceId: "tenant-a" }),
+      coverageBinding("b3", "tenant-b-admin", "tenant-b-admin", { namespaceId: "tenant-b" }),
+      coverageBinding("b4", "agent-reader", "agent-reader", agentA),
+      coverageBinding("b5", "log-reader", "log-reader", agentA),
+      coverageBinding("b6", "log-reader-without-read", "logs-only", agentA),
+      coverageBinding("b7", "agent-administrator", "administer-only", { namespaceId: "tenant-a" }),
     ],
     restrictions: [],
   };
   const driver = new NativeIAMDriver({ loadNativeIAMState: async () => policy });
-  const covers = (principalId, targetIdentityId) =>
+  const covers = (principalId: string, targetIdentityId: string) =>
     driver.coversIdentityAccess({ principalId, targetIdentityId });
 
   // An administrator can manage (disable, revoke) a person given the delegated log grant.
@@ -1598,9 +807,13 @@ test("identity access coverage counts Agent administer for a delegated read_logs
 });
 
 test("identity access coverage counts only direct human Agent audit grants", async () => {
-  const auditPermission = { action: "read_audit", resourceKind: "agent" };
-  const readPermission = { action: "read", resourceKind: "agent" };
-  const agentA = { namespaceId: "namespace-a", resourceKind: "agent", resourceId: "agent-a" };
+  const auditPermission: Permission = { action: "read_audit", resourceKind: "agent" };
+  const readPermission: Permission = { action: "read", resourceKind: "agent" };
+  const agentA: BindingScope = {
+    namespaceId: "namespace-a",
+    resourceKind: "agent",
+    resourceId: "agent-a",
+  };
   const driver = createDriver({
     roles: [
       { id: "audit-only", permissions: [auditPermission] },
@@ -1653,7 +866,7 @@ test("identity access coverage counts only direct human Agent audit grants", asy
       },
     ],
   });
-  const covers = (principalId, targetIdentityId) =>
+  const covers = (principalId: string, targetIdentityId: string) =>
     driver.coversIdentityAccess({ principalId, targetIdentityId });
 
   // A key manager still needs the ServicePrincipal's ordinary read, but gains nothing
@@ -1677,9 +890,9 @@ test("identity access coverage counts only direct human Agent audit grants", asy
 // that Agent's revisions and sandbox policy. Agent audit grants require a direct binding on
 // one Agent. The seeded differential below holds the indexed Driver to these rules.
 const reference = (() => {
-  const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
-  const optionalNonempty = (value) => value === undefined || nonempty(value);
-  const valid = (state) => {
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim().length > 0;
+  const optionalNonempty = (value: unknown) => value === undefined || nonempty(value);
+  const valid = (state: NativeIAMState) => {
     try {
       validateNativeIAMState(structuredClone(state));
       return true;
@@ -1687,21 +900,25 @@ const reference = (() => {
       return false;
     }
   };
-  const sorted = (values) => [...new Set(values)].sort();
-  const evidence = (input = {}) => ({
+  const sorted = (values: readonly string[]) => [...new Set(values)].sort();
+  const evidence = (input: Partial<AuthorizationEvidence> = {}): AuthorizationEvidence => ({
     ...(input.identityId === undefined ? {} : { identityId: input.identityId }),
     groupIds: sorted(input.groupIds ?? []),
     bindingIds: sorted(input.bindingIds ?? []),
     roleIds: sorted(input.roleIds ?? []),
     restrictionIds: sorted(input.restrictionIds ?? []),
   });
-  const decision = (allowed, reason, value = evidence()) => ({
+  const decision = (
+    allowed: boolean,
+    reason: string,
+    value = evidence(),
+  ): AuthorizationDecision => ({
     allowed,
     reason,
     driverId: "occ-native-iam",
     evidence: value,
   });
-  const auditBindings = (state, identity) =>
+  const auditBindings = (state: NativeIAMState, identity: Identity) =>
     identity.kind === "principal"
       ? state.bindings.filter(
           ({ subjectKind, subjectId, namespaceId, resourceKind }) =>
@@ -1711,7 +928,7 @@ const reference = (() => {
             resourceKind === "agent",
         )
       : [];
-  const validRequest = (request) =>
+  const validRequest = (request: AuthorizationRequest) =>
     typeof request === "object" &&
     request !== null &&
     typeof request.resource === "object" &&
@@ -1733,11 +950,11 @@ const reference = (() => {
     (request.parentAgentId === undefined ||
       (nonempty(request.parentAgentId) &&
         nonempty(request.resource.namespaceId) &&
-        AGENT_CHILD_RESOURCE_KINDS.includes(request.resource.kind))) &&
+        AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === request.resource.kind))) &&
     PERMISSION_ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind);
 
-  function authorize(state, request) {
+  function authorize(state: NativeIAMState, request: AuthorizationRequest) {
     if (!valid(state)) {
       return decision(false, "The native IAM policy is invalid.");
     }
@@ -1754,6 +971,7 @@ const reference = (() => {
       );
     }
     const [identity] = matches;
+    assert.ok(identity);
     const { resource } = request;
     if (identity.namespaceId !== undefined && identity.namespaceId !== resource.namespaceId) {
       return decision(
@@ -1774,9 +992,9 @@ const reference = (() => {
             )
             .map((membership) => membership.groupId),
     );
-    const bindingIds = [];
-    const roleIds = [];
-    const grantingGroupIds = [];
+    const bindingIds: string[] = [];
+    const roleIds: string[] = [];
+    const grantingGroupIds: string[] = [];
     const candidates =
       request.action === "read_audit"
         ? auditBindings(state, identity).filter(
@@ -1852,7 +1070,7 @@ const reference = (() => {
     );
   }
 
-  function lookupIdentity(state, input) {
+  function lookupIdentity(state: NativeIAMState, input: IdentityLookup) {
     if (
       typeof input !== "object" ||
       input === null ||
@@ -1877,12 +1095,15 @@ const reference = (() => {
             identity.issuer === input.issuer &&
             identity.subject === input.subject),
     );
-    return matches.length === 1 ? { ...matches[0] } : undefined;
+    const [identity] = matches;
+    return matches.length === 1 && identity !== undefined ? { ...identity } : undefined;
   }
 
-  function grants(state, identity) {
+  function grants(state: NativeIAMState, identity: Identity) {
     const directAuditBindings = auditBindings(state, identity);
-    const subjects = [{}];
+    const subjects: { groupId?: string; namespaceId: string | undefined }[] = [
+      { namespaceId: undefined },
+    ];
     if (identity.kind === "principal") {
       for (const membership of state.memberships) {
         if (membership.principalId === identity.id) {
@@ -1890,7 +1111,12 @@ const reference = (() => {
         }
       }
     }
-    const result = [];
+    const result: {
+      namespaceId: string | undefined;
+      resourceKind: ResourceKind | undefined;
+      resourceId: string | undefined;
+      permissions: readonly Permission[];
+    }[] = [];
     for (const subject of subjects) {
       for (const binding of state.bindings) {
         const role = state.roles.find((candidate) => candidate.id === binding.roleId);
@@ -1920,7 +1146,7 @@ const reference = (() => {
               (binding.resourceKind === undefined ||
                 permission.resourceKind === binding.resourceKind ||
                 (binding.resourceKind === "agent" &&
-                  AGENT_CHILD_RESOURCE_KINDS.includes(permission.resourceKind))),
+                  AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === permission.resourceKind))),
           ),
         });
       }
@@ -1928,7 +1154,7 @@ const reference = (() => {
     return result;
   }
 
-  function coversIdentityAccess(state, request) {
+  function coversIdentityAccess(state: NativeIAMState, request: IdentityAccessCoverageRequest) {
     if (
       typeof request !== "object" ||
       request === null ||
@@ -1938,7 +1164,7 @@ const reference = (() => {
     ) {
       return false;
     }
-    const exact = (id) => {
+    const exact = (id: string) => {
       const matches = state.identities.filter((identity) => identity.id === id);
       return matches.length === 1 ? matches[0] : undefined;
     };
@@ -1974,8 +1200,31 @@ const reference = (() => {
   return { authorize, lookupIdentity, coversIdentityAccess };
 })();
 
+type DifferentialCall =
+  | [method: "authorize", input: AuthorizationRequest]
+  | [method: "lookupIdentity", input: IdentityLookup]
+  | [method: "coversIdentityAccess", input: IdentityAccessCoverageRequest];
+
+type CorpusIdentity =
+  | Principal
+  | (Omit<ServicePrincipal, "kind"> & {
+      kind: ServicePrincipal["kind"] | "robot";
+    });
+type CorpusRestriction = Omit<Restriction, "effect"> & { effect: "allow" | "deny" };
+type CorpusPolicy = Omit<NativeIAMState, "identities" | "restrictions"> & {
+  identities: CorpusIdentity[];
+  restrictions: CorpusRestriction[];
+};
+type CorpusRequest = {
+  principalId: string;
+  action: PermissionAction;
+  resource: { kind: ResourceKind; id: string; namespaceId?: string };
+  parentAgentId?: string | undefined;
+  installationId?: string;
+};
+
 /** Seeded random policies (mostly valid, some corrupt) and requests against them. */
-function randomPolicies(seed) {
+function randomPolicies(seed: number) {
   let a = seed >>> 0;
   const random = () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -1984,23 +1233,32 @@ function randomPolicies(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  const chance = (p) => random() < p;
-  const int = (low, high) => low + Math.floor(random() * (high - low + 1));
-  const pick = (values) => values[Math.floor(random() * values.length)];
-  const namespaces = ["ns-a", "ns-b", "ns-c"];
+  const chance = (p: number) => random() < p;
+  const int = (low: number, high: number) => low + Math.floor(random() * (high - low + 1));
+  function pick<T>(values: readonly [T, ...T[]]): T;
+  function pick<T>(values: readonly T[]): T | undefined;
+  function pick<T>(values: readonly T[]): T | undefined {
+    return values[Math.floor(random() * values.length)];
+  }
+  function pickRequired<T>(values: readonly T[]): T {
+    const value = pick(values);
+    assert.ok(value !== undefined, "the corpus must have at least one candidate");
+    return value;
+  }
+  const namespaces = ["ns-a", "ns-b", "ns-c"] as const;
   const issuers = ["https://one.example.com", "https://two.example.com"];
   const resourceIds = ["agt-0", "agt-1", "sec-0", "cfg-0", "preset-0", "ins-0", ...namespaces];
   const scope = (p = 0.5) => (chance(p) ? {} : { namespaceId: pick(namespaces) });
 
-  function policy(size) {
+  function policy(size: number): CorpusPolicy {
     const corrupt = chance(0.15);
-    const bad = (p) => corrupt && chance(p);
-    const identities = [];
+    const bad = (p: number) => corrupt && chance(p);
+    const identities: CorpusIdentity[] = [];
     for (let k = 0, n = int(1, 3 * size); k < n; k += 1) {
       identities.push({
         kind: "principal",
         id: bad(0.05) && k > 0 ? "principal-0" : `principal-${k}`,
-        issuer: pick(issuers),
+        issuer: pickRequired(issuers),
         subject: bad(0.1) ? "subject-0" : `subject-${k}`,
       });
     }
@@ -2009,20 +1267,20 @@ function randomPolicies(seed) {
       identities.push({
         kind: bad(0.03) ? "robot" : "service_principal",
         id: `service-${k}`,
-        ...(agentOwned && !bad(0.1) ? { namespaceId: pick(namespaces) } : scope()),
+        ...(agentOwned && !bad(0.1) ? { namespaceId: pickRequired(namespaces) } : scope()),
         ...(agentOwned ? { agentId: bad(0.1) ? "agt-0" : `agt-${k}` } : {}),
       });
     }
-    const groups = [];
+    const groups: Group[] = [];
     for (let k = 0, n = int(0, size); k < n; k += 1) {
       groups.push({ id: `group-${k}`, ...scope(), name: bad(0.05) ? "" : "group" });
     }
     const principals = identities.filter((identity) => identity.kind === "principal");
-    const memberships = [];
-    const memberKeys = new Set();
+    const memberships: GroupMembership[] = [];
+    const memberKeys = new Set<string>();
     for (let k = 0, n = groups.length ? int(0, 3 * size) : 0; k < n; k += 1) {
-      const group = pick(groups);
-      const principal = bad(0.1) ? pick(identities) : pick(principals);
+      const group = pickRequired(groups);
+      const principal = bad(0.1) ? pickRequired(identities) : pickRequired(principals);
       const key = `${group.id}/${principal.id}`;
       if (memberKeys.has(key) && !bad(0.3)) {
         continue;
@@ -2034,12 +1292,15 @@ function randomPolicies(seed) {
         principalId: principal.id,
       });
     }
-    const roles = [];
+    const roles: Role[] = [];
     for (let k = 0, n = int(1, Math.max(2, size)); k < n; k += 1) {
-      const permissions = [];
-      const keys = new Set();
+      const permissions: Permission[] = [];
+      const keys = new Set<string>();
       for (let p = 0, m = int(1, 8); p < m; p += 1) {
-        const permission = { action: pick(PERMISSION_ACTIONS), resourceKind: pick(RESOURCE_KINDS) };
+        const permission = {
+          action: pickRequired(PERMISSION_ACTIONS),
+          resourceKind: pickRequired(RESOURCE_KINDS),
+        };
         const key = `${permission.action}/${permission.resourceKind}`;
         if (keys.has(key) && !bad(0.3)) {
           continue;
@@ -2053,16 +1314,22 @@ function randomPolicies(seed) {
       ...identities.map((identity) => ["identity", identity]),
       ...groups.map((group) => ["group", group]),
     ];
-    const bindings = [];
+    const bindings: AccessBinding[] = [];
     for (let k = 0, n = int(1, 4 * size); k < n; k += 1) {
-      const [subjectKind, subject] = pick(subjects);
+      const [subjectKind, subject] = pickRequired(subjects);
+      assert.ok(
+        (subjectKind === "identity" || subjectKind === "group") &&
+          subject !== undefined &&
+          typeof subject === "object",
+      );
       const compatible = roles.filter(
         (role) =>
           role.namespaceId === undefined ||
           role.namespaceId === subject.namespaceId ||
           (subjectKind === "identity" && subject.namespaceId === undefined),
       );
-      const role = bad(0.1) || compatible.length === 0 ? pick(roles) : pick(compatible);
+      const role =
+        bad(0.1) || compatible.length === 0 ? pickRequired(roles) : pickRequired(compatible);
       let namespaceId =
         subjectKind === "group"
           ? subject.namespaceId
@@ -2070,15 +1337,15 @@ function randomPolicies(seed) {
       if (bad(0.1)) {
         namespaceId = scope().namespaceId;
       }
-      let resourceKind = chance(0.5) ? pick(RESOURCE_KINDS) : undefined;
+      let resourceKind = chance(0.5) ? pickRequired(RESOURCE_KINDS) : undefined;
       if (
         !bad(0.3) &&
         namespaceId === undefined &&
-        ["configuration", "preset", "service_account"].includes(resourceKind)
+        ["configuration", "preset", "service_account"].some((kind) => kind === resourceKind)
       ) {
         resourceKind = "secret";
       }
-      let resourceId = resourceKind === undefined ? undefined : pick(resourceIds);
+      let resourceId = resourceKind === undefined ? undefined : pickRequired(resourceIds);
       if (resourceKind === "namespace" && namespaceId !== undefined) {
         resourceId = namespaceId;
       }
@@ -2092,49 +1359,57 @@ function randomPolicies(seed) {
         ...(resourceId === undefined || bad(0.05) ? {} : { resourceId }),
       });
     }
-    const restrictions = [];
+    const restrictions: CorpusRestriction[] = [];
     for (let k = 0, n = chance(0.6) ? 0 : int(1, size); k < n; k += 1) {
-      const resourceKind = pick(RESOURCE_KINDS);
+      const resourceKind = pickRequired(RESOURCE_KINDS);
       restrictions.push({
         id: `restriction-${k}`,
         ...(resourceKind === "installation" || resourceKind === "namespace" ? {} : scope(0.6)),
-        action: pick(PERMISSION_ACTIONS),
+        action: pickRequired(PERMISSION_ACTIONS),
         resourceKind,
-        ...(chance(0.5) ? {} : { resourceId: pick(resourceIds) }),
+        ...(chance(0.5) ? {} : { resourceId: pickRequired(resourceIds) }),
         effect: bad(0.05) ? "allow" : "deny",
       });
     }
     return { identities, groups, memberships, roles, bindings, restrictions };
   }
 
-  function call(state) {
+  function call(state: CorpusPolicy): DifferentialCall {
     const ids = [...state.identities.map((identity) => identity.id), "unknown", ""];
     const roll = random();
     if (roll < 0.15) {
-      const external = pick(state.identities.filter((identity) => "issuer" in identity));
+      const external = pickRequired(state.identities.filter((identity) => "issuer" in identity));
       return [
         "lookupIdentity",
         chance(0.5)
           ? {
-              issuer: chance(0.9) ? external.issuer : pick(issuers),
+              issuer: chance(0.9) ? external.issuer : pickRequired(issuers),
               subject: external.subject,
               ...scope(),
             }
-          : { servicePrincipalId: pick(ids) || "unknown", ...scope() },
+          : { servicePrincipalId: pickRequired(ids) || "unknown", ...scope() },
       ];
     }
     if (roll < 0.25) {
-      return ["coversIdentityAccess", { principalId: pick(ids), targetIdentityId: pick(ids) }];
+      return [
+        "coversIdentityAccess",
+        { principalId: pickRequired(ids), targetIdentityId: pickRequired(ids) },
+      ];
     }
-    const request = {
-      principalId: pick(ids),
-      action: pick(PERMISSION_ACTIONS),
-      resource: { kind: pick(RESOURCE_KINDS), id: pick(resourceIds), ...scope(0.3) },
+    const request: CorpusRequest = {
+      principalId: pickRequired(ids),
+      action: pickRequired(PERMISSION_ACTIONS),
+      resource: {
+        kind: pickRequired(RESOURCE_KINDS),
+        id: pickRequired(resourceIds),
+        ...scope(0.3),
+      },
     };
     // Half the requests aim at what a binding grants, so allows and near misses are common.
-    const binding = pick(state.bindings);
+    const binding = pickRequired(state.bindings);
     if (chance(0.5)) {
       const role = state.roles.find((candidate) => candidate.id === binding.roleId);
+      // An empty membership list still consumes one draw.
       const members = state.memberships.filter(
         (membership) => membership.groupId === binding.subjectId,
       );
@@ -2157,24 +1432,61 @@ function randomPolicies(seed) {
     if (chance(0.2)) {
       const role = state.roles.find((candidate) => candidate.id === binding.roleId);
       const child = role?.permissions.find((permission) =>
-        AGENT_CHILD_RESOURCE_KINDS.includes(permission.resourceKind),
+        AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === permission.resourceKind),
       );
       if (binding.resourceKind === "agent" && chance(0.7)) {
         request.parentAgentId = binding.resourceId;
-        request.resource.kind = child?.resourceKind ?? pick(AGENT_CHILD_RESOURCE_KINDS);
+        request.resource.kind = child?.resourceKind ?? pickRequired(AGENT_CHILD_RESOURCE_KINDS);
         request.action = child?.action ?? request.action;
         request.resource.id = "rev-0";
       } else {
-        request.parentAgentId = chance(0.1) ? "" : pick(["agt-0", "agt-1"]);
+        request.parentAgentId = chance(0.1) ? "" : pickRequired(["agt-0", "agt-1"]);
       }
     }
     if (chance(0.01)) {
       request.installationId = "ins-0";
     }
-    return ["authorize", request];
+    // Keep malformed requests, including any own Installation ID, on the runtime path.
+    return ["authorize", request as AuthorizationRequest];
   }
 
-  return { policy, call, pick };
+  return { policy, call, pick: pickRequired };
+}
+
+async function compareWithReference(
+  state: NativeIAMState,
+  [method, input]: DifferentialCall,
+  drivers: readonly NativeIAMDriver[],
+): Promise<AuthorizationDecision | undefined> {
+  async function compare<T>(
+    expected: T,
+    evaluate: (driver: NativeIAMDriver) => Promise<NoInfer<T>>,
+  ): Promise<T> {
+    for (const driver of drivers) {
+      assert.deepStrictEqual(
+        await evaluate(driver),
+        expected,
+        `${method} ${JSON.stringify(input)} on ${JSON.stringify(state)}`,
+      );
+    }
+    return expected;
+  }
+
+  switch (method) {
+    case "authorize":
+      return compare(reference.authorize(state, input), (driver) => driver.authorize(input));
+    case "lookupIdentity":
+      await compare(reference.lookupIdentity(state, input), (driver) =>
+        driver.lookupIdentity(input),
+      );
+      return undefined;
+    case "coversIdentityAccess":
+      await compare(reference.coversIdentityAccess(state, input), (driver) =>
+        driver.coversIdentityAccess(input),
+      );
+      return undefined;
+  }
+  assert.fail(`Unhandled differential method: ${method satisfies never}`);
 }
 
 test("the indexed native IAM Driver decides exactly as a linear scan of the policy", async () => {
@@ -2182,7 +1494,9 @@ test("the indexed native IAM Driver decides exactly as a linear scan of the poli
   let decisions = 0;
   let allowed = 0;
   for (let round = 0; round < 400; round += 1) {
-    const state = random.policy(random.pick([1, 2, 3, 5, 12]));
+    const rawPolicy = random.policy(random.pick([1, 2, 3, 5, 12]));
+    // Deliberate policy corruption reaches both the evaluator and the Driver unchanged.
+    const state = rawPolicy as NativeIAMState;
     // Mutable states are validated and indexed on every call; an immutable snapshot (one per
     // PostgreSQL unit of work) is validated and indexed once for all of its decisions.
     const snapshot = immutableSnapshot(state);
@@ -2191,16 +1505,9 @@ test("the indexed native IAM Driver decides exactly as a linear scan of the poli
       new NativeIAMDriver({ loadNativeIAMState: async () => snapshot }),
     ];
     for (let call = 0; call < 40; call += 1) {
-      const [method, input] = random.call(state);
-      const expected = reference[method](state, input);
-      for (const driver of drivers) {
-        assert.deepStrictEqual(
-          await driver[method](input),
-          expected,
-          `${method} ${JSON.stringify(input)} on ${JSON.stringify(state)}`,
-        );
-      }
-      if (method === "authorize") {
+      const request = random.call(rawPolicy);
+      const expected = await compareWithReference(state, request, drivers);
+      if (expected !== undefined) {
         decisions += 1;
         allowed += expected.allowed ? 1 : 0;
       }

@@ -73,7 +73,7 @@
     "tests/conformance/grafana-overview-dashboard.test.ts": 100,
     "tests/conformance/hosted-plugin-discovery.test.ts": 300,
     "tests/conformance/http-errors.test.ts": 500,
-    "tests/conformance/iam.test.mjs": 1600,
+    "tests/conformance/iam.test.ts": 1600,
     "tests/conformance/k3d-failure-diagnostics.test.ts": 700,
     "tests/conformance/kubernetes-api-read.test.ts": 3400,
     "tests/conformance/kubernetes-client.test.mjs": 6100,

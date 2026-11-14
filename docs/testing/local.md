@@ -75,7 +75,7 @@ finding that replaces an old one.
 
 ## Authentication and authorization coverage
 
-`tests/conformance/iam.test.mjs` and `tests/integration/occ-api.test.mjs` cover
+`tests/conformance/iam.test.ts` and `tests/integration/occ-api.test.mjs` cover
 identity, authorization, isolation, and audit behavior. The service API key
 suite uses memory storage. Run the [PostgreSQL tests](postgresql.md) for
 persistence and external sign-in; memory-backed success does not prove them.
