@@ -208,6 +208,9 @@ async function productionFixture(t) {
     `${JSON.stringify(productionInstallation(adminKeyPath), undefined, 2)}\n`,
     { encoding: "utf8", mode: 0o644 },
   );
+  // The nonroot container must read these synthetic files under any host umask.
+  await chmod(join(fixture, "admin-key"), 0o644);
+  await chmod(join(fixture, "installation.json"), 0o644);
   return fixture;
 }
 

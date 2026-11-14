@@ -3,6 +3,34 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { slackApi } from "./harness-topology-k3d-real.mjs";
 
+export function assertSlackChannelDestination(response, channelId) {
+  const channel = response?.channel;
+  const flags = ["is_channel", "is_group", "is_private"];
+  const validFlags =
+    channel !== null &&
+    typeof channel === "object" &&
+    !Array.isArray(channel) &&
+    flags.every((flag) => !(flag in channel) || typeof channel[flag] === "boolean");
+  // Both channel shapes need explicit IM and MPIM exclusions below.
+  const modern = channel?.is_channel === true && channel?.is_group !== true;
+  const legacy =
+    channel?.is_channel === false && channel?.is_group === true && channel?.is_private === true;
+  if (
+    !validFlags ||
+    typeof channelId !== "string" ||
+    channelId.length === 0 ||
+    channel.id !== channelId ||
+    typeof channel.is_private !== "boolean" ||
+    channel.is_im !== false ||
+    channel.is_mpim !== false ||
+    !(modern || legacy)
+  ) {
+    throw new Error(
+      "Slack destination-type failure: conversations.info must identify the exact configured public or private channel, not a DM or MPIM.",
+    );
+  }
+}
+
 export async function allMessages(method, token, params) {
   const messages = [];
   let cursor;

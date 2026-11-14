@@ -19,7 +19,7 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
-import { refusingPort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";

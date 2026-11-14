@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
+import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { type: "json" };
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
@@ -35,6 +36,7 @@ import {
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { registerNativeAdminHttpIntegrityCases } from "./native-admin-http-integrity-cases.ts";
 
 const cookieDomain = "oce.example.test";
 const nativeDomain = `agents.${cookieDomain}`;
@@ -84,17 +86,96 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
   });
 }
 
-async function startNativeHttpsUpstream(t) {
+/** @typedef {import("./native-admin-http-integrity-cases.ts").NativeAdminHttpObservations} NativeAdminHttpObservations */
+/** @typedef {import("./native-admin-http-integrity-cases.ts").NativeAdminStream} NativeAdminStream */
+
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {{ captureWire?: boolean }} [options]
+ */
+async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
   const directory = await temporaryDirectory(t, "openclaw-native-admin-upstream-");
   const { key, cert } = await selfSigned(directory, {
     keyPem: sharedRsaPrivateKeyPem("native-admin-upstream"),
     days: 2,
   });
 
+  /** @type {NativeAdminHttpObservations["requests"]} */
   const requests = [];
+  /** @type {NativeAdminHttpObservations["parsedRequests"]} */
+  const parsedRequests = [];
+  /** @type {NativeAdminHttpObservations["wire"]} */
+  const wire = [];
+  /** @type {NativeAdminHttpObservations["streams"]} */
+  const streams = new Map();
+  /** @type {NativeAdminHttpObservations["parserErrors"]} */
+  const parserErrors = [];
+  /** @type {Set<import("node:tls").TLSSocket>} */
+  const sockets = new Set();
+  /**
+   * @param {import("node:http").ServerResponse} response
+   * @param {string} name
+   * @param {number} statusCode
+   * @param {{ contentLength?: number, continuous?: boolean }} [options]
+   */
+  const startStream = (response, name, statusCode, { contentLength, continuous = false } = {}) => {
+    /** @type {(result: Awaited<NativeAdminStream["close"]>) => void} */
+    let resolveClosed;
+    /** @type {NativeAdminStream} */
+    const control = {
+      closed: false,
+      finished: false,
+      watchdogExpired: false,
+      writes: 0,
+      close: new Promise((resolve) => {
+        resolveClosed = resolve;
+      }),
+      reset: () => response.destroy(),
+    };
+    streams.set(name, control);
+    const prefix = `native-${name}-prefix\n`;
+    /** @type {NodeJS.Timeout | undefined} */
+    let interval;
+    const deadline = setTimeout(() => {
+      control.watchdogExpired = true;
+      response.destroy();
+    }, 4_000);
+    response.once("close", () => {
+      clearTimeout(deadline);
+      clearInterval(interval);
+      control.closed = true;
+      control.finished = response.writableFinished;
+      resolveClosed({ finished: control.finished, writes: control.writes });
+    });
+    response.writeHead(statusCode, {
+      "content-type": "text/plain; charset=utf-8",
+      ...(contentLength === undefined ? {} : { "content-length": String(contentLength) }),
+    });
+    response.write(prefix);
+    control.writes++;
+    if (continuous) {
+      interval = setInterval(() => {
+        if (control.writes >= 100) {
+          response.end();
+          return;
+        }
+        response.write(`native-${name}-tick\n`);
+        control.writes++;
+      }, 20);
+    }
+  };
   const server = createServer({ key, cert }, async (request, response) => {
+    parsedRequests.push({
+      method: request.method,
+      url: request.url,
+      headers: { ...request.headers },
+    });
+    /** @type {Uint8Array[]} */
     const chunks = [];
-    for await (const chunk of request) {
+    /** @type {AsyncIterable<unknown>} */
+    const body = request;
+    for await (const chunk of body) {
+      assert.ok(chunk instanceof Uint8Array, "the HTTPS request must deliver bytes");
       chunks.push(chunk);
     }
     requests.push({
@@ -103,6 +184,42 @@ async function startNativeHttpsUpstream(t) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (request.url?.endsWith("/integrity-response-reset")) {
+      startStream(response, "response-reset", 200);
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-short")) {
+      startStream(response, "response-short", 200, { contentLength: 512 });
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-pre-header")) {
+      request.socket.destroy();
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-complete")) {
+      response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      response.end("native-complete-body\n");
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-headers")) {
+      response.writeHead(200, {
+        "clear-site-data": '"cookies"',
+        "set-cookie": "invented_native_integrity=never-publish; Path=/",
+        "content-security-policy": "default-src 'self'",
+        "content-type": "text/plain; charset=utf-8",
+        "x-native-upstream": "integrity-headers",
+      });
+      response.end("native-header-body\n");
+      return;
+    }
+    if (request.url?.endsWith("/api/users/integrity-avatar-stream/avatar")) {
+      startStream(response, "avatar-stream", 502, { continuous: true });
+      return;
+    }
+    if (request.url?.endsWith("/integrity-client-stream")) {
+      startStream(response, "client-stream", 200, { continuous: true });
+      return;
+    }
     if (request.url?.includes("/upstream-unavailable")) {
       // OpenClaw's answer when a Gravatar fallback cannot be fetched.
       response.writeHead(502, { "content-type": "application/json" });
@@ -139,28 +256,61 @@ async function startNativeHttpsUpstream(t) {
     });
     response.end("native admin upstream\n");
   });
+  // Register after HTTPS installs its parser: Node's data-listener wrapper then
+  // leaves optimized socket consumption and exposes the same decrypted bytes.
+  server.on("secureConnection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    if (!captureWire) {
+      return;
+    }
+    /** @type {NativeAdminHttpObservations["wire"][number]} */
+    const observation = { chunks: [], bytes: 0, overflow: false };
+    wire.push(observation);
+    socket.prependListener("data", (/** @type {Buffer} */ chunk) => {
+      if (observation.bytes + chunk.length > 65_536) {
+        observation.overflow = true;
+        return;
+      }
+      observation.chunks.push(Buffer.from(chunk));
+      observation.bytes += chunk.length;
+    });
+  });
+  if (captureWire) {
+    server.on("clientError", (error, socket) => {
+      parserErrors.push({ code: error.code });
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    });
+  }
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(
     () =>
-      new Promise((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
+      new Promise((resolve, reject) => {
+        for (const control of streams.values()) {
+          control.reset();
+        }
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
   );
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, cert };
+  return { port: address.port, requests, parsedRequests, wire, streams, parserErrors, cert };
 }
 
 async function createNativeAdminFixture(t, options = {}) {
-  const upstream = await startNativeHttpsUpstream(t);
+  const upstream = await startNativeHttpsUpstream(t, options.upstream);
   const fixture = await createConsoleAppFixture(t, {
     ...(options.state === undefined ? {} : { state: options.state }),
     publicOrigin: options.publicOrigin ?? publicOrigin,
     authBaseURL: options.authBaseURL ?? authBaseURL,
     development: options.development ?? { enabled: false },
     auditSink: options.auditSink,
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.recordOperations === undefined
       ? {}
       : { recordOperations: options.recordOperations }),
@@ -213,7 +363,7 @@ async function createLiveNativeAgent(fixture, namespace, name, options = {}) {
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
-    nativeAdminHarnessConfiguration(nativeOrigin),
+    (options.configure ?? nativeAdminHarnessConfiguration)(nativeOrigin),
   );
   const revision = await fixture.controller.deployAgent(
     adminPrincipal(fixture).id,
@@ -390,6 +540,8 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   try {
     const unsupported = await nativeStatus(context, { session: operatorSession });
     assert.equal(unsupported.data.status, "unsupported");
+    // The Configuration is complete; the Compute Driver gives no chat endpoint (finding 3168).
+    assert.equal(unsupported.data.reason, "compute");
     assert.equal(unsupported.data.mode, "chat");
   } finally {
     driver.getGatewayChatEndpoint = chatEndpoint;
@@ -469,6 +621,42 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   assert.equal(restored.status, 200);
   assert.equal(restored.data.status, "available");
   assert.equal(restored.data.activeRevisionId, pending.id);
+});
+
+// What Create Agent saves from the shipped default Preset (Console `configurationTemplate`):
+// its gateway, with Control UI on for loopback port-forward origins only, and the selected
+// model. `nativeOrigin` is added to the allowed origins when given.
+function defaultPresetConfiguration(nativeOrigin) {
+  const { gateway } = structuredClone(defaultCodexPreset.template.configuration.values);
+  if (nativeOrigin !== undefined) {
+    gateway.controlUi.allowedOrigins.push(nativeOrigin);
+  }
+  return { ...createHarnessConfiguration("openclaw", "gpt-4.1"), gateway };
+}
+
+// Findings 3168 and 3189: an unsupported status names its cause, so the console can say what to
+// change. A Configuration without the browser chat opt-in is not-enabled: Control UI off, or on
+// without this Agent's origin and trusted-proxy auth. A browser chat setup that refuses for
+// another reason is configuration. All Agents are deployed and running.
+test("native browser status names why a Configuration is unsupported", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  for (const [name, configure, reason] of [
+    ["Browser chat off", () => createHarnessConfiguration("openclaw", "gpt-4.1"), "not-enabled"],
+    // Create Agent from the default Preset with Enable browser chat unchecked (finding 3189).
+    ["Default Preset", () => defaultPresetConfiguration(), "not-enabled"],
+    // Browser chat is on, but its allowed origin is the console, not this Agent.
+    ["Other origin", () => nativeAdminHarnessConfiguration(publicOrigin), "configuration"],
+    // This Agent's origin is allowed, but the gateway keeps password auth.
+    ["Password auth", defaultPresetConfiguration, "configuration"],
+  ]) {
+    const { agent } = await createLiveNativeAgent(context.fixture, context.namespace, name, {
+      configure,
+    });
+    const status = await nativeStatus({ ...context, agent });
+    assert.equal(status.status, 200, name);
+    assert.equal(status.data.status, "unsupported", name);
+    assert.equal(status.data.reason, reason, name);
+  }
 });
 
 test("native admin status is unavailable while a newer revision replaces the active workload", async (t) => {
@@ -561,6 +749,80 @@ async function issueServiceKeyForNativeAgent(context) {
   assert.match(issued.data.key, /^occ_/);
   return issued.data.key;
 }
+
+// Retained installation settings must not take ordinary Console and API access down.
+test("native admin retained domains preserve controller access and refuse unusable targets", async (t) => {
+  const longest = `${"a.".repeat(99)}oce.example.test`;
+  assert.equal(longest.length, 214);
+  for (const length of [214, 215]) {
+    const domain = `${"a".repeat(length - longest.length)}${longest}`;
+    const context = await createNativeAdminFixture(t, { nativeDomain: domain });
+    const { fixture, namespace, agent } = context;
+    assert.equal(deriveNativeAdminHost("installation", agent, domain).length, length + 39);
+    const ordinary = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.equal(ordinary.status, 200);
+    const consolePage = await fixture.app.inject({
+      method: "GET",
+      url: "/console/",
+      headers: { host: new URL(publicOrigin).host },
+    });
+    assert.equal(consolePage.statusCode, 200);
+    const status = await nativeStatus(context);
+    assert.equal(status.status, 200);
+    assert.equal(status.data.status, length === 214 ? "available" : "unavailable");
+    if (length === 215) {
+      assert.equal(status.data.host, undefined);
+      assert.equal(status.data.url, undefined);
+      const configurations = `/namespaces/${namespace.id}/configurations`;
+      const config = await fixture.request("POST", configurations, {
+        body: { kind: "agent", values: {} },
+      });
+      assert.equal(config.status, 201);
+      const before = await fixture.request("GET", `${configurations}/${config.data.id}`);
+      const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+        body: {
+          name: "refused-native-opt-in",
+          configurationId: config.data.id,
+          nativeAdmin: true,
+          expectedConfigurationGeneration: config.data.generation,
+        },
+      });
+      assert.equal(created.status, 400, JSON.stringify(created.body));
+      const after = await fixture.request("GET", `${configurations}/${config.data.id}`);
+      assert.deepEqual(after.data, before.data);
+    }
+  }
+  const options = (domain) => ({
+    publicOrigin,
+    authBaseURL,
+    development: { enabled: false },
+    nativeAdmin: { enabled: true, domain },
+    nativeAdminGatewayApiKey: async () => randomUUID(),
+  });
+  // Retained settings still identify disabled native hosts, which must be denied
+  // instead of preventing startup or falling through to ordinary Console routes.
+  const domain = `aaa${longest}`;
+  const disabled = await createConsoleAppFixture(t, {
+    ...options(domain),
+    nativeAdmin: { enabled: false, domain },
+    nativeAdminGatewayApiKey: async () => {
+      assert.fail("disabled native administration must not read the gateway key");
+    },
+  });
+  for (const host of [
+    `agent-${"a".repeat(32)}.${domain}`,
+    `agent-invalid.${domain}`,
+    `agent-${"a".repeat(32)}.other.${domain}`,
+  ]) {
+    const denied = await disabled.app.inject({
+      method: "GET",
+      url: "/console/",
+      headers: { host },
+    });
+    assert.equal(denied.statusCode, 403);
+    assert.equal(denied.json().error.code, "FORBIDDEN");
+  }
+});
 
 test("native admin shared session configuration validates cookie scope and rejects keys", async (t) => {
   const context = await createNativeAdminFixture(t);
@@ -838,6 +1100,74 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   assert.deepEqual(resumed.json().data, found.json().data);
 });
 
+test("native browser admission reports a failed session lookup and accepts the same session after recovery", async (t) => {
+  const logLines = [];
+  const context = await createNativeAdminFixture(t, {
+    logger: createOccLogger({
+      component: "native-admin-test",
+      level: "info",
+      destination: {
+        write(chunk) {
+          logLines.push(...String(chunk).split("\n").filter(Boolean));
+          return true;
+        },
+      },
+    }),
+  });
+  const status = await nativeStatus(context);
+  const headers = {
+    host: nativeAuthority(status.data),
+    cookie: context.session.cookie,
+    accept: "text/html,application/xhtml+xml",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  // Fail the backing session store below Better Auth while leaving the issued session intact.
+  const sessions = context.fixture.memoryDatabase.session;
+  Object.defineProperty(sessions, "filter", {
+    configurable: true,
+    value() {
+      throw new Error("Session store unavailable");
+    },
+  });
+  try {
+    const page = await injectJson(context.fixture, "GET", "/chat/main", { headers });
+    assert.equal(page.statusCode, 503);
+    assert.equal(page.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(page.headers.location, undefined);
+    assert.equal(page.headers["set-cookie"], undefined);
+    const completed = logLines
+      .map((line) => JSON.parse(line))
+      .find(
+        (line) =>
+          line.event === "http.completed" && line.requestId === page.headers["x-request-id"],
+      );
+    assert.equal(completed?.nativeAdmissionReason, "dependency_failure");
+    assert.equal(completed?.status, 503);
+    assert.ok(!JSON.stringify(completed).includes("Session store unavailable"));
+    // The Control UI probes this route before offering a browser reconnect on 401 or 403.
+    const probe = await injectJson(context.fixture, "GET", "/healthz", {
+      headers: {
+        host: headers.host,
+        cookie: headers.cookie,
+        "x-openclaw-reachability-probe": "1",
+      },
+    });
+    assert.equal(probe.statusCode, 503);
+    assert.equal(probe.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(probe.headers["set-cookie"], undefined);
+    assert.equal(context.upstream.requests.length, 0);
+  } finally {
+    Reflect.deleteProperty(sessions, "filter");
+  }
+
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const recovered = await injectJson(context.fixture, "GET", "/chat/main", { headers });
+  assert.equal(recovered.statusCode, 200);
+  assert.equal(recovered.headers["x-native-upstream"], "reached");
+});
+
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);
@@ -1057,16 +1387,59 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   const installationId = fixture.controller.installation.id;
   // The installation administrator's session administers every Agent, so each refusal below
   // comes from host resolution, not from IAM.
-  const proxied = (namespaceId, agentId) => {
+  const proxied = (namespaceId, agentId, cookie = context.session.cookie) => {
     const origin = nativeOriginForAgent(installationId, namespaceId, agentId);
     return injectJson(fixture, "GET", "/settings/profile", {
-      headers: { host: new URL(origin).host, origin, cookie: context.session.cookie },
+      headers: { host: new URL(origin).host, origin, cookie },
     });
   };
 
-  const own = await proxied(namespace.id, agent.id);
-  assert.equal(own.statusCode, 200, own.body);
-  assert.equal(upstream.requests.length, 1);
+  const resolveReference = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const shapeLookups = t.mock.method(fixture.controller, "resolveAgentReference", (...args) =>
+    resolveReference(...args),
+  );
+  try {
+    const own = await proxied(namespace.id, agent.id);
+    assert.equal(own.statusCode, 200, own.body);
+    assert.equal(upstream.requests.length, 1);
+    assert.equal(shapeLookups.mock.callCount(), 1, "a valid host uses the real reference lookup");
+
+    const account = await fixture.createAccountWithPolicy("native-host-no-access", () => {});
+    const limited = await fixture.signIn(account.credentials);
+    const unknown = await proxied(namespace.id, `agt_${randomUUID()}`, limited.cookie);
+    const inaccessible = await proxied(namespace.id, agent.id, limited.cookie);
+    assert.equal(unknown.statusCode, 403, unknown.body);
+    assert.equal(inaccessible.statusCode, 403, inaccessible.body);
+    assert.deepEqual(unknown.json().error, inaccessible.json().error);
+    assert.equal(shapeLookups.mock.callCount(), 3, "well-formed hosts retain the real lookup");
+
+    const key = deriveNativeAdminHost(installationId, agent, nativeDomain)
+      .split(".", 1)[0]
+      .slice(6);
+    for (const malformedHost of [
+      `agent-.${nativeDomain}`,
+      `agent-${key.slice(1)}.${nativeDomain}`,
+      `agent-${key}0.${nativeDomain}`,
+      `agent-${"g".repeat(32)}.${nativeDomain}`,
+      `agent-${key}.other.${nativeDomain}`,
+    ]) {
+      const before = shapeLookups.mock.callCount();
+      const denied = await injectJson(fixture, "GET", "/console/", {
+        headers: { host: malformedHost, cookie: limited.cookie },
+      });
+      assert.equal(denied.statusCode, 403, denied.body);
+      assert.equal(denied.json().error.code, "FORBIDDEN");
+      assert.equal(denied.headers.location, undefined);
+      assert.equal(
+        shapeLookups.mock.callCount() - before,
+        0,
+        `malformed native hosts must not enumerate Agent references: ${malformedHost}`,
+      );
+      assert.equal(upstream.requests.length, 1, "a malformed host must not reach a native gateway");
+    }
+  } finally {
+    shapeLookups.mock.restore();
+  }
 
   const other = await fixture.createNamespace("Native admin other", { ready: true });
   const otherAgent = await fixture.createAgent(
@@ -1089,13 +1462,43 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   assert.notEqual(otherHost.statusCode, 200, otherHost.body);
   assert.equal(upstream.requests.length, 1, "no refused host may reach a native gateway");
 
-  // A deleted Agent's host names nothing.
+  const chat = await createAgentPermissionSession(context, "deleting-agent-chat", {
+    agent: ["operate"],
+  });
+  const beforeDeletion = await proxied(namespace.id, agent.id, chat.cookie);
+  assert.equal(beforeDeletion.statusCode, 200, beforeDeletion.body);
   const deleted = await fixture.request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(deleted.status, 202);
-  assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+  const { response: deleting, denials: deletingDenials } = await denialsDuring(
+    fixture.auditSink,
+    () => proxied(namespace.id, agent.id, chat.cookie),
+  );
+
+  // Commit real deletion after the real host lookup, before admission's exact Agent read.
+  // The wrapper changes only ordering: no lookup result or failure is invented.
+  const resolve = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const lookup = t.mock.method(fixture.controller, "resolveAgentReference", async (...args) => {
+    const selected = await resolve(...args);
+    assert.equal(selected?.id, agent.id);
+    assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+    return selected;
+  });
+  let racing;
+  try {
+    racing = await denialsDuring(fixture.auditSink, () => proxied(namespace.id, agent.id));
+  } finally {
+    lookup.mock.restore();
+  }
   const afterDeletion = await proxied(namespace.id, agent.id);
-  assert.equal(afterDeletion.statusCode, 403, afterDeletion.body);
-  assert.equal(upstream.requests.length, 1);
+  assert.deepEqual(
+    [deleting.statusCode, racing.response.statusCode, afterDeletion.statusCode],
+    [403, 403, 403],
+    "deleting and deleted Agents are refusals, not temporary dependency outages",
+  );
+  assert.deepEqual(racing.response.json().error, afterDeletion.json().error);
+  assert.deepEqual(deletingDenials, []);
+  assert.deepEqual(racing.denials, [], "deletion does not invent an attributable IAM denial");
+  assert.equal(upstream.requests.length, 2);
 });
 
 test("native admin status decodes only the revisions it uses", async (t) => {
@@ -1349,9 +1752,36 @@ for (const changedField of [undefined, "id", "implementation"]) {
     );
     const host = new URL(nativeOriginForAgent(controller.installation.id, namespace.id, agent.id))
       .host;
+    const proxyLogStart = logLines.length;
     const proxy = await injectJson({ app }, "GET", "/", {
       headers: { ...headers, host, origin: `https://${host}` },
     });
+    if (changedField === undefined) {
+      const proxyCompletions = logLines
+        .slice(proxyLogStart)
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      assert.equal(proxyCompletions.length, 1);
+      assert.equal(proxyCompletions[0].status, 200);
+      assert.ok(proxyCompletions[0].requestId);
+      assert.equal(proxyCompletions[0].nativeAdmissionReason, undefined);
+      const refused = await app.inject({
+        method: "GET",
+        url: "/?private=discard-query-marker",
+        headers: { host, cookie: "discard-cookie-marker=private" },
+      });
+      assert.equal(refused.statusCode, 403);
+      const completions = logLines
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      const completed = completions.find(
+        (line) => line.requestId === refused.headers["x-request-id"],
+      );
+      assert.ok(completed, "the refusal must correlate to its existing HTTP request ID");
+      assert.equal(completed.nativeAdmissionReason, "session_invalid");
+      assert.equal(completed.status, 403);
+      assert.ok(!JSON.stringify(completed).includes("discard-"));
+    }
     // A console poll repeats the status read; the mismatch is still warned only once.
     const repeated = await injectJson(
       { app },
@@ -1447,3 +1877,39 @@ test("a browser Back to a denied Agent gateway stays 403 and links to the consol
   // The JSON refusal names the grant but not the Agent, which the host named, not the caller.
   assert.deepEqual(api.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
 });
+
+/** @type {import("./native-admin-http-integrity-cases.ts").CreateNativeAdminHttpFixture} */
+async function liveNativeAdminFixture(t, options = {}) {
+  const context = await createNativeAdminFixture(t, options);
+  // The console fixture returns untyped JSON. Check only the fields the wire cases consume.
+  /** @type {unknown} */
+  const native = (await nativeStatus(context)).data;
+  assert.ok(
+    native && typeof native === "object" && "origin" in native && typeof native.origin === "string",
+    "the native status must expose an origin",
+  );
+  /** @type {unknown} */
+  const agentId = context.agent.id;
+  assert.ok(typeof agentId === "string", "the live Agent must expose an ID");
+  const session = await createExactAgentAdministerSession(context, "native-http-integrity");
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const address = context.fixture.app.server.address();
+  assert.equal(typeof address, "object");
+  assert.notEqual(address, null);
+  return {
+    upstream: context.upstream,
+    namespaceId: context.namespace.id,
+    agentId,
+    nativeOrigin: native.origin,
+    nativeGatewayApiKey,
+    createReadOnlySession: (label) => createReadOnlySession(context, label),
+    port: address.port,
+    nativeHeaders: {
+      host: nativeAuthority(native),
+      origin: native.origin,
+      cookie: session.cookie,
+    },
+  };
+}
+
+registerNativeAdminHttpIntegrityCases(test, liveNativeAdminFixture);

@@ -207,11 +207,11 @@ namespace's Pod quota.
 ### Check the status port
 
 The status port `18791` admits the API server's proxy sources from
-`network.pluginStatusProxySourceCidrs`. Through the proxy, the status endpoint
-answers; the gateway port does not:
+`network.pluginStatusProxySourceCidrs`. Check that the proxy reaches the
+Gateway's private status endpoint and that the policy blocks its native port:
 
 ```bash
-kc get --raw "/api/v1/namespaces/$TENANT_NAMESPACE/pods/$HARNESS_POD:18791/proxy/openclaw/runtime/status"
+kc get --raw "/api/v1/namespaces/$GATEWAY_RUNTIME_NAMESPACE/pods/$GATEWAY_POD:18791/proxy/openclaw/runtime/status"
 echo
 kc get --raw "/api/v1/namespaces/$GATEWAY_RUNTIME_NAMESPACE/pods/$GATEWAY_POD:8080/proxy/"
 ```
@@ -224,9 +224,21 @@ kube-router, always admit traffic from a node to its own Pods: when the API serv
 runs on the Pod's node, the second command can return the gateway's response, so this
 check cannot show the status-port policy there. The control Pod showed
 that other Pods cannot connect to the status port directly. Repeat for Agents
-on different nodes: the proxy source address can differ per node. Host-network
+on different nodes. The proxy source address can differ per node. Host-network
 Pods and node processes that share a proxy source address can also reach the
 port.
+
+For the running version, select **Run diagnostics for this version** in the
+Console or call the [deployment diagnostics API](../../reference/agents.md#current-runtime-diagnostics).
+Look for the Gateway's Slack configuration check. Even **not set up**
+(`NOT_CONFIGURED` in the API) confirms that the Gateway answered for this
+version. If the only Gateway check is `gateway / runtime-status` with state
+`unknown` and code `UNAVAILABLE`, OCC received no Gateway diagnostics. Retry
+once the selected version is running. A successful direct Pod-proxy read verifies
+one path. A managed control plane can use a different source address for the OCC
+request. For a configured Slack channel, successful configuration,
+authentication, and connectivity checks verify the connection without sending a
+message.
 
 ### Public addresses
 
@@ -259,10 +271,21 @@ kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-u
 - The API or worker logs `KUBERNETES_MODEL_EGRESS_BLOCKED`: the Codex model
   endpoint uses a port other than 443, an IPv6 address, or an excluded IPv4
   range. Startup continues; Agents reach it only if your own policy admits it.
-- The status proxy fails for every Pod: set `network.pluginStatusProxySourceCidrs`
-  to the API server's source addresses on each node. It never reaches an
-  OpenShell Harness Pod, whose provider fence admits only its Gateway; Compute
-  does not try, and OpenShell reports that Harness's status.
+- Deployment diagnostics returns `DEPENDENCY_UNAVAILABLE` without Gateway
+  checks: record the OCC request ID and time. Check `get` on `pods/proxy` for
+  the OCC API ServiceAccount in the Gateway namespace. If the proxy connection
+  times out, correlate the actual OCC request with connection headers at the
+  target Gateway on TCP/18791. Verify the observed source addresses against the
+  control-plane inventory. Add verified `/32` or `/128` sources to
+  `network.pluginStatusProxySourceCidrs` in the Installation configuration.
+  During planned maintenance, [apply the Installation change](../deploy/production-installation-changes.md)
+  so the API and worker reload it. Then [deploy the affected Agent](../deploy/production-agents.md)
+  so Compute reconciles the Gateway policy. Read back the policy and verify its
+  sources before removing any temporary rule. Run deployment diagnostics for
+  the new version. Repeat source discovery if control-plane addresses rotate.
+- An OpenShell Harness reports `runtime-status` as `unknown`: the provider
+  fence prevents Kubernetes Pod-proxy reads of the Harness. Use the separate
+  `sandbox` check for the provider's observation.
 - The worker logs `KUBERNETES_STATUS_PROXY_SOURCE_BROAD`: a status source wider
   than one address, such as the Pod CIDR, lets every Pod in it reach each
   Agent's status port. List only the API server's `/32` or `/128` sources.

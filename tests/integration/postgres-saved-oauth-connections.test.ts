@@ -574,6 +574,27 @@ test(
     const sourceDetails = await owner("GET", source);
     assert.equal(sourceDetails.statusCode, 200, sourceDetails.body);
     assert.equal(sourceDetails.json().data.ownerCapability, "token_service");
+    // The saved source and its authorization must retain the Namespace consumed by the callback.
+    const completedEvents = (await state.transact((unit) => unit.audit.list())).filter(
+      (event) =>
+        event.action === "openclaw.namespaces.connections.complete" &&
+        event.outcome === "success" &&
+        event.namespaceId === namespaceId &&
+        event.resource.id === id,
+    );
+    assert.equal(completedEvents.length, 1);
+    const [completedEvent] = completedEvents;
+    assert.ok(completedEvent);
+    assert.equal(completedEvent.kind, "mutation");
+    assert.equal(completedEvent.actorId, ownerId);
+    assert.equal(completedEvent.actor?.principalId, ownerId);
+    assert.ok(completedEvent.admissionDecisionId);
+    assert.deepEqual(completedEvent.resource, { kind: "credential_source", namespaceId, id });
+    assert.deepEqual(completedEvent.authorization, {
+      principalId: ownerId,
+      action: "create",
+      resource: { kind: "credential_source", id: namespaceId, namespaceId },
+    });
     const readerAccounts = await reader("GET", connections);
     assert.equal(readerAccounts.statusCode, 200, readerAccounts.body);
     assert.deepEqual(readerAccounts.json().data, []);

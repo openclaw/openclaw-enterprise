@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { admissionIdTimestamp } from "./admission-id.ts";
+import { controlRequestBodyMaxBytes } from "./client-contracts.ts";
 import type { Clock } from "./backend-contracts.ts";
 import type { CredentialServiceOwner } from "./internal-contracts.ts";
 import type { SessionInput } from "./sessions.ts";
@@ -72,6 +74,13 @@ export function createControlAdmission(
     );
     return latestWall;
   };
+  function forget(id: string, record: AdmissionRecord): void {
+    record.cancel();
+    records.delete(id);
+    if (record.sessionId !== undefined) {
+      sessions.delete(record.sessionId);
+    }
+  }
   // `skip` is the admission the calling open handles itself.
   const sweep = (skip?: string) => {
     for (const [id, record] of records) {
@@ -114,11 +123,7 @@ export function createControlAdmission(
         (!record.durable || record.saved) &&
         clock.monotonicNow() >= record.forgetAt
       ) {
-        record.cancel();
-        records.delete(id);
-        if (record.sessionId !== undefined) {
-          sessions.delete(record.sessionId);
-        }
+        forget(id, record);
       }
     }
   };
@@ -130,11 +135,7 @@ export function createControlAdmission(
     } catch {
       return false;
     }
-    record.cancel();
-    records.delete(id);
-    if (record.sessionId !== undefined) {
-      sessions.delete(record.sessionId);
-    }
+    forget(id, record);
     return true;
   };
   const persist = async (id: string, record: AdmissionRecord, status: SessionStatus) => {
@@ -276,9 +277,8 @@ export function createControlAdmission(
         throw new Error("CONTROL_CLOSED");
       }
     }
-    const timestamp =
-      /^([0-9]{13})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.exec(id);
-    const age = timestamp ? now() - Number(timestamp[1]) : -1;
+    const timestamp = admissionIdTimestamp(id);
+    const age = timestamp === undefined ? -1 : now() - Number(timestamp);
     if (age < 0) {
       throw new Error("INVALID_ADMISSION");
     }
@@ -505,7 +505,9 @@ export async function handleControl(
     return;
   }
   const { head } = inspected;
-  if ((head.framing.bytes ?? 0) > Math.min(16384, config.limits.controlBodyBytes)) {
+  if (
+    (head.framing.bytes ?? 0) > Math.min(controlRequestBodyMaxBytes, config.limits.controlBodyBytes)
+  ) {
     reply(response, 413, { error: "invalid-request" });
     return;
   }
@@ -530,7 +532,7 @@ export async function handleControl(
     const chunks: Buffer[] = [];
     for await (const chunk of request) {
       size += chunk.length;
-      if (size > Math.min(16384, config.limits.controlBodyBytes)) {
+      if (size > Math.min(controlRequestBodyMaxBytes, config.limits.controlBodyBytes)) {
         request.destroy();
         return;
       }

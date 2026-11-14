@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chartPackage, chartPushParent, pushChart, writeBootstrapChart } from "./chart-package.mjs";
+import { chartPackage, chartPushParent, pushChart, writeBootstrapChart } from "./chart-package.ts";
 import {
   ghcrPackageName,
   github,
@@ -15,7 +15,7 @@ import {
   verifyCi,
   verifyEnvironment,
   verifyMainSource,
-} from "./container-release.mjs";
+} from "./container-release.ts";
 
 const workflow = ".github/workflows/container-bootstrap.yml";
 

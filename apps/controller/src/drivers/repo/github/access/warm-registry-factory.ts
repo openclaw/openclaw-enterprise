@@ -6,6 +6,7 @@ import type {
   ResolvedGrant,
 } from "../../access/backend-contracts.ts";
 import { sameBinding } from "../../access/grant-identity.ts";
+import { createGitHubClientEndpoint } from "./client-endpoint.ts";
 import { githubProviderOrigin } from "./origin.ts";
 import { createGatewayAuthentication } from "./gateway-authentication.ts";
 import { resolveGitHubRepositoryBinding, validateGitHubRepositoryRegistry } from "./registry.ts";
@@ -65,11 +66,7 @@ export function createPreparedGitHubRegistryFactory(
       });
       const client = Object.freeze({
         repository,
-        gatewayOrigin,
-        gitRemote: gatewayOrigin + "/" + repository + ".git",
-        gitUsername: "gateway-session",
-        canonicalApiHost: "github.com",
-        apiHost: new URL(gatewayOrigin).hostname,
+        ...createGitHubClientEndpoint(gatewayOrigin, repository),
         pushRefAllowlist,
       });
       const pull = base

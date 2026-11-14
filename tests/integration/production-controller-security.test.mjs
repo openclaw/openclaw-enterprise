@@ -18,7 +18,7 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const allowedNamespace = "ns_00000000-0000-4000-8000-000000000001";

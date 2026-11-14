@@ -73,12 +73,25 @@ export const credentialSourceHandlers = {
     const sources = await controller.listCredentialSources(context.actorId, namespaceId);
     reply.send({ data: sources.map(clientCredentialSource), meta: { requestId: request.id } });
   },
-  async getCredentialSource({ controller, context, request, reply, params, namespaceId }) {
+  async getCredentialSource({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    setAuditReadTarget,
+  }) {
     const source = await controller.readCredentialSource(
       context.actorId,
       namespaceId,
       params.credentialSourceId as string,
     );
+    setAuditReadTarget({
+      kind: "credential_source",
+      id: source.id,
+      namespaceId: source.namespaceId,
+    });
     reply.send({ data: clientCredentialSource(source), meta: { requestId: request.id } });
   },
   async updateCredentialSource({

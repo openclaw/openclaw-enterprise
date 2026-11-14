@@ -10,7 +10,7 @@ import {
 import { idTokenSigner, rsaSigningKey } from "../helpers/id-token.mjs";
 
 // verifyGoogleIdToken delegates every generic ID-token check to verifyIdToken, which
-// oidc-id-token.test.mjs pins. This file covers only what Google adds: its issuer
+// oidc-id-token.test.ts pins. This file covers only what Google adds: its issuer
 // spellings, the hosted-domain restriction, its nonce and its fixed endpoints.
 const clientId = "fixture-client.apps.googleusercontent.com";
 const nonce = googleNonce("test-only-authentication-secret", "s".repeat(43));

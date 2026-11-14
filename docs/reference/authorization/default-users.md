@@ -254,10 +254,10 @@ model Secret as a credential source before it saves the Agent, as it does for
 an administrator. Without that source, a deploy on a Credential Gateway
 Installation is refused.
 
-The answer omits guided provisioning and native admin UI setup, which need
-Installation `administer`. A member's console saves a draft, opens it, and
-offers no **Enable Native admin UI**. The member deploys the draft, and the
-deploy writes the grants above.
+The response omits only `agentProvisioning` because guided provisioning
+requires Installation `administer`. When the Installation enables browser
+access, the response includes `nativeAdmin: true`. The member deploys the draft
+to write the grants above. See [Agent browser access](../agent-native-admin.md).
 
 ## Current limits
 
@@ -268,8 +268,7 @@ These parts of the Default users design are not implemented:
 - Namespace-wide and Group bindings through the Namespace policy API.
 - Shared team Namespaces.
 - Removal of deploy-time grants when an Agent stops using a source.
-- CLI support for Default users, and native admin UI setup or guided
-  provisioning from a member's console.
+- CLI support for Default users and guided provisioning from a member's console.
 
 ## Related
 

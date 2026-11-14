@@ -290,11 +290,11 @@ function returning the current reconciliation operation's `AbortSignal`, or
 work when an operation loses its lease or is cancelled. Tenants and operator
 YAML cannot supply or replace the function.
 
-Production startup rejects bundled or installed Compute Drivers missing either
-`activateRevision` or `deactivateRevision`; development permits four-method
-Drivers. See the [ComputeDriver contract](compute.md) for
-core operations, staged activation, and preflight. Startup checks structure,
-not whether installed code actually preserves workload isolation.
+Every Compute Driver must implement `ensureNamespace`, `deleteNamespace`,
+`prepareRevision`, `stopRevision`, and `retireRevision`. Production also requires
+`activateRevision` and `deactivateRevision`; development permits their absence.
+See the [ComputeDriver contract](compute.md) for staged activation and preflight.
+Startup checks structure, not workload isolation.
 
 Provide any defaults explicitly in Installation YAML or document them in the
 Driver package. OCC does not merge package-provided defaults.

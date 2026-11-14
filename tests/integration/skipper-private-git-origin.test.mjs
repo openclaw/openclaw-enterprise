@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { get as httpGet } from "node:http";
+import { json } from "node:stream/consumers";
 import { Agent, request } from "node:https";
 import { once } from "node:events";
 import { connect } from "node:net";
 import { connect as connectTls } from "node:tls";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { withSkipperPrivateGitFixture } from "../../scripts/qualification/skipper-private-git-fixture.mjs";
 import {
   assertOnlyTokenRetirement,
   fetchAfterWithdrawalCommand,
@@ -61,6 +64,83 @@ function api(
     }
   });
 }
+
+test("private Git witness remains reachable from direct and nested temporary roots", async (t) => {
+  const shortRoot = await mkdtemp("/tmp/skipper-test-");
+  t.after(() => rm(shortRoot, { recursive: true, force: true }));
+  const longRoot = join(shortRoot, "nested-".repeat(16));
+  await mkdir(longRoot);
+  const originalRoot = process.env.TMPDIR;
+  t.after(() => {
+    if (originalRoot === undefined) {
+      delete process.env.TMPDIR;
+    } else {
+      process.env.TMPDIR = originalRoot;
+    }
+  });
+  for (const [name, root] of [
+    ["direct", "/tmp"],
+    ["short nested", shortRoot],
+    ["long nested", longRoot],
+  ]) {
+    await t.test(name, async () => {
+      process.env.TMPDIR = root;
+      let directory;
+      let socketPath;
+      let originDirectory;
+      const childFailure = new Error("fixture command failed");
+      const fixture = withSkipperPrivateGitFixture(
+        { host: "127.0.0.1", teamReview: false },
+        async (env) => {
+          directory = env.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY;
+          socketPath = env.OCC_TEST_SKIPPER_PRIVATE_GIT_WITNESS;
+          assert.equal(dirname(directory), root);
+          assert.match(socketPath, /^\/tmp\/oce-skipper-[a-zA-Z0-9]+\/witness\.sock$/);
+          if (root === "/tmp") {
+            assert.equal(dirname(socketPath), directory);
+          } else {
+            // Only inspect this test's own root to find the live synthetic Git origin.
+            const origins = (await readdir(root)).filter((entry) =>
+              entry.startsWith("skipper-private-git-"),
+            );
+            assert.equal(origins.length, 1);
+            originDirectory = join(root, origins[0]);
+          }
+          assert.equal((await stat(directory)).mode & 0o777, 0o700);
+          assert.equal((await stat(join(directory, "registry.json"))).mode & 0o777, 0o600);
+          assert.equal((await stat(dirname(socketPath))).mode & 0o777, 0o700);
+          const socket = await stat(socketPath);
+          assert.ok(socket.isSocket());
+          assert.equal(socket.mode & 0o777, 0o600);
+          const response = await new Promise((resolve, reject) => {
+            httpGet(
+              { socketPath, path: "/input", signal: AbortSignal.timeout(10_000) },
+              resolve,
+            ).on("error", reject);
+          });
+          assert.equal(response.statusCode, 200);
+          const input = await json(response);
+          assert.equal(input.repository, "fixture/skipper-" + input.id);
+          assert.match(input.initialSha, /^[0-9a-f]{40}$/);
+          // Exercise cleanup when the fixture's command fails after connecting.
+          if (root === longRoot) {
+            throw childFailure;
+          }
+        },
+      );
+      if (root === longRoot) {
+        await assert.rejects(fixture, (error) => error === childFailure);
+      } else {
+        await fixture;
+      }
+      for (const path of [socketPath, dirname(socketPath), directory, originDirectory].filter(
+        Boolean,
+      )) {
+        await assert.rejects(stat(path), { code: "ENOENT" });
+      }
+    });
+  }
+});
 
 test(
   "private origin authenticates Git, constrains pushes, witnesses objects, and revokes tokens",
@@ -777,6 +857,7 @@ test("the installed Skipper model requires terminal success and keeps failure di
     const model = await controlledModel(t);
     const initial = toolCall(model.next());
     assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
     assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
     assert.equal(
       model.observations.some((event) => event.event === "skipper-native-poll"),
@@ -794,6 +875,24 @@ test("the installed Skipper model rejects a changed native session and stops pol
     "SKIPPER_INCOMPLETE_skipper-test",
   );
   assert.equal(model.observations.at(-1).status, "unrecognized");
+
+  // Replay the mixed-session history with a terminal result after losing callback state.
+  model.restart();
+  const beforeReplay = model.observations.length;
+  assert.equal(
+    model.result(
+      { ...poll, call_id: model.command.id + "-wait-2" },
+      nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
+    ),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(model.observations.length, beforeReplay + 1);
+  assert.equal(model.observations[beforeReplay].modelFixtureSelectedTerminalSuccess, undefined);
+  assert.partialDeepStrictEqual(model.observations[beforeReplay], {
+    event: "skipper-native-result",
+    id: model.command.id,
+    status: "unrecognized",
+  });
 
   const expired = await controlledModel(t);
   const exec = toolCall(expired.next());

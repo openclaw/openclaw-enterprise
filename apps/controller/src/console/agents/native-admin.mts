@@ -6,6 +6,8 @@ import { message } from "./list.mjs";
 const warning =
   "Gateway managed mode restricts administrative changes by default. OCE deployments can overwrite changes made while managed mode is off.";
 
+type UnsupportedReason = "not-enabled" | "configuration" | "compute";
+
 type Availability =
   | {
       status: "available";
@@ -13,10 +15,11 @@ type Availability =
       mode: "admin" | "chat";
       sessionMode?: "host-only-exchange";
     }
-  | { status: "disabled" | "denied" | "stopped" | "unsupported" | "unavailable" };
+  | { status: "unsupported"; reason?: UnsupportedReason }
+  | { status: "disabled" | "denied" | "stopped" | "unavailable" };
 
 function readAvailability(value: unknown): Availability {
-  const { status, url, mode, sessionMode } = responseFields(value);
+  const { status, url, mode, sessionMode, reason } = responseFields(value);
   switch (status) {
     case "available":
       if (typeof url === "string" && url && (mode === "admin" || mode === "chat")) {
@@ -28,22 +31,39 @@ function readAvailability(value: unknown): Availability {
         };
       }
       break;
+    case "unsupported":
+      return reason === "not-enabled" || reason === "configuration" || reason === "compute"
+        ? { status, reason }
+        : { status };
     case "disabled":
     case "denied":
     case "stopped":
-    case "unsupported":
     case "unavailable":
       return { status };
   }
   throw new Error("Invalid native administration access response");
 }
 
-function unavailableText(status: Availability["status"]) {
-  switch (status) {
+// An Agent created with Enable browser chat unchecked deploys and serves, but has no browser
+// UI. The page names that setting; only a caller who cannot edit the Configuration is told to
+// ask someone who can (finding 3168). An unknown permission answer addresses an editor.
+function unsupportedText(reason: UnsupportedReason | undefined, canEdit: boolean) {
+  if (reason === "not-enabled") {
+    return canEdit
+      ? "Browser chat is off for this Agent. To turn it on, add the browser chat settings to its draft Configuration, then deploy it."
+      : "Browser chat is off for this Agent. Ask someone who can edit its Configuration to turn on browser chat, then deploy it.";
+  }
+  return canEdit
+    ? "Browser access is not supported by this Agent’s current version. Check the browser chat settings in its Configuration and its Compute support, then deploy a supported version."
+    : "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.";
+}
+
+function unavailableText(availability: Availability, canEdit: boolean) {
+  switch (availability.status) {
     case "stopped":
       return "Start this Agent before opening its browser UI.";
     case "unsupported":
-      return "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.";
+      return unsupportedText(availability.reason, canEdit);
     case "unavailable":
       return "Browser access is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.";
     default:
@@ -60,7 +80,9 @@ export function renderNativeAdminAccess(
   browserAccessAllowed?: () => Promise<boolean | undefined>,
   options?: {
     versionLabel(): string;
-    recovery(status: Availability["status"]): HTMLElement | null;
+    recovery(availability: Availability): HTMLElement | null;
+    // False when the caller may not save the Agent's Configuration; undefined when unknown.
+    configurationEditable?(): boolean | undefined;
   },
 ) {
   const statusPath = `${path}/native-admin`;
@@ -289,7 +311,7 @@ export function renderNativeAdminAccess(
     }
     target.hidden = launch.hidden;
     updateTarget();
-    const nextRecovery = current && launch.hidden ? options?.recovery(current.status) : null;
+    const nextRecovery = current && launch.hidden ? options?.recovery(current) : null;
     // An unchanged recovery link keeps focus if the reader moved there during the access read.
     const shownRecovery = recovery.firstElementChild;
     if (nextRecovery ? !nextRecovery.isEqualNode(shownRecovery) : shownRecovery !== null) {
@@ -346,7 +368,7 @@ export function renderNativeAdminAccess(
       } else if (current.status === "disabled" || current.status === "denied") {
         status.textContent = "";
       } else {
-        status.textContent = unavailableText(current.status);
+        status.textContent = unavailableText(current, options?.configurationEditable?.() !== false);
       }
     } catch (cause) {
       if (!context.isCurrent()) {

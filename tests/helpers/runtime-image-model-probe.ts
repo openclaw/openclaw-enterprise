@@ -1,0 +1,387 @@
+// Shared by the runtime image model probe tests, which CI runs in two lanes:
+// the CPU contention case (Image Runtime Startup 3) and the other outcomes
+// (Image Runtime Startup 2). File names are left out so CI Impact can still select a
+// test-only change to either file by its lane.
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import type { ExecFileOptions, ExecFileOptionsWithStringEncoding } from "node:child_process";
+import type { TestContext } from "node:test";
+import { randomBytes } from "node:crypto";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { changeSignal, followContainer } from "./docker-follow.ts";
+import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { gatewayMemoryArguments, runDockerCommand } from "./runtime-image-startup.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
+import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
+import { jsonLines } from "./json-lines.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
+import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
+import type { ProbeEvent, ProbePhase } from "./runtime-model-probe-diagnostic.ts";
+
+// The embedded Gateway's startup model probe on the real runtime image, under
+// the production example's Gateway memory limit and a 500m CPU limit, an eighth
+// of the example's four cores (deploy/examples/production/installation.yaml),
+// which operators may still choose. Only the model provider is
+// substituted: a sidecar in the runtime image owns the network namespace,
+// answers the Responses API as api.openai.com (mapped to loopback, trusted
+// through a private CA), and observes the wrapper from outside. Like the
+// kubelet, the sidecar also polls the real HTTP readiness endpoint.
+
+const executeFile = promisify(execFile);
+function assertCapturedOutput(
+  operation: ReturnType<typeof executeFile>,
+): asserts operation is ReturnType<typeof executeFile> & {
+  child: { stdout: NonNullable<typeof operation.child.stdout> };
+} {
+  assert.ok(operation.child.stdout, "the child process must capture stdout");
+}
+
+export function execute(command: string, args: string[], options?: ExecFileOptions) {
+  const operation = executeFile(command, args, options);
+  assertCapturedOutput(operation);
+  return operation;
+}
+export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+export const image = process.env.OCC_TEST_RUNTIME_IMAGE;
+export const imageTestOptions =
+  image === undefined
+    ? { skip: "Set OCC_TEST_RUNTIME_IMAGE to a locally built OpenClaw runtime image tag." }
+    : {};
+
+export const constrainedGatewayCpuLimit = "0.5";
+export const probeApiKey = "sk-openclaw-runtime-probe-synthetic";
+
+// Failures carry the exit code, signal, timeout and redacted output tails (finding 2184).
+export async function runDocker(args: string[], options: ExecFileOptionsWithStringEncoding = {}) {
+  return runDockerCommand(docker, args, {
+    timeout: 60_000 * imageSmokeTimeoutMultiplier,
+    maxBuffer: 4_000_000,
+    ...options,
+  });
+}
+
+async function waitForLog(containerName: string, pattern: RegExp) {
+  const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
+  const logs = followContainer(undefined, containerName, { docker, exit: false });
+  try {
+    for (;;) {
+      const seen = logs.changes.version;
+      const { stdout, following } = logs.read();
+      if (pattern.test(stdout)) {
+        return;
+      }
+      if (!following) {
+        throw new Error(`${containerName} stopped before ${pattern} appeared in its logs.`);
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.`);
+      }
+      await logs.changes.wait(seen, deadline - Date.now());
+    }
+  } finally {
+    await logs.stop();
+  }
+}
+
+async function createProbeMaterial(t: TestContext, configuration: OpenClawConfigurationDocument) {
+  const directory = await temporaryDirectory(t, "oce-runtime-model-probe-");
+  const file = (name: string) => join(directory, name);
+  // Sign a leaf with a private CA, as a provider certificate would be.
+  await createModelProbeCertificates({
+    directory,
+    caName: "oce-runtime-model-probe-ca",
+    run: execute,
+  });
+  await rm(file("ca-key.pem"));
+  // Only the provider host resolves, to the sidecar; every other name fails at once.
+  await writeFile(file("hosts"), "127.0.0.1 localhost\n127.0.0.1 api.openai.com\n");
+  await writeFile(file("resolv.conf"), "nameserver 127.0.0.1\noptions timeout:1 attempts:1\n");
+  await writeFile(
+    file("endpoint.mjs"),
+    await readFile(new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url)),
+  );
+  await writeFile(file("openclaw.json"), JSON.stringify(configuration));
+  await chmod(directory, 0o755);
+  for (const name of [
+    "ca.pem",
+    "cert.pem",
+    "key.pem",
+    "hosts",
+    "resolv.conf",
+    "endpoint.mjs",
+    "openclaw.json",
+  ]) {
+    await chmod(file(name), 0o644);
+  }
+  return directory;
+}
+
+// The embedded Gateway environment the Kubernetes Compute Driver renders for an
+// OpenClaw Harness, with the controller's probe configuration: the selected
+// model and its provider transport. Only allowPrivateNetwork is added, because
+// the stand-in provider listens on loopback.
+function embeddedGateway() {
+  const harness: OpenClawConfigurationDocument & {
+    agents: { defaults: { model: string; models: Record<string, OpenClawConfigurationDocument> } };
+    models: { providers: Record<string, OpenClawConfigurationDocument> };
+  } = createHarnessConfiguration("openclaw", defaultAgentModel);
+  const configuration = admitLoggingConfiguration(harness, "info");
+  const model = harness.agents.defaults.model;
+  const provider = model.split("/", 1)[0];
+  assert.ok(provider !== undefined);
+  const probeConfiguration = {
+    agents: {
+      defaults: {
+        model,
+        models: {
+          [model]: {
+            ...harness.agents.defaults.models?.[model],
+            agentRuntime: { id: "openclaw" },
+          },
+        },
+      },
+    },
+    models: {
+      providers: {
+        [provider]: {
+          ...harness.models.providers[provider],
+          request: { allowPrivateNetwork: true },
+        },
+      },
+    },
+  };
+  return {
+    configuration,
+    environment: [
+      "HOME=/home/node",
+      "OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json",
+      "OPENCLAW_GATEWAY_PORT=8080",
+      "OPENCLAW_GATEWAY_PASSWORD=openclaw-runtime-probe-password",
+      "OPENCLAW_STATE_DIR=/home/node/.openclaw",
+      `OPENCLAW_HARNESS_MODEL=${model}`,
+      `OPENCLAW_HARNESS_PROVIDER=${provider}`,
+      "OPENCLAW_HARNESS_CREDENTIAL_ENV=OPENAI_API_KEY",
+      `OPENCLAW_HARNESS_PROBE_CONFIG=${JSON.stringify(probeConfiguration)}`,
+      `OPENAI_API_KEY=${probeApiKey}`,
+      "NODE_EXTRA_CA_CERTS=/fixture/ca.pem",
+      "OPENCLAW_PLUGIN_STATUS_PORT=18791",
+      "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",
+      "OPENCLAW_RUNTIME_STATUS_PORT=18791",
+      "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
+      "OPENCLAW_AGENT_REVISION_ID=revision-model-probe",
+      "OPENCLAW_POD_UID=pod-model-probe",
+    ],
+  };
+}
+
+// Docker reports RFC 3339; Podman reports "YYYY-MM-DD hh:mm:ss.nnnnnnnnn +0000 UTC".
+function containerTime(value: string) {
+  const trimmed = value.trim();
+  const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?/.exec(trimmed);
+  assert.ok(match, `unrecognized container time ${trimmed}`);
+  assert.match(trimmed, /Z$|\+0000 UTC$/, "container time must be UTC");
+  return Date.parse(`${match[1]}T${match[2]}.${(match[3] ?? "0").padEnd(3, "0").slice(0, 3)}Z`);
+}
+
+export type ProbeSnapshot = Omit<
+  Parameters<typeof modelProbeDiagnostic>[0],
+  "events" | "phases" | "probe"
+> & {
+  events: (ProbeEvent & Record<string, unknown> & { ms: number })[];
+  phases: (ProbePhase & Record<string, unknown>)[];
+  probe: Record<string, unknown> | undefined;
+  exitCode: number;
+};
+
+type ProbeOptions = {
+  mode: "answer" | "reject" | "hang";
+  delayMs?: number;
+  cpus: string;
+  until: (snapshot: ProbeSnapshot, containerName: string) => boolean;
+  limitMs: number;
+  stress?: Parameters<typeof modelProbeDiagnostic>[1];
+  afterStop?: () => Promise<void>;
+};
+
+export function probeLogRecords(output: string): Record<string, unknown>[] {
+  const records: unknown[] = jsonLines(output, { lenient: true });
+  return records.filter(
+    (record): record is Record<string, unknown> =>
+      record !== null && typeof record === "object" && !Array.isArray(record),
+  );
+}
+
+// Starts one embedded Gateway against the stand-in provider. `mode` is the
+// provider's behaviour: "answer" after `delayMs`, "reject" with HTTP 401, or
+// "hang". Resolves once `until` accepts an observation snapshot.
+export async function runEmbeddedGatewayProbe(
+  t: TestContext,
+  { mode, delayMs = 0, cpus, until, limitMs, stress, afterStop }: ProbeOptions,
+) {
+  assert.ok(
+    image !== undefined,
+    "Set OCC_TEST_RUNTIME_IMAGE to a locally built OpenClaw runtime image tag.",
+  );
+  const scenarioStartedAt = Date.now();
+  const gateway = embeddedGateway();
+  const material = await createProbeMaterial(t, gateway.configuration);
+  const suffix = randomBytes(6).toString("hex");
+  const sidecar = `oce-runtime-model-probe-endpoint-${suffix}`;
+  const containerName = `oce-runtime-model-probe-gateway-${suffix}`;
+  t.after(async () => {
+    await runDocker(["rm", "-f", containerName]).catch(() => {});
+    await runDocker(["rm", "-f", sidecar]).catch(() => {});
+    await afterStop?.();
+  });
+  await runDocker([
+    "run",
+    "--name",
+    sidecar,
+    "--detach",
+    "--network",
+    "none",
+    "--sysctl",
+    "net.ipv4.ip_unprivileged_port_start=0",
+    "--user",
+    "1000:1000",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--tmpfs",
+    "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
+    "--volume",
+    `${material}:/fixture:ro`,
+    "-e",
+    `PROBE_ENDPOINT_MODE=${mode}`,
+    "-e",
+    `PROBE_ENDPOINT_DELAY_MS=${delayMs}`,
+    "-e",
+    "PROBE_OBSERVE_NATIVE_PORT=8080",
+    "-e",
+    "PROBE_OBSERVE_STATUS_PORT=18791",
+    "--entrypoint",
+    "node",
+    image,
+    "/fixture/endpoint.mjs",
+  ]);
+  await waitForLog(sidecar, /"event":"listening"/);
+  // The Gateway container of an embedded Pod: the driver's /home/node (1 GiB)
+  // and /tmp (64 MiB) volumes, a read-only root, and the production limits.
+  await runDocker([
+    "run",
+    "--name",
+    containerName,
+    "--detach",
+    "--network",
+    `container:${sidecar}`,
+    "--cpus",
+    cpus,
+    ...gatewayMemoryArguments,
+    "--user",
+    "1000:1000",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--tmpfs",
+    "/home/node:size=1024m,uid=1000,gid=1000,mode=700",
+    "--tmpfs",
+    "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
+    "--volume",
+    `${material}:/fixture:ro`,
+    "--volume",
+    `${join(material, "hosts")}:/etc/hosts:ro`,
+    "--volume",
+    `${join(material, "resolv.conf")}:/etc/resolv.conf:ro`,
+    "--volume",
+    `${join(material, "openclaw.json")}:/etc/openclaw/openclaw.json:ro`,
+    ...gateway.environment.flatMap((value) => ["-e", value]),
+    "--entrypoint",
+    "node",
+    image,
+    "-e",
+    // As the driver renders it: compressed pieces below the exec argument limit.
+    ...nodeProgramArguments(GATEWAY_RUNTIME_ENTRYPOINT),
+  ]);
+  const startedAt = containerTime(
+    (await runDocker(["inspect", containerName, "--format", "{{.State.StartedAt}}"])).stdout,
+  );
+  // Both containers' logs and the Gateway's exit stream in; each check reads
+  // what arrived, and the loop sleeps until the next write.
+  const changes = changeSignal();
+  const endpointLogs = followContainer(t, sidecar, { docker, exit: false, changes });
+  const gatewayLogs = followContainer(t, containerName, {
+    docker,
+    changes,
+    inspectTimeoutMs: 20_000 * imageSmokeTimeoutMultiplier,
+  });
+  const collect = async (): Promise<ProbeSnapshot> => {
+    const endpoint = endpointLogs.read();
+    const wrapper = gatewayLogs.read();
+    const output = `${wrapper.stdout}\n${wrapper.stderr}`;
+    return {
+      events: probeLogRecords(endpoint.stdout).map((event) => {
+        assert.ok(typeof event.at === "number", "provider event must have an epoch timestamp");
+        return { ...event, ms: event.at - startedAt };
+      }),
+      output,
+      phases: probeLogRecords(output).filter(({ event }) => event === "runtime.startup_phase"),
+      probe: probeLogRecords(output).find(({ event }) => event === "openclaw.model_probe"),
+      probeStage: probeLogRecords(output)
+        .filter(({ event }) => event === "openclaw.model_probe_stage")
+        .at(-1)?.stage,
+      running: wrapper.running,
+      exitCode: wrapper.exitCode,
+    };
+  };
+  const deadline = Date.now() + limitMs * imageSmokeTimeoutMultiplier;
+  for (;;) {
+    const checkedAt = Date.now();
+    const seen = changes.version;
+    const snapshot = await collect();
+    if (until(snapshot, containerName)) {
+      return { containerName, snapshot, setupMs: startedAt - scenarioStartedAt };
+    }
+    if (!snapshot.running) {
+      const error = new assert.AssertionError({
+        message: "The Gateway wrapper exited before settlement.",
+      });
+      Object.assign(error, {
+        openclawCiDiagnostic: modelProbeDiagnostic(snapshot, stress, "wrapper-exited"),
+      });
+      throw error;
+    }
+    if (Date.now() > deadline) {
+      const error = new assert.AssertionError({
+        message: "The embedded Gateway exceeded its settlement guard.",
+      });
+      Object.assign(error, {
+        openclawCiDiagnostic: modelProbeDiagnostic(snapshot, stress, "outer-timeout"),
+      });
+      throw error;
+    }
+    // Check again on the next write or exit (at least 5 s apart without one,
+    // at most every 250 ms with them).
+    await changes.wait(seen, Math.min(5_000, deadline + 1 - Date.now()));
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, checkedAt + 250 - Date.now())));
+  }
+}
+
+export const observed = (key: string, value: unknown) => (event: ProbeEvent) =>
+  event.event === "observe" && event.key === key && event.value === value;
+export const runtimeFailure = (events: ProbeEvent[]) =>
+  events.find(
+    (event) => event.event === "observe" && event.key === "runtimeFailure" && event.value !== null,
+  )?.value;
+export const phaseAt = (phases: ProbeSnapshot["phases"], phase: string) =>
+  phases.find((entry) => entry.phase === phase);

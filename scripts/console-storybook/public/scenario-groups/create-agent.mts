@@ -40,7 +40,8 @@ type CreateAgentScenario = {
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
   credentialSourceTypes?: readonly CredentialSourceType[];
-  credentialRegistrationOutcome?: "invalid-config" | "ready" | "different-source" | "deleting";
+  credentialRegistrationOutcome?:
+    "invalid-config" | "refused" | "ready" | "different-source" | "deleting";
   extraSecrets?: readonly { id: string; name: string }[];
   namespaceStatus?: NamespaceStatus;
   namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
@@ -63,7 +64,6 @@ type CreateAgentScenario = {
     "at"
   >;
   provisionedDeploymentError?: AgentDeploymentStatusWire["error"];
-  repositoryAccessRequired?: true;
   repositoryOptions?: readonly RepositoryOption[];
   secretOperateDenied?: readonly string[];
   denySecretCreate?: true;
@@ -1287,7 +1287,7 @@ export const createAgentProvisioningScenarios = {
       "The first source request receives a simulated destination mismatch. Check registration to confirm absence, then correct authorization and retry. Uncertain writes remain locked until checked.",
     steps: [
       "Select the simulated model Secret and enter https://other.example.com/v1.",
-      "Create the Agent, then choose Check credential registration.",
+      "Create the Agent, then choose Check credential registration. Confirm the destination refusal remains visible beside the correction instructions.",
       "Correct the authorization to https://models.example.com/v1 and retry.",
     ],
   },
@@ -1302,6 +1302,20 @@ export const createAgentProvisioningScenarios = {
     steps: [
       "Confirm the API-key Secret picker remains available and its guidance explains credential registration.",
       "Create the Agent and follow simulated provisioning. Its saved authentication uses a Credential Source.",
+    ],
+  },
+  createCredentialRegistrationRefused: {
+    group: "Pages/Create Agent",
+    name: "Model credential registration refused",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "refused",
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The first registration receives a simulated refusal without saving a source. Empty registration checks retain the reason and the saved Secret. The next explicit Create Agent request simulates recovery.",
+    steps: [
+      "Select Check credential registration twice. Confirm the refusal and saved-Secret guidance remain visible after each check.",
+      "Select Create Agent to retry. The same registration and Secret are reused before simulated provisioning opens Agent details.",
     ],
   },
   createCredentialRegistrationUnknown: {
@@ -1488,8 +1502,8 @@ export const createAgentProvisioningScenarios = {
     name: "Repository-only Credential Proxy",
     path: create,
     actions: dedicatedOpenclawForm,
+    credentialSourceTypes: modelCredentialSourceTypes,
     openclawExecutionModes: ["dedicated"],
-    repositoryAccessRequired: true,
     repositoryOptions: [
       {
         repositoryRef: "application",
@@ -1498,11 +1512,11 @@ export const createAgentProvisioningScenarios = {
       },
     ],
     description:
-      "The installation supports Dedicated OpenClaw but requires repository access to deploy. Create explains the restriction before it submits a provisioning request.",
+      "The simulated installation offers Git access alongside Dedicated OpenClaw. An Agent can be created with a model credential and no repository selection.",
     steps: [
-      "Check the reason beside Create Agent on the model-only form.",
+      "Check that Create Agent is available on the model-only form.",
       "Choose Codex and select example/application under Repository access.",
-      "In Customize access, turn off Create and manage issues to use the repository's approved access level. The requirement clears.",
+      "In Customize access, turn off Create and manage issues to use the repository's approved access level.",
     ],
   },
   createRepositoriesSelected: {
@@ -2571,7 +2585,8 @@ export const createAgentOutcomeScenarios = {
       'Before choosing a model, open Advanced settings and add "models": {"providers": {"codex": {"models": {}}}} to Configuration JSON. Close Advanced settings and choose gpt-6-sol. Confirm the list returns to Choose a model and Advanced settings opens with JSON focused and guidance to use an array of model objects with an id or remove the field. The raw JSON stays unchanged.',
       'Replace the inner models value with [{"id":"gpt-6-astra","cost":{"input":1}}], then choose gpt-6-astra. Set models.providers.codex.models to [null] and edit Model ID to gpt-6-sol, then press Tab. Confirm the same guidance appears and the raw JSON stays unchanged. Choose a model from the list must also keep manual entry visible.',
       'Restore models.providers.codex.models to [{"id":"gpt-6-astra","cost":{"input":1}}] and retry Model ID gpt-6-sol, then press Tab. Confirm the guidance clears, the primary becomes codex/gpt-6-sol, and cost.input remains 1. Return to the list and choose gpt-6-luna. Do not create an Agent; reset the story before checking credentials.',
-      "Choose a model before entering a dummy API key. Confirm the selection remains after entering or replacing the key.",
+      "Select gpt-6.1-sol before entering a dummy API key. Confirm gpt-6-sol is also listed and that gpt-6.1-sol stays selected after entering or replacing the key.",
+      "Switch the Harness to OpenClaw with OpenAI selected. Confirm gpt-6.1-sol stays selected.",
       "Change the provider to Anthropic and inspect its model list. The previous provider's model and credential are cleared.",
     ],
   },

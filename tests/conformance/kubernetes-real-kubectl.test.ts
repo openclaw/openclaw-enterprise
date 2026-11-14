@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
 import { execFile, type ExecFileException } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
@@ -11,10 +12,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   abandonedTeardownExitGraceMs,
-  assertProbeDenied,
   boundedTeardown,
+  teardownStepLimitMs,
+  withBoundedTeardown,
+} from "../helpers/bounded-teardown.ts";
+import {
+  assertProbeDenied,
   createKubernetesClient,
-  deleteNamespaceExplained as deleteNamespaceExplainedJs,
+  deleteNamespaceExplained,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   inlineProbeCommand,
@@ -22,14 +27,12 @@ import {
   namespaceAlreadyTerminating,
   PROBE_DENIED_EXIT_CODE,
   probeDenial,
-  retryKubectlRead as retryKubectlReadJs,
-  retryKubectlWrite as retryKubectlWriteJs,
-  teardownStepLimitMs,
-  withBoundedTeardown,
+  retryKubectlRead,
+  retryKubectlWrite,
   withinDiagnosticDeadline,
-} from "../helpers/kubernetes-real.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
-import { listen } from "../helpers/listen.mjs";
+} from "../helpers/kubernetes-real.ts";
+import { refusingPort } from "../helpers/available-port.ts";
+import { listen } from "../helpers/listen.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
@@ -54,26 +57,13 @@ type RetryOptions = {
   log: (message: string) => void;
 };
 type RetryOperation = <T>(operation: () => Promise<T>, options: RetryOptions) => Promise<T>;
-type Kubectl = (...args: string[]) => Promise<string>;
 type DiagnosticSleep = (
   ms: number,
   value: undefined,
   options: { signal: AbortSignal },
 ) => Promise<undefined>;
 
-// The JavaScript helpers accept these fixture inputs at runtime; inference from their defaults
-// otherwise narrows callback return values and treats unused fixture settings as required.
-const retryKubectlRead = retryKubectlReadJs as RetryOperation;
-const retryKubectlWrite = retryKubectlWriteJs as <T>(
-  operation: () => Promise<T>,
-  options: RetryOptions & { applied?: RegExp },
-) => Promise<T | "">;
 const retryModelAtCapacity = retryModelAtCapacityJs as RetryOperation;
-const deleteNamespaceExplained = deleteNamespaceExplainedJs as (
-  kubectl: Kubectl,
-  namespace: string,
-  options?: { timeout?: string; listTimeoutMs?: number; sleep?: DiagnosticSleep },
-) => Promise<unknown>;
 const createOpenShellKubernetesFixture = createOpenShellKubernetesFixtureJs as (options: {
   kubeconfigPath: string;
   kubernetesContext: string;
@@ -135,7 +125,7 @@ function expectError(value: unknown): Error {
 }
 
 const execute = promisify(execFile);
-const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
+const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mts", import.meta.url));
 
 // execFile rejects a non-zero kubectl exit with a numeric code and the
 // captured stderr; a spawn failure has a string code and no stderr.
@@ -347,6 +337,149 @@ if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <=
   expectStringArrays(kubectlCalls);
   return { ...outcome, kubectlCalls, sleeps, logs };
 }
+
+test("OpenShell permission logs require the exact Sandbox owner and exclude unrelated credentials", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-permission-kubectl-");
+  const statePath = join(directory, "state.json");
+  const callsPath = join(directory, "calls.jsonl");
+  const namespace = "permission-fixture";
+  const revision = { namespaceId: "ns_fixture", agentId: "agt_fixture", id: "rev_fixture" };
+  const sandbox = {
+    apiVersion: "agents.x-k8s.io/v1alpha1",
+    kind: "Sandbox",
+    metadata: {
+      name: "sandbox-fixture",
+      namespace,
+      uid: "sandbox-uid",
+      labels: {
+        "openshell.ai/sandbox-name": `os-${createHash("sha256").update(revision.id).digest("hex").slice(0, 16)}`,
+      },
+    },
+  };
+  const pod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: "harness",
+      namespace,
+      uid: "pod-uid",
+      labels: {
+        "openclaw.dev/namespace": revision.namespaceId,
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      },
+      ownerReferences: [
+        {
+          apiVersion: sandbox.apiVersion,
+          kind: "Sandbox",
+          name: sandbox.metadata.name,
+          uid: sandbox.metadata.uid,
+          controller: true,
+        },
+      ],
+    },
+    spec: { containers: [{ name: "agent", image: "fixture" }] },
+    status: {
+      containerStatuses: [
+        {
+          name: "agent",
+          containerID: "containerd://fixture",
+          state: { running: { startedAt: "2026-11-11T05:00:00Z" } },
+        },
+      ],
+    },
+  };
+  // A real child process supplies Kubernetes responses without making the reader's
+  // ownership decisions. This proves fixture behavior, not real kubectl or cluster behavior.
+  await writeCommand(
+    directory,
+    "kubectl",
+    `
+const { appendFileSync, readFileSync, writeFileSync } = process.getBuiltinModule("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({
+  args,
+  credentialPresent: process.env.OCE_TEST_UNRELATED_CREDENTIAL !== undefined,
+}) + "\\n");
+const state = JSON.parse(readFileSync(${JSON.stringify(statePath)}, "utf8"));
+const verb = args.findIndex((arg) => arg === "get" || arg === "logs");
+if (args[verb] === "logs") {
+  if (state.replaceOnLogs) {
+    state.sandbox.metadata.uid = "replacement-sandbox-uid";
+    writeFileSync(${JSON.stringify(statePath)}, JSON.stringify(state));
+  }
+  process.stdout.write("2026-11-11T05:10:00.100000001Z before cutoff\\n2026-11-11T05:10:00.126000001Z selected container log\\n");
+} else if (args[verb + 1] === "pods") {
+  process.stdout.write(JSON.stringify({ apiVersion: "v1", kind: "PodList", items: [state.pod] }));
+} else if (args[verb + 1] === "sandboxes.agents.x-k8s.io") {
+  process.stdout.write(JSON.stringify({ apiVersion: state.sandbox.apiVersion, kind: "SandboxList", items: [state.sandbox] }));
+} else {
+  throw new Error("Unexpected fixture command");
+}
+`,
+    { interpreter: process.execPath },
+  );
+  const fixture = createOpenShellKubernetesFixture({
+    kubeconfigPath: join(directory, "kubeconfig"),
+    kubernetesContext: "fixture",
+  });
+  await withEnvironment(
+    {
+      PATH: commandPath(directory),
+      OCE_TEST_UNRELATED_CREDENTIAL: "synthetic-unrelated-credential",
+    },
+    async () => {
+      for (const scenario of [
+        "valid",
+        "owner-uid",
+        "owner-name",
+        "owner-api-version",
+        "sandbox-replaced",
+      ]) {
+        const state = {
+          sandbox: structuredClone(sandbox),
+          pod: structuredClone(pod),
+          replaceOnLogs: scenario === "sandbox-replaced",
+        };
+        const [owner] = state.pod.metadata.ownerReferences;
+        assert.ok(owner);
+        // Matching workload labels must not authorize reading another Sandbox's Pod.
+        if (scenario === "owner-uid") {
+          owner.uid = "another-sandbox-uid";
+        }
+        if (scenario === "owner-name") {
+          owner.name = "another-sandbox";
+        }
+        if (scenario === "owner-api-version") {
+          owner.apiVersion = "unrelated.example/v1";
+        }
+        await writeFile(statePath, JSON.stringify(state));
+        await writeFile(callsPath, "");
+        const result = await fixture.readPermissionHarnessLogs(
+          namespace,
+          revision,
+          "2026-11-11T05:10:00.125Z",
+          AbortSignal.timeout(5_000),
+        );
+        assert.equal(result, scenario === "valid" ? "selected container log" : undefined, scenario);
+        const calls: Array<{ args: string[]; credentialPresent: boolean }> =
+          await readJsonLines(callsPath);
+        assert.ok(calls.length > 0, "the reader must invoke the child process");
+        assert.ok(
+          calls.every((call) => !call.credentialPresent),
+          "unrelated credentials must not reach kubectl",
+        );
+        const logCalls = calls.filter((call) => call.args.includes("logs"));
+        assert.equal(logCalls.length, scenario.startsWith("owner-") ? 0 : 1, scenario);
+        for (const call of logCalls) {
+          assert.ok(call.args.includes("--container=agent"));
+          assert.ok(call.args.includes("harness"));
+        }
+      }
+    },
+  );
+});
 
 test("a real-model turn with the client's retry receipt runs again and returns its reply", async (t) => {
   const { turn, error, kubectlCalls, sleeps, logs } = await gatewayTurnWithFakeKubectl(t, 1);
@@ -1112,7 +1245,7 @@ test(
   },
 );
 
-const kubernetesHelperUrl = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
+const teardownHelperUrl = new URL("../helpers/bounded-teardown.ts", import.meta.url).href;
 const openShellHelperUrl = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
   .href;
 const topologyHelperUrl = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url).href;
@@ -1143,11 +1276,17 @@ test(
     // Registering all six as one cleanup would attempt only the worker stop.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelperUrl)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       test("proof", async (testContext) => {
-        const { context } = boundedTeardown(testContext, { stepLimitMs: 200, exitGraceMs: 50 });
+        const { context } = boundedTeardown(testContext, {
+          stepLimitMs: 200,
+          exitGraceMs: 50,
+          onOutcome: (outcome) => testContext.diagnostic(
+            "openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-fixture-teardown", outcome }),
+          ),
+        });
         let poll;
         registerOpenShellInstallationCleanups(context, {
           workerStop: () => {
@@ -1173,6 +1312,10 @@ test(
       "attempted workload Namespace",
       "attempted temporary directory",
     ]);
+    assert.match(
+      exited.stdout,
+      /openclaw-ci-measurement \{"kind":"openshell-fixture-teardown","outcome":"failed"\}/,
+    );
     assert.match(
       exited.stderr,
       /teardown: cleanup workerStop registered at openshell-kubernetes-real\.mjs:\d+ failed: did not finish within 200 ms/,
@@ -1376,7 +1519,7 @@ test(
     const exited = await runFailingTestScript(`
       import test from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       test("setup outlives its timeout", { timeout: 200 }, async (testContext) => {
         const { context } = boundedTeardown(testContext, { stepLimitMs: 1000, exitGraceMs: 100 });
         context.after(() => process.stdout.write("attempted early cleanup\\n"));
@@ -1411,7 +1554,7 @@ test(
     const exited = await runFailingTestScript(`
       import { after, beforeEach, describe, it } from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       after(async () => {
         await delay(500);
         process.stdout.write("attempted file after\\n");
@@ -1472,7 +1615,7 @@ test(
       import test from "node:test";
       import { rm, writeFile } from "node:fs/promises";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       const acquire = async (path) => {
         await writeFile(path, "held");
         process.stdout.write("acquired " + path + "\\n");
@@ -1510,7 +1653,7 @@ test(
     // which waits for that setup only to its limit.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       test("never stops", { timeout: 200 }, async (testContext) => {
         boundedTeardown(testContext, { label: "setup", stepLimitMs: 1_000, exitGraceMs: 200 });
         await new Promise(() => setInterval(() => {}, 50));
@@ -1534,7 +1677,7 @@ test(
     // A late registration throws to stop the setup; a list that stopped at its first entry would
     // leave every resource behind the later entries (the pools, Namespaces and directories).
     const exited = await runTestScript(`
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import {
         productionTopologyCleanupOrder,
         registerProductionTopologyCleanups,
@@ -1639,7 +1782,7 @@ test(
     // cleanup, as before, would attempt only the gateway forward and the worker stop.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { withBoundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { withBoundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import {
         productionTopologyCleanupOrder,
         registerProductionTopologyCleanups,
@@ -1698,10 +1841,19 @@ const topologyStandIn = (exported: string[]) => `
     throw new Error("topology setup failed");
   }
   // The live Slack proof checks both bots before it arranges the topology.
-  export async function slackApi(method, token) {
+  export async function slackApi(method, token, query) {
     return method === "auth.test"
       ? { team_id: "T0", user_id: token }
-      : { channel: { is_member: true } };
+      : {
+          channel: {
+            id: query.channel,
+            is_channel: true,
+            is_private: false,
+            is_im: false,
+            is_mpim: false,
+            is_member: true,
+          },
+        };
   }
   ${exported
     .filter((name) => !["arrangeProductionTopology", "slackApi"].includes(name))
@@ -1749,7 +1901,7 @@ test(
     // Tests per file: each must reach arrangeProductionTopology, so a new test bumps its count.
     const files = {
       "harness-topology-k3d-real.test.mjs": 7,
-      "harness-topology-k3d-otel-real.test.mjs": 2,
+      "harness-topology-k3d-otel-real.test.ts": 2,
       "harness-topology-k3d-slack-real.test.mjs": 1,
     };
     // Settle every file before asserting, so no child still writes once the directory is removed.
@@ -2126,7 +2278,7 @@ test("only the probe's denial exit code with its stdout report is a denial", () 
 });
 
 // The Gateway container does not mount the probe fixture, so the Gateway
-// connect check (finding 335) runs probe.mjs from its source text.
+// connect check (finding 335) runs the stripped probe source inline.
 async function fakeKubectlExecInline(source: string, ...probeArguments: Array<string | number>) {
   const [node, script, ...args]: unknown[] = inlineProbeCommand(source, ...probeArguments);
   assert.equal(node, "node");

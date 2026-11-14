@@ -101,11 +101,12 @@ session lives, one click signs the person in again.
 
 ## Check the audit record
 
-OCE has no API or Console view for audit events. Read `occ.audit_events` through your
-approved database access; see the [audit log](../topics/audit-log.md). Sign-in rows have
-the action `authentication.login`, an `outcome` of `success` or `denied`, the provider
-in `details.provider` (denials only) and the reason code in
-`details.__occAuditMetadata.reasonCode`:
+Use approved database access to read sign-in records in `occ.audit_events`.
+To find a specific attempt, see [Investigate an external sign-in](../topics/audit-log.md#investigate-an-external-sign-in).
+
+Sign-in rows have the action `authentication.login` and an `outcome` of `success`
+or `denied`. For external sign-ins, `details.provider` identifies the provider.
+A denial records its reason in `details.__occAuditMetadata.reasonCode`.
 
 ```sql
 SELECT occurred_at, outcome,

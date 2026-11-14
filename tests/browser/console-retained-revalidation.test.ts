@@ -7,7 +7,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import {
   detailUrl,
   hasFocus,

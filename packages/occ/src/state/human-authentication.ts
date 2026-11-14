@@ -129,6 +129,7 @@ function isExternalIdentityConflict(error: unknown): boolean {
 /** A validated password account whose hash was computed before the State transaction. */
 export interface PreparedPasswordAccount {
   readonly id: string;
+  readonly emailVerified: boolean;
   readonly email: string;
   readonly name: string;
   readonly passwordHash: string;
@@ -552,10 +553,32 @@ export class PostgresHumanAuthentication {
     seed: PersistedNativeIAMPrincipalSeed,
     auditEvent?: AuditEvent,
     external?: { readonly providerId: string; readonly subject: string },
+    authority?: {
+      readonly holdSession: (unit: PlatformUnitOfWork) => Promise<void>;
+      readonly authorize: (unit: PlatformUnitOfWork) => Promise<AuditEvent>;
+    },
   ): Promise<void> {
-    await this.state.transact((unit) =>
-      this.insertPasswordAccount(unit, prepared, seed, auditEvent, external),
-    );
+    // Trusted setup can omit authority; a supplied authority must be complete.
+    if (
+      authority !== undefined &&
+      (typeof authority.holdSession !== "function" || typeof authority.authorize !== "function")
+    ) {
+      throw new ScopeViolationError("Account provisioning requires complete assigning authority.");
+    }
+    await this.state.transactReadCommitted(async (unit) => {
+      let currentAuditEvent = auditEvent;
+      if (authority !== undefined) {
+        // Preserve user/session, configuration, then policy lock order. A policy writer
+        // that wins first is visible to the selected IAM decision under READ COMMITTED.
+        await authority.holdSession(unit);
+        await unit.installations.holdIAMConfiguration("shared");
+        await this.query(unit, "SELECT occ.hold_account_administration_policy($1)", [
+          this.installationId,
+        ]);
+        currentAuditEvent = await authority.authorize(unit);
+      }
+      await this.insertPasswordAccount(unit, prepared, seed, currentAuditEvent, external);
+    });
   }
 
   private async insertPasswordAccount(
@@ -576,8 +599,8 @@ export class PostgresHumanAuthentication {
       await this.query(
         unit,
         `INSERT INTO occ."user" (id, name, email, email_verified, image, created_at, updated_at)
-         SELECT $1, $2, $3, true, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
-        [prepared.id, prepared.name, prepared.email],
+         SELECT $1, $2, $3, $4, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
+        [prepared.id, prepared.name, prepared.email, prepared.emailVerified],
       );
     } catch (error) {
       if (

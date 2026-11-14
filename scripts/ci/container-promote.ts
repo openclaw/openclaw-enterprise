@@ -16,7 +16,7 @@ import {
   verifyEnvironment,
   verifyGhcr,
   verifyMainSource,
-} from "./container-release.mjs";
+} from "./container-release.ts";
 
 const promoteWorkflow = ".github/workflows/container-promote.yml";
 
@@ -25,6 +25,7 @@ type ReceiptImage = {
   ciRunId: string;
   ciAttempt: string;
   destination: unknown;
+  platformDigests?: unknown;
   digest: string;
   tag: string;
 };

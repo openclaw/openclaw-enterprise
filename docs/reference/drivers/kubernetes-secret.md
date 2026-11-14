@@ -84,6 +84,8 @@ Helm provisions a separate Kubernetes namespace for confidential registrations a
 
 The Driver creates one Opaque Secret per registration. Rotation replaces its value in place. Before using or deleting the Secret, the Driver checks its Installation, registration, and Driver identity. Kubernetes resource versions fence concurrent changes.
 
+If Kubernetes confirms creation but returns an object that fails these checks, the Driver attempts to delete the requested object with the returned UID and resourceVersion. A replacement or changed object is preserved. Confirmed removal keeps the original refusal; missing preconditions or an unconfirmed delete report an unknown outcome. OCC retains its hidden registration until the cleanup worker confirms that the private object is absent.
+
 ## Create a Namespace-owned Secret
 
 Create the Secret after the OpenClaw Namespace is ready. An Agent does not need

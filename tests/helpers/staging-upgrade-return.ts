@@ -358,6 +358,9 @@ export async function measureUpgradeAvailability<T>(
   directory: string,
   upgrade: () => Promise<T>,
   record: (details: object) => Promise<void>,
+  receiptName:
+    | "forward-api-availability.json"
+    | "runtime-api-availability.json" = "forward-api-availability.json",
 ) {
   const samples: {
     phase: "before" | "during" | "after";
@@ -365,25 +368,63 @@ export async function measureUpgradeAvailability<T>(
     finishedAt: string;
     elapsedMs: number;
     gapMs: number | null;
+    startOffsetMs: number;
+    startGapMs: number | null;
+    scheduledSlot: number | null;
+    scheduleDelayMs: number | null;
     outcome:
       "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
     status: number | undefined;
     requestId?: string;
   }[] = [];
+  const origin = performance.now();
+  const nominalIntervalMs = 1_000;
+  let previousStart: number | undefined;
   let previousFinish: number | undefined;
+  let maxStartGapMs = 0;
+  const cadence: { start?: number; finish?: number } = {};
   const evidenceErrors: unknown[] = [];
-  const evidence = (upgradeSucceeded: boolean | null) => ({
-    requestTimeoutMs: 5_000,
-    intervalAfterResponseMs: 1_000,
-    upgradeSucceeded,
-    samples: samples.map((observation) => ({ ...observation })),
-  });
+  const evidence = (upgradeSucceeded: boolean | null) => {
+    // A checkpoint covers only the last completed request. File-write time is
+    // exposed by the next start; an interrupted write cannot extend this boundary.
+    const through = previousFinish ?? origin;
+    const duration = cadence.start === undefined ? 0 : (cadence.finish ?? through) - cadence.start;
+    const scheduledSlots = Math.floor(duration / nominalIntervalMs) + 1;
+    const probedSlots = samples.filter(({ scheduledSlot }) => scheduledSlot !== null).length;
+    return {
+      schemaVersion: 2,
+      requestTimeoutMs: 5_000,
+      // Version 1 slept after each response. Null explicitly retires that policy.
+      intervalAfterResponseMs: null,
+      nominalIntervalMs,
+      upgradeSucceeded,
+      complete: upgradeSucceeded !== null,
+      throughOffsetMs: through - origin,
+      maxStartGapMs,
+      tailGapMs: previousStart === undefined ? 0 : through - previousStart,
+      cadence:
+        cadence.start === undefined
+          ? null
+          : {
+              startOffsetMs: cadence.start - origin,
+              endOffsetMs: (cadence.finish ?? through) - origin,
+              complete: cadence.finish !== undefined,
+              scheduledSlots,
+              probedSlots,
+              unprobedSlots: scheduledSlots - probedSlots,
+            },
+      samples: samples.map((observation) => ({ ...observation })),
+    };
+  };
   const sample = async (
     phase: (typeof samples)[number]["phase"],
     upgradeSucceeded: boolean | null = null,
   ) => {
     const startedAt = new Date().toISOString();
     const start = performance.now();
+    const startGapMs = previousStart === undefined ? null : start - previousStart;
+    const scheduledSlot =
+      phase === "during" ? Math.floor((start - cadence.start!) / nominalIntervalMs) : null;
     const signal = AbortSignal.timeout(5_000);
     let outcome: (typeof samples)[number]["outcome"];
     let status: number | undefined;
@@ -426,15 +467,22 @@ export async function measureUpgradeAvailability<T>(
       finishedAt: new Date().toISOString(),
       elapsedMs: Math.round(finish - start),
       gapMs: previousFinish === undefined ? null : Math.round(start - previousFinish),
+      startOffsetMs: start - origin,
+      startGapMs,
+      scheduledSlot,
+      scheduleDelayMs:
+        scheduledSlot === null ? null : start - cadence.start! - scheduledSlot * nominalIntervalMs,
       outcome,
       status,
       ...(requestId === undefined ? {} : { requestId }),
     });
+    previousStart = start;
     previousFinish = finish;
+    maxStartGapMs = Math.max(maxStartGapMs, startGapMs ?? 0);
     try {
       // A killed runner leaves the last complete snapshot, never a truncated one.
       // Null means the action has not been recorded as settled.
-      const path = join(directory, "forward-api-availability.json");
+      const path = join(directory, receiptName);
       await writeFile(`${path}.tmp`, JSON.stringify(evidence(upgradeSucceeded)) + "\n", {
         mode: 0o600,
       });
@@ -450,18 +498,28 @@ export async function measureUpgradeAvailability<T>(
   const stopped = new AbortController();
   let observing: Promise<void> | undefined;
   let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
+  cadence.start = performance.now();
   try {
     const upgrading = upgrade();
     observing = (async () => {
       while (!stopped.signal.aborted) {
         await sample("during");
-        await delay(1_000, undefined, { signal: stopped.signal }).catch(() => {});
+        // Start at most once per nominal slot, with at least one interval between
+        // actual starts. A slow request/write or late wake skips slots, never
+        // queues requests to replay them. Recheck time after early timer wakes.
+        const nextStart = previousStart! + nominalIntervalMs;
+        while (!stopped.signal.aborted && performance.now() < nextStart) {
+          await delay(nextStart - performance.now(), undefined, { signal: stopped.signal }).catch(
+            () => {},
+          );
+        }
       }
     })();
     outcome = { succeeded: true, value: await upgrading };
   } catch (error) {
     outcome = { succeeded: false, error };
   }
+  cadence.finish = performance.now();
   stopped.abort();
   // Join the final bounded request before taking the post-upgrade observation.
   await observing;
@@ -637,96 +695,19 @@ export async function verifyCompletedMigrationHistory(
   );
 }
 
-export async function rehearsePopulatedReturn({
-  controllers,
+export function rehearsalPlane({
+  kube,
+  get,
+  run,
+  release,
+  localCluster,
   kubeconfig,
   context,
   namespace,
-  release,
-  directory,
-  occ,
-  occEnv,
-  namespaceId,
-  tenant,
-  runtime,
-  run,
-  kubectl,
-  api,
-  externalRequest,
-  custody,
-  localCluster,
-  waitFor,
-  record,
-}: Rehearsal) {
-  const { previous, candidate } = controllers;
-  const helmArgs = [
-    `--kubeconfig=${kubeconfig}`,
-    `--kube-context=${context}`,
-    `--namespace=${namespace}`,
-  ];
-  const helm = (...args: string[]) => run("helm", [...args, ...helmArgs], { timeout: 330_000 });
-  const kubeArgs = [
-    `--kubeconfig=${kubeconfig}`,
-    `--context=${context}`,
-    `--namespace=${namespace}`,
-  ];
-  const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
-  const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
-  const startupSecret = (name = "occ-installation-startup") =>
-    readImmutableInstallationSecret(run, kubeArgs, name);
-  const installationPath = "/installation";
-  const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
-  const agentPath = `${namespacePath}/agents`;
-  const readAgent = async (id: string) =>
-    returnedAgentSnapshot(await api("GET", `${agentPath}/${encodeURIComponent(id)}`));
-  const helmStatus = async () => JSON.parse(await helm("status", release, "-o", "json"));
-  const phase = async <T>(name: string, action: () => Promise<T>) => {
-    const startedAt = new Date().toISOString();
-    const start = performance.now();
-    await writeFile(
-      join(directory, "return-progress.json"),
-      JSON.stringify({ phase: name, startedAt }) + "\n",
-      { mode: 0o600 },
-    );
-    const result = await action();
-    await record(name, {
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      elapsedMs: Math.round(performance.now() - start),
-    });
-    return result;
-  };
-  const { postgres } = custody;
-  const sql = async (database: string, query: string) =>
-    (
-      await postgres("psql", "-XAt", "-v", "ON_ERROR_STOP=1", `--dbname=${database}`, "-c", query)
-    ).trim();
-  const dump = (file: string) =>
-    postgres("pg_dump", "--format=custom", `--file=${file}`, originalDatabase);
-  const restore = async (database: string, file: string) => {
-    await postgres("createdb", "--template=template0", database);
-    await postgres(
-      "pg_restore",
-      "--exit-on-error",
-      "--single-transaction",
-      `--dbname=${database}`,
-      file,
-    );
-    await sql(database, `GRANT CREATE ON DATABASE ${database} TO occ_migrator`);
-  };
-  const migrationReceipts = (database: string) =>
-    sql(database, "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id");
-  const databaseAgents = async (database: string) =>
-    (
-      JSON.parse(
-        await sql(
-          database,
-          `SELECT COALESCE(json_agg(json_build_object(
-      'id', id, 'namespaceId', namespace_id, 'name', name, 'configurationId', configuration_id
-    )), '[]') FROM occ.agents`,
-        ),
-      ) as unknown[]
-    ).map(agentIdentity);
+}: Pick<Rehearsal, "run" | "release" | "localCluster" | "kubeconfig" | "context" | "namespace"> & {
+  kube: Kubectl;
+  get: (resource: string) => Promise<ReturnType<typeof JSON.parse>>;
+}) {
   const pods = async () =>
     (
       JSON.parse(
@@ -828,12 +809,116 @@ export async function rehearsePopulatedReturn({
           deploymentUID: deployment.metadata.uid,
           serviceAccountUID: account.metadata.uid,
           ip: pod.status.podIP,
+          containerID: status.containerID,
           imageID: status.imageID,
           imageDigest,
         };
       }),
     );
   };
+  return { pods, verifyPodImage, controlPlane, claimIdentity };
+}
+
+export async function rehearsePopulatedReturn({
+  controllers,
+  kubeconfig,
+  context,
+  namespace,
+  release,
+  directory,
+  occ,
+  occEnv,
+  namespaceId,
+  tenant,
+  runtime,
+  run,
+  kubectl,
+  api,
+  externalRequest,
+  custody,
+  localCluster,
+  waitFor,
+  record,
+}: Rehearsal) {
+  const { previous, candidate } = controllers;
+  const helmArgs = [
+    `--kubeconfig=${kubeconfig}`,
+    `--kube-context=${context}`,
+    `--namespace=${namespace}`,
+  ];
+  const helm = (...args: string[]) => run("helm", [...args, ...helmArgs], { timeout: 330_000 });
+  const kubeArgs = [
+    `--kubeconfig=${kubeconfig}`,
+    `--context=${context}`,
+    `--namespace=${namespace}`,
+  ];
+  const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
+  const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
+  const startupSecret = (name = "occ-installation-startup") =>
+    readImmutableInstallationSecret(run, kubeArgs, name);
+  const installationPath = "/installation";
+  const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
+  const agentPath = `${namespacePath}/agents`;
+  const readAgent = async (id: string) =>
+    returnedAgentSnapshot(await api("GET", `${agentPath}/${encodeURIComponent(id)}`));
+  const helmStatus = async () => JSON.parse(await helm("status", release, "-o", "json"));
+  const phase = async <T>(name: string, action: () => Promise<T>) => {
+    const startedAt = new Date().toISOString();
+    const start = performance.now();
+    await writeFile(
+      join(directory, "return-progress.json"),
+      JSON.stringify({ phase: name, startedAt }) + "\n",
+      { mode: 0o600 },
+    );
+    const result = await action();
+    await record(name, {
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Math.round(performance.now() - start),
+    });
+    return result;
+  };
+  const { postgres } = custody;
+  const sql = async (database: string, query: string) =>
+    (
+      await postgres("psql", "-XAt", "-v", "ON_ERROR_STOP=1", `--dbname=${database}`, "-c", query)
+    ).trim();
+  const dump = (file: string) =>
+    postgres("pg_dump", "--format=custom", `--file=${file}`, originalDatabase);
+  const restore = async (database: string, file: string) => {
+    await postgres("createdb", "--template=template0", database);
+    await postgres(
+      "pg_restore",
+      "--exit-on-error",
+      "--single-transaction",
+      `--dbname=${database}`,
+      file,
+    );
+    await sql(database, `GRANT CREATE ON DATABASE ${database} TO occ_migrator`);
+  };
+  const migrationReceipts = (database: string) =>
+    sql(database, "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id");
+  const databaseAgents = async (database: string) =>
+    (
+      JSON.parse(
+        await sql(
+          database,
+          `SELECT COALESCE(json_agg(json_build_object(
+      'id', id, 'namespaceId', namespace_id, 'name', name, 'configurationId', configuration_id
+    )), '[]') FROM occ.agents`,
+        ),
+      ) as unknown[]
+    ).map(agentIdentity);
+  const { pods, controlPlane, verifyPodImage, claimIdentity } = rehearsalPlane({
+    kube,
+    get,
+    run,
+    release,
+    localCluster,
+    kubeconfig,
+    context,
+    namespace,
+  });
   const candidateConnections = () =>
     sql(
       "postgres",

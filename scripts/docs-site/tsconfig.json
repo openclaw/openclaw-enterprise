@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "allowJs": true,
     "checkJs": false,
     "composite": false,
@@ -11,5 +12,12 @@
     "rewriteRelativeImportExtensions": false,
     "erasableSyntaxOnly": true
   },
-  "files": ["github-anchors.ts"]
+  "files": [
+    "api-explorer.mts",
+    "build.ts",
+    "compute-matrix-browser.mts",
+    "github-anchors.ts",
+    "public-markdown.ts",
+    "site.mts"
+  ]
 }

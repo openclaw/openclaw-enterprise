@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -28,6 +29,69 @@ test(
   requiresPostgres,
   async (t) => {
     const f = await staticEgressFixture(t, { appFactory: postgresApp });
+    const readsBeforeRefusal = f.secretReads;
+    const marker = `schema-private-${randomUUID()}`;
+    const valid = { model: "fixture-model", input: "hello", store: false };
+    // The real signed TLS exchange must retain an attributable, value-free reason
+    // before any credential read. Missing input wins over an invalid store value.
+    const providers =
+      /** @type {import("../../packages/contracts/src/index.ts").CredentialProviderDefinition[]} */ (
+        f.egress.sourceControl.providers
+      );
+    const index = providers.findIndex((entry) => entry.sourceType.type === "openai");
+    const original = providers[index];
+    // A registered classifier may mutate its borrowed request. Attribution must
+    // still use the original signed ID, never this unvalidated replacement.
+    providers[index] = {
+      ...original,
+      classify(route, request, refused) {
+        return original.classify(route, request, (rule) => {
+          Reflect.set(request, "id", marker);
+          refused?.(rule);
+        });
+      },
+    };
+    t.after(() => {
+      providers[index] = original;
+    });
+    for (const [body, rule] of [
+      [{ model: "fixture-model", store: true }, 3],
+      [{ ...valid, store: true }, 4],
+      [{ ...valid, reasoning: { effort: marker } }, 9],
+      [{ ...valid, [marker]: marker }, 1],
+    ]) {
+      const rejected = f.capture(body);
+      assert.equal((await f.resolve(rejected)).refused.code, f.refusalCode("DENIED"));
+      const audit = await f.pool.query(
+        "SELECT * FROM occ.audit_events WHERE namespace_id=$1 AND action='openclaw.egress.authorize' AND details->>'requestId' IN ($2, $3)",
+        [f.namespace.id, rejected.request.context.request_id, marker],
+      );
+      assert.equal(JSON.stringify(audit.rows).includes(marker), false);
+      assert.deepEqual(
+        audit.rows.map((row) => {
+          const details = { ...row.details };
+          delete details.__occAuditMetadata;
+          return { actor: row.actor_id, resource: row.resource_id, outcome: row.outcome, details };
+        }),
+        [
+          {
+            actor: f.agent.servicePrincipalId,
+            resource: f.source.id,
+            outcome: "denied",
+            details: {
+              code: "unsupported_operation",
+              phase: "before_access",
+              requestId: rejected.request.context.request_id,
+              revisionId: f.revision.id,
+              classificationRule: rule,
+            },
+          },
+        ],
+      );
+      assert.equal(f.secretReads, readsBeforeRefusal);
+      assert.equal(f.providerRequests.length, 0);
+    }
+    providers[index] = original;
     const freshState = new PostgresPlatformState(f.pool);
     const plan = f.revision.egressPlan;
     const installed = await freshState.read((view) =>
@@ -86,6 +150,14 @@ test(
     const capture = f.capture();
     const ready = (await f.resolve(capture)).ready;
     assert.ok(ready);
+    const acceptedAudit = await f.pool.query(
+      "SELECT outcome, details FROM occ.audit_events WHERE namespace_id=$1 AND action='openclaw.egress.authorize' AND details->>'requestId'=$2",
+      [f.namespace.id, capture.request.context.request_id],
+    );
+    for (const row of acceptedAudit.rows) {
+      assert.notEqual(row.outcome, "denied");
+      assert.equal(Object.hasOwn(row.details, "classificationRule"), false);
+    }
     assert.ok((await f.authorize(f.permitRequest(capture, ready))).allowed);
     f.setResponse({
       status: 401,

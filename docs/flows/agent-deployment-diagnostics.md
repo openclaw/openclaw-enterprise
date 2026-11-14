@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-11
-last_updated_session: authoring-run/e028dbec-8765-42b2-b94f-fafcd435d7bc
+updated: 2026-11-14
+last_updated_session: authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260
 ---
 
 # Agent deployment diagnostics flow
@@ -71,6 +71,12 @@ replaced Pods produce `unknown` checks. Invalid diagnostics data fails the
 request. When concurrent reads reach the shared deadline, the Driver can still
 classify a rejected Gateway diagnostics request before reporting a generic timeout.
 
+Before it generates the runtime programs, the Kubernetes renderer loads the
+shared failure vocabulary. `runtime-entrypoints.ts:isStringArray` requires a
+string at each position in the diagnostic check, code, and startup failure lists.
+An empty position or a value of another type stops the renderer from loading
+with `Invalid runtime failure vocabulary.`
+
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:PLUGIN_RUNTIME_HELPERS`
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
 Gateway container. It maps live configuration, authentication, and connectivity
@@ -114,7 +120,7 @@ Agent has no Sandbox, such as a stopped Agent's.
 
 `packages/occ/src/deployment-diagnostics.ts:deploymentDiagnostics` requires
 the requested Agent revision ID, valid timestamps, and at most 32 checks with component, check, and code values of 1 to 64 allowed characters. A
-component, check or code outside `packages/contracts/src/runtime-failure.mjs`
+component, check or code outside `packages/contracts/src/runtime-failure.ts`
 reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
 without messages. A rejected private Gateway diagnostics Pod-proxy request instead
 retains the fixed `RuntimeDiagnosticsTransportError` class and message in the
@@ -158,6 +164,16 @@ state after admission.
   stop cleanly, and the restarted container cannot verify that the lock holder
   stopped. The log line quotes OpenClaw's holder description. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+- A dedicated Gateway held at `gateway-tool-policy` with code
+  `INCOMPATIBLE_RESPONSE` can have a runtime image provenance failure.
+  `apps/controller/src/drivers/compute/gateway-tool-policy.ts:requireGatewayToolPolicyRuntime`
+  runs in both Docker and Kubernetes launchers. Its fixed log message distinguishes
+  missing, unreadable, or malformed provenance from a source or commit that does
+  not match the controller's pinned OpenClaw source/revision. Use the OpenClaw
+  Enterprise (OCE) runtime image matching the controller. Neither message includes
+  supplied provenance values or read-error details. With matching provenance,
+  a policy refusal still names the required tool policy and Gateway tool allowlist.
+  These failures keep the Gateway stopped and unready.
 - A `gateway` `gateway-config` check with code `UNAVAILABLE` is a Kubernetes
   Gateway that exited before it served, and `openclaw config validate` reports
   its configuration invalid. A plugin entry whose `config` fails the plugin's
@@ -225,6 +241,10 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 11:06: Reject missing positions in the lists embedded in generated runtime programs. (authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260 - 08f8640d5503df1c98e9939ea5cce2763e9c4085)
+
+- 2026-11-12 20:29: Distinguish runtime image provenance failures from tool policy refusals in both generated launchers. (authoring-run/610ff967-1248-450d-a432-c62fe1e8ac7a - a627e44694987459dbbf9aa59a3d76b9a97f48a7)
 
 - 2026-11-11 02:04: Trace the private Pod proxy reader and shared diagnostics deadline. (authoring-run/e028dbec-8765-42b2-b94f-fafcd435d7bc - c5f99318f7e2495afac28ff7ec7b5f8e77891dfc)
 

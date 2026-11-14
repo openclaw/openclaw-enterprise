@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type {
+  HarnessWorkloadRequirements,
+  SandboxDriver,
+  SandboxHarnessContext,
+  SandboxResourceRef,
+} from "../../packages/contracts/src/index.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { labelSelectorLabels, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
+import {
+  readyServiceEndpointSliceList,
+  singleReplicaReadyDeploymentStatus,
+} from "./kubernetes-gateway-readiness-fixture.ts";
 
 const coreKinds = [
   "ConfigMap",
@@ -95,6 +106,44 @@ type FixtureClients = {
     listNamespacedEndpointSlice?: () => Promise<unknown>;
   };
 };
+
+const nativeHarnessName = "native-harness";
+
+export function nativeSandboxIdentity(): Pick<
+  SandboxDriver,
+  "id" | "implementation" | "capability" | "supportsHarnessExecutionMode" | "facets"
+> {
+  return {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+  };
+}
+
+export function nativeHarnessResource(
+  context: Pick<SandboxHarnessContext, "namespace" | "revision">,
+): SandboxResourceRef {
+  return {
+    namespaceName: context.namespace.name,
+    resourceName: nativeHarnessName,
+    agentId: context.revision.agentId,
+    revisionId: context.revision.id,
+  };
+}
+
+export function readyNativeHarnessPod(
+  namespace: string,
+  labels: HarnessWorkloadRequirements["labels"],
+): FixtureObject {
+  return {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: nativeHarnessName, namespace, labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+}
 
 export function createDedicatedDeployKubernetesFixture(
   { namespace, gatewayName, state, revision, sandboxDriver, clock }: FixtureOptions,
@@ -216,17 +265,8 @@ export function createDedicatedDeployKubernetesFixture(
     save(object);
     return object;
   };
-  clients.discovery.listNamespacedEndpointSlice = async () => ({
-    items: [
-      {
-        metadata: {
-          labels: { "kubernetes.io/service-name": gatewayName },
-          ownerReferences: [{ kind: "Service", name: gatewayName, uid: `${gatewayName}-uid` }],
-        },
-        endpoints: [{ conditions: { ready: true } }],
-      },
-    ],
-  });
+  clients.discovery.listNamespacedEndpointSlice = async () =>
+    readyServiceEndpointSliceList(gatewayName);
   clients.core.listNamespacedPod = async ({ labelSelector, namespace: requestedNamespace }) => {
     const labels = labelSelectorLabels(labelSelector) as Record<string, string | undefined>;
     const role = labels["openclaw.dev/workload-role"];
@@ -343,12 +383,7 @@ export function createDedicatedDeployKubernetesFixture(
 
   const markReady = (name: string) => {
     const object = read("Deployment", name);
-    object.status = {
-      observedGeneration: object.metadata.generation,
-      replicas: 1,
-      updatedReplicas: 1,
-      readyReplicas: 1,
-    };
+    object.status = singleReplicaReadyDeploymentStatus(object.metadata.generation);
     save(object);
   };
 
