@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { runTransition } from "../helpers/signin/transition.mjs";
+import { runTransition, type TransitionFixture } from "../helpers/signin/transition.ts";
 
 type Observation = {
   row: string;
@@ -242,7 +242,7 @@ test("sign-in coordinator refuses a missed issuance window before using the cont
       const encoded = Buffer.from(
         JSON.stringify({ a: attemptId, s: "session", p: "provider", v: 3, e: deadline }),
       ).toString("base64url");
-      const routes: [string, string, Response][] = [
+      const routes: [method: "GET" | "POST", path: string, response: Response][] = [
         ["POST", "/api/auth/sign-in/email", new Response(null, { status: 200 })],
         ["GET", "/api/auth/accounts/user", Response.json({ data: { version: 1 } })],
         ["POST", "/api/auth/accounts/user/providers/oidc", new Response(null, { status: 200 })],
@@ -269,71 +269,103 @@ test("sign-in coordinator refuses a missed issuance window before using the cont
           }),
         ],
       ];
-      const rows: Observation[] = [];
+      type Fixture = TransitionFixture<{ configDigest: string }, never>;
+      const observations: Parameters<Fixture["record"]>[] = [];
       let cleaned = false;
       const settled = async () => {};
-      await assert.rejects(
-        runTransition({
-          origin,
-          authorizationUrl,
-          userId: "user",
-          passwordLogin: {},
-          images: { P: { configDigest: "previous" }, A: { configDigest: "candidate" } },
-          signinPlan: { previous: { version: 3 }, candidate: { version: 3 } },
-          providerDirectory: pathToFileURL(directory + "/"),
-          providerHashes: { "config.json": createHash("sha256").update(config).digest("hex") },
-          canAdmit: (target: string, _images: unknown, skew: unknown) =>
-            ["P", "A"].includes(target) && skew !== null,
-          assertExclusiveDisposable: settled,
-          assertRunningProvider: settled,
-          closeAndProbeRoutes: settled,
-          verifiedSkewMs: async () => 0,
-          assertInitialVirginIssuance: settled,
-          assertOnlyTarget: settled,
-          assertCatalog: settled,
-          openTarget: settled,
-          checkpointState: settled,
-          assertResultRow: settled,
-          readerUpperMs: async () => deadline - remainingMs,
-          consoleFetch: async (url: URL, options: RequestInit) => {
-            const next = routes.shift();
-            assert.ok(next, "control must not be used after the issuance observation");
-            assert.deepEqual([options.method, url.pathname], next.slice(0, 2));
-            return next[2];
-          },
-          providerFetch: async () =>
-            new Response(null, {
-              status: 302,
-              headers: {
-                location:
-                  origin + "/api/auth/providers/oidc/callback?code=fixture&state=" + attemptId,
-              },
-            }),
-          record: async (_stage: string, row: Observation) => {
-            rows.push(row);
-            // Stop the positive boundary case after the accepted observation;
-            // subsequent replacement/collection behavior belongs to the installed test.
-            if (remainingMs > 0 && row.event === "issued") {
-              throw new Error("observation-complete");
-            }
-          },
-          closeAndCleanupOwned: async () => {
-            cleaned = true;
-          },
-        }),
-        (error: unknown) => {
-          assert.ok(error instanceof Error && error.cause instanceof Error);
-          assert.equal(
-            error.cause.message,
-            remainingMs > 0 ? "observation-complete" : "issuance-window-missed",
-          );
-          return true;
+      const unexpected = async () => assert.fail("operation reached beyond the issuance window");
+      const fixture: Fixture = {
+        origin,
+        authorizationUrl,
+        userId: "user",
+        passwordLogin: { email: "fixture@example.test", password: "fixture-password" },
+        images: { P: { configDigest: "previous" }, A: { configDigest: "candidate" } },
+        signinPlan: { previous: { version: 3 }, candidate: { version: 3 } },
+        providerDirectory: pathToFileURL(directory + "/"),
+        providerHashes: { "config.json": createHash("sha256").update(config).digest("hex") },
+        canAdmit: (target, _images, skew) => target !== "unknown" && skew !== null,
+        assertExclusiveDisposable: settled,
+        assertRunningProvider: settled,
+        closeAndProbeRoutes: async () => ({ start: 503, callback: 503, result: 503 }),
+        verifiedSkewMs: async () => 0,
+        assertInitialVirginIssuance: settled,
+        assertOnlyTarget: settled,
+        assertCatalog: settled,
+        openTarget: settled,
+        checkpointState: settled,
+        assertResultRow: settled,
+        readerUpperMs: async () => deadline - remainingMs,
+        assertClosedRoutes: unexpected,
+        waitUntilReaderPast: unexpected,
+        refusalControls: unexpected,
+        stopAndDrain: unexpected,
+        assertNoController: unexpected,
+        assertV2Fenced: unexpected,
+        startClosed: unexpected,
+        assertRetainedState: unexpected,
+        consoleFetch: async (url, options) => {
+          const next = routes.shift();
+          assert.ok(next, "control must not be used after the issuance observation");
+          const [method, path, response] = next;
+          assert.deepEqual([options.method, url.pathname], [method, path]);
+          return response;
         },
-      );
+        providerFetch: async () =>
+          new Response(null, {
+            status: 302,
+            headers: {
+              location:
+                origin + "/api/auth/providers/oidc/callback?code=fixture&state=" + attemptId,
+            },
+          }),
+        record: async (stage, row) => {
+          observations.push([stage, row]);
+          // Stop the positive boundary case after the accepted observation;
+          // subsequent replacement/collection behavior belongs to the installed test.
+          if (
+            remainingMs > 0 &&
+            typeof row === "object" &&
+            "event" in row &&
+            row.event === "issued"
+          ) {
+            throw new Error("observation-complete");
+          }
+        },
+        closeAndCleanupOwned: async () => {
+          assert.equal(observations.length, 2, "failure must be recorded before owned cleanup");
+          cleaned = true;
+        },
+      };
+      await assert.rejects(runTransition(fixture), (error: unknown) => {
+        assert.ok(error instanceof Error && error.cause instanceof Error);
+        assert.equal(
+          error.cause.message,
+          remainingMs > 0 ? "observation-complete" : "issuance-window-missed",
+        );
+        return true;
+      });
       assert.equal(cleaned, true);
-      const issued = rows.find((row) => row.event === "issued");
-      assert.equal(issued?.remainingMs, remainingMs);
-      assert.equal(issued?.disposition, remainingMs > 0 ? undefined : "INCONCLUSIVE");
+      assert.deepEqual(observations, [
+        [
+          "P-to-A",
+          {
+            event: "issued",
+            ordinal: 1,
+            target: "P",
+            remainingMs,
+            ...(remainingMs <= 0 && { disposition: "INCONCLUSIVE" }),
+          },
+        ],
+        [
+          "P-to-A",
+          {
+            event: "failure",
+            operation: "transition",
+            category: "operation-failed",
+            disposition: "FAIL",
+          },
+        ],
+      ]);
       assert.equal(routes.length, 0);
     }
   } finally {
