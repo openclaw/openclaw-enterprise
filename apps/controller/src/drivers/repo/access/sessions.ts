@@ -1,4 +1,4 @@
-import { sameBinding } from "./grant-identity.ts";
+import { isRepositoryCredentialIdentity, sameBinding } from "./grant-identity.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { AuthorityIdentity, Clock, SessionRef } from "./backend-contracts.ts";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
@@ -30,12 +30,7 @@ export function snapshotBinding(
 ): RepositoryCredentialGrantIdentity {
   const { providerInstanceId, repositoryId, grantId } = binding;
   for (const value of [providerInstanceId, repositoryId, grantId]) {
-    if (
-      typeof value !== "string" ||
-      value.length === 0 ||
-      Buffer.byteLength(value) > 512 ||
-      hasControlCharacter(value)
-    ) {
+    if (!isRepositoryCredentialIdentity(value)) {
       throw new Error("INVALID_BINDING");
     }
   }

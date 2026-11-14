@@ -3,8 +3,10 @@ import { lstat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { deferred } from "../helpers/deferred.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { closeWorkerComposition } from "../../apps/controller/src/worker/shutdown.ts";
@@ -18,6 +20,101 @@ function reach(path: string): Promise<string> {
       resolve("connected");
     });
     socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));
+  });
+}
+
+for (const rejectRead of [false, true]) {
+  test(`worker shutdown drains a receipt read that ${rejectRead ? "rejects" : "succeeds"}`, async (t) => {
+    const directory = await socketDirectory(t, "occ-worker-drain-", {
+      longest: "receipt.sock",
+    });
+    const receiptPath = join(directory, "receipt.sock");
+    const state = new InMemoryPlatformState();
+    const entered = deferred();
+    const release = deferred();
+    const stopped = deferred();
+    const events: string[] = [];
+    const read = state.read.bind(state);
+    let readSettled: Promise<void> | undefined;
+    // Hold the actual receipt State operation, without replacing its lookup behavior.
+    state.read = (work) => {
+      const operation = (async () => {
+        entered.resolve();
+        await release.promise;
+        try {
+          const result = await read(work);
+          if (rejectRead) {
+            throw new Error("State read failed");
+          }
+          return result;
+        } finally {
+          events.push("read settled");
+        }
+      })();
+      readSettled = operation.then(
+        () => {},
+        () => {},
+      );
+      return operation;
+    };
+    const receipt = await startRepositoryReceiptServer({
+      controlSocket: join(directory, "control.sock"),
+      state,
+      driverId: "repository-credentials",
+      implementation: "github",
+      backendId: "github",
+    });
+    const client = connect(receiptPath);
+    const disconnected = new Promise<void>((resolve) => client.once("close", resolve));
+    client.on("error", () => {});
+    let shutdown: Promise<void> | undefined;
+    try {
+      const body = JSON.stringify({ kind: "status", sessionId: "pending-session" });
+      client.write(
+        `POST /v1/receipt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+      );
+      await Promise.race([
+        entered.promise,
+        delay(2000).then(() => assert.fail("receipt read did not start")),
+      ]);
+      shutdown = closeWorkerComposition({
+        receiptServer: receipt,
+        closeMetrics: async () => {
+          events.push("metrics");
+        },
+        worker: {
+          stopLoop: async () => {},
+          stop: async () => {
+            events.push("worker");
+            stopped.resolve();
+          },
+        },
+      });
+      // Observe shutdown immediately so failure cleanup cannot leave a rejection unhandled.
+      void shutdown.catch(() => {});
+      await Promise.race([
+        disconnected,
+        delay(1000).then(() => assert.fail("shutdown did not disconnect the client")),
+      ]);
+      assert.equal(
+        await Promise.race([stopped.promise.then(() => "stopped"), delay(100).then(() => "held")]),
+        "held",
+        "worker dependencies closed while the receipt read was held",
+      );
+      assert.deepEqual(events, []);
+      release.resolve();
+      await shutdown;
+      // Ordering remains the discriminator even if the bounded observation is delayed.
+      assert.deepEqual(events, ["read settled", "metrics", "worker"]);
+      await assert.rejects(lstat(receiptPath), { code: "ENOENT" });
+    } finally {
+      release.resolve();
+      client.destroy();
+      await shutdown?.catch(() => {});
+      await receipt.close().catch(() => {});
+      // If setup reached State, join that operation even on the unfixed listener.
+      await readSettled;
+    }
   });
 }
 

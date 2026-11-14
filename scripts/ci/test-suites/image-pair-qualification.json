@@ -21,7 +21,7 @@
   },
   "files": [
     {
-      "path": "tests/integration/production-image-real-qualification.test.mjs",
+      "path": "tests/integration/production-image-real-qualification.test.ts",
       "expectedTests": [
         "staged controller and broker images qualify through the real Driver and broker",
         "incompatible old and new staged image pairs are rejected"

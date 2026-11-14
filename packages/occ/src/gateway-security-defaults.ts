@@ -3,24 +3,41 @@
 // OCE has no Gateway approval screen. Exec therefore defaults to "full" without a separate
 // prompt for each inline program. Preserve explicit exec policies, including the older
 // security/ask pair, which an explicit mode would override.
+// With a channel enabled, direct messages get a session per account, channel and sender.
+// OpenClaw's "main" scope would put every external sender in the conversation browser chat opens
+// (finding 3191). OCE channels accept named accounts (`channels.slack.accounts`), so the scope
+// includes the account. Without a channel there is nothing to isolate, and "main" keeps recall
+// across a browser-only Agent's conversations.
 // scripts/first-agent-model.mjs runs this module without installed workspace packages: keep it
 // free of imports and of TypeScript syntax that type stripping cannot erase.
 
 type ConfigurationObject = Readonly<Record<string, unknown>>;
 
 const always = () => true;
+// The rule of enabledChannelEntries (channel-secret-bindings.ts), which decides the channel
+// runtime and the channel Secret bindings: any `channels` key but the shared settings, unless its
+// `enabled` is false. This module cannot import it. Keep the two the same.
+const SHARED_CHANNEL_KEYS = ["defaults", "modelByChannel"];
+const channelEnabled = (_parent: ConfigurationObject, root: ConfigurationObject) =>
+  isObject(root.channels) &&
+  Object.entries(root.channels).some(
+    ([provider, channel]) =>
+      !SHARED_CHANNEL_KEYS.includes(provider) && !(isObject(channel) && channel.enabled === false),
+  );
 // No legacy exec policy beside the setting: OpenClaw reads a mode over `security` and `ask`.
 const noExecPolicy = (exec: ConfigurationObject) =>
   exec.security === undefined && exec.ask === undefined;
 
-// Each setting's path and value, and whether its parent object admits the fill. In order: the
-// inline-program rule reads the mode filled before it.
+// Each setting's path and value, and whether the fill is admitted, given the object that would
+// hold the setting and the document root. In order: the inline-program rule reads the mode filled
+// before it.
 const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [
   readonly string[],
   boolean | string,
-  (parent: ConfigurationObject) => boolean,
+  (parent: ConfigurationObject, root: ConfigurationObject) => boolean,
 ])[] = [
   [["tools", "exec", "applyPatch", "workspaceOnly"], true, always],
+  [["session", "dmScope"], "per-account-channel-peer", channelEnabled],
   [["agents", "defaults", "sandbox", "mode"], "off", always],
   [["tools", "exec", "mode"], "full", noExecPolicy],
   [
@@ -64,7 +81,8 @@ function fill(
 export function admitGatewaySecurityDefaults<T extends object>(values: Readonly<T>): T {
   let admitted = values as ConfigurationObject;
   for (const [path, value, admits] of GATEWAY_SECURITY_DEFAULTS) {
-    admitted = fill(admitted, path, value, admits);
+    const root = admitted;
+    admitted = fill(admitted, path, value, (parent) => admits(parent, root));
   }
   return admitted as T;
 }

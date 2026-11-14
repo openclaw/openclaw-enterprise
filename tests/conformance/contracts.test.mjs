@@ -697,7 +697,7 @@ test("every check and code a Compute driver builds itself is recorded as built",
   const found = (check, code, diagnostic) =>
     records.some(
       (record) =>
-        record.path === "compute/kubernetes/index.ts" &&
+        record.path.startsWith("compute/kubernetes/") &&
         record.check === check &&
         record.code === code &&
         record.diagnostic === diagnostic,

@@ -13,7 +13,7 @@ metadata:
 spec:
   {{- if eq $component "api" }}
   replicas: 1
-  # One serving controller: sign-in limits and session admission are process-local.
+  # Each API process has its own sign-in attempt and concurrency limits.
   strategy:
     type: Recreate
   {{- else }}
@@ -354,6 +354,8 @@ spec:
               value: {{ include "openclaw.installationSecretNamespace" $ | quote }}
             - name: NODE_ENV
               value: production
+            - name: OCC_CONTROL_PLANE_AUDIT_ENABLED
+              value: {{ ternary "true" "false" $.Values.controlPlaneAudit.enabled | quote }}
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
             - name: OCC_CONSOLE_THEME_DIR
               value: /etc/openclaw/console-theme

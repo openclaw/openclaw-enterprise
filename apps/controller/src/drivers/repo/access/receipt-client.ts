@@ -1,6 +1,11 @@
 import { request } from "node:http";
+import { readPrivateJsonResponse } from "./private-json-response.ts";
 import { dirname, join } from "node:path";
-import type { RepositoryCredentialBoundSessionInput, SessionStatus } from "./service-contracts.ts";
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type SessionStatus,
+} from "./service-contracts.ts";
 import { sameBinding } from "./grant-identity.ts";
 
 /** The broker sends only admission identities and already-observed terminal evidence. */
@@ -51,9 +56,7 @@ export class RepositoryReceiptClient {
       input,
       status,
     });
-    if (result.kind !== "acknowledged") {
-      throw new Error("RECEIPT_UNAVAILABLE");
-    }
+    requireAcknowledged(result);
   }
 
   async dispose(
@@ -68,9 +71,7 @@ export class RepositoryReceiptClient {
       input,
       status,
     });
-    if (result.kind !== "acknowledged") {
-      throw new Error("RECEIPT_UNAVAILABLE");
-    }
+    requireAcknowledged(result);
   }
 
   async fence(id: string, input: RepositoryCredentialBoundSessionInput): Promise<void> {
@@ -80,9 +81,7 @@ export class RepositoryReceiptClient {
       generation: this.generation,
       input,
     });
-    if (result.kind !== "acknowledged") {
-      throw new Error("RECEIPT_UNAVAILABLE");
-    }
+    requireAcknowledged(result);
   }
 
   async status(sessionId: string): Promise<SessionStatus | undefined> {
@@ -112,10 +111,7 @@ export class RepositoryReceiptClient {
       status.deadlineWallMs <= 0 ||
       !status.binding ||
       !status.cleanup ||
-      status.activeUses !== 0 ||
-      status.cleanup.active !== 0 ||
-      status.cleanup.pending !== 0 ||
-      status.cleanup.uncertain !== 0 ||
+      hasUnsettledCleanupCounts(status) ||
       status.cleanup.auxiliaryPending !== false ||
       !Number.isSafeInteger(status.cleanup.revoked) ||
       status.cleanup.revoked < 0 ||
@@ -133,8 +129,6 @@ export class RepositoryReceiptClient {
       throw new Error("RECEIPT_UNAVAILABLE");
     }
     return new Promise((done, reject) => {
-      const chunks: Buffer[] = [];
-      let size = 0;
       const outgoing = request(
         {
           socketPath: this.path,
@@ -150,39 +144,34 @@ export class RepositoryReceiptClient {
           },
         },
         (incoming) => {
-          incoming.on("data", (chunk: Buffer) => {
-            size += chunk.length;
-            if (size > 16384) {
-              // destroy() without an error emits neither "end" nor "error": settle first.
-              reject(new Error("RECEIPT_UNAVAILABLE"));
-              incoming.destroy();
-            } else {
-              chunks.push(chunk);
-            }
-          });
-          incoming.once("error", reject);
-          incoming.once("end", () => {
-            try {
-              if (
-                !incoming.complete ||
-                incoming.statusCode !== 200 ||
-                incoming.headers["content-type"] !== "application/json"
-              ) {
-                throw new Error("RECEIPT_UNAVAILABLE");
+          readPrivateJsonResponse(
+            incoming,
+            (bytes) => {
+              try {
+                if (bytes === undefined || incoming.statusCode !== 200) {
+                  throw new Error("RECEIPT_UNAVAILABLE");
+                }
+                const value: unknown = JSON.parse(bytes.toString("utf8"));
+                if (!value || typeof value !== "object" || Array.isArray(value)) {
+                  throw new Error("RECEIPT_UNAVAILABLE");
+                }
+                done(value as Record<string, unknown>);
+              } catch {
+                reject(new Error("RECEIPT_UNAVAILABLE"));
               }
-              const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-              if (!value || typeof value !== "object" || Array.isArray(value)) {
-                throw new Error("RECEIPT_UNAVAILABLE");
-              }
-              done(value as Record<string, unknown>);
-            } catch {
-              reject(new Error("RECEIPT_UNAVAILABLE"));
-            }
-          });
+            },
+            reject,
+          );
         },
       );
       outgoing.once("error", reject);
       outgoing.end(body);
     });
+  }
+}
+
+function requireAcknowledged(result: Record<string, unknown>): void {
+  if (result.kind !== "acknowledged") {
+    throw new Error("RECEIPT_UNAVAILABLE");
   }
 }

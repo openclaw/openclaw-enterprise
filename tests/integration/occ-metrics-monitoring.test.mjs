@@ -17,7 +17,7 @@ import {
 } from "../helpers/metrics-monitoring-readiness.mjs";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { startMetricsListener } from "../../apps/controller/src/metrics/listener.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 

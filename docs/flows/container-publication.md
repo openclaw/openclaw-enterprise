@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-10
-last_updated_session: authoring-run/72ec367a-a73a-495d-a83b-4cd72345f6d4
+updated: 2026-11-12
+last_updated_session: authoring-run/3d91deeb-c702-4376-b918-2394dc2e27ff
 ---
 
 # Container publication flow
@@ -21,7 +21,7 @@ OCE version and publishes a Helm chart. Image-only publication is the default.
   optional mutable image tag, and opt-in chart flag.
 - `scripts/ci/container-release.mjs:main`: validation, smoke, seal, and publication
   commands called by the workflow.
-- `scripts/ci/chart-release.mjs:publish`: version-tag and chart publication after
+- `scripts/ci/chart-release.ts:publish`: version-tag and chart publication after
   the image receipt exists.
 - Publication requires pre-existing public packages. The manual dispatch
   authorizes publication without a separate environment approval. GitHub grants
@@ -57,14 +57,14 @@ Source review does not prove a hosted build or registry transfer succeeded.
 
 ### 1. Admit the source and initialize preparation
 
-`scripts/ci/container-release.mjs:validate` verifies the trusted workflow, exact
-main source and successful CI identity, approved Node base digest, and the optional
-image tag. An empty tag selects `latest`; invalid or reserved tags fail before
-preparation. No-push preparation accepts private or public source only when
-`PUBLISH` is the exact string `"false"`. Publication and recovery require the
-public Enterprise repository and public packages. Publication also checks the
-main-only environment branch policy. No-push preparation has no package write
-permission or protected-environment credentials.
+`scripts/ci/container-release.mjs:validate` checks the trusted workflow, exact
+main SHA, successful CI identity, approved Node base digest, and [optional image alias](../release/containers.md#prepare-and-publish).
+A blank alias selects `latest`. Invalid or reserved aliases stop preparation.
+No-push preparation accepts private and public source only when `PUBLISH` is
+exactly `"false"`. Publication and recovery require the public Enterprise
+repository and public packages. Publication checks the main-only environment
+branch policy. No-push preparation lacks package write permission and
+protected-environment credentials.
 
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
@@ -235,11 +235,12 @@ for retention and package access.
 
 ### 4. Publish and hand off immutable references
 
-`scripts/ci/container-release.mjs:publishPrepared` checks both seals, archive hashes,
-index digests, and destinations before copying either image. It repeats source,
-CI, environment branch policy, and package checks during transfer. A matching existing source tag is retained;
-a conflicting tag or ambiguous registry error fails. An absent tag receives the
-entire index and both child manifests through Skopeo `--all --preserve-digests`.
+`scripts/ci/container-release.mjs:publishPrepared` checks the selected alias,
+both seals, archive hashes, index digests, and destinations before either copy.
+During transfer it rechecks source, CI, environment branch policy, and packages.
+It keeps matching source tags and fails on conflicts or ambiguous registry errors.
+For an absent tag, Skopeo `--all --preserve-digests` copies the index and both
+child manifests.
 After both source tags verify, ordinary publication copies each sealed archive to
 `latest` or the selected custom alias, then checks both source and alias digests.
 The custom alias replaces `latest` for that dispatch; recovery does not move an
@@ -257,7 +258,7 @@ same retained multi-platform archives and original producer identity; it does
 not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 
 The optional `jobs.publish-chart` downloads this run/attempt's image receipt only
-after `jobs.publish` succeeds. `scripts/ci/chart-release.mjs` requires
+after `jobs.publish` succeeds. `scripts/ci/chart-release.ts` requires
 both entries to match the current source, producer run, CI run, package names,
 and immutable digests. Root `package.json`, the chart version, and appVersion
 must agree before a version tag is written. The staged chart carries the source
@@ -286,7 +287,7 @@ owns package-write access and coordination.
 
 - For rejected source arguments, [resolve the manifest values](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
   and rebuild without bypassing checksum verification.
-- Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
+- Run `node --test tests/integration/container-{release.test.mjs,resume.test.ts,promote.test.ts}`
   for platform/archive validation and release gate coverage. The archive case uses
   real OCI blobs and tar; recovery uses transport fixtures.
 - Run the [registry integration](../testing/docker.md#container-publication-registry-proof)
@@ -313,6 +314,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-12 19:30: Document shared publisher alias validation. (authoring-run/3d91deeb-c702-4376-b918-2394dc2e27ff - 3b0efb219416109116f50ff643e7979ac2233711)
 
 - 2026-11-10 04:12: Separate runtime OCI construction from native smoke with an unqualified artifact handoff. (authoring-run/72ec367a-a73a-495d-a83b-4cd72345f6d4 - 8719eb3a5ca0adf5016e8123b6f17e51032987c8)
 

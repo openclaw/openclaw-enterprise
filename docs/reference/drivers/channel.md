@@ -26,15 +26,17 @@ The optional `validateCredentials(values, withSecret)` method checks configured
 channel credentials before API provisioning or deployment. `withSecret(binding,
 path, validate)` authorizes the exact same-Namespace Secret and supplies its value
 only inside the SecretDriver callback. Provider calls run before the write
-transaction. Validation does not pin Secret versions or revalidate queued work.
+transaction. Deployment admission retains the Configuration and selected Driver
+identities that were checked and rejects changes before recording a revision.
+Validation does not pin Secret versions or revalidate queued work.
 
 ## IAM
 
 OCC admits the caller, checks Agent creation or the exact Agent or Configuration
 edit, and requires `operate` on the caller-specified same-Namespace Secret. The
 Console supplies its selected bot Secret. OCC reads the value through the
-SecretDriver, then rechecks authority and Secret identity
-before giving that value to the ChannelDriver in-process. The Driver authenticates
+SecretDriver, then rechecks the required target authority, exact Secret/backend
+identity, and selected storage Driver before giving that value to the ChannelDriver in-process. The Driver authenticates
 to its provider with the token. No Secret value appears in an HTTP response,
 audit event, or Console script. Provider access does not grant OCC permissions.
 

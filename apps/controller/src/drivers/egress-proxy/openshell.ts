@@ -233,6 +233,8 @@ export function openShellEgressConfiguration(
           `oce-egress-${index}`,
           {
             name: `oce-egress-${index}`,
+            // Managed OpenShell requires a binary match even for whole-execution inference.
+            ...(route.binding.grant.kind === "inference" ? { binaries: [{ path: "/**" }] } : {}),
             endpoints: [
               {
                 host: origin.hostname,

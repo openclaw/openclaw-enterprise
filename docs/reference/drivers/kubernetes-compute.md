@@ -230,7 +230,7 @@ See [authentication](kubernetes-compute/configuration.md#authentication) and
   Native workspace initialization uses `resources.gateway`, including in dedicated
   Harness Pods, because it loads the OpenClaw CLI.
 - For real gateways in either topology, an explicitly selected
-  `runtime.gatewayStorageClassName` for a private disk supporting `10Gi`
+  `runtime.gatewayStorageClassName` for a private disk supporting the configured Gateway capacity
   `ReadWriteOnce` filesystem claims (`local-path` in the disposable k3d suite).
   Check the [gateway disk requirements](kubernetes-compute/storage-and-credentials.md#gateway-storage)
   before selecting a production StorageClass.
@@ -288,9 +288,18 @@ before replacing the controller images.
   reports a verified current-startup warning for an admitted selected plugin.
 - **Check `gateway-config` fails:** See
   [configuration OpenClaw refuses](kubernetes-compute/managed-native-configuration.md#configuration-openclaw-refuses-at-startup).
+- **`RUNTIME_STARTUP_FAILED` with a container in `CrashLoopBackOff`:** A live
+  Pod's `gateway` container, or a Deployment-run `agent` container, exited 3
+  times in a row without a deliberate restart (internal check `crash-loop`).
+  The Gateway wrapper exits 75 and logs startup phase `container-restart` when
+  it restarts its container on purpose; those restarts never count, and readiness
+  resets the count. Without the wrapper's count (a Harness, or an older Pod),
+  restart count 2 in backoff is the third exit. `occ agent runtime` shows the
+  restart count and last exit code; `occ agent logs --previous` shows the
+  crashed container's output.
 - **Gateway storage is pending or rejected:** Check the configured
-  `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
-  support, worker PVC permissions, and the PVC's exact ownership. Preserve
+  `runtime.gatewayStorageClassName`, available space for the configured Gateway
+  capacity, filesystem support, worker PVC permissions, and the PVC's exact ownership. Preserve
   data when resolving an incompatible or foreign claim; the driver does not
   adopt or convert it.
 - **Dedicated Harness cannot start:** Verify the default StorageClass supports

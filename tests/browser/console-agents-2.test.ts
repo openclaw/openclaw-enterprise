@@ -32,6 +32,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -78,7 +79,6 @@ import {
   RESOURCE_CONFLICT,
   POD_QUOTA_FULL,
   PROVISIONING_NOT_COMPLETED,
-  codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
@@ -1123,7 +1123,8 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
   const agent = await fixture.createAgent(namespace.id, "Handed off Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const work = provisioningJob(namespace.id, "work_handoff");
-  const { page } = await newPage(t, fixture);
+  const viewport = { width: 390, height: 844 };
+  const { page } = await newPage(t, fixture, { context: { viewport } });
   await routeDedicatedProvisioning(page, fixture, namespace);
   const handoff = {
     agentId: agent.id,
@@ -1143,32 +1144,38 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
   });
   // A first deployment this caller may read, waiting on a full Pod quota; the test API has
   // no Compute and would answer 503, which the form treats as "ask again at the next poll".
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
-    (route) =>
-      route.fulfill({
-        json: {
-          data: {
-            deploymentId: revision.id,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            status: "queued",
-            error: null,
-            warnings: [],
-            // A wait the operator must act on, which the Deployment tab must show them.
-            progress: {
-              lastAttempt: {
-                at: new Date().toISOString(),
-                code: "NAMESPACE_POD_QUOTA_EXCEEDED",
-                message: POD_QUOTA_FULL,
-              },
-              nextAttemptAt: new Date().toISOString(),
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
+  let deploymentReadError: 403 | 503 | undefined;
+  await page.route(`**${deploymentPath}`, (route) => {
+    if (deploymentReadError === 403) {
+      return route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL));
+    }
+    if (deploymentReadError === 503) {
+      return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable."));
+    }
+    return route.fulfill({
+      json: {
+        data: {
+          deploymentId: revision.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status: "queued",
+          error: null,
+          warnings: [],
+          // A wait the operator must act on, which the Deployment tab must show them.
+          progress: {
+            lastAttempt: {
+              at: new Date().toISOString(),
+              code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+              message: POD_QUOTA_FULL,
             },
+            nextAttemptAt: new Date().toISOString(),
           },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
         },
-      }),
-  );
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      },
+    });
+  });
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -1186,11 +1193,53 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
   assert.equal(location.searchParams.get("tab"), "deployment");
   await page.getByRole("heading", { name: "Handed off Agent" }).waitFor();
   await page.getByRole("tab", { name: "Deployment", selected: true }).waitFor();
-  // The operator sees the wait they must act on where the form sent them.
-  await page.getByText(POD_QUOTA_FULL).first().waitFor();
-  // Another poll interval passes on the Agent page without reading the job again.
-  await page.clock.runFor(2_000);
+  const deployment = page
+    .getByRole("region", { name: "Agent state at a glance", exact: true })
+    .getByText("Latest visible deployment", { exact: true })
+    .locator("..");
+  const quota = deployment.getByText(POD_QUOTA_FULL, { exact: true });
+  await quota.waitFor();
+  await deployment.getByText("v1", { exact: true }).waitFor();
+  // The operator can read the entire remedy on arrival at phone width.
+  const bounds = await quota.boundingBox();
+  assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= viewport.height);
+  assert.equal(await quota.getAttribute("data-tone"), null);
+  const activity = page.getByRole("region", { name: "Deployment activity", exact: true });
+  const details = activity.locator("details");
+  await details.waitFor();
+  const disclosure = details.getByText("Deployment details", { exact: true });
+  if ((await details.getAttribute("open")) !== null) {
+    await disclosure.click();
+  }
+  // Folding the details leaves the summary as the only visible copy of the wait.
+  await quota.waitFor();
+  assert.equal(await activity.getByText(POD_QUOTA_FULL).filter({ visible: true }).count(), 0);
   await waitForIdleFetches(page);
+
+  // An unavailable status keeps a marked last-known wait. A refusal clears it.
+  for (const status of [503, 403] as const) {
+    deploymentReadError = status;
+    const [response] = await Promise.all([
+      page.waitForResponse(
+        (reply) => reply.request().method() === "GET" && reply.url().endsWith(deploymentPath),
+      ),
+      page.clock.runFor(DEPLOYMENT_POLL_MS),
+    ]);
+    assert.equal(response.status(), status);
+    if (status === 503) {
+      await deployment
+        .getByText(`Update delayed. Last recorded: ${POD_QUOTA_FULL}`, { exact: true })
+        .waitFor();
+      assert.equal(await details.getAttribute("open"), null);
+    }
+  }
+  await waitForIdleFetches(page);
+  await deployment
+    .getByText("Recorded deployment status could not be read.", { exact: true })
+    .waitFor();
+  assert.equal(await deployment.getByText(POD_QUOTA_FULL).count(), 0);
+  assert.equal(await activity.getByText(POD_QUOTA_FULL).count(), 0);
+  // The Agent page follows its deployment throughout, using no more job reads.
   assert.equal(served.reads, observations.length);
   assert.equal(await settledFetches(page, work.url), observations.length);
 });
@@ -1826,33 +1875,42 @@ test("Static model selection survives credential edits and resets for provider o
   assert.equal(await choice.isEnabled(), true);
   assert.deepEqual(
     (await optionValues(choice)).map(({ value }) => value),
-    ["", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+    [
+      "",
+      "gpt-6.1-sol",
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ],
   );
   assert.equal(await choice.locator('option[value=""]').textContent(), "Choose a model");
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
-  await choice.selectOption("gpt-6-astra");
+  await choice.selectOption("gpt-6.1-sol");
   const selectedConfiguration = await configuration.inputValue();
-  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-6-astra");
+  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-6.1-sol");
   for (const credential of ["first-openai-key", "replacement-openai-key"]) {
     await page.getByLabel("Agent name").fill(`Static model ${credential}`);
     await createModelCredentialSecret(page, credential);
-    assert.equal(await choice.inputValue(), "gpt-6-astra");
+    assert.equal(await choice.inputValue(), "gpt-6.1-sol");
     assert.equal(await configuration.inputValue(), selectedConfiguration);
   }
 
   // Switching compatible harnesses changes the native transport without clearing the model.
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-  assert.equal(await choice.inputValue(), "gpt-6-astra");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "openai/gpt-6-astra",
+    "openai/gpt-6.1-sol",
   );
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await choice.inputValue(), "gpt-6-astra");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "codex/gpt-6-astra",
+    "codex/gpt-6.1-sol",
   );
 
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
@@ -2378,24 +2436,24 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   assert.equal(await credential.inputValue(), secretOptionLabel(secret));
   assert.equal(await page.getByLabel("Agent name").inputValue(), "Model selection round trip");
-  await choice.selectOption("gpt-6-sol");
+  await choice.selectOption("gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "codex/gpt-6-sol",
+    "codex/gpt-6.1-sol",
   );
 
   // Repeated switches must still offer both modes without leaving a hidden required input.
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  assert.equal(await model.inputValue(), "gpt-6-sol");
+  assert.equal(await model.inputValue(), "gpt-6.1-sol");
   await page.getByRole("button", { name: "Choose a model from the list", exact: true }).click();
-  assert.equal(await choice.inputValue(), "gpt-6-sol");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   const agent: AgentWire = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(agent.harnessAuth, { method: "api_key", source: secret.ref });
   const savedConfiguration = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assert.equal(savedConfiguration.data.values.agents.defaults.model, "codex/gpt-6-sol");
+  assert.equal(savedConfiguration.data.values.agents.defaults.model, "codex/gpt-6.1-sol");
 });
 
 test("Agent creation accepts a manual model outside the static list and saves through the real Agent API", async (t) => {
@@ -2557,7 +2615,8 @@ test("Agent creation names the Configuration field that holds an inline model cr
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 400);
   const feedback = page.getByRole("alert").filter({
-    hasText: codexApiKeyRefusal("models.providers.openai.apiKey"),
+    hasText:
+      "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.

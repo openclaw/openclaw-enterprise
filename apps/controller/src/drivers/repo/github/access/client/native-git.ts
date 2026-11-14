@@ -8,7 +8,7 @@ import {
   requireCurrentBinding,
   type RuntimeRepositoryManifest,
 } from "./manifest.ts";
-import { readPrivateFile } from "./private-files.ts";
+import { clientSessionFileMaxBytes, readPrivateFile } from "./private-files.ts";
 import { hasControlCharacter } from "../../../access/client-contracts.ts";
 
 export { normalizePushRefAllowlist } from "../../../access/client-contracts.ts";
@@ -57,7 +57,10 @@ export async function renderNativeGitConfiguration(
     }
     hosts.set(client.canonicalApiHost, client.gatewayOrigin);
     const ca = configuration.hasPublicCa
-      ? await readPrivateFile(join(binding.materialDirectory, "ca.pem"), 64 * 1024)
+      ? await readPrivateFile(
+          join(binding.materialDirectory, "ca.pem"),
+          clientSessionFileMaxBytes["ca.pem"],
+        )
       : undefined;
     const trust = origins.get(client.gatewayOrigin);
     if (trust && (Boolean(trust.ca) !== Boolean(ca) || (trust.ca && ca && !trust.ca.equals(ca)))) {

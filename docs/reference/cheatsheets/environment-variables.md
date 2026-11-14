@@ -32,7 +32,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_SECRET` — Production requires a high-entropy session-signing secret; development has a local-only fallback.
 - `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when Google or OIDC sign-in is enabled.
-- `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy; see [OIDC enrollment](../authentication/team-enrollment.md).
+- `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy, including `createAccount.requireVerifiedEmail` (default `true`); see [OIDC enrollment](../authentication/team-enrollment.md).
 - `OCC_AUTH_PASSWORD_SIGN_IN` — `all` (default) or `recovery-only`, which lets only the recovery account sign in with a password; requires Google or OIDC sign-in. See [recovery-only password sign-in](../authentication/external-sign-in.md#recovery-only-password-sign-in).
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
@@ -46,6 +46,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_CLIENT_IP_HEADER` — Lowercase header carrying the client address, such as `x-real-ip`; required by `generic` only.
 - `OCC_AGENT_NATIVE_ADMIN_ENABLED` — Enables the Agent native admin pilot; default: `false`.
 - `OCC_AGENT_RUNTIME_LOGS_ENABLED` — `false` makes the Agent runtime status and log routes answer `501`; default: `true`. Set by the chart's `agentRuntimeLogs.enabled`.
+- `OCC_CONTROL_PLANE_AUDIT_ENABLED` — Enables durable Control Plane request and worker audit and authorized Agent audit reads. Defaults to `true` in development and `false` in production. Set both processes together with `controlPlaneAudit.enabled` in Helm. See the [audit guide](../../guides/topics/audit-log.md).
 - `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` — `shared-cookie` (default) or guarded OIDC `host-only-exchange`; see [native access](../agent-native-admin.md#host-only-session-exchange).
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required for shared browser sessions even when native access is disabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
@@ -108,9 +109,9 @@ These settings belong to the checkout's development stack. See
 [development settings](../settings/development.md#required-development-controller-environment)
 for supported engines, images, and security restrictions.
 
-- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
+- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `kubernetes` (default) or `docker`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
-- `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
+- `OCC_DEVELOPMENT_CONTROL_PLANE` — `kubernetes` or `compose`; the default follows the Compute Driver (`kubernetes` on Kubernetes Compute, `compose` on Docker Compute). Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.
 - `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Retired; any presence, including an empty value, is rejected. Remove it from the environment; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_DATABASE_NAME` — Optional disposable `openclaw_k8s_` database for the Kubernetes control plane; see [development settings](../settings/development.md).
@@ -137,7 +138,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes namespace that runs the control plane in the Kubernetes-only profile; default: `oce-system`.
 - `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` — Disposable k3d cluster; default: a generated name beginning with `occ-dev-`.
 - `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile cluster and service readiness timeout; default: `600` seconds per wait in Kubernetes-only mode, `300` in Compose mode.
-- `OCC_DEVELOPMENT_KEEP_ON_FAILURE` — Unset by default; any nonempty value keeps a failed `occ dev up` stack, state directory, and copied service key for inspection; see [development settings](../settings/development.md).
+- `OCC_DEVELOPMENT_KEEP_ON_FAILURE` — Unset by default; any nonempty value keeps a failed `occ dev up` stack, state directory, and copied service key for inspection. Compose preparation failures before resource startup remove incomplete state; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_KUBERNETES_API_PORT` — Local Kubernetes API port; default: `6443`.
 - `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for either local k3d profile, or `k3d` for k3d's default; Linux Docker defaults to the host's upstream resolver.
 - `OCC_DEVELOPMENT_K3S_IMAGE` — K3s node image or channel for Compose control plane without OpenShell; default: `+v1.35`. Kubernetes-only and OpenShell profiles use their pinned image.

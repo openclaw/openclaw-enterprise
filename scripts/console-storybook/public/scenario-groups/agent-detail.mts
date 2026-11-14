@@ -972,6 +972,29 @@ export function createAgentDetailScenarios({
         ],
         gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
       },
+      codexGatewayPasswordMissingRefused: {
+        group: "Pages/Agent detail",
+        name: "Dedicated Codex without the gateway password",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/validate",
+            method: "POST",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              'Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.',
+          },
+        ],
+        description:
+          "An older release saved a Dedicated Codex Configuration without gateway.auth.password. Kubernetes Compute refuses it where it applies the workspace node at runtime, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+        steps: [
+          "In Prepare this version, the first step reads Fix the gateway password.",
+          "Deploy new version is disabled with the gateway.auth.password refusal deploy gives.",
+        ],
+        gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail-deployment.ts covers the page with the real Kubernetes Compute rules.",
+      },
       kubernetesEntryKeyVariantChecking: {
         group: "Pages/Agent detail",
         name: "Plugin entry key, Compute check in flight",
@@ -3075,11 +3098,19 @@ export function createAgentDetailScenarios({
             skip: 1,
             once: true,
           },
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            delayMs: 2500,
+          },
         ],
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
-          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
-          "Switch to another browser tab and return. The draft and focus return without selecting Retry.",
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit and scroll until the page header is out of view.",
+          "Switch to another browser tab and return. After one second, Still checking… appears at the bottom of the viewport while the draft is hidden. The delayed retry restores the draft, selection, focus, and scroll without selecting Retry, and the status disappears.",
+          "Repeat at 390 px wide. The status fits the viewport and does not block navigation. Reset the story to repeat the delayed retry.",
         ],
       },
       configurationReadUnavailableOnRefocus: {

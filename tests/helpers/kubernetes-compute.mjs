@@ -6,6 +6,7 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
  * @param {Pick<NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]>,
  *   "sandboxDriver" | "credentialGatewayDriver" | "protectedDriver"> & {
  *   authentication?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["authentication"],
+ *   scratchVolumes?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["runtime"]["scratchVolumes"],
  *   repositoryCredentials?: boolean, gatewayRuntime?: boolean, channelRuntime?: boolean,
  *   routed?: boolean, privateStatus?: boolean, gatewayTrustedProxyCidrs?: string[],
  *   modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration,
@@ -31,6 +32,7 @@ export function createTestKubernetesComputeDriver(
     modelProvider,
     servicePrincipalCredentials = { mode: "disabled" },
     sandboxDriver,
+    scratchVolumes,
     credentialGatewayDriver,
     protectedDriver,
   } = {},
@@ -87,6 +89,7 @@ export function createTestKubernetesComputeDriver(
         ? {
             runtime: {
               transportSecretPrefix: "transport",
+              ...(scratchVolumes === undefined ? {} : { scratchVolumes }),
               ...(modelProvider === undefined ? {} : { modelProvider }),
               gatewayStorageClassName: "local-path",
               ...(placed ? { gatewayNodeSelector: { "oce-role": "control" } } : {}),
@@ -117,13 +120,18 @@ export const conformanceKubeconfig = Object.freeze({
  * Production-shaped Kubernetes Compute Driver options shared by the conformance suites:
  * fixture images, bounded resources and quota, kube-dns, one controller client and disabled
  * service principal credentials. Each suite states its trusted proxy range and runtime.
+ * @param {{
+ *   gatewayTrustedProxyCidrs: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["network"]["gatewayTrustedProxyCidrs"],
+ *   runtime?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["runtime"],
+ * }} options
  */
 export function conformanceKubernetesOptions({ gatewayTrustedProxyCidrs, runtime }) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
-  return {
+  /** @satisfies {import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions} */
+  const options = {
     authentication: { mode: "kubeconfig", ...conformanceKubeconfig },
     images: {
       gateway: "openclaw-enterprise/gateway-fixture:local",
@@ -149,4 +157,5 @@ export function conformanceKubernetesOptions({ gatewayTrustedProxyCidrs, runtime
     servicePrincipalCredentials: { mode: "disabled" },
     ...(runtime === undefined ? {} : { runtime }),
   };
+  return options;
 }

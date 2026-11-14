@@ -96,7 +96,7 @@ type Requests = ReturnType<typeof apiRequests>;
 type DeploymentError = NonNullable<ReturnType<typeof persistedDeploymentError>>;
 
 declare global {
-  var summaryRewrites: (string | null)[];
+  var summaryRewrites: string[];
   var diagnosticsSeen: string[];
 }
 
@@ -321,7 +321,8 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
 
 // A pending deployment is reread every few seconds and its summary usually stays the same.
 // Rewriting the summary cards and status line with the same text repainted them on every
-// poll (finding 1424); only the changed attempt details in Deployment activity may change.
+// poll (finding 1424). Attempt timing belongs in Deployment activity; only a changed
+// wait message updates the deployment summary.
 test("Deployment polls leave an unchanged summary and status line untouched", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -329,7 +330,8 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
   const agent = await fixture.createAgent(namespace.id, "Quiet Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let attempt = 1;
+  let attemptAt = "2026-09-30T12:00:01.000Z";
+  let wait = "Waiting for the runtime to become ready.";
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
     route.fulfill({
       status: 200,
@@ -344,9 +346,9 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
           warnings: [],
           progress: {
             lastAttempt: {
-              at: `2026-09-30T12:00:0${attempt}.000Z`,
+              at: attemptAt,
               code: "REVISION_INCOMPLETE",
-              message: `Waiting for the runtime to become ready (attempt ${attempt}).`,
+              message: wait,
             },
             nextAttemptAt: null,
           },
@@ -363,16 +365,23 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
   );
   await waitForChosenVersion(page, 1);
   const activity = await expectDeploymentOutcome(page, "In progress");
-  await activity.getByText("Waiting for the runtime to become ready (attempt 1).").waitFor();
-  await page
-    .getByRole("region", { name: "Agent state at a glance" })
-    .getByText("v1 · In progress", { exact: true })
-    .waitFor();
-  await page.evaluate(() => {
+  await activity.getByText(wait, { exact: true }).waitFor();
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.getByText("v1 · In progress", { exact: true }).waitFor();
+  const summaryNote = summary
+    .getByText("Latest visible deployment", { exact: true })
+    .locator("..")
+    .locator("p");
+  assert.equal(await summaryNote.textContent(), wait);
+  await summaryNote.evaluate((note) => {
     globalThis.summaryRewrites = [];
     const observer = new globalThis.MutationObserver((records) => {
       for (const record of records) {
-        globalThis.summaryRewrites.push(record.target.textContent);
+        globalThis.summaryRewrites.push(
+          record.target === note && record.type === "childList"
+            ? "deployment summary note"
+            : `unexpected ${record.type} mutation: ${record.target.textContent}`,
+        );
       }
     });
     for (const selector of [".agent-current-summary", ".agent-status-line"]) {
@@ -388,11 +397,22 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
     }
   });
 
-  // The poll renders the new attempt and the summary in the same pass.
-  attempt = 2;
+  // A newer attempt with the same wording changes the recorded time without rewriting the summary.
+  attemptAt = "2026-09-30T12:00:02.000Z";
+  const recordedAt = await page.evaluate((time) => new Date(time).toLocaleString(), attemptAt);
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await activity.getByText("Waiting for the runtime to become ready (attempt 2).").waitFor();
+  await activity.getByText(recordedAt, { exact: true }).waitFor();
+  assert.equal(await summaryNote.textContent(), wait);
   assert.deepEqual(await page.evaluate(() => globalThis.summaryRewrites), []);
+
+  // A changed wait updates the summary note once and leaves the rest of the summary alone.
+  wait = "Waiting for the runtime to become ready after a retry.";
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await activity.getByText(wait, { exact: true }).waitFor();
+  await summary.getByText(wait, { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.summaryRewrites), [
+    "deployment summary note",
+  ]);
 });
 
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {

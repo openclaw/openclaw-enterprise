@@ -12,7 +12,7 @@ import {
   managedPluginMiddlewareImplementation,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
-import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.mjs";
+import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import {
   grpc,
