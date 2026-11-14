@@ -566,6 +566,16 @@ interface DispatchResult {
   readonly authorization?: AuthorizationRequest;
 }
 
+class RevisionPreparationBlocked extends Error {
+  readonly denial: RevisionDispatchResult | undefined;
+
+  constructor(denial?: RevisionDispatchResult) {
+    super("Deployment must recheck current authority before preparation.");
+    this.name = "RevisionPreparationBlocked";
+    this.denial = denial;
+  }
+}
+
 interface RevisionDispatchResult extends DispatchResult {
   /** Terminal preparation requires durable retirement of this exact revision. */
   readonly cleanupFailedPreparation?: true;
@@ -2093,7 +2103,11 @@ export class ControllerWorker {
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
       // A predecessor's stop that yielded is no preparation failure: the candidate is untouched.
-      if (error instanceof WorkClaimLostError || error instanceof ComputeStopYieldedError) {
+      if (
+        error instanceof WorkClaimLostError ||
+        error instanceof ComputeStopYieldedError ||
+        error instanceof RevisionPreparationBlocked
+      ) {
         throw error;
       }
       let diagnostic: ComputePrepareRevisionFailureDiagnostic | undefined;
@@ -2157,6 +2171,9 @@ export class ControllerWorker {
         ),
       );
       await this.stopPredecessors(claim, earlier);
+      if (earlier.length !== 0 && isCandidateDeployment(claim)) {
+        await this.recheckPreparationAuthority(claim, revision);
+      }
     }
     try {
       return await this.prepareAfterPredecessors(claim, revision, context);
@@ -2385,6 +2402,30 @@ export class ControllerWorker {
       if (oldest !== undefined) {
         this.stoppedPredecessors.delete(oldest);
       }
+    }
+  }
+
+  private async recheckPreparationAuthority(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    // Stopping predecessors may take minutes. Use the current owner and grant at
+    // the boundary before creating the candidate's runtime.
+    const { namespace, agent } = await this.state.read(async (view) => ({
+      namespace: await view.namespaces.findNamespace(revision.namespaceId),
+      agent: await view.agents.findAgent(revision.namespaceId, revision.agentId),
+    }));
+    if (
+      namespace?.status !== "ready" ||
+      agent?.status !== "active" ||
+      agent.desiredRuntimeState !== "running" ||
+      agent.servicePrincipalId !== revision.servicePrincipalId
+    ) {
+      throw new RevisionPreparationBlocked();
+    }
+    const denied = await this.authorizeRevision(claim, agent, revision);
+    if (denied !== undefined) {
+      throw new RevisionPreparationBlocked(denied);
     }
   }
 
@@ -5255,6 +5296,15 @@ export class ControllerWorker {
       }
       if (error instanceof RefusedCandidateStopError) {
         ({ result, logFields: failureLogFields } = error.pending());
+      } else if (error instanceof RevisionPreparationBlocked) {
+        if (error.denial === undefined) {
+          // Re-enter dispatch so its current Stop, deletion or ownership path
+          // handles cleanup and the public result. This does not spend an attempt.
+          await this.queue.defer(claim, { code: "REVISION_LIFECYCLE_CHANGED" }, { delayMs: 1 });
+          this.passOutcome = "pending";
+          return;
+        }
+        result = error.denial;
       } else {
         const dependencyFailure = revisionDependencyFailure(error);
         if (error instanceof ComputePreparationFailedError) {

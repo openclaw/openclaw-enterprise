@@ -1665,7 +1665,13 @@ revisionTest(
   },
 );
 
-for (const recovery of ["retry", "reassigned", "explicit Stop", "legacy sweep"]) {
+for (const recovery of [
+  "retry",
+  "reassigned",
+  "explicit Stop",
+  "legacy sweep",
+  "Stop during sweep",
+]) {
   test(
     `planned replacement recovers a committed predecessor stop after its only claim expires (${recovery})`,
     { ...requiresPostgres, timeout: 60_000 },
@@ -1734,6 +1740,13 @@ for (const recovery of ["retry", "reassigned", "explicit Stop", "legacy sweep"])
         releaseRetry = resolve;
       });
       driver.compute.stopRevision = async (revision) => {
+        if (
+          revision.id === earlier.id &&
+          recovery === "Stop during sweep" &&
+          stopWork === undefined
+        ) {
+          stopWork = await fixture.requestStop(owner);
+        }
         if (revision.id === earlier.id && recovery === "legacy sweep") {
           sweepAttempts += 1;
           if (sweepAttempts === 1) {
@@ -1744,7 +1757,11 @@ for (const recovery of ["retry", "reassigned", "explicit Stop", "legacy sweep"])
             return;
           }
         }
-        if (revision.id === first.id && recovery !== "legacy sweep") {
+        if (
+          revision.id === first.id &&
+          recovery !== "legacy sweep" &&
+          recovery !== "Stop during sweep"
+        ) {
           stopAttempts += 1;
           if (stopAttempts === 1 && recovery === "reassigned") {
             newer = await fixture.revision(owner, 4);
@@ -1810,7 +1827,7 @@ for (const recovery of ["retry", "reassigned", "explicit Stop", "legacy sweep"])
         assert.ok(driver.preparations(candidate) > 0);
         return;
       }
-      if (recovery === "explicit Stop") {
+      if (recovery === "explicit Stop" || recovery === "Stop during sweep") {
         await fixture.work(candidate, "succeeded");
         assert.ok(stopWork);
         await fixture.work(stopWork, "succeeded");
