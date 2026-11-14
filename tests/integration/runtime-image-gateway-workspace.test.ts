@@ -46,7 +46,7 @@ function lastOutputRecord(stdout: string): Record<string, unknown> {
 }
 
 // Codex Gateway cases on the real runtime image, split from
-// runtime-image-startup.test.mjs by measured case durations so CI runs them
+// runtime-image-startup.test.ts by measured case durations so CI runs them
 // beside it: the Gateway hot-loads its workspace node binding in place,
 // custom-provider subagents keep their native model IDs in the remote workspace,
 // and a write-scoped run's native command approval reaches the reviewer.

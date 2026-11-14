@@ -143,7 +143,7 @@ docker pull "$CONTROLLER_IMAGE"
 docker pull "$RUNTIME_IMAGE"
 OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
   node --test --test-concurrency=1 tests/integration/production-image-startup.test.mjs \
-    tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup.test.ts \
     tests/integration/runtime-image-gateway-workspace.test.ts \
     tests/integration/runtime-image-public-github-read.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \

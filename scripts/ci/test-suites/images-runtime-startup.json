@@ -16,7 +16,7 @@
   "fileConcurrency": 3,
   "parallelFiles": [
     "tests/integration/runtime-image-gateway-retained-state.test.ts",
-    "tests/integration/runtime-image-startup.test.mjs",
+    "tests/integration/runtime-image-startup.test.ts",
     "tests/integration/runtime-image-gateway-workspace.test.ts",
     "tests/integration/runtime-image-public-github-read.test.mjs",
     "tests/integration/runtime-image-managed-files.test.ts",
@@ -37,7 +37,7 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-image-startup.test.mjs",
+      "path": "tests/integration/runtime-image-startup.test.ts",
       "expectedTests": [
         "runtime image applies the repository profile to a native thread shell turn",
         "runtime image shares the reviewed Codex version between the plugin and Dedicated command",

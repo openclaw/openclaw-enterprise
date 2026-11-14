@@ -1,4 +1,4 @@
-// Runtime image cases split from runtime-image-startup.test.mjs so CI can run
+// Runtime image cases split from runtime-image-startup.test.ts so CI can run
 // them beside it: the Harness entrypoint initializes its workspace without
 // replacing owner edits, and the Gateway treats a read-only Kubernetes
 // configuration as externally managed and starts with OCE's Node options.
