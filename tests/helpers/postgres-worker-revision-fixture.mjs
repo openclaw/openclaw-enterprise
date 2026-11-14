@@ -225,7 +225,7 @@ export function createWorkerRevisionFixtures(
   }
 
   /**
-   * @param {TestContext} context
+   * @param {Pick<TestContext, "after">} context
    * @param {Partial<typeof disposeLimitsMs>} limitsMs
    */
   async function prepareDatabase(context, limitsMs = {}) {
@@ -300,7 +300,7 @@ export function createWorkerRevisionFixtures(
   }
 
   /**
-   * @param {TestContext} context
+   * @param {Pick<TestContext, "after">} context
    * @param {{
    *   database?: Pick<Awaited<ReturnType<typeof prepareDatabase>>, "url" | "pools" | "workers">,
    *   leaseDurationMs?: number,
