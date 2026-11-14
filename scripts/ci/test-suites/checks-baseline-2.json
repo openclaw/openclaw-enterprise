@@ -391,7 +391,7 @@
       "path": "tests/integration/skipper-release.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-draft-pr-cli.test.mjs"
+      "path": "tests/integration/repository-credentials-draft-pr-cli.test.ts"
     },
     {
       "path": "tests/integration/ci-keycloak.test.ts"
