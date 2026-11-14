@@ -224,6 +224,12 @@ const stringNameDatabaseCa = {
   "database.caKey": "ca.pem",
   "database.caMountPath": "/etc/openclaw/database-ca",
 };
+const executionClusterValues = {
+  "executionCluster.enabled": "true",
+  "executionCluster.apiKubeconfigSecretName": "execution-api",
+  "executionCluster.workerKubeconfigSecretName": "execution-worker",
+  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+};
 const stringNameCaValues = {
   database: stringNameDatabaseCa,
   oidc: {
@@ -240,12 +246,7 @@ const stringNameCaValues = {
     "auth.oidc.caSecretName": "oidc-ca",
     "auth.oidc.caSecretKey": "ca.crt",
   },
-  execution: {
-    "executionCluster.enabled": "true",
-    "executionCluster.apiKubeconfigSecretName": "execution-api",
-    "executionCluster.workerKubeconfigSecretName": "execution-worker",
-    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-  },
+  execution: executionClusterValues,
 };
 
 test(
@@ -639,20 +640,17 @@ test(
   "two-cluster packaging separates remote API identities without optional services",
   tooling,
   async () => {
-    const execution = {
-      "executionCluster.enabled": "true",
-      "executionCluster.apiKubeconfigSecretName": "execution-api",
-      "executionCluster.workerKubeconfigSecretName": "execution-worker",
-      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-    };
     // This guard must apply even when the unrelated repository service is disabled.
     await assert.rejects(render({ "executionCluster.enabled": "true" }), /separate API and worker/);
     await assert.rejects(
-      render({ ...execution, "executionCluster.workerKubeconfigSecretName": "execution-api" }),
+      render({
+        ...executionClusterValues,
+        "executionCluster.workerKubeconfigSecretName": "execution-api",
+      }),
       /separate API and worker/,
     );
     await assert.rejects(
-      render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
+      render({ ...executionClusterValues, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
       /executionCluster\.apiKubeconfigSecretName must name a dedicated Secret; occ-auth is also auth\.secretName/,
     );
     for (const cidr of [
@@ -663,13 +661,13 @@ test(
       "::ffff:999.1.2.3/64",
     ]) {
       await assert.rejects(
-        render({ ...execution, "executionCluster.apiCidrs[0]": cidr }),
+        render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": cidr }),
         /executionCluster\.apiCidrs/,
         cidr,
       );
     }
-    await render({ ...execution, "executionCluster.apiCidrs[0]": "10.1.1.0/28" });
-    await render({ ...execution, "executionCluster.apiCidrs[0]": "2001:db8::/64" });
+    await render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": "10.1.1.0/28" });
+    await render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": "2001:db8::/64" });
     // Optional credential Secrets count once enabled (findings 1046, 1048): the ChatGPT admin,
     // sign-in, database CA and sandbox TLS Secrets, and the Gateway Secrets cert-manager writes.
     const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
@@ -683,7 +681,7 @@ test(
     ]) {
       for (const key of ["apiKubeconfigSecretName", "workerKubeconfigSecretName"]) {
         await assert.rejects(
-          render({ ...execution, ...values, [`executionCluster.${key}`]: secret }),
+          render({ ...executionClusterValues, ...values, [`executionCluster.${key}`]: secret }),
           ({ code, stderr }) =>
             code !== 0 &&
             stderr.includes(
@@ -693,10 +691,13 @@ test(
         );
       }
       // Until that feature is enabled, its Secret name is free.
-      await render({ ...execution, "executionCluster.apiKubeconfigSecretName": secret });
-      await render({ ...execution, ...values });
+      await render({
+        ...executionClusterValues,
+        "executionCluster.apiKubeconfigSecretName": secret,
+      });
+      await render({ ...executionClusterValues, ...values });
     }
-    const objects = await renderObjects(execution);
+    const objects = await renderObjects(executionClusterValues);
     for (const component of ["api", "worker"]) {
       const pod = findResource(objects, "Deployment", `openclaw-enterprise-${component}`).spec
         .template.spec;
@@ -718,15 +719,9 @@ test(
         /cluster\.port must be an integer TCP port/,
       );
     }
-    const executionValues = {
-      "executionCluster.enabled": "true",
-      "executionCluster.apiKubeconfigSecretName": "execution-api",
-      "executionCluster.workerKubeconfigSecretName": "execution-worker",
-      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-    };
     for (const port of ["0", "010", "65536", "9.5"]) {
       await assert.rejects(
-        render({ ...executionValues, "executionCluster.apiPort": port }),
+        render({ ...executionClusterValues, "executionCluster.apiPort": port }),
         /executionCluster\.apiPort must be an integer TCP port/,
       );
     }
@@ -736,12 +731,15 @@ test(
     );
     await assert.rejects(
       render(
-        { ...executionValues },
+        { ...executionClusterValues },
         { strings: { "executionCluster.apiPort": "99999999999999999999" } },
       ),
       /executionCluster\.apiPort must be an integer TCP port/,
     );
-    const objects = await renderObjects({ ...executionValues, "executionCluster.apiPort": "6443" });
+    const objects = await renderObjects({
+      ...executionClusterValues,
+      "executionCluster.apiPort": "6443",
+    });
     const policy = findResource(
       objects,
       "NetworkPolicy",
@@ -3178,10 +3176,7 @@ test("database CA mounts stay distinct from active production volume mounts", to
     ...repositoryCredentialValues,
     ...gatewayRoutingValues,
     ...chatgptValues,
-    "executionCluster.enabled": "true",
-    "executionCluster.apiKubeconfigSecretName": "execution-api",
-    "executionCluster.workerKubeconfigSecretName": "execution-worker",
-    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+    ...executionClusterValues,
   };
   for (const features of [
     {},
@@ -3854,12 +3849,6 @@ const oidcLoginValues = {
   "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
   "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
   "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
-};
-const executionClusterValues = {
-  "executionCluster.enabled": "true",
-  "executionCluster.apiKubeconfigSecretName": "execution-api",
-  "executionCluster.workerKubeconfigSecretName": "execution-worker",
-  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
 };
 for (const [field, enable = {}] of [
   ["installation.secretName"],
