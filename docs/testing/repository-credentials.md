@@ -17,7 +17,7 @@ The controlled tests use disposable fixtures and do not use ambient GitHub crede
 ## Run controlled tests
 
 ```sh
-node scripts/verify-repository-credentials-boundary.mjs
+node scripts/verify-repository-credentials-boundary.ts
 node --test tests/conformance/repository-credentials-fixture-ownership.test.ts \
   tests/conformance/repository-credentials-backend-conformance.test.ts
 node --test tests/integration/repository-credentials-git.test.ts \

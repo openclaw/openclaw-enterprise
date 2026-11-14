@@ -4,7 +4,7 @@ import type { Clock } from "./backend-contracts.ts";
 /**
  * A deliberate copy of `MAX_TIMER_DELAY_MS` from `@openclaw-enterprise/utils`: files under
  * drivers/repo/access import a workspace package only through a reviewed import
- * (scripts/verify-repository-credentials-boundary.mjs). The utils conformance suite checks
+ * (scripts/verify-repository-credentials-boundary.ts). The utils conformance suite checks
  * that both copies agree.
  */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;

@@ -122,7 +122,7 @@
     "tests/conformance/repository-credentials-receive-pack.test.mjs": 100,
     "tests/conformance/repository-credentials-registry.test.mjs": 100,
     "tests/conformance/repository-credentials-sessions.test.ts": 100,
-    "tests/conformance/repository-credentials-source-boundary.test.mjs": 9700,
+    "tests/conformance/repository-credentials-source-boundary.test.ts": 9700,
     "tests/conformance/repository-credentials-tool-evidence.test.ts": 100,
     "tests/conformance/repository-material-store.test.ts": 200,
     "tests/conformance/repository-runtime-material.test.ts": 3200,
