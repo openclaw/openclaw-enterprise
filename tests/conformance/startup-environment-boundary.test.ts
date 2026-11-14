@@ -4,11 +4,11 @@ import test from "node:test";
 import { parsers } from "prettier/plugins/typescript";
 
 // API startup and the initialization Job's settings take their environment as a
-// parameter: server.mjs and scripts/bootstrap-installation.mjs pass process.env,
+// parameter: server.mjs and scripts/bootstrap-installation.ts pass process.env,
 // and the sign-in parity tests run the same code in process with their own
 // environment. A process.env read in these files would make those tests check
 // the test runner's environment instead of the one they pass, so an edit ported
-// from server.mjs or scripts/bootstrap-installation.mjs must read `env`.
+// from server.mjs or scripts/bootstrap-installation.ts must read `env`.
 const parameterizedSources = [
   "apps/controller/src/api-startup.mjs",
   "scripts/lib/bootstrap-configuration.ts",

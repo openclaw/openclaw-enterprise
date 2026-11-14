@@ -11,7 +11,7 @@ import { OpenClawController, PostgresPlatformState } from "../../packages/occ/sr
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { bootstrapInstallation } from "../../scripts/bootstrap-installation.mjs";
+import { bootstrapInstallation } from "../../scripts/bootstrap-installation.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 function object(value: unknown): Record<string, unknown> {

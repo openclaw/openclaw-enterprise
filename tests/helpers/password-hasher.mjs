@@ -25,7 +25,7 @@ function testDigest(salt, password) {
  * which the controller's scrypt hasher refuses (the key never matches), so a test hash can
  * never sign in to a controller composed without this hasher. It verifies any other stored
  * hash with the real scrypt hasher, so fixtures may sign in to accounts that a production
- * entry point (scripts/bootstrap-installation.mjs, hashLocalPassword) wrote. Those results are
+ * entry point (scripts/bootstrap-installation.ts, hashLocalPassword) wrote. Those results are
  * remembered per hash and password for the process: a fixture signs its bootstrap
  * administrator in many times, and scrypt gives the same answer every time.
  *

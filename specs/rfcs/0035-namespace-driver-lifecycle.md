@@ -30,7 +30,7 @@ separate from those namespace-owned resources.
 
 ## Motivation and current behavior
 
-[Installation bootstrap](../../scripts/bootstrap-installation.mjs) and API creation
+[Installation bootstrap](https://github.com/openclaw/openclaw-enterprise/blob/e23d8854d8eec8701c29e4067e7899cb04fff97c/scripts/bootstrap-installation.mjs) and API creation
 share `OpenClawController.createNamespace` in [OCC](../../packages/occ/src/index.ts).
 It saves a `provisioning` Namespace and queues work. The
 [worker](../../apps/controller/src/worker.ts) asks Compute to ensure the Namespace.

@@ -53,8 +53,8 @@ Only the initialization Job mounts it; `bootstrap.password.fileName` and
 See [initial-key retrieval](authentication/service-api-keys.md#retrieve-the-bootstrap-service-key)
 and [bootstrap recovery](authentication/service-api-keys.md#recover-an-incomplete-bootstrap).
 
-The shared `scripts/bootstrap-installation.mjs` initializer runs after migration
-and before either API or worker startup in Compose and Helm. Development
+The [Installation initializer](settings/production.md#production-installation-bootstrap-environment)
+runs after migration and before API or worker startup in Compose and Helm. Development
 provisions the configured `OPENCLAW_DEV_EMAIL` and
 `OPENCLAW_DEV_PASSWORD` on a fresh database, using the defaults in
 [settings](settings/development.md#required-development-controller-environment), and

@@ -29,8 +29,8 @@ process startup procedures.
   filesystem Configuration Driver root. Compose mounts `occ_configuration_data`
   only into the controller at `/app/.development/configurations`.
 - A bootstrapped Installation. Compose's `bootstrap` service and the Helm
-  initialization Job run `scripts/bootstrap-installation.mjs` after migration
-  and before the API or worker. Direct-process setups run that initializer first.
+  initialization Job run the [Installation initializer](settings/production.md#production-installation-bootstrap-environment)
+  after migration and before the API or worker. Direct-process setups run that initializer first.
 - `NODE_ENV=development` or `NODE_ENV=production` and the application-role
   `OCC_DATABASE_URL`.
 - In production, the shared absolute `OCC_CONFIG_PATH` to trusted Installation
@@ -217,7 +217,7 @@ A prepared repository App key that cannot sign stops the worker with
   [Kubernetes Compute Driver guide](drivers/kubernetes-compute.md).
 - **Installation is not bootstrapped:** Confirm the Compose `bootstrap` service
   or Helm initialization Job succeeded against the API/worker database. For
-  direct-process setup, run `scripts/bootstrap-installation.mjs` with the selected
+  direct-process setup, run `scripts/bootstrap-installation.ts` with the selected
   environment's protected output settings before starting either process.
   Resolve [failed initialization](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
   manually before another attempt; bootstrap does not clean up or retry.

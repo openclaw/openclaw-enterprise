@@ -7,7 +7,7 @@ import { jsonEvent } from "../helpers/json-lines.mjs";
 
 type StartupEntryPoint =
   | { path: "apps/controller/src/server.mjs"; event: "startup-error" }
-  | { path: "scripts/bootstrap-installation.mjs"; event: "installation.bootstrap-failed" };
+  | { path: "scripts/bootstrap-installation.ts"; event: "installation.bootstrap-failed" };
 
 type StartupMode = "development" | "production";
 
@@ -23,7 +23,7 @@ const controller = {
   event: "startup-error",
 } satisfies StartupEntryPoint;
 const bootstrap = {
-  path: "scripts/bootstrap-installation.mjs",
+  path: "scripts/bootstrap-installation.ts",
   event: "installation.bootstrap-failed",
 } satisfies StartupEntryPoint;
 

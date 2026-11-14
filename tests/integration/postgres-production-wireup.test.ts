@@ -156,7 +156,7 @@ async function runSuccessfulBootstrap(
   environment: NodeJS.ProcessEnv,
   event: "installation.bootstrapped" | "installation.already-bootstrapped",
 ) {
-  const result = await run(process.execPath, ["scripts/bootstrap-installation.mjs"], {
+  const result = await run(process.execPath, ["scripts/bootstrap-installation.ts"], {
     cwd: repository,
     env: environment,
   }).catch(() => {
@@ -364,7 +364,7 @@ test(
       // A different configured administrator must not silently adopt the existing Installation.
       const administratorMismatch = await run(
         process.execPath,
-        ["scripts/bootstrap-installation.mjs"],
+        ["scripts/bootstrap-installation.ts"],
         {
           cwd: repository,
           env: { ...environment, OCC_BOOTSTRAP_ADMIN_EMAIL: "different-admin@example.test" },

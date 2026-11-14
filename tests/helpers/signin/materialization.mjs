@@ -453,7 +453,7 @@ export async function prepareMaterialization({
           egressCidrs: [initial.status.podIP + "/32"],
         },
       };
-      values.agentNativeAdmin = { enabled: false };
+      values.agentNativeAdmin.enabled = false;
       const upgradedValues = join(directory, "oidc-values.json");
       await writeFile(upgradedValues, JSON.stringify(values) + "\n", {
         flag: "wx",

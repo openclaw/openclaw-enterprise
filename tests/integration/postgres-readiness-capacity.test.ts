@@ -13,7 +13,7 @@ import {
   loadInstallationConfiguration,
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
-import { bootstrapInstallation } from "../../scripts/bootstrap-installation.mjs";
+import { bootstrapInstallation } from "../../scripts/bootstrap-installation.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";

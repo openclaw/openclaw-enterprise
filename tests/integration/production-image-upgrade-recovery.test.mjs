@@ -271,7 +271,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
                 {
                   name: "bootstrap",
                   image,
-                  args: ["scripts/bootstrap-installation.mjs"],
+                  args: ["--run", "db:bootstrap:production"],
                   ...(initializationResources ? { resources: initializationResources } : {}),
                   securityContext: { capabilities: { drop: ["ALL"] } },
                 },
