@@ -1048,10 +1048,11 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   await page.setViewportSize({ width: 1280, height: 900 });
   const sort = panel.getByRole("button", { name: "Sort by destination" });
   const destinations = panel.getByRole("row").filter({ has: page.getByRole("cell") });
+  const firstDestination = destinations.first().getByRole("cell").first();
   await sort.press("Enter");
-  assert.match(await destinations.first().innerText(), /packages\.example\.org/);
+  await firstDestination.getByText(host.host, { exact: true }).waitFor();
   await sort.press("Enter");
-  assert.match(await destinations.first().innerText(), /deb\.debian\.org/);
+  await firstDestination.getByText(prior.host, { exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(
     await archiveRow.evaluate((row) => {
