@@ -1,3 +1,7 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { within } from "../helpers/wait-for.mjs";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
@@ -23,6 +27,17 @@ import {
   startGitHubFixture,
 } from "../fixtures/repository-credentials/github.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
+
+const bounded = <T>(work: Promise<T>) => within(work, "shared issuance", 5000);
+const providerArrival = (arrival: Promise<void>, work: Promise<unknown>) =>
+  bounded(
+    Promise.race([
+      arrival,
+      work.then(() => {
+        throw new Error("issue ended before provider arrival");
+      }),
+    ]),
+  );
 
 test(
   "PostgreSQL shares one mint across admitted source members and retains it after one withdrawal",
@@ -233,13 +248,17 @@ test(
     assert.ok(linkedA && linkedB && linkedC);
     assert.deepEqual(linkedA.admission, linkedB.admission);
     assert.notEqual(linkedA.admission.familyId, linkedC.admission.familyId);
-    function prepare(family: NonNullable<typeof linkedA>) {
+    function prepare(
+      family: NonNullable<typeof linkedA>,
+      ca = gh.tls.ca,
+      getKey = async () => issuer,
+    ) {
       return createGitHubPreparationOwner({
         ...family,
         clock,
         apiOrigin: gh.origin,
-        ca: gh.tls.ca,
-        getKey: async () => issuer,
+        ca,
+        getKey,
         renewBeforeMs: 60_000,
         minimumValidityMs: 60_000,
       });
@@ -247,11 +266,17 @@ test(
     const sharedIssue = (issueGate = holdProviderIssue());
     const mint = runPreparation(prepare(linkedA), t.signal);
     try {
-      await sharedIssue.arrived.promise;
+      await providerArrival(sharedIssue.arrived.promise, mint);
+      // Crossing the dispatch window alone must not fence an already dispatched response.
+      await poolA.query(
+        "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-interval '2 minutes' WHERE source_id=$1",
+        [linkedA.admission.familyId],
+      );
       assert.equal(await runPreparation(prepare(linkedB), t.signal), "blocked");
     } finally {
       issueGate = undefined;
       sharedIssue.release.resolve();
+      await Promise.allSettled([mint]);
     }
     assert.equal(await mint, "committed");
     assert.equal(gh.issuesOfTokens.length, 1);
@@ -301,11 +326,12 @@ test(
     const staleIssue = (issueGate = holdProviderIssue());
     const inFlight = runPreparation(prepare(linkedC), t.signal);
     try {
-      await staleIssue.arrived.promise;
+      await providerArrival(staleIssue.arrived.promise, inFlight);
       assert.equal(await next.observeIssuer(nextVersion), true);
     } finally {
       issueGate = undefined;
       staleIssue.release.resolve();
+      await Promise.allSettled([inFlight]);
     }
     assert.equal(await inFlight, "quarantined");
     assert.equal(
@@ -380,5 +406,218 @@ test(
     assert.ok(replacement);
     assert.notDeepEqual(replacement, actual);
     assert.equal(gh.issuesOfTokens.length, 3);
+
+    // Selecting an old operation restores its duplicate fence, without replaying the provider.
+    assert.equal(
+      await prepare(linkedNext).run(actual.preparationAttemptId, {
+        signal: t.signal,
+        deadlineMonoMs: clock.monotonicNow() + 5000,
+      }),
+      "blocked",
+    );
+    // A live intent is projected; once its durable bound passes only its exact invocation
+    // can settle it. A legitimate successor must remain current when the late response arrives.
+    await poolA.query(
+      "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '30 seconds' WHERE id=$1",
+      [replacement.preparationAttemptId],
+    );
+    const trustDirectory = await temporaryDirectory(t);
+    const additionalCaPath = join(trustDirectory, "additional-ca.pem");
+    await run("openssl", [
+      "req",
+      "-x509",
+      "-key",
+      gh.tls.keyFile,
+      "-out",
+      additionalCaPath,
+      "-days",
+      "2",
+      "-subj",
+      "/CN=additional-test-trust",
+    ]);
+    const nextCa = Buffer.concat([gh.tls.ca, Buffer.from("\n"), await readFile(additionalCaPath)]);
+    const changedAuthority = preparationIssuerAuthority(gh.origin, nextCa);
+    assert.notEqual(changedAuthority, issuerAuthority);
+    const changed = new SharedPreparedRepositoryGit({
+      ...options,
+      pool: poolB,
+      issuerGeneration: 3,
+      issuerAuthority: changedAuthority,
+    });
+    // Pause before the genuine dispatch fence. A successor claim must irrevocably
+    // quarantine this intent, even if its timestamp later re-enters the dispatch window.
+    const pausedId = randomUUID();
+    const keyGate = holdProviderIssue();
+    const paused = prepare(linkedNext, gh.tls.ca, async () => {
+      keyGate.arrived.resolve();
+      await keyGate.release.promise;
+      return issuer;
+    }).run(pausedId, { signal: t.signal, deadlineMonoMs: clock.monotonicNow() + 25_000 });
+    const lateId = randomUUID();
+    const lateIssue = holdProviderIssue();
+    let lateMint: Promise<string> | undefined;
+    let successor: Awaited<ReturnType<typeof next.waitForVersion>>;
+    let successorMint: Promise<string> | undefined;
+    let successorIssue: ReturnType<typeof holdProviderIssue> | undefined;
+    let successorAdmission: typeof linkedNext.admission;
+    const projection = () =>
+      linkedNext.store.readCurrent(linkedNext.admission.familyId, (row) =>
+        row?.attempts.map((attempt) => attempt.id).sort(),
+      );
+    try {
+      await providerArrival(keyGate.arrived.promise, paused);
+      await poolA.query(
+        "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-interval '3 hours' WHERE id=$1",
+        [pausedId],
+      );
+      issueGate = lateIssue;
+      lateMint = prepare(linkedNext).run(lateId, {
+        signal: t.signal,
+        deadlineMonoMs: clock.monotonicNow() + 25_000,
+      });
+      await providerArrival(lateIssue.arrived.promise, lateMint);
+      await poolA.query(
+        "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp() WHERE id=$1",
+        [pausedId],
+      );
+      keyGate.release.resolve();
+      assert.equal(await bounded(paused), "quarantined");
+      assert.equal(
+        gh.issuesOfTokens.length,
+        3,
+        "the superseded original never dispatches while its successor is issuing",
+      );
+      // Age the fenced intent again before the independent authority-change case.
+      await poolA.query(
+        "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-interval '3 hours' WHERE id=$1",
+        [pausedId],
+      );
+      assert.deepEqual(await projection(), [replacement.preparationAttemptId, lateId].sort());
+      await poolA.query(
+        "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-interval '3 hours' WHERE id=$1",
+        [lateId],
+      );
+      assert.deepEqual(await projection(), [replacement.preparationAttemptId]);
+      assert.ok(linkedNext.store.forAttempt);
+      assert.deepEqual(
+        await linkedNext.store
+          .forAttempt(lateId, linkedNext.admission)
+          .readCurrent(linkedNext.admission.familyId, (row) =>
+            row?.attempts.map((attempt) => attempt.id).sort(),
+          ),
+        [replacement.preparationAttemptId, lateId].sort(),
+      );
+      assert.equal(await changed.observeIssuer(nextVersion), true);
+      assert.equal(
+        await retirePreparedGitHubToken(
+          next,
+          linkedNext.admission.familyId,
+          t.signal,
+          gh.origin,
+          gh.tls.ca,
+          clock,
+        ),
+        "retired",
+      );
+      const linkedChanged = await admittedTransaction(poolB, b, (db) =>
+        changed.attach(db, b, nextVersion),
+      );
+      assert.ok(linkedChanged);
+      assert.equal(linkedChanged.admission.familyId, linkedNext.admission.familyId);
+      assert.equal(linkedChanged.admission.issuerAuthority, changedAuthority);
+      successorAdmission = linkedChanged.admission;
+      assert.equal(
+        await linkedNext.store.readCurrent(
+          linkedNext.admission.familyId,
+          (row) => row !== undefined,
+        ),
+        false,
+      );
+      successorIssue = issueGate = holdProviderIssue();
+      successorMint = runPreparation(prepare(linkedChanged, nextCa), t.signal);
+      await providerArrival(successorIssue.arrived.promise, successorMint);
+      // Rollback cannot restore the original's publication authority after successor dispatch.
+      await poolA.query(
+        "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp() WHERE id=$1",
+        [lateId],
+      );
+      successorIssue.release.resolve();
+      assert.equal(await bounded(successorMint), "committed");
+      successor = await changed.waitForVersion(
+        linkedChanged.admission,
+        Date.now() + 1000,
+        t.signal,
+      );
+      assert.ok(successor);
+      lateIssue.release.resolve();
+      assert.equal(await bounded(lateMint), "quarantined");
+    } finally {
+      issueGate = undefined;
+      successorIssue?.release.resolve();
+      keyGate.release.resolve();
+      lateIssue.release.resolve();
+      await Promise.allSettled([
+        paused,
+        ...(lateMint ? [lateMint] : []),
+        ...(successorMint ? [successorMint] : []),
+      ]);
+    }
+    assert.deepEqual(
+      await changed.waitForVersion(successorAdmission, Date.now() + 1000, t.signal),
+      successor,
+    );
+    assert.deepEqual(
+      (
+        await poolA.query(
+          `SELECT state,custody,sealed IS NOT NULL AS captured,
+        provider_expires_at > clock_timestamp() AS live, admission=$2::jsonb AS original
+        FROM occ.prepared_github_attempts WHERE id=$1`,
+          [lateId, linkedNext.admission],
+        )
+      ).rows,
+      [{ state: "quarantined", custody: "retire", captured: true, live: true, original: true }],
+    );
+    assert.equal(
+      await prepare(linkedNext).run(lateId, {
+        signal: t.signal,
+        deadlineMonoMs: clock.monotonicNow() + 5000,
+      }),
+      "fenced",
+    );
+    assert.deepEqual(
+      (
+        await poolA.query("SELECT state,custody FROM occ.prepared_github_attempts WHERE id=$1", [
+          actual.preparationAttemptId,
+        ])
+      ).rows,
+      [{ state: "committed", custody: "revoked" }],
+    );
+    // Only the original issuer can decrypt and retire its captured credential; the new
+    // issuer's current version is neither selected nor changed by that cleanup.
+    assert.equal(
+      await retirePreparedGitHubToken(
+        next,
+        linkedNext.admission.familyId,
+        t.signal,
+        gh.origin,
+        gh.tls.ca,
+        clock,
+      ),
+      "retired",
+    );
+    assert.deepEqual(
+      (
+        await poolA.query(
+          "SELECT custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts WHERE id=$1",
+          [lateId],
+        )
+      ).rows,
+      [{ custody: "revoked", erased: true }],
+    );
+    assert.deepEqual(
+      await changed.waitForVersion(successorAdmission, Date.now() + 1000, t.signal),
+      successor,
+    );
+    assert.equal(gh.issuesOfTokens.length, 5);
   },
 );

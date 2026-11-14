@@ -1,3 +1,5 @@
+import type { InstalledTokenVersion } from "../token-service/material.ts";
+import type { GitHubPreparationDiagnostic } from "../../drivers/repo/github/access/provider-diagnostics.ts";
 import type { RepositoryGitCustody } from "../../composition/repository-credentials/custody-selection.ts";
 import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
 import { createHash, createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
@@ -401,16 +403,52 @@ export async function startPreparedGitHubGitOwner(
     allowsPreparedGitGrantRead(source.grant);
   async function withAppKey<T>(
     use: (key: Awaited<ReturnType<typeof appSigningKey>>["owner"], version: string) => Promise<T>,
+    keyUnavailable?: () => T,
   ) {
-    const { keyObject, owner: key } = await appSigningKey(
-      options.privateKeyPath,
-      registry.appId,
-      clock,
-    );
+    let signing: Awaited<ReturnType<typeof appSigningKey>>;
+    try {
+      signing = await appSigningKey(options.privateKeyPath, registry.appId, clock);
+    } catch (error) {
+      // Only acquisition failed: no attachment, provider dispatch or publication occurred.
+      if (error instanceof PreparedGitHubAppKeyError && keyUnavailable) {
+        return keyUnavailable();
+      }
+      throw error;
+    }
+    const { keyObject, owner: key } = signing;
     try {
       return await use(key, signingKeyVersion(keyObject));
     } finally {
       key.close();
+    }
+  }
+  const issuanceObserver =
+    (source: PreparedRepositoryGitSource) =>
+    ({ error, ...diagnostic }: GitHubPreparationDiagnostic) =>
+      options.report?.(
+        "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+        {
+          ...diagnostic,
+          ...(error ? { errorClass: error } : {}),
+          namespaceId: source.session.namespaceId,
+          revisionId: source.session.revisionId,
+          repositoryRef: source.session.binding.repositoryRef,
+        },
+        "info",
+      );
+  function recoveryRequired(
+    source: PreparedRepositoryGitSource,
+    reason: "quarantined" | "blocked",
+  ) {
+    try {
+      options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
+        reason,
+        namespaceId: source.session.namespaceId,
+        revisionId: source.session.revisionId,
+        repositoryRef: source.session.binding.repositoryRef,
+      });
+    } catch {
+      // Reporting cannot change custody or skip readback after unknown publication.
     }
   }
   async function prepare(
@@ -433,25 +471,11 @@ export async function startPreparedGitHubGitOwner(
         ...(ca ? { ca } : {}),
         renewBeforeMs: 600_000,
         minimumValidityMs: 60_000,
-        observe: ({ error, ...diagnostic }) =>
-          options.report?.(
-            "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
-            {
-              ...diagnostic,
-              ...(error ? { errorClass: error } : {}),
-              revisionId: source.session.revisionId,
-            },
-            "info",
-          ),
+        observe: issuanceObserver(source),
       }),
     );
     if (outcome === "quarantined" || outcome === "blocked") {
-      options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
-        reason: outcome,
-        namespaceId: source.session.namespaceId,
-        revisionId: source.session.revisionId,
-        repositoryRef: source.session.binding.repositoryRef,
-      });
+      recoveryRequired(source, outcome);
     }
   }
   const preparing = new Map<string, Promise<void>>();
@@ -460,6 +484,7 @@ export async function startPreparedGitHubGitOwner(
     source: PreparedRepositoryGitSource,
     deadline: number,
     signal: AbortSignal,
+    warmVersion?: InstalledTokenVersion,
   ) {
     stop.signal.throwIfAborted();
     if (!onDemand(source)) {
@@ -467,24 +492,31 @@ export async function startPreparedGitHubGitOwner(
     }
     const shared = store.shared;
     if (shared) {
-      const work = withAppKey(async (key, version) => {
-        signal.throwIfAborted();
-        const family = await store.attachSharedGit(source, version);
-        if (!family) {
-          return undefined;
-        }
-        const owner = createGitHubPreparationOwner({
-          ...family,
-          clock,
-          apiOrigin,
-          getKey: async () => key,
-          ...(ca ? { ca } : {}),
-          renewBeforeMs: 60_000,
-          minimumValidityMs: 60_000,
-        });
-        await runPreparation(owner, stop.signal);
-        return shared.waitForVersion(family.admission, deadline, signal);
-      }).finally(() => sharedPreparations.delete(work));
+      const work = withAppKey(
+        async (key, version) => {
+          signal.throwIfAborted();
+          const family = await store.attachSharedGit(source, version);
+          if (!family) {
+            return undefined;
+          }
+          const owner = createGitHubPreparationOwner({
+            ...family,
+            clock,
+            apiOrigin,
+            getKey: async () => key,
+            ...(ca ? { ca } : {}),
+            renewBeforeMs: 60_000,
+            minimumValidityMs: 60_000,
+            observe: issuanceObserver(source),
+          });
+          const outcome = await runPreparation(owner, stop.signal);
+          if (outcome === "quarantined") {
+            recoveryRequired(source, outcome);
+          }
+          return shared.waitForVersion(family.admission, deadline, signal);
+        },
+        warmVersion ? () => warmVersion : undefined,
+      ).finally(() => sharedPreparations.delete(work));
       sharedPreparations.add(work);
       return work;
     }

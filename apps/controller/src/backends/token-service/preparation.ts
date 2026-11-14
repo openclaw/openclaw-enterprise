@@ -46,7 +46,7 @@ interface PreparationOptions<A extends TokenAdmission> {
  * One fenced issuance attempt shared by scheduled and authorized request-time preparation.
  */
 export function createTokenPreparation<A extends TokenAdmission>(options: PreparationOptions<A>) {
-  const { store, clock, renewBeforeMs, minimumValidityMs } = options;
+  const { clock, renewBeforeMs, minimumValidityMs } = options;
   const admission = structuredClone(options.admission);
   if (
     !Number.isFinite(renewBeforeMs) ||
@@ -75,6 +75,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
       if (!attemptId || !inBounds()) {
         return "blocked";
       }
+      const store = options.store.forAttempt?.(attemptId, admission) ?? options.store;
       try {
         observe({ stage: "intent" });
         const begun = await store.transact(admission.familyId, (row) => {
@@ -138,6 +139,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
                     matches &&
                     entry.state === "issuing" &&
                     !entry.stale &&
+                    !entry.settlementOnly &&
                     sameTokenAdmission(entry.admission, admission)
                   );
                 });
@@ -173,6 +175,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
         verified = undefined;
       }
 
+      let published = false;
       try {
         observe({ stage: "publication" });
         const outcome = await store.transact(admission.familyId, (row, allocateMaterialVersion) => {
@@ -195,6 +198,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
           });
           if (
             attempt.state === "quarantined" ||
+            attempt.settlementOnly ||
             !admissionCurrent ||
             !currentBounds ||
             !verified ||
@@ -207,6 +211,13 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
             attempt.state = "quarantined";
             if (candidate) {
               attempt.candidate = Uint8Array.from(candidate);
+              if (
+                attempt.settlementOnly &&
+                verified &&
+                Number.isFinite(verified.providerExpiresAt)
+              ) {
+                attempt.candidateExpiresAt = verified.providerExpiresAt;
+              }
             } else if (refused) {
               // The provider answered this attempt's one request without a token: terminal.
               attempt.notIssued = true;
@@ -226,6 +237,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
           attempt.materialVersion = materialVersion;
           return "committed" as const;
         });
+        published = outcome === "committed";
         observe({ stage: "publication", publication: outcome });
         return outcome;
       } catch {
@@ -234,6 +246,20 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
         // The original intent remains non-replayable even if publication did not commit.
         return "quarantined";
       } finally {
+        if (!published && candidate) {
+          try {
+            // A takeover may have fenced ordinary family access, or publication may be unknown.
+            // This exact write cannot overwrite a committed result or existing cleanup custody.
+            await store.retainCaptured?.(
+              admission,
+              attemptId,
+              candidate,
+              verified?.providerExpiresAt,
+            );
+          } catch {
+            // Preserve the original unknown/quarantined outcome; never replay the provider.
+          }
+        }
         candidate?.fill(0);
       }
     },

@@ -1,3 +1,5 @@
+import { within } from "../helpers/wait-for.mjs";
+import { SharedPreparedRepositoryGit } from "../../apps/controller/src/drivers/repo/github/access/shared-prepared-git.ts";
 import assert from "node:assert/strict";
 import { randomUUID, sign } from "node:crypto";
 import { request as httpsRequest } from "node:https";
@@ -29,7 +31,10 @@ type DraftClaim = Pick<
   "request_digest_sha256" | "admission_id" | "attempt_id" | "material_version"
 > & { receipt_id: string; outcome: string };
 
-function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
+function signedColdGitJourney(
+  shared: boolean,
+  scenario: "normal" | "withdraw" | "refuse" | "concurrent" | "last-minute" = "normal",
+) {
   return async (t: TestContext) => {
     await selectedReadGitJourney(
       t,
@@ -139,15 +144,18 @@ function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
           const decision = await evaluateRequest(request);
           return { requestId: request.context.request_id, decision: decision.decision };
         };
-        const receipts = async () =>
+        const receiptRows = async () =>
           (
-            await pool.query<{ operation: string }>(
-              `SELECT operation FROM occ.prepared_repository_git_uses u
+            await pool.query<
+              Pick<GitUseReceipt, "admission_id" | "attempt_id" | "material_version" | "operation">
+            >(
+              `SELECT u.admission_id,u.attempt_id,u.material_version,u.operation FROM occ.prepared_repository_git_uses u
            JOIN occ.repository_session_attempts s USING (admission_id)
            WHERE s.revision_id=$1 ORDER BY authorization_reply_by`,
               [revision.id],
             )
-          ).rows.map(({ operation }) => operation);
+          ).rows;
+        const receipts = async () => (await receiptRows()).map(({ operation }) => operation);
         const issuance = peer.gh.issuesOfTokens.length;
         assert.equal(issuance, 0, "the selected route starts before any installation token exists");
         const foreignRepository = await approve(false, "fixture/unselected");
@@ -172,20 +180,161 @@ function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
         );
         assert.equal((await grant(discovery.requestId, assertion(), "wrong-binding")).status, 403);
         assert.equal(peer.gh.issuesOfTokens.length, 0, "authorization and bad grants never mint");
+        const privateProviderDetail = "fixture-private-provider-detail";
+        if (scenario === "refuse") {
+          peer.gh.setIssueStatus(403, JSON.stringify({ message: privateProviderDetail }));
+        }
         const signedGrant = assertion();
         const originBeforeIssuance = peer.originCalls();
         const redemption = grant(discovery.requestId, signedGrant);
+        let peerRedemption: ReturnType<typeof grant> | undefined;
         try {
-          await waitForIssuance();
+          await within(
+            Promise.race([
+              waitForIssuance(),
+              redemption.then(() => {
+                throw new Error("redemption ended before provider arrival");
+              }),
+            ]),
+            "provider arrival",
+            5000,
+          );
           assert.deepEqual(await receipts(), [], "held issuer has not released material");
-          if (withdrawWhileIssuing) {
+          if (scenario === "concurrent") {
+            const entered = Promise.withResolvers<void>();
+            const wait = SharedPreparedRepositoryGit.prototype.waitForVersion;
+            const observation = t.mock.method(
+              SharedPreparedRepositoryGit.prototype,
+              "waitForVersion",
+              function (this: SharedPreparedRepositoryGit, ...args: Parameters<typeof wait>) {
+                entered.resolve();
+                return wait.apply(this, args);
+              },
+            );
+            try {
+              const peerApproval = await approve(true);
+              assert.equal(peerApproval.decision, 1);
+              peerRedemption = grant(peerApproval.requestId, assertion());
+              // The original issuer is held, so entering real wait proves the peer was blocked.
+              await within(
+                Promise.race([
+                  entered.promise,
+                  peerRedemption.then(() => {
+                    throw new Error("peer completed before waiting for the held issuer");
+                  }),
+                ]),
+                "shared peer wait",
+                3000,
+              );
+            } finally {
+              observation.mock.restore();
+            }
+          }
+          if (scenario === "withdraw") {
             await removeBinding();
           }
         } finally {
           finishIssuance();
+          // Drain both requests without replacing an earlier control failure.
+          await Promise.allSettled([redemption, ...(peerRedemption ? [peerRedemption] : [])]);
         }
-        const allowed = await redemption;
-        if (withdrawWhileIssuing) {
+        const [allowed, peerAllowed] = await Promise.all([
+          redemption,
+          ...(peerRedemption ? [peerRedemption] : []),
+        ]);
+        assert.ok(allowed);
+        if (scenario === "concurrent") {
+          assert.equal(allowed.status, 200);
+          assert.equal(peerAllowed?.status, 200);
+          assert.equal(peer.gh.issuesOfTokens.length, 1);
+          assert.equal(
+            peer.issuanceEvents.some((event) => event.code === "PREPARED_GITHUB_RECOVERY_REQUIRED"),
+            false,
+          );
+          assert.deepEqual((await receipts()).sort(), ["advertise-upload-pack", "upload-pack"]);
+          return;
+        }
+        if (scenario === "refuse") {
+          assert.equal(allowed.status, 403);
+          assert.equal(allowed.value === undefined, true);
+          assert.deepEqual(await receipts(), []);
+          assert.equal(peer.gh.issuesOfTokens.length, 0);
+          const events = peer.issuanceEvents;
+          assert.equal(JSON.stringify(events).includes(privateProviderDetail), false);
+          const diagnostic = events.find(
+            (event) => event.code === "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+          );
+          const recovery = events.find(
+            (event) => event.code === "PREPARED_GITHUB_RECOVERY_REQUIRED",
+          );
+          assert.ok(diagnostic && recovery);
+          assert.equal(diagnostic.context.outcome, "quarantined");
+          assert.equal(diagnostic.context.httpStatus, 403);
+          assert.equal(recovery.context.reason, "quarantined");
+          assert.equal(diagnostic.context.validationKind, "reauthorization-required");
+          assert.equal(diagnostic.context.validationCode, "authority-unavailable");
+          assert.equal(diagnostic.context.errorClass, "validation-failed");
+          assert.equal(diagnostic.context.publication, "quarantined");
+          assert.equal(
+            events.filter((event) => event.code === "PREPARED_GITHUB_RECOVERY_REQUIRED").length,
+            1,
+          );
+          const allowedFields = new Set([
+            "namespaceId",
+            "revisionId",
+            "repositoryRef",
+            "reason",
+            "stage",
+            "requestEndCalled",
+            "admissionCurrent",
+            "stale",
+            "inBounds",
+            "clockTolerance",
+            "httpStatus",
+            "responseComplete",
+            "candidateIdentified",
+            "validationKind",
+            "validationCode",
+            "firstFailureStage",
+            "errorClass",
+            "publication",
+            "attemptId",
+            "outcome",
+          ]);
+          for (const event of [diagnostic, recovery]) {
+            assert.equal(event.context.namespaceId, revision.namespaceId);
+            assert.equal(event.context.revisionId, revision.id);
+            assert.equal(
+              event.context.repositoryRef,
+              revision.repositoryCredentials!.bindings[0]!.repositoryRef,
+            );
+            assert.equal(
+              Object.keys(event.context).every((key) => allowedFields.has(key)),
+              true,
+            );
+          }
+          assert.deepEqual(
+            (
+              await pool.query(
+                `SELECT a.state,a.custody FROM occ.prepared_github_attempts a
+             JOIN occ.prepared_github_shared_members m ON m.family_id=a.source_id
+             JOIN occ.repository_session_attempts s USING (admission_id) WHERE s.revision_id=$1`,
+                [revision.id],
+              )
+            ).rows,
+            [{ state: "quarantined", custody: "not_issued" }],
+          );
+          const requests = peer.gh.trace.length;
+          assert.equal((await grant(discovery.requestId, assertion())).status, 403);
+          assert.equal(
+            peer.gh.trace.length,
+            requests,
+            "the consumed grant cannot replay the refused issue",
+          );
+          assert.equal(peer.originCalls(), originBeforeIssuance);
+          return;
+        }
+        if (scenario === "withdraw") {
           assert.deepEqual(allowed, { status: 403, value: undefined });
           assert.equal(
             peer.gh.issuesOfTokens.length,
@@ -219,12 +368,40 @@ function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
           403,
           "a new request cannot reuse a signed JTI",
         );
-        const fetch = await approve(true);
-        assert.equal(fetch.decision, 1);
-        const fetched = await grant(fetch.requestId, assertion());
-        assert.equal(fetched.status, 200);
-        assert.ok(fetched.value);
-        assert.equal((await peer.send(fetched.value, true)).status, 200);
+        const exactReceipts = async () =>
+          (await receiptRows()).map(({ admission_id, attempt_id, material_version }) => ({
+            admission_id,
+            attempt_id,
+            material_version,
+          }));
+        const [originalReceipt] = await exactReceipts();
+        assert.ok(originalReceipt);
+        const requestsBefore = peer.gh.trace.length;
+        const originBefore = peer.originCalls();
+        const warmFetch = async () => {
+          const fetch = await approve(true);
+          assert.equal(fetch.decision, 1);
+          const fetched = await grant(fetch.requestId, assertion());
+          assert.equal(fetched.status, 200);
+          assert.ok(fetched.value);
+          assert.equal((await peer.send(fetched.value, true)).status, 200);
+        };
+        // Shorten only the usable window; keep the real issued token and running owner.
+        if (scenario === "last-minute") {
+          await pool.query(
+            "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '30 seconds' WHERE id=$1",
+            [originalReceipt.attempt_id],
+          );
+        }
+        if (shared) {
+          await peer.withoutAppKey(warmFetch);
+        } else {
+          await warmFetch();
+        }
+        assert.deepEqual(await exactReceipts(), [originalReceipt, originalReceipt]);
+        assert.equal(peer.gh.trace.length, requestsBefore, "warm use makes no issuer request");
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        assert.equal(peer.originCalls(), originBefore + 1);
         const before = await receipts();
         assert.deepEqual(before, ["advertise-upload-pack", "upload-pack"]);
 
@@ -255,6 +432,19 @@ function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
           assert.equal(state.rowCount, 1);
           assert.match(state.rows[0]!.family_id, /^repository-git-shared:[0-9a-f]{64}$/);
           assert.equal(state.rows[0]!.custody, "current");
+        }
+        if (scenario === "last-minute") {
+          await pool.query(
+            "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()-interval '1 second' WHERE id=$1",
+            [originalReceipt.attempt_id],
+          );
+          await peer.withoutAppKey(async () => {
+            const expired = await approve(true);
+            assert.equal(expired.decision, 1);
+            assert.equal((await grant(expired.requestId, assertion())).status, 403);
+          });
+          assert.deepEqual(await receipts(), before);
+          assert.equal(peer.gh.trace.length, requestsBefore);
         }
         const pending = await approve(true);
         assert.equal(pending.decision, 1);
@@ -312,7 +502,7 @@ test(
 test(
   "cold Git HTTPS grant refuses token release after withdrawal during issuance",
   { ...requiresPostgres, timeout: 90_000 },
-  signedColdGitJourney(false, true),
+  signedColdGitJourney(false, "withdraw"),
 );
 test(
   "Git HTTPS redemption reuses a committed shared-family token and denies withdrawal while warm",
@@ -320,9 +510,24 @@ test(
   signedColdGitJourney(true),
 );
 test(
+  "shared Git HTTPS keeps the last usable minute during a key outage but refuses expired material",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(true, "last-minute"),
+);
+test(
+  "concurrent shared Git HTTPS redemption waits without reporting recovery",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(true, "concurrent"),
+);
+test(
+  "shared Git HTTPS issuance reports a definitive refusal without replaying the grant",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(true, "refuse"),
+);
+test(
   "shared Git HTTPS redemption refuses token release after withdrawal during issuance",
   { ...requiresPostgres, timeout: 90_000 },
-  signedColdGitJourney(true, true),
+  signedColdGitJourney(true, "withdraw"),
 );
 
 for (const { name, action, expectedDenial } of [

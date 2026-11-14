@@ -267,6 +267,7 @@ export class SharedPreparedRepositoryGit extends PreparedGitHubPostgres {
       if (restored.rowCount !== 1) {
         return undefined;
       }
+      await this.fenceSupersededAttempts(c, familyId);
     }
     await c.query(
       `INSERT INTO ${members} (admission_id, family_id, source) VALUES ($1,$2,$3)
@@ -346,11 +347,13 @@ export class SharedPreparedRepositoryGit extends PreparedGitHubPostgres {
     installed: InstalledTokenVersion,
   ) {
     const source = await this.boundSource(c, member);
-    const selected = source && (await this.tokens.readWarm(c, source));
-    return selected?.preparationAttemptId === installed.preparationAttemptId &&
-      selected.materialVersion === installed.materialVersion
-      ? selected
-      : undefined;
+    return source ? this.lockMaterial(c, source, installed, true) : undefined;
+  }
+
+  /** Select metadata only; the final release must lock and read this exact version again. */
+  async warmMember(c: PostgresClient, member: PreparedRepositoryGitSource) {
+    const source = await this.boundSource(c, member);
+    return source ? this.lockMaterial(c, source, null, false) : undefined;
   }
 
   /** Keep material when any independently admitted member is still live. */
