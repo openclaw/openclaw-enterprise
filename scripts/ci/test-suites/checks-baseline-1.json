@@ -101,7 +101,7 @@
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.ts",
     "tests/conformance/sandbox-policy-persistence.test.ts",
-    "tests/conformance/contracts.test.mjs",
+    "tests/conformance/contracts.test.ts",
     "tests/conformance/presets.test.ts",
     "tests/integration/production-healthcheck.test.ts",
     "tests/conformance/pr-status.test.ts",
@@ -111,7 +111,7 @@
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.ts",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
-    "tests/conformance/model-discovery.test.mjs",
+    "tests/conformance/model-discovery.test.ts",
     "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
@@ -163,7 +163,7 @@
       "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
     },
     {
-      "path": "tests/conformance/model-discovery.test.mjs"
+      "path": "tests/conformance/model-discovery.test.ts"
     },
     {
       "path": "tests/conformance/codex-seccomp-profile.test.ts"
@@ -193,7 +193,7 @@
       "path": "tests/conformance/console-design-tokens.test.ts"
     },
     {
-      "path": "tests/conformance/contracts.test.mjs"
+      "path": "tests/conformance/contracts.test.ts"
     },
     {
       "path": "tests/conformance/update-contributors.test.ts"

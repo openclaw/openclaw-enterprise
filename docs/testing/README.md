@@ -63,8 +63,8 @@ For conformance tests alone, use `pnpm test:conformance`.
 ### Run one test
 
 ```sh
-pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.mjs
-pnpm test:files --test-name-pattern='the Driver contract exposes' -- tests/conformance/contracts.test.mjs
+pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.ts
+pnpm test:files --test-name-pattern='the Driver contract exposes' -- tests/conformance/contracts.test.ts
 ```
 
 The second command selects one named case. `test:files` does not prepare
