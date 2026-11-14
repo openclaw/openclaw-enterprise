@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "description": "Dedicated Codex profile with hosted plugin discovery and codex_pat runtime authentication; managed ChatGPT ServiceAccount issuance is optional.",
+  "description": "Dedicated Codex profile with hosted plugin discovery and per-Agent runtime authentication; managed ChatGPT ServiceAccount issuance is optional.",
   "recommendedPreset": "Standard Codex",
   "agentHarness": "dedicated-codex",
   "pluginSelection": "hosted-discovery-pat",
