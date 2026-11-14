@@ -135,7 +135,12 @@
     "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-credentials-tool-evidence.test.ts",
     "tests/integration/client-address.test.ts",
-    "tests/integration/full-integration-preflight.test.mjs",
+    "tests/integration/full-integration-preflight.test.ts",
+    "tests/integration/full-integration-schedule.test.ts",
+    "tests/integration/full-integration-reuse.test.ts",
+    "tests/integration/full-integration-coverage.test.ts",
+    "tests/integration/full-integration-workflow.test.ts",
+    "tests/integration/qa-repository-materialization.test.ts",
     "tests/integration/container-promote.test.ts",
     "tests/conformance/controller-stop-yields.test.ts",
     "tests/integration/dev-up-model-provider.test.mjs",
@@ -337,7 +342,22 @@
       ]
     },
     {
-      "path": "tests/integration/full-integration-preflight.test.mjs"
+      "path": "tests/integration/full-integration-preflight.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-schedule.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-reuse.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-coverage.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-workflow.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-repository-materialization.test.ts"
     },
     {
       "path": "tests/integration/ci-cleanup.test.ts"

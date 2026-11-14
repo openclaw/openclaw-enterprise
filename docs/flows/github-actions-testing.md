@@ -58,7 +58,7 @@ graph TD
 
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
 `.github/workflows/full-integration-execution.yml:jobs`,
-`scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
+`scripts/ci/full-integration-preflight.ts:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.ts:loadTestSuites`
 
 `loadTestSuites` reads ordered `scripts/ci/test-suites.json` lanes: tests, inputs, preparation.
@@ -103,7 +103,7 @@ Full Integration pins `github.sha`. [Scheduled admission](../testing/ci/full-int
 rechecks main, cadence and receipts under lock.
 `scripts/ci/full-integration-schedule-history.ts:readUnmarkedClock` requires explicit
 targeting to ignore live shared work.
-`scripts/ci/full-integration-preflight.mjs:fetchGithubJson` distinguishes malformed
+`scripts/ci/full-integration-preflight.ts:fetchGithubJson` distinguishes malformed
 JSON from request failures; diagnostics omit raw content.
 Manual dispatch verifies dispatcher, team and environment.
 Slack serializes channel/app access; installation and Skipper Git serialize per branch.
