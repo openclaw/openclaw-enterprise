@@ -2435,13 +2435,8 @@ assert.equal(commands, 0);
     }
   });
 
-  test("CI installs browsers for the PostgreSQL sign-in suite's owning lane", async () => {
+  test("CI installs Chromium for the PostgreSQL browser suites", async () => {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
-    const owners = Object.entries(manifest.lanes).filter(([, lane]) =>
-      lane.files.some((file) => file.path === "tests/integration/postgres-oidc-sign-in.test.mjs"),
-    );
-    assert.equal(owners.length, 1);
-    const [lane] = owners[0];
     const action = loadYaml(
       await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
     );
@@ -2449,11 +2444,21 @@ assert.equal(commands, 0);
       (step) => step.run === "bash scripts/ci/setup-tools.sh browser",
     );
     assert.ok(browserSetup);
-    // Moving the browser suite between lanes must carry its Chromium prerequisite.
-    assert.ok(
-      browserSetup.if.split(/\s*\|\|\s*/).includes(`inputs.lane == '${lane}'`),
-      `${lane} must install browsers before running the PostgreSQL sign-in suite`,
-    );
+    // Moving a browser suite between lanes must carry its Chromium prerequisite.
+    for (const path of [
+      "tests/integration/postgres-human-session-cookie.test.ts",
+      "tests/integration/postgres-native-host-only-browser.test.ts",
+    ]) {
+      const owners = Object.entries(manifest.lanes).filter(([, lane]) =>
+        lane.files.some((file) => file.path === path),
+      );
+      assert.equal(owners.length, 1, path);
+      const [lane] = owners[0];
+      assert.ok(
+        browserSetup.if.split(/\s*\|\|\s*/).includes(`inputs.lane == '${lane}'`),
+        `${lane} must install Chromium for ${path}`,
+      );
+    }
   });
 
   test("focused CI selection fails before tool setup or lane preparation", async () => {
