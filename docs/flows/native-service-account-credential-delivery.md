@@ -265,7 +265,7 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 
 ## Debugging and Verification
 
-- `node --test tests/conformance/plugin-compute.test.mjs` checks the filtered
+- `node --test tests/conformance/plugin-compute.test.ts` checks the filtered
   Codex child environments, startup-derived listener hash, and retained wrapper
   token. The runtime-image startup test checks the native Codex shell without a
   provider turn.
