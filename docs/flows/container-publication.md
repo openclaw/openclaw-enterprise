@@ -73,22 +73,17 @@ See [shared CI settings](../release/configuration.md#build-settings) for native 
 
 ### Runtime source verification
 
-For an ARM64 dedicated Codex Harness that runs without a JIT, build the
-[interpreter image](../../deploy/runtime/README.md#build-an-arm64-codex-harness-for-a-sandbox-that-forbids-jit)
-from the chosen runtime digest. Verify a returned JavaScript value through
-the installed Harness. A successful session handshake alone misses failures
-when V8 evaluates the first expression.
+Run JavaScript through the installed [interpreter Harness](../../deploy/runtime/code-mode/README.md).
 
-To verify runtime changes locally, first
-[resolve the build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments), then run:
+[Resolve build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments) and run:
 
 ```bash
 docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-Before assembly, `openclaw-bridge-tests` runs bridge suites, CUA tests, and
-typechecks with the same checkout, arguments, base, and platform. Failure blocks
+Before assembly, `openclaw-bridge-tests` runs bridge and CUA tests and
+typechecks on the same checkout, arguments, base and platform. Failure blocks
 smoke and upload. Local assembly can run independently.
 
 The `resources` step checks architecture, CPU, memory, and cgroup-v2 ancestor
