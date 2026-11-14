@@ -5,13 +5,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "node:https";
 import { request as controlRequest } from "node:http";
-import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import {
-  InMemoryPlatformState,
-  PostgresPlatformState,
-  DependencyUnavailableError,
-} from "../../packages/occ/src/index.ts";
+import { PostgresPlatformState, DependencyUnavailableError } from "../../packages/occ/src/index.ts";
 import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/access/receipt-client.ts";
 import { servePrivateRepositoryRequest } from "../../apps/controller/src/backends/repository-credentials/private-request-server.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
@@ -22,12 +17,13 @@ import {
   sessionAttempt,
 } from "../conformance/repository-sessions.contract.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
-import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { registerBrokerReceiptFencingCase } from "./postgres-repository-broker-receipt-fencing-cases.ts";
+import { registerBrokerReceiptShutdownCase } from "./postgres-repository-broker-receipt-shutdown-cases.ts";
 
 function requestGitDiscovery(fixture, opened) {
   return new Promise((resolve, reject) => {
@@ -61,104 +57,7 @@ function requestGitDiscovery(fixture, opened) {
   });
 }
 
-test(
-  "only the reserving broker generation fences its own reservation",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const pool = testPool(t, { connectionString: databaseUrl, max: 2 });
-    // The memory store refuses a fence of an open attempt itself; PostgreSQL's receipt trigger
-    // refuses it (23514), which the store reports as an ownership or state violation.
-    for (const [name, state, fenceRefusal] of [
-      ["memory", new InMemoryPlatformState(), /The broker receipt transition is invalid/],
-      [
-        "postgres",
-        new PostgresPlatformState(pool),
-        /The resource violates its exact platform ownership or state/,
-      ],
-    ]) {
-      await t.test(name, async () => {
-        const generation = randomUUID();
-        let revision;
-        // Each attempt gets its own revision: one repository has one opening attempt.
-        const reserve = async (phase) => {
-          ({ revision } = await seedSessionRevision(state));
-          const attempt = sessionAttempt(revision, { brokerProtocol: 1 });
-          await state.transact(async (unit) => {
-            await unit.repositorySessions.createAttempt(attempt);
-            await unit.repositorySessions.createBrokerReceipt({
-              admissionId: attempt.admissionId,
-              state: "reserved",
-              generation,
-            });
-            if (phase !== undefined) {
-              await unit.repositorySessions.advanceAttempt({
-                admissionId: attempt.admissionId,
-                expectedPhase: "opening",
-                phase,
-                ...(phase === "open" ? { sessionId: `session-${randomUUID()}` } : {}),
-                updatedAt: revision.createdAt,
-              });
-            }
-          });
-          return attempt.admissionId;
-        };
-        const fence = (admissionId, by = generation) =>
-          state.transact((unit) =>
-            unit.repositorySessions.fenceBrokerReceipt({ admissionId, generation: by }),
-          );
-        const reserved = await reserve();
-        assert.equal(await fence(reserved, randomUUID()), undefined);
-        assert.deepEqual(await fence(reserved), {
-          admissionId: reserved,
-          state: "fenced",
-          generation,
-        });
-        // A fence is terminal: it cannot be fenced again or bound.
-        assert.equal(await fence(reserved), undefined);
-        assert.equal(
-          await state.transact((unit) =>
-            unit.repositorySessions.advanceBrokerReceipt({
-              admissionId: reserved,
-              expectedState: "reserved",
-              generation,
-              state: "active",
-              sessionId: `session-${randomUUID()}`,
-              deadlineWallMs: revision.repositoryCredentials.deadlineWallMs,
-            }),
-          ),
-          undefined,
-        );
-        // A worker that already recorded the session keeps the reservation unfenced.
-        const opened = await reserve("open");
-        await assert.rejects(fence(opened), (error) => {
-          assert.equal(error.name, "ScopeViolationError");
-          assert.match(error.message, fenceRefusal);
-          return true;
-        });
-        assert.equal(
-          (await state.read((view) => view.repositorySessions.findBrokerReceipt(opened))).state,
-          "reserved",
-        );
-        // A closing attempt without a session may still be fenced.
-        const closing = await reserve("closing");
-        assert.equal((await fence(closing)).state, "fenced");
-      });
-    }
-    // Only a reservation may become fenced, and only a recovery fence starts that way.
-    const { revision } = await seedSessionRevision(new PostgresPlatformState(pool));
-    const attempt = sessionAttempt(revision, { brokerProtocol: 1 });
-    await new PostgresPlatformState(pool).transact((unit) =>
-      unit.repositorySessions.createAttempt(attempt),
-    );
-    await assert.rejects(
-      pool.query(
-        "INSERT INTO occ.repository_broker_receipts (admission_id,state,generation) VALUES ($1,'fenced',$2)",
-        [attempt.admissionId, randomUUID()],
-      ),
-      { code: "23514" },
-    );
-  },
-);
+registerBrokerReceiptFencingCase();
 
 test(
   "confirmed broker disposal survives service restart in PostgreSQL",
@@ -709,164 +608,4 @@ test(
   },
 );
 
-test(
-  "broker shutdown waits for receipts and loss of unconfirmed authority stays unknown",
-  { ...requiresPostgres, timeout: 45_000 },
-  async (t) => {
-    for (const mode of ["delayed-commit", "unavailable", "abrupt-death"]) {
-      await t.test(mode, async (context) => {
-        const resources = createTestResourceScope(context);
-        const pool = testPool(resources, { connectionString: databaseUrl, max: 4 });
-        let listener;
-        resources.after(() => listener?.close());
-        const namespaceId = `ns_${randomUUID()}`;
-        const fixture = await startServiceProcessFixture(resources, {
-          shutdownGraceMs: 100,
-          namespaceId,
-          // A free slot lets the later admission open and then meet the lost journal.
-          ...(mode === "unavailable" ? { sessions: 2 } : {}),
-        });
-        const state = new PostgresPlatformState(pool);
-        const binding = {
-          repositoryRef: fixture.input.repositoryRef,
-          profile: fixture.input.profile,
-          backendId: "github-fixture",
-          grant: fixture.input.expectedBinding,
-        };
-        const { revision } = await seedSessionRevision(
-          state,
-          {
-            driver: { id: "repository-credentials", implementation: "github" },
-            deadlineWallMs: fixture.input.deadlineWallMs,
-            bindings: [binding],
-          },
-          { namespaceId },
-        );
-        const admissionId = fixture.admissionId();
-        await state.transact((unit) =>
-          unit.repositorySessions.createAttempt(
-            sessionAttempt(revision, {
-              admissionId,
-              repositoryRef: binding.repositoryRef,
-              durationSeconds: fixture.input.durationSeconds,
-              brokerProtocol: 3,
-            }),
-          ),
-        );
-        listener = await startRepositoryReceiptServer({
-          state,
-          controlSocket: fixture.config.gateway.controlSocket,
-          driverId: "repository-credentials",
-          implementation: "github",
-          backendId: "github-fixture",
-        });
-        const control = new UnixRepositoryCredentialControlClient({
-          controlSocket: fixture.config.gateway.controlSocket,
-        });
-        await control.checkAdmissionReady(AbortSignal.timeout(2000));
-        const opened = await fixture.open(admissionId, false, true);
-        assert.equal(opened.session.state, "OPEN");
-        assert.deepEqual(fixture.github.tokenState(), []);
-
-        if (mode === "abrupt-death") {
-          // Forced death loses the original broker's in-memory cleanup outcome.
-          // Neither a restarted broker nor a durable active receipt proves disposal.
-          await fixture.kill();
-          await fixture.start();
-          const receipt = await state.read((view) =>
-            view.repositorySessions.findBrokerReceipt(admissionId),
-          );
-          assert.equal(receipt.state, "active");
-          assert.deepEqual(await fixture.open(admissionId, true, true), { error: "unavailable" });
-          assert.deepEqual(await fixture.status(opened.session.sessionId), {
-            error: "unavailable",
-          });
-          assert.deepEqual(fixture.github.tokenState(), []);
-          return;
-        }
-
-        if (mode === "unavailable") {
-          // No acknowledgment can be obtained after the worker listener is lost.
-          await listener.close();
-          listener = undefined;
-          // Capability identifies the protocol, not current journal availability.
-          // A later admission cannot return a bearer without a reservation.
-          await control.checkAdmissionReady(AbortSignal.timeout(2000));
-          assert.deepEqual(await fixture.open(fixture.admissionId(), false, true), {
-            error: "unavailable",
-          });
-          assert.deepEqual(fixture.github.tokenState(), []);
-          await fixture.shutdown(1);
-          const receipt = await state.read((view) =>
-            view.repositorySessions.findBrokerReceipt(admissionId),
-          );
-          assert.equal(receipt.state, "active");
-          return;
-        }
-
-        // A real row lock holds the terminal write past the original shutdown
-        // grace; the broker must stay alive for a separate acknowledgment window.
-        const lock = await pool.connect();
-        let completed = false;
-        let stopping;
-        try {
-          await lock.query("BEGIN");
-          await lock.query(
-            "SELECT admission_id FROM occ.repository_broker_receipts WHERE admission_id=$1 FOR UPDATE",
-            [admissionId],
-          );
-          stopping = fixture.shutdown().then(() => {
-            completed = true;
-          });
-          void stopping.catch(() => {});
-          const blocked = await waitFor(
-            "the original broker to attempt the terminal write",
-            async () => {
-              const result = await pool.query(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%repository_broker_receipts%') AS blocked",
-              );
-              return result.rows[0].blocked ? true : undefined;
-            },
-            2000,
-          );
-          assert.equal(blocked, true, "the original broker must attempt the terminal write");
-          await delay(300);
-          assert.equal(
-            completed,
-            false,
-            "the broker must outlive the original grace while flushing",
-          );
-        } finally {
-          await lock.query("ROLLBACK");
-          lock.release();
-        }
-        await stopping;
-        const receipt = await state.read((view) =>
-          view.repositorySessions.findBrokerReceipt(admissionId),
-        );
-        assert.equal(receipt.state, "disposed");
-        assert.equal(receipt.sessionId, opened.session.sessionId);
-        assert.equal(receipt.admissionId, admissionId);
-        assert.equal(receipt.deadlineWallMs, fixture.input.deadlineWallMs);
-        assert.equal(receipt.revoked, 0);
-        assert.equal(receipt.expired, 0);
-        assert.deepEqual(fixture.github.tokenState(), []);
-        assert.deepEqual(fixture.github.trace, []);
-        await fixture.start();
-        const recovered = await fixture.open(admissionId, true, true);
-        assert.deepEqual(recovered, await fixture.status(opened.session.sessionId));
-        assert.equal(recovered.state, "DISPOSED");
-        assert.equal(recovered.sessionId, opened.session.sessionId);
-        assert.deepEqual(recovered.binding, binding.grant);
-        assert.deepEqual(recovered.cleanup, {
-          active: 0,
-          pending: 0,
-          revoked: 0,
-          expired: 0,
-          uncertain: 0,
-          auxiliaryPending: false,
-        });
-      });
-    }
-  },
-);
+registerBrokerReceiptShutdownCase();

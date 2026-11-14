@@ -389,7 +389,16 @@
     },
     {
       "path": "tests/integration/postgres-repository-broker-receipts.test.mjs",
-      "expectedTests": ["confirmed broker disposal survives service restart in PostgreSQL"]
+      "expectedTests": [
+        "only the reserving broker generation fences its own reservation",
+        "memory",
+        "postgres",
+        "confirmed broker disposal survives service restart in PostgreSQL",
+        "broker shutdown waits for receipts and loss of unconfirmed authority stays unknown",
+        "delayed-commit",
+        "unavailable",
+        "abrupt-death"
+      ]
     },
     {
       "path": "tests/integration/postgres-password-sign-in-limit.test.ts",

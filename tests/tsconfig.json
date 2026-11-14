@@ -53,6 +53,8 @@
     "integration/postgres-agent-provisioning-fixture.ts",
     "integration/postgres-agent-provisioning-refusal-cases.ts",
     "integration/postgres-agent-provisioning-transport-fixture.ts",
+    "integration/postgres-repository-broker-receipt-fencing-cases.ts",
+    "integration/postgres-repository-broker-receipt-shutdown-cases.ts",
     "integration/runtime-image-seccomp-case.ts",
     "integration/runtime-image-codex-auth-mount-case.ts",
     "integration/runtime-image-gateway-probe-cleanup-case.ts",
