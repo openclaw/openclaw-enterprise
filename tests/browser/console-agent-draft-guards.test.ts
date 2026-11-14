@@ -1071,6 +1071,11 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   await search.fill("https://PACKAGES.example.org" + archive.path);
   assert.equal(await archiveRow.count(), 1);
   assert.equal(await destinations.count(), 1);
+  const alsoAllowed = `Also allowed by host · ${hostUrl}`;
+  const allowedCell = archiveRow
+    .getByRole("cell")
+    .filter({ has: page.getByText("Allowed", { exact: true }) });
+  assert.ok(await allowedCell.getByText(alsoAllowed, { exact: true }).isVisible());
   for (const query of [
     hostUrl + archive.path.toUpperCase(),
     "https://packages.example.org:8443" + archive.path,
@@ -1150,6 +1155,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   await refresh.click();
   await confirmation.waitFor();
   await nextRow.getByText("Allowed", { exact: true }).waitFor();
+  assert.equal(await nextRow.getByText(/^Also allowed by host/).count(), 0);
   // A transient verification failure can outlast the operation that already settled.
   view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
   await page.reload();
@@ -1214,6 +1220,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     downloadChange: { action: "disable", destination: archive },
   });
   await archiveRow.getByText("Last confirmed on", { exact: true }).waitFor();
+  assert.equal(await archiveRow.getByText(alsoAllowed, { exact: true }).count(), 0);
   await archiveRow
     .getByRole("cell")
     .filter({ hasText: "Agent-approved" })

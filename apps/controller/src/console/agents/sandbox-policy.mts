@@ -1081,7 +1081,7 @@ export function renderAgentSandboxPolicy(
     }[] = [];
     for (const [url, d] of scopes) {
       const exact = confirmedUrls.has(url);
-      const covered = !exact && confirmedUrls.has(origin(d));
+      const covered = d.path !== undefined && confirmedUrls.has(origin(d));
       let access = baselineOff ? "Off on this revision" : "Unconfirmed";
       let accessTone = baselineOff ? "neutral" : "warning";
       if (receipt) {
@@ -1222,7 +1222,13 @@ export function renderAgentSandboxPolicy(
           "td",
           { "data-label": "Confirmed access" },
           element("span", { className: "network-admin__access", "data-tone": accessTone }, access),
-          covered ? element("span", { className: "network-admin__secondary" }, origin(d)) : null,
+          covered && (!exact || currentReceipt)
+            ? element(
+                "span",
+                { className: "network-admin__secondary" },
+                exact ? `Also allowed by host · ${origin(d)}` : origin(d),
+              )
+            : null,
         ),
         element("td", { "data-label": "Actions" }, actions),
       );

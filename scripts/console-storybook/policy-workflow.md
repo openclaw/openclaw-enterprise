@@ -77,9 +77,10 @@ Open **Pages/Agent detail → Protected Downloads stay covered by a host rule**.
    **Confirmed access**. Under **Filter destinations**, choose **Off** to see
    the approved mirror. Choose **All access states** to return to the full list.
 2. Paste `https://downloads.example.org/releases/tool.tar.gz` into **Search
-   destinations**. Only the exact archive appears. Choose **Disable** on that
-   row and wait for **Confirmed**. The archive keeps its Agent approval and
-   shows **Covered by host** with `https://downloads.example.org:443`.
+   destinations**. Only the exact archive appears. Under **Allowed**, check for
+   **Also allowed by host · https://downloads.example.org:443**. Choose
+   **Disable** on that row and wait for **Confirmed**. The archive keeps its
+   Agent approval and shows **Covered by host** with `https://downloads.example.org:443`.
 3. Open **More actions** (⋯) on the same archive and choose **Withdraw approval**.
    Wait for **Confirmed**, then choose **Refresh**. The archive shows **Off**,
    **No Agent approval**, and **Covered by host**. Clear the search to see
