@@ -262,6 +262,9 @@ export async function runBodylessRoutes({
   const app = fixture.createApp(fixture.principal, createFastifyApp);
 
   try {
+    const session = app.defaultSession;
+    assert.ok(session);
+    const headers = authenticatedHeaders(session);
     for (const [method, url] of [
       ["GET", "/installation"],
       ["GET", "/namespaces"],
@@ -278,7 +281,7 @@ export async function runBodylessRoutes({
         method,
         url,
         headers: {
-          ...authenticatedHeaders(app.defaultSession),
+          ...headers,
           "content-type": "application/json",
           host: "console.oce.localhost",
         },

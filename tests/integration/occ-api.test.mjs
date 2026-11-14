@@ -472,10 +472,13 @@ function stateWithDeploymentWork(state, deploymentWorks) {
     ...view,
     operations: {
       ...view.operations,
-      findWork: async (requestedKey) =>
-        deploymentWorks.has(requestedKey)
-          ? Object.freeze({ ...deploymentWorks.get(requestedKey) })
-          : view.operations.findWork(requestedKey),
+      findWork: async (requestedKey) => {
+        if (!deploymentWorks.has(requestedKey)) {
+          return view.operations.findWork(requestedKey);
+        }
+        const work = deploymentWorks.get(requestedKey);
+        return work === undefined ? undefined : Object.freeze({ ...work });
+      },
     },
   });
   return {
@@ -539,6 +542,14 @@ async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
       `${path}/deploy-first/${body.key}/${body.expectedConfigurationId}/${body.expectedGeneration}`,
       options,
     );
+  const listRevisions = () =>
+    controller.fixture.platformState.read((state) =>
+      state.revisions.listRevisions(namespace.id, agent.id),
+    );
+  const listRevisionMetadata = () =>
+    controller.fixture.platformState.read((state) =>
+      state.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
   const work = () =>
     controller.fixture.platformState
       .pendingOperations()
@@ -550,6 +561,8 @@ async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
     path,
     intent,
     recover,
+    listRevisions,
+    listRevisionMetadata,
     work,
     secretDriver,
     channelDriver,
@@ -581,8 +594,9 @@ test("guarded first deployment returns 409 and audits an unready Namespace witho
 });
 
 test("guarded first deployment with the bundled Slack selection recovers without writes", async () => {
+  const deployment = await firstDeploymentFixture();
   const { controller, namespace, agent, path, intent, recover, work, secretDriver, providerCalls } =
-    await firstDeploymentFixture();
+    deployment;
   const schemaApp = controller.fixture.createApp(undefined, createFastifyApp);
   let operations;
   try {
@@ -623,9 +637,7 @@ test("guarded first deployment with the bundled Slack selection recovers without
   assert.equal(controller.fixture.auditSink.events.length, before);
   // Discard the reply; the observer reads the owning state, just as in the stock control.
   await controller.request("POST", `${path}/deploy-first`, { body: intent });
-  const [stored] = await controller.fixture.platformState.read((state) =>
-    state.revisions.listRevisions(namespace.id, agent.id),
-  );
+  const [stored] = await deployment.listRevisions();
   assert.ok(stored);
   const calls = secretDriver.calls.length;
   const events = controller.fixture.auditSink.events.length;
@@ -682,9 +694,7 @@ test("guarded first deployment with the bundled Slack selection recovers without
     409,
   );
 
-  for (const revision of await controller.fixture.platformState.read((state) =>
-    state.revisions.listRevisions(namespace.id, agent.id),
-  )) {
+  for (const revision of await deployment.listRevisions()) {
     for (const field of ["key", "actorId", "firstDeploymentDigest", "first_deployment_digest"]) {
       assert.equal(Object.hasOwn(revision, field), false);
       assert.equal(Object.hasOwn(ordinary.data, field), false);
@@ -870,7 +880,7 @@ test("guarded first deployment rejects stale binding and generation before crede
 });
 
 test("direct first-deployment intent boundary rejects malformed values before I/O", async (t) => {
-  const { controller, namespace, agent, intent, work, secretDriver, providerCalls } =
+  const { controller, namespace, agent, intent, listRevisions, work, secretDriver, providerCalls } =
     await firstDeploymentFixture();
   const { fixture } = controller;
   const input = { namespaceId: namespace.id, agentId: agent.id };
@@ -951,10 +961,7 @@ test("direct first-deployment intent boundary rejects malformed values before I/
   }
   // No revision or queued work can be written without crossing the guarded state
   // boundaries. Inspect the real store too, after the per-call spies are restored.
-  assert.deepEqual(
-    await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
-    [],
-  );
+  assert.deepEqual(await listRevisions(), []);
   assert.equal(work().length, 0);
 
   await t.test("valid string admits revision one and recovers with real grants", async () => {
@@ -964,9 +971,7 @@ test("direct first-deployment intent boundary rejects malformed values before I/
       intent,
       resolveApprovedDevelopmentHarness,
     );
-    const revisions = await state.read((view) =>
-      view.revisions.listRevisions(namespace.id, agent.id),
-    );
+    const revisions = await listRevisions();
     assert.equal(revisions.length, 1);
     assert.equal(revisions[0].id, admitted.revisionId);
     assert.equal(work().length, 1);
@@ -1114,7 +1119,8 @@ test("direct first-deployment captures intent for exact current receipt authorit
 test("direct first-deployment captures scalars once for fresh admission and recovery", async (t) => {
   for (const change of ["stateful key", "immediate target and generation mutation"]) {
     await t.test(change, async (caseContext) => {
-      const { controller, namespace, agent, path, intent, work } = await firstDeploymentFixture();
+      const { controller, namespace, agent, path, intent, listRevisions, work } =
+        await firstDeploymentFixture();
       const { fixture } = controller;
       const actorId = fixture.principal.id;
       const deploy = fixture.controller.deployAgentFirst.bind(fixture.controller);
@@ -1145,9 +1151,7 @@ test("direct first-deployment captures scalars once for fresh admission and reco
       if (change === "stateful key") {
         assert.equal(keyReads, 1);
       }
-      const revisions = await fixture.platformState.read((view) =>
-        view.revisions.listRevisions(namespace.id, agent.id),
-      );
+      const revisions = await listRevisions();
       assert.equal(revisions.length, 1);
       const [revision] = revisions;
       assert.equal(revision.revision, 1);
@@ -1200,12 +1204,7 @@ test("direct first-deployment captures scalars once for fresh admission and reco
         );
         assert.equal(recoveryKeyReads, 1);
       }
-      assert.deepEqual(
-        await fixture.platformState.read((view) =>
-          view.revisions.listRevisions(namespace.id, agent.id),
-        ),
-        revisions,
-      );
+      assert.deepEqual(await listRevisions(), revisions);
       assert.equal(work().length, 1);
       assert.deepEqual(fixture.auditSink.events.slice(beforeAudit), events);
     });
@@ -1332,8 +1331,8 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
     [false, "deploy-first"],
     [true, "deploy"],
   ]) {
-    const { controller, namespace, agent, path, intent, secretDriver, work, providerCalls } =
-      await slackFirstDeploymentFixture(enabled);
+    const deployment = await slackFirstDeploymentFixture(enabled);
+    const { controller, namespace, path, intent, secretDriver, work, providerCalls } = deployment;
     const app = controller.fixture.createApp(undefined, createFastifyApp);
     try {
       const url = await app.listen({ host: "127.0.0.1", port: 0 });
@@ -1346,9 +1345,7 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
       const result = await send("POST", route, route === "deploy-first" ? { body: intent } : {});
       assert.equal(result.status, 202, JSON.stringify(result.body));
       assert.equal(work().length, 1);
-      const revisions = await controller.fixture.platformState.read((state) =>
-        state.revisions.listRevisionMetadata(namespace.id, agent.id),
-      );
+      const revisions = await deployment.listRevisionMetadata();
       assert.equal(revisions.length, 1);
       assert.equal(controller.fixture.auditSink.events.length - before, 1);
       assert.equal(providerCalls(), enabled ? 1 : 0);
@@ -1425,12 +1422,7 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
         assert.deepEqual(secretDriver.calls, calls);
         assert.equal(providerCalls(), enabled ? 1 : 0);
         assert.equal(work().length, 1);
-        assert.deepEqual(
-          await controller.fixture.platformState.read((state) =>
-            state.revisions.listRevisionMetadata(namespace.id, agent.id),
-          ),
-          revisions,
-        );
+        assert.deepEqual(await deployment.listRevisionMetadata(), revisions);
         restrictions.pop();
         const restored = await send(
           "GET",
@@ -1487,8 +1479,9 @@ test("first-deployment CLI recovers a lost committed response with the original 
   await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
   for (const reply of ["dropped", "malformed"]) {
     await t.test(`${reply} committed reply`, async (t) => {
+      const deployment = await firstDeploymentFixture();
       const { controller, namespace, agent, path, intent, work, secretDriver, providerCalls } =
-        await firstDeploymentFixture();
+        deployment;
       const fixture = controller.fixture;
       // Provision an automation identity in the actual native IAM fixture. The HTTP auth
       // service issues its key; the CLI never impersonates the administrator's session.
@@ -1603,9 +1596,7 @@ test("first-deployment CLI recovers a lost committed response with the original 
           [{ method: "POST", path: `${path}/deploy-first` }],
           "the CLI must not automatically replay an uncertain mutation",
         );
-        const revisions = await fixture.platformState.read((unit) =>
-          unit.revisions.listRevisionMetadata(namespace.id, agent.id),
-        );
+        const revisions = await deployment.listRevisionMetadata();
         assert.equal(revisions.length, 1);
         assert.equal(revisions[0].id, committed.revisionId);
         assert.equal(work().length, 1);
@@ -1664,12 +1655,7 @@ test("first-deployment CLI recovers a lost committed response with the original 
           },
         ]);
         assert.equal(work().length, 1);
-        assert.deepEqual(
-          await fixture.platformState.read((unit) =>
-            unit.revisions.listRevisionMetadata(namespace.id, agent.id),
-          ),
-          revisions,
-        );
+        assert.deepEqual(await deployment.listRevisionMetadata(), revisions);
         assert.deepEqual(secretDriver.calls, calls);
         assert.equal(providerCalls(), 0);
         assert.deepEqual(fixture.auditSink.events, audit);
@@ -2013,8 +1999,9 @@ test("guarded first deployment rechecks Agent and Configuration authority before
 test("guarded first deployment refuses deleting Agents before validation", async (t) => {
   for (const stage of ["before-valid-token", "before-wrong-role-token", "after-validation-error"]) {
     await t.test(stage, async (t) => {
-      const { controller, namespace, agent, bot, path, intent, work, secretDriver, providerCalls } =
-        await slackFirstDeploymentFixture();
+      const deployment = await slackFirstDeploymentFixture();
+      const { controller, namespace, bot, path, intent, work, secretDriver, providerCalls } =
+        deployment;
       const fixture = controller.fixture;
       const app = fixture.createApp(undefined, createFastifyApp);
       try {
@@ -2057,9 +2044,7 @@ test("guarded first deployment refuses deleting Agents before validation", async
           session: app.defaultSession,
           body: intent,
         });
-        const revisions = await fixture.platformState.read((unit) =>
-          unit.revisions.listRevisionMetadata(namespace.id, agent.id),
-        );
+        const revisions = await deployment.listRevisionMetadata();
         const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
         t.diagnostic(
           JSON.stringify({
@@ -4924,11 +4909,20 @@ test("Installation deployment inventory fails closed on incomplete authorization
     ?.agents.find((candidate) => candidate.id === agent.id);
   assert.equal(inProgressAgent?.deploymentInProgress, true);
 
+  // Work belonging to a different Namespace cannot establish this deployment's state.
+  const otherNamespace = inventory.data.namespaces.find(
+    (candidate) => candidate.id !== namespace.id,
+  );
+  assert.ok(otherNamespace);
+  deploymentWorks.set(workKey, { ...completedWork, namespaceId: otherNamespace.id });
+  const wrongOwner = await controller.request("GET", inventoryPath);
+  assertApiError(wrongOwner, 503, "DEPENDENCY_UNAVAILABLE", "wrong-owner deployment work");
+
   // Missing durable work makes completeness unknowable and must fail the whole operation.
   deploymentWorks.set(workKey, undefined);
   const incomplete = await controller.request("GET", inventoryPath);
-  assert.equal(incomplete.status, 503);
-  assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(incomplete, 503, "DEPENDENCY_UNAVAILABLE", "missing deployment work");
+  assert.deepEqual(Object.keys(incomplete.body).sort(), ["error", "meta"]);
 });
 
 test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
@@ -10004,13 +9998,13 @@ test("ordinary deployment admits only the Configuration and Drivers whose channe
       const { promise: reached, resolve: reach } = Promise.withResolvers();
       const { promise: released, resolve: release } = Promise.withResolvers();
       let held = false;
-      const { controller, namespace, agent, path, work, channelDriver, providerCalls } =
-        await slackFirstDeploymentFixture(true, async () => {
-          if (held) {
-            reach();
-            await released;
-          }
-        });
+      const deployment = await slackFirstDeploymentFixture(true, async () => {
+        if (held) {
+          reach();
+          await released;
+        }
+      });
+      const { controller, namespace, agent, path, work, channelDriver, providerCalls } = deployment;
       const fixture = controller.fixture;
       const replacement = await createConfiguration(controller, namespace.id);
       const app = fixture.createApp(undefined, createFastifyApp);
@@ -10070,9 +10064,7 @@ test("ordinary deployment admits only the Configuration and Drivers whose channe
         assert.equal(providerCalls(), 2, "one provider request per attempted deployment");
         assert.equal(work().length - beforeWork, change === "unchanged" ? 1 : 0);
         assert.equal(successes() - beforeAudit, change === "unchanged" ? 1 : 0);
-        const revisions = await fixture.platformState.read((state) =>
-          state.revisions.listRevisionMetadata(namespace.id, agent.id),
-        );
+        const revisions = await deployment.listRevisionMetadata();
         assert.equal(revisions.length, change === "unchanged" ? 2 : 1);
         if (change === "unchanged") {
           assert.equal(result.data.revision, 2);

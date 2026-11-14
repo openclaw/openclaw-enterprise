@@ -2,17 +2,13 @@ import { registerCredentialFixtureRegressions } from "../fixtures/repository-cre
 import assert from "node:assert/strict";
 import test from "node:test";
 import { request } from "node:https";
-import type {
-  RepositoryBackendFactory,
-  RequestHead,
-} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { RequestHead } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
   CredentialServiceOwner,
   ExchangeSender,
   RunningListeners,
 } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import type { ServiceConfig } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import type { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
@@ -20,12 +16,13 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import {
   createAlternateDriverFactory,
   startAlternateUpstream,
-} from "../fixtures/repository-credentials/alternate.mjs";
+} from "../fixtures/repository-credentials/alternate.ts";
 import {
   createServiceConfiguration,
   eventually,
   gatewayRequest,
 } from "../fixtures/repository-credentials/service.mjs";
+import type { AlternateDriverObservation } from "../fixtures/repository-credentials/alternate/driver.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
@@ -33,28 +30,6 @@ import { removeRemoteBranches } from "../fixtures/repository-credentials/workflo
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
 import { requestHead } from "../fixtures/repository-credentials/builders.mjs";
-
-type AlternateFactory = RepositoryBackendFactory & {
-  events: { kind: string }[];
-  drivers: {
-    settle(original: object): Promise<void>;
-    prepareAuthentication(credential: object, plan: object): void;
-  }[];
-};
-
-type AlternateUpstream = {
-  origin: string;
-  tls: Awaited<ReturnType<typeof createTlsMaterial>>;
-  accepted: Map<string, number>;
-  trace: {
-    method: string;
-    path: string;
-    authorizationPresent: boolean;
-    cookiePresent: boolean;
-    bodyBytes?: number;
-    committed?: boolean;
-  }[];
-};
 
 registerCredentialFixtureRegressions();
 
@@ -100,7 +75,7 @@ test("second backend retains renewal through expiry and finalizes through the re
     origin: "https://forge.example.test",
     gatewayOrigin: config.gateway.publicOrigin,
     clock,
-  }) as AlternateFactory;
+  });
   const { createCredentialService } = await import("../fixtures/repository-credentials/service.ts");
   const service = createCredentialService({
     config,
@@ -152,11 +127,15 @@ test("second backend retains renewal through expiry and finalizes through the re
   const driver = factory.drivers[0];
   assert.ok(driver);
   await assert.rejects(
+    // An unbranded lookalike must fail the Driver's runtime identity check.
+    // @ts-expect-error The forged outcome lacks the original outcome identity.
     driver.settle(Object.freeze({ kind: "finalized", attemptId: "foreign" })),
     /foreign/,
   );
   assert.throws(
-    () => driver.prepareAuthentication(Object.freeze({}), Object.freeze({})),
+    () =>
+      // @ts-expect-error These objects were not produced by the Driver.
+      driver.prepareAuthentication(Object.freeze({}), Object.freeze({})),
     /foreign/,
   );
 });
@@ -174,13 +153,13 @@ test("second backend uses the production HTTPS sender and distinct native authen
   t.after(() => resources.close());
   const clock = createControlledClock();
   const config: ServiceConfig = await createServiceConfiguration(resources);
-  const upstream: AlternateUpstream = await startAlternateUpstream(resources, { clock });
+  const upstream = await startAlternateUpstream(resources, { clock });
   const factory = createAlternateDriverFactory({
     origin: upstream.origin,
     gatewayOrigin: config.gateway.publicOrigin,
     clock,
     accepted: upstream.accepted,
-  }) as AlternateFactory;
+  });
   const { service, listeners }: { service: CredentialServiceOwner; listeners: RunningListeners } =
     await startServiceListeners(resources, {
       config,
@@ -224,11 +203,11 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
     credentialMarginMs: 100,
   });
   const { promise: held, resolve: release } = Promise.withResolvers<void>();
-  const upstream: AlternateUpstream = await startAlternateUpstream(resources, {
+  const upstream = await startAlternateUpstream(resources, {
     clock,
     controls: { beforeWriteChunk: () => held },
   });
-  const observations: { kind: string; method?: string }[] = [];
+  const observations: AlternateDriverObservation[] = [];
   const factory = createAlternateDriverFactory({
     origin: upstream.origin,
     gatewayOrigin: config.gateway.publicOrigin,
@@ -236,8 +215,8 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
     accepted: upstream.accepted,
     lifetimeMs: 90000,
     operationMs: 60000,
-    controls: { observe: (event: { kind: string; method?: string }) => observations.push(event) },
-  }) as AlternateFactory;
+    controls: { observe: (event) => observations.push(event) },
+  });
   const { service, listeners }: { service: CredentialServiceOwner; listeners: RunningListeners } =
     await startServiceListeners(resources, {
       config,

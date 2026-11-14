@@ -685,7 +685,7 @@ while [ "$SECONDS" -le "$deadline" ]; do
     fail "$service_stage" "$service_message" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
   fi
   if [ "$service_status" = "probe" ]; then
-    if compose exec -T worker node scripts/production-healthcheck.mjs worker ready >/dev/null 2>"$temporary_directory/worker-readiness.err"; then
+    if compose exec -T worker node scripts/production-healthcheck.ts worker ready >/dev/null 2>"$temporary_directory/worker-readiness.err"; then
       startup_ready=1
       break
     fi

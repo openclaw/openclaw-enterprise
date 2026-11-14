@@ -73,7 +73,11 @@ export default defineConfig(
     ".agents/**",
   ]),
   {
-    files: ["{apps,packages,scripts,tests}/**/*.{js,mjs,cjs,ts,mts}", "*.{js,mjs,cjs,ts}"],
+    files: [
+      "{apps,packages,scripts,tests}/**/*.{js,mjs,cjs,ts,mts}",
+      "deploy/helm/src/*.ts",
+      "*.{js,mjs,cjs,ts}",
+    ],
     extends: [js.configs.recommended],
     languageOptions: { globals: globals.node },
     plugins: { "@stylistic": stylistic },

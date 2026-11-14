@@ -25,7 +25,7 @@ import {
 } from "../helpers/dev-up.mjs";
 
 // dev-up's Kubernetes Compute lifecycle: authenticated startup, cleanup, rollback and the real
-// Go launcher's recovery. The Compose stack cases are in dev-up-compose.test.mjs.
+// Go launcher's recovery. The Compose startup and preflight suites cover the Compose stack.
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",

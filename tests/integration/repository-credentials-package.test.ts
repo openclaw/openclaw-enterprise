@@ -101,7 +101,7 @@ test(
     await stageArtifactInputs(build);
     const built = spawnSync(
       process.execPath,
-      [join(build, "scripts/build-repository-credentials.mjs")],
+      [join(build, "scripts/build-repository-credentials.ts")],
       {
         encoding: "utf8",
         timeout: 30000,
@@ -122,7 +122,7 @@ test(
     );
     const issuerRejected = spawnSync(
       process.execPath,
-      [join(build, "scripts/build-repository-credentials.mjs")],
+      [join(build, "scripts/build-repository-credentials.ts")],
       { encoding: "utf8", timeout: 30000, env: { PATH: process.env.PATH } },
     );
     assert.notEqual(issuerRejected.status, 0);
@@ -956,12 +956,10 @@ test("credential artifact builder rejects dependencies outside its emitted closu
   const emitted = join(temporary, "apps/controller/dist");
   const entrypoint = join(emitted, "composition/repository-credentials/check-config.js");
   await mkdir(join(emitted, "composition/repository-credentials"), { recursive: true });
-  for (const extension of ["mjs", "ts"]) {
-    await cp(
-      join(root, `scripts/build-repository-credentials.${extension}`),
-      join(temporary, `scripts/build-repository-credentials.${extension}`),
-    );
-  }
+  await cp(
+    join(root, "scripts/build-repository-credentials.ts"),
+    join(temporary, "scripts/build-repository-credentials.ts"),
+  );
   await cp(
     join(root, "deploy/runtime/repository-credentials"),
     join(temporary, "deploy/runtime/repository-credentials"),
@@ -974,7 +972,6 @@ test("credential artifact builder rejects dependencies outside its emitted closu
     entrypoint,
     join(emitted, "composition/repository-credentials/projected-inputs.js"),
     join(emitted, "composition/repository-credentials/probe.js"),
-    join(emitted, "drivers/repo/github/access/client/router.js"),
     clientEntry,
     join(emitted, "drivers/repo/github/access/client/operator.js"),
     join(emitted, "drivers/repo/github/access/client/git-helper.js"),
@@ -990,7 +987,7 @@ test("credential artifact builder rejects dependencies outside its emitted closu
   // inputs must not satisfy an expected dependency rejection.
   const valid = spawnSync(
     process.execPath,
-    [join(temporary, "scripts/build-repository-credentials.mjs")],
+    [join(temporary, "scripts/build-repository-credentials.ts")],
     { encoding: "utf8", timeout: 10000, env: { PATH: process.env.PATH } },
   );
   assert.equal(valid.status, 0, valid.stdout + valid.stderr);
@@ -1019,7 +1016,7 @@ test("credential artifact builder rejects dependencies outside its emitted closu
       await writeFile(target, source);
       const built = spawnSync(
         process.execPath,
-        [join(temporary, "scripts/build-repository-credentials.mjs")],
+        [join(temporary, "scripts/build-repository-credentials.ts")],
         {
           encoding: "utf8",
           timeout: 10000,
@@ -1037,7 +1034,7 @@ test("credential artifact builder rejects dependencies outside its emitted closu
     await link(outside, clientEntry);
     const built = spawnSync(
       process.execPath,
-      [join(temporary, "scripts/build-repository-credentials.mjs"), "--client-only"],
+      [join(temporary, "scripts/build-repository-credentials.ts"), "--client-only"],
       { encoding: "utf8", timeout: 10000 },
     );
     assert.equal(built.status, 1);
@@ -1047,7 +1044,7 @@ test("credential artifact builder rejects dependencies outside its emitted closu
 
 test("emitted credential Docker contexts contain only staged runtime inputs", async () => {
   // Rebuild the actual image inputs so stale contexts cannot satisfy this check.
-  const built = spawnSync(process.execPath, ["scripts/build-repository-credentials.mjs"], {
+  const built = spawnSync(process.execPath, ["scripts/build-repository-credentials.ts"], {
     cwd: root,
     encoding: "utf8",
     timeout: 30000,
@@ -1114,7 +1111,7 @@ test("runtime image client stage emits the full build's client from its own inpu
   await stageArtifactInputs(full);
   const reference = spawnSync(
     process.execPath,
-    [join(full, "scripts/build-repository-credentials.mjs")],
+    [join(full, "scripts/build-repository-credentials.ts")],
     { encoding: "utf8", timeout: 30000, env: { PATH: process.env.PATH } },
   );
   assert.equal(reference.status, 0, reference.stdout + reference.stderr);
@@ -1172,7 +1169,7 @@ test("runtime image client stage emits the full build's client from its own inpu
   assert.equal(emitted.status, 0, emitted.stdout + emitted.stderr);
   const built = spawnSync(
     process.execPath,
-    ["scripts/build-repository-credentials.mjs", "--client-only"],
+    ["scripts/build-repository-credentials.ts", "--client-only"],
     {
       cwd: stage,
       encoding: "utf8",
@@ -1189,7 +1186,7 @@ test("runtime image client stage emits the full build's client from its own inpu
 
   const rejected = spawnSync(
     process.execPath,
-    ["scripts/build-repository-credentials.mjs", "--service-only"],
+    ["scripts/build-repository-credentials.ts", "--service-only"],
     {
       cwd: stage,
       encoding: "utf8",
@@ -1198,7 +1195,7 @@ test("runtime image client stage emits the full build's client from its own inpu
     },
   );
   assert.notEqual(rejected.status, 0);
-  assert.match(rejected.stderr, /Usage: build-repository-credentials\.mjs \[--client-only\]/);
+  assert.match(rejected.stderr, /Usage: build-repository-credentials\.ts \[--client-only\]/);
 });
 
 // Exercise real HTTP parsing and the same private readiness response as the worker.
@@ -1320,12 +1317,10 @@ function isConnectionReset(error: unknown): boolean {
 
 async function stageArtifactInputs(directory: string): Promise<void> {
   await mkdir(join(directory, "scripts"), { recursive: true });
-  for (const extension of ["mjs", "ts"]) {
-    await cp(
-      join(root, `scripts/build-repository-credentials.${extension}`),
-      join(directory, `scripts/build-repository-credentials.${extension}`),
-    );
-  }
+  await cp(
+    join(root, "scripts/build-repository-credentials.ts"),
+    join(directory, "scripts/build-repository-credentials.ts"),
+  );
   await cp(join(root, "apps/controller/dist"), join(directory, "apps/controller/dist"), {
     recursive: true,
   });

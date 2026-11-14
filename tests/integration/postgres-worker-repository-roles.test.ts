@@ -248,7 +248,7 @@ test(
         for (const call of checks.mock.calls) {
           assert.deepEqual(call.arguments, [input]);
         }
-        const opened = repository.calls.filter(({ operation }) => operation === "open");
+        const opened = repository.calls.filter((call) => call.operation === "open");
         assert.equal(opened.length, 1);
         assert.deepEqual(opened[0]!.input.binding, finite.bindings[0]);
         assert.equal(opened[0]!.input.deadlineWallMs, snapshot.deadlineWallMs);
@@ -316,7 +316,7 @@ async function admitLegacyRepositorySession(
   assert.ok(opened?.sessionId);
   assert.equal(opened.brokerProtocol, 3);
   assert.equal(opened.phase, "open");
-  const originalOpen = repository.calls.find(({ operation }) => operation === "open");
+  const originalOpen = repository.calls.find((call) => call.operation === "open");
   assert.equal(originalOpen?.input.admissionId, opened.admissionId);
   assert.deepEqual(originalOpen?.input.binding, snapshot.bindings[0]);
   assert.equal(originalOpen?.input.deadlineWallMs, snapshot.deadlineWallMs);
@@ -346,7 +346,7 @@ async function deferLegacyRepositoryCleanup(
         event.code === "REPOSITORY_CLEANUP_PENDING",
     );
     await fixture.stop();
-    assert.equal(typeof pending.workId, "string");
+    assert.ok(typeof pending.workId === "string");
     const cleanupWork = { idempotencyKey: pending.workId };
     const deferred = await fixture.observerPool.query(
       `SELECT actor_id, agent_id, revision_id, state,
@@ -361,7 +361,7 @@ async function deferLegacyRepositoryCleanup(
     assert.equal(deferred.rows[0].revision_id, revision.id);
     assert.ok(Number(deferred.rows[0].delay_ms) >= repository.driver.maintenanceIntervalMs - 1_000);
     const [closing] = await repositoryAttempts(fixture, candidate);
-    assert.equal(closing.phase, "closing");
+    assert.equal(closing?.phase, "closing");
     assert.equal(closing.brokerProtocol, 3);
     assert.equal(closing.admissionId, opened.admissionId);
     assert.equal(closing.sessionId, opened.sessionId);
@@ -467,7 +467,7 @@ test(
           await fixture.work(stop, "succeeded");
           await fixture.stop();
           const [disposed] = await repositoryAttempts(fixture, candidate);
-          assert.equal(disposed.phase, "disposed");
+          assert.equal(disposed?.phase, "disposed");
           assert.equal(disposed.brokerProtocol, 3);
           assert.equal(disposed.admissionId, opened.admissionId);
           assert.equal(disposed.sessionId, opened.sessionId);
@@ -574,8 +574,11 @@ test(
       repository.calls.map(({ operation }) => operation),
       ["open", "recover", "close"],
     );
-    assert.deepEqual(repository.calls[1]?.input, { ...input, recoverOnly: true });
-    assert.equal(repository.calls[2]?.sessionId, sessionId);
+    const [, recovered, closed] = repository.calls;
+    assert.equal(recovered?.operation, "recover");
+    assert.deepEqual(recovered.input, { ...input, recoverOnly: true });
+    assert.equal(closed?.operation, "close");
+    assert.equal(closed.sessionId, sessionId);
     const [disposed] = await repositoryAttempts(fixture, candidate);
     assert.equal(disposed?.admissionId, attempt.admissionId);
     assert.equal(disposed.sessionId, sessionId);

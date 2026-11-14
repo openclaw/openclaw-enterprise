@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-11
-last_updated_session: authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6
+updated: 2026-11-14
+last_updated_session: authoring-run/e22da2ae-8be7-42d3-876f-6355fa901e9f
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -263,8 +263,10 @@ Pod creation.
 
 After Sandbox readiness, `initializeWorkspace` validates the setup Secret's
 Namespace, Agent and setup identity, then sends initializer/JSON stdin through
-authenticated `ExecSandbox`. Workspace `flock` serializes attempts; the Harness
-awaits completion. See [document initialization](workspace-files.md#2-deployment-initializes-storage-before-execution),
+authenticated `ExecSandbox`. Each attempt has 270 seconds to acquire the workspace lock
+and run the initializer. With fewer than 250 seconds left, the lock holder can only
+verify the completion marker. If a pending setup has no marker, the worker retries.
+The Harness waits for completion. See [document initialization](workspace-files.md#2-deployment-initializes-storage-before-execution),
 separate from native subpath preparation.
 
 Credential attachments require OCC `oce-cs-` names without static-provider duplicates.
@@ -421,6 +423,8 @@ model execution.
 
 ## Changelog
 
+- 2026-11-14 14:53: Explain workspace lock and retry timing. (authoring-run/e22da2ae-8be7-42d3-876f-6355fa901e9f - 8a15b18175c508fe54672fc12ea0ff5a0847967d)
+
 - 2026-11-11 21:41: Bind controller preload to node identity. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - 7a2f352a44c42459a3a33c784199a47d11d98e1e)
 
 - 2026-11-11 21:12: Preload Agent Sandbox locally. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
@@ -440,13 +444,5 @@ model execution.
 - 2026-11-10 20:33: Wait for the native Gateway node binding and rollout before readiness. (authoring-run/01a1b316-df53-7fc0-b967-6e23527300dc - 5b7ee9438050)
 
 - 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
-
-- 2026-11-10 12:45: Record fixed Codex permission denial categories in worker diagnostics. (authoring-run/bc23cb27-0cf1-40d2-9361-93726c5de660 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
-
-- 2026-11-10 12:22: Clarify Gateway authority. (authoring-run/64da6dd5-9c32-4858-b176-ff11e8c8ae92 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
-
-- 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
-
-- 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.
