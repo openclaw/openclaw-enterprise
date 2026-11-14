@@ -23,7 +23,7 @@ import {
   RUNTIME_FAILURE_CHECKS,
   WORKSPACE_SETUP_CHECK,
   WORKSPACE_SETUP_FAILED,
-} from "../../packages/contracts/src/runtime-failure.mjs";
+} from "../../packages/contracts/src/runtime-failure.ts";
 import { deploymentDiagnostics } from "../../packages/occ/src/deployment-diagnostics.ts";
 import {
   validateFailureData,

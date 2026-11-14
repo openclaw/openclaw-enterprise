@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
 import { codexLaunchEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
+import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.ts";
 
 const nodeRequire = createRequire(import.meta.url);
 const revisionId = "revision-runtime-auth-gate";

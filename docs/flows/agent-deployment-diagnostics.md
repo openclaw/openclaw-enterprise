@@ -114,7 +114,7 @@ Agent has no Sandbox, such as a stopped Agent's.
 
 `packages/occ/src/deployment-diagnostics.ts:deploymentDiagnostics` requires
 the requested Agent revision ID, valid timestamps, and at most 32 checks with component, check, and code values of 1 to 64 allowed characters. A
-component, check or code outside `packages/contracts/src/runtime-failure.mjs`
+component, check or code outside `packages/contracts/src/runtime-failure.ts`
 reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
 without messages. A rejected private Gateway diagnostics Pod-proxy request instead
 retains the fixed `RuntimeDiagnosticsTransportError` class and message in the

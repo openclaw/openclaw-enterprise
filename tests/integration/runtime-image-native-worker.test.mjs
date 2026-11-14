@@ -603,7 +603,7 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
         "apps/controller/src/drivers/compute/runtime-startup.ts",
         "apps/controller/src/drivers/plugin/runtime-translator.ts",
         "apps/controller/src/drivers/sandbox/openshell-plugin-runtime.ts",
-        "packages/contracts/src/runtime-failure.mjs",
+        "packages/contracts/src/runtime-failure.ts",
         "tests/conformance/workspace-node-supervisor-cases.ts",
       ];
       const files = await Promise.all(
