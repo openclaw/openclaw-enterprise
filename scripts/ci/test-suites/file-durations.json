@@ -129,7 +129,7 @@
     "tests/conformance/repository-sessions-memory.test.ts": 300,
     "tests/conformance/repository-transactions.test.mjs": 200,
     "tests/conformance/runtime-gateway-state-migration.test.mjs": 400,
-    "tests/conformance/runtime-logs-content.test.mjs": 5800,
+    "tests/conformance/runtime-logs-content.test.ts": 5800,
     "tests/conformance/runtime-logs-replay.test.ts": 200,
     "tests/conformance/runtime-logs-sandbox.test.ts": 4000,
     "tests/conformance/runtime-model-probe-settlement.test.mjs": 3800,

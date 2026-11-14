@@ -52,7 +52,7 @@
     "tests/integration/profile-renderer.test.mjs",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
-    "tests/conformance/runtime-logs-content.test.mjs",
+    "tests/conformance/runtime-logs-content.test.ts",
     "tests/conformance/runtime-logs-container-wire.test.ts",
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
@@ -302,7 +302,7 @@
       "path": "tests/conformance/runtime-logs-admission.test.ts"
     },
     {
-      "path": "tests/conformance/runtime-logs-content.test.mjs"
+      "path": "tests/conformance/runtime-logs-content.test.ts"
     },
     {
       "path": "tests/conformance/runtime-logs-container-wire.test.ts"
