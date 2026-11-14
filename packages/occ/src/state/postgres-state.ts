@@ -1,6 +1,11 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
-import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import {
+  assertExecutionAdmission,
+  CONFIGURED_IAM_ID_PREFIXES,
+  CONTROLLER_WORK_AUDIT_ACTIONS,
+  isConfiguredRoleId,
+} from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
@@ -9,6 +14,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
 
+import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
@@ -16,6 +23,7 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import { postgresSavedConnections } from "./postgres-saved-connections.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
+import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
 import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
@@ -64,10 +72,16 @@ import {
   validPluginRevisionState,
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
-import { freezeSnapshot, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  freezeSnapshot,
+  immutableCopy,
+  isNonEmptyString,
+} from "@openclaw-enterprise/utils";
 import {
   CallerStateDeniedError,
   AGENT_NAME_CONFLICT,
+  AuditAppendUnavailableError,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
@@ -82,6 +96,8 @@ import {
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
+  RepositorySessionWithdrawnError,
+  WorkClaimLostError,
 } from "../errors.ts";
 import type {
   AgentRepository,
@@ -131,18 +147,13 @@ import {
 } from "./platform-state.ts";
 import {
   asWork,
-  WorkClaimLostError,
   PostgresWorkQueue,
   repositoryCleanupSql,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
 } from "./postgres-work-queue.ts";
 import { beginProvisioningEffectProgress } from "../provisioning-effects.ts";
-import {
-  CREDENTIAL_WITHDRAWAL_TARGET,
-  credentialWithdrawalOperationId,
-  credentialWithdrawalWorkKey,
-} from "./controller-work.ts";
+import { credentialWithdrawalOperationId, credentialWithdrawalWorkKey } from "./controller-work.ts";
 
 type PostgresRow = Record<string, unknown>;
 
@@ -172,12 +183,16 @@ export interface PostgresPlatformStateOptions {
     ((transaction: PostgresQueryClient) => PreparedTokenCurrentProof) | undefined;
   readonly bootstrapNativeIAM?: PersistedNativeIAMState;
   readonly workQueue?: PostgresWorkQueueOptions;
+  /** Server-side deadline for statements in standalone audit writes. */
+  readonly auditWriteTimeoutMs?: number;
 }
 
 export interface PersistedNativeIAMPrincipalSeed {
   readonly principal: Principal;
   readonly roles: readonly Role[];
   readonly bindings: readonly AccessBinding[];
+  /** Configured Installation Groups the new Principal joins, such as `iam.defaultUserGroups`. */
+  readonly groupIds?: readonly string[];
 }
 
 export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
@@ -433,7 +448,7 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
   if (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped") {
     throw new PersistedStateInvalidError("Persisted Agent desired runtime state is invalid.");
   }
-  return immutableCopy({
+  return Object.freeze({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     name: text(row, "name"),
@@ -448,7 +463,7 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
     desiredRuntimeState,
     status: text(row, "status") as Agent["status"],
     createdAt: timestamp(row, "created_at"),
-  });
+  } satisfies AgentMetadata & Record<string, string | number | boolean | null | undefined>);
 }
 
 function agentFromRow(row: PostgresRow, metadata = agentMetadataFromRow(row)): Readonly<Agent> {
@@ -653,14 +668,14 @@ function revisionMetadataFromRow(row: PostgresRow): Readonly<AgentRevisionMetada
   if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision <= 0) {
     throw new PersistedStateInvalidError("Persisted AgentRevision numbering is invalid.");
   }
-  return immutableCopy({
+  return Object.freeze({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     agentId: text(row, "agent_id"),
     revision,
     backendId: row.backend_id === null ? null : text(row, "backend_id"),
     createdAt: timestamp(row, "admitted_at"),
-  });
+  } satisfies Record<string, string | number | boolean | null | undefined>);
 }
 
 function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary> {
@@ -668,13 +683,12 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
   const rawGeneration = row.configuration_generation;
   const configurationGeneration =
     typeof rawGeneration === "string" ? Number(rawGeneration) : rawGeneration;
-  const harness = row.harness as Record<string, unknown> | null;
+  const harness = asRecord(row.harness);
   if (
     typeof configurationGeneration !== "number" ||
     !Number.isSafeInteger(configurationGeneration) ||
     configurationGeneration <= 0 ||
-    typeof harness !== "object" ||
-    harness === null ||
+    harness === undefined ||
     typeof harness.id !== "string" ||
     typeof harness.version !== "string" ||
     (harness.mode !== "embedded" && harness.mode !== "dedicated")
@@ -685,7 +699,15 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
     ...metadata,
     configurationId: text(row, "configuration_id"),
     configurationGeneration,
-    harness: { id: harness.id, version: harness.version, mode: harness.mode },
+    harness: {
+      id: harness.id,
+      version: harness.version,
+      mode: harness.mode,
+      ...(harness.overrides === undefined ? {} : { overrides: jsonObject(harness.overrides) }),
+      ...(harness.configuration === undefined
+        ? {}
+        : { configuration: jsonObject(harness.configuration) }),
+    },
   });
 }
 
@@ -807,7 +829,16 @@ function revisionFromRow(
 
 function revisionForBrowsingFromRow(row: PostgresRow): Readonly<AgentRevisionRead> {
   const metadata = revisionMetadataFromRow(row);
-  return browseSavedConfiguration(metadata, () => revisionFromRow(row, metadata));
+  return browseSavedConfiguration(metadata, () => {
+    const revision = revisionFromRow(row, metadata);
+    if (revision.harness.overrides === undefined || revision.harness.configuration === undefined) {
+      throw new SavedConfigurationReadError(
+        "configuration",
+        "This revision predates recorded Harness settings.",
+      );
+    }
+    return revision;
+  });
 }
 
 function secretBindingsFromJson(value: unknown, namespaceId: string): SecretBindings | undefined {
@@ -890,6 +921,12 @@ const NAME_CONFLICTS: Readonly<Record<string, string>> = Object.freeze({
   egress_installations_namespace_id_revision_id_key: EGRESS_REVISION_INSTALLED_CONFLICT,
 });
 
+const AUDIT_ROW_CHECKS = new Set([
+  "audit_events_id_format",
+  "audit_events_outcome_valid",
+  "audit_events_details_object",
+]);
+
 function databaseError(error: unknown): Error {
   if (
     error instanceof ScopeViolationError ||
@@ -902,16 +939,27 @@ function databaseError(error: unknown): Error {
   }
 
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  const constraint =
+    "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
+  if (constraint === "control_plane_audit_capacity") {
+    return new AuditAppendUnavailableError("AUDIT_CAPACITY_EXCEEDED");
+  }
+  // Preserve the existing scope error for an audit row that violates the ledger schema.
+  const invalidAuditRow =
+    code === "23502" || (constraint !== undefined && AUDIT_ROW_CHECKS.has(constraint));
   if (
-    code === "23514" &&
-    "constraint" in error &&
-    error.constraint === "held_authentication_session_is_current"
+    ("table" in error && error.table === "audit_events" && !invalidAuditRow) ||
+    constraint === "control_plane_audit_event_size"
   ) {
+    return new AuditAppendUnavailableError();
+  }
+  if (code === "23514" && constraint === "held_authentication_session_is_current") {
     return new CallerStateDeniedError("The assigning session is no longer current.");
   }
+  if (code === "23514" && constraint === "repository_session_admission_not_withdrawn") {
+    return new RepositorySessionWithdrawnError();
+  }
   if (code === "23505") {
-    const constraint =
-      "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
     const nameConflict =
       constraint !== undefined && Object.hasOwn(NAME_CONFLICTS, constraint)
         ? NAME_CONFLICTS[constraint]
@@ -931,6 +979,9 @@ function databaseError(error: unknown): Error {
     code === "55000"
   ) {
     return new ScopeViolationError("The resource violates its exact platform ownership or state.");
+  }
+  if (queryAbandonedByClient(error)) {
+    return new DependencyUnavailableError("The platform persistence query timeout expired.");
   }
   if (code === "55P03") {
     // A lock timeout is transient contention, retryable like a statement timeout (57014).
@@ -1016,7 +1067,7 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
   if (
     !RESOURCE_KINDS.has(resourceKind) ||
     !["success", "denied", "failure"].includes(outcome) ||
-    !["bootstrap", "mutation", "access", "authorization_denial"].includes(kind)
+    !["bootstrap", "mutation", "access", "authorization_denial", "api_request"].includes(kind)
   ) {
     throw new PersistedStateInvalidError("Persisted audit evidence contains an invalid event.");
   }
@@ -1221,6 +1272,14 @@ function permissions(value: unknown): readonly Permission[] {
   );
 }
 
+/** The advisory lock that serializes writes of durable authority with the `iam` configuration. */
+const IAM_CONFIGURATION_LOCK_KEY = "occ:iam-configuration";
+
+/** A LIKE pattern for IDs that start with `prefix`, which contains `_`. */
+function prefixPattern(prefix: string): string {
+  return `${prefix.replaceAll("_", "\\_")}%`;
+}
+
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
   private readonly pool: PostgresPool;
@@ -1238,8 +1297,22 @@ export class PostgresPlatformState implements PlatformStateStore {
       options.preparedTokenProof ?? (() => ({ current: async () => false }));
     this.queueOptions = Object.freeze({ ...(options.workQueue ?? {}) });
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
+    const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
     this.auditSink = {
-      append: async (event) => this.transact(async (state) => state.audit.append(event)),
+      append: async (event) =>
+        this.execute(false, async (state, context) => {
+          if (auditWriteTimeoutMs !== undefined) {
+            // A local setting leaves other transactions on the pooled connection unaffected.
+            await context.client.query(
+              `SELECT pg_catalog.set_config(name,
+                 CASE WHEN setting::integer = 0 THEN $1::text
+                      ELSE LEAST(setting::integer, $1::integer)::text END, true)
+               FROM pg_catalog.pg_settings WHERE name IN ('statement_timeout', 'lock_timeout')`,
+              [String(auditWriteTimeoutMs)],
+            );
+          }
+          await state.audit.append(event);
+        }),
     };
   }
 
@@ -1491,12 +1564,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (
         binding.subjectKind !== "identity" ||
         binding.subjectId !== seed.principal.id ||
-        binding.resourceKind !== "installation" ||
-        binding.resourceId !== installation.id ||
-        binding.namespaceId !== undefined
+        (binding.resourceKind !== undefined &&
+          (binding.resourceKind !== "installation" ||
+            binding.resourceId !== installation.id ||
+            binding.namespaceId !== undefined)) ||
+        (binding.resourceKind === undefined && binding.resourceId !== undefined)
       ) {
         throw new ScopeViolationError(
-          "Account provisioning requires an exact Installation binding.",
+          "Account provisioning requires a supported initial Role binding.",
         );
       }
     }
@@ -1520,7 +1595,7 @@ export class PostgresPlatformState implements PlatformStateStore {
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           binding.id,
-          null,
+          binding.namespaceId ?? null,
           binding.subjectId,
           null,
           binding.roleId,
@@ -1528,6 +1603,22 @@ export class PostgresPlatformState implements PlatformStateStore {
           binding.resourceId,
         ],
       );
+    }
+    if ((seed.groupIds ?? []).length > 0) {
+      // A configuration change that deletes one of these Groups commits before or after this.
+      await context.client.query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))", [
+        IAM_CONFIGURATION_LOCK_KEY,
+      ]);
+    }
+    for (const groupId of seed.groupIds ?? []) {
+      const inserted = await context.client.query(
+        `INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id)
+         SELECT NULL, id, $2 FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL`,
+        [groupId, seed.principal.id],
+      );
+      if (inserted.rowCount !== 1) {
+        throw new ScopeViolationError(`The configured IAM Group ${groupId} does not exist.`);
+      }
     }
     return installation.id;
   }
@@ -1544,6 +1635,11 @@ export class PostgresPlatformState implements PlatformStateStore {
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
     return this.execute(false, async (state) => work(state));
+  }
+
+  /** Observe changes committed while acquiring locks, regardless of the connection default. */
+  async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.execute(false, async (state) => work(state), true);
   }
 
   /**
@@ -1651,6 +1747,65 @@ export class PostgresPlatformState implements PlatformStateStore {
     return context.lifetime.run(() => context.client.query(statement, parameters));
   }
 
+  async boundAgentAuditTransaction(unit: PlatformUnitOfWork): Promise<void> {
+    // A caller can configure a lower timeout. Keep it for this transaction too.
+    await this.queryInTransaction(
+      unit,
+      `SELECT pg_catalog.set_config(name,
+          CASE WHEN setting::integer = 0 THEN maximum::text
+               ELSE LEAST(setting::integer, maximum)::text END, true)
+        FROM pg_catalog.pg_settings JOIN (VALUES
+          ('lock_timeout', 1000), ('statement_timeout', 3000), ('transaction_timeout', 5000)
+        ) AS limits(name, maximum) USING (name)`,
+    );
+  }
+
+  async holdAgentAuditResource(
+    unit: PlatformUnitOfWork,
+    installationId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<boolean> {
+    const namespace = await this.queryInTransaction(
+      unit,
+      `SELECT id FROM occ.namespaces
+        WHERE id = $1 AND status = 'ready' AND deleted_at IS NULL FOR SHARE NOWAIT`,
+      [namespaceId],
+    );
+    if (namespace.rowCount !== 1) {
+      return false;
+    }
+    const agent = await this.queryInTransaction(
+      unit,
+      `SELECT id FROM occ.agents
+        WHERE namespace_id = $1 AND id = $2 AND status = 'active' FOR SHARE NOWAIT`,
+      [namespaceId, agentId],
+    );
+    if (agent.rowCount !== 1) {
+      return false;
+    }
+    await this.queryInTransaction(unit, "SELECT occ.hold_agent_audit_policy($1)", [installationId]);
+    return true;
+  }
+
+  async listAgentAuditInTransaction(
+    unit: PlatformUnitOfWork,
+    namespaceId: string,
+    agentId: string,
+    selection: AgentAuditSelection,
+  ) {
+    const result = await this.queryInTransaction(unit, SELECT_AGENT_AUDIT, [
+      namespaceId,
+      agentId,
+      selection.start,
+      selection.end,
+      selection.after?.occurredAt ?? null,
+      selection.after?.id ?? null,
+      selection.limit + 1,
+    ]);
+    return rows(result.rows).map(projectAgentAuditRow);
+  }
+
   /**
    * Hold the native IAM policy barrier on the original unit. The SQL supplier
    * verifies the preheld Installation authority. Account and session writers
@@ -1735,6 +1890,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "recoverStale",
       "findWork",
       "findWorkAttempt",
+      "hasRepositoryExecutionRedeployRequired",
       "repositoryExpiryState",
       "latestRevisionMaintenanceKey",
       "countRefusedStopWaits",
@@ -2027,7 +2183,24 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         return session.rowCount === 1;
       },
+      holdIAMConfiguration: async (mode) => {
+        // A transaction-scoped advisory lock: no row stands for the whole configuration.
+        await client.query(
+          mode === "shared"
+            ? "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))"
+            : "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [IAM_CONFIGURATION_LOCK_KEY],
+        );
+      },
     };
+
+    async function namespaceResourceExists(
+      statement: string,
+      namespaceId: string,
+    ): Promise<boolean> {
+      const result = await client.query(statement, [namespaceId]);
+      return rows(result.rows)[0]?.present === true;
+    }
 
     const namespaces: NamespaceRepository = {
       findNamespace: async (namespaceId) => {
@@ -2094,28 +2267,16 @@ export class PostgresPlatformState implements PlatformStateStore {
         )[0];
         return found === undefined ? undefined : namespaceFromRow(found);
       },
-      hasAgents: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasConfigurations: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.configurations WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
+      hasAgents: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
+      hasConfigurations: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.configurations WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
       listConfigurationIds: async (namespaceId) =>
         Object.freeze(
           rows(
@@ -2127,50 +2288,26 @@ export class PostgresPlatformState implements PlatformStateStore {
             ).rows,
           ).map((row) => String(row.id)),
         ),
-      hasPresets: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.presets WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasServiceAccounts: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasSecrets: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasCredentialSources: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
+      hasPresets: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.presets WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
+      hasServiceAccounts: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
+      hasSecrets: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
+      hasCredentialSources: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
       transitionNamespaceStatus: async (namespaceId, expected, next) => {
         await this.requireInitialized(context);
         const expectedStatuses = Array.isArray(expected) ? expected : [expected];
@@ -4292,6 +4429,172 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         return deleted.rowCount === 1;
       },
+      listConfiguredPolicy: async () => {
+        const roles = rows(
+          (
+            await client.query(
+              `SELECT id, namespace_id, name, permissions FROM occ.iam_roles
+               WHERE id LIKE $1 ORDER BY id`,
+              [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.role)],
+            )
+          ).rows,
+        ).map(roleFromRow);
+        const groups = rows(
+          (
+            await client.query(`SELECT id, name FROM occ.iam_groups WHERE id LIKE $1 ORDER BY id`, [
+              prefixPattern(CONFIGURED_IAM_ID_PREFIXES.group),
+            ])
+          ).rows,
+        ).map((row) => Object.freeze({ id: text(row, "id"), name: text(row, "name") }));
+        const bindings = rows(
+          (
+            await client.query(
+              `SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
+                      resource_kind, resource_id
+               FROM occ.iam_access_bindings WHERE id LIKE $1 ORDER BY id`,
+              [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.binding)],
+            )
+          ).rows,
+        ).map(accessBindingFromRow);
+        return Object.freeze({
+          roles: Object.freeze(roles),
+          groups: Object.freeze(groups),
+          bindings: Object.freeze(bindings),
+        });
+      },
+      putConfiguredRole: async (role) => {
+        await this.requireInitialized(context);
+        if (!isConfiguredRoleId(role.id) || role.namespaceId !== undefined) {
+          throw new ScopeViolationError("A configured IAM Role is an Installation Role.");
+        }
+        const existing = rows(
+          (
+            await client.query(
+              "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE id = $1 FOR UPDATE",
+              [role.id],
+            )
+          ).rows,
+        ).map(roleFromRow)[0];
+        const permissionsJson = JSON.stringify(role.permissions);
+        if (existing === undefined) {
+          await client.query(
+            "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
+            [role.id, role.name ?? null, permissionsJson],
+          );
+          return "created";
+        }
+        if (
+          existing.name === role.name &&
+          JSON.stringify(existing.permissions) === permissionsJson
+        ) {
+          return "unchanged";
+        }
+        // iam_configured_role_update_only refuses an update of any other Role.
+        await client.query(
+          "UPDATE occ.iam_roles SET name = $2, permissions = $3::jsonb WHERE id = $1",
+          [role.id, role.name ?? null, permissionsJson],
+        );
+        return "updated";
+      },
+      deleteConfiguredRole: async (roleId) => {
+        if (!isConfiguredRoleId(roleId)) {
+          throw new ScopeViolationError("Only a configured IAM Role is deleted this way.");
+        }
+        const references = await client.query(
+          "SELECT id FROM occ.iam_access_bindings WHERE role_id = $1 ORDER BY id LIMIT 3",
+          [roleId],
+        );
+        if (references.rowCount !== 0) {
+          throw new ResourceConflictError(
+            `The configuration no longer lists IAM Role ${roleId}, but AccessBindings use it: ${rows(
+              references.rows,
+            )
+              .map((row) => text(row, "id"))
+              .join(", ")}. Delete those AccessBindings or list the Role again.`,
+          );
+        }
+        await client.query("DELETE FROM occ.iam_roles WHERE id = $1 AND namespace_id IS NULL", [
+          roleId,
+        ]);
+      },
+      createConfiguredGroup: async (group) => {
+        await this.requireInitialized(context);
+        if (
+          !group.id.startsWith(CONFIGURED_IAM_ID_PREFIXES.group) ||
+          group.namespaceId !== undefined
+        ) {
+          throw new ScopeViolationError("A configured IAM Group is an Installation Group.");
+        }
+        await client.query(
+          `INSERT INTO occ.iam_groups (id, namespace_id, name) VALUES ($1, NULL, $2)
+           ON CONFLICT (id) DO NOTHING`,
+          [group.id, group.name ?? group.id],
+        );
+      },
+      deleteConfiguredGroup: async (groupId) => {
+        if (!groupId.startsWith(CONFIGURED_IAM_ID_PREFIXES.group)) {
+          throw new ScopeViolationError("Only a configured IAM Group is deleted this way.");
+        }
+        const references = await client.query(
+          "SELECT id FROM occ.iam_access_bindings WHERE group_subject_id = $1 ORDER BY id LIMIT 3",
+          [groupId],
+        );
+        if (references.rowCount !== 0) {
+          throw new ResourceConflictError(
+            `The configuration no longer lists IAM Group ${groupId}, but AccessBindings use it: ${rows(
+              references.rows,
+            )
+              .map((row) => text(row, "id"))
+              .join(", ")}. Delete those AccessBindings or list the Group again.`,
+          );
+        }
+        await client.query("DELETE FROM occ.iam_group_memberships WHERE group_id = $1", [groupId]);
+        await client.query("DELETE FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL", [
+          groupId,
+        ]);
+      },
+      createOCCBinding: async (binding) => {
+        await this.requireInitialized(context);
+        if (!isConfiguredRoleId(binding.roleId)) {
+          throw new ScopeViolationError("The AccessBinding must name a configured IAM Role.");
+        }
+        if (binding.namespaceId !== undefined) {
+          const namespace = await namespaces.lockNamespace(binding.namespaceId);
+          if (
+            namespace === undefined ||
+            (namespace.status !== "provisioning" && namespace.status !== "ready")
+          ) {
+            throw new ScopeViolationError(
+              "The AccessBinding must belong to an available Namespace.",
+            );
+          }
+        }
+        const inserted = await client.query(
+          `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, group_subject_id, role_id,
+            resource_kind, resource_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (id) DO NOTHING`,
+          [
+            binding.id,
+            binding.namespaceId ?? null,
+            binding.subjectKind === "identity" ? binding.subjectId : null,
+            binding.subjectKind === "group" ? binding.subjectId : null,
+            binding.roleId,
+            binding.resourceKind ?? null,
+            binding.resourceId ?? null,
+          ],
+        );
+        return inserted.rowCount === 1;
+      },
+      deleteConfiguredBinding: async (bindingId) => {
+        await this.requireInitialized(context);
+        const deleted = await client.query(
+          "DELETE FROM occ.iam_access_bindings WHERE id = $1 AND id LIKE $2",
+          [bindingId, prefixPattern(CONFIGURED_IAM_ID_PREFIXES.binding)],
+        );
+        return deleted.rowCount === 1;
+      },
       listServicePrincipals: async (namespaceId) =>
         Object.freeze(
           rows(
@@ -4472,15 +4775,18 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
-        create: async (input: CreateAgentProvisioningRecord) => {
+        create: async (input: CreateAgentProvisioningRecord, requestId) => {
           const record = validateProvisioningCreate(input);
           await this.requireInitialized(context);
-          await queue.enqueue({
-            kind: "provisioning",
-            idempotencyKey: record.workId,
-            namespaceId: record.namespaceId,
-            actorId: record.actorId,
-          });
+          await queue.enqueue(
+            {
+              kind: "provisioning",
+              idempotencyKey: record.workId,
+              namespaceId: record.namespaceId,
+              actorId: record.actorId,
+            },
+            requestId,
+          );
           const inserted = rows(
             (
               await client.query(
@@ -4667,7 +4973,22 @@ export class PostgresPlatformState implements PlatformStateStore {
                      AND $3::text = 'handoff'
                      AND work.idempotency_key = $1
                      AND EXISTS (SELECT 1 FROM updated_provisioning)
-                   RETURNING work.idempotency_key
+                   RETURNING work.*
+                 ), completed_evidence AS (
+                   INSERT INTO occ.audit_events (
+                     id, occurred_at, kind, actor_id, action, namespace_id,
+                     resource_kind, resource_id, outcome, details
+                   )
+                   SELECT 'aud_' || gen_random_uuid()::text, clock_timestamp(), 'mutation',
+                     work.actor_id, '${CONTROLLER_WORK_AUDIT_ACTIONS.completed}', work.namespace_id,
+                     'agent', provisioning.agent_id, 'success',
+                     jsonb_build_object('workId', work.idempotency_key,
+                       'attemptId', 'aud_' || work.audit_attempt_id::text,
+                       'attemptCount', work.attempt_count, 'reasonCode', 'PROVISIONING_HANDOFF',
+                       'workState', work.state, 'agentId', provisioning.agent_id)
+                   FROM completed_work AS work
+                   JOIN updated_provisioning AS provisioning ON provisioning.work_id = work.idempotency_key
+                   WHERE work.audit_attempt_id IS NOT NULL
                  )
                  SELECT * FROM updated_provisioning`,
                 [
@@ -4974,14 +5295,22 @@ export class PostgresPlatformState implements PlatformStateStore {
                    FROM owner
                    WHERE work.idempotency_key = owner.idempotency_key
                      AND EXISTS (SELECT 1 FROM updated_provisioning)
-                   RETURNING work.idempotency_key
+                   RETURNING work.idempotency_key, CASE WHEN owner.state = 'claimed'
+                     THEN 'aud_' || owner.audit_attempt_id::text END AS attempt_id
                  )
-                 SELECT * FROM updated_provisioning`,
+                 SELECT idempotency_key, attempt_id FROM completed_work`,
                 [namespaceId, agentId, code, message],
               )
             ).rows,
           );
-          return cancelled[0] === undefined ? undefined : provisioningRecordFromRow(cancelled[0]);
+          if (cancelled[0] === undefined) {
+            return undefined;
+          }
+          const attemptId = optionalText(cancelled[0], "attempt_id");
+          return {
+            workId: text(cancelled[0], "idempotency_key"),
+            ...(attemptId === undefined ? {} : { attemptId }),
+          };
         },
         settleAbandonedEffect: async (namespaceId, agentId) => {
           // A cancelled job never runs again (finding 1384). Once the claim that began its
@@ -5109,24 +5438,53 @@ export class PostgresPlatformState implements PlatformStateStore {
             throw new ScopeViolationError("The audit event and resource scopes do not match.");
           }
           const details = auditDetails(event);
-          await client.query(
-            `INSERT INTO occ.audit_events
-             (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
-              outcome, details)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
-            [
-              event.id,
-              event.occurredAt,
-              event.kind,
-              event.actorId,
-              event.action,
-              event.namespaceId ?? null,
-              event.resource.kind,
-              event.resource.id,
-              event.outcome,
-              details === undefined ? null : JSON.stringify(details),
-            ],
-          );
+          const values = [
+            event.id,
+            event.occurredAt,
+            event.kind,
+            event.actorId,
+            event.action,
+            event.namespaceId ?? null,
+            event.resource.kind,
+            event.resource.id,
+            event.outcome,
+            details === undefined ? null : JSON.stringify(details),
+          ];
+          let inserted;
+          try {
+            // Skip known IDs before the insert trigger checks capacity. A concurrent
+            // delivery may still win the insert, so read the stored row on either conflict.
+            inserted = await client.query(
+              `INSERT INTO occ.audit_events
+               (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
+                outcome, details)
+               SELECT $1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10::jsonb
+               WHERE NOT EXISTS (SELECT 1 FROM occ.audit_events WHERE id = $1)
+               ON CONFLICT (id) DO NOTHING`,
+              values,
+            );
+          } catch (error) {
+            const mapped = databaseError(error);
+            throw mapped instanceof AuditAppendUnavailableError ||
+              mapped instanceof ScopeViolationError
+              ? mapped
+              : new AuditAppendUnavailableError();
+          }
+          if (inserted.rowCount === 0) {
+            const sameEvent = await client.query(
+              `SELECT id FROM occ.audit_events
+               WHERE id = $1 AND occurred_at = $2::timestamptz AND kind = $3
+                 AND actor_id = $4 AND action = $5 AND namespace_id IS NOT DISTINCT FROM $6
+                 AND resource_kind = $7 AND resource_id = $8 AND outcome = $9
+                 AND details IS NOT DISTINCT FROM $10::jsonb`,
+              values,
+            );
+            if (sameEvent.rowCount !== 1) {
+              throw new ResourceConflictError(
+                "The audit event ID already identifies different evidence.",
+              );
+            }
+          }
         },
         list: async () => {
           const installation = await this.currentInstallation(context);
@@ -5146,7 +5504,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
       },
       operations: {
-        append: async (operation) => {
+        append: async (operation, requestId) => {
           await this.requireInitialized(context);
           const namespaceId = operation.namespaceId;
           if (namespaceId === undefined) {
@@ -5204,25 +5562,28 @@ export class PostgresPlatformState implements PlatformStateStore {
             throw new ScopeViolationError("Unsupported controller work resource kind.");
           }
 
-          await queue.enqueue({
-            idempotencyKey:
-              operation.kind === "agent"
-                ? operation.target !== "deleted"
-                  ? `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`
-                  : `agent:${operation.resourceId}:${operation.action}:${operation.target}`
-                : operation.kind === "agent_revision" &&
-                    operation.target === CREDENTIAL_WITHDRAWAL_TARGET
-                  ? credentialWithdrawalWorkKey(operation.resourceId, operation.operationId)
-                  : `${operation.kind}:${operation.resourceId}:${operation.action}${
-                      namespaceTarget === undefined ? "" : `:${namespaceTarget}`
-                    }`,
-            namespaceId,
-            ...(agentId === undefined ? {} : { agentId }),
-            ...(revisionId === undefined ? {} : { revisionId }),
-            ...(namespaceTarget === undefined ? {} : { namespaceTarget }),
-            ...(agentTarget === undefined ? {} : { agentTarget }),
-            actorId: operation.actorId,
-          });
+          await queue.enqueue(
+            {
+              idempotencyKey:
+                operation.kind === "agent"
+                  ? operation.target !== "deleted"
+                    ? `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`
+                    : `agent:${operation.resourceId}:${operation.action}:${operation.target}`
+                  : operation.kind === "agent_revision" &&
+                      operation.target === CREDENTIAL_WITHDRAWAL_TARGET
+                    ? credentialWithdrawalWorkKey(operation.resourceId, operation.operationId)
+                    : `${operation.kind}:${operation.resourceId}:${operation.action}${
+                        namespaceTarget === undefined ? "" : `:${namespaceTarget}`
+                      }`,
+              namespaceId,
+              ...(agentId === undefined ? {} : { agentId }),
+              ...(revisionId === undefined ? {} : { revisionId }),
+              ...(namespaceTarget === undefined ? {} : { namespaceTarget }),
+              ...(agentTarget === undefined ? {} : { agentTarget }),
+              actorId: operation.actorId,
+            },
+            requestId,
+          );
         },
         list: async () => {
           await this.requireInitialized(context);
@@ -5339,6 +5700,10 @@ export class PostgresPlatformState implements PlatformStateStore {
           await this.requireInitialized(context);
           return queue.findWorkAttempt(idempotencyKey);
         },
+        hasRepositoryExecutionRedeployRequired: async (owner) => {
+          await this.requireInitialized(context);
+          return queue.hasRepositoryExecutionRedeployRequired(owner);
+        },
         hasOutstandingCredentialWithdrawalWork: async (namespaceId, revisionId) => {
           await this.requireInitialized(context);
           const found = await client.query(
@@ -5417,7 +5782,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         (binding.subjectKind !== "identity" && binding.subjectKind !== "group") ||
         role === undefined ||
         (identity?.namespaceId !== undefined && identity.namespaceId !== binding.namespaceId) ||
-        (binding.subjectKind === "group" && group?.namespaceId !== binding.namespaceId) ||
+        // An Installation Group, such as a configured one, can be bound in one Namespace.
+        (group?.namespaceId !== undefined && group.namespaceId !== binding.namespaceId) ||
         (role.namespaceId !== undefined && role.namespaceId !== binding.namespaceId) ||
         (binding.resourceKind === undefined) !== (binding.resourceId === undefined) ||
         (binding.resourceKind !== undefined && !RESOURCE_KINDS.has(binding.resourceKind)) ||

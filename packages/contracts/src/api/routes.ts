@@ -14,6 +14,7 @@ import {
   SandboxPolicyRecommendationsResponse,
 } from "./sandbox-policy.ts";
 import { Type } from "typebox";
+import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -38,6 +39,7 @@ import {
 import {
   AgentParams,
   FirstDeploymentIntent,
+  AgentDeploymentBody,
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
@@ -112,6 +114,7 @@ import {
   AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
+  NamespaceAgentCapabilitiesResponse,
   NamespaceCallerPermissionsResponse,
   NamespaceSecretPermissionsResponse,
   AgentResponse,
@@ -694,6 +697,23 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "getNamespaceAgentCapabilities",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agent-capabilities",
+    action: "openclaw.namespaces.agent_capabilities.read",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary:
+      "Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceAgentCapabilitiesResponse, ...readErrors },
+    },
+  },
+  {
     operationId: "getNamespaceSecretPermissions",
     method: "GET",
     path: "/namespaces/:namespaceId/permissions/secrets",
@@ -1213,7 +1233,22 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      response: { 204: Type.Null(), ...mutationErrors },
+      response: {
+        204: Type.Null(),
+        ...mutationErrors,
+        503: {
+          allOf: [ErrorResponseRef],
+          headers: {
+            "Retry-After": Type.Optional(
+              Type.String({
+                pattern: "^[1-9][0-9]*$",
+                description:
+                  "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
+              }),
+            ),
+          },
+        },
+      },
     },
   },
   {
@@ -1813,7 +1848,8 @@ export const occApiRoutes = [
     iamAction: "manage_policy",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Apply the saved policy to the running Agent revision",
+    summary:
+      "Queue policy application to the running Agent revision, optionally replacing saved additions",
     tags: ["Agents"],
     schema: {
       params: SandboxPolicyParams,
@@ -1876,6 +1912,22 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentReadResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "listAgentAuditEvents",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/audit-events",
+    action: "openclaw.audit.agent.read",
+    iamAction: "read_audit",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List audit metadata for one Agent",
+    tags: ["Agents"],
+    schema: {
+      params: AgentParams,
+      querystring: AgentAuditQuery,
+      response: { 200: AgentAuditResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -2057,7 +2109,10 @@ export const occApiRoutes = [
       "Read an exact first-deployment receipt; null does not prove failure; requires Configuration read",
     tags: ["Agents"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: Type.Object(
+        { harnessOverrides: Type.Optional(Type.String({ maxLength: 8192 })) },
+        { additionalProperties: false },
+      ),
       params: Type.Object(
         { ...AgentParams.properties, ...FirstDeploymentRecoveryTuple.properties },
         { additionalProperties: false },
@@ -2084,7 +2139,8 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
-      response: { 202: AgentRevisionResponse, ...mutationErrors },
+      body: AgentDeploymentBody,
+      response: { 202: AgentRevisionResponse, ...createErrors },
     },
   },
   {

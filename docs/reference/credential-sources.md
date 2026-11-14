@@ -35,12 +35,10 @@ OpenShell is a development integration. See the
 2. For a Secret-backed source, [create a Secret](drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and keep its `ref`.
 3. Send `POST /namespaces/:namespaceId/credential-sources`. The caller needs
    `credential_source:create` on the Namespace and `secret:operate` on each
-   referenced Secret. A protected metadata source also requires `agent:operate`
+   referenced Secret. A protected metadata source requires `agent:operate`
    on the active, dedicated Agent named by `config.agent_id` in that Namespace.
 
-For example, this source names the GitHub App, installation, repository and
-Agent. `"authority": "execution"` admits requests from processes throughout
-that execution. Replace the example IDs and Secret reference with your own.
+Replace the sample IDs and Secret reference. Execution authority admits every process in that execution.
 
 ```json
 {
@@ -64,21 +62,22 @@ that execution. Replace the example IDs and Secret reference with your own.
 }
 ```
 
-OCC returns `201` with a `cs_` source ID, binding `ref` and status. Use the
-`cs_` ID in the Agent draft. The `sec_` reference stays on the source.
+The `201` response includes the `cs_` source ID, binding `ref` and status. Bind the Agent to the source ID. The source retains the `sec_` reference.
 
 - `name` is unique within the Namespace.
-- `type` must be offered by the installation. With a Credential Proxy selected,
-  registration also requires a protected profile for that type.
+- Select an offered `type`. With a Proxy selected, fresh Gateway registration requires
+  a static Harness model type and the bundled Proxy handling only Git. Refresh, device
+  authorization and ChatGPT OAuth are ineligible. Other registrations require protected
+  admission. Explicit live adoption preserves ownership.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
-  only `https://api.openai.com/v1`; a custom authorization must match the
-  [shared model provider](drivers/kubernetes-compute/model-provider.md).
+  only `https://api.openai.com/v1`. Custom authorization must match the
+  [revision provider](drivers/kubernetes-compute/model-provider.md) at deployment and delivery.
   `base_url` cannot select a route. Replace old sources before reuse.
 - `secrets` maps catalog fields to same-Namespace Secret references. OCC rejects
   cross-Namespace references with `400` and missing Secrets with `404`.
 
-OCC rejects unknown fields, missing required fields, and Driver-invalid configuration
+OCC rejects unknown or missing required fields and invalid configuration
 with `400 INVALID_REQUEST`, which names the field and points at `/config/<field>` or
 `/secrets/<field>`, before reading Secrets through
 the Secret Driver. OCC records `registering` before the external operation.
@@ -106,10 +105,7 @@ status `pending` while its worker prepares the token.
 and returns only sources on which the caller has exact `read`. Lists
 do not call the gateway and omit `status`.
 
-The record's `state` is `registering`, `ready`, or `deleting`. A source left
-`registering` by an interrupted request never becomes usable; delete it to
-remove any gateway copy. A `registering` or `deleting` source cannot be
-bound or deployed.
+The record's `state` is `registering`, `ready`, or `deleting`. Bind or deploy only ready sources. Delete interrupted registrations to remove any Gateway copy.
 
 ## Bind a source to an Agent
 
@@ -157,10 +153,12 @@ the Agent's `credentialSources`, and grants its service principal exact source
 permission on the underlying model Secret. Queued and running provisioning jobs
 keep their source referenced before the Agent exists.
 
-The Console uses the selected gateway catalog from Installation capabilities.
-For supported Dedicated API-key creation, it registers the selected model Secret
-before submitting the provisioning request; the provider and Secret controls are
-shared by both Harnesses. See [Console creation](console/create-and-deploy.md).
+The Console reads the Gateway catalog from Installation or [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
+Both Dedicated Harnesses share provider and Secret controls. API-key provisioning registers the Secret first. See [Console creation](console/create-and-deploy.md).
+
+For an Agent without repositories on the bundled Git-only Proxy, bind the matching
+ready static Harness model source from the selected Gateway as the Agent’s only
+credential source. Kubernetes [rechecks its lifecycle before release](../flows/credential-source-lifecycle.md#6-resolve-the-source-at-dispatch).
 
 ## Update a source
 
@@ -212,30 +210,31 @@ material; update again with corrected Secrets. Running Agents lose the source's
 token within about 10 seconds of an update, even a failed one, and receive none
 until you redeploy them.
 
-The issuer can replace an `oauth2-refresh-token` source's refresh token each
-time the gateway uses it, so the recorded Secret may hold an already-used
-token. Re-sending it can fail or make the issuer revoke the sign-in, so an
-update that keeps the `refresh_token` Secret, including `{}`, returns `409`.
-Complete a new sign-in, store its refresh token in a new Secret, and reference
-that Secret.
+An issuer may rotate a refresh token on use. Reusing the recorded Secret can
+fail or revoke the sign-in. An `oauth2-refresh-token` update that retains the
+`refresh_token` Secret, including `{}`, returns `409`. Sign in again, save the
+new token in a new Secret, and reference it.
 
 ## Rotate a refresh source
 
-The gateway re-mints a `refresh`-type source's token before it expires, and
-running Agents use the new token with the same placeholder. To replace a token
-immediately, for example after a suspected leak, send
+For sources with `rotation: refresh`, the Gateway renews the access token before
+it expires. Running Agents keep the same placeholder. To rotate immediately, call
 `POST /namespaces/:namespaceId/credential-sources/:credentialSourceId/rotate`
-or run `occ credential-source rotate ID`. The caller needs exact
-`credential_source:update`; rotation reads no Secret. The request returns `200`
-with the source and its `status.refresh`, `409` for a static source, and `503`
-when the gateway is unavailable or minting fails; a failed mint is audited.
-Rotation does not revoke the previous token at the issuer, and Agents need no
-redeploy.
+or run `occ credential-source rotate ID`. Rotation requires exact
+`credential_source:update`, reads no Secret, and needs no redeploy. It does
+not revoke the previous token at the issuer.
 
-When `status.refresh.recoveryAction` is `reauthorize`, the issuer revoked the
-refresh token. For a Secret-backed source, store new authorization material in a
-new Secret and update the source. For device authorization, sign in again and
-replace the Agent binding.
+Success returns `200` with the source and `status.refresh`. Static sources
+return `409`; an unavailable gateway or failed mint returns `503`. Failed
+mints are audited.
+
+`status.refresh.recoveryAction: reauthorize` means the issuer revoked the refresh
+token. Update a Secret-backed source with a new authorization Secret. For device
+authorization, sign in again and replace the Agent binding.
+
+Prepared issuers cannot rotate on demand. If their provider advertises
+`rotation: refresh`, enrollment returns `501` before reading Secret material,
+configuring the issuer, or calling Credential Refresh.
 
 ## Withdraw a source from an Agent
 
@@ -263,9 +262,11 @@ requires exact `delete` and returns `204`:
   The record stays `deleting`. Retry after the time in the message, at most 72
   minutes after the attempt. A refused issue with no token does not block deletion.
   While the worker is revoking a token, deletion waits up to 25 seconds for GitHub's answer.
-- Within 70 seconds of registration, cleanup returns `503`
-  and keeps the record, because a timed-out registration could still create a
-  copy. The message names the seconds left; retry after them.
+- Within 70 seconds of registration, `503 DEPENDENCY_UNAVAILABLE` keeps the
+  record against late registration. `error.reason: "credential_registration_pending"`
+  identifies this refusal; `Retry-After` gives the remaining whole seconds.
+  Wait that long before retrying the same deletion. Other `503` responses
+  do not authorize an automatic retry.
 
 While a source exists, including one in `deleting`, its Namespace cannot be
 deleted, and its referenced Secrets cannot be deleted.

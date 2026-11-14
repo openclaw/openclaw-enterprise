@@ -1,14 +1,21 @@
+import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
   isDevelopmentBrowserOrigin,
+  validateAuthSecret,
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
 } from "./auth/configuration.ts";
-import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
+import {
+  clientAddressConfiguration,
+  deriveSharedCookieDomain,
+  humanLoginConfiguration,
+} from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
+import { controlPlaneAuditEnabled } from "./composition/control-plane-audit.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
@@ -22,11 +29,11 @@ import {
   startupDependencyFailure,
   startupConfigurationFailure,
   startupListenerFailure,
+  installationSettingFailureCode,
 } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
-const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
 function startupFailureCode(error) {
   if (error instanceof ConsoleThemeError) {
@@ -43,7 +50,9 @@ function startupFailureCode(error) {
     return "AUTH_SECRET_INVALID";
   }
   if (
-    /OCC_AUTH_BASE_URL|OCC_AUTH_COOKIE_DOMAIN|loopback host|loopback HTTP\(S\) URL/.test(message)
+    /OCC_AUTH_BASE_URL|OCC_AUTH_COOKIE_DOMAIN|OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN|OCC_AGENT_NATIVE_ADMIN_DOMAIN|Shared session cookies|Console and Agent hostnames|loopback host|loopback HTTP\(S\) URL/.test(
+      message,
+    )
   ) {
     return "AUTH_BASE_URL_INVALID";
   }
@@ -71,19 +80,9 @@ function startupFailureCode(error) {
   if (/Slack directory proxy/i.test(message)) {
     return "CHANNEL_DIRECTORY_PROXY_INVALID";
   }
-  if (
-    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
-      message,
-    )
-  ) {
-    return "OBSERVABILITY_URL_INVALID";
-  }
-  if (
-    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
-      message,
-    )
-  ) {
-    return "RUNTIME_IMAGE_INVALID";
+  const settingCode = installationSettingFailureCode(message);
+  if (settingCode !== undefined) {
+    return settingCode;
   }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
@@ -99,6 +98,16 @@ function startupFailureCode(error) {
 
 /** The log fields that name a startup failure: its `code`, and for some causes, more. */
 export function startupFailureFields(error) {
+  if (
+    error instanceof ScopeViolationError &&
+    error.message === "Enrollment requires an existing Installation Role."
+  ) {
+    return {
+      code: "OIDC_ENROLLMENT_ROLE_INVALID",
+      reason:
+        "Set auth.oidc.enrollment.createAccount.role.id to an Installation-scoped Role from the Installation iam configuration.",
+    };
+  }
   return (
     startupDependencyFailure(error) ??
     startupConfigurationFailure(error) ??
@@ -224,27 +233,30 @@ function configuration(env) {
   }
 
   const nativeAdminEnabled = optionalBooleanEnvironment(env, "OCC_AGENT_NATIVE_ADMIN_ENABLED");
+  const auditEnabled = controlPlaneAuditEnabled(mode, env.OCC_CONTROL_PLANE_AUDIT_ENABLED);
   // Default on: the routes are IAM-gated and audited; the chart value turns them off.
   const agentRuntimeLogsEnabled =
     env.OCC_AGENT_RUNTIME_LOGS_ENABLED === undefined ||
     env.OCC_AGENT_RUNTIME_LOGS_ENABLED.trim().length === 0
       ? true
       : optionalBooleanEnvironment(env, "OCC_AGENT_RUNTIME_LOGS_ENABLED");
+  for (const removed of ["OCC_AUTH_COOKIE_DOMAIN", "OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"]) {
+    if (Object.hasOwn(env, removed)) {
+      throw new Error(
+        `${removed} has been removed; session cookie scope is derived from Console and Agent hostnames.`,
+      );
+    }
+  }
   const nativeAdminDomain = env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
-  const authCookieDomain = env.OCC_AUTH_COOKIE_DOMAIN;
-  const nativeAdmin =
-    nativeAdminEnabled || (nativeAdminDomain !== undefined && nativeAdminDomain.trim().length > 0)
-      ? {
-          enabled: nativeAdminEnabled,
-          ...(nativeAdminDomain === undefined ? {} : { domain: nativeAdminDomain }),
-          ...(authCookieDomain === undefined ? {} : { sharedCookieDomain: authCookieDomain }),
-        }
-      : undefined;
+  const sessionMode = env.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE ?? "shared-cookie";
+  if (!["shared-cookie", "host-only-exchange"].includes(sessionMode)) {
+    throw new Error(
+      "OCC_AGENT_NATIVE_ADMIN_SESSION_MODE must be shared-cookie or host-only-exchange.",
+    );
+  }
+  const nativeAdmin = { enabled: nativeAdminEnabled, domain: nativeAdminDomain, sessionMode };
 
-  const configuredAuthBaseURL =
-    mode === "production"
-      ? requiredEnvironment(env, "OCC_AUTH_BASE_URL")
-      : (env.OCC_AUTH_BASE_URL ?? DEFAULT_BETTER_AUTH_BASE_URL);
+  const configuredAuthBaseURL = requiredEnvironment(env, "OCC_AUTH_BASE_URL");
   let parsedAuthBaseURL;
   try {
     parsedAuthBaseURL = new URL(configuredAuthBaseURL);
@@ -260,13 +272,24 @@ function configuration(env) {
     throw new Error(`Development OCC_AUTH_BASE_URL must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
   }
 
-  // { github?, google?, oidc? }: each configured provider carries the recovery user ID.
+  deriveSharedCookieDomain(authBaseURL, nativeAdminDomain);
+
+  // { google?, oidc? }: each configured provider carries the recovery user ID.
   const humanLogin = humanLoginConfiguration(env);
   const clientAddress = clientAddressConfiguration(env);
+  const authSecret =
+    mode === "production"
+      ? requiredEnvironment(env, "OCC_AUTH_SECRET")
+      : optionalEnvironment(
+          env,
+          "OCC_AUTH_SECRET",
+          "openclaw-development-auth-secret-minimum-32-bytes",
+        );
+  validateAuthSecret(authSecret);
   if (mode === "production") {
     return Object.freeze({
       ...settings,
-      authSecret: requiredEnvironment(env, "OCC_AUTH_SECRET"),
+      authSecret,
       authBaseURL,
       ...humanLogin,
       ...(clientAddress === undefined ? {} : { clientAddress }),
@@ -275,8 +298,9 @@ function configuration(env) {
       ...(channelDirectoryManagedProxyHost === undefined
         ? {}
         : { channelDirectoryManagedProxyHost }),
-      ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
+      nativeAdmin,
       agentRuntimeLogsEnabled,
+      controlPlaneAuditEnabled: auditEnabled,
       // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
       apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
@@ -285,22 +309,15 @@ function configuration(env) {
   if (clientAddress !== undefined) {
     throw new Error("OCC_AUTH_TRUSTED_PROXY_* settings are production-only.");
   }
-  const authSecret = optionalEnvironment(
-    env,
-    "OCC_AUTH_SECRET",
-    "openclaw-development-auth-secret-minimum-32-bytes",
-  );
-  if (authSecret.length < 32) {
-    throw new Error("OCC_AUTH_SECRET must be at least 32 characters.");
-  }
   return Object.freeze({
     ...settings,
     authSecret,
     authBaseURL,
     ...humanLogin,
     ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
-    ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
+    nativeAdmin,
     agentRuntimeLogsEnabled,
+    controlPlaneAuditEnabled: auditEnabled,
     ...(trustedDevelopmentBridgeCidr === undefined ? {} : { trustedDevelopmentBridgeCidr }),
     ...(trustedDevelopmentForwarderCidr === undefined || trustedDevelopmentForwarderCidr === ""
       ? {}

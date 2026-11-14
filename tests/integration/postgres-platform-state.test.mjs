@@ -21,7 +21,7 @@ import {
   spawnWorker,
   startController,
   verifyPlatformStateStoreContract,
-} from "../helpers/postgres-platform-state.mjs";
+} from "../helpers/postgres-platform-state.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { AGENT_NAME_CONFLICT, callerDenied } from "../helpers/refusal-text.mjs";
 
@@ -126,7 +126,13 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       configuration: {},
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      harness: {
+        id: "openclaw",
+        version: "1.0.0",
+        mode: "embedded",
+        overrides: {},
+        configuration: {},
+      },
       compute: {
         id: "compute-local-development",
         implementation: "deterministic-local-development",
@@ -184,7 +190,7 @@ test(
     } else {
       assert.equal(installation.status, 200);
     }
-    const { controller } = await createDurableController(pool);
+    const { controller, state } = await createDurableController(pool);
     const actor = await pool.query(
       `SELECT identity.id
        FROM occ.iam_identities AS identity
@@ -201,6 +207,19 @@ test(
     assert.equal(created.status, 201);
     assert.equal(created.data.status, "provisioning");
     const namespaceId = created.data.id;
+
+    const ledger = await state.transact((unit) => unit.audit.list());
+    const creation = ledger.find(
+      (event) => event.action === "openclaw.namespaces.create" && event.resource.id === namespaceId,
+    );
+    assert.ok(creation?.requestId);
+    assert.deepEqual(
+      ledger
+        .filter((event) => event.kind === "api_request" && event.requestId === creation.requestId)
+        .map(({ action }) => action)
+        .sort(),
+      ["openclaw.api.request.admitted", "openclaw.api.request.result"],
+    );
 
     const provisioning = await request(process, "GET", `/namespaces/${namespaceId}`);
     assert.equal(provisioning.status, 200);
@@ -274,17 +293,68 @@ test(
     assert.ok(listed.data.every(({ id }) => id !== namespaceId));
 
     const audits = await pool.query(
-      "SELECT action, outcome FROM occ.audit_events WHERE resource_id = $1",
+      "SELECT kind, action, outcome, details FROM occ.audit_events WHERE resource_id = $1",
       [namespaceId],
     );
+    const namespaceAudits = audits.rows.filter(
+      ({ kind, action }) => kind === "mutation" && action.startsWith("openclaw.namespaces."),
+    );
     assert.deepEqual(
-      audits.rows.map(({ action }) => action).sort(),
+      namespaceAudits
+        .filter(({ details }) => details.registrationId === undefined)
+        .map(({ action }) => action)
+        .sort(),
       [
         "openclaw.namespaces.create",
         "openclaw.namespaces.delete",
         "openclaw.namespaces.lifecycle.delete",
         "openclaw.namespaces.lifecycle.ensure",
       ].sort(),
+    );
+    // Driver-step evidence is separate from the existing lifecycle transition audit.
+    assert.deepEqual(
+      namespaceAudits
+        .filter(({ details }) => details.registrationId !== undefined)
+        .map(({ details }) => ({
+          registrationId: details.registrationId,
+          phase: details.phase,
+          outcome: details.outcome,
+        }))
+        .sort((a, b) => a.phase.localeCompare(b.phase)),
+      ["delete", "ensure"].map((phase) => ({
+        registrationId: controller.selectedDriver("compute").id,
+        phase,
+        outcome: "complete",
+      })),
+    );
+    // Each HTTP write commits a queued record with the exact job ID and the same request ID.
+    const queued = audits.rows.filter(({ action }) => action === "openclaw.controller_work.queued");
+    assert.equal(queued.length, lifecycleWork.rowCount);
+    for (const { idempotency_key: workId, namespace_target: target } of lifecycleWork.rows) {
+      const action =
+        target === "ready" ? "openclaw.namespaces.create" : "openclaw.namespaces.delete";
+      const requestId = namespaceAudits.find((event) => event.action === action)?.details
+        .__occAuditMetadata?.requestId;
+      assert.ok(requestId);
+      assert.equal(
+        queued.find(({ details }) => details.workId === workId)?.details.__occAuditMetadata
+          ?.requestId,
+        requestId,
+      );
+    }
+    assert.deepEqual(
+      audits.rows
+        .filter(({ kind }) => kind === "api_request")
+        .map(({ action, details }) => ({
+          action,
+          operation: details.operationId,
+          status: details.statusCode,
+        })),
+      Array.from({ length: 3 }, () => ({
+        action: "openclaw.api.request.result",
+        operation: "getNamespace",
+        status: 200,
+      })),
     );
     assert.ok(audits.rows.every(({ outcome }) => outcome === "success"));
   },
@@ -577,7 +647,13 @@ test(
         configurationKind: "agent",
         configurationGeneration: 1,
         configuration: { agents: { defaults: { model: "test/model" } } },
-        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        harness: {
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+          overrides: {},
+          configuration: {},
+        },
         compute: { id: "compute-provisioning-success", implementation: "deterministic-test" },
         executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
@@ -1909,7 +1985,13 @@ test(
         configurationKind: "agent",
         configurationGeneration: 1,
         configuration: configuration.values,
-        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        harness: {
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+          overrides: {},
+          configuration: {},
+        },
         compute: {
           id: "compute-local-development",
           implementation: "deterministic-local-development",
@@ -2221,7 +2303,13 @@ test(
           configurationKind: "agent",
           configurationGeneration: 1,
           configuration: configuration.values,
-          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          harness: {
+            id: "openclaw",
+            version: "1.0.0",
+            mode: "embedded",
+            overrides: {},
+            configuration: {},
+          },
           compute: {
             id: "compute-local-development",
             implementation: "deterministic-local-development",

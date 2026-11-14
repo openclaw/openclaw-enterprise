@@ -3,11 +3,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
-  request as httpRequest,
   type IncomingHttpHeaders,
+  type IncomingMessage,
   type OutgoingHttpHeaders,
 } from "node:http";
+import { request as httpsRequest, Server as HttpsServer } from "node:https";
 import { stripTypeScriptTypes } from "node:module";
+import { text } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
@@ -42,6 +44,7 @@ import { OpenClawController, type PlatformStateStore } from "../../packages/occ/
 import {
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
+  NamespaceAgentCapabilitiesResponse,
   NamespaceCallerPermissionsResponse,
   NamespaceSecretPermissionsResponse,
   NamespaceListResponse,
@@ -233,6 +236,83 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
     (await fixture.request("GET", alphaImages, { session: limitedSession })).status,
     403,
   );
+});
+
+test("the Namespace Agent capabilities authorize before resolving the exact Namespace", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const provisioning = await fixture.createNamespace("Provisioning capabilities");
+  const ready = await fixture.createNamespace("Ready capabilities", { ready: true });
+  assert.equal(provisioning.status, "provisioning");
+  assert.equal(ready.status, "ready");
+  const missingId = `ns_${randomUUID()}`;
+  const creator = await fixture.createAccountWithPolicy("capabilities-creator", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: "capabilities-create-only",
+      namespaceId: undefined,
+      resource: undefined,
+      permissions: { agent: ["create"] },
+    });
+  });
+  const creatorSession = await fixture.signIn(creator.credentials);
+  const readCapabilities = (namespaceId: string, session: Session) =>
+    fixture.request("GET", `/namespaces/${namespaceId}/agent-capabilities`, { session });
+
+  // Installation-wide Agent create covers the missing collection too, but grants no
+  // Namespace read. The capability response must preserve that permission distinction.
+  assertApiError(
+    await fixture.request("GET", `/namespaces/${ready.id}`, { session: creatorSession }),
+    403,
+    "FORBIDDEN",
+  );
+  for (const namespace of [provisioning, ready]) {
+    const response = await readCapabilities(namespace.id, creatorSession);
+    const { capabilities } = checkedResponse(
+      fixture,
+      response,
+      NamespaceAgentCapabilitiesResponse,
+    ).data;
+    assert.equal(Object.hasOwn(capabilities, "agentProvisioning"), false);
+  }
+  assertApiError(await readCapabilities(missingId, creatorSession), 404, "NOT_FOUND");
+
+  // A Namespace reader without Agent create cannot distinguish an absent Namespace from
+  // the existing one. Moving the existence check ahead of authorization would expose it.
+  const reader = await fixture.createNamespaceMember("capabilities-reader", ready.id, [
+    ["read", "namespace"],
+  ]);
+  const readerSession = await fixture.signIn(reader.credentials);
+  for (const namespaceId of [ready.id, missingId]) {
+    assertApiError(await readCapabilities(namespaceId, readerSession), 403, "FORBIDDEN");
+  }
+
+  // Reading the advisory capabilities grants no later write authority. A new Restriction
+  // still refuses the real Agent-create request at its Agent collection authorization.
+  const configuration = await fixture.createConfiguration(ready.id);
+  restrict(fixture.policy, "create", "agent", { namespaceId: ready.id });
+  const deniedBefore = fixture.auditSink.events.length;
+  assertApiError(
+    await fixture.request("POST", `/namespaces/${ready.id}/agents`, {
+      session: creatorSession,
+      body: {
+        name: "Refused after capability read",
+        configurationId: configuration.id,
+        harnessAuth: null,
+      },
+    }),
+    403,
+    "FORBIDDEN",
+  );
+  const denial = fixture.auditSink.events
+    .slice(deniedBefore)
+    .find((event) => event.kind === "authorization_denial");
+  assert.ok(denial);
+  assert.equal(denial.action, "openclaw.agents.create");
+  assert.deepEqual(denial.authorization, {
+    principalId: creator.principal.id,
+    action: "create",
+    resource: { kind: "agent", id: ready.id, namespaceId: ready.id },
+  });
 });
 
 // The Secrets page disables Create Secret on a false answer (finding 2365), so the answer must be
@@ -1365,12 +1445,12 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
 // native IAM Driver reads its policy once for all of them, as for the Agent Secret answer
 // (finding 2473). The units the answer opens do not grow with the number of Secrets.
 test("the Namespace Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<boolean>();
+  const unit = new AsyncLocalStorage<symbol>();
   let units = 0;
   const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
     read: (work) => {
       units += 1;
-      return unit.run(true, () => state.read(work));
+      return unit.run(Symbol(), () => state.read(work));
     },
     transact: (work) => state.transact(work),
   });
@@ -1386,11 +1466,11 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     ],
     [],
   );
-  const decisions: { action: PermissionAction; inUnit: boolean }[] = [];
+  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
   const authorize = fixture.iamDriver.authorize;
   fixture.iamDriver.authorize = async (request) => {
     if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, inUnit: unit.getStore() === true });
+      decisions.push({ action: request.action, unitId: unit.getStore() });
     }
     return authorize.call(fixture.iamDriver, request);
   };
@@ -1401,18 +1481,26 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     decisions.length = 0;
     units = 0;
     const denied = await creator.answer();
+    // All Secret decisions for this answer must share the same read unit.
+    const unitId = decisions[0]?.unitId;
+    assert.notEqual(unitId, undefined);
+    assert.ok(decisions.every((decision) => decision.unitId === unitId));
     return { denied, units, decisions: [...decisions] };
   };
   const few = await measure();
-  assert.deepEqual(few.denied, [model.id, bot.id].sort());
+  const expectedDenied = [model.id, bot.id];
+  assert.deepEqual(few.denied, [...expectedDenied].sort());
+  assert.equal(few.decisions.filter(({ action }) => action === "read").length, 2);
+  assert.equal(few.decisions.filter(({ action }) => action === "operate").length, 2);
   for (let index = 0; index < 6; index += 1) {
-    await fixture.createSecret(namespace.id, `Extra key ${index}`, "extra-value");
+    const extra = await fixture.createSecret(namespace.id, `Extra key ${index}`, "extra-value");
+    expectedDenied.push(extra.id);
   }
   const many = await measure();
-  assert.equal(many.denied.length, 8);
-  // Each readable Secret costs a read and an operate decision, all inside a read unit.
+  assert.deepEqual(many.denied, expectedDenied.sort());
+  // Each readable Secret costs a read and an operate decision in the shared read unit.
+  assert.equal(many.decisions.filter(({ action }) => action === "read").length, 8);
   assert.equal(many.decisions.filter(({ action }) => action === "operate").length, 8);
-  assert.ok(many.decisions.every(({ inUnit }) => inUnit));
   assert.equal(many.units, few.units);
 });
 
@@ -1635,6 +1723,54 @@ test("console static routes expose only public assets and preserve API JSON fail
   assert.equal(errorBody(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
 });
 
+test("Console HTTPS ingress stops listening before it closes connections and awaits its close callback", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const origin = new URL(fixture.origin);
+  const response = await new Promise<IncomingMessage>((resolve, reject) => {
+    httpsRequest(
+      new URL("/console/", origin),
+      {
+        hostname: "127.0.0.1",
+        servername: origin.hostname,
+        headers: { host: origin.host },
+      },
+      resolve,
+    )
+      .on("error", reject)
+      .end();
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(await text(response), /src="\/console\/console\.mjs"/);
+
+  // Observe Node's listener and callback while both shutdown methods run normally.
+  const { close, closeAllConnections } = HttpsServer.prototype;
+  let listeningAtSweep: boolean | undefined;
+  let closeCallbackRan = false;
+  t.mock.method(HttpsServer.prototype, "closeAllConnections", function (this: HttpsServer) {
+    listeningAtSweep = this.listening;
+    return closeAllConnections.call(this);
+  });
+  t.mock.method(
+    HttpsServer.prototype,
+    "close",
+    function (this: HttpsServer, callback?: (error?: Error) => void) {
+      if (callback === undefined) {
+        return close.call(this);
+      }
+      return close.call(this, (error) => {
+        closeCallbackRan = true;
+        callback(error);
+      });
+    },
+  );
+
+  // The next fixture cleanup may proceed only after the HTTPS server has closed.
+  fixture.registerCleanupBeforeAppClose(() => {
+    assert.equal(listeningAtSweep, false);
+    assert.equal(closeCallbackRan, true);
+  });
+});
+
 test("console scripts and styles are compressed when accepted; the shell and binaries are not", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   const host = new URL(fixture.origin).host;
@@ -1647,9 +1783,14 @@ test("console scripts and styles are compressed when accepted; the shell and bin
       headers: IncomingHttpHeaders;
       rawPayload: Buffer;
     }>((resolve, reject) => {
-      const request = httpRequest(
+      const request = httpsRequest(
         new URL(url, fixture.origin),
-        { method, headers: { host, ...headers } },
+        {
+          hostname: "127.0.0.1",
+          servername: new URL(fixture.origin).hostname,
+          method,
+          headers: { host, ...headers },
+        },
         (response) => {
           const chunks: Buffer[] = [];
           response.on("data", (chunk: unknown) => {
@@ -1807,6 +1948,12 @@ test("console auth routes reject untrusted browser origins and issue production 
   assert.equal(accepted.response.status, 200, accepted.text);
   const setCookies: unknown = setCookieHeaders(accepted.response);
   assert.ok(Check(Type.Array(Type.String()), setCookies));
+  // Sign-in emits only the current session scope, not clearance for retired cookie names.
+  const sessionCookies = setCookies.filter((cookie) => /^[^=]+\.session_token=/.test(cookie));
+  assert.equal(sessionCookies.length, 1);
+  const activeSessionCookie = sessionCookies[0]!;
+  assert.match(activeSessionCookie, /^__Secure-openclaw_occ_shared\.session_token=[^;]/);
+  assert.match(activeSessionCookie, /; Domain=console\.oce\.localhost(?:;|$)/i);
   const setCookie = setCookies.join("\n");
   const requestCookie = cookieHeaderFromSetCookie(setCookies);
   assert.ok(requestCookie.length > 0);
@@ -1844,12 +1991,11 @@ test("console auth routes reject untrusted browser origins and issue production 
   assert.equal(crossSiteNoOrigin.response.status, 403);
   assert.equal(errorBody(crossSiteNoOrigin.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
-  // Without the GitHub profile the session key still only narrows the cookie session.
+  // Without an external sign-in profile the session key still only narrows the cookie session.
   const providers = await fixture.rawRequest("GET", "/api/auth/providers");
   const providersBody: unknown = JSON.parse(providers.text);
   assert.ok(Check(Type.Object({ data: Type.Unknown() }), providersBody));
   assert.deepEqual(providersBody.data, {
-    github: false,
     google: false,
     oidc: false,
     password: true,
@@ -1885,6 +2031,36 @@ test("console auth routes reject untrusted browser origins and issue production 
     headers: { cookie: requestCookie, origin: fixture.origin, "x-occ-session-key": sessionKey },
   });
   assert.equal(cliSignOut.response.status, 200, cliSignOut.text);
+  // Logout must still clear and revoke the current shared session after legacy cleanup removal.
+  const clearedSessions = setCookieHeaders(cliSignOut.response).filter((cookie: string) =>
+    /^[^=]+\.session_token=/.test(cookie),
+  );
+  assert.equal(clearedSessions.length, 1);
+  assert.match(clearedSessions[0]!, /^__Secure-openclaw_occ_shared\.session_token=;/);
+  assert.match(clearedSessions[0]!, /; Domain=console\.oce\.localhost(?:;|$)/i);
+  assert.match(clearedSessions[0]!, /; Max-Age=0(?:;|$)/i);
+  const freshSession = await fixture.signIn();
+  // Stale probes with or without a binding must not clear the replacement cookie.
+  for (const binding of [undefined, sessionKey]) {
+    const signedOut = await fixture.rawRequest("GET", "/api/auth/session", {
+      headers: {
+        cookie: requestCookie,
+        ...(binding === undefined ? {} : { "x-occ-session-key": binding }),
+      },
+    });
+    assert.equal(signedOut.response.status, 200, signedOut.text);
+    assert.equal(JSON.parse(signedOut.text).data, null);
+    assert.equal(signedOut.response.headers.has("set-cookie"), false);
+    assert.equal(signedOut.response.headers.get("cache-control"), "no-store");
+    assert.equal(signedOut.response.headers.get("pragma"), "no-cache");
+  }
+  const fresh = await fixture.rawRequest("GET", "/api/auth/session", {
+    headers: authenticatedHeaders(freshSession),
+  });
+  assert.equal(fresh.response.status, 200, fresh.text);
+  const freshBody: unknown = JSON.parse(fresh.text);
+  assert.ok(Check(sessionSchema, freshBody));
+  assert.notEqual(freshBody.data.sessionKey, sessionKey);
 
   // A body that fails the sign-in schema is a 400 before any credential check.
   const malformedSignIn = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {
@@ -1949,8 +2125,8 @@ test("every /api/auth operation that takes a body answers the 400, 413 and 415 i
         return [{ method: method.toUpperCase(), path, operation }];
       }),
     );
-  // Fourteen such operations exist today; an empty scan would prove nothing.
-  assert.ok(operations.length >= 14, `found ${operations.length} operations`);
+  // Twelve such operations exist today; an empty scan would prove nothing.
+  assert.ok(operations.length >= 12, `found ${operations.length} operations`);
   // An Installation administrator with a trusted Origin passes admission, so each refusal
   // comes from the body itself: the declared size before parsing, then the media type, then
   // the operation's schema.
@@ -2029,22 +2205,19 @@ test("public Agent revisions return the selected binding without private credent
   assert.deepEqual(historicalData.harnessAuth, agent.harnessAuth);
 });
 
-// The Agent page skips its native admin status probe when this answer is false (review of
-// #3600), so the answer must be the decision that probe makes: Agent administer on the exact
-// Agent, not any other Agent action. Each step proves the answer against the real probe.
-test("the Agent administer answer matches what native admin access checks", async (t) => {
+// Administration remains an exact-Agent permission even when operate admits browser chat.
+test("native browser access accepts operate while administer answers remain exact", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Administer answer", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Administered agent");
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  // Every other Agent action, so an answer that reports any of them instead is caught.
+  // Other lifecycle actions alone admit neither administration nor browser chat.
   const member = await fixture.createNamespaceMember("administer-answer", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],
     ["update", "agent"],
     ["deploy", "agent"],
-    ["operate", "agent"],
     ["delete", "agent"],
   ]);
   const session = await fixture.signIn(member.credentials);
@@ -2090,6 +2263,16 @@ test("the Agent administer answer matches what native admin access checks", asyn
     403,
     "FORBIDDEN",
   );
+
+  grantMember(fixture, "administer-answer", [["operate", "agent"]]);
+  const operatorSummary = await fixture.request("GET", `${otherPath}/permissions`, { session });
+  assert.equal(
+    checkedResponse(fixture, operatorSummary, AgentCallerPermissionsResponse).data.administer,
+    false,
+  );
+  const operatorProbe = await fixture.request("GET", `${otherPath}/native-admin`, { session });
+  assert.equal(operatorProbe.status, 200);
+  assert.deepEqual(operatorProbe.data, { status: "disabled" });
 
   grantMember(fixture, "administer-answer", [["administer", "agent"]]);
   assert.equal(await answer(), true);

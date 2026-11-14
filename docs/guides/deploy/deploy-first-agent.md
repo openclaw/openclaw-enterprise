@@ -75,7 +75,7 @@ modelSource=$(request GET "$base/credential-sources" |
     '[.data[]|select(.name==$n and .type==$t and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
 ```
 
-Otherwise, store the credential in a Namespace Secret and register its reference before enabling the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
+Otherwise, store the credential in a Namespace Secret and register its reference with Credential Gateway. This works with or without the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
 
 ```bash
 # POST $base/secrets: read the credential from its file.
@@ -212,6 +212,8 @@ In the Console, open **Workspace files** on `fred`. Check `IDENTITY.md` for its 
 
 Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen **Open Agent UI**, and select the **same conversation** in chat history. Ask “How do I like my answers?” and check the reply against your saved preference. Retain the conversation's browser path with the private session record.
 
+To hand off work, share the Namespace, Agent name, conversation label, and a link to the decision in your team’s repository at the exact commit. Keep launch tokens, redemption tokens, and browser cookies private. Your teammate signs in to the Console with their own account and [opens the Agent](native-admin.md#local-development). If they see the conversation in chat history, they can select it. Otherwise, they can start a new conversation with the decision reference.
+
 <Snippet file="../../snippets/openshell-quickstart/console-onboard.md" />
 
 </Accordion>
@@ -240,4 +242,4 @@ save_session
 
 Run the two commands printed by `save_session` to resume in a fresh Bash shell. The private session saves IDs and paths; the service key stays in its protected file. Keep this Agent running. You can add Git with either credential. To add plugins, use the service account token.
 
-On Amazon EKS, [verify workspace routing](eks-openshell-setup.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).
+On Amazon EKS, [verify workspace routing](eks-openshell-installation.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).

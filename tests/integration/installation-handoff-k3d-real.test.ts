@@ -285,7 +285,7 @@ test(
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
-        ["scripts/diagnose-kubernetes-prerequisites.mjs", "--config", configPath, "--json"],
+        ["scripts/diagnose-kubernetes-prerequisites.ts", "--config", configPath, "--json"],
         { encoding: "utf8", timeout: 100_000 },
       );
       assert.equal(result.error, undefined);
@@ -422,6 +422,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
       gatewayRouting: { enabled: false },
       images: { controller: `registry.example.invalid/controller@sha256:${"a".repeat(64)}` },
       auth: { baseUrl: "https://occ.example.invalid", secretName: "occ-auth", secretKey: "secret" },
+      agentNativeAdmin: { domain: "agents.example.invalid" },
       bootstrap: {
         adminEmail: "admin@example.invalid",
         password: { claimName: "absent-bootstrap" },

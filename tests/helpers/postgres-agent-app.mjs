@@ -1,8 +1,11 @@
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
 import { createPostgresControllerAuth } from "./password-hasher.mjs";
+import { postgresAgentAuditState } from "../../apps/controller/src/composition/control-plane-audit.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -21,7 +24,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
-const origin = "http://127.0.0.1";
+const origin = "https://console.oce.localhost";
 
 // Bootstraps the shared development Installation once per database; later suites reuse it.
 export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
@@ -37,6 +40,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
     password: adminPassword,
     authSecret,
     authBaseURL: origin,
+    agentDomain: "agents.oce.localhost",
     installationName: `${label} PostgreSQL test`,
   });
 }
@@ -53,6 +57,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * @param options.authSecret the session signing secret (at least 32 characters).
  * @param [options.createAuditSink] receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
+ * @param [options.requestAudit] wires the same durable sink for required HTTP request evidence.
  * @param [options.appOptions] extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
  * @param [options.controllerOptions]
@@ -73,6 +78,7 @@ export async function createPostgresAgentApp(
     label,
     authSecret,
     createAuditSink = (persisted) => persisted,
+    requestAudit = false,
     appOptions,
     controllerOptions,
     stateOptions,
@@ -92,15 +98,26 @@ export async function createPostgresAgentApp(
     mode: "development",
     installationId: installation.id,
     baseURL: origin,
+    agentDomain: "agents.oce.localhost",
     secret: authSecret,
     pool,
   });
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
-  const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
+  const computeDriver = createRuntimeLogComputeDriver({
+    id: `${label}-pg-compute`,
+    ...(sandboxDriver === undefined ? {} : { sandboxNamespaceName: kubernetesNamespaceName }),
+  });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
   const controller = new OpenClawController(installation, {
     state,
+    ...(appOptions?.agentAuditCursorSecret === undefined
+      ? {}
+      : { agentAuditState: postgresAgentAuditState(state) }),
     recordOperations: false,
+    namespaceLifecycleBindings:
+      sandboxDriver?.ensureNamespace === undefined
+        ? []
+        : [sandboxNamespaceLifecycleBinding(computeDriver, sandboxDriver)],
     ...controllerOptions,
   });
   for (const driver of [iamDriver, computeDriver, configurationDriver, secretDriver]) {
@@ -112,6 +129,7 @@ export async function createPostgresAgentApp(
     controller.selectDriver("sandbox", sandboxDriver.id);
   }
   function createApp(selectedController = controller) {
+    const auditSink = createAuditSink(state.auditSink);
     const created = createFastifyApp({
       controller: selectedController,
       iamDriver,
@@ -119,7 +137,8 @@ export async function createPostgresAgentApp(
       configurationDriver,
       secretDriver,
       resolveHarness: resolveApprovedHarness,
-      auditSink: createAuditSink(state.auditSink),
+      auditSink,
+      ...(requestAudit ? { durableRequestAuditSink: state.auditSink } : {}),
       auth,
       development: { enabled: false },
       ...appOptions,

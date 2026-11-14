@@ -11,6 +11,26 @@ GHCR packages are public. The deployment tools use immutable image references
 internally; the commands below resolve the selected tags so you do not need to
 find or copy a SHA manually.
 
+## Rehearse a fresh installation
+
+For an independent release check, have an operator who did not build the images follow
+the [custom Helm guide](production-installation.md). Keep a short record of the run:
+
+1. Before pulling, record the guide revision, installation profile and prerequisites.
+   Use a fresh workstation image store and fresh nodes for the controller and Agent.
+   Record whether either release image was present before its first pull.
+2. Keep the GHCR pull results and compare both image references with the
+   [publication record](#check-publication-and-source). For each multi-platform image,
+   record the node OS and architecture. Match the manifest digest from the node’s
+   pull record to that platform in the published index. If the runtime exposes
+   only an image ID with no manifest mapping, record the platform check as unverified.
+3. Record the Installation ID from [API authentication](production-installation.md#authenticate-to-the-production-api)
+   and the [Namespace ID](production-agents.md#use-a-driver-managed-kubernetes-namespace).
+   Verify that the Agent returns the fresh nonce from the [model-response check](../operate/model-verification.md).
+4. Record any help the operator needed and the step where they needed it. If the
+   run stops early, record the first blocked step, who can resolve it and which
+   checks remain.
+
 <a id="pull-the-latest-pair"></a>
 
 ## Pull a matching pair
@@ -47,8 +67,12 @@ else
 fi
 ```
 
-Stop if selection fails. If an anonymous pull fails with `unauthorized` or
-`denied`, the packages have not been published publicly yet:
+Stop if selection fails. If an anonymous pull returns `unauthorized` or
+`denied`, ask the publisher for the publication record for the requested channel
+and both image names and tags, and ask them to confirm package visibility and
+pull access. The error alone does not establish publication status. After image
+selection succeeds, [compare both resolved references with the publication record](#check-publication-and-source).
+If no approved pair is available,
 [build images from your checkout](production-installation.md#build-and-publish-production-images)
 instead, or [start the local stack](../quickstart.md#start-the-local-stack)
 without image selections, which builds this checkout. The two aliases are not

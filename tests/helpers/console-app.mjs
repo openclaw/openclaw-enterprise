@@ -1,3 +1,6 @@
+import { openShellNamespaceObjects } from "./openshell-workspace-protocol.mjs";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID, createHash, X509Certificate } from "node:crypto";
@@ -8,6 +11,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { createConsoleFixtureRevisions } from "./console-fixture-revisions.ts";
 import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
@@ -20,6 +24,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
   AgentResponse,
   ConfigurationResponse,
+  InstallationResponse,
   NamespaceResponse,
   SecretResponse,
 } from "../../packages/contracts/src/api/resources.ts";
@@ -30,11 +35,26 @@ import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mj
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
-import { reservePort } from "./available-port.mjs";
+import { reservePort } from "./available-port.ts";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { createFixtureResponse } from "./console-fixture-response.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
+
+/**
+ * @typedef {{
+ *   email?: string,
+ *   password?: string,
+ *   name?: string | undefined,
+ *   rememberMe?: boolean | undefined,
+ *   origin?: string | undefined,
+ *   path?: string | undefined,
+ *   fetch?: ((request: Request) => Promise<Response>) | undefined,
+ *   headers?: Record<string, string> | undefined,
+ * }} SignInOverrides
+ */
+/** @typedef {{response: Response, setCookie: string[], cookie: string, origin: string}} ConsoleSession */
+/** @typedef {string | ConsoleSession | {cookie: string, origin?: string | undefined}} RequestSession */
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -60,12 +80,13 @@ function computeDriver({
   credentialGatewayDriver,
   resolveSandboxNamespace = async (namespace) => ({
     ...namespace,
-    name: `console-${namespace.id}`,
+    name: kubernetesNamespaceName(namespace.id),
   }),
   // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
   // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
   implementation = "test-memory-lifecycle",
 } = {}) {
+  const namespaceObjects = openShellNamespaceObjects();
   const driver = createTestKubernetesComputeDriver("console-compute", {
     gatewayRuntime: true,
     ...(modelProvider === undefined ? {} : { modelProvider }),
@@ -97,6 +118,16 @@ function computeDriver({
     },
     // The same fixture placement is shared by source management and the Sandbox.
     resolveSandboxNamespace,
+    async resolveSandboxNamespaceContext(namespace, signal) {
+      return {
+        namespace: await resolveSandboxNamespace(namespace),
+        kubernetes: namespaceObjects,
+        signal,
+      };
+    },
+    async checkNamespaceDeletion(namespace) {
+      return { namespaceId: namespace.id, deletionAllowed: true };
+    },
     async prepareRevision(revision) {
       return {
         namespaceId: revision.namespaceId,
@@ -114,6 +145,31 @@ function computeDriver({
 // can land after a space, which a Name cannot end with.
 function authSecretName(agentName) {
   return Array.from(`Auth ${agentName}`).slice(0, NAME_MAX_CHARACTERS).join("").trimEnd();
+}
+
+// Playwright route.fetch uses Node's TLS client, separately from Chromium.
+// Keep each live fixture's exact certificate trusted until that fixture closes.
+let originalNodeCertificates;
+const nodeFixtureCertificates = new Map();
+function trustNodeFixtureCertificate(cert) {
+  const pem = cert.toString();
+  originalNodeCertificates ??= getCACertificates("default");
+  nodeFixtureCertificates.set(pem, (nodeFixtureCertificates.get(pem) ?? 0) + 1);
+  const update = () =>
+    setDefaultCACertificates([...originalNodeCertificates, ...nodeFixtureCertificates.keys()]);
+  update();
+  return () => {
+    const remaining = nodeFixtureCertificates.get(pem) - 1;
+    if (remaining === 0) {
+      nodeFixtureCertificates.delete(pem);
+    } else {
+      nodeFixtureCertificates.set(pem, remaining);
+    }
+    update();
+    if (nodeFixtureCertificates.size === 0) {
+      originalNodeCertificates = undefined;
+    }
+  };
 }
 
 function spkiHash(cert) {
@@ -160,7 +216,9 @@ export async function startHttpsIngress({
           "-out",
           certPath,
           "-subj",
-          `/CN=${originHost}`,
+          // Concurrent self-signed roots need distinct subjects. OpenSSL otherwise
+          // selects one of the same-subject/key certificates and rejects the others.
+          `/CN=${originHost}/OU=${randomUUID()}`,
           "-addext",
           `subjectAltName=DNS:${originHost}`,
         ],
@@ -183,11 +241,18 @@ export async function startHttpsIngress({
         headers: incoming.headers,
       },
       (response) => {
+        response.on("error", (error) => outgoing.destroy(error));
         outgoing.writeHead(response.statusCode, response.headers);
         response.pipe(outgoing);
       },
     );
-    upstream.on("error", () => outgoing.writeHead(502).end());
+    // Preserve deliberate connection-loss cases through the fixture TLS hop.
+    upstream.on("error", (error) => outgoing.destroy(error));
+    outgoing.on("close", () => {
+      if (!outgoing.writableFinished) {
+        upstream.destroy();
+      }
+    });
     incoming.pipe(upstream);
   });
   ingress.listen({ port, host: "127.0.0.1", reusePort });
@@ -195,10 +260,10 @@ export async function startHttpsIngress({
   return {
     cert,
     async close() {
-      ingress.closeAllConnections();
-      await new Promise((resolve, reject) =>
-        ingress.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise((resolve, reject) => {
+        ingress.close((error) => (error ? reject(error) : resolve()));
+        ingress.closeAllConnections();
+      });
     },
   };
 }
@@ -227,7 +292,7 @@ export function fileConsoleApp(options = {}) {
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
  * @param {import("./console-file-app.ts").CleanupRegistrar} t
  * @template {object | Record<string, unknown>} [Options=object]
- * @param {Options & {auditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
+ * @param {Options & {auditSink?: InMemoryAuditSink, durableRequestAuditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
  */
 export async function createConsoleAppFixture(t, options = {}) {
   const auditSink = options.auditSink ?? new InMemoryAuditSink();
@@ -241,13 +306,14 @@ export async function createConsoleAppFixture(t, options = {}) {
   const appPort = await reservePort();
   t.after(appPort.release);
   const port = appPort.port;
-  const originHost = options.originHost ?? "127.0.0.1";
-  const browserReservation = options.https === true ? await reservePort() : null;
+  const originHost = options.originHost ?? "console.oce.localhost";
+  const https = options.https !== false;
+  const browserReservation = https ? await reservePort() : null;
   if (browserReservation !== null) {
     t.after(browserReservation.release);
   }
   const browserPort = browserReservation?.port ?? port;
-  const origin = `${options.https === true ? "https" : "http"}://${originHost}:${browserPort}`;
+  const origin = `${https ? "https" : "http"}://${originHost}:${browserPort}`;
   const browserArgs = [];
   const transportOrigin = `http://127.0.0.1:${port}`;
   const { rawRequest, fetchThroughLoopback } = createConsoleFixtureTransport(
@@ -271,14 +337,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     installationId,
     mode: authMode,
     baseURL: authBaseURL,
+    agentDomain: options.nativeAdmin?.domain ?? `agents.${new URL(authBaseURL).hostname}`,
     secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
     memoryDatabase,
-    ...(options.authCookieDomain === undefined
-      ? {}
-      : { sharedCookieDomain: options.authCookieDomain }),
-    ...(options.authSecureCookies === undefined
-      ? {}
-      : { secureCookies: options.authSecureCookies }),
   });
   const credentials = {
     email: `console-admin-${randomUUID()}@example.com`,
@@ -300,6 +361,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   };
   // These grant-free accounts are fixture setup. Accounts added later through
   // createAccountWithPolicy are also shareable, because State resolves identities live.
+  /** @type {{credentials: typeof credentials, principal: typeof seed.principal}[]} */
   const provisionedAccounts = [];
   for (const label of options.provisionedPeople ?? []) {
     const personCredentials = {
@@ -402,7 +464,17 @@ export async function createConsoleAppFixture(t, options = {}) {
     auth,
     iamDriver,
     auditSink,
-    development: { enabled: true, installationId, ...options.development },
+    ...(options.durableRequestAuditSink === undefined
+      ? {}
+      : { durableRequestAuditSink: options.durableRequestAuditSink }),
+    development: {
+      enabled: true,
+      installationId,
+      ...(options.development?.enabled === false
+        ? {}
+        : { browserOrigin: new URL(authBaseURL).origin }),
+      ...options.development,
+    },
     computeDriver:
       options.computeDriver ??
       computeDriver({
@@ -437,6 +509,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        namespaceLifecycleBindings:
+          options.namespaceLifecycleBindings ??
+          (options.sandboxDriver?.ensureNamespace === undefined
+            ? []
+            : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
         ...(options.pluginSourceReader === undefined
@@ -489,6 +566,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   const cleanupBeforeAppClose = [];
   let appClosed = false;
 
+  /** @param {() => void | Promise<void>} cleanup */
   function registerCleanupBeforeAppClose(cleanup) {
     cleanupBeforeAppClose.push(cleanup);
   }
@@ -522,7 +600,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   t.after(close);
   const fixtureResponse = createFixtureResponse(app.getSchemas());
 
-  if (options.https === true) {
+  if (https) {
     // Exercise browser Secure/Domain cookies through a real TLS ingress to the HTTP API.
     const ingress = await startHttpsIngress({
       tls: options.ingressTLS,
@@ -532,7 +610,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       reusePort: browserReservation.reusePort,
     });
     await browserReservation.release();
-    cleanupBeforeAppClose.push(ingress.close);
+    cleanupBeforeAppClose.push(ingress.close, trustNodeFixtureCertificate(ingress.cert));
     if (options.ingressTLS === undefined) {
       browserArgs.push(chromiumTrustArg([ingress.cert]));
     }
@@ -548,6 +626,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     return payload;
   }
 
+  /** @param {SignInOverrides} [overrides] @returns {Promise<ConsoleSession>} */
   async function signIn(overrides = {}) {
     return signInWithEmailPassword({
       origin,
@@ -562,7 +641,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   /**
    * @param {string} method
    * @param {string} path
-   * @param {{session?: typeof adminSession | null, headers?: Record<string, string>, body?: unknown}} [options]
+   * @param {{session?: RequestSession | null | undefined, headers?: Record<string, string>, body?: unknown}} [options]
    */
   async function request(method, path, { session = adminSession, headers = {}, body } = {}) {
     const result = await rawRequest(method, path, {
@@ -583,10 +662,10 @@ export async function createConsoleAppFixture(t, options = {}) {
 
   async function bootstrap(name = "Console test Installation") {
     const result = await request("POST", "/installation/bootstrap", { body: { name } });
-    assert.equal(result.status, 201);
-    return result.data;
+    return fixtureResponse(result, 201, InstallationResponse, "bootstrap Installation").data;
   }
 
+  /** @param {string} name */
   async function createNamespace(name, { ready = false } = {}) {
     const result = await request("POST", "/namespaces", { body: { name } });
     const namespace = fixtureResponse(result, 201, NamespaceResponse, "create Namespace").data;
@@ -598,6 +677,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     return namespace;
   }
 
+  /** @param {string} namespaceId */
   async function makeNamespaceReady(namespaceId) {
     assert.ok(controller, "bootstrap must create the controller before Namespace lifecycle runs");
     const updated = await controller.handleNamespaceLifecycle(
@@ -609,6 +689,10 @@ export async function createConsoleAppFixture(t, options = {}) {
     return updated;
   }
 
+  /**
+   * @param {string} namespaceId
+   * @param {object} [values]
+   */
   async function createConfiguration(namespaceId, values = {}, options = {}) {
     const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       body: {
@@ -620,6 +704,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     return fixtureResponse(configuration, 201, ConfigurationResponse, "create Configuration").data;
   }
 
+  /**
+   * @param {string} namespaceId
+   * @param {string} configurationId
+   * @param {object} [values]
+   */
   async function updateConfiguration(namespaceId, configurationId, values = {}, options = {}) {
     const configuration = await request(
       "PATCH",
@@ -633,8 +722,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         },
       },
     );
-    assert.equal(configuration.status, 200);
-    return configuration.data;
+    return fixtureResponse(configuration, 200, ConfigurationResponse, "update Configuration").data;
   }
 
   // The listed bindings createAgent adds for each Agent's model credential (finding 2260).
@@ -721,6 +809,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     return binding.data;
   }
 
+  /**
+   * @param {string} namespaceId
+   * @param {string} name
+   * @param {object} [values]
+   */
   async function createAgent(namespaceId, name, values = {}, options = {}) {
     const configuration = await createConfiguration(namespaceId, values, {
       secretBindings: options.secretBindings,
@@ -771,6 +864,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     return created;
   }
 
+  /**
+   * @param {string} namespaceId
+   * @param {string} agentId
+   * @param {unknown} body
+   */
   async function updateAgent(namespaceId, agentId, body) {
     const agent = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       body,
@@ -787,6 +885,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     },
   );
 
+  /**
+   * @param {string} namespaceId
+   * @param {string} name
+   * @param {string} value
+   */
   async function createSecret(namespaceId, name, value) {
     const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
       body: { name, value },
@@ -862,6 +965,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   return {
+    principal: seed.principal,
     origin,
     browserArgs,
     credentials,
@@ -874,6 +978,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     iamDriver,
     withIamOutage,
     rawRequest,
+    fetch: fetchThroughLoopback,
     request,
     fixtureResponse,
     signIn,

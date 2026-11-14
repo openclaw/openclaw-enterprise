@@ -1205,6 +1205,11 @@
                 "type": "array"
               },
               "message": { "maxLength": 256, "minLength": 1, "type": "string" },
+              "reason": {
+                "const": "credential_registration_pending",
+                "description": "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+                "type": "string"
+              },
               "remainingResources": {
                 "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
                 "items": {
@@ -1655,7 +1660,7 @@
   "paths": {
     "/api/auth/accounts": {
       "post": {
-        "description": "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled. An optional github.subject attaches that GitHub identity in the same transaction; it conflicts when GitHub sign-in is not configured or the identity is already assigned.",
+        "description": "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",
         "operationId": "createAuthAccount",
         "requestBody": {
           "content": {
@@ -1674,14 +1679,6 @@
                 "additionalProperties": false,
                 "properties": {
                   "email": { "maxLength": 320, "minLength": 3, "type": "string" },
-                  "github": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "subject": { "pattern": "^[1-9][0-9]{0,19}$", "type": "string" }
-                    },
-                    "required": ["subject"],
-                    "type": "object"
-                  },
                   "name": { "maxLength": 200, "minLength": 1, "type": "string" },
                   "password": { "maxLength": 128, "minLength": 12, "type": "string" },
                   "roleId": { "maxLength": 200, "minLength": 1, "type": "string" }
@@ -2107,6 +2104,67 @@
               }
             },
             "description": "Unsupported Media Type"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Too many account creation requests; wait for Retry-After",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Too many account creation requests; wait for Retry-After"
           },
           "503": {
             "content": {
@@ -4818,584 +4876,6 @@
         ]
       }
     },
-    "/api/auth/accounts/{userId}/providers/github": {
-      "post": {
-        "description": "Requires a current human Native IAM Installation administrator who holds every grant of the target account's Principal, trusted Origin and expectedVersion from a guarded account read. Commits state and audit together. An unknown outcome must be inspected without automatic retry; present state does not attribute the earlier request.",
-        "operationId": "attachGitHubIdentity",
-        "parameters": [
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "user-docs-admin"
-              }
-            },
-            "in": "path",
-            "name": "userId",
-            "required": true,
-            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "examples": {
-                "example": {
-                  "summary": "Example request",
-                  "value": { "expectedVersion": 1, "subject": "12345678" }
-                }
-              },
-              "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
-                  "subject": { "pattern": "^[1-9][0-9]{0,19}$", "type": "string" }
-                },
-                "required": ["subject", "expectedVersion"],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": { "userId": "user-docs-admin" },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "OK",
-                  "properties": {
-                    "data": {
-                      "additionalProperties": false,
-                      "properties": { "userId": { "type": "string" } },
-                      "required": ["userId"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Bad Request",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Bad Request"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Unauthorized",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Forbidden",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Not Found",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Conflict",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Conflict"
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Payload Too Large",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Payload Too Large"
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Unsupported Media Type",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unsupported Media Type"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Service Unavailable",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Service Unavailable"
-          }
-        },
-        "security": [{ "sessionCookie": [] }],
-        "summary": "Attach an exact GitHub identity to an existing account",
-        "tags": ["Authentication"],
-        "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
-        ]
-      }
-    },
     "/api/auth/accounts/{userId}/providers/google": {
       "post": {
         "description": "Requires a current human Native IAM Installation administrator who holds every grant of the target account's Principal, trusted Origin and expectedVersion from a guarded account read. Commits state and audit together. An unknown outcome must be inspected without automatic retry; present state does not attribute the earlier request.",
@@ -7139,7 +6619,6 @@
                     "summary": "Example response",
                     "value": {
                       "data": {
-                        "github": false,
                         "google": false,
                         "oidc": false,
                         "password": true,
@@ -7156,7 +6635,6 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
-                        "github": { "type": "boolean" },
                         "google": { "type": "boolean" },
                         "oidc": { "type": "boolean" },
                         "oidcSignIn": {
@@ -7175,7 +6653,7 @@
                         },
                         "sessionBinding": { "type": "boolean" }
                       },
-                      "required": ["github", "google", "oidc", "password", "sessionBinding"],
+                      "required": ["google", "oidc", "password", "sessionBinding"],
                       "type": "object"
                     },
                     "meta": {
@@ -7319,692 +6797,6 @@
         },
         "security": [],
         "summary": "List configured browser sign-in methods",
-        "tags": ["Authentication"]
-      }
-    },
-    "/api/auth/providers/github/callback": {
-      "get": {
-        "description": "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
-        "operationId": "completeGitHubSignIn",
-        "responses": { "302": { "description": "Redirect to Console" } },
-        "security": [],
-        "summary": "Complete an enrolled GitHub sign-in",
-        "tags": ["Authentication"]
-      }
-    },
-    "/api/auth/providers/github/result": {
-      "post": {
-        "description": "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
-        "operationId": "confirmGitHubSignIn",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "examples": {
-                "example": {
-                  "summary": "Example request",
-                  "value": { "attemptId": "example000000000000000000000000000000000000" }
-                }
-              },
-              "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "attemptId": { "pattern": "^[A-Za-z0-9_-]{43}$", "type": "string" }
-                },
-                "required": ["attemptId"],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": { "sessionKey": "example-session-binding-not-a-credential" },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "OK",
-                  "properties": {
-                    "data": {
-                      "additionalProperties": false,
-                      "properties": { "sessionKey": { "type": "string" } },
-                      "required": ["sessionKey"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Bad Request",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Bad Request"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Unauthorized",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Forbidden",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Payload Too Large",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Payload Too Large"
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Unsupported Media Type",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unsupported Media Type"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Service Unavailable",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Service Unavailable"
-          }
-        },
-        "security": [{ "sessionCookie": [] }],
-        "summary": "Confirm which session a GitHub sign-in created",
-        "tags": ["Authentication"]
-      }
-    },
-    "/api/auth/providers/github/start": {
-      "post": {
-        "description": "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
-        "operationId": "startGitHubSignIn",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": {
-                        "attemptId": "example000000000000000000000000000000000000",
-                        "url": "https://github.com/login/oauth/authorize?client_id=example&state=example-browser-bound-state"
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "OK",
-                  "properties": {
-                    "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "attemptId": { "pattern": "^[A-Za-z0-9_-]{43}$", "type": "string" },
-                        "url": { "format": "uri", "type": "string" }
-                      },
-                      "required": ["url", "attemptId"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Unauthorized",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Forbidden",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "Service Unavailable",
-                  "properties": {
-                    "error": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "code": { "type": "string" },
-                        "details": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "code": {
-                                "anyOf": [
-                                  { "const": "REQUIRED", "type": "string" },
-                                  { "const": "UNKNOWN_FIELD", "type": "string" },
-                                  { "const": "INVALID_TYPE", "type": "string" },
-                                  { "const": "INVALID_FORMAT", "type": "string" },
-                                  { "const": "INVALID_VALUE", "type": "string" },
-                                  { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" },
-                                  { "const": "INVALID_RANGE", "type": "string" },
-                                  { "const": "OUTSIDE_CEILING", "type": "string" }
-                                ]
-                              },
-                              "message": { "maxLength": 512, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["path", "code"],
-                            "type": "object"
-                          },
-                          "maxItems": 32,
-                          "type": "array"
-                        },
-                        "message": { "type": "string" }
-                      },
-                      "required": ["code", "message"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["error", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Service Unavailable"
-          }
-        },
-        "security": [],
-        "summary": "Start GitHub sign-in for an enrolled account",
         "tags": ["Authentication"]
       }
     },
@@ -14488,6 +13280,14 @@
                                       "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                       "type": "string"
                                     },
+                                    "repositoryWorkerRestart": {
+                                      "anyOf": [
+                                        { "const": "original-worker-required", "type": "string" },
+                                        { "const": "reverification-supported", "type": "string" },
+                                        { "const": "not-applicable", "type": "string" },
+                                        { "const": "unknown", "type": "string" }
+                                      ]
+                                    },
                                     "status": {
                                       "anyOf": [
                                         { "const": "active", "type": "string" },
@@ -15541,6 +14341,406 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agent-capabilities": {
+      "get": {
+        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "operationId": "getNamespaceAgentCapabilities",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "capabilities": {
+                          "credentialSources": {
+                            "types": [
+                              {
+                                "config": [{ "name": "authorized_base_url", "required": false }],
+                                "harnessAuth": {
+                                  "loginMode": "api_key",
+                                  "modelProvider": "openai"
+                                },
+                                "rotation": "external",
+                                "secrets": [{ "name": "api_key", "required": true }],
+                                "type": "openai"
+                              }
+                            ]
+                          },
+                          "openclaw": { "executionModes": ["dedicated"] }
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "capabilities": {
+                          "additionalProperties": false,
+                          "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration.",
+                          "properties": {
+                            "credentialSources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "types": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "config": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "deviceAuthorization": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "harnessId": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["harnessId"],
+                                        "type": "object"
+                                      },
+                                      "harnessAuth": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "loginMode": {
+                                            "anyOf": [
+                                              { "const": "api_key", "type": "string" },
+                                              { "const": "codex_pat", "type": "string" },
+                                              { "const": "chatgptAuthTokens", "type": "string" }
+                                            ]
+                                          },
+                                          "modelProvider": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["modelProvider", "loginMode"],
+                                        "type": "object"
+                                      },
+                                      "rotation": {
+                                        "anyOf": [
+                                          { "const": "none", "type": "string" },
+                                          { "const": "external", "type": "string" },
+                                          { "const": "refresh", "type": "string" }
+                                        ]
+                                      },
+                                      "secrets": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "type": {
+                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "maxLength": 64,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["type", "config", "secrets", "rotation"],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["types"],
+                              "type": "object"
+                            },
+                            "nativeAdmin": { "const": true, "type": "boolean" },
+                            "nativeWorkers": {
+                              "additionalProperties": false,
+                              "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    { "const": "pinned-runtime", "type": "string" },
+                                    { "const": "custom-image", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": ["support"],
+                              "type": "object"
+                            },
+                            "openclaw": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither.",
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "sandboxDriverUnavailable": {
+                                  "const": true,
+                                  "description": "Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE.",
+                                  "type": "boolean"
+                                },
+                                "settingRefusals": {
+                                  "additionalProperties": false,
+                                  "description": "Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing.",
+                                  "properties": {
+                                    "dedicated": { "minLength": 1, "type": "string" }
+                                  },
+                                  "type": "object"
+                                }
+                              },
+                              "required": ["executionModes"],
+                              "type": "object"
+                            },
+                            "pluginCatalogs": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "harnessId": {
+                                    "anyOf": [
+                                      { "const": "openclaw", "type": "string" },
+                                      { "const": "codex", "type": "string" }
+                                    ]
+                                  },
+                                  "pluginDiscovery": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "credential": {
+                                        "anyOf": [
+                                          { "const": "required", "type": "string" },
+                                          { "const": "none", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["credential"],
+                                    "type": "object"
+                                  },
+                                  "pluginPolicies": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "approvers": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agent": { "type": "boolean" },
+                                          "plugin": { "type": "boolean" },
+                                          "tools": { "type": "boolean" }
+                                        },
+                                        "required": ["agent", "plugin", "tools"],
+                                        "type": "object"
+                                      },
+                                      "driver": { "$ref": "#/components/schemas/def-1" },
+                                      "driverPolicySchema": {
+                                        "additionalProperties": {},
+                                        "type": "object"
+                                      },
+                                      "policyScopeByPlugin": {
+                                        "additionalProperties": {
+                                          "const": "enablement_only",
+                                          "type": "string"
+                                        },
+                                        "type": "object"
+                                      },
+                                      "toolDefaults": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" },
+                                                { "const": "none", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": ["enabled", "approval", "reviewer"],
+                                        "type": "object"
+                                      },
+                                      "tools": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" },
+                                                { "const": "none", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": ["enabled", "approval", "reviewer"],
+                                        "type": "object"
+                                      }
+                                    },
+                                    "required": [
+                                      "driver",
+                                      "toolDefaults",
+                                      "tools",
+                                      "driverPolicySchema"
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "required": ["harnessId", "pluginPolicies"],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": ["capabilities"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there",
+        "tags": ["Namespaces"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents": {
       "get": {
         "description": "Requires read permission on the requested Namespace. Only Agent resources with individual read permission are returned.",
@@ -16163,6 +15363,11 @@
                       { "const": "dedicated", "type": "string" }
                     ]
                   },
+                  "expectedConfigurationGeneration": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "gatewayManagedMode": {
                     "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                     "type": "boolean"
@@ -16295,6 +15500,10 @@
                     "minLength": 1,
                     "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                     "type": "string"
+                  },
+                  "nativeAdmin": {
+                    "description": "Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer.",
+                    "type": "boolean"
                   },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -19707,7 +18916,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -21971,6 +21180,297 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
+      "get": {
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.",
+        "operationId": "listAgentAuditEvents",
+        "parameters": [
+          {
+            "description": "Number of records per page, from 1 to 100. The default is 50.",
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "20"
+              }
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": { "pattern": "^(?:[1-9][0-9]?|100)$", "type": "string" }
+          },
+          {
+            "description": "Continuation from the preceding page for the same Agent and session.",
+            "examples": {
+              "example": {
+                "summary": "Illustrative only: copy an actual cursor from the previous response.",
+                "value": "YXVkaXQtbmV4dC1wYWdl"
+              }
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "events": [
+                          {
+                            "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+                            "event": "api_request",
+                            "id": "aud_123e4567-e89b-42d3-a456-426614174000",
+                            "occurredAt": "2026-10-01T11:30:00.000000Z",
+                            "operationId": "getAgent",
+                            "outcome": "success",
+                            "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+                          }
+                        ],
+                        "nextCursor": null,
+                        "projectionVersion": 1,
+                        "window": {
+                          "end": "2026-10-01T12:00:00.000Z",
+                          "start": "2026-09-30T12:00:00.000Z"
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "events": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actorId": {
+                                "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                "type": "string"
+                              },
+                              "attemptId": {
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "event": {
+                                "anyOf": [
+                                  { "const": "api_request", "type": "string" },
+                                  { "const": "work_queued", "type": "string" },
+                                  { "const": "work_claimed", "type": "string" },
+                                  { "const": "work_deferred", "type": "string" },
+                                  { "const": "work_completed", "type": "string" },
+                                  { "const": "work_result", "type": "string" }
+                                ]
+                              },
+                              "id": {
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "occurredAt": {
+                                "format": "date-time",
+                                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                "type": "string"
+                              },
+                              "operationId": { "const": "getAgent", "type": "string" },
+                              "outcome": {
+                                "anyOf": [
+                                  { "const": "success", "type": "string" },
+                                  { "const": "denied", "type": "string" },
+                                  { "const": "failure", "type": "string" }
+                                ]
+                              },
+                              "requestId": {
+                                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "workId": { "pattern": "^work_[0-9a-f]{64}$", "type": "string" },
+                              "workState": {
+                                "anyOf": [
+                                  { "const": "queued", "type": "string" },
+                                  { "const": "claimed", "type": "string" },
+                                  { "const": "succeeded", "type": "string" },
+                                  { "const": "failed_permanent", "type": "string" },
+                                  { "const": "superseded", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": ["id", "occurredAt", "event", "outcome"],
+                            "type": "object"
+                          },
+                          "maxItems": 100,
+                          "type": "array"
+                        },
+                        "nextCursor": {
+                          "anyOf": [
+                            {
+                              "description": "Continuation from the preceding page for the same Agent and session.",
+                              "maxLength": 1024,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "type": "string"
+                            },
+                            { "type": "null" }
+                          ]
+                        },
+                        "projectionVersion": { "const": 1, "type": "number" },
+                        "window": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "end": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "start": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["start", "end"],
+                          "type": "object"
+                        }
+                      },
+                      "required": ["projectionVersion", "window", "events", "nextCursor"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "List audit metadata for one Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read_audit", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw": {
       "post": {
         "description": "Requires operate permission on the requested Agent.",
@@ -22450,6 +21950,25 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": { "example": { "summary": "Example request", "value": {} } },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "harnessOverrides": {
+                    "additionalProperties": {},
+                    "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "202": {
             "content": {
@@ -22517,7 +22036,19 @@
                         "configurationKind": "agent",
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "gatewayManagedMode": true,
-                        "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                        "harness": {
+                          "configuration": {
+                            "modelProvider": {
+                              "baseUrl": "https://api.openai.com/v1",
+                              "protocol": "openai-responses",
+                              "supportsStandaloneWebSearch": false
+                            }
+                          },
+                          "id": "codex",
+                          "mode": "dedicated",
+                          "overrides": {},
+                          "version": "1"
+                        },
                         "harnessAuth": {
                           "method": "api_key",
                           "source": {
@@ -22609,6 +22140,11 @@
                         "harness": {
                           "additionalProperties": false,
                           "properties": {
+                            "configuration": {
+                              "additionalProperties": {},
+                              "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                              "type": "object"
+                            },
                             "id": { "minLength": 1, "type": "string" },
                             "mode": {
                               "anyOf": [
@@ -22616,9 +22152,14 @@
                                 { "const": "dedicated", "type": "string" }
                               ]
                             },
+                            "overrides": {
+                              "additionalProperties": {},
+                              "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                              "type": "object"
+                            },
                             "version": { "minLength": 1, "type": "string" }
                           },
-                          "required": ["id", "version", "mode"],
+                          "required": ["id", "version", "mode", "overrides", "configuration"],
                           "type": "object"
                         },
                         "harnessAuth": {
@@ -22903,6 +22444,26 @@
             },
             "description": "The requested operation conflicts with the current resource state."
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -23028,6 +22589,11 @@
                     "maximum": 9007199254740991,
                     "minimum": 1,
                     "type": "integer"
+                  },
+                  "harnessOverrides": {
+                    "additionalProperties": {},
+                    "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                    "type": "object"
                   },
                   "key": {
                     "maxLength": 128,
@@ -23266,6 +22832,18 @@
         "description": "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.",
         "operationId": "recoverAgentFirstDeployment",
         "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "{}"
+              }
+            },
+            "in": "query",
+            "name": "harnessOverrides",
+            "required": false,
+            "schema": { "maxLength": 8192, "type": "string" }
+          },
           {
             "examples": {
               "example": {
@@ -24039,6 +23617,20 @@
                             }
                           ],
                           "description": "Pending deployment progress. Null for terminal outcomes. A last attempt describes a recorded result, not current runtime health."
+                        },
+                        "repositoryAccess": {
+                          "additionalProperties": false,
+                          "description": "Present when completed maintenance for this exact revision recorded that repository access requires a new revision. This condition does not change the original deployment result. Absence does not establish current repository access health.",
+                          "properties": {
+                            "code": {
+                              "const": "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+                              "type": "string"
+                            },
+                            "message": { "type": "string" },
+                            "state": { "const": "redeploy-required", "type": "string" }
+                          },
+                          "required": ["state", "code", "message"],
+                          "type": "object"
                         },
                         "status": {
                           "anyOf": [
@@ -26747,7 +26339,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin": {
       "get": {
-        "description": "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
+        "description": "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.",
         "operationId": "getAgentNativeAdmin",
         "parameters": [
           {
@@ -26797,7 +26389,16 @@
                       "properties": {
                         "activeRevisionId": { "type": "string" },
                         "host": { "type": "string" },
+                        "mode": { "enum": ["admin", "chat"], "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
+                        "reason": {
+                          "enum": ["not-enabled", "configuration", "compute"],
+                          "type": "string"
+                        },
+                        "sessionMode": {
+                          "enum": ["shared-cookie", "host-only-exchange"],
+                          "type": "string"
+                        },
                         "status": {
                           "enum": [
                             "available",
@@ -26870,7 +26471,440 @@
         "summary": "Resolve native admin UI launch availability for one Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          {
+            "action": "operate",
+            "condition": "native_chat",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "administer",
+            "condition": "native_admin_alternative",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm": {
+      "post": {
+        "description": "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.",
+        "operationId": "confirmAgentNativeAdmin",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "sssssssssssssssssssssssssssssssssssssssssss"
+              }
+            },
+            "in": "header",
+            "name": "x-occ-session-key",
+            "required": true,
+            "schema": { "pattern": "^[A-Za-z0-9_-]{43}$", "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "https://console.example.com"
+              }
+            },
+            "in": "header",
+            "name": "origin",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "challenge": "ccccccccccccccccccccccccccccccccccccccccccc",
+                    "intentId": "123e4567-e89b-42d3-a456-426614174000"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "challenge": { "pattern": "^[A-Za-z0-9_-]{43}$", "type": "string" },
+                  "intentId": { "format": "uuid", "type": "string" }
+                },
+                "required": ["intentId", "challenge"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "exchange": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                        "intentId": "123e4567-e89b-42d3-a456-426614174000",
+                        "redeemUrl": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com/__occ/native-admin/redeem"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "exchange": { "type": "string" },
+                        "intentId": { "type": "string" },
+                        "landingUrl": { "type": "string" },
+                        "origin": { "type": "string" },
+                        "redeemUrl": { "type": "string" }
+                      },
+                      "required": ["intentId", "exchange", "redeemUrl"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Payload Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "Confirm a native Agent browser challenge",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          {
+            "action": "operate",
+            "condition": "native_chat",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "administer",
+            "condition": "native_admin_alternative",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/native-admin/launch": {
+      "post": {
+        "description": "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.",
+        "operationId": "launchAgentNativeAdmin",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "sssssssssssssssssssssssssssssssssssssssssss"
+              }
+            },
+            "in": "header",
+            "name": "x-occ-session-key",
+            "required": true,
+            "schema": { "pattern": "^[A-Za-z0-9_-]{43}$", "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "https://console.example.com"
+              }
+            },
+            "in": "header",
+            "name": "origin",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": { "example": { "summary": "Example request", "value": {} } },
+              "schema": { "additionalProperties": false, "properties": {}, "type": "object" }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "intentId": "123e4567-e89b-42d3-a456-426614174000",
+                        "landingUrl": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com/__occ/native-admin/launch?intent=123e4567-e89b-42d3-a456-426614174000",
+                        "origin": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "exchange": { "type": "string" },
+                        "intentId": { "type": "string" },
+                        "landingUrl": { "type": "string" },
+                        "origin": { "type": "string" },
+                        "redeemUrl": { "type": "string" }
+                      },
+                      "required": ["intentId", "origin", "landingUrl"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Payload Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "Create a browser-bound native Agent launch",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          {
+            "action": "operate",
+            "condition": "native_chat",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "administer",
+            "condition": "native_admin_alternative",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
         ]
       }
     },
@@ -28729,7 +28763,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -28918,7 +28952,19 @@
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "deploymentErrorCode": null,
                           "deploymentStatus": "succeeded",
-                          "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                          "harness": {
+                            "configuration": {
+                              "modelProvider": {
+                                "baseUrl": "https://api.openai.com/v1",
+                                "protocol": "openai-responses",
+                                "supportsStandaloneWebSearch": false
+                              }
+                            },
+                            "id": "codex",
+                            "mode": "dedicated",
+                            "overrides": {},
+                            "version": "1"
+                          },
                           "id": "rev_123e4567-e89b-42d3-a456-426614174000",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "revision": 1
@@ -28937,7 +28983,7 @@
                     "data": {
                       "description": "Agent revisions that you can read, newest first.",
                       "items": {
-                        "description": "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",
+                        "description": "Agent revision metadata with the Harness descriptor and any recorded Harness settings, without the native configuration document. Read this Agent revision for its full saved configuration or a `configurationReadError` when those settings are unreadable.",
                         "properties": {
                           "agentId": {
                             "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -28984,13 +29030,24 @@
                           },
                           "harness": {
                             "additionalProperties": false,
+                            "description": "Older revisions omit overrides and configuration when Harness settings were not recorded.",
                             "properties": {
+                              "configuration": {
+                                "additionalProperties": {},
+                                "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                "type": "object"
+                              },
                               "id": { "minLength": 1, "type": "string" },
                               "mode": {
                                 "anyOf": [
                                   { "const": "embedded", "type": "string" },
                                   { "const": "dedicated", "type": "string" }
                                 ]
+                              },
+                              "overrides": {
+                                "additionalProperties": {},
+                                "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                "type": "object"
                               },
                               "version": { "minLength": 1, "type": "string" }
                             },
@@ -29015,8 +29072,8 @@
                           "backendId",
                           "configurationId",
                           "configurationGeneration",
-                          "harness",
                           "createdAt",
+                          "harness",
                           "deploymentStatus",
                           "deploymentErrorCode"
                         ],
@@ -29231,7 +29288,19 @@
                         "configurationKind": "agent",
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "gatewayManagedMode": true,
-                        "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                        "harness": {
+                          "configuration": {
+                            "modelProvider": {
+                              "baseUrl": "https://api.openai.com/v1",
+                              "protocol": "openai-responses",
+                              "supportsStandaloneWebSearch": false
+                            }
+                          },
+                          "id": "codex",
+                          "mode": "dedicated",
+                          "overrides": {},
+                          "version": "1"
+                        },
                         "harnessAuth": {
                           "method": "api_key",
                           "source": {
@@ -29325,6 +29394,11 @@
                             "harness": {
                               "additionalProperties": false,
                               "properties": {
+                                "configuration": {
+                                  "additionalProperties": {},
+                                  "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                  "type": "object"
+                                },
                                 "id": { "minLength": 1, "type": "string" },
                                 "mode": {
                                   "anyOf": [
@@ -29332,9 +29406,14 @@
                                     { "const": "dedicated", "type": "string" }
                                   ]
                                 },
+                                "overrides": {
+                                  "additionalProperties": {},
+                                  "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                  "type": "object"
+                                },
                                 "version": { "minLength": 1, "type": "string" }
                               },
-                              "required": ["id", "version", "mode"],
+                              "required": ["id", "version", "mode", "overrides", "configuration"],
                               "type": "object"
                             },
                             "harnessAuth": {
@@ -31497,7 +31576,66 @@
               },
               "schema": {
                 "additionalProperties": false,
+                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
                 "properties": {
+                  "additions": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "binary": {
+                          "description": "Absolute path of the executable receiving access.",
+                          "maxLength": 512,
+                          "minLength": 2,
+                          "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                          "title": "Executable path",
+                          "type": "string"
+                        },
+                        "host": {
+                          "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                          "title": "Destination hostname",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                          "title": "Rule ID",
+                          "type": "string"
+                        },
+                        "ports": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "from": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "Start port",
+                                "type": "integer"
+                              },
+                              "to": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "End port",
+                                "type": "integer"
+                              }
+                            },
+                            "required": ["from", "to"],
+                            "type": "object"
+                          },
+                          "maxItems": 16,
+                          "minItems": 1,
+                          "title": "Port ranges",
+                          "type": "array"
+                        }
+                      },
+                      "required": ["id", "binary", "host", "ports"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "title": "Network rules",
+                    "type": "array"
+                  },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
                   "revisionId": {
                     "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -31509,6 +31647,7 @@
               }
             }
           },
+          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
           "required": true
         },
         "responses": {
@@ -31779,7 +31918,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Apply the saved policy to the running Agent revision",
+        "summary": "Queue policy application to the running Agent revision, optionally replacing saved additions",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
@@ -32278,7 +32417,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
         "operationId": "validateAgentSandboxPolicy",
         "parameters": [
           {
@@ -32535,7 +32674,8 @@
         "summary": "Preview Agent network policy admission without saving or applying",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" }
+          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },
@@ -36288,10 +36428,16 @@
                 "examples": {
                   "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
-                "schema": { "$ref": "#/components/schemas/def-7" }
+                "schema": { "allOf": [{ "$ref": "#/components/schemas/def-7" }] }
               }
             },
-            "description": "A required dependency is unavailable."
+            "description": "A required dependency is unavailable.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
+                "schema": { "pattern": "^[1-9][0-9]*$", "type": "string" }
+              }
+            }
           }
         },
         "summary": "Remove an unreferenced credential source from the Credential Gateway",
@@ -37734,7 +37880,8 @@
                                     { "const": "operate", "type": "string" },
                                     { "const": "administer", "type": "string" },
                                     { "const": "read_logs", "type": "string" },
-                                    { "const": "manage_policy", "type": "string" }
+                                    { "const": "manage_policy", "type": "string" },
+                                    { "const": "read_audit", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -37903,7 +38050,8 @@
                             { "const": "operate", "type": "string" },
                             { "const": "administer", "type": "string" },
                             { "const": "read_logs", "type": "string" },
-                            { "const": "manage_policy", "type": "string" }
+                            { "const": "manage_policy", "type": "string" },
+                            { "const": "read_audit", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -37984,7 +38132,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "read_audit", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -38315,7 +38464,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "read_audit", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -42938,7 +43088,7 @@
     },
     "/native-admin/return/{agentKey}": {
       "get": {
-        "description": "Requires a human session with administer permission on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
+        "description": "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
         "operationId": "resolveAgentNativeAdminReturn",
         "parameters": [
           {
@@ -43059,7 +43209,18 @@
         "summary": "Resolve an authorized Agent from a copied native chat link",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          {
+            "action": "operate",
+            "condition": "native_chat",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "administer",
+            "condition": "native_admin_alternative",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
         ]
       }
     },

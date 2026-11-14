@@ -179,7 +179,11 @@ leading or trailing whitespace and no control characters or line or paragraph
 separators. It must also fit in 200 UTF-16 code units, because repository
 bindings store a GitHub Backend ID under that bound: 100 emoji fit and 101 do
 not. The chart refuses any other spelling, the same checks Installation
-startup applies before it saves the GitHub Backend. Supply current
+startup applies before it saves the GitHub Backend. Supply the same literal ID
+in chart values, service configuration, and the registry. The chart handles
+Kubernetes dollar escaping; do not pre-escape values such as `github-$$` or
+`github-$(BACKEND)`. The origin helper reports the original logical ID.
+Supply current
 operator-approved ranges for GitHub HTTPS destinations. The chart
 adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
 dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
@@ -193,12 +197,12 @@ in effect. Unbound Agents receive no generated policy change. Because worker and
 sidecar share a Pod network namespace, these rules do not isolate containers
 within that Pod.
 
-Render the chart and use the rendered broker origin as the source of truth for
-the certificate. The helper reads the worker sidecar argument from the rendered
-manifests; it does not construct a second hostname.
+Use the release checkout's pinned Node.js version (24.22.1) to run the helper.
+Use the broker hostname from the rendered worker sidecar argument as the
+certificate's DNS SAN.
 
 ```bash
-node scripts/render-repository-credentials-origin.mjs \
+node scripts/render-repository-credentials-origin.ts \
   --release oce --namespace openclaw-system \
   --values "$OCC_INPUT_DIRECTORY/values.yaml" \
   > "$OCC_INPUT_DIRECTORY/repository-broker.json"

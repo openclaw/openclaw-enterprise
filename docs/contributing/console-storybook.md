@@ -41,9 +41,10 @@ Node 24 to remove types, preserve line numbers, and serve JavaScript at the same
 URL as before.
 
 Node resolves imports literally, including imports inside an `.mts` file. Point
-Node callers of a standalone module directly at its `.mts` source. For example,
-when the starter model moves, change the first-agent scripts and test helpers to
-import `agents/starter-model.mts`.
+Node callers of a standalone module directly at its `.mts` source. The first-agent
+CLI (`scripts/first-agent.ts`), model helper (`scripts/first-agent-model.mjs`), and CI
+smoke script (`scripts/ci/first-agent-smoke.mjs`) all import
+`agents/starter-model.mts` directly.
 Test browser behavior through the served `.mjs` URLs, where the controller
 resolves the whole module graph.
 
@@ -59,6 +60,11 @@ desktop (1440 × 1000), tablet (768 × 1024), and mobile (390 × 844).
 Check keyboard focus, search, navigation, an open dialog, and empty, loading,
 error, permission-denied, and missing-credential stories. The console stays light
 under either system appearance.
+
+In **Components/Native admin → Available on tablet**, check that the 768px preview
+keeps the Agent name readable beside the visible sidebar. The title uses its own
+row below the back link and actions. Open Agent UI must still open the fixture.
+Compare **Available** at desktop and phone widths to check the surrounding layouts.
 
 The Claw palette, type scale, and surface geometry reference
 [OpenClaw `6e8d06876fd166064abbec4928fb3bb109ebe999`](https://github.com/openclaw/openclaw/tree/6e8d06876fd166064abbec4928fb3bb109ebe999/ui),
@@ -82,7 +88,7 @@ Stories reach error states through real controls after loading fixture data.
 
 | Group                                                                              | Coverage                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign in                                                                            | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                                  |
+| Sign in                                                                            | Password, Google and OIDC sign-in, discovery failure, provider errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                          |
 | Agents                                                                             | Populated, empty, no matches, loading, inaccessible Namespaces, denied or failed reads; row Stop and Delete restrictions, refusals, uncertain outcomes.                                                                                                                                                                                                                                                           |
 | Backends                                                                           | Configured, empty, discovery failure, and access denied.                                                                                                                                                                                                                                                                                                                                                          |
 | [Namespaces](../../scripts/console-storybook/namespace-create-workflow.md)         | Creation, status cards, empty, denied, recovery.                                                                                                                                                                                                                                                                                                                                                                  |
@@ -102,6 +108,10 @@ Stories reach error states through real controls after loading fixture data.
 
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
+
+In **Pages → Create Agent → Repository-only Credential Proxy**, check that the
+model-only Dedicated OpenClaw form permits creation without a repository selection. Choose Codex, select the repository, and turn off issue
+management under **Customize access** to use its approved access level.
 
 ## Return navigation
 

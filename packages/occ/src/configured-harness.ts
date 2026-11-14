@@ -324,23 +324,25 @@ function configuredModels(value: unknown, setting: SelectionMessage): readonly s
 }
 
 /**
- * The refusal for an agents.defaults.models or agents.entries.<id>.models setting (`parent`,
- * holding `value`) that breaks the selectable rule, or undefined when it holds: an object keyed
- * by model ref, where a model other than the primary needs the primary's provider and the same
- * agentRuntime, set on both. The first model that breaks it, in document order, is named.
+ * Require an agents.defaults.models or agents.entries.<id>.models setting (`parent`, holding
+ * `value`) to be an object keyed by model ref. Each model beside the primary needs the primary's
+ * provider and the same agentRuntime, set on both. The first model that breaks the rule, in
+ * document order, is named.
  * `primaryOffer` gives the remedy for the primary's missing runtime: the values to set it to, or
  * the next step where the deploying Agent runs none.
  */
-function selectableModelsRefusal(
+function requireSelectableModels(
   parent: string,
   value: Readonly<Record<string, unknown>> | undefined,
   selectedModel: string,
   primaryOffer: (listed: Readonly<Record<string, unknown>>) => string,
-): string | undefined {
+): void {
   if (value === undefined) {
-    return configurationSettingMessage(
-      parent,
-      'must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}',
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(
+        parent,
+        'must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}',
+      ),
     );
   }
   const selectedPolicy = () => keyedSettingPath(parent, selectedModel);
@@ -351,26 +353,31 @@ function selectableModelsRefusal(
       continue;
     }
     if (selectedRuntime === undefined) {
-      return configurationSettingMessage(
-        `${selectedPolicy()}.agentRuntime.id`,
-        `is required when other models are listed beside the primary model: ${primaryOffer(value)}`,
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          `${selectedPolicy()}.agentRuntime.id`,
+          `is required when other models are listed beside the primary model: ${primaryOffer(value)}`,
+        ),
       );
     }
     const listed = () => keyedSettingPath(parent, model);
     if (splitModelRef(model).provider !== selectedProvider) {
-      return configurationSettingMessage(
-        listed(),
-        `is not on the primary model's provider, ${quotedSettingKey(selectedProvider, 64)}: remove it, or list a model of that provider`,
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          listed(),
+          `is not on the primary model's provider, ${quotedSettingKey(selectedProvider, 64)}: remove it, or list a model of that provider`,
+        ),
       );
     }
     if (configuredRuntime(policy, listed) !== selectedRuntime) {
-      return configurationSettingMessage(
-        `${listed()}.agentRuntime.id`,
-        `must be ${selectedRuntime}, the primary model's runtime: set it, or remove the model`,
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          `${listed()}.agentRuntime.id`,
+          `must be ${selectedRuntime}, the primary model's runtime: set it, or remove the model`,
+        ),
       );
     }
   }
-  return undefined;
 }
 
 // A provider catalog's rows keyed by id, built once per resolution so that looking up each
@@ -658,15 +665,12 @@ function resolveModelPolicy(
     }
     primary ??= model;
     if (entry.models !== undefined) {
-      const refusal = selectableModelsRefusal(
+      requireSelectableModels(
         entryModelsPath(key),
         asRecord(entry.models),
         model,
         primaryRuntimeOffer(model, [defaultModels?.[model]]),
       );
-      if (refusal !== undefined) {
-        throw new ConfigurationHarnessError(refusal);
-      }
     }
     selections.push({ models: selection, entry, key });
   }
@@ -677,7 +681,7 @@ function resolveModelPolicy(
         "Configuration setting agents.defaults.models needs a primary model: set agents.defaults.model or an agents.entries model.",
       );
     }
-    const refusal = selectableModelsRefusal(
+    requireSelectableModels(
       "agents.defaults.models",
       defaultModels,
       primary,
@@ -686,9 +690,6 @@ function resolveModelPolicy(
         Object.values(entries ?? {}).map((entry) => asRecord(asRecord(entry)?.models)?.[primary]),
       ),
     );
-    if (refusal !== undefined) {
-      throw new ConfigurationHarnessError(refusal);
-    }
   }
 
   requireSelectedCatalogRows(

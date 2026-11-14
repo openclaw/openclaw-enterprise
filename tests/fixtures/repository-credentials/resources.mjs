@@ -6,6 +6,7 @@ export function createResourceScope({ cleanupTimeoutMs = 10000 } = {}) {
     throw new Error("invalid fixture cleanup timeout");
   }
   const cleanups = [];
+  /** @type {Promise<void> | undefined} */
   let closing;
   return Object.freeze({
     after(cleanup) {

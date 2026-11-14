@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import test, { before } from "node:test";
 import { promisify } from "node:util";
 import { prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
@@ -166,8 +166,7 @@ test(
           body: JSON.stringify({ email: "admin@development.openclaw.invalid", password }),
         });
         assert.equal(signedIn.statusCode, 200, "browser sign-in failed");
-        // Sign-in clears stale cookie variants before issuing the new session.
-        // Select the nonempty session rather than one of those clearing cookies.
+        // Select the issued shared session cookie.
         const sessionCookie = signedIn.headers["set-cookie"]?.find((entry) =>
           /^(?:__Secure-)?openclaw_occ_shared\.session_token=[^;]+/.test(entry),
         );

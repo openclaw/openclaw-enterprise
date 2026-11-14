@@ -8,6 +8,10 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import {
+  createConsoleFixtureTransport,
+  fetchLoopback,
+} from "../helpers/console-fixture-transport.ts";
 import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import {
   alternateWorkspaceId,
@@ -35,8 +39,11 @@ import {
 } from "../helpers/refusal-text.mjs";
 
 async function request(origin, session, method, path, body) {
-  const response = await fetch(`${origin}${path}`, {
-    ...jsonRequestInit(method, body, authenticatedHeaders(session)),
+  const response = await fetchLoopback(`${origin}${path}`, {
+    ...jsonRequestInit(method, body, {
+      host: new URL(session.origin).host,
+      ...authenticatedHeaders(session),
+    }),
     signal: AbortSignal.timeout(5_000),
   });
   return { response, payload: await response.json() };
@@ -105,12 +112,14 @@ test(
   "development API starts with stale Backend references and permits repair through Agent update",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    // The port is part of the auth base URL. Hold it until the child binds it, and again
+    // Hold the private transport port until the child binds it, and again
     // across the restart, so no other socket takes it in between.
     let reservation = await reservePort();
     context.after(() => reservation.release());
     const { port } = reservation;
     const origin = `http://127.0.0.1:${port}`;
+    const authBaseURL = "https://console.oce.localhost";
+    const transport = createConsoleFixtureTransport(authBaseURL, origin);
     const email = "postgres-admin@openclaw.local";
     const password = "postgres-development-password";
     const authSecret = "openclaw-backend-repair-auth-secret-minimum-32-bytes";
@@ -118,16 +127,21 @@ test(
       email,
       password,
       authSecret,
-      origin,
+      authBaseURL,
       installationName: "PostgreSQL Backend repair integration",
     });
     let server = await startBackendlessDevelopmentServer(context, {
       reservation,
-      origin,
+      authBaseURL,
       authSecret,
       configurationRoot: fixture.configurationRoot,
     });
-    let session = await signInWithEmailPassword({ fetch, origin, email, password });
+    let session = await signInWithEmailPassword({
+      fetch: transport.fetchThroughLoopback,
+      origin: authBaseURL,
+      email,
+      password,
+    });
 
     const namespace = await request(origin, session, "POST", "/namespaces", {
       name: `backend-repair-${randomUUID()}`,
@@ -170,11 +184,16 @@ test(
 
     server = await startBackendlessDevelopmentServer(context, {
       reservation,
-      origin,
+      authBaseURL,
       authSecret,
       configurationRoot: fixture.configurationRoot,
     });
-    session = await signInWithEmailPassword({ fetch, origin, email, password });
+    session = await signInWithEmailPassword({
+      fetch: transport.fetchThroughLoopback,
+      origin: authBaseURL,
+      email,
+      password,
+    });
     const visible = await request(
       origin,
       session,

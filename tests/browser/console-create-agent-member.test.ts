@@ -61,9 +61,9 @@ const defaultCodexPreset = await shippedPreset("default-codex");
 const ACCESS_FROM_PRESET =
   "You can create Agents in Member team. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.";
 const MEMBER_CREDENTIAL_ACCESS =
-  "An Installation administrator then gives the new Agent access to its Secrets.";
+  "Deploying the new Agent gives it access to the Secrets and credential sources it uses.";
 const MEMBER_GRANT_REFUSED =
-  "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. Ask an Installation administrator to open the saved Agent and grant it.";
+  "The Agent was created as a draft. Deploy it from its page: deploying gives it access to its model and channel Secrets.";
 
 // Every console API answer, as "METHOD path status".
 function apiResponses(page: Page, origin: string) {
@@ -128,10 +128,15 @@ test("a member with Agent create completes the default Preset path without Insta
   await open.click();
   await fillDefaultPreset(page, secret, "Member Agent");
 
-  // The real API refused the Installation read; the form goes on and says why, above the form.
+  // The real API refused the Installation read; the form reads the Namespace's Agent
+  // capabilities instead (RFC-0026), goes on, and says why, above the form.
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("GET /installation ")),
     ["GET /installation 403"],
+  );
+  assert.deepEqual(
+    answers.filter((answer) => answer.includes("/agent-capabilities ")),
+    [`GET /namespaces/${namespace.id}/agent-capabilities 200`],
   );
   // A known grant reads the repository choices once; the refused Installation read adds none.
   assert.deepEqual(repositoryReads(answers), [
@@ -142,7 +147,7 @@ test("a member with Agent create completes the default Preset path without Insta
     tone: "info",
     body: `${ACCESS_FROM_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
   });
-  // Without the Installation's capabilities the line under the fields claims no deploy outcome.
+  // The member cannot provision, so the line under the fields claims no deploy outcome.
   assert.equal(
     await page.locator("#create-agent-capability-status").textContent(),
     "Agents you create here are saved as drafts for later deployment.",
@@ -168,12 +173,13 @@ test("a member with Agent create completes the default Preset path without Insta
   const { data: created }: AgentResponse = await response.json();
   assert.equal(created.name, "Member Agent");
   assert.deepEqual(created.harnessAuth, { method: "api_key", source: secret.ref });
-  // Granting the Agent's credential access is Installation administration, which the API refuses
-  // the member: the form names who finishes it instead of a generic denial.
-  await page.getByRole("alert").filter({ hasText: MEMBER_GRANT_REFUSED }).waitFor();
-  const agentLink = await page.getByRole("link", { name: "Open saved Agent" }).getAttribute("href");
-  assert.ok(agentLink);
-  assert.match(agentLink, new RegExp(created.id));
+  // The member's deploy grants the Agent its credential access (RFC-0026), so the form opens the
+  // saved Agent's draft, where the member deploys it.
+  await page.waitForURL(
+    (url) =>
+      url.pathname.endsWith(`/agents/${created.id}`) &&
+      url.searchParams.get("revision") === "draft",
+  );
   // Every write the console tried was the member's own Namespace work; nothing touched the
   // Installation.
   assert.deepEqual(
@@ -196,13 +202,6 @@ test("a member with Agent create completes the default Preset path without Insta
     [],
   );
   assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
-  assert.equal(
-    await page
-      .getByText(/retr(?:y|ies)/i)
-      .filter({ visible: true })
-      .count(),
-    0,
-  );
 });
 
 test("a member without Agent create never sees the form, and Create Agent names why", async (t) => {

@@ -8,7 +8,7 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
+import { allowsPushRef } from "../../apps/controller/src/drivers/repo/access/client-contracts.ts";
 import {
   PREPARED_REPOSITORY_DIRECTORY,
   REPOSITORY_CONTROL_SOCKET,
@@ -17,7 +17,7 @@ import {
   preparedRepositoryInstallation,
 } from "../../scripts/lib/prepared-repository-installation.mjs";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
-import { createGitHubAppRepositoryObserver } from "./github-app-observer.mjs";
+import { createGitHubAppRepositoryObserver } from "./github-app-observer.ts";
 import {
   createRepositoryObserver,
   readInstalledCredentialSession,

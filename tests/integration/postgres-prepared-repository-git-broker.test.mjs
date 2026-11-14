@@ -14,6 +14,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import {
   createAuthenticatedControllerRequest,
   createTestAuthPrincipal,
@@ -30,10 +31,10 @@ import {
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
-import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
-import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
+import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
+import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 
 async function startBroker(
   t,
@@ -179,7 +180,7 @@ async function startBroker(
 // Finding 2411: each refused authenticated request logs exactly one record with the code
 // the Agent received (an error envelope's code, or a receipt's error), where it was refused,
 // the operation once known, and the session.
-function refusedOnceBy(b, response, reason, operation) {
+function refusedOnceBy(b, response, reason, operation, upstreamConnect) {
   assert.ok(response.status >= 400, response.text);
   const { error } = JSON.parse(response.text);
   assert.deepEqual(b.logs.splice(0), [
@@ -189,14 +190,20 @@ function refusedOnceBy(b, response, reason, operation) {
       reasonCode: typeof error === "string" ? error : error.code,
       reason,
       ...(operation === undefined ? {} : { operation }),
+      ...(upstreamConnect === undefined ? {} : { upstreamConnect }),
       ...b.identity,
     },
   ]);
 }
 
-async function withdrawRepositoryBinding(t, { state, agent }) {
+async function withdrawRepositoryBinding(t, { state, pool, agent, revision }) {
+  const original = await state.read((unit) =>
+    unit.operations.findWork(`agent_revision:${revision.id}:reconcile`),
+  );
+  assert.ok(original);
   const installation = await state.read((unit) => unit.installations.getInstallation());
   const auth = await createTestAuthPrincipal({ installationId: installation.id });
+  assert.notEqual(original.actorId, auth.seed.principal.id);
   const iam = new NativeIAMDriver({
     async loadNativeIAMState() {
       return {
@@ -216,8 +223,13 @@ async function withdrawRepositoryBinding(t, { state, agent }) {
     controller,
     iamDriver: iam,
     auditSink: new InMemoryAuditSink(),
+    durableRequestAuditSink: state.auditSink,
     auth: auth.auth,
-    development: { enabled: true, installationId: installation.id },
+    development: {
+      enabled: true,
+      installationId: installation.id,
+      browserOrigin: "https://console.oce.localhost",
+    },
   });
   t.after(() => app.close());
   const api = await createAuthenticatedControllerRequest(app, auth);
@@ -227,6 +239,34 @@ async function withdrawRepositoryBinding(t, { state, agent }) {
   });
   assert.equal(result.status, 200, JSON.stringify(result.error));
   assert.deepEqual(result.data.repositoryBindings ?? [], []);
+  // Cleanup retains the original deployer, even when another principal removes Git.
+  const workId = repositoryRemovalWorkKey(revision.id);
+  const withdrawal = await state.read((unit) => unit.operations.findWork(workId));
+  assert.ok(withdrawal);
+  assert.equal(withdrawal.actorId, original.actorId);
+  const replay = await api("PATCH", "/namespaces/" + agent.namespaceId + "/agents/" + agent.id, {
+    configurationId: agent.configurationId,
+    repositoryBindings: [],
+  });
+  assert.equal(replay.status, 200, JSON.stringify(replay.error));
+  // Only the request that queued withdrawal is linked to this job.
+  const events = await pool.query(
+    `SELECT details->'__occAuditMetadata'->>'requestId' AS request_id, actor_id,
+            resource_kind, resource_id, namespace_id, details->>'agentId' AS agent_id
+     FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
+       AND details->>'workId' = $1`,
+    [workId],
+  );
+  assert.deepEqual(events.rows, [
+    {
+      request_id: result.meta.requestId,
+      actor_id: original.actorId,
+      resource_kind: "agent_revision",
+      resource_id: revision.id,
+      namespace_id: agent.namespaceId,
+      agent_id: agent.id,
+    },
+  ]);
 }
 
 test(
@@ -236,7 +276,10 @@ test(
     timeout: 75000,
   },
   async (t) => {
-    const f = await fixture(t, { openBroker: (input) => startBroker(t, input) });
+    const f = await fixture(t, {
+      openBroker: (input) => startBroker(t, input),
+      recordDeploymentOperation: true,
+    });
     const b = f.broker;
     const repo = "/" + b.repository + ".git/";
     const discovery = repo + "info/refs?service=git-upload-pack";
@@ -311,7 +354,28 @@ test(
     assert.equal(await useCount(), before + 1);
     assert.equal(b.observed.length, beforeOrigin);
 
+    const negotiation = packet("command=ls-refs\n") + "00010000";
+    // Unchanged identity input retains chunked framing at the Git origin.
+    const beforeIdentity = b.origin.trace.length;
+    const identity = await b.http(repo + "git-upload-pack", {
+      method: "POST",
+      headers: {
+        "git-protocol": "version=2",
+        "transfer-encoding": "chunked",
+        "content-type": "application/x-git-upload-pack-request",
+      },
+      body: negotiation,
+    });
+    assert.equal(identity.status, 200);
+    assert.equal(b.origin.trace.length, beforeIdentity + 1);
+    const identityRequest = b.origin.trace[beforeIdentity];
+    assert.equal(identityRequest.method, "POST");
+    assert.equal(identityRequest.path, repo + "git-upload-pack");
+    assert.equal(identityRequest.contentEncoding, undefined);
+    assert.equal(identityRequest.contentLength, undefined);
+
     // The deadline is to start sending, not a five-second limit on completing a large fetch.
+    const beforeGzip = b.origin.trace.length;
     const hold = b.origin.holdNextFetch({ beforeHeaders: true });
     const started = b.http(repo + "git-upload-pack", {
       method: "POST",
@@ -320,12 +384,18 @@ test(
         "content-encoding": "gzip",
         "content-type": "application/x-git-upload-pack-request",
       },
-      body: gzipSync(packet("command=ls-refs\n") + "00010000"),
+      body: gzipSync(negotiation),
     });
     await hold.observed;
     await delay(5200);
     hold.release();
     assert.equal((await started).status, 200);
+    assert.equal(b.origin.trace.length, beforeGzip + 1);
+    const decodedRequest = b.origin.trace[beforeGzip];
+    assert.equal(decodedRequest.method, "POST");
+    assert.equal(decodedRequest.path, repo + "git-upload-pack");
+    assert.equal(decodedRequest.contentEncoding, undefined);
+    assert.equal(decodedRequest.contentLength, String(Buffer.byteLength(negotiation)));
 
     const remote = b.opened.client.gitRemote.replace("https://127.0.0.1", b.address);
     const cwd = await temporaryDirectory(t, "warm-native-git-");
@@ -467,16 +537,29 @@ for (const mode of [
     if (mode === "connection failed before any write") {
       // Finding 2429: the GitHub connection fails before TLS, so the broker settles the create
       // as not sent. The Agent gets a recorded 409 and the operator one not_dispatched line;
-      // a same-operation replay returns that receipt and is logged the same way.
+      // a same-operation replay returns that receipt and is logged the same way. Only the
+      // attempt that connected names the failed provider connect (finding 3183), and the
+      // receipt the Agent reads never carries it.
       b.logs.splice(0);
       f.gh.refuseNextConnection();
+      const api = new URL(f.gh.origin);
       for (let i = 0; i < 2; i++) {
         const response = await send();
         assert.equal(response.status, 409);
         const value = JSON.parse(response.text);
         assert.equal(value.operationId, operationId);
         assert.equal(value.error, "not-submitted");
-        refusedOnceBy(b, response, "not_dispatched", "api");
+        assert.equal(value.upstreamConnect, undefined);
+        const connect =
+          i === 0
+            ? {
+                host: api.hostname,
+                addresses: [api.hostname],
+                port: Number(api.port),
+                error: "ECONNRESET",
+              }
+            : undefined;
+        refusedOnceBy(b, response, "not_dispatched", "api", connect);
       }
       assert.equal(observed().length, 0);
       assert.equal(f.gh.pulls.size, 0);
@@ -504,7 +587,7 @@ for (const mode of [
       });
       const proxyAddress = (await listen(t, proxy)).replace(/^https:/, "http:");
       const client = new URL(
-        "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
+        "../../apps/controller/src/drivers/repo/github/access/client/draft-pr.ts",
         import.meta.url,
       ).href;
       const args = (operation = operationId, target = base) => [
