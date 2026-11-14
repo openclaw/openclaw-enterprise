@@ -31,6 +31,7 @@ import {
   workspaceNodeGatewayPasswordProblem,
 } from "../environment-references.mjs";
 import {
+  bindLinkClick,
   button,
   element,
   field,
@@ -998,11 +999,7 @@ export async function renderAgentDetail(
   // With `deploy`, a draft link brings that draft's Deploy new version into view instead.
   function versionLink(label: string, revision: string, tab: string, { deploy = false } = {}) {
     const node = element("a", { href: context.pageUrl(target(revision, tab)) }, label);
-    node.addEventListener("click", (event) => {
-      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-        return;
-      }
-      event.preventDefault();
+    bindLinkClick(node, () => {
       if (revision === selected && tab === selectedTab) {
         // Already open below: rebuilding it would only discard the reader's edits.
         openVersionDetail({ animate: true, deploy });
