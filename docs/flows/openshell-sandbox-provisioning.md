@@ -97,29 +97,30 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-[downloadVerified](../../internal/occdev/openshell_assets.go) streams archives.
-[Go](../../internal/occdev/routing_manifest.go) and [CI](../../scripts/ci/routing.ts) cap manifests at 32 MiB.
-Only network errors or HTTP 408/429/5xx retry: up to eight cancelable 60-second attempts starting
-within 120 seconds. Retries remove incomplete `0600` archives, preserving existing files.
+[downloadVerified](../../internal/occdev/openshell_assets.go) streams archives;
+[Go](../../internal/occdev/routing_manifest.go)/[CI](../../scripts/ci/routing.ts) cap manifests at 32 MiB.
+Retry network errors/HTTP 408/429/5xx: eight cancelable 60-second attempts starting
+within 120 seconds. Remove incomplete `0600` archives; preserve existing files.
 
-Kubernetes-only uses PostgreSQL in `oce-system`, in-cluster authentication and
-[per-Agent HTTPS](../guides/deploy/local-setup.md). Compose uses PostgreSQL/OCC with k3d.
+Kubernetes-only: PostgreSQL in `oce-system`, in-cluster authentication and
+[per-Agent HTTPS](../guides/deploy/local-setup.md). Compose: PostgreSQL/OCC with k3d.
 
 `prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.ts) verify native/descriptor identity
 from cached children/indexes or exact-child pulls. Manifest/config/CRI checks precede apply
 (`Never`); CRI misses retry. Overrides remain intact.
-The [importer](../../internal/occdev/openshell_image.go) journals tag/engine-ID intent before creation.
-Return/rollback/`dev down` reconcile without clusters/Compose providers. Incomplete inspection
-or uncertain/replaced tags retain state.
+The [importer](../../internal/occdev/openshell_image.go) recognizes only complete,
+exact absence responses (Podman: exit 125).
+It journals tag/engine-ID intent before creation. Return/rollback/`dev down`
+reconcile without clusters/Compose providers. Incomplete inspection or uncertain/replaced tags retain state.
 
-[first-agent](../../scripts/first-agent.ts) and the operator hook [check](../../internal/occdev/check.go)
-controller availability before provisioning and share refusal diagnostics.
+[first-agent](../../scripts/first-agent.ts)/[operator hook](../../internal/occdev/check.go)
+check controller availability before provisioning with shared refusal diagnostics.
 
 [captureAgentSandboxRollout](../../internal/occdev/agent_sandbox_rollout_diagnostics.go) reports Deployment,
-UID-linked ReplicaSets/Pods and Warning reasons once, preserving rollback errors. It excludes
-messages, environment, full labels and logs, marking unavailable/malformed/oversized results.
-Limits: 15 seconds total, three seconds/256 KiB per command, 32 KiB per record, no retries.
-The 200 ms pipe drain cannot terminate descendants.
+UID-linked ReplicaSets/Pods and Warning reasons once, preserving rollback errors.
+Messages, environment, full labels and logs are excluded; unavailable/malformed/oversized results are marked.
+Limits: 15 s total, 3 s/256 KiB per command, 32 KiB per record; no retries.
+Draining (200 ms) cannot terminate descendants.
 
 `network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
 Agent Gateways alias its hostname, preserving HTTP Host; policy permits only those
@@ -131,7 +132,7 @@ Protected Git preserves Gateway DNS/API egress through Service addresses, DNS
 selectors/ports and ready API endpoints. Empty discovery warns and removes stale
 grants; failed reads abort. Policies are recorded before application and
 deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
-and the [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+and [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
 policies (maximum 1 MiB) before provisioning; persisted rules augment generated
@@ -413,7 +414,6 @@ model execution.
 
 - [OpenShell Sandbox Driver](../reference/drivers/openshell-sandbox.md) and [OpenShell Credential Gateway](../reference/drivers/openshell-credential-gateway.md)
 - [Credential source lifecycle](credential-source-lifecycle.md)
-- [OpenShell tests](../testing/openshell.md)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
 - [Harness execution topology](harness-execution-topology.md)
 
@@ -424,6 +424,8 @@ model execution.
 ## Changelog
 
 - 2026-11-14 14:53: Explain workspace lock and retry timing. (authoring-run/e22da2ae-8be7-42d3-876f-6355fa901e9f - 8a15b18175c508fe54672fc12ea0ff5a0847967d)
+
+- 2026-11-14 04:11: Recognize Podman absence. (authoring-run/1ced20ff-7099-45bc-9dd0-f2f3a617b2dc - 9097eeebb186ebcd54d58175ac0bb0a9f568e7e2)
 
 - 2026-11-11 21:41: Bind controller preload to node identity. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - 7a2f352a44c42459a3a33c784199a47d11d98e1e)
 

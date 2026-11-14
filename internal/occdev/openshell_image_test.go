@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -389,6 +391,37 @@ func TestOpenShellImportInterruptedTag(t *testing.T) {
 	}
 	if !slices.Contains(commands(), "docker image rm "+stage) {
 		t.Fatal("recovery did not use the exact staging name")
+	}
+}
+
+func TestPodmanImageAbsenceProtocol(t *testing.T) {
+	const query = "registry.example/controller:v1@" + profileTestDigest
+	const normalized = "registry.example/controller@" + profileTestDigest
+	missing := fmt.Sprintf("Error: unable to inspect %q: failed to find image %s: %s: image not known", query, query, normalized)
+	for _, tc := range []struct {
+		name, engine, output, diagnostic string
+		exitCode                         int
+		absent                           bool
+	}{
+		{"remote-missing", "podman", "[]", missing, 125, true},
+		{"legacy-missing", "podman", "[]", "Error: " + normalized + ": image not known", 125, true},
+		{"connection-error", "podman", "[]", "Cannot connect to Podman\n" + missing, 125, false},
+		{"wrong-object", "podman", "[]", missing + "-other", 125, false},
+		{"unexpected-output", "podman", "unexpected", missing, 125, false},
+		{"wrong-exit", "podman", "[]", missing, 2, false},
+		{"docker-exit", "docker", "[]", missing, 125, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reproduce the native Podman CLI's complete missing-image result.
+			// Only that result permits the preload path to acquire an absent image.
+			fakeProfileCommands(t, map[string]string{tc.engine: `"image inspect ` + query + `") printf '%s\n' ` + shellQuote(tc.output) + `; printf '%s\n' ` + shellQuote(tc.diagnostic) + ` >&2; exit ` + strconv.Itoa(tc.exitCode) + ` ;;`})
+			r := newRunner(Options{})
+			r.engine = tc.engine
+			_, absent, err := r.imageCommand(context.Background(), "image", "inspect", query)
+			if err == nil || absent != tc.absent {
+				t.Fatalf("absent = %v, error = %v; want absent %v with a command failure", absent, err, tc.absent)
+			}
+		})
 	}
 }
 
