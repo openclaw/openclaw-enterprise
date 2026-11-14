@@ -1,12 +1,5 @@
-// A relative import, like the others here: CI image builds and the in-image supervisor proof
-// load this file from a checkout or copy with no workspace packages installed.
-import {
-  RUNTIME_DIAGNOSTIC_CHECKS,
-  RUNTIME_DIAGNOSTIC_CODES,
-  RUNTIME_FAILURE_CHECKS,
-} from "../../../../../../packages/contracts/src/runtime-failure.mjs";
-
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
   MANAGED_PLUGIN_CREDENTIAL_HELPER,
   managedCredentialEnvironment,
@@ -26,6 +19,47 @@ import {
   openClawStateMigrationHelper,
   startupPhaseHelper,
 } from "../runtime-startup.ts";
+
+type RuntimeVocabulary = Pick<
+  typeof import("@openclaw-enterprise/contracts"),
+  "RUNTIME_DIAGNOSTIC_CHECKS" | "RUNTIME_DIAGNOSTIC_CODES" | "RUNTIME_FAILURE_CHECKS"
+>;
+
+function isStringArray(value: unknown): value is readonly string[] {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index) || typeof value[index] !== "string") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isRuntimeVocabulary(value: unknown): value is RuntimeVocabulary {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "RUNTIME_DIAGNOSTIC_CHECKS" in value &&
+    isStringArray(value.RUNTIME_DIAGNOSTIC_CHECKS) &&
+    "RUNTIME_DIAGNOSTIC_CODES" in value &&
+    isStringArray(value.RUNTIME_DIAGNOSTIC_CODES) &&
+    "RUNTIME_FAILURE_CHECKS" in value &&
+    isStringArray(value.RUNTIME_FAILURE_CHECKS)
+  );
+}
+
+// The in-image supervisor and checkout-only CI load the renderer without workspace
+// dependencies. Compiled callers load the compiler's separate contracts output.
+const require = createRequire(import.meta.url);
+const vocabulary: unknown = new URL(import.meta.url).pathname.endsWith(".ts")
+  ? require("../../../../../../packages/contracts/src/runtime-failure.ts")
+  : require("../../../../../../packages/contracts/dist/runtime-failure.js");
+if (!isRuntimeVocabulary(vocabulary)) {
+  throw new Error("Invalid runtime failure vocabulary.");
+}
+const { RUNTIME_DIAGNOSTIC_CHECKS, RUNTIME_DIAGNOSTIC_CODES, RUNTIME_FAILURE_CHECKS } = vocabulary;
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
 // and 5s supervisor margin. Idle Gateways exit as soon as their work settles.

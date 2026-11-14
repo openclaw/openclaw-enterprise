@@ -200,18 +200,26 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
-      "to": "packages/contracts/src/runtime-failure.mjs",
-      "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
-      "kind": "import",
+      "to": "packages/contracts/src/runtime-failure.ts",
+      "specifier": "../../../../../../packages/contracts/src/runtime-failure.ts",
+      "kind": "require",
       "typeOnly": false,
-      "bindings": [
-        "value:RUNTIME_DIAGNOSTIC_CHECKS",
-        "value:RUNTIME_DIAGNOSTIC_CODES",
-        "value:RUNTIME_FAILURE_CHECKS"
-      ],
+      "bindings": ["*"],
       "owner": "Kubernetes runtime programs",
-      "reason": "Image builds and the in-image supervisor proof load the runtime programs from a checkout or copy with no workspace packages installed, so they read the shared runtime failure vocabulary from its source.",
-      "removeWhen": "Image builds and the in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+      "reason": "Checkout CI and the in-image supervisor proof load this dependency-free source without workspace packages installed. The renderer reads the three vocabulary arrays and validates them at load time.",
+      "removeWhen": "The checkout and in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+    },
+    {
+      "rule": "unresolved-local-import",
+      "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+      "to": "packages/contracts/dist/runtime-failure.js",
+      "specifier": "../../../../../../packages/contracts/dist/runtime-failure.js",
+      "kind": "require",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Kubernetes runtime programs",
+      "reason": "The compiled renderer loads the emitted vocabulary from the contracts project output. The authored-source graph excludes that output.",
+      "removeWhen": "The compiled renderer uses a package export or build-output resolution is represented in the analyzer."
     },
     {
       "rule": "unresolved-local-import",

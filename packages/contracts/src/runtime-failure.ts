@@ -8,10 +8,10 @@
 export const UNRECOGNIZED_RUNTIME_VALUE = "UNRECOGNIZED";
 
 /** The runtime containers Compute names as a check's component. */
-export const RUNTIME_COMPONENTS = Object.freeze(["agent", "gateway"]);
+export const RUNTIME_COMPONENTS: readonly string[] = Object.freeze(["agent", "gateway"]);
 
 /** Codes a runtime entrypoint holds a startup failure with, or reports on a diagnostic check. */
-export const RUNTIME_DIAGNOSTIC_CODES = Object.freeze([
+export const RUNTIME_DIAGNOSTIC_CODES: readonly string[] = Object.freeze([
   "LOGIN_FAILED",
   "MODEL_PROBE_FAILED",
   "MODEL_PROBE_TIMEOUT",
@@ -27,7 +27,7 @@ export const RUNTIME_DIAGNOSTIC_CODES = Object.freeze([
 ]);
 
 /** The startup steps a runtime entrypoint holds a failure under. */
-export const RUNTIME_FAILURE_CHECKS = Object.freeze([
+export const RUNTIME_FAILURE_CHECKS: readonly string[] = Object.freeze([
   "gateway-tool-policy",
   "login",
   "model-probe",
@@ -71,7 +71,7 @@ export const CRASH_LOOP_CHECK = "crash-loop";
  * Slack channel checks, and Compute's own check for a runtime status it could not read. OCC's
  * own Sandbox check is not here: OCC adds it after it masks what Compute returned.
  */
-export const RUNTIME_DIAGNOSTIC_CHECKS = Object.freeze([
+export const RUNTIME_DIAGNOSTIC_CHECKS: readonly string[] = Object.freeze([
   "configuration",
   "authentication",
   "connectivity",
@@ -79,7 +79,7 @@ export const RUNTIME_DIAGNOSTIC_CHECKS = Object.freeze([
 ]);
 
 /** The signals a `PROCESS_EXIT` cause may name, as `signal-<name>` (Linux, as Node names them). */
-export const PROCESS_EXIT_SIGNALS = Object.freeze([
+export const PROCESS_EXIT_SIGNALS: readonly string[] = Object.freeze([
   "SIGHUP",
   "SIGINT",
   "SIGQUIT",
@@ -119,7 +119,7 @@ export const PROCESS_EXIT_SIGNALS = Object.freeze([
  * The system error codes a `PROCESS_EXIT` cause may name, as `error-<code>`: the Linux errno
  * names and libuv's own error names, as Node reports them.
  */
-export const PROCESS_EXIT_ERROR_CODES = Object.freeze([
+export const PROCESS_EXIT_ERROR_CODES: readonly string[] = Object.freeze([
   "E2BIG",
   "EACCES",
   "EADDRINUSE",
@@ -222,7 +222,7 @@ export const PROCESS_EXIT_MAX_STATUS = 255;
  * names none of those), `empty` and `unknown`. The runtime wrapper logs only the class,
  * never the output.
  */
-export const CODEX_FAILURE_OUTPUT_CLASSES = Object.freeze([
+export const CODEX_FAILURE_OUTPUT_CLASSES: readonly string[] = Object.freeze([
   "network",
   "tls",
   "http_401_403",
