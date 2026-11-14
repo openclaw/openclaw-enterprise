@@ -3,6 +3,7 @@ import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buffer } from "node:stream/consumers";
 import test from "node:test";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -119,12 +120,8 @@ test("smoke timing retains failure and omits pending branches and free-form data
 
 test("smoke retirement notices report only reached Actions waits outside the v1 report", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "first-agent-retirement-"));
-  const path = join(directory, "notices");
-  const sink = await open(path, "w");
-  t.after(async () => {
-    await sink.close();
-    await rm(directory, { recursive: true, force: true });
-  });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await using sink = await open(join(directory, "notices"), "wx+");
   const noticeStream: { fd: number } = process.stderr;
   const originalNoticeFd = noticeStream.fd;
 
@@ -198,10 +195,13 @@ test("smoke retirement notices report only reached Actions waits outside the v1 
     noticeStream.fd = originalNoticeFd;
   }
 
-  assert.equal(
-    await readFile(path, "utf8"),
-    '::notice title=First Agent Smoke retirement wait::{"stage":"held-sockets","durationMs":7,"outcome":"ok"}\n' +
-      '::notice title=First Agent Smoke retirement wait::{"stage":"peer-withdrawal","durationMs":13,"outcome":"failed"}\n',
+  // The writes leave the descriptor at EOF. Read the same file from byte zero.
+  assert.deepEqual(
+    await buffer(sink.createReadStream({ start: 0, autoClose: false })),
+    Buffer.from(
+      '::notice title=First Agent Smoke retirement wait::{"stage":"held-sockets","durationMs":7,"outcome":"ok"}\n' +
+        '::notice title=First Agent Smoke retirement wait::{"stage":"peer-withdrawal","durationMs":13,"outcome":"failed"}\n',
+    ),
   );
   await recorder.writeTimingReport(directory);
   assert.equal(
