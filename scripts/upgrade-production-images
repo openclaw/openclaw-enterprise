@@ -799,7 +799,7 @@ def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -1701,7 +1701,7 @@ if [[ "$repository_enabled" == true ]]; then
     "$evidence_dir/node-selector-values.json" >"$evidence_dir/eligible-nodes.json" ||
     die "cannot identify a single eligible control-plane platform."
   qualified_platform=$(jq -er '.platform' "$evidence_dir/eligible-nodes.json")
-  node scripts/upgrade-repository-image-probe.mjs "$controller_image" "$broker_image" \
+  node scripts/upgrade-repository-image-probe.ts "$controller_image" "$broker_image" \
     "$qualified_platform" >"$evidence_dir/pair-proof.json" ||
     die "the selected repository image pair failed compatibility qualification."
   python3 - "$evidence_dir/parameters.json" "$evidence_dir/pair-proof.json" "$evidence_dir/eligible-nodes.json" "$evidence_dir/node-selector-values.json" \
@@ -1898,7 +1898,7 @@ PYTHON
   if ((resume)); then
     resume_pair_proof=$(mktemp "$evidence_dir/pair-resume.XXXXXXXX.json")
     qualified_platform=$(jq -er '.platform' "$evidence_dir/eligible-nodes.json")
-    node scripts/upgrade-repository-image-probe.mjs "$controller_image" "$broker_image" \
+    node scripts/upgrade-repository-image-probe.ts "$controller_image" "$broker_image" \
       "$qualified_platform" >"$resume_pair_proof" || die "the selected image pair could not be requalified."
     jq -e --slurpfile original "$evidence_dir/pair-proof.json" \
       '.controller == $original[0].controller and .broker == $original[0].broker' \

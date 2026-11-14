@@ -222,8 +222,13 @@ node scripts/ci/run-tests.mjs run image-pair-qualification \
   --state "$pair_state_dir/state.json" --results "$pair_state_dir/results.json"
 ```
 
-The lane requires all four images and fails on skipped cases. It checks protocol
-compatibility, not cluster behavior or a live Agent workflow.
+The lane requires all four images and fails on skipped cases. It exercises the
+admission protocol in Docker. For an older broker that exits before its control
+socket opens, the test starts the same image with its historical projected inputs.
+It uses a disposable, unregistered App key and a container with no external
+network. It checks the exact HTTP 404 response, then adds only the prepared-git
+authority arguments and verifies that the broker exits before opening the socket.
+The upgrade command uses prepared-git inputs for every invocation.
 
 ## Runtime image startup test environment
 

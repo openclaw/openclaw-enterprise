@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-13"
-last_updated_session: "authoring-run/01a1d5fb-c244-7162-a7e2-17b48732f5c4"
+updated: "2026-11-14"
+last_updated_session: "authoring-run/837cd51d-17ce-4c24-ad13-20197e634e9c"
 ---
 
 # Production image upgrade flow
@@ -120,14 +120,13 @@ This permits neither online migration nor rollback; see [qualification limits](.
 and runtime inspection. Agent reads bracket explicit-revision runtime reads,
 freezing identity and Driver-declared roles in `agent-continuity.json`, not editable topology.
 
-Repository-enabled releases require immutable controller/broker images and one
-architecture across matching control-plane nodes, including unready/cordoned ones. `scripts/upgrade-image-identity.py:read_platform`
-verifies the selected platform and blob hashes from Docker OCI exports
-(2 MiB/blob, 32 MiB total metadata).
-`scripts/upgrade-repository-image-probe.mjs` tests both images
-for recovery and refused reservations with synthetic inputs/private receipt listener,
-recording image identities, requests and responses.
-Kubernetes image availability, receipt durability and disposal remain unverified; the broker hostname stays fixed. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
+Repository credentials require immutable images and one architecture across all
+matching control-plane nodes. `scripts/upgrade-image-identity.py:read_platform`
+verifies the platform and OCI metadata hashes (2 MiB per blob, 32 MiB total).
+`scripts/upgrade-repository-image-probe.ts:main` qualifies admission with synthetic
+requests before preparation and again on resume. It reports a nonzero broker exit
+only if the socket stayed absent and Docker confirms the owned container exited
+without an OOM kill or daemon error. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
 
 For immutable switches, `prepare_upgrade` validates identities, unrelated data and
 candidate YAML, then hashes staged bytes; `upgrade-evidence.py` binds both snapshots.
@@ -392,6 +391,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 06:52: Trace the broker exit before socket readiness. (authoring-run/837cd51d-17ce-4c24-ad13-20197e634e9c - ba5b0832956ac3ad93695aab92db952f388ae7da)
 
 - 2026-11-13 17:42: Trace the OpenShell bearer token file check in each writer Job. (authoring-run/01a1d5fb-c244-7162-a7e2-17b48732f5c4 - 1f0bf5cd0a208f362971accbb1850db193f9d4d9)
 
