@@ -129,6 +129,7 @@
     "helpers/keycloak-enrollment-wait.ts",
     "helpers/node-test-summary.ts",
     "helpers/reuse-port-preload.ts",
+    "helpers/released-controller-process.mts",
     "helpers/image-smoke-timeout.ts",
     "helpers/runtime-image-model-probe.ts",
     "helpers/runtime-image-gateway-restart.ts",

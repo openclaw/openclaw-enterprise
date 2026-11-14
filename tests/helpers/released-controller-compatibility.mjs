@@ -14,7 +14,7 @@ const legacyOrigin = "http://127.0.0.1";
 const sharedCookieOrigin = "https://console.oce.localhost";
 const agentDomain = "agents.oce.localhost";
 const bootstrapProgram = "/app/scripts/bootstrap-installation.mjs";
-const processProgram = "released-controller-process.mjs";
+const processProgram = "released-controller-process.mts";
 const bootstrapProbe = `
   import { existsSync } from "node:fs";
   const configuration = "/app/apps/controller/src/auth/configuration.ts";
