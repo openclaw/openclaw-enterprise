@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
 import { defaultK3sImage, prepareRuntimeImageSmoke } from "../../scripts/ci/prepare.mjs";
-import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
+import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
 import {
   assertStderrMatch,
   digest,
@@ -438,7 +438,9 @@ function assertImageCacheObservations(stderr, lane) {
 
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
-describe("CI k3d preparation", { concurrency: true }, () => {
+// Each case starts several child processes. Bound overlap so setup can reach
+// the deliberately hung command before the deadline being tested expires.
+describe("CI k3d preparation", { concurrency: 4 }, () => {
   for (const lane of ["slack", "production-tui"]) {
     test(`${lane} prepares checkout images with read-only BuildKit caches`, async (t) => {
       const commands = await fixtureImageCommands(t, "cache-progress", lane, {
@@ -1024,7 +1026,7 @@ export async function prepareCodexSeccompProfile() { return { profileName: "fixt
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (context.parentURL === ${JSON.stringify(prepareUrl)} &&
-        ["./routing.mjs", "./codex-seccomp.mjs"].includes(specifier)) {
+        ["./routing.ts", "../lib/codex-seccomp-k3d.ts"].includes(specifier)) {
       return { url: import.meta.url, shortCircuit: true };
     }
     return nextResolve(specifier, context);
@@ -2229,11 +2231,11 @@ test("Agent Sandbox preparation imports its native cache and verifies reuse", as
 import { mock } from "node:test";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import * as openshell from ${JSON.stringify(new URL("../../scripts/ci/openshell.mjs", import.meta.url).href)};
-import * as routing from ${JSON.stringify(new URL("../../scripts/ci/routing.mjs", import.meta.url).href)};
+import * as openshell from ${JSON.stringify(new URL("../../scripts/ci/openshell.ts", import.meta.url).href)};
+import * as routing from ${JSON.stringify(new URL("../../scripts/ci/routing.ts", import.meta.url).href)};
 import { preloadAgentSandboxController } from ${JSON.stringify(new URL("../../scripts/ci/agent-sandbox.ts", import.meta.url).href)};
-mock.module(${JSON.stringify(new URL("../../scripts/ci/routing.mjs", import.meta.url).href)}, { exports: { ...routing, prepareGatewayRouting: async () => ({ env: {} }) } });
-mock.module(${JSON.stringify(new URL("../../scripts/ci/openshell.mjs", import.meta.url).href)}, { exports: {
+mock.module(${JSON.stringify(new URL("../../scripts/ci/routing.ts", import.meta.url).href)}, { exports: { ...routing, prepareGatewayRouting: async () => ({ env: {} }) } });
+mock.module(${JSON.stringify(new URL("../../scripts/ci/openshell.ts", import.meta.url).href)}, { exports: {
   ...openshell,
   prepareOpenShellClusterBootstrap: async () => ({ k3sImage: ${JSON.stringify(defaultK3sImage)}, kubectl: process.env.OCC_KUBECTL_BIN, runtimeClass: "openshell-sandbox", runtimeHandler: "runc" }),
   prepareOpenShellPodSecurityAdmission: async () => ({ k3dArgs: [] }),

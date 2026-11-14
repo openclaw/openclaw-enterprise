@@ -285,7 +285,7 @@ test(
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
-        ["scripts/diagnose-kubernetes-prerequisites.mjs", "--config", configPath, "--json"],
+        ["scripts/diagnose-kubernetes-prerequisites.ts", "--config", configPath, "--json"],
         { encoding: "utf8", timeout: 100_000 },
       );
       assert.equal(result.error, undefined);

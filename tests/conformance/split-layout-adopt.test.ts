@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   AdoptError,
   JOURNAL_ANNOTATION,
-  applyAdoption as applyAdoptionScript,
+  applyAdoption,
   createKubectl,
   finalizeAdoption,
-  planAll as planAllScript,
-  revertAdoption as revertAdoptionScript,
+  planAll,
+  revertAdoption,
   storageNamespaceName,
-} from "../../scripts/split-layout-adopt.mjs";
+} from "../../scripts/split-layout-adopt.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // The script drives a cluster only through kubectl. This fake answers the kubectl commands it
@@ -52,29 +54,6 @@ type FixtureObject = {
   [key: string]: unknown;
 };
 type Failure = (args: string[], input: string | undefined) => boolean;
-type AdoptionOptions = {
-  archive: string;
-  namespaceIds?: string[];
-  dropResources?: string[];
-  acceptOauthReconnect?: boolean;
-  sleep?: (milliseconds: number) => Promise<void>;
-  timeoutMs?: number;
-};
-type Kubectl = ReturnType<typeof createKubectl>;
-// The JavaScript command infers empty default option arrays as never[].
-const applyAdoption = applyAdoptionScript as (
-  kubectl: Kubectl,
-  options: AdoptionOptions,
-) => ReturnType<typeof applyAdoptionScript>;
-const revertAdoption = revertAdoptionScript as (
-  kubectl: Kubectl,
-  options: Pick<AdoptionOptions, "archive" | "namespaceIds" | "sleep" | "timeoutMs">,
-) => ReturnType<typeof revertAdoptionScript>;
-const planAll = planAllScript as (
-  kubectl: Kubectl,
-  options?: Pick<AdoptionOptions, "namespaceIds" | "dropResources" | "acceptOauthReconnect">,
-) => ReturnType<typeof planAllScript>;
-
 function required<T>(value: T | undefined): T {
   assert.ok(value !== undefined);
   return value;
@@ -745,6 +724,28 @@ function snapshot({ get }: ReturnType<typeof fakeCluster>) {
   };
 }
 
+test("the adoption CLI refuses unconfirmed apply and unknown flags before calling kubectl", async (t) => {
+  const directory = await withArchive(t);
+  const archive = join(directory, "archive");
+  const script = fileURLToPath(new URL("../../scripts/split-layout-adopt.ts", import.meta.url));
+  // Use Node's native TypeScript entry point and leave kubectl unavailable to this process.
+  const invoke = (...args: string[]) =>
+    spawnSync(process.execPath, [script, ...args], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: directory },
+      timeout: 10_000,
+    });
+
+  const unconfirmed = invoke("apply", "--archive", archive);
+  assert.equal(unconfirmed.status, 1, unconfirmed.stderr);
+  assert.match(unconfirmed.stderr, /^Usage:\n.*scripts\/split-layout-adopt\.ts plan/u);
+  assert.deepEqual(await readdir(directory), []);
+
+  const unknown = invoke("plan", "--unknown");
+  assert.equal(unknown.status, 1, unknown.stderr);
+  assert.match(unknown.stderr, /^unknown argument --unknown\nUsage:\n/u);
+});
+
 test("plan sorts the Harness namespace into moved, copied, archived and dropped objects", () => {
   const { kubectl, calls } = releasedInstallation();
   const { plans, adopted } = planAll(kubectl);
@@ -1095,36 +1096,26 @@ test("apply returns only once the old API serves again", async (t) => {
   const cluster = releasedInstallation();
   let restarted = false;
   let unavailableReads = 0;
-  const kubectl = {
-    ...cluster.kubectl,
-    patch: (
-      resource: string,
-      name: string,
-      namespace: string | undefined,
-      type: string,
-      body: unknown,
-    ) => {
-      if (
-        name === "openclaw-enterprise-api" &&
-        isRecord(body) &&
-        isRecord(body.spec) &&
-        Number(body.spec.replicas) > 0
-      ) {
-        restarted = true;
-      }
-      return cluster.kubectl.patch(resource, name, namespace, type, body);
-    },
+  const kubectl = createKubectl((args, input) => {
+    const result = cluster.run(args, input);
+    if (args[2] !== "openclaw-enterprise-api" || result.status !== 0) {
+      return result;
+    }
+    if (
+      args[0] === "patch" &&
+      required(cluster.get("deployments.apps", "openclaw-system", args[2])).spec?.replicas
+    ) {
+      restarted = true;
+    }
     // The Deployment reports no available replica for its first reads after the restart.
-    get: (resource: string, name: string, namespace: string | undefined) => {
-      const object: unknown = cluster.kubectl.get(resource, name, namespace);
-      if (restarted && name === "openclaw-enterprise-api" && unavailableReads < 3) {
-        unavailableReads += 1;
-        const deployment = fixtureObject(object);
-        return { ...deployment, status: { ...deployment.status, availableReplicas: 0 } };
-      }
-      return object;
-    },
-  };
+    if (args[0] === "get" && restarted && unavailableReads < 3) {
+      unavailableReads += 1;
+      const deployment = fixtureObject(JSON.parse(result.stdout));
+      deployment.status = { ...deployment.status, availableReplicas: 0 };
+      return { ...result, stdout: JSON.stringify(deployment) };
+    }
+    return result;
+  });
   await applyAdoption(kubectl, { archive, ...fast, timeoutMs: 5_000 });
   assert.equal(unavailableReads, 3);
 });

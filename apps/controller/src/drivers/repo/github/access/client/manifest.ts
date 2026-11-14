@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { readClientConfiguration, type ClientFiles } from "./config.ts";
+import { isClientSessionId, readClientConfiguration, type ClientFiles } from "./config.ts";
 import {
   hasControlCharacter,
   normalizePushRefAllowlist,
@@ -179,8 +179,7 @@ export async function readRuntimeRepositoryManifest(
     if (
       typeof binding.repositoryRef !== "string" ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(binding.repositoryRef) ||
-      typeof binding.sessionId !== "string" ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(binding.sessionId) ||
+      !isClientSessionId(binding.sessionId) ||
       typeof binding.deadlineWallMs !== "number" ||
       !Number.isSafeInteger(binding.deadlineWallMs) ||
       binding.deadlineWallMs <= 0 ||
@@ -271,7 +270,9 @@ export async function readManifestOrigins(
   return origins;
 }
 
-export function requireCurrentBinding(binding: RuntimeRepositoryBinding): void {
+export function requireCurrentBinding(
+  binding: Pick<RuntimeRepositoryBinding, "deadlineWallMs">,
+): void {
   if (binding.deadlineWallMs <= Date.now()) {
     throw new Error("repository-session-expired");
   }

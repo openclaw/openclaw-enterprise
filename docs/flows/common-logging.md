@@ -1,27 +1,26 @@
 ---
 created: 2026-09-02
-updated: 2026-11-08
-last_updated_session: authoring-run/b490de13-d3f2-4301-b212-4393219a8625
+updated: 2026-11-13
+last_updated_session: authoring-run/ab7d7799-30b2-43fe-8453-86ac8cba698b
 ---
 
 # Common Operational Logging Flow
 
 ## Overview
 
-Startup selects OCC's logging level; deployment saves runtime logging settings
-in the Agent revision. Optional Collectors export reviewed operational records;
-PostgreSQL audit remains separate durable evidence.
+Startup sets the OCC log level. Deployment saves runtime logging in the Agent
+revision. Optional Collectors export reviewed operational records. PostgreSQL
+retains separate, durable audit evidence.
 
 ## Entry Points
 
-- Trigger: start the API, worker, migration, or bootstrap process; deploy an
-  Agent; enable the optional Docker Compose or Helm logging Collector.
+- Trigger: API, worker, migration, or bootstrap startup, Agent deployment, or
+  optional Docker Compose or Helm Collector enablement.
 - Source: `apps/controller/src/composition/installation-config.ts:loadStartupConfigurationSnapshot`
 - Source: `packages/occ/src/index.ts:OpenClawController.deployAgent`
 - Source: `deploy/helm/openclaw-enterprise/templates/collector.yaml:logging.collector.enabled`
-- Assumptions: trusted startup YAML, an authorized deployment request, selected
-  Compute Driver support, and operator-owned Collector configuration when remote
-  export is enabled.
+- Assumptions: trusted startup YAML, authorized deployment, Compute Driver
+  support, and operator-owned Collector configuration for remote export.
 
 ## Flow
 
@@ -63,12 +62,12 @@ graph TD
 
 `apps/controller/src/composition/installation-config.ts:loadStartupConfigurationSnapshot`
 
-API and worker parse trusted YAML once and pass `startupConfiguration.logging`
-to driver composition. Invalid settings fail startup before requests or work.
-Bootstrap, maintenance, and the worker's fallback read only the logging section
-through `apps/controller/src/composition/startup-file.ts:loadOperationalLoggingConfiguration`,
-which shares the snapshot's file reader and checks. The migration command imports
-that module directly, so it never loads Drivers.
+The API and worker parse trusted YAML once and pass `startupConfiguration.logging`
+to Driver composition. Invalid settings stop startup before requests or work.
+Bootstrap, maintenance, and worker fallback read only the logging section via
+`apps/controller/src/composition/startup-file.ts:loadOperationalLoggingConfiguration`,
+using the same reader and checks. Migration imports this module directly and
+skips Driver loading.
 See the [settings reference](../reference/settings.md) for YAML shape and values.
 
 ### 2. Processes log fixed sanitized events
@@ -77,48 +76,53 @@ See the [settings reference](../reference/settings.md) for YAML shape and values
 
 Worker (`apps/controller/src/worker.mjs`), bootstrap
 (`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.mjs`)
-also create Pino loggers at the selected level. The API disables Fastify request
-logging. Bootstrap and migration separate success protocol output from structured
-failure diagnostics. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
-keeps reviewed scalar fields and drops credentials, provider payloads, request/reply
-objects, and unsafe strings before the Collector filter in step 7. The Collector
-retains allowed worker `work.operation` values and `work.id` formats. Agent stop keys
-include the operation UUID. Credential withdrawal keys end in the operation UUID or
-`activation` (the attempt a candidate's activation queues), optionally followed by
-`:recovery:<n>` for a later attempt series. Deletion keys have no operation suffix.
-Provisioning keys use `agent-provisioning:` and exactly 32 lowercase hexadecimal
-characters. The local emitter retains `stopYields` from throttled drain-yield and
-completion records as a nonnegative safe integer; the Collector excludes it.
-The sanitizer keeps `check`, `failure`, `reasonCode`, `harnessState`, `hintCode`
-and the `auth:maintain` event's `command` as identifier codes, never free text;
-`fence` must be a nonnegative safe integer. `installationId` and `orphanedConfigurationId` are kept only as
-OCC-assigned `ins_` and `cfg_` UUIDs.
+use Pino at the selected level. The API disables Fastify request logging.
+Bootstrap and migration separate protocol success output from structured
+failures. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
+keeps reviewed scalars and drops credentials, provider payloads, request and
+reply objects, and unsafe strings. The emitter applies URL and
+connection-string credential checks to approved strings. Step 7 covers
+Collector filtering.
 
-`apps/controller/src/worker.ts:finalizeActiveRevision` adds only the runtime failure
-code to active maintenance's `worker.completed.failure`, normalized through the
-shared vocabulary. Unknown codes become `UNRECOGNIZED`; absent or malformed
-evidence adds nothing and does not establish health. Pending outcomes and
-scheduling are unchanged.
+The Collector keeps allowed worker `work.operation` values and `work.id` formats.
+Agent stop keys include the operation UUID. Credential withdrawal keys end in
+the operation UUID or `activation` (queued by candidate activation), optionally
+followed by `:recovery:<n>` for later attempt series. Deletion keys omit an
+operation suffix. Provisioning keys start with `agent-provisioning:` followed by
+exactly 32 lowercase hexadecimal characters. The local emitter keeps
+nonnegative safe-integer `stopYields` from throttled drain-yield and completion
+records. The Collector drops it.
+
+The sanitizer keeps `check`, `failure`, `reasonCode`, `harnessState`, `hintCode`,
+and the `auth:maintain` event's `command` only as identifier codes. It keeps
+`fence` only as a nonnegative safe integer and `installationId` and
+`orphanedConfigurationId` only as OCC-assigned `ins_` and `cfg_` UUIDs.
+
+`apps/controller/src/worker.ts:finalizeActiveRevision` normalizes the runtime
+failure code through the shared vocabulary and adds only that code to active
+maintenance's `worker.completed.failure`. Unknown codes become `UNRECOGNIZED`.
+Missing or malformed evidence leaves the field unset and health unproven.
+Pending outcomes and scheduling are unchanged.
 
 Compute preparation failures may carry a Driver-reviewed stage, classification,
-status and message (up to 256 characters). The worker excludes raw exceptions;
-the sanitizer drops secret-shaped messages before output.
+status, and message (up to 256 characters). The worker excludes raw exceptions.
+The sanitizer drops secret-shaped messages before output.
 
 ### 3. Admission freezes runtime logging
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-If the trusted ComputeDriver declares `runtimeLogging: "driver"`, admission
-validates and freezes the native document without rewriting logging fields. The
+When the trusted ComputeDriver declares `runtimeLogging: "driver"`, admission
+validates and freezes the native document with its logging fields intact. The
 [Compute contract](../reference/drivers/compute.md#runtime-logging-ownership)
-owns that pipeline; OCC logging and audit remain unchanged.
+defines that runtime pipeline. OCC logging and audit remain unchanged.
 
 Otherwise, the SandboxDriver may transform a frozen copy of the Namespace-owned
-Configuration. Deployment stamps native fields before validation: matching
-`logging.level` and `logging.consoleLevel`, JSON console style, and
-`diagnostics.otel.logs=false`. It drops the retired `logging.redactSensitive` key.
-Runtime code owns console and tool redaction. The source Configuration is unchanged;
-the Agent revision retains the admitted policy across restarts and later edits.
+Configuration. Before validation, deployment sets matching `logging.level` and
+`logging.consoleLevel`, JSON console style, and `diagnostics.otel.logs=false`. It
+drops the retired `logging.redactSensitive` key. Runtime code owns console and
+tool redaction. Deployment leaves the source Configuration intact. The Agent
+revision retains the admitted policy across restarts and Configuration edits.
 
 <a id="4-compute-renders-settings-from-the-revision" class="anchor-alias"></a>
 
@@ -147,67 +151,68 @@ reachable from the Engine. See the [Docker procedure](../guides/observability.md
 
 `deploy/helm/openclaw-enterprise/templates/collector.yaml:logging.collector.enabled`
 
-The Helm Collector DaemonSet reads node CRI files and uses Pod metadata to
-associate records with managed workloads. See the
+The Helm Collector DaemonSet reads node CRI files and identifies managed
+workloads from Pod metadata. The
 [Kubernetes observability procedure](../guides/observability.md#kubernetes-and-helm)
-for enablement and existing-Collector reuse, and the
+covers enablement and Collector reuse. The
 [security reference](../reference/security.md#operational-log-collection-boundary)
-for isolation limits.
+defines isolation limits.
 
-`k8sattributes` maps identity before `transform/kubernetes-resource` removes
-shared Pod labels, preserving identity across the batch. It blocks startup until
-its Pod cache syncs. Otherwise a downstream filter drops records without Pod
-identity while `filelog` commits their offsets, losing those startup events.
+`k8sattributes` preserves identity across the batch by mapping it before
+`transform/kubernetes-resource` drops shared Pod labels. It waits for Pod cache
+sync at startup to prevent the downstream filter from dropping records without
+Pod identity while `filelog` commits their offsets.
 
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.quantity`
-checks the Collector resource and volume quantities for obvious syntax errors,
-and `openclaw.nonNegativeQuantity` and `openclaw.resourceRequirements` refuse
-negative values and unknown resource names. Malformed
-values stop rendering with the setting name; absent optional limits pass
-through. Kubernetes performs complete validation after rendering. See the
+checks basic Collector resource and volume quantity syntax.
+`openclaw.nonNegativeQuantity` and `openclaw.resourceRequirements` reject
+negative values and unknown resource names. Malformed values stop rendering and
+name the setting. Omitted optional limits pass through. Kubernetes completes
+validation after rendering. See the
 [production settings](../reference/settings/production.md#production-operational-logging-collection)
-for the supported scope.
+for supported settings.
 
-The chart validates one exporter destination: an IPv4 `/32` or paired namespace/Pod
-selectors, with a decimal TCP port from 1 to 65535. Leading zeros fail rendering:
-Kubernetes YAML would read them as octal and grant a different port. It renders
-exporter egress alongside DNS/API
-access. Empty Collector metrics selectors grant no ingress; paired selectors admit
-port 8888. Policies are additive. The demo can export privately to Loki using
-the bundled Collector or an external Collector with its own filtering policy.
-Driver-owned pipelines also have separate guarantees.
+The chart validates one exporter destination, an IPv4 `/32` or paired
+namespace and Pod selectors, with a decimal TCP port from 1 to 65535. It refuses
+leading zeros because Kubernetes YAML reads them as octal and would grant a
+different port. The chart renders exporter egress alongside DNS and API access.
+Empty Collector metrics selectors grant no ingress. Paired selectors admit port 8888. Policies are additive. The demo can export privately to Loki with the
+bundled Collector or an external Collector with its own filtering policy.
 
 ### 7. Collector exports only operational classes
 
 `deploy/logging/collector.yaml:transform/operational`
 
 The bundled Collector keeps transport-derived identity before parsing untrusted
-JSON. It classifies fixed OCC event names, `gateway` subsystem records, Codex
-stderr records from `codex_app_server` plus Codex warnings and errors (not
-`codex_otel`), `codex.turn` and `codex.tool_call`, and the Gateway and Harness wrappers'
-stderr diagnostics: `runtime.startup_phase` keeps `occ.startup.phase` (and a
-failed phase's cause as `occ.code`, such as `PLUGIN_NOT_IN_CATALOG`), and
-`runtime.workspace_node` and the model probes keep `occ.code`. A failed phase or
-non-`READY` probe is WARN, so a startup failure's cause reaches the backend.
-`runtime.gateway_settings_overridden` is WARN with no attributes: the names of
-the replaced owner settings stay in `occ agent logs`.
-`runtime.protected_startup` is INFO and keeps its SHA-256 identity as `occ.startup.hash`.
+JSON. It classifies fixed OCC event names, `gateway` subsystem records,
+`codex_app_server` stderr, Codex warnings and errors except `codex_otel`,
+`codex.turn`, `codex.tool_call`, and Gateway and Harness wrapper stderr
+diagnostics.
+
+`runtime.startup_phase` keeps `occ.startup.phase` and the cause of a failed
+phase as `occ.code` (for example, `PLUGIN_NOT_IN_CATALOG`). `runtime.workspace_node` and
+model probes keep `occ.code`. Failed phases and non-`READY` probes are WARN.
+`runtime.gateway_settings_overridden` is WARN with no attributes. Replaced
+owner setting names stay in `occ agent logs`. `runtime.protected_startup` is
+INFO and keeps its SHA-256 identity as `occ.startup.hash`.
 `worker.openshell-git-continuity-refused` keeps `occ.check`, a SHA-256
 `occ.continuity.key_hash`, and `occ.continuity.result`: a boolean, a count from
 0 to 2,147,483,647, or the fixed value `invalid`. Other values are discarded.
 `worker.openshell-git-probe-failed` keeps `occ.git_probe.reason` only for
-`probe_process_failed` or `probe_response_invalid`. A process failure also keeps
-`occ.git_probe.exit_code` when `code` is an integer from 1 to 99. Other reasons,
-invalid exit codes, process output, response bodies, URLs and proofs are discarded.
-Kubernetes resources drop the `latest` image tag that metadata extraction reports
-for a digest-only image. For retained records it keeps allowlisted
-attributes and replaces the body with the event name, stripping arbitrary content;
-Codex turn and tool-call bodies are fixed text, and a `codex.operational` body
-keeps a short plain-text Codex message only from `codex_app_server` or the fixed
-`codex_core::responses_retry` retry messages; a Codex warning without such a
-message is dropped (as are span lifecycle records).
-OCC `compute.preflight-warning` records retain WARN severity and `occ.code` values of at most 64 allowed characters;
-local diagnostic messages are not exported.
+`probe_process_failed` or `probe_response_invalid`. For a process failure, it
+keeps an integer `code` from 1 to 99 as `occ.git_probe.exit_code`. It drops
+other reasons, invalid exit codes, process output, response bodies, URLs, and
+proofs.
+
+The Collector drops Kubernetes metadata's inferred `latest` tag for
+digest-only images. It keeps allowlisted attributes and replaces arbitrary
+bodies with event names. Codex turn and tool-call bodies use fixed text.
+`codex.operational` keeps short plain-text messages only from `codex_app_server`
+or fixed `codex_core::responses_retry` retries. The Collector drops Codex warnings
+without such a message and span lifecycle records.
+
+OCC `compute.preflight-warning` retains WARN severity and `occ.code` values of at
+most 64 allowed characters. Diagnostic messages stay local.
 `authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
 `occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
@@ -216,7 +221,8 @@ hash is not exported. `authentication.provider-unavailable-warning` keeps
 `membership` or `email`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
-`occ.worker.cause`.
+`occ.worker.cause`. These codes and runtime wrapper codes reject the same recognized
+key and token shapes as the other code fields. SQLSTATE values remain supported.
 Every exported OCC event keeps the sanitizer's codes under the same checks (a
 letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `check`, `failure`, `harnessState`, `hintCode` and `reasonCode` as `occ.check`,
@@ -226,81 +232,84 @@ letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `withdrawn` or `retire-runtime`).
 `apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
 adds `failure` and `grpcStatus`, never supplier text.
-`worker.repository-delivery-pending` reports Git
-delivery retries. Reconciliation retries each second, logging failures initially
-and then at most once a minute. Sandbox Driver, Installation and
-Configuration IDs stay local.
-`worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
-ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
-other worker events keep; the stage, error class, status and message stay local.
-API lifecycle and dependency warnings are exported too. `shutdown.started`,
-`shutdown.completed` and `shutdown.failed` (ERROR, `occ.code`) carry the drain's
-`duration_ms` once it ends; the signal stays local. `database.idle-client-error`
+`worker.repository-delivery-pending` reports Git delivery failure on the first
+failure and then at most once a minute. Reconciliation retries each second.
+Sandbox Driver, Installation, and Configuration IDs stay local.
+`worker.compute-prepare-failed` is ERROR when a Compute Driver cannot prepare a version.
+It keeps `occ.code`, Namespace, Agent and Agent revision IDs, and work
+identity. Stage, error class, status, and message stay local.
+
+`shutdown.started`, `shutdown.completed`, and `shutdown.failed` (ERROR,
+`occ.code`) carry the drain's `duration_ms` once it ends. The signal stays local. `database.idle-client-error`
 keeps its SQLSTATE or transport code as `occ.code`. `device_authorization.start_failed`
 keeps `request.id`, `occ.device_authorization.reason` (`unreachable` or `unavailable`)
 and its failure class of at most 64 allowed characters (such as `TimeoutError`) as `occ.device_authorization.failure`.
 `agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
 resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` (the
 Compute Driver refused a provisioning plan for a reason the caller cannot fix) keeps only
-`request.id`; the Driver's reason stays local. `http.dependency_unavailable` keeps only `request.id`; the API returns generic
-`503 DEPENDENCY_UNAVAILABLE` text. Its route, error class, message and causes stay local.
+`request.id`. The Driver's reason stays local. `http.dependency_unavailable`
+keeps only `request.id`. The API returns generic `503 DEPENDENCY_UNAVAILABLE`
+text. Its route, error class, message, and causes stay local.
 `native_admin.websocket_audit_failed`
 keeps the Namespace, Agent and Agent revision IDs. `native_admin.http_denial_audit_failed`
 and `native_admin.websocket_denial_audit_failed` carry no request, user, error or payload
 fields. `native_admin.pending_work_unresolved` keeps only its nonnegative safe-integer
 count as `occ.native_admin.pending`; invalid counts are omitted.
-`native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the Namespace, Agent and Agent revision IDs; the Driver IDs and
-implementations stay local. `authentication.activation-warning`, `authentication.password-sign-in-warning`
-and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
-messages stay local.
-`presets.default-refresh-skipped` (a default Preset copy kept because policy refused
-its refresh) is WARN and keeps `occ.namespace.id` and `occ.preset.id`; the Preset
-name, refusal text and Restriction IDs stay local. `presets.default-create-skipped`
-(a missing default left uncreated because a deny Restriction refused it) is WARN and
-keeps only `occ.namespace.id`. `presets.bundled-default-shadowed` (a bundled
-default replaced by a same-named `presets.files` entry) is WARN and carries no IDs;
-the Preset name and file path stay local. These three Preset events come only from
-`occ-api`: the worker never applies default Presets. The Collector drops malformed,
-oversized, unclassified, unspecified-severity, and Codex protocol stdout records.
+`native_admin.compute_owner_mismatch` reports native admin refusal when another
+Compute Driver owns the selected version. Namespace, Agent, and Agent
+revision IDs are exported. Driver IDs and implementations stay local.
+`authentication.activation-warning`, `authentication.password-sign-in-warning`,
+and `authentication.recovery-seed-warning` keep at most `occ.code`. Account
+IDs and messages stay local.
+
+Only `occ-api` emits the three Preset WARN events. The worker never applies
+default Presets.
+`presets.default-refresh-skipped` keeps `occ.namespace.id` and `occ.preset.id`
+when policy prevents refreshing an existing copy. The Preset name, refusal
+text, and Restriction IDs stay local. `presets.default-create-skipped` keeps
+only `occ.namespace.id` when a deny Restriction prevents creating a missing
+default. `presets.bundled-default-shadowed` carries no IDs when a same-named
+`presets.files` entry replaces a bundled default. The Preset name and file
+path stay local. The Collector drops malformed, oversized, unclassified,
+unspecified-severity, and Codex protocol stdout records.
 OpenClaw's Gateway startup failure (an `error` record with no subsystem whose
 message starts `Gateway failed to start:`) is exported as
-`gateway.startup_failed`, so a crash-looping Gateway's cause reaches the backend;
-its body keeps the message under the same plain-text rules as `codex.operational`.
-Those rules also reject a message with an argv credential flag (`-u`, `--password`)
-or a `user:password` pair.
-Collector-only configuration holds exporter credentials and TLS settings. Finite
-queues and retries make logs best-effort; outage or overflow cannot block API
-service, worker reconciliation, or PostgreSQL audit persistence.
+`gateway.startup_failed`. Its body keeps the message under the
+`codex.operational` plain-text rules, which also reject argv credential flags
+(`-u`, `--password`) and `user:password` pairs.
+Only Collector configuration holds exporter credentials and TLS settings.
+Finite queues and retries make export best-effort. Export outage or overflow
+cannot block API service, worker reconciliation, or PostgreSQL audit persistence.
 
 ### 8. The demo dashboard presents existing metadata
 
 `deploy/helm/openclaw-observability-demo/templates/grafana.yaml:logs.json`
 
 `deploy/helm/openclaw-observability-demo/templates/_helpers.tpl:demo.serviceName`
-preserves short DNS-label Service names. Other release names use the component,
-normalized release and original release hash, avoiding collisions with unchanged
-names. Deployments and Grafana datasource URLs share these Service names;
-Deployment names, selectors and discovery keep the full release.
-`demo.validate` rejects uppercase image repository paths, but permits uppercase
-registry hosts and tags. The Collector endpoint remains in its exporter Secret.
-After a Loki rename, update that endpoint and refresh Collector Pods as described
-in [recovery](../guides/observability/demo-cleanup.md#refresh-a-renamed-loki-address).
+keeps short DNS-label Service names. For other releases it combines the
+component, normalized release, and original release hash to avoid name
+collisions. Deployments and Grafana datasource URLs use those Service names.
+Deployment names, selectors, and discovery keep the full release.
+`demo.validate` permits uppercase in registry hosts and tags and refuses it in
+image repository paths. The exporter Secret holds the Collector endpoint. After
+a Loki rename, update that endpoint and refresh Collector Pods as described in
+[recovery](../guides/observability/demo-cleanup.md#refresh-a-renamed-loki-address).
 
-For the bundled Collector path, Loki retains event names and normalizes attributes
-as structured metadata. Grafana formats metadata at query time without changing
-records. External and Driver-owned pipelines require separate operator review.
+With the bundled Collector, Loki retains event names and normalizes attributes
+as structured metadata. Grafana formats metadata at query time, leaving records
+intact. Operators must review external and Driver-owned pipelines separately.
 See the [demo guide](../guides/observability/demo.md#read-and-narrow-operational-logs)
 for panels, correlation, and authorization limits.
 
 ### 9. The optional operator command observes worker exits
 
 `scripts/observe-worker-terminations.ts:main` lists worker Pods in the selected
-namespace and watches from the list's resource version. For each Pod UID it reads
-the worker's container status, including restartable init containers. During
-backoff the waiting container ID can identify the current exit in `lastState`
-before kubelet increments the restart count. The observer syncs each new exit
-and count change to the private file. A closed watch stops observation until the
-supervisor starts a new list.
+namespace and watches from the list's resource version. It reads worker
+container status per Pod UID, including restartable init containers. During
+backoff, the waiting container ID can identify the current exit in
+`lastState` before kubelet increments the restart count. The observer syncs each
+new exit and count change to the private file. If the watch closes, observation
+resumes when the supervisor starts a new list.
 
 `deploy/logging/worker-observer.yaml` projects the file records into a separate
 OTLP pipeline. The [operator procedure](../guides/observability/worker-terminations.md)
@@ -308,16 +317,16 @@ covers credentials, supervision, queue storage and backend verification.
 
 ## Debugging and Verification
 
-- For unexpected process levels, check the startup snapshot; for runtime levels,
-  compare the saved version with rendered container settings.
+- Check the startup snapshot for process levels. For runtime levels, compare
+  the settings saved in the Agent revision with rendered container settings.
 - Use the [observability guide](../guides/observability.md#tests) for delivery,
   Collector metrics, and deployment troubleshooting.
-- Packaging and Collector tests prove configuration, filtering, queue size limits,
-  and startup boundaries. Select real runtime suites separately for gateway,
-  Codex, model-turn, or OpenShell deployment proof.
-- If a runtime Pod enters `CrashLoopBackOff` before a model turn with a config
-  lock failure under `/etc/openclaw`, inspect the admitted Configuration for
-  retired fields before treating the run as a completed case.
+- Packaging and Collector tests verify configuration, filtering, queue limits,
+  and startup boundaries. Use real runtime suites for gateway, Codex, model
+  turns, or OpenShell deployment.
+- If a runtime Pod enters `CrashLoopBackOff` with a config lock failure under
+  `/etc/openclaw` before a model turn, check the admitted Configuration for
+  retired fields before counting the case as complete.
 
 ## Related docs
 
@@ -332,6 +341,8 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 22:56: Apply the existing credential checks to local scalar strings and Collector diagnostic codes. (authoring-run/ab7d7799-30b2-43fe-8453-86ac8cba698b - afab47b8ff040a1ab6e0fa1c5a211690ab990f32)
 
 - 2026-11-08 16:26: Record bounded Git retirement diagnostics. (authoring-run/b490de13-d3f2-4301-b212-4393219a8625 - 842bea47b86394333aa46a900c962a8a81272580)
 

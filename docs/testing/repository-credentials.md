@@ -18,7 +18,7 @@ The controlled tests use disposable fixtures and do not use ambient GitHub crede
 
 ```sh
 node scripts/verify-repository-credentials-boundary.mjs
-node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs \
+node --test tests/conformance/repository-credentials-fixture-ownership.test.ts \
   tests/conformance/repository-credentials-backend-conformance.test.ts
 node --test tests/integration/repository-credentials-git.test.ts \
   tests/integration/repository-credentials-native-paths.test.ts \
@@ -87,7 +87,7 @@ node --test tests/integration/repository-credentials-admission.test.mjs \
 
 For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
-Run `postgres-repository-sessions.test.mjs`,
+Run `postgres-repository-sessions.test.ts`,
 `postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
 worker version tests with `OCC_TEST_DATABASE_URL` set. The
 `postgres-openshell-standing-selected-repository.test.ts` case follows one
@@ -306,7 +306,7 @@ Run the `image-pair-qualification` lane using the
 current and incompatible older controller and broker images against disposable
 fixtures, checks the admission protocol, and rejects incompatible pairs. It does
 not prove credential disposal or a live Agent workflow. See the
-[qualification test](../../tests/integration/production-image-real-qualification.test.mjs)
+[qualification test](../../tests/integration/production-image-real-qualification.test.ts)
 for fixture setup and expected probe exchanges.
 
 ## Run an authorized live smoke

@@ -1,5 +1,6 @@
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hasControlCharacter } from "../../../access/client-contracts.ts";
 import { isClientBearer, readClientConfiguration } from "./config.ts";
 import {
   buildOperatorRepositoryManifest,
@@ -19,13 +20,7 @@ async function readCredentialRequest(): Promise<ReadonlyMap<string, string>> {
       throw new Error("invalid-helper-request");
     }
   }
-  if (
-    [...input].some((character) => {
-      const code = character.charCodeAt(0);
-      return (code <= 0x1f && code !== 0x0a) || code === 0x7f;
-    }) ||
-    !input.endsWith("\n")
-  ) {
+  if (!input.endsWith("\n")) {
     throw new Error("invalid-helper-request");
   }
   const lines = input.split("\n");
@@ -33,13 +28,10 @@ async function readCredentialRequest(): Promise<ReadonlyMap<string, string>> {
   if (lines.at(-1) === "") {
     lines.pop();
   }
-  if (lines.some((line) => !line)) {
-    throw new Error("invalid-helper-request");
-  }
   const fields = new Map<string, string>();
   for (const line of lines) {
     const offset = line.indexOf("=");
-    if (offset < 1 || line.includes("\r") || line.includes("\0")) {
+    if (offset < 1 || hasControlCharacter(line)) {
       throw new Error("invalid-helper-request");
     }
     const key = line.slice(0, offset);

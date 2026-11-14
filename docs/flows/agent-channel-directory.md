@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: "2026-11-06 10:19"
-last_updated_session: authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf
+updated: 2026-11-14
+last_updated_session: authoring-run/7504b1da-810c-4ead-a42b-831ed5e9c3e8
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -77,6 +77,17 @@ The override does not change Gateway routing, and proxy failure does not select
 the other endpoint. The managed proxy accepts CONNECT for its configured
 hostnames on port 443 (Slack by default), while its NetworkPolicy allows upstream egress to public
 IPv4 addresses on TCP 443, excluding private and reserved ranges.
+
+In `apps/controller/src/slack-proxy.mjs:createSlackProxyServer`, the managed
+proxy starts a 10-second wait when a write to the client is pending, even if
+the write buffer is below its high-water mark. The proxy clears the wait when
+all pending writes complete. A later pending write starts a new wait. A quiet
+tunnel has no write deadline. An upstream end, an upstream close, or a client
+close also clears the wait. If the wait expires with a write still pending,
+the proxy resets the client connection so a partial reply cannot appear
+complete. After a clean upstream end, a separate wait gives the client time
+to read the remaining bytes and close its side.
+
 The selected SecretDriver invokes `withValue` and verifies backend ownership.
 OCC rechecks grants and Secret backend identity after the read. It passes the
 token only in process to the ChannelDriver. The bundled Slack implementation
@@ -177,6 +188,10 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 00:08: Clarify pending client writes and fresh drain budgets in the accompanying Slack proxy correction. (authoring-run/7504b1da-810c-4ead-a42b-831ed5e9c3e8 - 3309c7be21ce3c3c0256eb470f294c75c2c771f1)
+
+- 2026-11-13 22:19: Document bounded client write stalls in the accompanying Slack proxy change. (authoring-run/38e47fe4-fe4c-4f85-9b86-3a9cca43424e - bf84c5566fc92f97e7f9a4f7ae1f4a5778a0e83c)
 
 - 2026-11-06 10:19: Retain the directory-only proxy override with shared-default routing and exact API egress (authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf - f4d2e15fc73f6ef43016e0ce959df010bd2be98c)
 - 2026-11-05 19:30: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)

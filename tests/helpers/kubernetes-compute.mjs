@@ -120,13 +120,18 @@ export const conformanceKubeconfig = Object.freeze({
  * Production-shaped Kubernetes Compute Driver options shared by the conformance suites:
  * fixture images, bounded resources and quota, kube-dns, one controller client and disabled
  * service principal credentials. Each suite states its trusted proxy range and runtime.
+ * @param {{
+ *   gatewayTrustedProxyCidrs: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["network"]["gatewayTrustedProxyCidrs"],
+ *   runtime?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["runtime"],
+ * }} options
  */
 export function conformanceKubernetesOptions({ gatewayTrustedProxyCidrs, runtime }) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
-  return {
+  /** @satisfies {import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions} */
+  const options = {
     authentication: { mode: "kubeconfig", ...conformanceKubeconfig },
     images: {
       gateway: "openclaw-enterprise/gateway-fixture:local",
@@ -152,4 +157,5 @@ export function conformanceKubernetesOptions({ gatewayTrustedProxyCidrs, runtime
     servicePrincipalCredentials: { mode: "disabled" },
     ...(runtime === undefined ? {} : { runtime }),
   };
+  return options;
 }

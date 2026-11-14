@@ -4,7 +4,11 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { publishWorkflow, repository } from "../../scripts/ci/container-release.mjs";
+import {
+  publishPrepared,
+  publishWorkflow,
+  repository,
+} from "../../scripts/ci/container-release.mjs";
 import { setEnvironment } from "../helpers/environment.ts";
 import { prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -689,11 +693,11 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     field(parse(await readFile(statePath, "utf8")), "copies"),
     prepared.map(({ remote }) => remote),
   );
-  const runPublication = async (alias = "") => {
+  const runPublicationCommand = async (command: "validate" | "publish", alias = "") => {
     await writeFixture();
     execFileSync(
       process.execPath,
-      ["--import", preload, "scripts/ci/container-release.mjs", "publish", directory],
+      ["--import", preload, "scripts/ci/container-release.mjs", command, directory],
       {
         env: {
           ...process.env,
@@ -702,12 +706,16 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
           GITHUB_RUN_ID: "123",
           CI_RUN_ID: "456",
           CI_ATTEMPT: "1",
+          GITHUB_OUTPUT: join(directory, "publication-output"),
           PUBLISH: "true",
           IMAGE_TAG: alias,
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+  };
+  const runPublication = async (alias = "") => {
+    await runPublicationCommand("publish", alias);
     return parse(await readFile(join(directory, "publication.json"), "utf8"));
   };
   const priorState = { ...object(state), remote: { ...object(field(state, "remote")) } };
@@ -769,6 +777,49 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     await assert.rejects(runPublication(invalid), refusedBy(guard));
     assert.deepEqual(parse(await readFile(statePath, "utf8")), customState);
   }
+  // Cover release versions, leading-zero components, and the chart owner's
+  // permissive prerelease forms. None may replace an existing release image.
+  const releaseVersions = ["0.0.0", "1.2.3", "01.002.0003", "1.2.3-rc.1", "1.2.3-A-."];
+  const versionState = {
+    ...object(customState),
+    remote: { ...object(field(customState, "remote")) },
+  };
+  for (const version of releaseVersions) {
+    for (const image of images) {
+      versionState.remote[`docker://${env[`GHCR_${image.toUpperCase()}_IMAGE`]}:${version}`] =
+        `existing ${image} release bytes`;
+    }
+  }
+  const versionStateBytes = JSON.stringify(versionState);
+  await writeFile(statePath, versionStateBytes);
+  const releaseVersion = /^Release version tags are reserved\./;
+  let verifications = 0;
+  const stopBeforePublication = async () => {
+    verifications++;
+    throw new Error("Reached publication verification.");
+  };
+  for (const version of releaseVersions) {
+    await assert.rejects(runPublicationCommand("validate", version), refusedBy(releaseVersion));
+    await assert.rejects(runPublication(version), refusedBy(releaseVersion));
+    // Other callers must reach the same refusal before their first verification
+    // or transport operation. The sentinel makes a missing boundary guard safe.
+    await assert.rejects(
+      publishPrepared(directory, env, item(prepared, 0).metadata, stopBeforePublication, version),
+      { message: releaseVersion },
+    );
+    assert.equal(verifications, 0);
+    assert.equal(await readFile(statePath, "utf8"), versionStateBytes);
+  }
+  // Reserve only the chart owner's grammar. Recovery still omits the alias,
+  // and other valid OCI tags still pass the shared boundary.
+  for (const alias of [undefined, "", "latest", "candidate", "v1.2.3", "1.2.3-"]) {
+    await assert.rejects(
+      publishPrepared(directory, env, item(prepared, 0).metadata, stopBeforePublication, alias),
+      { message: /^Reached publication verification\.$/ },
+    );
+  }
+  assert.equal(verifications, 6);
+  assert.equal(await readFile(statePath, "utf8"), versionStateBytes);
   // The aliases are separate registry writes: a failure must not produce a receipt.
   const partial = {
     ...object(customState),

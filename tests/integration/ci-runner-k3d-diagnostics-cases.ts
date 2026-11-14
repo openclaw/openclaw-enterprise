@@ -803,6 +803,9 @@ export async function checkControllerReadinessEvidence(t: TestContext, earlyLogE
     OCC_KUBECTL_BIN: kubectl,
     PATH: `${bin}:${process.env.PATH}`,
     OCC_TEST_EVENT_VALUE: eventValue,
+    // pnpm's package name matches the fixture deployment name. Keep the
+    // readiness assertion independent of environment-value redaction.
+    npm_package_name: "",
   });
   assert.equal(result.status, 1, result.stderr);
   assert.match(

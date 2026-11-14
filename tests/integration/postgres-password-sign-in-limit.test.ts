@@ -24,7 +24,7 @@ import {
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { scryptPasswordHasher } from "../helpers/password-hasher.mjs";
-import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
+import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.ts";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
 const ingress = "10.0.0.9";
@@ -485,7 +485,7 @@ test(
           assert.equal(response.statusCode, 401, `attempt ${index}: ${response.body}`);
         }
         await assertSpentDeviceProofRefusal({
-          installReader(holdRead: (read: () => unknown) => Promise<unknown>) {
+          installReader(holdRead) {
             const query = pg.Pool.prototype.query;
             return t.mock.method(
               pg.Pool.prototype,

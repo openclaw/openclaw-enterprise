@@ -2202,6 +2202,7 @@ function checkoutWithoutDependencies() {
   const sources = [
     "package.json",
     "scripts/render-installation-profile.mjs",
+    "scripts/render-installation-profile.ts",
     "scripts/lib/prepared-repository-installation.mjs",
     "deploy/profiles",
     "apps/controller/package.json",
@@ -3167,3 +3168,16 @@ test(
     }
   },
 );
+
+test("retired channel proxy profile keys identify their replacement", async () => {
+  for (const [key, value, replacement] of [
+    ["runtimeProxyUrl", "http://192.0.2.10:3128", "proxy.url"],
+    ["managedSlackProxy", true, "proxy.bundled"],
+  ]) {
+    await assertPreflightFailure(
+      "openclaw",
+      baseInput({ channels: { [key]: value } }),
+      new RegExp(`channels\\.${key} was removed; use ${replacement.replace(".", "\\.")}`),
+    );
+  }
+});

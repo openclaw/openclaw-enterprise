@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.mjs";
+import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { asRecord } from "../../packages/utils/src/index.ts";

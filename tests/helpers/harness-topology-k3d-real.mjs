@@ -49,7 +49,7 @@ import {
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
-import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.mjs";
+import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
 import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";

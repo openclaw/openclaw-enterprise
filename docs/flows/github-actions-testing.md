@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-12 11:00"
-last_updated_session: "authoring-run/2f421f2e-6313-4a70-a0e0-821995778b2f"
+updated: "2026-11-14 13:17"
+last_updated_session: "authoring-run/d26b1f82-7e6f-460d-97d3-6a187c060e96"
 ---
 
 # GitHub Actions testing flow
@@ -65,10 +65,9 @@ graph TD
 
 `run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
-`run-tests.mjs:parseArgs` accepts `--test-name=<literal>` with leading dashes;
-duplicates, including empty values, fail before effects. `selectLane` validates paths/names.
-`runFile` requires one passing standalone case through an escaped, anchored Node-child pattern.
-Results retain environment, cleanup and focus/name on preparation failure.
+`runner-inputs.ts:parseArgs` rejects unknown options/repeated `--test-name` before effects. `--test-name=<literal>` accepts dashes. `selectLane` validates paths/names.
+`runFile` requires one passing standalone case via an anchored, escaped pattern.
+Preparation failures retain environment, cleanup and focus/name.
 `validateLaneEvidence` rejects focused aggregation.
 
 `CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
@@ -111,7 +110,7 @@ Slack serializes channel/app access; installation and Skipper Git serialize per 
 Retries require [approved dispatch](../testing/ci/configuration.md#environments).
 
 First-attempt `all` reuse requires completed execution
-(`scripts/ci/full-integration-reuse.mjs:validateResults`). Success selects artifacts,
+(`scripts/ci/full-integration-reuse.ts:validateResults`). Success selects artifacts,
 skipping lanes. Failure uses preflight’s fresh fallback.
 QA awaits Slack despite failure, stops on cancellation, and requires selected results.
 
@@ -167,7 +166,7 @@ Without runner capture, it emits a projected diagnostic. `unavailable` means a
 failed observation; missing records do not prove healthy startup.
 
 Dedicated Codex preparation and the operator's offline profile generator share
-`scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
+`scripts/lib/codex-seccomp-profile.ts:deriveCodexBwrapProfile`. Preparation
 requires an actual workspace write and denied write to a container-writable
 outside path before publishing the selected Localhost profile to the live suite.
 Native runtime-image tests trust a dynamic Codex Docker seccomp profile only when
@@ -185,7 +184,7 @@ owns credential isolation and historical-pair limits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-`scripts/ci/run-tests.mjs:normalizeFile` validates `file.env`.
+`scripts/ci/runner-inputs.ts:normalizeFile` validates `file.env`.
 `runFile` merges filtered inherited values, restored declared inputs, `lane.env`,
 preparation defaults, `file.env`, then generated values; later values win.
 `scripts/ci/prepare.mjs:prepareFile` separates defaults and outputs.
@@ -293,6 +292,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 13:17: Validate options. (authoring-run/d26b1f82-7e6f-460d-97d3-6a187c060e96 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 
 - 2026-11-12 11:00: Validate OpenShell cohort credentials. (authoring-run/2f421f2e-6313-4a70-a0e0-821995778b2f - 7040f7a648359a9c43d280b83efbc27be991049c)
 

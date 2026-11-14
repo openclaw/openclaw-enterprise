@@ -1,4 +1,4 @@
-import { registerCredentialFixtureRegressions } from "../fixtures/repository-credentials/regressions.mjs";
+import { registerCredentialFixtureRegressions } from "../fixtures/repository-credentials/regressions.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { request } from "node:https";
@@ -29,7 +29,7 @@ import {
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
-import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.mjs";
+import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
 import { requestHead } from "../fixtures/repository-credentials/builders.mjs";

@@ -22,7 +22,7 @@ KINDS = {"networkpolicy": "networkpolicy.networking.k8s.io", "secret": "secret",
          **{slot: "job.batch" for slot in JOBS}}
 HASHES = {
     "scriptSha256": "upgrade-production-images",
-    "startupPreflightSha256": "upgrade-startup-preflight.mjs",
+    "startupPreflightSha256": "upgrade-startup-preflight.ts",
     "preflightStateSha256": "upgrade-preflight-state.py",
     "preflightCleanupSha256": "lib/upgrade-preflight-cleanup.sh",
 }

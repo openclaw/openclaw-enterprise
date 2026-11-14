@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { runPinnedClients } from "../fixtures/repository-credentials/clients.mjs";
-import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.mjs";
+import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.ts";
 import {
   closeAndDispose,
   registerResourceCleanup,
-} from "../fixtures/repository-credentials/cleanup.mjs";
+} from "../fixtures/repository-credentials/cleanup.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import {
   cleanEnvironment,

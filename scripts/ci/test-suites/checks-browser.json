@@ -21,7 +21,7 @@
     "tests/integration/github-installation-access-policy.test.ts",
     "tests/integration/repository-credentials-github-installation-issuer.test.ts",
     "tests/integration/skipper-private-git-origin.test.mjs",
-    "tests/integration/repository-credentials-github-token.test.mjs",
+    "tests/integration/repository-credentials-github-token.test.ts",
     "tests/integration/repository-credentials-client-config.test.mjs",
     "tests/browser/console-agent-overview.test.ts",
     "tests/browser/console-deployment-activity.test.ts",
@@ -108,7 +108,7 @@
       "path": "tests/integration/skipper-private-git-origin.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-github-token.test.mjs"
+      "path": "tests/integration/repository-credentials-github-token.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-client-config.test.mjs"

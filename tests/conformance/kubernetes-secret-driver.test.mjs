@@ -14,17 +14,15 @@ import {
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { withMutationDeadline } from "../../apps/controller/src/admission/mutation-deadline.ts";
 import {
+  MINIMUM_SEND_BUDGET_MS,
+  READ_RETRY_PAUSES_MS,
   controlledRequestTimeouts,
   frozenClock,
   nextTurns,
   settlement,
   untilSent,
-} from "../helpers/kubernetes-core-api.mjs";
-import {
-  MINIMUM_SEND_BUDGET_MS,
-  READ_RETRY_PAUSES_MS,
   withRetryTimers,
-} from "../helpers/kubernetes-request-retry.mjs";
+} from "../helpers/kubernetes-core-api.ts";
 
 import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
 import { assertProtectedStaticSecretRead } from "../helpers/protected-static-secret-read.ts";

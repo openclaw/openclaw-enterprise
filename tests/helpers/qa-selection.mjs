@@ -7,10 +7,12 @@ const scenarioPresets = {
   "scratch-volume": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
+  "openshell-git-model": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
+  "agent-audit": ["Codex"],
   "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
@@ -37,6 +39,7 @@ export function selectQaMatrix(env = process.env) {
         "scratch-volume",
         "plugin-install",
         "openshell-linear-read",
+        "openshell-git-model",
         "codex-search-config",
         "harness-overrides",
       ].includes(name),
@@ -60,10 +63,16 @@ export function selectQaMatrix(env = process.env) {
   }
   const presets = preset === "all" ? ["OpenClaw", "Codex"] : [preset];
   const installations = installation === "all" ? ["compose", "kubernetes"] : [installation];
+  const applies = (scenario, installation, preset) =>
+    scenarioPresets[scenario].includes(preset) &&
+    (scenario !== "agent-audit" || installation === "compose");
   for (const name of scenarios) {
     assert.ok(
-      input === "all" || scenarioPresets[name].some((value) => presets.includes(value)),
-      `${name} is not applicable to selected QA presets`,
+      input === "all" ||
+        installations.some((installation) =>
+          presets.some((preset) => applies(name, installation, preset)),
+        ),
+      `${name} is not applicable to selected QA installations and presets`,
     );
   }
   const cells = installations.flatMap((value) =>
@@ -79,9 +88,10 @@ export function selectQaMatrix(env = process.env) {
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
+            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
-          ].includes(scenario) && scenarioPresets[scenario].includes(name),
+          ].includes(scenario) && applies(scenario, value, name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
@@ -91,10 +101,11 @@ export function selectQaMatrix(env = process.env) {
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
+            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
           ].includes(scenario) &&
-          scenarioPresets[scenario].includes(name) &&
+          applies(scenario, value, name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
@@ -105,9 +116,10 @@ export function selectQaMatrix(env = process.env) {
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
+            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
-          ].includes(scenario) && !scenarioPresets[scenario].includes(name),
+          ].includes(scenario) && !applies(scenario, value, name),
       ),
     })),
   );
@@ -164,6 +176,7 @@ export function selectQaMatrix(env = process.env) {
     }
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
   }
+  const gitModel = scenarios.includes("openshell-git-model");
   const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const scratchVolume = scenarios.includes("scratch-volume");
@@ -192,7 +205,8 @@ export function selectQaMatrix(env = process.env) {
       scratchVolume ||
       pluginInstall ||
       linearRead ||
-      harnessOverrides,
+      harnessOverrides ||
+      gitModel,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -207,8 +221,8 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (namespaceLifecycle) {
-    assert.notEqual(installation, "compose", "Namespace lifecycle proof requires Kubernetes");
+  if (namespaceLifecycle || gitModel) {
+    assert.notEqual(installation, "compose", "This OpenShell scenario requires Kubernetes");
     for (const key of ["OCC_TEST_QA_OPENAI_KEY_FILE", "OCC_TEST_QA_OPENAI_MODEL"]) {
       if (!requiredEnv.includes(key)) {
         requiredEnv.push(key);
@@ -227,7 +241,7 @@ export function selectQaMatrix(env = process.env) {
       }
     }
   }
-  if (namespaceLifecycle || sandboxPolicy || pluginInstall || scratchVolume) {
+  if (namespaceLifecycle || sandboxPolicy || pluginInstall || scratchVolume || gitModel) {
     if ((sandboxPolicy || pluginInstall) && !requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
@@ -257,6 +271,7 @@ export function selectQaMatrix(env = process.env) {
     installations,
     exclusions,
     namespaceLifecycle,
+    gitModel,
     oidcAgentChat,
     sandboxPolicy,
     scratchVolume,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnOptions } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -23,7 +24,7 @@ import {
   eachSettled as all,
   settled,
 } from "../helpers/child-processes.mjs";
-import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.ts";
 import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { checkArguments, classify, respond } from "../../scripts/ci/impact.ts";
 
@@ -35,7 +36,7 @@ function present<T>(value: T | null | undefined): T {
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.ts");
 const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
-const gate = join(repositoryRoot, "scripts/ci/impact-gate.mjs");
+const gate = join(repositoryRoot, "scripts/ci/impact-gate.ts");
 const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const read = (path: string) => readFileSync(join(repositoryRoot, path), "utf8");
 const policy = readFileSync(selector, "utf8");
@@ -2446,7 +2447,7 @@ test("every lane job stops its test files before its own timeout", (t) => {
   }
 });
 
-// Runs impact-gate.mjs on a needs object, writing needs.json in `root`.
+// Runs impact-gate.ts on a needs object, writing needs.json in `root`.
 function runGate(root: string, needs: object, mode: string, lanes?: string) {
   const raw = join(root, "raw-needs.json");
   writeFileSync(raw, JSON.stringify(needs));
@@ -2539,7 +2540,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     ].sort(),
     [...expectedFullLanes, "k3d-observability-demo"].sort(),
   );
-  await each(["docs", "full"], async (expected) => {
+  await each(["docs", "full"] as const, async (expected) => {
     const [f, bootstrap] = await policyFixture(t, ({ put }) => {
       put("docs/change.md");
       if (expected === "full") {
@@ -2554,7 +2555,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     assert.equal((await bootstrap.run("verify", mode)).status, 0);
 
     const root = bootstrap.checkout;
-    const needs = passingGateNeeds(mode);
+    const needs = passingGateNeeds(expected);
     const gateResult = await runGate(root, needs, mode);
     assert.equal(gateResult.status, 0, gateResult.stderr);
     const selectedNeeds = needsData(readFileSync(join(root, "needs.json"), "utf8"));
@@ -3325,7 +3326,7 @@ test("mixed test and code, tooling, workflow or package changes select full", as
       "src/app.ts",
       "scripts/ci/prepare.mjs",
       "scripts/ci/run-tests.mjs",
-      "scripts/ci/impact-gate.mjs",
+      "scripts/ci/impact-gate.ts",
       ".github/workflows/ci.yml",
       "package.json",
       "pnpm-lock.yaml",
@@ -3654,7 +3655,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   }
   const required = job("ci-required");
   assert.match(required, /EXPECTED_LANES: \$\{\{ needs\.impact\.outputs\.lanes \}\}/);
-  assert.match(required, /impact-gate\.mjs [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
+  assert.match(required, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
   assert.match(required, /run-tests\.mjs aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
   const impact = job("impact");
   for (const [output, step] of [
@@ -4212,4 +4213,96 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
     "pr-safe-same-sha": { result: "skipped" },
   });
   assert.deepEqual(Object.keys(targeted).sort(), ["docker-model", "preflight"]);
+});
+
+test("trusted main lint cache trial verifies restored bytes before invoking warm lint", (t) => {
+  const job = present(loadYaml(".github/workflows/lint-cache-trial.yml").jobs.trial);
+  const run = present(job.steps.find((step) => step.id === "warm")?.run);
+  const dir = temporaryDirectorySync(t, "lint-trial-");
+  const cache = join(dir, "seed");
+  const invoked = join(dir, "invoked");
+  const bytes = "clean";
+  writeFileSync(cache, bytes);
+
+  // The marker observes whether the workflow hands the restored file to pnpm.
+  const check = (hit: string, matched: string, expected: boolean) => {
+    rmSync(invoked, { force: true });
+    const result = spawnSync(
+      "bash",
+      ["-e", "-o", "pipefail", "-c", `pnpm() { touch "$INVOKED"; }\n${run}`],
+      {
+        env: {
+          ...process.env,
+          CACHE_FILE: cache,
+          DIGEST: createHash("sha256").update(bytes).digest("hex"),
+          BYTES: String(bytes.length),
+          HIT: hit,
+          MATCHED: matched,
+          EXPECTED: "trial-key",
+          PRIMARY: "trial-key",
+          RESTORE_START: String(Date.now()),
+          GITHUB_OUTPUT: join(dir, "outputs"),
+          INVOKED: invoked,
+        },
+      },
+    );
+    assert.equal(result.status, expected ? 0 : 1);
+    assert.equal(existsSync(invoked), expected);
+  };
+  check("true", "trial-key", true);
+  check("", "", false);
+  check("true", "another-key", false);
+  writeFileSync(cache, "wrong");
+  check("true", "trial-key", false);
+  rmSync(cache);
+  symlinkSync(join(dir, "elsewhere"), cache);
+  writeFileSync(join(dir, "elsewhere"), bytes);
+  check("true", "trial-key", false);
+});
+
+test("lint cache trial requires the lookup-only witness to match the saved seed", (t) => {
+  const steps = present(loadYaml(".github/workflows/lint-cache-trial.yml").jobs.trial).steps;
+  const witness = present(steps.find((step) => step.id === "witness"));
+  const restore = present(steps.find((step) => step.id === "restore"));
+  assert.deepEqual(witness.with, {
+    path: "${{ env.CACHE_FILE }}",
+    key: "${{ steps.trial.outputs.probe }}",
+    "restore-keys": "${{ steps.trial.outputs.key }}",
+    "lookup-only": true,
+  });
+  assert.deepEqual(restore.with, {
+    path: "${{ env.CACHE_FILE }}",
+    key: "${{ steps.trial.outputs.key }}",
+    "fail-on-cache-miss": true,
+  });
+  const run = present(steps.find((step) => step.id === "witnessed")?.run);
+  const dir = temporaryDirectorySync(t, "lint-witness-");
+  const check = (primary: string, hit: string, matched: string) =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", run], {
+      env: {
+        ...process.env,
+        START: String(Date.now()),
+        CACHE_FILE: join(dir, "cache"),
+        GITHUB_OUTPUT: join(dir, "output"),
+        PROBE: "probe",
+        SEED: "seed",
+        PRIMARY: primary,
+        HIT: hit,
+        MATCHED: matched,
+      },
+    }).status;
+  assert.equal(check("probe", "false", "seed"), 0);
+  for (const [primary, hit, matched] of [
+    ["probe", "", ""],
+    ["other", "false", "seed"],
+    ["probe", "true", "probe"],
+    ["probe", "false", "foreign"],
+    ["probe", "", "seed"],
+    ["probe", "False", "seed"],
+    ["", "false", "seed"],
+  ] as const) {
+    assert.equal(check(primary, hit, matched), 1);
+  }
+  writeFileSync(join(dir, "cache"), "unexpected download");
+  assert.equal(check("probe", "false", "seed"), 1);
 });

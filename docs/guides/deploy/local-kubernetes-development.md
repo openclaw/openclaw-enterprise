@@ -87,8 +87,9 @@ other published ports must differ. k3d publishes ports at creation; changes
 require `dev-down` and fresh `dev-up`.
 
 The persistent realm attaches `alice` to the existing administrator through
-[OIDC](oidc-sign-in.md), makes passwords recovery-only, and disables
-[Agent native administration](../../reference/agent-native-admin.md). OpenShell
+[OIDC](oidc-sign-in.md), makes passwords recovery-only, and keeps
+[Agent native administration](../../reference/agent-native-admin.md) enabled.
+OpenShell
 is unsupported; password-only remains the default.
 
 Import `browser-ca.crt` and `gateway-ca.crt` into your browser; add the printed

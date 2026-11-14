@@ -648,7 +648,7 @@ test(
       JSON.parse(
         (
           await execute(process.execPath, [
-            "scripts/upgrade-startup-preflight.mjs",
+            "scripts/upgrade-startup-preflight.ts",
             action,
             renderedPath,
             "api",
