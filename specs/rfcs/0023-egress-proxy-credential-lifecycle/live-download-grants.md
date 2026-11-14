@@ -82,18 +82,43 @@ composition before changing the provider. The separate
 [frozen artifact contract](contracts.md#protected-codex-artifact-downloads)
 and ordinary unprotected editor retain their existing behavior.
 
-Before dispatch, record the operation ID, the immutable Sandbox identity, the
-provider’s compare-and-swap version, and the hashes of the intended policy and
-the Installation limits. If the write response is lost, look up that original
-operation through the authenticated read-only provider path, including after a
-restore. Recovery never resends the original write. A later policy version alone cannot
-establish which operation produced it. The protected pair must agree on the new
-policy in subsequent wiring and health checks. Confirm the expected source and effective rules,
-including absence of removed access, and match the supervisor’s loaded version
-and hash to the **post-update** policy on the current Sandbox and instance.
-A queued write, a successful RPC, or the previous deployment witness alone
-cannot establish enforcement. Refuse the feature where the pair cannot produce
-that evidence.
+Before the worker dispatches a provider write, OCC commits the recovery data
+on the original Agent-owned work row. Record the operation ID, revision,
+immutable Sandbox and instance, provider compare-and-swap version, requested
+scope, hashes of the intended policy and Installation limits, and last confirmed
+installation. Store any later provider commit receipt on the same row.
+If the write response is lost, the recovery owner uses the authenticated
+read-only provider path to look up that operation, including after a restore.
+A later policy version alone cannot identify which operation produced it.
+
+### Publish the confirmed installation
+
+The Driver pair verifies the original operation receipt, the resulting policy
+source and effective rules, and the supervisor’s loaded version and hash on
+the same Sandbox and instance. Verify that only the approved download rules
+changed and that the model and Git rules, bindings and authorized recipients
+match the predecessor. Wiring and health checks must agree on that policy.
+Refuse the feature where the pair cannot produce that evidence.
+
+Today OCC reads the deployment receipt or a confirmed credential reduction.
+The proposed download edit must also advance the installation used for
+credential checks. In one transaction, OCC rechecks the operation, current
+authority and grants, running revision, recipient and exact predecessor.
+It records the confirmed SandboxPolicy, the successor installation with the
+verified effective policy hash, and the matching Git route evidence. Report
+**Applied** only after commit. Preserve the original deployment receipt.
+Both credential reductions and download edits must start from the current
+confirmed installation. A stale edit cannot overwrite a reduction, restore
+withdrawn access or publish against a replacement.
+
+Through the transition, the qualified pair’s credential checks require current
+grants and an exact match between the verified execution policy hash and the
+published installation. Refuse credential use if the supervisor has loaded
+the new hash before publication or the recipient cannot be verified. After publication,
+model and Git credential checks read the same successor, including during
+issuance or renewal for that recipient. Each request stays bound to its
+installation through credential release and its final authorization check.
+A request already past its final authorization check may finish.
 
 Show **Pending** from admission until confirmation. **Applied** identifies the
 confirmed policy and running revision. **Failed** explains the refusal or
@@ -105,20 +130,36 @@ successor applied. Desired grants survive controller restart and are revalidated
 at the next deployment against current delegation and Installation limits.
 A replacement Sandbox or supervisor needs fresh evidence.
 
-If an original write is still uncertain when a different revision and Sandbox
-become active, first fence the old writer. In the same transaction that admits
-the new change, preserve the old operation’s reconciliation data on its original
-Agent-owned work row. This optional private field is empty on existing and
-ordinary work. Keep the operation identity, original target and precondition,
-requested scope, optional provider commit receipt, and prior confirmed witness
-through retries, cancellation and ordinary result changes. An uncertain approval cannot extend the replacement’s delegation.
+### Reconcile an unconfirmed write
 
-Only the recovery owner reads this private data. Preserve it through queue
-retries until an authorized read verifies the original effect or confirms that
-the exact old recipient has retired. Retirement closes the old recipient’s
-ability to act. Its historical policy outcome may remain unknown. In one
-transaction, record the terminal result and a sanitized audit disposition, then
-clear the private data. Reporting rollback requires independent confirmation that
+Keep the private recovery data on the original work row through retries,
+failure, cancellation and supersession, even if the displayed application
+changes. The field is empty on existing and ordinary work. While a write to
+the same running Sandbox remains unconfirmed, OCC refuses a second download
+edit and identifies the operation awaiting confirmation. The recovery owner
+continues read-only reconciliation after **Failed**. If the original receipt
+arrives late and the pair verifies its effect, OCC uses the same publication
+checks to record that operation as **Applied**. Recovery never resends the
+write. If publication fails, record the observed outcome against the original
+work only. Keep edits to that Sandbox blocked until OCC can verify its current
+installed baseline, including any intervening credential reduction. A subsequent
+edit must pass fresh admission against that baseline.
+
+When a different revision and Sandbox become active, fence the old writer
+before admitting a change for the replacement. Admission must preserve the
+original work row and its recovery data in the same transaction. Qualify the
+replacement independently. An uncertain approval cannot extend its delegation.
+
+Only the recovery owner reads this private data. If the provider effect is
+verified but OCC publication has yet to commit, retain the original record and
+refuse further download edits on that Sandbox. The owner can retry publication
+after rechecking current authority, the recipient, the predecessor and both
+Drivers’ evidence. Clear the record only when publication commits, an
+authorized reconciliation verifies the installed policy against the current
+published installation, or the exact old recipient is confirmed retired.
+Record the terminal disposition and clear the private data in one transaction.
+Retirement closes the old recipient’s ability to act. Its historical policy
+outcome may remain unknown. Reporting rollback requires independent confirmation that
 the original recipient loaded the restored policy. A successful change on the replacement
 leaves the old outcome uncertain. Successful final Agent deletion removes its
 work rows under the existing lifecycle. Restored work remains isolated from live
@@ -141,7 +182,11 @@ Agent, revision, Sandbox, Pod and supervisor identities throughout.
    read. Add a previously unseen eligible domain in the browser. Time the
    click, provider confirmation and first successful fresh shell download.
    Verify response bytes at a controlled origin, with no platform credential
-   delivered. Check an unauthorized Agent and an unlisted destination stay denied.
+   delivered. While the grant is active, make a fresh model turn and authorized
+   Git read through their usual credential paths on the same instance. Verify
+   both use the confirmed installation. Check that a request with the new hash
+   before publication and one with the old hash after publication are refused.
+   Check an unauthorized Agent and an unlisted destination stay denied.
 2. Exercise the signed Debian package workflow and an exact shared-host archive
    after a redirect. Check the artifact integrity, a sibling path, a write
    method and an unapproved redirect hop. A delegated editor cannot approve an
@@ -149,9 +194,19 @@ Agent, revision, Sandbox, Pod and supervisor identities throughout.
 3. Remove the domain in the browser and time the first fresh connection denial.
    Exercise an already open connection separately. Retest model and Git access,
    verify unchanged runtime identities and confirm a second Agent’s policy
-   never changed. Exercise stale writes, worker restart after provider update,
-   revision replacement, and stale supervisor evidence. On replacement, verify
-   that interrupted admission preserves the original operation and its witness,
+   never changed. Exercise stale writes and stale supervisor evidence. In a
+   separate run, race publication with a credential reduction and verify the
+   withdrawn route stays denied.
+4. Lose the provider reply after it accepts a write. Restart the worker, let
+   confirmation fail, then attempt a second edit on the same running Sandbox.
+   Verify the refusal preserves the original work row and published installation.
+   Make the original receipt available, then fail the first OCC publication
+   after the pair verifies the loaded policy. Verify that another edit is still
+   refused and that the original recovery record survives. Let recovery publish
+   the original operation, check that the provider received exactly one write,
+   and admit the next edit against the confirmed version.
+5. On revision and Sandbox replacement, verify that interrupted admission
+   preserves the original operation and its witness,
    and that a separately verified successor succeeds independently. A late
    acknowledgment cannot settle either operation by itself. Read the original
    operation to settle it and clear its private data without replay. Confirm that
