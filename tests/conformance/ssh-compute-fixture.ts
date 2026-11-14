@@ -347,10 +347,10 @@ export async function fixture(
             resolve({ code: code ?? 1, stdout, stderr });
           }
         });
-        // Use the host fixture's ordinary umask so the snapshot mode check is
-        // independent of the caller's shell and still catches a wrong write mode.
+        // Clear the helper child's umask so the permission checks observe every
+        // bit the helper requested, including unintended group or other access.
         child.stdin.end(
-          `process.umask(0o022);\nconst SSH_OPERATION = ${JSON.stringify(command.operation)};\n${command.helper}`,
+          `process.umask(0);\nconst SSH_OPERATION = ${JSON.stringify(command.operation)};\n${command.helper}`,
         );
       });
     },
