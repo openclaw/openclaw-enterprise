@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { removeImageFileContainer } from "../lib/image-file.mjs";
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.ts";
-import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
+import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.ts";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
 import { constants, type Dirent } from "node:fs";

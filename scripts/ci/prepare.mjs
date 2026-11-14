@@ -48,7 +48,7 @@ import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.mjs";
 import { pullImage } from "./image-pull.ts";
-import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
+import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.ts";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
 import { verifyPreloadedAgentSandbox } from "./agent-sandbox.ts";

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:https";
+import type { OutgoingHttpHeaders } from "node:http";
 import { connect } from "node:net";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,18 +32,86 @@ const readinessDeadlineMs = 180_000;
 const ownedNamePattern = /^openclaw-ci-kc-[a-z0-9-]+$/;
 const hostsMarker = "# openclaw-ci keycloak";
 
+type CommandOptions = { env?: NodeJS.ProcessEnv; timeoutMs?: number };
+type CommandRunner = (
+  command: string,
+  args: string[],
+  options?: CommandOptions,
+) => Promise<{ stdout: string; stderr: string }>;
+
+type ResourceLocation = { name: string; directory: string };
+type KeycloakResource = ResourceLocation & { hostsLine?: string };
+type LookupAll = (host: string) => Promise<readonly { address: string }[]>;
+type Pause = (ms: number) => Promise<void>;
+
+type PrepareKeycloakOptions<Resource extends KeycloakResource> = {
+  stateDirectory: string;
+  name: string;
+  execFile: CommandRunner;
+  docker?: string;
+  ensureImage: (image: string) => Promise<string | void>;
+  reservePort: () => Promise<number>;
+  registerResource: (resource: ResourceLocation) => Promise<Resource>;
+  saveState: () => Promise<void>;
+  lookupAll?: LookupAll;
+  portAccepts?: (port: number) => Promise<boolean>;
+  sleep?: Pause;
+  realmFile?: string;
+  imageFile?: string;
+  deadlineMs?: number;
+  log?: (message: string) => void;
+};
+
+type CertificatePaths = { certPath: string; keyPath: string };
+type ResolverFailure = { loopbackOnly: false; host: string; addresses: string[]; error?: string };
+type ResolverAnswer = { loopbackOnly: true } | ResolverFailure;
+type HttpsOptions = {
+  ca: Buffer;
+  method?: string;
+  headers?: OutgoingHttpHeaders;
+  body?: string;
+};
+type HttpsResponse = { status: number | undefined; json: unknown };
+type ReadinessCheck = {
+  ca: Buffer;
+  adminUsername: string;
+  adminPassword: string;
+  expected: { clientSecret: string; redirectUri: string };
+};
+type ReadinessOptions = ReadinessCheck & {
+  execFile: CommandRunner;
+  docker: string;
+  name: string;
+  sleep: Pause;
+  deadlineMs: number;
+};
+
+function hasFields(value: unknown): value is Record<PropertyKey, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readField(value: unknown, key: string | number): unknown {
+  return hasFields(value) ? value[key] : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  const message = readField(error, "message");
+  return typeof message === "string" ? message : String(error);
+}
+
 // Prefixes every failure with the step it happened in, so a lane log names it.
-async function step(name, operation) {
+async function step<Result>(name: string, operation: () => Promise<Result>): Promise<Result> {
   try {
     return await operation();
   } catch (error) {
-    throw new Error(`Keycloak ${name} step failed: ${error.message}`, { cause: error });
+    throw new Error(`Keycloak ${name} step failed: ${errorMessage(error)}`, { cause: error });
   }
 }
 
 export async function readKeycloakImage(path = keycloakImageFile) {
-  const { image } = JSON.parse(await readFile(path, "utf8"));
-  if (!/^\S+@sha256:[a-f0-9]{64}$/.test(image ?? "")) {
+  const pin: unknown = JSON.parse(await readFile(path, "utf8"));
+  const image = readField(pin, "image");
+  if (typeof image !== "string" || !/^\S+@sha256:[a-f0-9]{64}$/.test(image)) {
     throw new Error(`${path} must pin an immutable image@sha256 reference.`);
   }
   return image;
@@ -50,11 +119,17 @@ export async function readKeycloakImage(path = keycloakImageFile) {
 
 // `--import-realm` resolves `${NAME}` from the server's environment and, when NAME is
 // unset, imports the placeholder text itself, so every placeholder must have a value.
-export function realmPlaceholders(realmText) {
-  return [...new Set([...realmText.matchAll(/\$\{([^}:]+)(?::[^}]*)?\}/g)].map((m) => m[1]))];
+export function realmPlaceholders(realmText: string) {
+  const names = new Set<string>();
+  for (const [, name] of realmText.matchAll(/\$\{([^}:]+)(?::[^}]*)?\}/g)) {
+    if (name !== undefined) {
+      names.add(name);
+    }
+  }
+  return [...names];
 }
 
-export function assertPlaceholderValues(names, values) {
+export function assertPlaceholderValues(names: readonly string[], values: NodeJS.ProcessEnv) {
   const empty = names.filter((name) => typeof values[name] !== "string" || values[name] === "");
   if (empty.length > 0) {
     throw new Error(`refusing to start while realm placeholder variable(s) are empty: ${empty}`);
@@ -65,14 +140,14 @@ function secret() {
   return randomBytes(24).toString("base64url");
 }
 
-async function writePrivate(path, data) {
+async function writePrivate(path: string, data: string) {
   await writeFile(path, data, { mode: 0o600 });
   await chmod(path, 0o600);
 }
 
 // A two-day private CA and its server leaves: one for Keycloak's DNS name, one for the
 // test's HTTPS Console DNS origin on loopback. Same openssl recipe as routing.ts.
-async function createCertificates(directory, execFile) {
+async function createCertificates(directory: string, execFile: CommandRunner) {
   const ca = { certPath: join(directory, "ca.crt"), keyPath: join(directory, "ca.key") };
   await execFile("openssl", [
     "req",
@@ -94,70 +169,91 @@ async function createCertificates(directory, execFile) {
     "-out",
     ca.certPath,
   ]);
-  const leaves = {};
-  for (const [name, commonName, subjectAltName] of [
-    ["keycloak", keycloakHost, keycloakHosts.map((host) => `DNS:${host}`).join(",")],
-    ["console", keycloakConsoleHost, `DNS:${keycloakConsoleHost}`],
-  ]) {
-    const certPath = join(directory, `${name}.crt`);
-    const keyPath = join(directory, `${name}.key`);
-    const csrPath = join(directory, `${name}.csr`);
-    const extPath = join(directory, `${name}.ext`);
-    await writePrivate(
-      extPath,
-      [
-        "basicConstraints=critical,CA:FALSE",
-        "keyUsage=critical,digitalSignature,keyEncipherment",
-        "extendedKeyUsage=serverAuth",
-        `subjectAltName=${subjectAltName}`,
-        "",
-      ].join("\n"),
-    );
-    await execFile("openssl", [
-      "req",
-      "-new",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-sha256",
-      "-subj",
-      `/CN=${commonName}`,
-      "-keyout",
-      keyPath,
-      "-out",
-      csrPath,
-    ]);
-    await execFile("openssl", [
-      "x509",
-      "-req",
-      "-in",
-      csrPath,
-      "-CA",
-      ca.certPath,
-      "-CAkey",
-      ca.keyPath,
-      "-set_serial",
-      `0x${randomBytes(15).toString("hex")}`,
-      "-days",
-      "2",
-      "-sha256",
-      "-extfile",
-      extPath,
-      "-out",
-      certPath,
-    ]);
-    await rm(csrPath, { force: true });
-    await rm(extPath, { force: true });
-    leaves[name] = { certPath, keyPath };
+  const keycloak = await createCertificateLeaf(
+    directory,
+    execFile,
+    ca,
+    "keycloak",
+    keycloakHost,
+    keycloakHosts.map((host) => `DNS:${host}`).join(","),
+  );
+  const console = await createCertificateLeaf(
+    directory,
+    execFile,
+    ca,
+    "console",
+    keycloakConsoleHost,
+    `DNS:${keycloakConsoleHost}`,
+  );
+  for (const { certPath, keyPath } of [ca, keycloak, console]) {
+    await chmod(certPath, 0o600);
+    await chmod(keyPath, 0o600);
   }
-  for (const path of [ca.certPath, ca.keyPath, ...Object.values(leaves).flatMap(Object.values)]) {
-    await chmod(path, 0o600);
-  }
-  return { ca, leaves };
+  return { ca, leaves: { keycloak, console } };
+}
+
+async function createCertificateLeaf(
+  directory: string,
+  execFile: CommandRunner,
+  ca: CertificatePaths,
+  name: string,
+  commonName: string,
+  subjectAltName: string,
+): Promise<CertificatePaths> {
+  const certPath = join(directory, `${name}.crt`);
+  const keyPath = join(directory, `${name}.key`);
+  const csrPath = join(directory, `${name}.csr`);
+  const extPath = join(directory, `${name}.ext`);
+  await writePrivate(
+    extPath,
+    [
+      "basicConstraints=critical,CA:FALSE",
+      "keyUsage=critical,digitalSignature,keyEncipherment",
+      "extendedKeyUsage=serverAuth",
+      `subjectAltName=${subjectAltName}`,
+      "",
+    ].join("\n"),
+  );
+  await execFile("openssl", [
+    "req",
+    "-new",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-sha256",
+    "-subj",
+    `/CN=${commonName}`,
+    "-keyout",
+    keyPath,
+    "-out",
+    csrPath,
+  ]);
+  await execFile("openssl", [
+    "x509",
+    "-req",
+    "-in",
+    csrPath,
+    "-CA",
+    ca.certPath,
+    "-CAkey",
+    ca.keyPath,
+    "-set_serial",
+    `0x${randomBytes(15).toString("hex")}`,
+    "-days",
+    "2",
+    "-sha256",
+    "-extfile",
+    extPath,
+    "-out",
+    certPath,
+  ]);
+  await rm(csrPath, { force: true });
+  await rm(extPath, { force: true });
+  return { certPath, keyPath };
 }
 
 /** Require reachable IPv4 loopback; macOS may also return its IPv6 loopback alias. */
-async function resolverAnswer(lookupAll) {
+async function resolverAnswer(lookupAll: LookupAll): Promise<ResolverAnswer> {
   for (const host of keycloakHosts) {
     try {
       const addresses = (await lookupAll(host)).map(({ address }) => address);
@@ -168,24 +264,30 @@ async function resolverAnswer(lookupAll) {
         return { loopbackOnly: false, host, addresses };
       }
     } catch (error) {
-      return { loopbackOnly: false, host, addresses: [], error: error.code ?? error.message };
+      const code = readField(error, "code");
+      return {
+        loopbackOnly: false,
+        host,
+        addresses: [],
+        error: typeof code === "string" ? code : errorMessage(error),
+      };
     }
   }
   return { loopbackOnly: true };
 }
 
-function describeAnswer({ host, addresses, error }) {
+function describeAnswer({ host, addresses, error }: ResolverFailure) {
   return `${host} resolves to ${error === undefined ? `[${addresses.join(", ")}]` : `no answer (${error})`}`;
 }
 
-function hostsLineFor(resource) {
-  return `127.0.0.1 ${keycloakHosts.join(" ")} ${hostsMarker} ${resource.name}`;
+function hostsLineFor(name: string) {
+  return `127.0.0.1 ${keycloakHosts.join(" ")} ${hostsMarker} ${name}`;
 }
 
-function loopbackPortAccepts(port) {
+function loopbackPortAccepts(port: number): Promise<boolean> {
   return new Promise((resolvePromise) => {
     const socket = connect({ host: "127.0.0.1", port });
-    const finish = (accepted) => {
+    const finish = (accepted: boolean) => {
       socket.destroy();
       resolvePromise(accepted);
     };
@@ -196,16 +298,19 @@ function loopbackPortAccepts(port) {
 }
 
 // Real DNS, real TLS: the request trusts only the lane CA (plus the system store).
-function httpsJSON(url, { ca, method = "GET", headers = {}, body } = {}) {
+function httpsJSON(
+  url: string,
+  { ca, method = "GET", headers = {}, body }: HttpsOptions,
+): Promise<HttpsResponse> {
   return new Promise((resolvePromise, reject) => {
     const req = request(url, { method, headers, ca, family: 4, timeout: 10_000 }, (response) => {
       let text = "";
       response.setEncoding("utf8");
-      response.on("data", (chunk) => {
+      response.on("data", (chunk: string) => {
         text += chunk;
       });
       response.on("end", () => {
-        let json;
+        let json: unknown;
         try {
           json = JSON.parse(text);
         } catch {
@@ -222,16 +327,17 @@ function httpsJSON(url, { ca, method = "GET", headers = {}, body } = {}) {
 
 class PermanentReadinessError extends Error {}
 
-async function checkReadiness({ ca, adminUsername, adminPassword, expected }) {
+async function checkReadiness({ ca, adminUsername, adminPassword, expected }: ReadinessCheck) {
   const discovery = await httpsJSON(`${keycloakIssuer}/.well-known/openid-configuration`, {
     ca,
   });
   if (discovery.status !== 200) {
     throw new Error(`discovery answered HTTP ${discovery.status}`);
   }
-  if (discovery.json?.issuer !== keycloakIssuer) {
+  const issuer = readField(discovery.json, "issuer");
+  if (issuer !== keycloakIssuer) {
     throw new PermanentReadinessError(
-      `discovery issuer ${JSON.stringify(discovery.json?.issuer)} is not ${keycloakIssuer}`,
+      `discovery issuer ${JSON.stringify(issuer)} is not ${keycloakIssuer}`,
     );
   }
   const token = await httpsJSON(
@@ -248,23 +354,24 @@ async function checkReadiness({ ca, adminUsername, adminPassword, expected }) {
       }).toString(),
     },
   );
-  if (token.status !== 200 || typeof token.json?.access_token !== "string") {
+  const accessToken = readField(token.json, "access_token");
+  if (token.status !== 200 || typeof accessToken !== "string") {
     throw new Error(`admin sign-in answered HTTP ${token.status}`);
   }
-  const authorization = { authorization: `Bearer ${token.json.access_token}` };
+  const authorization = { authorization: `Bearer ${accessToken}` };
   const clients = await httpsJSON(
     `https://${keycloakHost}/admin/realms/oce/clients?clientId=${clientId}`,
     { ca, headers: authorization },
   );
-  const client = clients.json?.[0];
-  if (clients.status !== 200 || client?.clientId !== clientId) {
+  const client = readField(clients.json, 0);
+  if (clients.status !== 200 || readField(client, "clientId") !== clientId) {
     throw new PermanentReadinessError(`the oce realm has no ${clientId} client`);
   }
   const clientSecret = await httpsJSON(
-    `https://${keycloakHost}/admin/realms/oce/clients/${encodeURIComponent(client.id)}/client-secret`,
+    `https://${keycloakHost}/admin/realms/oce/clients/${encodeURIComponent(String(readField(client, "id")))}/client-secret`,
     { ca, headers: authorization },
   );
-  const value = clientSecret.json?.value;
+  const value = readField(clientSecret.json, "value");
   // A literal `${...}` means the import read an unset variable; never hand that to a test.
   if (typeof value !== "string" || /\$\{/.test(value)) {
     throw new PermanentReadinessError("the client secret is a literal realm placeholder");
@@ -272,20 +379,29 @@ async function checkReadiness({ ca, adminUsername, adminPassword, expected }) {
   if (value !== expected.clientSecret) {
     throw new PermanentReadinessError("the client secret differs from the generated secret");
   }
-  if (JSON.stringify(client.redirectUris) !== JSON.stringify([expected.redirectUri])) {
+  if (
+    JSON.stringify(readField(client, "redirectUris")) !== JSON.stringify([expected.redirectUri])
+  ) {
     throw new PermanentReadinessError("the client redirect URI differs from the reserved one");
   }
 }
 
-async function containerRunning(execFile, docker, name) {
+async function containerRunning(execFile: CommandRunner, docker: string, name: string) {
   const inspected = await execFile(docker, ["inspect", "--format", "{{.State.Running}}", name]);
   return inspected.stdout.trim() === "true";
 }
 
-async function waitForReadiness({ execFile, docker, name, sleep, deadlineMs, ...check }) {
+async function waitForReadiness({
+  execFile,
+  docker,
+  name,
+  sleep,
+  deadlineMs,
+  ...check
+}: ReadinessOptions) {
   const started = Date.now();
-  let last;
   for (;;) {
+    let last: string;
     try {
       await checkReadiness(check);
       return;
@@ -293,13 +409,13 @@ async function waitForReadiness({ execFile, docker, name, sleep, deadlineMs, ...
       if (error instanceof PermanentReadinessError) {
         throw error;
       }
-      last = error;
+      last = errorMessage(error);
     }
     if (!(await containerRunning(execFile, docker, name))) {
-      throw new Error(`the container exited before it was ready (last: ${last.message})`);
+      throw new Error(`the container exited before it was ready (last: ${last})`);
     }
     if (Date.now() - started >= deadlineMs) {
-      throw new Error(`not ready within ${deadlineMs / 1000} s (last: ${last.message})`);
+      throw new Error(`not ready within ${deadlineMs / 1000} s (last: ${last})`);
     }
     await sleep(2_000);
   }
@@ -309,7 +425,7 @@ async function waitForReadiness({ execFile, docker, name, sleep, deadlineMs, ...
  * Starts the lane's Keycloak. `registerResource` records the cleanup resource before any
  * side effect; `saveState` persists later additions to it (the hosts line).
  */
-export async function prepareKeycloak({
+export async function prepareKeycloak<Resource extends KeycloakResource>({
   stateDirectory,
   name,
   execFile,
@@ -325,12 +441,12 @@ export async function prepareKeycloak({
   imageFile = keycloakImageFile,
   deadlineMs = readinessDeadlineMs,
   log = (message) => process.stderr.write(`${message}\n`),
-}) {
+}: PrepareKeycloakOptions<Resource>) {
   if (!ownedNamePattern.test(name)) {
     throw new Error(`Keycloak container name is not owned by CI: ${name}`);
   }
   const directory = join(stateDirectory, name);
-  const resource = await registerResource({ name, directory });
+  const resource: Resource & KeycloakResource = await registerResource({ name, directory });
 
   const image = await step("image", async () => {
     const pinned = await readKeycloakImage(imageFile);
@@ -390,7 +506,7 @@ export async function prepareKeycloak({
       return;
     }
     log(`Keycloak hosts: ${describeAnswer(answer)}; adding an /etc/hosts line.`);
-    resource.hostsLine = hostsLineFor(resource);
+    resource.hostsLine = hostsLineFor(resource.name);
     await saveState();
     await execFile("sudo", [
       "-n",
@@ -493,23 +609,22 @@ export async function prepareKeycloak({
 
 /** Removes the container, the hosts line and the private directory a run created. */
 export async function cleanupKeycloak(
-  resource,
-  { execFile, docker = "docker", hostsFile = "/etc/hosts" },
+  resource: { name?: unknown; directory?: unknown; hostsLine?: unknown },
+  {
+    execFile,
+    docker = "docker",
+    hostsFile = "/etc/hosts",
+  }: { execFile: CommandRunner; docker?: string; hostsFile?: string },
 ) {
-  if (!ownedNamePattern.test(resource.name ?? "")) {
-    throw new Error(`Refusing to clean unowned Keycloak container: ${resource.name}`);
+  const { name, directory } = resource;
+  if (typeof name !== "string" || !ownedNamePattern.test(name)) {
+    throw new Error(`Refusing to clean unowned Keycloak container: ${name}`);
   }
-  if (
-    typeof resource.directory !== "string" ||
-    !isAbsolute(resource.directory) ||
-    basename(resource.directory) !== resource.name
-  ) {
-    throw new Error(
-      `Refusing to clean Keycloak directory outside ownership: ${resource.directory}`,
-    );
+  if (typeof directory !== "string" || !isAbsolute(directory) || basename(directory) !== name) {
+    throw new Error(`Refusing to clean Keycloak directory outside ownership: ${directory}`);
   }
-  await execFile(docker, ["rm", "--force", "--volumes", resource.name]).catch((error) => {
-    if (!/no such container|no container with name or id/i.test(error.message)) {
+  await execFile(docker, ["rm", "--force", "--volumes", name]).catch((error) => {
+    if (!/no such container|no container with name or id/i.test(errorMessage(error))) {
       throw error;
     }
   });
@@ -517,19 +632,20 @@ export async function cleanupKeycloak(
     "ps",
     "--all",
     "--filter",
-    `name=^${resource.name}$`,
+    `name=^${name}$`,
     "--format",
     "{{.Names}}",
   ]);
   if (remaining.stdout.trim() !== "") {
-    throw new Error(`Owned Keycloak container remains after removal: ${resource.name}`);
+    throw new Error(`Owned Keycloak container remains after removal: ${name}`);
   }
-  if (resource.hostsLine !== undefined) {
-    if (resource.hostsLine !== hostsLineFor(resource)) {
+  const { hostsLine } = resource;
+  if (hostsLine !== undefined) {
+    if (hostsLine !== hostsLineFor(name)) {
       throw new Error("Refusing to remove a hosts line this run did not write.");
     }
     const present = async () =>
-      (await readFile(hostsFile, "utf8")).split(/\r?\n/).includes(resource.hostsLine);
+      (await readFile(hostsFile, "utf8")).split(/\r?\n/).includes(hostsLine);
     if (await present()) {
       // Rewrite in place (the file may be a bind mount) and keep it on a grep error.
       await execFile("sudo", [
@@ -538,14 +654,14 @@ export async function cleanupKeycloak(
         "-c",
         'grep -vxF -e "$1" "$2" > "$2.$3"; s=$?; [ "$s" -le 1 ] && cat "$2.$3" > "$2"; rm -f "$2.$3"; [ "$s" -le 1 ]',
         "sh",
-        resource.hostsLine,
+        hostsLine,
         hostsFile,
-        resource.name,
+        name,
       ]);
       if (await present()) {
         throw new Error(`The Keycloak hosts line remains in ${hostsFile}.`);
       }
     }
   }
-  await rm(resource.directory, { recursive: true, force: true });
+  await rm(directory, { recursive: true, force: true });
 }
