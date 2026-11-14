@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { verifyIdToken } from "../../apps/controller/src/auth/id-token.ts";
+import { verifyIdToken, type IdTokenExpectation } from "../../apps/controller/src/auth/id-token.ts";
 import {
   exchangeOidcSubject,
   oidcLoginConfiguration,
   oidcNonce,
   oidcProviderId,
 } from "../../apps/controller/src/auth/oidc.ts";
+import type { ProviderFailure } from "../../apps/controller/src/auth/provider-transport.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { encodeSegment as encode, idTokenSigner, rsaSigningKey } from "../helpers/id-token.mjs";
 
@@ -33,7 +34,7 @@ const weak = rsaSigningKey("weak-kid", 1024);
 const jwks = { keys: [other.jwk, current.jwk, weak.jwk] };
 const sign = idTokenSigner(current);
 
-function claims(overrides = {}) {
+function claims(overrides: Record<string, unknown> = {}) {
   return {
     iss: issuer,
     aud: clientId,
@@ -45,11 +46,11 @@ function claims(overrides = {}) {
   };
 }
 
-function token(payload = claims(), options) {
+function token(payload = claims(), options?: Parameters<typeof sign>[1]): string {
   return sign(payload, options);
 }
 
-function verified(value, expected = {}) {
+function verified(value: string, expected: Partial<IdTokenExpectation> = {}) {
   return verifyIdToken(value, {
     issuers: new Set([issuer]),
     clientId,
@@ -83,6 +84,7 @@ test("OIDC configuration is all or none and pins every URL to the issuer's host"
     OCC_AUTH_OIDC_DISPLAY_NAME: "Acme SSO",
   });
   // The issuer stays the configured string; the URLs are normalized.
+  assert.ok(keycloak);
   assert.equal(keycloak.issuer, "https://sso.example.test/realms/acme");
   assert.equal(
     keycloak.authorizationUrl,
@@ -120,6 +122,7 @@ test("OIDC configuration is all or none and pins every URL to the issuer's host"
       username: "user",
       password: "pass",
       host: "tenant.idp.example.test",
+      port: undefined,
       pathname: "/",
     }),
     "https://tenant.idp.example.test/?tenant=1",
@@ -239,7 +242,9 @@ test("only RS256 from a 2,048-bit JWKS key named by kid verifies", () => {
   assert.equal(verified(unsigned), undefined);
   assert.equal(verified(`${unsigned}AA`), undefined);
   const hsInput = `${encode({ alg: "HS256", kid: current.kid })}.${encode(payload)}`;
-  for (const secret of ["fixture-oidc-secret", current.jwk.n]) {
+  const modulus = current.jwk.n;
+  assert.ok(typeof modulus === "string", "Expected an RSA modulus");
+  for (const secret of ["fixture-oidc-secret", modulus]) {
     // HS256 under the client secret or the published RSA modulus is never a signature.
     const hs = createHmac("sha256", secret).update(hsInput).digest("base64url");
     assert.equal(verified(`${hsInput}.${hs}`), undefined);
@@ -303,6 +308,7 @@ test("malformed tokens are rejected", () => {
   assert.equal(verified(`${valid}.AAAA`), undefined);
   assert.equal(verified(valid.split(".").slice(0, 2).join(".")), undefined);
   const [header, payload, signature] = valid.split(".");
+  assert.ok(header && payload && signature, "Expected three signed token segments");
   // Segments are unpadded base64url: padding and the standard alphabet are refused.
   assert.equal(verified(`${header}.${payload}.${signature}=`), undefined);
   assert.equal(verified(`${header}.${payload.slice(0, -1)}+.${signature}`), undefined);
@@ -320,16 +326,30 @@ test("subject must be 1-255 printable ASCII characters", () => {
 });
 
 test("code exchange fetches only the pinned token and JWKS URLs", async (t) => {
-  const config = oidcLoginConfiguration(environment);
+  const configuredOidc = oidcLoginConfiguration(environment);
+  assert.ok(configuredOidc);
+  const { enrollment, ...config } = configuredOidc;
+  assert.equal(enrollment, undefined, "OIDC fixture must not configure enrollment");
   const redirectURI = "https://console.example.test/api/auth/providers/oidc/callback";
   const live = claims({
     iat: Math.floor(Date.now() / 1000) - 5,
     exp: Math.floor(Date.now() / 1000) + 600,
   });
-  let respond;
-  const requests = [];
-  t.mock.method(globalThis, "fetch", async (input, init) => {
+  const json = (value: unknown, status = 200) => Response.json(value, { status });
+  let respond: (url: string) => Response | Promise<Response> = (url) =>
+    url === environment.OCC_AUTH_OIDC_TOKEN_URL
+      ? json({ access_token: "fixture-access", id_token: token(live), token_type: "Bearer" })
+      : json(jwks);
+  const requests: {
+    url: string;
+    method: string;
+    redirect: RequestInit["redirect"];
+    body: RequestInit["body"];
+    authorization: string | null;
+  }[] = [];
+  t.mock.method(globalThis, "fetch", (async (input, init) => {
     const url = String(input);
+    assert.ok(init, "The provider transport must supply request options");
     requests.push({
       url,
       method: init.method ?? "GET",
@@ -338,14 +358,8 @@ test("code exchange fetches only the pinned token and JWKS URLs", async (t) => {
       authorization: new Headers(init.headers).get("authorization"),
     });
     return respond(url);
-  });
-  const json = (value, status = 200) => Response.json(value, { status });
-  const valid = (url) =>
-    url === environment.OCC_AUTH_OIDC_TOKEN_URL
-      ? json({ access_token: "fixture-access", id_token: token(live), token_type: "Bearer" })
-      : json(jwks);
+  }) satisfies typeof fetch);
 
-  respond = valid;
   assert.deepEqual(
     await exchangeOidcSubject(config, "code-1", "v".repeat(43), redirectURI, nonce),
     { subject },
@@ -357,13 +371,15 @@ test("code exchange fetches only the pinned token and JWKS URLs", async (t) => {
       [environment.OCC_AUTH_OIDC_JWKS_URL, "GET", "error"],
     ],
   );
-  const post = new URLSearchParams(String(requests[0].body));
+  const [postRequest] = requests;
+  assert.ok(postRequest);
+  const post = new URLSearchParams(String(postRequest.body));
   assert.equal(post.get("client_id"), clientId);
   assert.equal(post.get("client_secret"), "fixture-oidc-secret");
   assert.equal(post.get("code"), "code-1");
   assert.equal(post.get("code_verifier"), "v".repeat(43));
   assert.equal(post.get("redirect_uri"), redirectURI);
-  assert.equal(requests[0].authorization, null);
+  assert.equal(postRequest.authorization, null);
 
   // client_secret_basic moves the credentials into the Authorization header.
   requests.length = 0;
@@ -377,16 +393,18 @@ test("code exchange fetches only the pinned token and JWKS URLs", async (t) => {
     ),
     { subject },
   );
-  const basic = new URLSearchParams(String(requests[0].body));
+  const [basicRequest] = requests;
+  assert.ok(basicRequest);
+  const basic = new URLSearchParams(String(basicRequest.body));
   assert.equal(basic.has("client_secret"), false);
   assert.equal(
-    requests[0].authorization,
+    basicRequest.authorization,
     `Basic ${Buffer.from(`${clientId}:fixture-oidc-secret`).toString("base64")}`,
   );
 
   const rejectedIdentity = { denial: "EXTERNAL_IDENTITY_REJECTED" };
   // The bounded failure is what the callback logs for operators.
-  const unavailable = (failure) => ({ denial: "PROVIDER_UNAVAILABLE", failure });
+  const unavailable = (failure: ProviderFailure) => ({ denial: "PROVIDER_UNAVAILABLE", failure });
   assert.deepEqual(
     await exchangeOidcSubject(config, "code-1", "v".repeat(43), redirectURI, "other"),
     rejectedIdentity,

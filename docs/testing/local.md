@@ -80,7 +80,7 @@ identity, authorization, isolation, and audit behavior. The service API key
 suite uses memory storage. Run the [PostgreSQL tests](postgresql.md) for
 persistence and external sign-in; memory-backed success does not prove them.
 
-`tests/integration/oidc-ca-trust.test.mjs` requires Helm, yq, and OpenSSL;
+`tests/integration/oidc-ca-trust.test.ts` requires Helm, yq, and OpenSSL;
 `OCC_HELM_BIN` can select Helm. It exercises loopback TLS trust and callback
 transport, not a live IdP, PostgreSQL authentication, or an installed deployment.
 

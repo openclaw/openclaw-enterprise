@@ -35,7 +35,7 @@
     "tests/integration/production-image-qualification.test.ts",
     "tests/integration/development-packaging.test.mjs",
     "tests/integration/container-publication-workflow.test.ts",
-    "tests/integration/oidc-ca-trust.test.mjs",
+    "tests/integration/oidc-ca-trust.test.ts",
     "tests/integration/ci-runtime-artifact.test.ts",
     "tests/integration/production-kubernetes-numeric-values.test.ts"
   ],
@@ -166,7 +166,7 @@
       ]
     },
     {
-      "path": "tests/integration/oidc-ca-trust.test.mjs",
+      "path": "tests/integration/oidc-ca-trust.test.ts",
       "expectedTests": [
         "OIDC CA chart wiring adds trust only to the API and preserves Gateway selection",
         "OIDC CA chart refuses partial, malformed and disabled configuration",

@@ -161,6 +161,19 @@ export async function signedLeaf(
 
 // A CA and a server leaf it signed, in `directory` as ca-key.pem, ca.pem, key.pem and
 // cert.pem. `run` and file ownership as for certificateAuthority.
+/**
+ * @param {string} directory
+ * @param {{
+ *   caName: string,
+ *   commonName?: string | undefined,
+ *   subject?: string | undefined,
+ *   subjectAltName?: string | undefined,
+ *   caKeyPem?: string | undefined,
+ *   leafKeyPem?: string | undefined,
+ *   days?: number,
+ *   run?: (command: string, args: string[]) => Promise<unknown>,
+ * }} options
+ */
 export async function caAndLeaf(
   directory,
   { caName, commonName, subject, subjectAltName, caKeyPem, leafKeyPem, days = 2, run = execute },
