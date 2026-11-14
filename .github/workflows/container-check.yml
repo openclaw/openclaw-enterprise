@@ -79,7 +79,7 @@ jobs:
         if: ${{ matrix.image == 'runtime' }}
         id: openclaw-source
         run: |
-          values="$(node scripts/lib/openclaw-source.mjs build-args)"
+          values="$(node scripts/lib/openclaw-source.ts build-args)"
           {
             echo 'build-args<<EOF'
             printf '%s\n' "$values"

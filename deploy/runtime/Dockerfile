@@ -128,18 +128,17 @@ ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY deploy/runtime/openclaw-source.json /tmp/openclaw-source.json
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
-    node /tmp/lib/openclaw-source.mjs verify /tmp/openclaw-source.json; \
+    node /tmp/lib/openclaw-source.ts verify /tmp/openclaw-source.json; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
     printf '%s  /tmp/openclaw-source.tar.gz\n' "$OPENCLAW_SOURCE_SHA256" | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
-# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
+# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.ts,
 # which writes provenance; runtime-assets.test.mjs compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
@@ -149,8 +148,9 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
 RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
+RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
+    && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
 # @matrix-org/matrix-sdk-crypto-nodejs downloads its native library from GitHub during
 # install, with no retry or checksum. Fetch the pinned library with the retrying,
@@ -393,8 +393,7 @@ for (const plugin of ["codex", "slack"]) {
   }
 }
 NODE
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 COPY --from=openclaw-source /tmp/openclaw-source.json /tmp/openclaw-source.json
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
@@ -402,8 +401,9 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
     node scripts/docker/copy-bootstrap-scripts.mjs /tmp/openclaw-runtime-bootstrap \
     && rm -rf scripts \
     && mv /tmp/openclaw-runtime-bootstrap/scripts scripts \
-    && node /tmp/build-runtime-assets.mjs package /source /out /tmp/openclaw-source.json \
-    && node /verification/scripts/check-package-dist-imports.mjs /source
+    && node /tmp/build-runtime-assets.ts package /source /out /tmp/openclaw-source.json \
+    && node /verification/scripts/check-package-dist-imports.mjs /source \
+    && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts /tmp/openclaw-source.json
 
 FROM node-runtime-base AS runtime
 
@@ -485,8 +485,7 @@ RUN mkdir -p node_modules/.bin \
     && ln -s ../openclaw/openclaw.mjs node_modules/.bin/openclaw \
     && ln -s ../openclaw/node_modules/@openai/codex/bin/codex.js node_modules/.bin/codex
 
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 
 RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images \
@@ -515,8 +514,8 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && rm -rf "$codex_home" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json \
-  && node /tmp/build-runtime-assets.mjs inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json \
-  && rm /tmp/build-runtime-assets.mjs /tmp/lib/openclaw-source.mjs /tmp/lib/openclaw-source.ts
+  && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json \
+  && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
 RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 

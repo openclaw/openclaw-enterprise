@@ -49,7 +49,7 @@ import {
   openclawBuildArguments,
   openclawBuildValues,
   readOpenclawSource,
-} from "../lib/openclaw-source.mjs";
+} from "../lib/openclaw-source.ts";
 import { compareEvents, eventObservedTime } from "./kubernetes-event-time.ts";
 import { prepareRuntimeArtifactLayout, runtimeArtifactSelection } from "./runtime-artifact.ts";
 

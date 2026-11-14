@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,

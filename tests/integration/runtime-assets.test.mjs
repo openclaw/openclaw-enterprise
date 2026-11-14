@@ -136,7 +136,7 @@ packages:
   // Refuse stale metadata before pruning the input tree or writing provenance.
   const refused = spawnSync(
     process.execPath,
-    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, sourceManifest],
+    ["scripts/build-runtime-assets.ts", "package", sourceAlias, output, sourceManifest],
     { encoding: "utf8", env: { ...process.env, GIT_COMMIT: "c".repeat(40) } },
   );
   assert.notEqual(refused.status, 0);
@@ -144,7 +144,7 @@ packages:
   assert.equal(await readFile(join(root, "src/server.ts"), "utf8"), files["src/server.ts"]);
   execFileSync(
     process.execPath,
-    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, sourceManifest],
+    ["scripts/build-runtime-assets.ts", "package", sourceAlias, output, sourceManifest],
     {
       env: { ...process.env, GIT_COMMIT: "a".repeat(40) },
     },
