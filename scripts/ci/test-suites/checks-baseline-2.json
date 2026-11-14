@@ -113,7 +113,8 @@
     "tests/conformance/repository-sessions-memory.test.ts",
     "tests/conformance/repository-credentials-github-token.test.ts",
     "tests/conformance/repository-credentials-registry.test.mjs",
-    "tests/integration/ci-openshell.test.mjs",
+    "tests/integration/ci-openshell-preparation.test.ts",
+    "tests/integration/ci-openshell.test.ts",
     "tests/conformance/repository-credentials-sessions.test.ts",
     "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
@@ -381,7 +382,10 @@
       "path": "tests/integration/k3d-launcher.test.mjs"
     },
     {
-      "path": "tests/integration/ci-openshell.test.mjs"
+      "path": "tests/integration/ci-openshell-preparation.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-openshell.test.ts"
     },
     {
       "path": "tests/integration/ci-logging.test.ts"
