@@ -3791,7 +3791,7 @@ test("Console share grants confer only the shared Agent and Namespace discovery"
     });
     assert.equal(binding.status, 201, JSON.stringify(binding.body));
     // Mirror persisted policy into the native IAM state, as production loadNativeIAMState does.
-    // The live Postgres proof is in postgres-namespace-iam-policy.test.mjs.
+    // The live Postgres proof is in postgres-namespace-iam-policy.test.ts.
     fixture.state.roles.push(role.data);
     fixture.state.bindings.push(binding.data);
   }

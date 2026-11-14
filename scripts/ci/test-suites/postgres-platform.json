@@ -25,7 +25,7 @@
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.ts",
     "tests/integration/postgres-worker-audit.test.ts",
-    "tests/integration/postgres-namespace-iam-policy.test.mjs",
+    "tests/integration/postgres-namespace-iam-policy.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
@@ -192,7 +192,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-namespace-iam-policy.test.mjs",
+      "path": "tests/integration/postgres-namespace-iam-policy.test.ts",
       "expectedTests": [
         "selected native IAM sees original-unit grants and revocations before rollback",
         "PostgreSQL native IAM creates exact Namespace bindings atomically with audit",
