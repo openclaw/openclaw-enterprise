@@ -78,7 +78,7 @@ containerd or Docker profile from the internet.
 From the OCE repository root, generate the compatibility artifact offline:
 
 ```sh
-node scripts/generate-codex-seccomp.mjs \
+node scripts/generate-codex-seccomp.ts \
   --baseline runtime-default.json \
   --codex-version 0.164.0 \
   --out codex-bwrap.json
