@@ -39,7 +39,11 @@ import {
 import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
-import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
+import {
+  boundedProgressLines,
+  openShellProgress,
+  openShellReplacementCheckpoints,
+} from "./openshell-progress.mjs";
 import {
   absoluteInputPath,
   auditManifest,
@@ -581,10 +585,11 @@ function parseReporter(stdout, timedOut = false) {
   return events;
 }
 
+const upstreamStages = ["installation", "exposure-auth", "initial-model", "replacement"];
+
 // An unfinished start is useful only if the earlier operations finished in order
 // and the independent terminal diagnostics agree with that sequence.
 function upstreamUnfinishedStage(events, measurements) {
-  const stages = ["installation", "exposure-auth", "initial-model", "replacement"];
   const phases = ["installation", "exposure-auth", "gateway-turns", "pod-replacement"];
   let index = 0;
   let started = false;
@@ -599,7 +604,7 @@ function upstreamUnfinishedStage(events, measurements) {
       continue;
     }
     const { stage, outcome } = event.data;
-    if (stage !== stages[index] || outcome !== (started ? "passed" : "started")) {
+    if (stage !== upstreamStages[index] || outcome !== (started ? "passed" : "started")) {
       return undefined;
     }
     if (started) {
@@ -607,7 +612,7 @@ function upstreamUnfinishedStage(events, measurements) {
     }
     started = !started;
   }
-  const stage = stages[index];
+  const stage = upstreamStages[index];
   if (!started || (stage !== "installation" && stage !== "replacement")) {
     return undefined;
   }
@@ -618,7 +623,7 @@ function upstreamUnfinishedStage(events, measurements) {
     if (kind !== "openshell-stage" && kind !== "openshell-sandbox-phase") {
       return undefined;
     }
-    const names = kind === "openshell-stage" ? stages : phases;
+    const names = kind === "openshell-stage" ? upstreamStages : phases;
     const position = names.indexOf(measuredStage);
     if (outcome !== "passed" || position <= (previous.get(kind) ?? -1) || position >= index) {
       return undefined;
@@ -626,6 +631,59 @@ function upstreamUnfinishedStage(events, measurements) {
     previous.set(kind, position);
   }
   return stage;
+}
+
+const upstreamOutageCase = "OpenShell model and tool upstream outages fail closed";
+const upstreamReplacementPrefix = [
+  ...upstreamStages.slice(0, -1).flatMap((stage) => [`${stage}:started`, `${stage}:passed`]),
+  "replacement:started",
+];
+
+// Progress belongs to the case only through its selected terminal event.
+// Node can deliver the independent measurement after the failed case event.
+function upstreamReplacementCheckpoint(events, measurements, cutoff) {
+  const progress = [];
+  let afterCutoff = false;
+  for (const event of events) {
+    if (event === cutoff) {
+      afterCutoff = true;
+    }
+    if (event.type !== "test:progress") {
+      continue;
+    }
+    const { kind, stage, outcome, checkpoint } = event.data;
+    if (kind !== "openshell-stage" && kind !== "openshell-replacement-checkpoint") {
+      continue;
+    }
+    if (afterCutoff) {
+      return undefined;
+    }
+    progress.push(kind === "openshell-stage" ? `${stage}:${outcome}` : checkpoint);
+  }
+
+  if (cutoff.type === "test:fail") {
+    const terminal = measurements.filter(
+      ({ kind, stage }) => kind === "openshell-stage" && stage === "replacement",
+    );
+    if (
+      progress.pop() !== "replacement:failed" ||
+      terminal.length !== 1 ||
+      terminal[0].outcome !== "failed"
+    ) {
+      return undefined;
+    }
+  }
+  if (!upstreamReplacementPrefix.every((token, index) => progress[index] === token)) {
+    return undefined;
+  }
+  const checkpoints = progress.slice(upstreamReplacementPrefix.length);
+  if (
+    checkpoints.length <= openShellReplacementCheckpoints.length &&
+    checkpoints.every((checkpoint, index) => checkpoint === openShellReplacementCheckpoints[index])
+  ) {
+    return checkpoints.at(-1);
+  }
+  return undefined;
 }
 
 function isRealTestEvent(event, absolutePath) {
@@ -1125,6 +1183,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   let case2Directory;
   let case2Phase;
   let unfinishedStage;
+  let openShellReplacement;
   try {
     if (issues.length === 0) {
       // An externally prepared release case has no diagnostic collection state.
@@ -1177,6 +1236,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
             if (installationProgress) {
               installationPhases.accept(progress);
             }
+            return;
+          }
+          if (kind === "openshell-replacement-checkpoint") {
             return;
           }
           if (kind === "openshell-stage-failure") {
@@ -1234,10 +1296,10 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
       measurements = events
         .filter((event) => event.type === "test:diagnostic" && event.data?.kind === "measurement")
         .map((event) => event.data.measurement);
-      if (
+      const upstream =
         relativePath === "tests/integration/openshell-upstream-real.test.ts" &&
-        ["openshell", "openshell-installers"].includes(lane.name)
-      ) {
+        ["openshell", "openshell-installers"].includes(lane.name);
+      if (upstream) {
         unfinishedStage = upstreamUnfinishedStage(events, measurements);
       }
       const terminalEvents = events.filter(
@@ -1247,6 +1309,40 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
             event.data?.testType === "suite"),
       );
       const caseEvents = terminalEvents.filter((event) => event.data.testType !== "suite");
+      if (
+        upstream &&
+        file.expectedTests?.length === 1 &&
+        file.expectedTests[0] === upstreamOutageCase
+      ) {
+        const [testCase] = caseEvents;
+        const interrupted = events.find(({ type }) => type === "test:interrupted");
+        const running = interrupted?.data.running.filter(({ name }) => name !== absolutePath);
+        const unfinished =
+          nodeResult.error?.code === "ETIMEDOUT" &&
+          unfinishedStage === "replacement" &&
+          caseEvents.length === 0 &&
+          running?.length === 1 &&
+          running[0].name === upstreamOutageCase &&
+          running[0].nesting === 0;
+        const failed =
+          !nodeResult.error &&
+          !nodeResult.signal &&
+          !rootFailure &&
+          !interrupted &&
+          terminalEvents.length === 1 &&
+          caseEvents.length === 1 &&
+          testCase.type === "test:fail" &&
+          testCase.data.file === absolutePath &&
+          testCase.data.name === upstreamOutageCase &&
+          testCase.data.nesting === 0;
+        const cutoff = unfinished ? interrupted : failed ? testCase : undefined;
+        if (cutoff) {
+          const checkpoint = upstreamReplacementCheckpoint(events, measurements, cutoff);
+          if (checkpoint) {
+            openShellReplacement = { checkpoint, outcome: unfinished ? "unfinished" : "failed" };
+          }
+        }
+      }
       let coverageAssertions;
       if (
         recordsCoverage(process.env.GITHUB_WORKFLOW) &&
@@ -1453,6 +1549,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
         tests[0].name === file.expectedTests[0]))
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
+    ...(openShellReplacement ? { openShellReplacement } : {}),
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
