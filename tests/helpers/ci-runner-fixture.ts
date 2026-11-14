@@ -182,8 +182,8 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
   );
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await writeFile(
-    join(root, "scripts/ci/failure-redaction.mjs"),
-    await readFile(new URL("../../scripts/ci/failure-redaction.mjs", import.meta.url)),
+    join(root, "scripts/ci/failure-redaction.ts"),
+    await readFile(new URL("../../scripts/ci/failure-redaction.ts", import.meta.url)),
   );
   await writeFile(join(root, "bin/occ"), `#!${process.execPath}\n${cliBody}`, { mode: 0o700 });
 }

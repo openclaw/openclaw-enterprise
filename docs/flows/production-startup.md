@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-13"
-last_updated_session: "authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c"
+updated: "2026-11-14"
+last_updated_session: "authoring-run/1be06605-515e-4261-8b21-d0d796809916"
 ---
 
 # Production Startup Flow
@@ -187,9 +187,8 @@ Otherwise Drizzle retains pending migration and read-only refusal.
 `finally` releases the lock and client
 ([history](../reference/settings/operations.md#migration-history)).
 
-`scripts/lib/bootstrap-configuration.mjs:authBaseURL` checks HTTP(S) origin before
-database access. Production requires HTTPS except HTTP loopback verification
-(`127.0.0.1`, `localhost`, `[::1]`).
+`scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
+Console origin before database access, including during `--verify-existing`.
 
 `scripts/bootstrap-installation.mjs` creates or verifies Installation,
 human/service administrators, IAM seed, audit evidence, and initial service key.
@@ -206,7 +205,7 @@ the Job. Helm failure does not imply database-hook rollback.
 
 ### 4. Start private API and worker Deployments
 
-`apps/controller/src/api-startup.mjs:configuration`, `apps/controller/src/worker.ts:312`
+`apps/controller/src/api-startup.ts:configuration`, `apps/controller/src/worker.ts:312`
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
@@ -223,9 +222,9 @@ the auth factory repeat it. Endpoints include `/healthz` and `/readyz`.
 shares one application-pool `SELECT 1` per instance across overlapping `GET` and
 implicit `HEAD` probes until PostgreSQL settles. Disconnects cannot release it;
 later probes query afresh.
-The startup probe allows 120 one-second failures; readiness has a one-second
-timeout. Worker exec probes run Node under its CPU limit; 24 five-second startup failures
-allow two minutes.
+API startup allows 120 one-second failures. API readiness times out after one
+second. [Worker startup](../../scripts/production-healthcheck.ts) allows 24
+five-second failures.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
@@ -353,8 +352,7 @@ until tenant deployment/TUI procedures run.
   inspected; initialization never repairs its ledger.
 - The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
   `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
-- `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
-  Kubernetes to 1.35 or later for support.
+- For `KUBERNETES_VERSION_BELOW_MINIMUM`, upgrade Kubernetes to 1.35 or later.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
   `host` and `port`. Check `cluster.cidrs` and `cluster.port`; restarted
@@ -362,7 +360,7 @@ until tenant deployment/TUI procedures run.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
 - `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
-  `apps/controller/src/api-startup.mjs:startupFailureFields` passes these diagnostics
+  `apps/controller/src/api-startup.ts:startupFailureFields` passes these diagnostics
   to `server.mjs`.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role
@@ -393,6 +391,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 
 - 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
 

@@ -1,4 +1,3 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -6,8 +5,6 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
 import pg from "pg";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
@@ -23,72 +20,34 @@ import {
   createRealKubernetesFixture,
   kubernetesHash as hash,
   productionGatewayMemoryLimit,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 import { createGatewaySessionEvidence } from "./plugin-gateway-session-evidence.ts";
+import {
+  createPluginRevisionFailureLogs,
+  pluginRevisionLogTarget,
+} from "./plugin-revision-failure-logs.ts";
+import { createPluginTranscriptAssertions } from "./plugin-transcript-assertions.ts";
+import {
+  optionalPluginProofModel,
+  requiredPluginProofEnv,
+  selectPluginProofInputs,
+} from "./plugin-driver-proof-inputs.ts";
 
 export { ConversationReplyError } from "./plugin-gateway-session-evidence.ts";
+export {
+  approvalReviewKind,
+  automaticReviewerErrored,
+  describeApprovalReviews,
+} from "./plugin-transcript-assertions.ts";
+export {
+  optionalPluginProofModel,
+  pluginProofSkipReason,
+  realPluginProofSelected,
+} from "./plugin-driver-proof-inputs.ts";
 
 const authSecret = "plugin-driver-real-auth-secret-32-bytes";
 const authBaseURL = "https://console.oce.localhost";
 const proofPrefix = "occ-plugin-01a08228";
-
-export const realPluginProofSelected = process.env.OCC_TEST_PLUGIN_DRIVER_REAL === "1";
-
-export function pluginProofSkipReason(scenario) {
-  const key = `OCC_TEST_PLUGIN_DRIVER_${scenario.toUpperCase()}_REAL`;
-  if (realPluginProofSelected || process.env[key] === "1") {
-    return false;
-  }
-  return `Set ${key}=1 or OCC_TEST_PLUGIN_DRIVER_REAL=1 with disposable k3d/PostgreSQL, immutable real runtime images, model credentials, injected CODEX_ACCESS_TOKEN for Codex proofs, curated plugin proof prompts.`;
-}
-
-function requiredPluginProofEnv(name, description = name) {
-  const value = process.env[name];
-  assert.ok(value && value.trim().length > 0, `${description} (${name}) is required.`);
-  return value;
-}
-
-export function optionalPluginProofModel() {
-  return (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
-    /^(?:openai|codex)\//,
-    "",
-  );
-}
-
-function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {
-  if (realPluginProofSelected) {
-    const scenarioKeys = {
-      openclaw: "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
-      codex_linear: "OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL",
-      codex_failure: "OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL",
-    };
-    assert.ok(Object.hasOwn(scenarioKeys, scenario), "unknown real plugin-driver scenario.");
-    const databases = Object.entries(scenarioKeys).map(([name, key]) => {
-      const url = requiredPluginProofEnv(key);
-      let connection;
-      try {
-        connection = new pg.Client({ connectionString: url }).connectionParameters;
-      } catch {
-        assert.fail(`${key} must be a valid PostgreSQL connection URL.`);
-      }
-      assert.ok(connection.database, `${key} must name a database.`);
-      return [name, JSON.stringify([connection.host, connection.port, connection.database])];
-    });
-    assert.ok(
-      databaseUrl === process.env[scenarioKeys[scenario]],
-      `${scenario} must use its scenario-specific database URL.`,
-    );
-    for (let index = 0; index < databases.length; index += 1) {
-      for (let sibling = index + 1; sibling < databases.length; sibling += 1) {
-        assert.ok(
-          databases[index][1] !== databases[sibling][1],
-          `real plugin-driver scenarios ${databases[index][0]} and ${databases[sibling][0]} must use separate dedicated databases.`,
-        );
-      }
-    }
-  }
-  return databaseUrl ?? requiredPluginProofEnv("OCC_TEST_DATABASE_URL");
-}
 
 export function assertNoSecretMaterial(value, secrets, description) {
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
@@ -471,96 +430,6 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
       grpcStatus: event.grpcStatus,
       validationCategory: event.validationCategory,
     }));
-}
-
-// Codex's automatic reviewer reports a judgement as approved or denied with a risk level
-// and user authorization. When the review itself cannot finish (session, parse or prompt
-// errors) Codex fails closed: "denied" with no risk or authorization and a rationale that
-// starts with this prefix. A review that ran out of time reports "timed_out". A changed
-// authorization fails closed the same way but may be the policy's own change, so it is
-// kept apart and never treated as a reviewer error.
-const reviewerFailedRationale = "Automatic approval review failed: ";
-const staleAuthorizationRationale = `${reviewerFailedRationale}authorization changed before approval could be applied`;
-
-export function approvalReviewKind(review) {
-  if (review?.status === "timed_out") {
-    return "reviewer-error";
-  }
-  if (review?.status !== "denied") {
-    return review?.status ?? "unknown";
-  }
-  if (typeof review.riskLevel === "string" || typeof review.userAuthorization === "string") {
-    return "judged-deny";
-  }
-  if (typeof review.rationale !== "string") {
-    return "denied-unclassified";
-  }
-  if (review.rationale.startsWith(staleAuthorizationRationale)) {
-    return "stale-authorization";
-  }
-  return review.rationale.startsWith(reviewerFailedRationale)
-    ? "reviewer-error"
-    : "denied-unclassified";
-}
-
-// One line per failure: rationales (session and parse errors among them) can span lines.
-export function describeApprovalReviews(results) {
-  const reviews = results.flatMap((result) => result.approvalReviews ?? []);
-  if (reviews.length === 0) {
-    return "no approval review recorded";
-  }
-  return reviews
-    .map((review) => {
-      const facts = [
-        review.riskLevel && `risk: ${review.riskLevel}`,
-        review.userAuthorization && `authorization: ${review.userAuthorization}`,
-      ].filter(Boolean);
-      const reason = review.rationale ? `: ${review.rationale.replace(/\s+/g, " ").trim()}` : "";
-      return `${approvalReviewKind(review)}${facts.length ? ` (${facts.join(", ")})` : ""}${reason}`;
-    })
-    .join("; ");
-}
-
-// True only when the call failed and every review of it is a reviewer error, so no
-// judgement (deny, approve or unclassified) was reached for it.
-export function automaticReviewerErrored(results) {
-  return (
-    results.length > 0 &&
-    results.every(
-      (result) =>
-        result.isError === true &&
-        (result.approvalReviews ?? []).length > 0 &&
-        result.approvalReviews.every((review) => approvalReviewKind(review) === "reviewer-error"),
-    )
-  );
-}
-
-function completedCodexRun(turn) {
-  return turn?.promptSeen && (turn.terminalAssistantSeen || turn.gatewayRunCompletion);
-}
-
-// For a later reply, a different valid pair can establish that the run completed.
-// It cannot establish which tool produced the result we are reporting.
-function completedCodexToolPair(turn, call, result) {
-  return (
-    completedCodexRun(turn) &&
-    (turn.terminalAssistantSeen ||
-      (typeof call.id === "string" &&
-        call.id.trim().length > 0 &&
-        result.toolCallId === call.id &&
-        call.seq < result.seq &&
-        result.mirrorIdentity === call.mirrorIdentity.slice(0, -":call".length) + ":result"))
-  );
-}
-
-function codexToolTurnPrefix(identity, suffix) {
-  if (typeof identity !== "string" || !identity.endsWith(suffix)) {
-    return undefined;
-  }
-  const withoutSuffix = identity.slice(0, -suffix.length);
-  const marker = ":tool:";
-  const index = withoutSuffix.lastIndexOf(marker);
-  return index === -1 ? undefined : withoutSuffix.slice(0, index);
 }
 
 function codexBridgeSlug(pluginId) {
@@ -1054,6 +923,11 @@ export function createNativePluginAssertions({
 
   const { sessionEvidence, readCodexSessionBinding, readConversationReply } =
     createGatewaySessionEvidence({ execGateway, proofMode });
+  const transcriptAssertions = createPluginTranscriptAssertions(sessionEvidence, proofMode);
+  const { captureRuntimeFailureLogs, withRuntimeFailureLogs } = createPluginRevisionFailureLogs({
+    readRuntimeLogs,
+    recordRuntimeLogs,
+  });
 
   async function assertGatewayChatCompletionsEnabled(agent) {
     const execution = await execGateway(agent, ["node", "-e", gatewayHttpConfigScript]);
@@ -1109,62 +983,6 @@ export function createNativePluginAssertions({
     });
   }
 
-  async function captureRuntimeFailureLogs(logTarget, secrets = []) {
-    if (readRuntimeLogs && recordRuntimeLogs && logTarget.revisionId) {
-      // OCC authorizes and redacts each exact revision read. Apply the existing QA
-      // redactor again for fixture secrets before writing the public evidence artifact.
-      try {
-        for (const value of secrets) {
-          if (typeof value === "string" && value) {
-            registerQaSecret(value);
-          }
-        }
-        const sources = [];
-        for (const source of ["gateway", "agent"]) {
-          // Stay within OCC's two log reads/second per principal and Agent.
-          await delay(500);
-          try {
-            const page = await readRuntimeLogs({ ...logTarget, source });
-            const lines = page.records.map((record) => {
-              if (record.type === "line") {
-                const { type, time, level, message, fields } = record;
-                return JSON.stringify({ type, time, level, message, fields });
-              }
-              const { type, time, reason, count } = record;
-              return JSON.stringify({ type, time, reason, count });
-            });
-            sources.push({
-              source,
-              lines: redactedQaTail(lines.join("\n"), process.env, {
-                lines: 80,
-                lineChars: 900,
-              }),
-            });
-          } catch {
-            sources.push({ source, unavailable: true });
-          }
-        }
-        await recordRuntimeLogs({ ...logTarget, sources });
-      } catch {
-        // Diagnostic reads/writes must never replace the original turn failure.
-      }
-    }
-  }
-
-  async function withRuntimeFailureLogs(agent, action) {
-    const logTarget = {
-      namespaceId: agent.namespaceId,
-      agentId: agent.id,
-      revisionId: agent.revision?.id,
-    };
-    try {
-      return await action();
-    } catch (error) {
-      await captureRuntimeFailureLogs(logTarget);
-      throw error;
-    }
-  }
-
   async function normalGatewayTurn({
     agent,
     gatewayPassword,
@@ -1175,11 +993,7 @@ export function createNativePluginAssertions({
     humanReview,
   }) {
     // Snapshot the turn's admitted identity; later fixture changes must not retarget logs.
-    const logTarget = {
-      namespaceId: agent.namespaceId,
-      agentId: agent.id,
-      revisionId: agent.revision?.id,
-    };
+    const logTarget = pluginRevisionLogTarget(agent);
     const gateway = await gatewayUrl(agent);
     const password = gatewayPassword ?? gateway.gatewayPassword;
     assert.ok(password, "normal Agent turn requires a gateway password.");
@@ -1350,317 +1164,6 @@ export function createNativePluginAssertions({
     return JSON.parse(execution.stdout);
   }
 
-  async function assertSessionToolCallEvidence(agent, options) {
-    const evidence = await sessionEvidence(agent, options);
-    assert.equal(evidence.exists, true, `${options.sessionKey} must have a persisted transcript.`);
-    assert.equal(
-      evidence.userMarkerSeen,
-      true,
-      `${options.sessionKey} must include the marker-bearing user request.`,
-    );
-    assert.equal(
-      evidence.assistantMarkerSeen,
-      true,
-      `${options.sessionKey} must include the completed marker-bearing assistant response.`,
-    );
-    assert.equal(
-      evidence.assistantError,
-      false,
-      `${options.sessionKey} assistant turn must succeed.`,
-    );
-    const matched = evidence.calls.find(
-      (call) =>
-        ((options.expectedArguments === undefined && options.codeModeCall === undefined) ||
-          call.matchesArguments === true) &&
-        evidence.results.some(
-          (result) =>
-            result.toolCallId === call.id &&
-            result.isError === false &&
-            result.matchesResult === true,
-        ),
-    );
-    if (!matched) {
-      // Lead with the review outcome so the first line says whether a reviewer judged
-      // the read or failed to judge it (finding 1980).
-      const error = new assert.AssertionError({
-        message: `native transcript for ${options.sessionKey} did not include ${options.toolName ?? "a list_calendars tool"} with a matching successful result (approval reviews: ${describeApprovalReviews(evidence.results)}): ${JSON.stringify(
-          {
-            runtime: evidence.runtime,
-            sessionId: evidence.sessionId,
-            promptReportSource: evidence.promptReportSource,
-            promptToolNames: evidence.promptToolNames,
-            calls: evidence.calls,
-            results: evidence.results,
-            diagnostics: evidence.diagnostics,
-          },
-        )}`,
-        actual: matched,
-        expected: true,
-        operator: "==",
-      });
-      error.automaticReviewerErrored = automaticReviewerErrored(evidence.results);
-      error.approvalReviewSummary = describeApprovalReviews(evidence.results);
-      throw error;
-    }
-    if (proofMode === "openclaw") {
-      assert.ok(
-        Array.isArray(evidence.promptToolNames),
-        `${options.sessionKey} must have a run-sourced systemPromptReport.tools.entries snapshot: ${JSON.stringify(
-          {
-            runtime: evidence.runtime,
-            sessionId: evidence.sessionId,
-            promptReport: evidence.promptReportShape,
-          },
-        )}`,
-      );
-      assert.ok(
-        evidence.promptToolNames.includes(matched.name),
-        `${options.sessionKey} prompt tools must advertise ${matched.name}: ${JSON.stringify({
-          runtime: evidence.runtime,
-          sessionId: evidence.sessionId,
-          promptReportSource: evidence.promptReportSource,
-          promptToolNames: evidence.promptToolNames,
-        })}`,
-      );
-    }
-    const result = evidence.results.find(
-      (candidate) =>
-        candidate.toolCallId === matched.id &&
-        candidate.isError === false &&
-        candidate.matchesResult === true,
-    );
-    if (options.expectedExitCode !== undefined) {
-      assert.equal(
-        result.exitCode,
-        options.expectedExitCode,
-        `native tool ${matched.name} must exit with code ${options.expectedExitCode}: ${JSON.stringify(result.resultDetails)}`,
-      );
-    }
-    let codexTurn;
-    if (proofMode === "codex") {
-      const callPrefix = codexToolTurnPrefix(matched.mirrorIdentity, ":call");
-      const resultPrefix = codexToolTurnPrefix(result?.mirrorIdentity, ":result");
-      assert.ok(
-        callPrefix && callPrefix === resultPrefix,
-        `${options.sessionKey} Codex native tool call/result must share one mirrored turn.`,
-      );
-      codexTurn = evidence.codexTurns.find((candidate) => candidate.turnPrefix === callPrefix);
-      assert.ok(
-        completedCodexToolPair(codexTurn, matched, result) &&
-          codexTurn.toolCallMirrorSeen &&
-          codexTurn.toolResultMirrorSeen,
-        `${options.sessionKey} Codex run must include a native prompt and tool call/result plus an owned terminal reply: ${JSON.stringify(
-          {
-            runtime: evidence.runtime,
-            sessionId: evidence.sessionId,
-            turnPrefix: callPrefix,
-            turn: codexTurn,
-            markerUserMessages: evidence.markerUserMessages,
-            markerAssistantMessages: evidence.markerAssistantMessages,
-          },
-        )}`,
-      );
-    }
-    const approvedReviews = result.approvalReviews.filter((review) => review.status === "approved");
-    if (options.requireAutomaticReview) {
-      assert.equal(
-        evidence.calls.length,
-        1,
-        "the reviewed turn must perform exactly the requested read",
-      );
-      assert.ok(
-        approvedReviews.length > 0,
-        "the successful native read must carry an approved automatic review",
-      );
-    }
-    return {
-      runtime: evidence.runtime,
-      sessionId: evidence.sessionId,
-      toolName: matched.name,
-      toolCallId: matched.id,
-      ...(matched.targetId ? { targetId: matched.targetId, targetName: matched.targetName } : {}),
-      ...(options.expectedCatalog ? { catalog: result.catalog } : {}),
-      promptAdvertised: proofMode === "openclaw",
-      ...(proofMode === "openclaw"
-        ? { promptReport: { ...evidence.promptReportShape, toolNames: evidence.promptToolNames } }
-        : {}),
-      ...(codexTurn?.terminalAssistantSeen ? { codexMirrorTurnVerified: true } : {}),
-      ...(codexTurn?.gatewayRunCompletion
-        ? { codexGatewayRunCompletion: codexTurn.gatewayRunCompletion }
-        : {}),
-      resultMatched: true,
-      ...(options.codeModeCall ? { codeModeProgramVerified: result.codeModeProgramVerified } : {}),
-      ...(options.expectedExitCode === undefined ? {} : { exitCode: result.exitCode }),
-      approvedReviewIds: approvedReviews.map((review) => review.id),
-    };
-  }
-
-  async function assertSessionToolFailureEvidence(agent, options) {
-    const evidence = await sessionEvidence(agent, options);
-    assert.equal(evidence.userMarkerSeen, true);
-    assert.equal(evidence.assistantMarkerSeen, true);
-    assert.equal(
-      evidence.calls.length,
-      1,
-      `the denied turn must attempt exactly the requested tool: ${JSON.stringify(evidence.diagnostics)}`,
-    );
-    assert.equal(evidence.results.length, 1, "the denied call must have a terminal result");
-    assert.equal(evidence.results[0].toolCallId, evidence.calls[0].id);
-    assert.equal(
-      evidence.results[0].matchesTarget,
-      true,
-      "the refusal must belong to the attempted target",
-    );
-    if (proofMode === "openclaw") {
-      assert.ok(
-        evidence.promptToolNames?.includes(evidence.calls[0].name),
-        "the run must advertise the actual attempted tool or dispatcher",
-      );
-    }
-    if (proofMode === "codex") {
-      const prefix = codexToolTurnPrefix(evidence.calls[0].mirrorIdentity, ":call");
-      assert.ok(
-        prefix && prefix === codexToolTurnPrefix(evidence.results[0].mirrorIdentity, ":result"),
-        "denial must correlate to the attempted native call",
-      );
-      const turn = evidence.codexTurns.find((value) => value.turnPrefix === prefix);
-      assert.ok(
-        completedCodexToolPair(turn, evidence.calls[0], evidence.results[0]) &&
-          turn.toolCallMirrorSeen &&
-          turn.toolResultMirrorSeen,
-        `${options.sessionKey} denied Codex run must include a native prompt and tool call/result plus an owned terminal reply: ${JSON.stringify(
-          {
-            runtime: evidence.runtime,
-            sessionId: evidence.sessionId,
-            turnPrefix: prefix,
-            turn,
-            markerUserMessages: evidence.markerUserMessages,
-            markerAssistantMessages: evidence.markerAssistantMessages,
-          },
-        )}`,
-      );
-    }
-    assert.equal(evidence.results[0].isError, true, "denial must prevent a successful tool result");
-    return evidence;
-  }
-
-  async function assertSessionToolDeniedEvidence(agent, options) {
-    const evidence = await assertSessionToolFailureEvidence(agent, options);
-    assert.equal(
-      evidence.results[0].deniedByUser,
-      true,
-      "the native failure must come from denied approval, not a provider error",
-    );
-    assert.equal(
-      evidence.results[0].matchesResult,
-      false,
-      "denial must not expose the provider result",
-    );
-  }
-
-  async function assertSessionToolPolicyDeniedEvidence(agent, options) {
-    const patterns = [options.resultPattern].flat();
-    assert.ok(
-      patterns.length > 0 &&
-        patterns.every((pattern) => typeof pattern === "string" && pattern.length),
-      "policy proof requires the expected native refusal",
-    );
-    assert.ok(
-      options.expectedArguments || options.codeModeCall,
-      "policy proof requires the intended invocation target",
-    );
-    const evidence = await assertSessionToolFailureEvidence(agent, options);
-    assert.equal(
-      evidence.calls[0].matchesArguments,
-      true,
-      "the model must attempt the exact requested action and target",
-    );
-    assert.equal(
-      evidence.results[0].matchesResult,
-      true,
-      `the attempted tool must return the policy refusal: ${JSON.stringify({ resultDetails: evidence.results[0].resultDetails, errorLines: evidence.results[0].errorLines })}`,
-    );
-    return {
-      sessionId: evidence.sessionId,
-      toolCallId: evidence.calls[0].id,
-      toolName: evidence.calls[0].name,
-      ...(options.codeModeCall
-        ? { codeModeProgramVerified: evidence.results[0].codeModeProgramVerified }
-        : {}),
-      ...(Array.isArray(options.resultPattern)
-        ? { matchedRefusal: evidence.results[0].matchedResultPattern }
-        : {}),
-      ...(evidence.calls[0].targetId
-        ? {
-            targetId: evidence.calls[0].targetId,
-            targetName: evidence.calls[0].targetName,
-          }
-        : {}),
-    };
-  }
-
-  async function assertNoSessionToolCallEvidence(agent, options) {
-    const evidence = await sessionEvidence(agent, { ...options, resultPattern: "" });
-    assert.equal(evidence.exists, true, `${options.sessionKey} must have a persisted transcript.`);
-    assert.equal(
-      evidence.userMarkerSeen,
-      true,
-      `${options.sessionKey} must include the marker-bearing user request.`,
-    );
-    assert.equal(
-      evidence.assistantMarkerSeen,
-      true,
-      `${options.sessionKey} must include the completed marker-bearing assistant response.`,
-    );
-    assert.equal(
-      evidence.assistantError,
-      false,
-      `${options.sessionKey} assistant turn must succeed.`,
-    );
-    if (proofMode === "openclaw") {
-      assert.ok(
-        Array.isArray(evidence.promptToolNames),
-        `${options.sessionKey} must have a run-sourced systemPromptReport.tools.entries snapshot.`,
-      );
-      assert.equal(
-        evidence.promptToolNames.includes(options.toolName),
-        false,
-        `${options.sessionKey} direct prompt schemas still advertised ${options.toolName}: ${JSON.stringify(
-          {
-            runtime: evidence.runtime,
-            sessionId: evidence.sessionId,
-            promptReportSource: evidence.promptReportSource,
-            promptToolNames: evidence.promptToolNames,
-          },
-        )}`,
-      );
-    } else {
-      // The Gateway prompt report omits native Codex tools. An empty trace alone cannot
-      // distinguish a filtered tool from a turn that never ran or finished.
-      assert.ok(
-        evidence.codexTurns.some(completedCodexRun),
-        `${options.sessionKey} must include a completed marker-bearing Codex run: ${JSON.stringify({
-          runtime: evidence.runtime,
-          sessionId: evidence.sessionId,
-          codexTurns: evidence.codexTurns,
-          markerUserMessages: evidence.markerUserMessages,
-          markerAssistantMessages: evidence.markerAssistantMessages,
-        })}`,
-      );
-    }
-    assert.equal(
-      evidence.calls.length,
-      0,
-      `disabled/removed/sibling turn ${options.sessionKey} still invoked ${options.toolName}: ${JSON.stringify(
-        {
-          runtime: evidence.runtime,
-          sessionId: evidence.sessionId,
-          calls: evidence.calls,
-        },
-      )}`,
-    );
-  }
-
   async function listCodexNativeCatalog(agent, pluginIds) {
     assert.equal(proofMode, "codex", "native Codex catalog discovery requires Codex proof mode.");
     const execution = await execCodex(agent, [
@@ -1779,10 +1282,7 @@ export function createNativePluginAssertions({
     readCodexSessionBinding,
     readConversationReply,
     readCodexThreadMetadata,
-    assertSessionToolCallEvidence,
-    assertSessionToolDeniedEvidence,
-    assertSessionToolPolicyDeniedEvidence,
-    assertNoSessionToolCallEvidence,
+    ...transcriptAssertions,
     readOpenClawPluginPolicy,
     listCodexNativeCatalog,
     codexNativePluginDetail,
@@ -1794,22 +1294,19 @@ export function createNativePluginAssertions({
   };
 }
 
+/**
+ * @param {{ after: (cleanup: () => Promise<void>) => void }} context
+ * @param {import("./plugin-driver-proof-inputs.ts").PluginProofInputOptions & {
+ *   codexCredential?: Awaited<ReturnType<typeof readCodexServiceAccountCredential>>,
+ *   pluginDriverConfiguration?: Record<string, unknown>,
+ * }} options
+ */
 export async function createPluginDriverRealFixture(
   context,
   { scenario, pluginDriverId, databaseUrl, codexCredential, pluginDriverConfiguration = {} },
 ) {
-  const kubeconfigPath = requiredPluginProofEnv("OCC_TEST_KUBERNETES_KUBECONFIG");
-  const kubernetesContext = requiredPluginProofEnv("OCC_TEST_KUBERNETES_CONTEXT");
-  const gatewayImage = requiredPluginProofEnv("OCC_TEST_KUBERNETES_GATEWAY_IMAGE");
-  const codexImage =
-    pluginDriverId === "codex-plugin"
-      ? (process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
-        requiredPluginProofEnv("OCC_TEST_KUBERNETES_AGENT_IMAGE", "Codex runtime image"))
-      : (process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
-        process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE ??
-        gatewayImage);
-  const selectedDatabaseUrl = selectPluginProofDatabaseUrl({ scenario, databaseUrl });
-  const directory = await mkdtemp(join(tmpdir(), "occ-plugin-driver-real-"));
+  const inputs = selectPluginProofInputs({ scenario, pluginDriverId, databaseUrl });
+  const { gatewayImage, codexImage, databaseUrl: selectedDatabaseUrl } = inputs;
   const suffix = hash(`${proofPrefix}-${randomUUID()}`);
   const platformNamespace = `${proofPrefix}-${suffix}`;
   const credentials = {
@@ -1827,13 +1324,7 @@ export async function createPluginDriverRealFixture(
     startPortForward,
     startPortForwardTarget,
     applyManifest,
-  } = createRealKubernetesFixture({
-    kubeconfigPath,
-    kubernetesContext,
-    gatewayImage,
-    codexImage,
-    databaseUrl: selectedDatabaseUrl,
-  });
+  } = createRealKubernetesFixture(inputs);
 
   await validatePrerequisites();
   let worker;
@@ -1863,6 +1354,7 @@ export async function createPluginDriverRealFixture(
     }
   }
 
+  const directory = await mkdtemp(join(tmpdir(), "occ-plugin-driver-real-"));
   context.after(async () => {
     const failures = [];
     async function cleanup(operation) {

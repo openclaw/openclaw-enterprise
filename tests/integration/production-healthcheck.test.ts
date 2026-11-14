@@ -10,17 +10,23 @@ import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 
-function runProbe(environment: NodeJS.ProcessEnv, readiness?: "ready") {
-  return execute(
+async function runProbe(environment: NodeJS.ProcessEnv, readiness?: "ready"): Promise<void> {
+  const { stdout, stderr } = await execute(
     process.execPath,
-    ["scripts/production-healthcheck.mjs", "worker", ...(readiness === "ready" ? ["ready"] : [])],
+    ["scripts/production-healthcheck.ts", "worker", ...(readiness === "ready" ? ["ready"] : [])],
     { cwd: repository, env: environment, encoding: "utf8" },
   );
+  assert.equal(stdout, "");
+  assert.equal(stderr, "");
 }
 
 function reportsProbeError(error: unknown, message: RegExp): boolean {
   return (
     error instanceof Error &&
+    "code" in error &&
+    error.code === 1 &&
+    "stdout" in error &&
+    error.stdout === "" &&
     "stderr" in error &&
     typeof error.stderr === "string" &&
     message.test(error.stderr)
@@ -56,6 +62,7 @@ test("production worker liveness fails once the run loop stops reporting progres
   };
   const live = () => runProbe(environment);
 
+  await runProbe(environment, "ready");
   await live();
   // A loop waiting out a database outage keeps moving, so a stale or missing readiness
   // marker (a worker started during the outage never writes one) must not restart it.
@@ -63,6 +70,9 @@ test("production worker liveness fails once the run loop stops reporting progres
   await utimes(ready, outage, outage);
   await live();
   await rm(ready);
+  await assert.rejects(runProbe(environment, "ready"), (error: unknown) =>
+    reportsProbeError(error, /^ENOENT:.*stat .*\n$/),
+  );
   await live();
   // A loop stuck on one await (a query on a silent connection) stops reporting progress.
   await utimes(alive, outage, outage);
@@ -84,13 +94,8 @@ for (const mode of ["readiness", "liveness", "legacy liveness"]) {
     const probe = () => runProbe(environment, mode === "readiness" ? "ready" : undefined);
 
     // No worker observation exists: a freshly mounted or replaced directory is not a marker.
-    await assert.rejects(
-      probe(),
-      (error: unknown) =>
-        error instanceof Error &&
-        "code" in error &&
-        error.code === 1 &&
-        reportsProbeError(error, /marker must be a regular file/),
+    await assert.rejects(probe(), (error: unknown) =>
+      reportsProbeError(error, /marker must be a regular file/),
     );
     await rm(marker, { recursive: true });
     await writeFile(marker, "healthy\n", { mode: 0o600 });

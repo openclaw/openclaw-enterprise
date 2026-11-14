@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { removeImageFileContainer } from "../lib/image-file.mjs";
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.ts";
-import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
+import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.ts";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
 import { constants, type Dirent } from "node:fs";
@@ -21,7 +21,7 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.mjs";
+import { runPostgresAdmin } from "./postgres-admin.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -148,7 +148,7 @@ function execFile(
     // The supervisor remains the group leader until command and pipes settle.
     // It also owns termination when this caller exits without running JS hooks.
     const child = processGroup
-      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+      ? fork(new URL("./cleanup-command.ts", import.meta.url), [], {
           ...spawnOptions,
           detached: true,
           execArgv: [],
@@ -1162,7 +1162,7 @@ async function recordLaneCleanup(
   await rename(temporary, path);
 }
 
-export async function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.state) {
     throw new Error("--state is required.");
@@ -1194,3 +1194,10 @@ export async function main() {
 }
 
 export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster, stopCleanupCommands };
+
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error: unknown) => {
+    console.error(errorMessage(error));
+    process.exitCode = 1;
+  });
+}

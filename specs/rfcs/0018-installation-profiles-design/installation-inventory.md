@@ -237,7 +237,7 @@ fresh disposable local Kubernetes and separately authorized EKS/general Kubernet
 
 Relevant existing suites were inspected, not executed:
 [driver startup](../../../tests/integration/plugin-driver-startup.test.ts),
-[discovery API](../../../tests/integration/plugin-discovery-api.test.mjs),
+[discovery API](../../../tests/integration/plugin-discovery-api.test.ts),
 [real status transport](../../../tests/integration/kubernetes-plugin-status-real.test.mjs),
 [native plugins](../../../tests/integration/plugin-driver-real.test.mjs),
 [PostgreSQL presets](../../../tests/integration/postgres-presets.test.ts).

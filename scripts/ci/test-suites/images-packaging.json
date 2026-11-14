@@ -22,19 +22,20 @@
     "tests/integration/production-upgrade-signal-lock.test.ts",
     "tests/integration/codex-model-probe.test.mjs",
     "tests/integration/production-image-upgrade-recovery.test.mjs",
+    "tests/integration/production-upgrade-migration-preflight.test.ts",
     "tests/integration/upgrade-preflight-state.test.ts",
     "tests/integration/docker-compute-token-retry.test.mjs",
     "tests/integration/workspace-setup-runtime.test.ts",
     "tests/integration/production-kubernetes-packaging.test.mjs",
     "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
-    "tests/integration/container-registry-real.test.mjs",
+    "tests/integration/container-registry-real.test.ts",
     "tests/integration/logging-packaging.test.ts",
     "tests/integration/repository-runtime-volume.test.ts",
     "tests/integration/production-image-qualification.test.ts",
     "tests/integration/development-packaging.test.mjs",
     "tests/integration/container-publication-workflow.test.ts",
-    "tests/integration/oidc-ca-trust.test.mjs",
+    "tests/integration/oidc-ca-trust.test.ts",
     "tests/integration/ci-runtime-artifact.test.ts",
     "tests/integration/production-kubernetes-numeric-values.test.ts"
   ],
@@ -77,6 +78,12 @@
       "path": "tests/integration/production-image-upgrade-recovery.test.mjs"
     },
     {
+      "path": "tests/integration/production-upgrade-migration-preflight.test.ts",
+      "expectedTests": [
+        "migration preflight preserves labels and refuses ambiguous initialization Jobs"
+      ]
+    },
+    {
       "path": "tests/integration/upgrade-preflight-state.test.ts"
     },
     {
@@ -91,6 +98,8 @@
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
+        "the staged sign-in chart preserves the historical worker probes for both Helm operations",
+        "the production image executes the chart worker probes as the worker user",
         "the plugin request guard installs beside OpenShell without control-plane access",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
@@ -140,7 +149,7 @@
       ]
     },
     {
-      "path": "tests/integration/container-registry-real.test.mjs",
+      "path": "tests/integration/container-registry-real.test.ts",
       "expectedTests": [
         "publication updates aliases using real Skopeo and a multi-platform registry"
       ]
@@ -159,7 +168,7 @@
       ]
     },
     {
-      "path": "tests/integration/oidc-ca-trust.test.mjs",
+      "path": "tests/integration/oidc-ca-trust.test.ts",
       "expectedTests": [
         "OIDC CA chart wiring adds trust only to the API and preserves Gateway selection",
         "OIDC CA chart refuses partial, malformed and disabled configuration",

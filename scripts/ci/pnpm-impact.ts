@@ -5,7 +5,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 
-import { loadTestSuites } from "./test-suites.mjs";
+import { loadTestSuites } from "./test-suites.ts";
 
 const oid = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
@@ -77,7 +77,7 @@ function changedPaths(base: string, tested: string) {
   if (fields.length % 2 || fields.length > 512) {
     throw new Error("unsupported diff");
   }
-  const paths = [];
+  const paths: string[] = [];
   for (let i = 0; i < fields.length; i += 2) {
     const match = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([AMD])$/.exec(fields[i] ?? "");
     if (!match) {
@@ -119,6 +119,10 @@ function projects(args: string[]): unknown[] {
     throw new Error("invalid workspace");
   }
   return result;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function property(value: unknown, key: string): unknown {
@@ -168,7 +172,7 @@ function verifiedStorybook(tested: string) {
   const entries = git("ls-tree", tested, "--", workflow, preparer).toString("utf8");
   return (
     entries ===
-      `100644 blob 08676f57d84dcdec23bb01aae2ebed6c1882f9f2\t${workflow}\n` +
+      `100644 blob ad55f3c6ecfb551d76984ffd901abe3dfeb9c170\t${workflow}\n` +
         `100644 blob 47cc6129264ecdfb5271be15c51441e48e990323\t${preparer}\n` &&
     hasPackageScript(
       tested,
@@ -194,17 +198,24 @@ function assetPrediction({ base, tested }: Identity): Prediction {
   }
   try {
     const manifest = loadTestSuites("scripts/ci/test-suites.json");
-    const ci: unknown = manifest.groups.ci;
-    if (manifest.version !== 1 || !Array.isArray(ci) || !ci.length) {
+    const ci = property(property(manifest, "groups"), "ci");
+    const definitions = property(manifest, "lanes");
+    if (
+      property(manifest, "version") !== 1 ||
+      !Array.isArray(ci) ||
+      !ci.length ||
+      !isObject(definitions)
+    ) {
       return broad("incomplete_manifest");
     }
     const found = new Set<string>();
     const lanes: string[] = [];
-    for (const [name, lane] of Object.entries(manifest.lanes)) {
-      const files: unknown = property(lane, "files");
-      if (!Array.isArray(files)) {
+    for (const [name, lane] of Object.entries(definitions)) {
+      const entries = property(lane, "files");
+      if (!Array.isArray(entries)) {
         return broad("incomplete_manifest");
       }
+      const files: readonly unknown[] = entries;
       for (const file of files) {
         const path = property(file, "path");
         if (typeof path !== "string") {
@@ -224,7 +235,7 @@ function assetPrediction({ base, tested }: Identity): Prediction {
     if (
       found.size !== assetTests.length ||
       lanes.length > 32 ||
-      !ci.every((name) => Object.hasOwn(manifest.lanes, name))
+      !ci.every((name: unknown) => typeof name === "string" && Object.hasOwn(definitions, name))
     ) {
       return broad("incomplete_manifest");
     }
@@ -356,7 +367,7 @@ function inspect() {
     if (!cleanCheckout()) {
       return { identity, result: unavailable("dirty_checkout") };
     }
-    let result;
+    let result: ReturnType<typeof inspectGraph>;
     try {
       result = inspectGraph(checked.base, paths);
     } catch {

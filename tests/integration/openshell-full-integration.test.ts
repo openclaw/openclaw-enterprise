@@ -4,7 +4,7 @@ import { closeSync, openSync, writeSync, mkdirSync, readFileSync, writeFileSync 
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -14,7 +14,6 @@ const testedSha = "1".repeat(40);
 
 type FileEntry = { path: string; expectedTests: string[] };
 type Lane = { files: FileEntry[] };
-type Suite = { lanes: Record<string, Lane>; groups: Record<string, string[]> };
 type Result = {
   version: number;
   command: string;
@@ -66,6 +65,43 @@ function assertIssue(
   );
 }
 
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+  return Object.fromEntries(Object.entries(value));
+}
+
+function readSuite(view = "default") {
+  const suite = record(loadTestSuites(join(root, manifest), view));
+  const lanes = record(suite.lanes);
+  const groups = record(suite.groups);
+  return {
+    lane(name: string): Lane {
+      const lane = record(lanes[name]);
+      const files = lane.files;
+      assert.ok(Array.isArray(files));
+      return {
+        ...lane,
+        files: files.map((file: unknown) => {
+          const entry = record(file);
+          const { path, expectedTests } = entry;
+          assert.ok(typeof path === "string");
+          assert.ok(
+            Array.isArray(expectedTests) &&
+              expectedTests.every((test: unknown) => typeof test === "string"),
+          );
+          return { ...entry, path, expectedTests };
+        }),
+      };
+    },
+    lanes,
+    group(name: string): string[] {
+      const group = groups[name];
+      assert.ok(Array.isArray(group) && group.every((lane: unknown) => typeof lane === "string"));
+      return group;
+    },
+  };
+}
+
 function present<T>(value: T | undefined): T {
   assert.ok(value !== undefined);
   return value;
@@ -76,32 +112,36 @@ function writeJson(path: string, data: unknown) {
 }
 
 test("Full Integration partitions OpenShell without changing the default focused caller", (t) => {
-  const legacy: Suite = loadTestSuites(join(root, manifest));
-  const selected: Suite = loadTestSuites(join(root, manifest), fullView);
-  const canonical = present(legacy.lanes.openshell);
-  const shards = present(selected.groups.openshell);
+  const legacy = readSuite();
+  const selected = readSuite(fullView);
+  const canonical = legacy.lane("openshell");
+  const shards = selected.group("openshell");
   assert.deepEqual(shards, ["openshell-policy", "openshell-installers"]);
   assert.equal(selected.lanes.openshell, undefined);
   assert.ok(
-    present(selected.lanes["openshell-installers"]).files.some(
-      ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
-    ),
+    selected
+      .lane("openshell-installers")
+      .files.some(
+        ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
+      ),
     "tests/integration/openshell-git-finite-removal-real.test.ts must be in openshell-installers",
   );
   assert.ok(
-    !present(selected.lanes["openshell-policy"]).files.some(
-      ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
-    ),
+    !selected
+      .lane("openshell-policy")
+      .files.some(
+        ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
+      ),
     "tests/integration/openshell-git-finite-removal-real.test.ts must be absent from openshell-policy",
   );
-  const allFiles = shards.flatMap((name) => present(selected.lanes[name]).files);
+  const allFiles = shards.flatMap((name) => selected.lane(name).files);
   assert.equal(allFiles.length, canonical.files.length);
   assert.deepEqual(
     [...allFiles].sort((a, b) => a.path.localeCompare(b.path)),
     [...canonical.files].sort((a, b) => a.path.localeCompare(b.path)),
   );
   for (const name of shards) {
-    const lane = present(selected.lanes[name]);
+    const lane = selected.lane(name);
     const paths = new Set(lane.files.map(({ path }) => path));
     assert.deepEqual(lane, {
       ...canonical,
@@ -186,8 +226,8 @@ test("Full Integration partitions OpenShell without changing the default focused
 
 test("the full view refuses canonical overlap and the audit detects omitted files", (t) => {
   const directory = temporaryDirectorySync(t, "openshell-view-audit-");
-  const source: Suite = loadTestSuites(join(root, manifest));
-  const original = present(source.lanes.openshell);
+  const source = readSuite();
+  const original = source.lane("openshell");
   for (const { path } of original.files) {
     const file = join(directory, path);
     mkdirSync(dirname(file), { recursive: true });
@@ -213,8 +253,8 @@ test("the full view refuses canonical overlap and the audit detects omitted file
 
 test("both complete OpenShell receipts are required by targeted and full aggregation", (t) => {
   const directory = temporaryDirectorySync(t, "openshell-view-aggregate-");
-  const suite: Suite = loadTestSuites(join(root, manifest), fullView);
-  const lanes = present(suite.groups.openshell);
+  const suite = readSuite(fullView);
+  const lanes = suite.group("openshell");
   const makeReceipt = (lane: string): Result => ({
     version: 1,
     command: "run",
@@ -223,7 +263,7 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
     sourceSha: testedSha,
     status: "passed",
     exitCode: 0,
-    files: present(suite.lanes[lane]).files.map(({ path, expectedTests }) => ({
+    files: suite.lane(lane).files.map(({ path, expectedTests }) => ({
       path,
       status: "passed",
       counts: { total: expectedTests.length },

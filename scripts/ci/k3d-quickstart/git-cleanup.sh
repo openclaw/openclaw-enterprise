@@ -4,7 +4,7 @@ set -euo pipefail
 set +x
 umask 077
 dir=scripts/ci/k3d-quickstart
-fixture="$dir/git-fixture.mjs"
+fixture="$dir/git-fixture.ts"
 : "${RUN_DIR:?}"
 case "${1:-all}" in
   custody)

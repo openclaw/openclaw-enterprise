@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-12
-last_updated_session: authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d
+updated: "2026-11-14"
+last_updated_session: "authoring-run/1be06605-515e-4261-8b21-d0d796809916"
 ---
 
 # Controller Worker Flow
@@ -374,10 +374,10 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Debugging and Verification
 
-- `worker.started` names `computeDriverId` and optional `sandboxDriverId`.
-  Ready `worker.health` confirms a pending-work query.
-- `worker.startup-error` reports mode, database, Installation, Driver, or
-  preflight errors. The worker exposes readiness through a private marker file.
+- `worker.started` names the Drivers. Ready `worker.health` confirms a work query.
+- `worker.startup-error` reports startup failures. The
+  [worker exec probe](../../scripts/production-healthcheck.ts) checks the
+  readiness and progress markers.
 - For queued work, compare API and worker database and Installation settings.
   Check `worker.completed` and `worker.error`. Check IAM for `ACTOR_REVOKED` or
   `AUTHORIZATION_DENIED`. `DEPENDENCY_UNAVAILABLE` retries within
@@ -394,14 +394,14 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.ts),
   [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.ts),
   [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts),
-  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs),
+  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.ts),
   [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.ts),
   [claim audit](../../tests/integration/postgres-worker-audit.test.ts) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.ts)
   require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback after an IAM Driver change.
-- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs),
+- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.ts),
   [Installation configuration](../../tests/integration/sandbox-driver-installation-configuration.test.ts)
   and [IPv6 endpoints](../../tests/integration/sandbox-driver-ipv6-endpoints.test.ts)
   check startup. [k3d tests](../../tests/helpers/openshell-sandbox-workflows.mjs)
@@ -423,6 +423,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 
 - 2026-11-12 14:03: Save development claim evidence. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
 - 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)

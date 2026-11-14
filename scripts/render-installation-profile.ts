@@ -307,7 +307,7 @@ function fail(message: string): never {
 }
 
 function usage() {
-  return `Usage: node scripts/render-installation-profile.mjs --profile openclaw|codex \\
+  return `Usage: node scripts/render-installation-profile.ts --profile openclaw|codex \\
   --input <site-inputs.json> --out-dir <rendered-directory>
 
 The renderer writes values.yaml, installation.yaml, and preflight.json. Missing
@@ -2646,7 +2646,7 @@ export async function renderInstallationProfile(args: RenderArguments) {
   );
 }
 
-export async function runInstallationProfileCli() {
+async function runInstallationProfileCli() {
   try {
     const preflight = await renderInstallationProfile(parseArgs(process.argv.slice(2)));
     process.stdout.write(`${JSON.stringify(preflight, null, 2)}\n`);
@@ -2660,4 +2660,8 @@ export async function runInstallationProfileCli() {
     process.stderr.write(`render-installation-profile: ${error.message}\n`);
     process.exit(1);
   }
+}
+
+if (import.meta.main) {
+  await runInstallationProfileCli();
 }

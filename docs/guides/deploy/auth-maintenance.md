@@ -34,7 +34,8 @@ The tool never reads the controller auth secret. An ended session's console
 browser signs in again. Resetting a password revokes the account's
 [known-device cookies](../../reference/authentication.md#known-devices), and a
 disabled account's cookies exempt nothing while it stays disabled; purging
-sessions leaves them valid. They never grant a session. The command prints one JSON line and exits with:
+sessions leaves them valid. They never grant a session. The command writes one
+JSON line to stdout for exit codes `0`, `2`, and `3`. Diagnostics go to stderr.
 
 | Exit | Meaning                                                                                                                                  |
 | ---- | ---------------------------------------------------------------------------------------------------------------------------------------- |
@@ -89,8 +90,8 @@ its registered redirect URI on the canonical host.
 
 ## Run the command
 
-Run it from the installed controller image in a temporary Job. The Job controller
-owns its Pod; this matters on EKS, where NetworkPolicy enforcement can be unreliable
+Run the command from the installed controller image in a temporary Job. Use the
+Job example for the release of that image. The Job controller owns its Pod; this matters on EKS, where NetworkPolicy enforcement can be unreliable
 for standalone Pods. The Pod labels below select the installed initialization
 NetworkPolicy for the Helm release (`RELEASE`), allowing DNS and database egress.
 Keep that policy and the `openclaw-enterprise-initialization` service account in place.
@@ -145,7 +146,7 @@ spec:
       containers:
         - name: occ-auth-maintain
           image: "$CONTROLLER_IMAGE"
-          args: ["scripts/auth-maintain.mjs", "status"]
+          args: ["scripts/auth-maintain.ts", "status"]
           env:
             - name: NODE_ENV
               value: production

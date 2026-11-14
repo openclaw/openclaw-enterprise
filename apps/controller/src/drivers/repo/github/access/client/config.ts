@@ -7,6 +7,7 @@ import {
   clientGhConfiguration,
   renderClientGhHosts,
   isValidGitClientConnection,
+  matchesRepositorySessionId,
   isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
 } from "../../../access/client-contracts.ts";
@@ -28,8 +29,8 @@ export function isClientBearer(bearer: string): boolean {
   return /^[A-Za-z0-9_-]{32,256}$/.test(bearer);
 }
 
-function isClientSessionId(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+export function isClientSessionId(value: unknown): value is string {
+  return typeof value === "string" && matchesRepositorySessionId(value);
 }
 
 /** Refuse a direct gh session whose private files disagree. */

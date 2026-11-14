@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
-import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
 import {
   collectNativeWorkerFailure,
   nativePlacementReadRetryable,

@@ -10,9 +10,12 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-import type { AgentRevision, Permission } from "../../packages/contracts/src/index.ts";
+import {
+  WORKSPACE_DEFAULTS,
+  type AgentRevision,
+  type Permission,
+} from "../../packages/contracts/src/index.ts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {

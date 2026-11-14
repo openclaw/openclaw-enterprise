@@ -1,8 +1,8 @@
 import { createServer } from "node:net";
 
 // A PostgreSQL server for the CI preparation and cleanup tests (ci-prepare*.test.mjs,
-// ci-cleanup.test.mjs): scripts/ci/postgres-admin.ts connects to a lane server's published
-// port, and this listens on one in the test process. It speaks just enough of the frontend/
+// ci-cleanup-postgres-cases.ts): scripts/ci/postgres-admin.ts connects to a lane server's
+// published port, and this listens on one in the test process. It speaks just enough of the frontend/
 // backend protocol for node-postgres: startup, a cleartext password request, and simple
 // queries, each answered with an empty CommandComplete. It records every session's user,
 // password and database and each query it receives, in order.

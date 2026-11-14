@@ -257,7 +257,11 @@ export async function tenantRequest(
   options: TenantRequestOptions = {},
 ) {
   const session = options.session ?? app.defaultSession;
-  const headers = new Headers(options.identity === false ? {} : authenticatedHeaders(session));
+  let headers = new Headers();
+  if (options.identity !== false) {
+    assert.ok(session, "an authenticated request needs a session");
+    headers = new Headers(authenticatedHeaders(session));
+  }
   for (const [name, value] of Object.entries(options.headers ?? {})) {
     if (value === null) {
       headers.delete(name);

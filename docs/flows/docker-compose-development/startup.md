@@ -129,7 +129,7 @@ attempts, and failure recovery.
 
 ### 4. The API admits only local development traffic
 
-`apps/controller/src/api-startup.mjs:startApi`,
+`apps/controller/src/api-startup.ts:startApi`,
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`,
 `apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver`
 
@@ -389,7 +389,7 @@ Helpers and CI retain one allowlisted final failure record, including older form
 Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [Field meanings](../../reference/cli/local-development.md).
 
-- `node --test tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
+- `node --test tests/integration/dev-up-compose-startup.test.ts tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
   exercises profile selection, generated configuration, authenticated readiness,
   rollback, and cleanup with inert engine and cluster commands.
 - `OCC_TEST_DEV_UP_OPENSHELL_REAL=1 node --test tests/integration/dev-up-openshell-k3d-real.test.mjs`

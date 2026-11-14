@@ -7,6 +7,16 @@ export { cookieHeaderFromSetCookie };
 
 export const betterAuthSignInPath = "/api/auth/sign-in/email";
 
+/**
+ * @typedef {{ getSetCookie?: () => string[], raw?: () => Record<string, string[]>,
+ *   get?: (name: string) => string | null }} CookieHeaders
+ * @typedef {{ headers?: CookieHeaders, ok: boolean, status: number,
+ *   text: () => Promise<string> }} SignInResponse
+ * @typedef {{ email: string, password: string }} SignInCredentials
+ * @typedef {{ cookie: string, origin: string, setCookie: string[] }} SignInSession
+ */
+
+/** @param {{ headers?: CookieHeaders }} response @returns {string[]} */
 export function setCookieHeaders(response) {
   const headers = response.headers;
   if (headers === undefined) {
@@ -29,6 +39,22 @@ export function setCookieHeaders(response) {
   return single === null ? [] : [single];
 }
 
+/**
+ * @typedef {SignInCredentials & {origin?: string | undefined, path?: string,
+ *   rememberMe?: boolean | undefined, headers?: Record<string, string>}} SignInOptions
+ */
+/**
+ * @overload
+ * @param {SignInOptions & {fetch?: undefined}} options
+ * @returns {Promise<SignInSession & {response: Response}>}
+ */
+/**
+ * @template {SignInResponse} ResponseType
+ * @overload
+ * @param {SignInOptions & {fetch: (input: Request, init?: RequestInit) => Promise<ResponseType>}} options
+ * @returns {Promise<SignInSession & {response: ResponseType}>}
+ */
+/** @param {SignInOptions & {fetch?: ((input: Request, init?: RequestInit) => Promise<SignInResponse>) | undefined}} options */
 export async function signInWithEmailPassword({
   fetch: fetchRequest = globalThis.fetch,
   origin = "https://console.oce.localhost",
@@ -73,6 +99,26 @@ export async function signInWithEmailPassword({
   return { response, setCookie, cookie, origin: new URL(origin).origin };
 }
 
+/** @typedef {string | {cookie: string, origin?: string | undefined}} SessionHeaderInput */
+/** @typedef {{cookie: string, origin?: string}} SessionHeaders */
+
+/**
+ * @overload
+ * @param {SessionHeaderInput} session
+ * @param {undefined} [headers]
+ * @returns {SessionHeaders}
+ */
+/**
+ * @template {Record<string, string | number> & {origin?: string}} ExtraHeaders
+ * @overload
+ * @param {SessionHeaderInput} session
+ * @param {ExtraHeaders} headers
+ * @returns {Omit<ExtraHeaders, "cookie" | "origin"> & SessionHeaders}
+ */
+/**
+ * @param {SessionHeaderInput} session
+ * @param {object} [headers]
+ */
 export function authenticatedHeaders(session, headers = {}) {
   const cookie = typeof session === "string" ? session : session.cookie;
   assert.equal(typeof cookie, "string", "a session cookie header is required");
@@ -86,6 +132,11 @@ export function authenticatedHeaders(session, headers = {}) {
   };
 }
 
+/**
+ * @param {{installationId?: string, mode?: import("../../apps/controller/src/auth/index.ts").ControllerAuthOptions["mode"],
+ *   baseURL?: string, email?: string, password?: string, name?: string, secret?: string,
+ *   agentDomain?: string}} [options]
+ */
 export async function createTestAuthPrincipal({
   installationId = `ins_${randomUUID()}`,
   mode = "development",
@@ -108,6 +159,13 @@ export async function createTestAuthPrincipal({
   return { auth, account, seed, installationId, email, password, name };
 }
 
+/**
+ * @param {import("../../apps/controller/src/index.ts").ControllerApp
+ *   | ({fetch?: undefined} & Pick<ReturnType<typeof import("../../apps/controller/src/index.ts").createFastifyApp>, "inject">)} app
+ * @param {SignInCredentials} credentials
+ * @param {{origin?: string | undefined}} [options]
+ * @returns {Promise<SignInSession & { response: Response }>}
+ */
 export async function signInToControllerApp(app, credentials, { origin } = {}) {
   return signInWithEmailPassword({
     origin,
@@ -117,7 +175,7 @@ export async function signInToControllerApp(app, credentials, { origin } = {}) {
         : async (request) => {
             const url = new URL(request.url);
             const response = await app.inject({
-              method: request.method,
+              method: "POST",
               url: `${url.pathname}${url.search}`,
               headers: { ...Object.fromEntries(request.headers), host: url.host },
               ...(request.body === null

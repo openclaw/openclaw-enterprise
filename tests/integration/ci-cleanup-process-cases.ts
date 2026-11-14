@@ -462,14 +462,21 @@ export function registerCommandOwnershipCases({
           const fixtureImport = JSON.stringify(
             new URL("../helpers/postgres-worker-revision-fixture.mjs", import.meta.url).href,
           );
+          const waitImport = JSON.stringify(
+            new URL("../helpers/wait-for.mjs", import.meta.url).href,
+          );
           const body =
             scenario === "fixture-exit"
               ? `import { createWorkerRevisionFixtures, disposeStep } from ${fixtureImport};
+           import { waitUntil } from ${waitImport};
            // A shorter exit grace than the fixture's 2 s: this file has one test to report.
            const { cleanup } = createWorkerRevisionFixtures(import.meta.url, { exitGraceMs: 500 });
            after(cleanup);
            test("abandons cleanup", async () => {
-             await assert.rejects(disposeStep("cleanup command", 500, () => cleanupState(${JSON.stringify(statePath)})), /did not finish within 500 ms/);
+             // Exercise abandonment with a live command, regardless of Node startup time.
+             const operation = cleanupState(${JSON.stringify(statePath)});
+             await Promise.race([waitUntil("cleanup command heartbeat", () => existsSync(${JSON.stringify(heartbeat)}), { timeoutMs: 5000, intervalMs: 25 }), operation]);
+             await assert.rejects(disposeStep("cleanup command", 500, () => operation), /did not finish within 500 ms/);
              console.log("fixture cleanup abandoned");
            });`
               : scenario === "runner-cleanup-exit"

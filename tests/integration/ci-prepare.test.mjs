@@ -20,13 +20,13 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.ts";
-import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
+import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.ts";
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
-import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
+import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   assertStderrMatch,
@@ -507,7 +507,7 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
       const { directory } = JSON.parse(await readFile(contentionPath, "utf8"));
       const cleanup = await spawnResult(
         process.execPath,
-        [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
+        [join(repositoryRoot, "scripts/ci/cleanup.ts"), "--state", statePath],
         { env: { ...process.env, OCC_DOCKER_BIN: docker } },
       );
       assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "foreign bootstrap");
@@ -595,7 +595,7 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
           : "unrelated content";
       const cleanup = await spawnResult(
         process.execPath,
-        [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
+        [join(repositoryRoot, "scripts/ci/cleanup.ts"), "--state", statePath],
         { env: { ...process.env, OCC_DOCKER_BIN: docker } },
       );
 
@@ -1867,6 +1867,8 @@ process.exit(73);
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/test-suites.ts",
+      "scripts/ci/openshell-full-integration.ts",
       "scripts/ci/resource-names.ts",
       "scripts/ci/test-suites/images-packaging.json",
       ".github/workflows/ci-image-cache.yml",
@@ -2435,13 +2437,8 @@ assert.equal(commands, 0);
     }
   });
 
-  test("CI installs browsers for the PostgreSQL sign-in suite's owning lane", async () => {
+  test("CI installs Chromium for the PostgreSQL browser suites", async () => {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
-    const owners = Object.entries(manifest.lanes).filter(([, lane]) =>
-      lane.files.some((file) => file.path === "tests/integration/postgres-oidc-sign-in.test.mjs"),
-    );
-    assert.equal(owners.length, 1);
-    const [lane] = owners[0];
     const action = loadYaml(
       await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
     );
@@ -2449,11 +2446,21 @@ assert.equal(commands, 0);
       (step) => step.run === "bash scripts/ci/setup-tools.sh browser",
     );
     assert.ok(browserSetup);
-    // Moving the browser suite between lanes must carry its Chromium prerequisite.
-    assert.ok(
-      browserSetup.if.split(/\s*\|\|\s*/).includes(`inputs.lane == '${lane}'`),
-      `${lane} must install browsers before running the PostgreSQL sign-in suite`,
-    );
+    // Moving a browser suite between lanes must carry its Chromium prerequisite.
+    for (const path of [
+      "tests/integration/postgres-human-session-cookie.test.ts",
+      "tests/integration/postgres-native-host-only-browser.test.ts",
+    ]) {
+      const owners = Object.entries(manifest.lanes).filter(([, lane]) =>
+        lane.files.some((file) => file.path === path),
+      );
+      assert.equal(owners.length, 1, path);
+      const [lane] = owners[0];
+      assert.ok(
+        browserSetup.if.split(/\s*\|\|\s*/).includes(`inputs.lane == '${lane}'`),
+        `${lane} must install Chromium for ${path}`,
+      );
+    }
   });
 
   test("focused CI selection fails before tool setup or lane preparation", async () => {
@@ -3382,7 +3389,7 @@ export async function readDefaultCollectorImage(): Promise<never> {
 const prepareUrl = ${JSON.stringify(prepareUrl)};
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === "./logging.mjs" && context.parentURL === prepareUrl) {
+    if (specifier === "./logging.ts" && context.parentURL === prepareUrl) {
       return { url: import.meta.url, shortCircuit: true };
     }
     return nextResolve(specifier, context);
@@ -4584,7 +4591,7 @@ ${scenario.failure === "signal" ? 'process.kill(process.pid, "SIGTERM");' : `pro
 import assert from "node:assert/strict";
 const { prepareFile } = await import(process.argv[1]);
 await assert.rejects(() => prepareFile({ lane: "postgres-application",
-  file: "tests/integration/postgres-platform-state.test.mjs", statePath: process.argv[2] }),
+  file: "tests/integration/postgres-platform-state.test.ts", statePath: process.argv[2] }),
   error => {
     assert.equal(error.code, "CI_PREPARATION_COMMAND_FAILED");
     assert.equal(error.stage, ${JSON.stringify(scenario.stage)});

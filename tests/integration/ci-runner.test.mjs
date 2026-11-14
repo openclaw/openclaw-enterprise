@@ -1,4 +1,4 @@
-import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
+import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
 import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -1897,51 +1897,44 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     requireTestResult(tests, "job env redaction").error.message,
     "owner openclaw-public-owner [env:OCC_TEST_STRIPPED_VALUE]",
   );
-  const httpFailure = requireTestResult(tests, "allowlisted controller HTTP diagnostic");
-  assert.deepEqual(httpFailure.error.diagnostic, {
+
+  function diagnosticFor(name) {
+    return requireTestResult(tests, name).error.diagnostic;
+  }
+
+  function assertDiagnostic(name, expected) {
+    assert.deepEqual(diagnosticFor(name), expected, name);
+  }
+
+  function assertNoDiagnostic(name) {
+    assert.equal(diagnosticFor(name), undefined, name);
+  }
+
+  assertDiagnostic("allowlisted controller HTTP diagnostic", {
     kind: "controller-http",
     status: 503,
     expectedStatus: 201,
     occErrorCode: "DEPENDENCY_UNAVAILABLE",
     upstream: { kind: "chatgpt-admin-http", operation: "create-service-account", status: 403 },
   });
-  const unsafeFailure = requireTestResult(tests, "rejects unsafe controller HTTP diagnostic");
-  assert.equal(unsafeFailure.error.diagnostic, undefined);
-  const installationStatusFailure = requireTestResult(
-    tests,
-    "allowlisted observability installation status diagnostic",
-  );
-  assert.deepEqual(installationStatusFailure.error.diagnostic, {
+  assertNoDiagnostic("rejects unsafe controller HTTP diagnostic");
+  assertDiagnostic("allowlisted observability installation status diagnostic", {
     kind: "observability-installation-status",
     status: 503,
     expectedStatus: 401,
   });
-  const unsafeInstallationStatusFailure = requireTestResult(
-    tests,
-    "rejects unsafe observability installation status diagnostic",
-  );
-  assert.equal(unsafeInstallationStatusFailure.error.diagnostic, undefined);
-  const logExportFailure = requireTestResult(
-    tests,
-    "allowlisted observability log export diagnostic",
-  );
-  assert.deepEqual(logExportFailure.error.diagnostic, {
+  assertNoDiagnostic("rejects unsafe observability installation status diagnostic");
+  assertDiagnostic("allowlisted observability log export diagnostic", {
     kind: "observability-log-export",
     api: true,
     worker: false,
   });
-  const unsafeLogExportFailure = requireTestResult(
-    tests,
-    "rejects unsafe observability log export diagnostic",
-  );
-  assert.equal(unsafeLogExportFailure.error.diagnostic, undefined);
+  assertNoDiagnostic("rejects unsafe observability log export diagnostic");
   // Keep the failed wait identifiable without exposing arbitrary runtime output.
   for (const stage of ["ready-status", "warning-status", "initial-rollout"]) {
-    const failure = requireTestResult(tests, stage);
-    assert.deepEqual(failure.error.diagnostic, { kind: "kubernetes-plugin-status", stage });
+    assertDiagnostic(stage, { kind: "kubernetes-plugin-status", stage });
   }
-  const rolloutFailure = requireTestResult(tests, "warning-rollout");
-  assert.deepEqual(rolloutFailure.error.diagnostic, {
+  assertDiagnostic("warning-rollout", {
     kind: "kubernetes-plugin-status",
     stage: "warning-rollout",
     pods: [
@@ -1962,44 +1955,28 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       { phase: "Running", containers: [{ name: "prepare-private-state" }] },
     ],
   });
-  const unsafeStage = requireTestResult(tests, "unsafe plugin stage");
-  assert.equal(unsafeStage.error.diagnostic, undefined);
-  const deniedTraffic = requireTestResult(tests, "allowlisted denied traffic diagnostic");
-  assert.deepEqual(deniedTraffic.error.diagnostic, {
+  assertNoDiagnostic("unsafe plugin stage");
+  assertDiagnostic("allowlisted denied traffic diagnostic", {
     kind: "network-policy",
     stage: "Agent outbound platform traffic",
   });
-  const unsafeTraffic = requireTestResult(tests, "rejects unsafe denied traffic diagnostic");
-  assert.equal(unsafeTraffic.error.diagnostic, undefined);
-  const stockBrokerFailure = requireTestResult(
-    tests,
-    "allowlisted runtime stock broker diagnostic",
-  );
-  assert.deepEqual(stockBrokerFailure.error.diagnostic, {
+  assertNoDiagnostic("rejects unsafe denied traffic diagnostic");
+  assertDiagnostic("allowlisted runtime stock broker diagnostic", {
     kind: "runtime-image-stock-broker",
     stage: "broker-denial",
   });
-  const unsafeStockBroker = requireTestResult(tests, "rejects unsafe runtime stock broker stage");
-  assert.equal(unsafeStockBroker.error.diagnostic, undefined);
+  assertNoDiagnostic("rejects unsafe runtime stock broker stage");
   const nativeProof = requireTestResult(tests, "retains native first-Agent proof failure stage");
   assert.equal(nativeProof.status, "failed");
   assert.deepEqual(nativeProof.error.diagnostic, {
     kind: "native-first-agent-proof",
     failureStage: "required-placement",
   });
-  const terminalPlacement = requireTestResult(
-    tests,
-    "retains a terminal native first-Agent placement stage",
-  );
-  assert.deepEqual(terminalPlacement.error.diagnostic, {
+  assertDiagnostic("retains a terminal native first-Agent placement stage", {
     kind: "native-first-agent-proof",
     failureStage: "required-placement-terminal-reclaimed",
   });
-  const retainedNative = requireTestResult(
-    tests,
-    "retains native worker placement observations through CI",
-  ).error.diagnostic;
-  assert.deepEqual(retainedNative, {
+  assertDiagnostic("retains native worker placement observations through CI", {
     kind: "native-first-agent-proof",
     failureStage: "required-placement-terminal-failed",
     worker: {
@@ -2028,33 +2005,27 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     },
   });
   assert.deepEqual(
-    requireTestResult(tests, "retains value-free native history observations through CI").error
-      .diagnostic.worker,
+    diagnosticFor("retains value-free native history observations through CI").worker,
     nativeHistory,
   );
   for (const [index, [exitCode]] of inconsistentNativeFailures.entries()) {
     assert.deepEqual(
-      requireTestResult(tests, `rejects inconsistent native failure ${index}`).error.diagnostic
-        .worker,
+      diagnosticFor(`rejects inconsistent native failure ${index}`).worker,
       exitCode === undefined ? {} : { historyExecNestedExitCode: exitCode },
     );
   }
-  assert.deepEqual(
-    requireTestResult(tests, "rejects hostile native worker diagnostic fields").error.diagnostic
-      .worker,
-    {
-      placementState: "other",
-      recoveryError: "other",
-      environmentLookup: "other",
-      turnStatus: "other",
-      turnError: "other",
-      assistantError: "other",
-      execError: "other",
-      historyExecErrorFlag: "other",
-    },
-  );
+  assert.deepEqual(diagnosticFor("rejects hostile native worker diagnostic fields").worker, {
+    placementState: "other",
+    recoveryError: "other",
+    environmentLookup: "other",
+    turnStatus: "other",
+    turnError: "other",
+    assistantError: "other",
+    execError: "other",
+    historyExecErrorFlag: "other",
+  });
   for (const [, category] of turnCases) {
-    const turn = requireTestResult(tests, `native turn ${category}`).error.diagnostic.worker;
+    const turn = diagnosticFor(`native turn ${category}`).worker;
     assert.equal(turn.turnStatus, "error");
     assert.equal(turn.turnError, category);
     assert.equal(turn.assistantError, category);
@@ -2063,21 +2034,16 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     assert.equal(turn.execResultCount, 1);
     assert.equal(turn.execFailureCount, 1);
   }
-  const collected = requireTestResult(
-    tests,
+  const collected = diagnosticFor(
     "collects native turn failure within the shared read budget",
-  ).error.diagnostic.worker;
+  ).worker;
   assert.equal(collected.turnError, "network-connection");
   assert.equal(collected.historyLookup, "found");
-  const wrapped = requireTestResult(
-    tests,
-    "retains wrapped native worker bootstrap causes through CI",
-  ).error.diagnostic.worker;
+  const wrapped = diagnosticFor("retains wrapped native worker bootstrap causes through CI").worker;
   assert.equal(wrapped.recoveryError, "worker-deploy-artifact-missing");
   assert.equal(wrapped.terminalReason, "bundle-install-failed");
   assert.equal(wrapped.environmentError, "node-installer-disconnected");
-  const fresh = requireTestResult(tests, "refreshes retained native placement").error.diagnostic
-    .worker;
+  const fresh = diagnosticFor("refreshes retained native placement").worker;
   assert.equal(fresh.placementLookup, "fresh");
   assert.equal(fresh.placementState, "failed");
   assert.equal(fresh.environmentState, "failed");
@@ -2086,17 +2052,15 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     "labels fallback after failed native placement refresh",
     "rejects another session during native placement refresh",
   ]) {
-    const fallback = requireTestResult(tests, name).error.diagnostic.worker;
+    const fallback = diagnosticFor(name).worker;
     assert.equal(fallback.placementLookup, "fallback");
     assert.equal(fallback.placementState, "active");
     assert.equal(fallback.environmentState, "attached");
   }
   for (const [, category] of nativeLeafCases) {
-    const leaf = requireTestResult(tests, `native installer ${category}`);
-    assert.equal(leaf.error.diagnostic.worker.recoveryError, category);
+    assert.equal(diagnosticFor(`native installer ${category}`).worker.recoveryError, category);
   }
-  const monitoringFailure = requireTestResult(tests, "retains safe monitoring readiness evidence");
-  assert.deepEqual(monitoringFailure.error.diagnostic, {
+  assertDiagnostic("retains safe monitoring readiness evidence", {
     kind: "metrics-monitoring",
     stage: "prometheus-up",
     reason: "container-exited",
@@ -2104,8 +2068,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     exitCode: 2,
     lastHttpStatus: 503,
   });
-  const unsafeMonitoring = requireTestResult(tests, "rejects unsafe monitoring stage");
-  assert.equal(unsafeMonitoring.error.diagnostic, undefined);
+  assertNoDiagnostic("rejects unsafe monitoring stage");
   assertRepositorySetupDiagnostics(summary, repositorySetupCases);
 
   const unsafeNativeProof = requireTestResult(
@@ -2117,8 +2080,8 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
 });
 
 test("failure text is bounded and redacts env values and credential shapes", async () => {
-  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
-  const { failureSecrets, redactFailure } = await import("../../scripts/ci/failure-redaction.mjs");
+  const { default: reporter } = await import("../../scripts/ci/reporter.ts");
+  const { failureSecrets, redactFailure } = await import("../../scripts/ci/failure-redaction.ts");
   const secrets = failureSecrets([
     { GITHUB_REPOSITORY_OWNER: "openclaw", JOB_ONLY_KEY: "jobonlyopaque123" },
     {
@@ -2513,7 +2476,7 @@ await registerFiniteConversationTests();
 });
 
 test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
-  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
+  const { default: reporter } = await import("../../scripts/ci/reporter.ts");
   const render = async (events) => {
     let text = "";
     for await (const chunk of reporter(events)) {

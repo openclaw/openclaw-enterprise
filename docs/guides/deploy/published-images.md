@@ -141,9 +141,49 @@ For production, public GHCR pulls need no pull Secret. See
 to a private mirror. For local setup, export the resolved pair as
 [development image selections](../quickstart.md#optional-use-matching-published-images).
 
+## Read runtime download client identities
+
+Use Node.js 24.22.1 or newer, Python 3, and Docker with the containerd image
+store and `--platform` support for `docker image inspect` and `docker image save`.
+Download the `container-publication-<run-id>-<attempt>` artifact from the
+successful protected [Enterprise Containers run](#check-publication-and-source).
+It contains `publication.json`. From the matching release checkout, pull the
+receipt's runtime index by digest for the target platform with
+`docker pull --platform`.
+
+Export `SOURCE_SHA` (the full OCE source commit), `PUBLICATION_RUN_ID`,
+`PUBLICATION_ATTEMPT`, `NODE_BASE_IMAGE` (the approved build base with digest),
+and `GHCR_RUNTIME_IMAGE` (the runtime repository without a tag or digest) from
+that publication. Run this for the architecture where the Agent will run.
+
+```bash
+node scripts/ci/runtime-download-client-projection.ts publication.json linux/amd64
+```
+
+Use `linux/arm64` for ARM64. The command checks the local runtime index,
+platform manifest, config digest, and source against the receipt. It reads
+`/opt/oce/runtime/provenance.json` from a stopped container and prints JSON
+with `sourceImage`, `platformImage`, `platform`, and `downloadClients`. Each
+client entry contains its absolute `resolvedBinary` path and `binarySha256`.
+The stock inventory contains curl, both APT transport methods, and Node.js.
+Both APT methods resolve to the same executable.
+
+The command checks additional clients against the list at `SOURCE_SHA`. For a
+custom image that adds a native download client, record the executable that
+opens network connections in the same source change that installs it. Use its
+actual path on both architectures. See the
+[optional native tool paths](../../../deploy/runtime/README.md#select-optional-native-tools).
+
 ## Verify after installation
 
 The publication's startup checks do not establish a working Agent on your
 cluster. Complete [Agent model verification](../operate/model-verification.md).
 Keep the resolved image references with your deployment record so a later move
 of the selected alias does not change which images were selected for this installation.
+
+For an OpenShell deployment that uses optional native tools, the sandbox
+filesystem policy must let the Agent read and execute files under
+`/opt/devtools`. Verify each required tool through the deployed Agent with
+the exact image digest and policy. Exercise a real allowed download and a
+connection the policy must deny. Follow the
+[OpenShell verification procedures](../../testing/openshell.md#openshell-sandbox).

@@ -10,14 +10,14 @@ import {
   isCredentialLine,
   newestMatchingLogLines,
   redactLogLine,
-} from "../../scripts/ci/failure-redaction.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
 import { maskPrivateKeyLogLines } from "../../scripts/ci/k3d-node-log.ts";
 import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.ts";
 import {
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
 type Secrets = readonly (readonly [string, string])[];
 

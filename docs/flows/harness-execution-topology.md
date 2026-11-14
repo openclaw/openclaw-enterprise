@@ -324,7 +324,7 @@ removal.
   values or payloads; stderr suppression and deadlines remain.
 
 - Check placement, immutable policy, and conflicts:
-  `node --test tests/conformance/configuration-occ.test.mjs`.
+  `node --test tests/conformance/configuration-occ.test.ts`.
 - Check guarded activation and recovery:
   `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with an explicitly
   provisioned application-role PostgreSQL database.

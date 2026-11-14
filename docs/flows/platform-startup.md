@@ -22,7 +22,7 @@ requests and the worker starts polling PostgreSQL for queued operations.
 
 - Trigger: Start the API with `node apps/controller/src/server.mjs`; start the
   worker separately with `node apps/controller/src/worker.mjs`.
-- Source: `apps/controller/src/api-startup.mjs:startApi`,
+- Source: `apps/controller/src/api-startup.ts:startApi`,
   `apps/controller/src/worker.mjs:configuration`, and
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`.
 - Assumptions: PostgreSQL-backed startup requires the same migrated application
@@ -78,7 +78,7 @@ graph TD
 
 ### 1. Launch independent API and worker processes
 
-`apps/controller/src/api-startup.mjs:startApi`
+`apps/controller/src/api-startup.ts:startApi`
 
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
@@ -135,7 +135,7 @@ comes from server-owned singleton state, never startup YAML.
 
 API and worker use matching logical Driver identities but separate instances.
 Each IAM Driver loads current persisted policy for every identity lookup and
-authorization decision. Only `api-startup.mjs` reads the mounted ChatGPT admin key,
+authorization decision. Only `api-startup.ts` reads the mounted ChatGPT admin key,
 constructs `Backend<ChatGPTClient>`, and injects it into the optional
 ServiceAccount Driver factory. The worker consumes only nonsecret Backend
 metadata and never receives the client or admin credential. Startup validates
@@ -179,7 +179,7 @@ ServiceAccount Driver with OCC before
 exact-resource-authorized API routes.
 Route request validators and response serializers come from
 [`route-compilers.ts`](../../apps/controller/src/http/route-compilers.ts). When
-[`precompile-route-schemas.mjs`](../../apps/controller/src/precompile-route-schemas.mjs)
+[`precompile-route-schemas.ts`](../../apps/controller/src/precompile-route-schemas.ts)
 has written `apps/controller/dist/route-compilers.cjs`, as the image build does, the API
 loads code generated for exactly the same schema, options, Node version and lockfile
 instead of compiling it; anything else compiles at start, as before. The

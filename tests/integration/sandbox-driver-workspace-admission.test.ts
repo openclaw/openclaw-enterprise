@@ -13,17 +13,15 @@ import type {
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { OpenShellSandboxCreateRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import type {
-  AgentRevision,
-  ComputeRevisionContext,
-  CredentialGatewayDriver,
-  CredentialSource,
-  CredentialSourceLoginMode,
-} from "../../packages/contracts/src/index.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
+  type AgentRevision,
+  type ComputeRevisionContext,
+  type CredentialGatewayDriver,
+  type CredentialSource,
+  type CredentialSourceLoginMode,
+} from "../../packages/contracts/src/index.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import {
   captureOpenShellHarness,

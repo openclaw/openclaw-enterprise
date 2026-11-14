@@ -5,7 +5,7 @@ import {
   type ExecFileOptionsWithStringEncoding,
 } from "node:child_process";
 import { promisify } from "node:util";
-import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { followContainer } from "./docker-follow.ts";
 import { withTestOwnerLabel } from "./docker-test-owner.mjs";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
@@ -246,7 +246,7 @@ export function commandOutput(error: object) {
   return `${stdout ?? ""}\n${stderr ?? ""}`;
 }
 
-// CI keeps only the first 16 KiB of a failure message (scripts/ci/reporter.mjs),
+// CI keeps only the first 16 KiB of a failure message (scripts/ci/reporter.ts),
 // so a whole container log in an error loses its end: the wrapper's stderr and
 // the actual failure (finding 976 misread a cut log as a Doctor stall). Errors
 // carry at most the last `limit` characters of process output instead, from a

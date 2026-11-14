@@ -13,7 +13,7 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.ts";
 
-// Shared by ci-prepare.test.mjs and ci-prepare-k3d.test.mjs, which split the
+// Shared by ci-prepare.test.mjs and ci-prepare-k3d.test.ts, which split the
 // preparation cases so Checks and Conformance 2 can run them at the same time.
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 
@@ -288,7 +288,7 @@ export async function fixtureImageCommands(
       env: { ...env, ...options?.env },
     });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
-  const cleanup = () => run("cleanup.mjs", ["--state", statePath]);
+  const cleanup = () => run("cleanup.ts", ["--state", statePath]);
   return {
     statePath,
     githubEnv,

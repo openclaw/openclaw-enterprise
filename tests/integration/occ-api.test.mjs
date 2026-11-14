@@ -55,7 +55,6 @@ import {
   AGENT_NAME_CONFLICT,
   BINDING_SUBJECT_EMAIL,
   BINDING_SUBJECT_INELIGIBLE,
-  callerDenied,
   DEDICATED_STORAGE_ROUTING_REQUIRED,
   DEPLOYMENT_FAILED,
   KUBERNETES_ALLOW_USERS_REFUSAL,
@@ -66,7 +65,6 @@ import {
   referenceFormRefusal,
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
-  SERVICE_ACCOUNT_NAME_CONFLICT,
   SLACK_ROUTE_NOT_CONFIGURED,
   sshGatewayPasswordRefusal,
   unboundReferenceRefusal,
@@ -75,7 +73,6 @@ import {
   unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
 import { INVALID_ALLOW_USERS_SAMPLE } from "../helpers/trusted-proxy-shapes.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -306,20 +303,6 @@ async function createConfiguration(controller, namespaceId, values = {}) {
   return result.data;
 }
 
-async function createServiceAccount(controller, namespaceId, name) {
-  const result = await controller.request("POST", `/namespaces/${namespaceId}/service-accounts`, {
-    body: { name },
-  });
-  assert.equal(result.status, 201);
-  assert.match(result.data.id, identifier("sa"));
-  assert.deepEqual(result.data, {
-    id: result.data.id,
-    namespaceId,
-    name,
-  });
-  return result.data;
-}
-
 async function createAgent(controller, namespaceId, name, values = {}) {
   const configuration = await createConfiguration(controller, namespaceId, values);
   const result = await controller.request("POST", `/namespaces/${namespaceId}/agents`, {
@@ -489,10 +472,13 @@ function stateWithDeploymentWork(state, deploymentWorks) {
     ...view,
     operations: {
       ...view.operations,
-      findWork: async (requestedKey) =>
-        deploymentWorks.has(requestedKey)
-          ? Object.freeze({ ...deploymentWorks.get(requestedKey) })
-          : view.operations.findWork(requestedKey),
+      findWork: async (requestedKey) => {
+        if (!deploymentWorks.has(requestedKey)) {
+          return view.operations.findWork(requestedKey);
+        }
+        const work = deploymentWorks.get(requestedKey);
+        return work === undefined ? undefined : Object.freeze({ ...work });
+      },
     },
   });
   return {
@@ -2353,7 +2339,6 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
     defaultNamespace,
     createNamespace,
     createAgent,
-    createServiceAccount,
     missingRevisionId,
     missingAgentId,
   }));
@@ -3791,7 +3776,7 @@ test("Console share grants confer only the shared Agent and Namespace discovery"
     });
     assert.equal(binding.status, 201, JSON.stringify(binding.body));
     // Mirror persisted policy into the native IAM state, as production loadNativeIAMState does.
-    // The live Postgres proof is in postgres-namespace-iam-policy.test.mjs.
+    // The live Postgres proof is in postgres-namespace-iam-policy.test.ts.
     fixture.state.roles.push(role.data);
     fixture.state.bindings.push(binding.data);
   }
@@ -4942,11 +4927,20 @@ test("Installation deployment inventory fails closed on incomplete authorization
     ?.agents.find((candidate) => candidate.id === agent.id);
   assert.equal(inProgressAgent?.deploymentInProgress, true);
 
+  // Work belonging to a different Namespace cannot establish this deployment's state.
+  const otherNamespace = inventory.data.namespaces.find(
+    (candidate) => candidate.id !== namespace.id,
+  );
+  assert.ok(otherNamespace);
+  deploymentWorks.set(workKey, { ...completedWork, namespaceId: otherNamespace.id });
+  const wrongOwner = await controller.request("GET", inventoryPath);
+  assertApiError(wrongOwner, 503, "DEPENDENCY_UNAVAILABLE", "wrong-owner deployment work");
+
   // Missing durable work makes completeness unknowable and must fail the whole operation.
   deploymentWorks.set(workKey, undefined);
   const incomplete = await controller.request("GET", inventoryPath);
-  assert.equal(incomplete.status, 503);
-  assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(incomplete, 503, "DEPENDENCY_UNAVAILABLE", "missing deployment work");
+  assert.deepEqual(Object.keys(incomplete.body).sort(), ["error", "meta"]);
 });
 
 test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
@@ -6448,577 +6442,6 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   }
   const afterStoredRefusal = await controller.request("GET", agentPath);
   assert.deepEqual(afterStoredRefusal.data, beforeDriverSwitch.data);
-});
-
-test("a forced ServiceAccount delete without a ChatGPT Backend removes an account whose token nothing can revoke and audits it", async () => {
-  const controller = await configuredController();
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "service-account-force-delete");
-  const account = await createServiceAccount(controller, namespace.id, "orphaned-token");
-  const accountPath = `/namespaces/${namespace.id}/service-accounts/${account.id}`;
-  const missingPath = `/namespaces/${namespace.id}/service-accounts/sa_00000000-0000-4000-8000-000000000000`;
-  // The token was issued while a ChatGPT Backend was configured; this Installation has none.
-  await controller.fixture.controller.transact((unit) =>
-    unit.serviceAccounts.updateCredential(namespace.id, account.id, {
-      kind: "access_token",
-      secretRef: { name: `account-${account.id.slice(3)}`, key: "token" },
-    }),
-  );
-
-  // Without force, and with an explicit force=false, deletion still refuses and names both ways out.
-  for (const path of [accountPath, `${accountPath}?force=false`]) {
-    const refused = await controller.request("DELETE", path);
-    assertApiError(refused, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-    assert.match(
-      refused.body.error.message,
-      /force the delete and revoke the token at the provider/,
-    );
-  }
-  const malformed = await controller.request("DELETE", `${accountPath}?force=yes`);
-  assertApiError(malformed, 400, "INVALID_REQUEST");
-
-  // Force adds no oracle: a caller without delete gets the same 403 for a real and an unknown
-  // account, and the grant holder the usual 404 for an unknown one.
-  const outsider = await controller.fixture.createAuthPrincipal("service-account-force-outsider");
-  controller.fixture.state.identities.push(outsider.principal);
-  const denied = await assertSameAnswer(
-    (id) =>
-      controller.request(
-        "DELETE",
-        `/namespaces/${namespace.id}/service-accounts/${id}?force=true`,
-        { session: outsider.session },
-      ),
-    [account.id, missingPath.split("/").at(-1)],
-  );
-  // The denial names the account ID its request sent, and nothing else about it.
-  assert.equal(denied.message, callerDenied("ServiceAccount delete", "ServiceAccount <id>"));
-  const unknown = await controller.request("DELETE", `${missingPath}?force=true`);
-  assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
-
-  const forced = await controller.request("DELETE", `${accountPath}?force=true`);
-  assert.equal(forced.status, 200, JSON.stringify(forced.body));
-  // The in-memory state keeps no Backend binding, so no binding identity is reported.
-  assert.deepEqual(forced.data, {
-    id: account.id,
-    namespaceId: namespace.id,
-    revocation: "skipped",
-  });
-  assert.equal((await controller.request("GET", accountPath)).status, 404);
-
-  const deletion = controller.fixture.auditSink.events.findLast(
-    (event) => event.action === "openclaw.service_accounts.delete",
-  );
-  assert.equal(deletion.outcome, "success");
-  assert.equal(deletion.actorId, controller.fixture.principal.id);
-  assert.deepEqual(deletion.resource, {
-    kind: "service_account",
-    id: account.id,
-    namespaceId: namespace.id,
-  });
-  // `revocation` survives audit redaction, which a `tokenRevoked` key would not.
-  assert.equal(deletion.details.force, true);
-  assert.equal(deletion.details.revocation, "skipped");
-
-  // PostgreSQL state also reports the token's Backend binding (postgres-service-account-deletion
-  // pins the lookup). The response names only the Backend; the audit event keeps every binding
-  // ID, which redaction leaves alone because each key ends in "Id", so the token can be revoked.
-  const bound = await createServiceAccount(controller, namespace.id, "orphaned-bound-token");
-  await controller.fixture.controller.transact((unit) =>
-    unit.serviceAccounts.updateCredential(namespace.id, bound.id, {
-      kind: "access_token",
-      secretRef: { name: `account-${bound.id.slice(3)}`, key: "token" },
-    }),
-  );
-  const binding = {
-    backendId: "chatgpt",
-    workspaceId: "11111111-1111-4111-8111-111111111111",
-    externalAccountId: "user-account-bound",
-    credentialId: "key-bound",
-  };
-  const occ = controller.fixture.controller;
-  const deleteServiceAccount = occ.deleteServiceAccount;
-  occ.deleteServiceAccount = async (...args) => {
-    const deleted = await deleteServiceAccount.apply(occ, args);
-    return { ...deleted, unrevokedCredential: binding };
-  };
-  let boundForced;
-  try {
-    boundForced = await controller.request(
-      "DELETE",
-      `/namespaces/${namespace.id}/service-accounts/${bound.id}?force=true`,
-    );
-  } finally {
-    delete occ.deleteServiceAccount;
-  }
-  assert.equal(boundForced.status, 200, JSON.stringify(boundForced.body));
-  assert.deepEqual(boundForced.data, {
-    id: bound.id,
-    namespaceId: namespace.id,
-    revocation: "skipped",
-    backendId: "chatgpt",
-  });
-  const boundEvent = controller.fixture.auditSink.events.findLast(
-    (event) => event.action === "openclaw.service_accounts.delete",
-  );
-  assert.equal(boundEvent.resource.id, bound.id);
-  assert.deepEqual(boundEvent.details, { force: true, revocation: "skipped", ...binding });
-
-  // An account without an issued token never needed revocation: force answers the usual 204.
-  const native = await createServiceAccount(controller, namespace.id, "native");
-  const nativeDeleted = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/service-accounts/${native.id}?force=true`,
-  );
-  assert.equal(nativeDeleted.status, 204);
-  const nativeEvent = controller.fixture.auditSink.events.findLast(
-    (event) => event.action === "openclaw.service_accounts.delete",
-  );
-  assert.equal(nativeEvent.resource.id, native.id);
-  // The requested force is recorded, but nothing was skipped.
-  assert.equal(nativeEvent.details.force, true);
-  assert.equal(Object.hasOwn(nativeEvent.details, "revocation"), false);
-});
-
-function serviceAccountHarnessAuth(sourceNamespaceId, accountId) {
-  return {
-    method: "codex_pat",
-    source: { kind: "service_account", namespaceId: sourceNamespaceId, id: accountId },
-  };
-}
-
-test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
-  const controller = await configuredController({ recordOperations: true });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "service-account-lifecycle");
-  const namespacePath = `/namespaces/${namespace.id}`;
-  const accountsPath = `${namespacePath}/service-accounts`;
-  const agentsPath = `${namespacePath}/agents`;
-  const account = await createServiceAccount(controller, namespace.id, "model-provider");
-  const accountPath = `${accountsPath}/${account.id}`;
-  const credentialPath = `${accountPath}/credential`;
-
-  const detail = await controller.request("GET", accountPath);
-  assert.deepEqual(detail.data, account);
-
-  const configuration = await createConfiguration(controller, namespace.id);
-  const agentResult = await controller.request("POST", agentsPath, {
-    body: {
-      name: "service-account-agent",
-      configurationId: configuration.id,
-      harnessAuth: serviceAccountHarnessAuth(account.namespaceId, account.id),
-    },
-  });
-  assert.equal(agentResult.status, 201);
-  assert.equal(agentResult.data.harnessAuth.source.id, account.id);
-  const agentPath = `${agentsPath}/${agentResult.data.id}`;
-  const deploymentPath = `${agentPath}/deploy`;
-
-  // A ready Namespace is insufficient: associated accounts without credentials cannot admit revisions.
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
-  // This Installation has no ChatGPT Backend: issuance is a conflict naming the fix, not an
-  // outage, and only after the caller's grant and the account lookup.
-  const issuance = await controller.request("POST", `${accountPath}/credentials`, { body: {} });
-  assertApiError(issuance, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  assert.equal(
-    issuance.body.error.message,
-    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An Installation administrator must configure it and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
-  );
-  const unknownIssuance = await controller.request(
-    "POST",
-    `${accountsPath}/sa_00000000-0000-4000-8000-000000000000/credentials`,
-    { body: {} },
-  );
-  assert.equal(unknownIssuance.status, 404, JSON.stringify(unknownIssuance.body));
-  const issuer = await controller.fixture.createAuthPrincipal("service-account-no-backend-issuer");
-  controller.fixture.state.identities.push(issuer.principal);
-  const deniedIssuance = await controller.request("POST", `${accountPath}/credentials`, {
-    body: {},
-    session: issuer.session,
-  });
-  assert.equal(deniedIssuance.status, 403, JSON.stringify(deniedIssuance.body));
-
-  // Without a Backend no account can hold an access token, so deployment names the Backend too.
-  const missingCredential = await controller.request("POST", deploymentPath);
-  assertApiError(missingCredential, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  assert.equal(
-    missingCredential.body.error.message,
-    "ChatGPT Harness authentication needs an issued access-token credential, and this Installation has no ChatGPT Backend to issue one. An Installation administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
-  );
-
-  const initialCredential = {
-    kind: "api_key",
-    secretRef: { name: "namespace-provider-source", key: "provider-api-key" },
-  };
-  const assigned = await controller.request("PATCH", credentialPath, {
-    body: initialCredential,
-  });
-  assert.equal(assigned.status, 200);
-  assert.deepEqual(assigned.data.credential, { kind: initialCredential.kind });
-  assert.deepEqual(
-    (
-      await controller.fixture.controller.getServiceAccount(
-        controller.fixture.principal.id,
-        namespace.id,
-        account.id,
-      )
-    ).credential,
-    initialCredential,
-  );
-
-  const nativeDeployment = await controller.request("POST", deploymentPath);
-  assertApiError(nativeDeployment, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  // A PAT source admits only an access-token credential, never an API key in its place.
-  assert.match(nativeDeployment.body.error.message, /needs an issued access-token credential/);
-
-  // OAuth references are representable, but no refresh or OAuth execution exists yet.
-  const oauthCredential = {
-    kind: "oauth_access_token",
-    secretRef: { name: "namespace-oauth-source", key: "access-token" },
-  };
-  const oauthUpdate = await controller.request("PATCH", credentialPath, {
-    body: oauthCredential,
-  });
-  assert.equal(oauthUpdate.status, 200);
-  const oauthDeployment = await controller.request("POST", deploymentPath);
-  assertApiError(oauthDeployment, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  assert.match(oauthDeployment.body.error.message, /needs an issued access-token credential/);
-
-  const replacementCredential = {
-    kind: "api_key",
-    secretRef: { name: "namespace-provider-rotated", key: "rotated-api-key" },
-  };
-  const replaced = await controller.request("PATCH", credentialPath, {
-    body: replacementCredential,
-  });
-  assert.equal(replaced.status, 200);
-  assert.deepEqual(replaced.data.credential, { kind: replacementCredential.kind });
-  assert.deepEqual(
-    (
-      await controller.fixture.controller.getServiceAccount(
-        controller.fixture.principal.id,
-        namespace.id,
-        account.id,
-      )
-    ).credential,
-    replacementCredential,
-  );
-  assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
-
-  // The caller holds delete on the account, so the conflict names what still depends on it.
-  const boundDeletion = await controller.request("DELETE", accountPath);
-  assertApiError(boundDeletion, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    boundDeletion.body.error.message,
-    "An Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the ServiceAccount. Remove those references, or let provisioning finish, first.",
-  );
-  // Authorization precedes the reference check: a caller without delete learns nothing about references.
-  const outsider = await controller.fixture.createAuthPrincipal("service-account-outsider");
-  controller.fixture.state.identities.push(outsider.principal);
-  const forbidden = await controller.request("DELETE", accountPath, { session: outsider.session });
-  assertApiError(forbidden, 403, "FORBIDDEN");
-
-  const detached = await controller.request("PATCH", agentPath, {
-    body: { configurationId: configuration.id, harnessAuth: null },
-  });
-  assert.equal(detached.status, 200);
-  assert.equal(detached.data.harnessAuth, null);
-
-  // Failed admissions create no pending revision that could keep a detached account referenced.
-  const deletedDetached = await controller.fixture.app.fetch(
-    new Request(`https://console.oce.localhost${accountPath}`, {
-      method: "DELETE",
-      headers: authenticatedHeaders(controller.fixture.session),
-    }),
-  );
-  assert.equal(deletedDetached.status, 204);
-
-  const unusedAccount = await createServiceAccount(controller, namespace.id, "unused-provider");
-  const unusedAccountPath = `${accountsPath}/${unusedAccount.id}`;
-  // Successful DELETE is intentionally bodyless, unlike canonical JSON resource responses.
-  const deleted = await controller.fixture.app.fetch(
-    new Request(`https://console.oce.localhost${unusedAccountPath}`, {
-      method: "DELETE",
-      headers: authenticatedHeaders(controller.fixture.session),
-    }),
-  );
-  assert.equal(deleted.status, 204);
-  const missingAccount = await controller.request("GET", unusedAccountPath);
-  assert.equal(missingAccount.status, 404);
-
-  const accountEvents = controller.fixture.auditSink.events.filter(
-    (event) => event.kind === "mutation" && event.resource.kind === "service_account",
-  );
-  assert.deepEqual(
-    new Set(accountEvents.map(({ action }) => action)),
-    new Set([
-      "openclaw.service_accounts.create",
-      "openclaw.service_accounts.update",
-      "openclaw.service_accounts.delete",
-    ]),
-  );
-  assert.deepEqual(accountEvents[0].authorization.resource, {
-    kind: "service_account",
-    id: namespace.id,
-    namespaceId: namespace.id,
-  });
-  assert.deepEqual(accountEvents.at(-1).authorization.resource, {
-    kind: "service_account",
-    id: unusedAccount.id,
-    namespaceId: namespace.id,
-  });
-});
-
-test("native ServiceAccounts reject invalid references and enforce exact Namespace-scoped access", async () => {
-  const controller = await configuredController();
-  await bootstrap(controller);
-  const namespaceA = await createNamespace(controller, "service-account-namespace-a");
-  const namespaceB = await createNamespace(controller, "service-account-namespace-b");
-  const accountA = await createServiceAccount(controller, namespaceA.id, "account-a");
-  const accountB = await createServiceAccount(controller, namespaceA.id, "account-b");
-  const namespaceAPath = `/namespaces/${namespaceA.id}`;
-  const namespaceBPath = `/namespaces/${namespaceB.id}`;
-  const accountsPath = `${namespaceAPath}/service-accounts`;
-  const agentsPath = `${namespaceAPath}/agents`;
-  const exactAccountPath = `${accountsPath}/${accountA.id}`;
-  const credentialPath = `${exactAccountPath}/credential`;
-
-  const duplicate = await controller.request("POST", accountsPath, {
-    body: { name: "account-a" },
-  });
-  assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
-  // The caller chose only the name, so the conflict says the name is taken here.
-  assert.equal(duplicate.body.error.message, SERVICE_ACCOUNT_NAME_CONFLICT);
-
-  // Account ownership participates in Namespace emptiness even before any Agent is created.
-  const occupiedNamespace = await controller.request("DELETE", namespaceAPath);
-  assertApiError(occupiedNamespace, 409, "NAMESPACE_NOT_EMPTY");
-
-  for (const invalid of [
-    { name: "unrecognized-field", implementation: "native" },
-    { name: "cross-namespace", namespaceId: namespaceB.id },
-  ]) {
-    const rejected = await controller.request("POST", accountsPath, { body: invalid });
-    assert.equal(rejected.status, 400);
-  }
-
-  for (const invalid of [
-    ...[".", ".."].map((key) => ({ kind: "api_key", secretRef: { name: "valid-source", key } })),
-    { kind: "api_key", secretRef: { name: "valid-source", key: "credential", namespace: "other" } },
-    { kind: "provider_token", secretRef: { name: "valid-source", key: "credential" } },
-  ]) {
-    const rejected = await controller.request("PATCH", credentialPath, {
-      body: invalid,
-    });
-    assertApiError(rejected, 400, "INVALID_REQUEST");
-  }
-
-  const credential = { kind: "api_key", secretRef: { name: "account-a-source", key: "api-key" } };
-  const assigned = await controller.request("PATCH", credentialPath, {
-    body: credential,
-  });
-  assert.equal(assigned.status, 200);
-
-  // A real account ID never becomes accessible by substituting a sibling Namespace in the URL.
-  for (const [method, suffix, options] of [
-    ["GET", ""],
-    ["PATCH", "/credential", { body: credential }],
-    ["DELETE", ""],
-  ]) {
-    const crossNamespace = await controller.request(
-      method,
-      `${namespaceBPath}/service-accounts/${accountA.id}${suffix}`,
-      options,
-    );
-    assert.equal(crossNamespace.status, 404);
-  }
-
-  const configurationB = await createConfiguration(controller, namespaceB.id);
-  const configurationA = await createConfiguration(controller, namespaceA.id);
-  const crossNamespaceAssociation = await controller.request("POST", `${namespaceBPath}/agents`, {
-    body: {
-      name: "cross-namespace-agent",
-      configurationId: configurationB.id,
-      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, accountA.id),
-    },
-  });
-  assert.equal(crossNamespaceAssociation.status, 404);
-  // A source naming another Namespace is refused as such, even when the route Namespace holds
-  // an account with that id: the reference itself must not cross Namespaces.
-  const foreignSourceAssociation = await controller.request("POST", agentsPath, {
-    body: {
-      name: "foreign-source-agent",
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, accountA.id),
-    },
-  });
-  // The rule reads only the request, before any account lookup, so the API names it as a request
-  // error instead of a 404 (finding 2536): the text is the same whether the account exists.
-  assert.equal(foreignSourceAssociation.status, 400, JSON.stringify(foreignSourceAssociation.body));
-  assert.equal(foreignSourceAssociation.body.error.code, "INVALID_REQUEST");
-  assert.equal(foreignSourceAssociation.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
-  const missingForeignSource = await controller.request("POST", agentsPath, {
-    body: {
-      name: "foreign-source-agent",
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, `sa_${randomUUID()}`),
-    },
-  });
-  assert.equal(missingForeignSource.status, 400);
-  assert.deepEqual(missingForeignSource.body.error, foreignSourceAssociation.body.error);
-
-  // Namespace-wide Agent authority never substitutes for an exact ServiceAccount binding.
-  controller.fixture.state.roles.push(
-    {
-      id: "role-service-account-namespace-reader",
-      namespaceId: namespaceA.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "create", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent" },
-        { action: "update", resourceKind: "agent" },
-      ],
-    },
-    {
-      id: "role-exact-service-account-reader",
-      namespaceId: namespaceA.id,
-      permissions: [{ action: "read", resourceKind: "service_account" }],
-    },
-  );
-  async function exactReader(suffix, accountId) {
-    const { principal: identity } = await controller.fixture.createAuthPrincipal(suffix);
-    controller.fixture.state.identities.push(identity);
-    controller.fixture.state.bindings.push(
-      ...["namespace", "account"].map((kind) => ({
-        id: `binding-${suffix}-${kind}`,
-        namespaceId: namespaceA.id,
-        subjectKind: "identity",
-        subjectId: identity.id,
-        roleId:
-          kind === "namespace"
-            ? "role-service-account-namespace-reader"
-            : "role-exact-service-account-reader",
-        ...(kind === "account" ? { resourceKind: "service_account", resourceId: accountId } : {}),
-      })),
-    );
-    return { identity, app: controller.fixture.createApp(identity) };
-  }
-
-  const { identity: reader, app: readerApp } = await exactReader(
-    "existing-account-reader",
-    accountA.id,
-  );
-
-  const authorizedAccount = await injectedRequest(readerApp, "GET", exactAccountPath);
-  assert.equal(authorizedAccount.status, 200);
-
-  const accountList = await injectedRequest(readerApp, "GET", accountsPath);
-  assert.equal(accountList.status, 200);
-  assert.deepEqual(accountList.data, [assigned.data]);
-  assert.equal(JSON.stringify(accountList.data).includes(accountB.id), false);
-  assert.equal(Object.hasOwn(accountList.data[0], "backendId"), false);
-
-  const denied = await injectedRequest(readerApp, "GET", `${accountsPath}/${accountB.id}`);
-  assertApiError(denied, 403, "FORBIDDEN");
-  const denial = controller.fixture.auditSink.events.at(-1);
-  assert.deepEqual(denial.resource, {
-    kind: "service_account",
-    id: accountB.id,
-    namespaceId: namespaceA.id,
-  });
-  assert.equal(denial.action, "openclaw.service_accounts.read");
-
-  // Agent creation still needs read permission on its exact associated account, not a sibling.
-  const deniedAssociation = await injectedRequest(readerApp, "POST", agentsPath, {
-    body: {
-      name: "denied-account-association",
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(accountB.namespaceId, accountB.id),
-    },
-  });
-  assert.equal(deniedAssociation.status, 403);
-  const deniedAssociationAudit = controller.fixture.auditSink.events.at(-1);
-  assert.equal(deniedAssociationAudit.action, "openclaw.agents.create");
-  assert.deepEqual(deniedAssociationAudit.authorization, {
-    principalId: reader.id,
-    action: "read",
-    resource: { kind: "service_account", id: accountB.id, namespaceId: namespaceA.id },
-  });
-
-  const allowedAssociation = await injectedRequest(readerApp, "POST", agentsPath, {
-    body: {
-      name: "allowed-account-association",
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(accountA.namespaceId, accountA.id),
-    },
-  });
-  assert.equal(allowedAssociation.status, 201);
-  assert.equal(allowedAssociation.data.harnessAuth.source.id, accountA.id);
-  const associatedAgentPath = `${agentsPath}/${allowedAssociation.data.id}`;
-
-  // Replacing A with B requires exact read on the new account, not merely authority over A.
-  const deniedNewAccount = await injectedRequest(readerApp, "PATCH", associatedAgentPath, {
-    body: {
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(accountB.namespaceId, accountB.id),
-    },
-  });
-  assert.equal(deniedNewAccount.status, 403);
-  const unchangedAfterNewAccountDenial = await injectedRequest(
-    readerApp,
-    "GET",
-    associatedAgentPath,
-  );
-  assert.equal(unchangedAfterNewAccountDenial.data.harnessAuth.source.id, accountA.id);
-
-  const deniedCreation = await injectedRequest(readerApp, "POST", accountsPath, {
-    body: { name: "unauthorized-account" },
-  });
-  assert.equal(deniedCreation.status, 403);
-  assert.deepEqual(controller.fixture.auditSink.events.at(-1).resource, {
-    kind: "service_account",
-    id: namespaceA.id,
-    namespaceId: namespaceA.id,
-  });
-
-  // Reading replacement account B cannot authorize detaching or replacing the existing account A.
-  const { identity: replacementOnlyReader, app: replacementOnlyApp } = await exactReader(
-    "replacement-only-reader",
-    accountB.id,
-  );
-
-  for (const harnessAuth of [null, serviceAccountHarnessAuth(namespaceA.id, accountB.id)]) {
-    const deniedOldAccount = await injectedRequest(
-      replacementOnlyApp,
-      "PATCH",
-      associatedAgentPath,
-      {
-        body: {
-          configurationId: configurationA.id,
-          harnessAuth,
-        },
-      },
-    );
-    assert.equal(deniedOldAccount.status, 403);
-    const deniedOldAccountAudit = controller.fixture.auditSink.events.at(-1);
-    assert.equal(deniedOldAccountAudit.action, "openclaw.agents.update");
-    assert.deepEqual(deniedOldAccountAudit.authorization, {
-      principalId: replacementOnlyReader.id,
-      action: "read",
-      resource: {
-        kind: "service_account",
-        id: accountA.id,
-        namespaceId: namespaceA.id,
-      },
-    });
-
-    const unchanged = await injectedRequest(replacementOnlyApp, "GET", associatedAgentPath);
-    assert.equal(unchanged.data.harnessAuth.source.id, accountA.id);
-  }
 });
 
 test("session inspection stays optional and never exposes session or credential secrets", async () => {

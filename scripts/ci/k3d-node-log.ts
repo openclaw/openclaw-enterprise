@@ -1,4 +1,4 @@
-import { maskPrivateKeyLines } from "./failure-redaction.mjs";
+import { maskPrivateKeyLines } from "./failure-redaction.ts";
 
 // Bootstrap logs can contain K3s join tokens. Never publish credential-bearing
 // lines, full object specs, kubeconfigs, or container environments.
@@ -6,7 +6,7 @@ const CREDENTIAL_LINE =
   /token|password|secret|credential|authorization|bearer|private.?key|https?:\/\/[^\s/]+@/i;
 
 export function maskPrivateKeyLogLines(lines: readonly string[]): string[] {
-  const masked: unknown = maskPrivateKeyLines(lines);
+  const masked = maskPrivateKeyLines(lines);
   if (!Array.isArray(masked) || !masked.every((line: unknown) => typeof line === "string")) {
     throw new TypeError("Expected string log lines from private key masking.");
   }

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { readClientConfiguration, type ClientFiles } from "./config.ts";
+import { isClientSessionId, readClientConfiguration, type ClientFiles } from "./config.ts";
 import {
   hasControlCharacter,
   normalizePushRefAllowlist,
+  repositoryCredentialClientStringKeys,
 } from "../../../access/client-contracts.ts";
 import {
   assertPrivateDirectory,
@@ -71,12 +72,7 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
   const hasPolicy =
     value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
   const client = record(value, [
-    "gatewayOrigin",
-    "gitRemote",
-    "gitUsername",
-    "canonicalApiHost",
-    "apiHost",
-    "repository",
+    ...repositoryCredentialClientStringKeys,
     ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
   if (
@@ -94,12 +90,7 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
 
 function clientsAgree(first: ClientFiles["client"], second: ClientFiles["client"]): boolean {
   return (
-    first.gatewayOrigin === second.gatewayOrigin &&
-    first.gitRemote === second.gitRemote &&
-    first.gitUsername === second.gitUsername &&
-    first.canonicalApiHost === second.canonicalApiHost &&
-    first.apiHost === second.apiHost &&
-    first.repository === second.repository &&
+    repositoryCredentialClientStringKeys.every((key) => first[key] === second[key]) &&
     JSON.stringify(first.pushRefAllowlist) === JSON.stringify(second.pushRefAllowlist)
   );
 }
@@ -179,8 +170,7 @@ export async function readRuntimeRepositoryManifest(
     if (
       typeof binding.repositoryRef !== "string" ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(binding.repositoryRef) ||
-      typeof binding.sessionId !== "string" ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(binding.sessionId) ||
+      !isClientSessionId(binding.sessionId) ||
       typeof binding.deadlineWallMs !== "number" ||
       !Number.isSafeInteger(binding.deadlineWallMs) ||
       binding.deadlineWallMs <= 0 ||

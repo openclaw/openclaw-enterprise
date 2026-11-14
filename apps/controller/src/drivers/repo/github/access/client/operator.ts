@@ -5,13 +5,20 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepositoryCredentialBoundSessionInput } from "../../../access/service-contracts.ts";
 import { clientSessionFileMaxBytes, readPrivateFile } from "./private-files.ts";
-import { hasControlCharacter } from "../../../access/client-contracts.ts";
+import {
+  controlRequestBodyMaxBytes,
+  hasControlCharacter,
+} from "../../../access/client-contracts.ts";
 import type {
   ControlErrorCode,
   ControlRequest,
   ControlResponse,
 } from "../../../access/control-contracts.ts";
-import { assertClientDirectoryAvailable, writeClientConfiguration } from "./config.ts";
+import {
+  assertClientDirectoryAvailable,
+  isClientSessionId,
+  writeClientConfiguration,
+} from "./config.ts";
 
 function assertOperatorAdmissionId(admissionId: string): void {
   if (!/^[0-9]{13}-[0-9a-f-]{36}$/.test(admissionId)) {
@@ -33,7 +40,7 @@ export async function callControl(
   }
   assertOperatorAdmissionId(admissionId);
   const body = "body" in request ? JSON.stringify(request.body) : "";
-  if (Buffer.byteLength(body) > 16 * 1024) {
+  if (Buffer.byteLength(body) > controlRequestBodyMaxBytes) {
     throw new Error("invalid-control-request");
   }
   return new Promise((resolveResponse, reject) => {
@@ -305,7 +312,7 @@ async function main(): Promise<void> {
     );
   } else if (operation === "status" || operation === "close") {
     const id = options.get("--session");
-    if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    if (!isClientSessionId(id)) {
       throw new Error("invalid-arguments");
     }
     const result = await callControl(

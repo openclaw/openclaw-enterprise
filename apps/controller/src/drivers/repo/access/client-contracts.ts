@@ -1,5 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 
+export const controlRequestBodyMaxBytes = 16_384;
+
 export const clientSessionFileMaxBytes = Object.freeze({
   bearer: 256,
   "client.json": 16 * 1024,
@@ -22,6 +24,10 @@ export function renderClientGhHosts(
 
 export const repositorySessionBearerSource = "[A-Za-z0-9_-]{43,256}";
 
+export function matchesRepositorySessionId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
 /** Check a Unix socket path's lexical form and UTF-8 byte limit. */
 export function isCanonicalUnixSocketPath(path: string): boolean {
   return isAbsolute(path) && resolve(path) === path && Buffer.byteLength(path) <= 103;
@@ -36,6 +42,18 @@ export interface RepositoryCredentialClientConfiguration {
   readonly repository: string;
   readonly pushRefAllowlist?: readonly string[];
 }
+
+export const repositoryCredentialClientStringKeys = Object.freeze([
+  "gatewayOrigin",
+  "gitRemote",
+  "gitUsername",
+  "canonicalApiHost",
+  "apiHost",
+  "repository",
+] as const satisfies readonly Exclude<
+  keyof RepositoryCredentialClientConfiguration,
+  "pushRefAllowlist"
+>[]);
 
 /** Check the canonical HTTPS gateway and its same-origin Git remote after URL parsing. */
 export function isValidGitClientConnection(
@@ -81,7 +99,7 @@ export function isValidGitClientUsernameAndHosts(
  *
  * A deliberate copy of `hasControlCharacter` from `@openclaw-enterprise/utils`. The isolated
  * repository-credentials runtimes never load a workspace package: the build closures in
- * scripts/build-repository-credentials.mjs reject bare specifiers, and
+ * scripts/build-repository-credentials.ts reject bare specifiers, and
  * scripts/verify-repository-credentials-boundary.mjs has no reviewed import for one. The
  * utils conformance suite checks that both copies flag exactly the same characters.
  */

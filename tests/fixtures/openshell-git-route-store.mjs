@@ -1,8 +1,20 @@
+/** @import {OpenShellGitMaterialReference, OpenShellGitRouteIdentity, OpenShellGitRouteRecord, OpenShellGitRouteSnapshot, OpenShellGitRouteWithdrawal, OpenShellGitRouteWrite} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts" */
+/** @import {OpenShellGitRouteBlockReason} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts" */
+/**
+ * @typedef {{ -readonly [Key in keyof OpenShellGitRouteRecord]: OpenShellGitRouteRecord[Key] } & {
+ *   workerInstance: string,
+ *   operationFence: number,
+ *   targetMaterial: OpenShellGitMaterialReference | undefined,
+ *   retainedLaunchHash?: string,
+ * }} FixtureRoute
+ */
+
 // An in-memory OpenShellGitRouteStore with the Postgres store's fencing semantics (finding
 // 2128, migration 0062): adoption and write reservation move the fence. Only the
 // reserving operation can settle a pending write; blocking preserves unknown outcomes. `fault` makes every
 // call throw (a store that does not answer); `calls` counts them.
 export function routeStore() {
+  /** @type {Map<string, FixtureRoute>} */
   const rows = new Map();
   const calls = {
     open: 0,
@@ -17,7 +29,9 @@ export function routeStore() {
   const store = {
     rows,
     calls,
+    /** @type {unknown} */
     fault: undefined,
+    /** @param {OpenShellGitRouteIdentity} route @param {string} workerInstance */
     async open(route, workerInstance) {
       calls.open += 1;
       store.check();
@@ -37,6 +51,7 @@ export function routeStore() {
         blocked: undefined,
       });
     },
+    /** @param {string} revisionId @param {string} workerInstance */
     async adopt(revisionId, workerInstance) {
       calls.adopt += 1;
       store.check();
@@ -51,6 +66,12 @@ export function routeStore() {
       }
       return structuredClone(row);
     },
+    /**
+     * @param {string} revisionId
+     * @param {number} fence
+     * @param {OpenShellGitRouteWrite} write
+     * @param {OpenShellGitMaterialReference} [material]
+     */
     async writing(revisionId, fence, write, material) {
       calls.writing += 1;
       store.check();
@@ -68,6 +89,7 @@ export function routeStore() {
       row.operationFence = row.fence;
       return row.fence;
     },
+    /** @param {string} revisionId @param {number} fence */
     async cancelWriting(revisionId, fence) {
       calls.cancelWriting += 1;
       store.check();
@@ -79,6 +101,7 @@ export function routeStore() {
       row.targetMaterial = undefined;
       return true;
     },
+    /** @param {string} revisionId @param {number} fence @param {OpenShellGitRouteSnapshot} snapshot */
     async record(revisionId, fence, snapshot) {
       calls.record += 1;
       store.check();
@@ -108,12 +131,14 @@ export function routeStore() {
       }
       return true;
     },
+    /** @param {string} revisionId @param {number} fence */
     async owns(revisionId, fence) {
       calls.owns += 1;
       store.check();
       const row = rows.get(revisionId);
       return row !== undefined && row.fence === fence ? (row.blocked ?? true) : false;
     },
+    /** @param {string} revisionId @param {number} fence @param {OpenShellGitRouteBlockReason} reason */
     async block(revisionId, fence, reason) {
       calls.block += 1;
       store.check();
@@ -124,6 +149,13 @@ export function routeStore() {
       row.blocked = reason;
       return true;
     },
+    /**
+     * @param {string} revisionId
+     * @param {string} workerInstance
+     * @param {number} fence
+     * @param {OpenShellGitRouteBlockReason} reason
+     * @returns {Promise<"confirmed" | "superseded">}
+     */
     async confirmPreviewBlocked(revisionId, workerInstance, fence, reason) {
       store.check();
       const row = rows.get(revisionId);
@@ -139,6 +171,7 @@ export function routeStore() {
       row.blocked = reason;
       return "confirmed";
     },
+    /** @param {OpenShellGitRouteWithdrawal} selector */
     async withdraw(selector) {
       calls.withdraw += 1;
       store.check();
@@ -158,6 +191,7 @@ export function routeStore() {
         throw store.fault;
       }
     },
+    /** @param {string} revisionId @param {number} fence */
     held(revisionId, fence) {
       const row = rows.get(revisionId);
       return row !== undefined && row.fence === fence && row.blocked === undefined

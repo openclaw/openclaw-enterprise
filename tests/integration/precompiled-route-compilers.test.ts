@@ -21,7 +21,7 @@ import {
   validatorOptionsKey,
   writePrecompiledRouteCompilers,
 } from "../../apps/controller/src/http/route-compilers.ts";
-import { createFastifyApp, type ControllerAppOptions } from "../../apps/controller/src/index.ts";
+import { createRouteGenerationApp } from "../../apps/controller/src/route-generation-app.ts";
 import { perturbValue, sampleValue, seededRandom } from "../helpers/json-schema-samples.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -32,9 +32,7 @@ const directory = fileTemporaryDirectory("precompiled-route-compilers-");
 
 const generated = await generatePrecompiledRouteCompilers(async () => {
   // Like the precompile CLI, this app only registers routes. It never calls a request handler.
-  const app = createFastifyApp({
-    development: { enabled: true, installationId: "ins_6054d30d-0f89-4cd0-aa56-2b76e3c5fb52" },
-  } as ControllerAppOptions);
+  const app = createRouteGenerationApp();
   try {
     await app.ready();
   } finally {

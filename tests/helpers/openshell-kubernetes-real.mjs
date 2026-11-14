@@ -18,7 +18,7 @@ import {
   diagnosticDeadlineMs,
   productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 import { runGatewayInstallation } from "./openshell-installation.ts";
 
 import {
@@ -232,7 +232,15 @@ export class OpenShellDeploymentFailedError extends Error {
 }
 
 export function waitForOpenShellRevisionActivation(
-  waitFor,
+  /** @type {(description: string | (() => string), read: () => Promise<unknown>) => Promise<unknown>} */ waitFor,
+  /** @type {{
+   *   request: (method: string, path: string) => Promise<{status: number, data: unknown}>,
+   *   agentPath: string,
+   *   revisionId: string,
+   *   workerEvents?: readonly Readonly<Record<string, unknown>>[],
+   *   checkDeploymentBeforeActivation?: boolean,
+   *   reportDeploymentStatusOnTimeout?: boolean,
+   * }} */
   {
     request,
     agentPath,

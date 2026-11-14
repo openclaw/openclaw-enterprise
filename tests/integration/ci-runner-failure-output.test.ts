@@ -7,8 +7,8 @@ import {
   failureSecrets,
   redactFailureDetail,
   redactOutputLine,
-} from "../../scripts/ci/failure-redaction.mjs";
-import reporter from "../../scripts/ci/reporter.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
+import reporter from "../../scripts/ci/reporter.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   createRunnerFixture,
@@ -425,7 +425,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       'test("passes", () => {});',
       'import { writeFileSync } from "node:fs";',
       "import { boundedTeardown } from " +
-        JSON.stringify(new URL("../helpers/kubernetes-real.mjs", import.meta.url).href) +
+        JSON.stringify(new URL("../helpers/bounded-teardown.ts", import.meta.url).href) +
         ";",
       'test("long failure", (t) => {',
       "  const { context } = boundedTeardown(t, {",
@@ -561,7 +561,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate as turn } from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { createKubernetesClient } from ${moduleUrl("../helpers/kubernetes-real.mjs")};
+import { createKubernetesClient } from ${moduleUrl("../helpers/kubernetes-real.ts")};
 import { waitForReplacementActivation } from ${moduleUrl("../helpers/openshell-sandbox-workflows.mjs")};
 import { createReplacementNodeObservation } from ${moduleUrl("../helpers/openshell-workspace-node-observation.ts")};
 import { observeWorkspaceNodeRead, recordWorkspaceNodeObservation } from ${moduleUrl("../../apps/controller/src/gateway/workspace-node-observation.ts")};

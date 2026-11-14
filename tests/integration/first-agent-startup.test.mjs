@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
@@ -31,7 +31,7 @@ import {
 } from "../helpers/admitted-configuration.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
-const firstAgent = join(repository, "scripts", "first-agent.mjs");
+const firstAgent = join(repository, "scripts", "first-agent.ts");
 
 async function fixture(t, sandboxDriver) {
   const directory = await mkdtemp(join(await realpath(tmpdir()), "oce-first-agent-startup-"));
@@ -112,35 +112,31 @@ function runFirstAgent(env, ...args) {
 test("first-Agent starts without installed workspace dependencies", async (t) => {
   const directory = await realpath(await temporaryDirectory(t, "oce-first-agent-source-"));
 
-  // Run real sources outside the checkout so installed workspace packages cannot
-  // hide import failures in the host-run command used by First Agent Smoke.
-  // plain-text.ts and gateway-security-defaults.ts have no imports; first-agent loads the Name
-  // rule and the defaults deployment admission fills from them.
-  await mkdir(join(directory, "packages/contracts/src/api"), { recursive: true });
-  await mkdir(join(directory, "packages/occ/src"), { recursive: true });
+  // Run the command with its local import graph so workspace dependencies and
+  // unrelated controller files cannot hide an incomplete source delivery.
   for (const path of [
     "package.json",
-    "scripts/first-agent.mjs",
-    "scripts/first-agent.ts",
-    "scripts/first-agent-database.mjs",
-    "scripts/first-agent-api.mjs",
-    "scripts/first-agent-api.ts",
-    "scripts/first-agent-diagnostics.mjs",
-    "scripts/first-agent-diagnostics.ts",
-    "packages/contracts/src/runtime-failure.mjs",
-    "scripts/first-agent-model.mjs",
-    "scripts/lib/private-owned-path.mjs",
+    "apps/controller/src/console/agents/starter-model.mts",
+    "apps/controller/src/gateway/native-admin-host.ts",
     "packages/contracts/src/api/plain-text.ts",
+    "packages/contracts/src/runtime-failure.ts",
     "packages/occ/src/gateway-security-defaults.ts",
-    "apps/controller/src",
+    "scripts/first-agent.ts",
+    "scripts/first-agent-api.ts",
+    "scripts/first-agent-database.ts",
+    "scripts/first-agent-diagnostics.ts",
+    "scripts/first-agent-model.mjs",
+    "scripts/lib/private-owned-path.ts",
   ]) {
-    await cp(join(repository, path), join(directory, path), { recursive: true });
+    const target = join(directory, path);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(repository, path), target);
   }
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   const result = spawnSync(
     process.execPath,
-    [join(directory, "scripts/first-agent.mjs"), "--help"],
+    [join(directory, "scripts/first-agent.ts"), "--help"],
     {
       cwd: directory,
       encoding: "utf8",
@@ -150,8 +146,9 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
   );
 
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-  assert.match(result.stdout, /Usage: node scripts\/first-agent\.mjs/);
+  assert.match(result.stdout, /Usage: node scripts\/first-agent\.ts/);
   assert.match(result.stdout, /--control-ui/);
+  assert.equal(result.stderr, "");
 });
 
 test("first-Agent applies the Name rule before local setup", () => {
@@ -759,9 +756,8 @@ test("model verification retains safe failure metadata without forwarding probe 
 });
 
 test("first-Agent diagnostics bind runtime streams and bound the authenticated HTTP read", async (t) => {
-  const { createFirstAgentApi } = await import("../../scripts/first-agent-api.mjs");
-  const { collectFirstAgentDiagnostics } =
-    await import("../../scripts/first-agent-diagnostics.mjs");
+  const { createFirstAgentApi } = await import("../../scripts/first-agent-api.ts");
+  const { collectFirstAgentDiagnostics } = await import("../../scripts/first-agent-diagnostics.ts");
   const { sanitizeRuntimeLogChunk, runtimeLogGap } =
     await import("../../packages/occ/src/runtime-logs/sanitize.ts");
   const replay = JSON.parse(

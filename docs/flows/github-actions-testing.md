@@ -58,8 +58,8 @@ graph TD
 
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
 `.github/workflows/full-integration-execution.yml:jobs`,
-`scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
-`scripts/ci/test-suites.mjs:loadTestSuites`
+`scripts/ci/full-integration-preflight.ts:validateFullIntegrationPreflight`, and
+`scripts/ci/test-suites.ts:loadTestSuites`
 
 `loadTestSuites` reads ordered `scripts/ci/test-suites.json` lanes: tests, inputs, preparation.
 
@@ -103,7 +103,7 @@ Full Integration pins `github.sha`. [Scheduled admission](../testing/ci/full-int
 rechecks main, cadence and receipts under lock.
 `scripts/ci/full-integration-schedule-history.ts:readUnmarkedClock` requires explicit
 targeting to ignore live shared work.
-`scripts/ci/full-integration-preflight.mjs:fetchGithubJson` distinguishes malformed
+`scripts/ci/full-integration-preflight.ts:fetchGithubJson` distinguishes malformed
 JSON from request failures; diagnostics omit raw content.
 Manual dispatch verifies dispatcher, team and environment.
 Slack serializes channel/app access; installation and Skipper Git serialize per branch.
@@ -142,7 +142,7 @@ Full Integration requires [compatible cache exports](github-actions-testing/prep
 before OpenShell source builds. These retain their builder and fixed epoch;
 cache credentials stay in preparation. Mutable scopes make cache hits best effort.
 
-Kubernetes preparation records host snapshots. Failed reads, bounded
+`scripts/ci/k3d-preparation-diagnostics.ts` records Kubernetes host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
 Fixture lanes use `--no-rollback` and registered teardown. Staged sign-in also
 disables rollback, but unacknowledged creation requires reconciliation instead of
@@ -152,7 +152,7 @@ comparison ([CI guide](../testing/ci.md)).
 
 `scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and namespace
 events in ready k3d clusters before tests delete them. On pass or failure,
-`scripts/ci/k3d-diagnostics.mjs:projectAgentNamespaceActivity` records
+`scripts/ci/k3d-diagnostics.ts:projectAgentNamespaceActivity` records
 `agentNamespaces`: up to 200 Pod and 200 event records per file and cluster, retaining 40
 entries. Messages are redacted and truncated; Pod specs are omitted. Raw watches
 use separate files in the cluster directory and are removed on completion.
@@ -160,7 +160,7 @@ Cluster-wide watches can include sibling namespaces under `fileConcurrency`.
 Failed starts log `Agent namespace activity unavailable`. Each producing lane
 uploads the artifact.
 
-Before Agent Pods exist, `tests/helpers/kubernetes-real.mjs:waitForDeploymentAvailable`
+Before Agent Pods exist, `tests/helpers/kubernetes-real.ts:waitForDeploymentAvailable`
 captures Deployment logs and Pod/events, retaining the last eight `containerLogs` records.
 Without runner capture, it emits a projected diagnostic. `unavailable` means a
 failed observation; missing records do not prove healthy startup.
@@ -182,7 +182,7 @@ owns credential isolation and historical-pair limits.
 
 ### 3. Execute and account for actual cases
 
-`scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
+`scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.ts:jsonLinesReporter` and `scripts/ci/failure-redaction.ts:redactFailure`
 
 `scripts/ci/runner-inputs.ts:normalizeFile` validates `file.env`.
 `runFile` merges filtered inherited values, restored declared inputs, `lane.env`,
@@ -244,7 +244,7 @@ Per-file cleanup releases databases; job cleanup removes owned resources,
 including Collector objects and logging data.
 Sign-in transitions and proof readers reject already-expired issuance observations.
 Cleanup errors fail except [QA image warnings](github-actions-testing/preparation.md).
-`cleanup-staged-signin.mjs` passes the prepared state digest and custody to
+`cleanup-staged-signin.ts` passes the prepared state digest and custody to
 `scripts/ci/cleanup.ts:cleanupState`: locked validation precedes exact server/network
 deletion and volume checks. A persisted mutation marker forbids fixture fallback
 without completed cleanup; verified pre-mutation refusals retain fallback authority.

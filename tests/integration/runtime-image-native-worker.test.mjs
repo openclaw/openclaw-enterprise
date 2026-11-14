@@ -585,7 +585,13 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
       // Run the same process proof inside the image, using the production init
       // command. Copy source over argv so this also works with a remote Docker engine.
       const paths = [
-        "tests/conformance/workspace-node-supervisor.test.mjs",
+        "tests/conformance/workspace-node-supervisor.test.ts",
+        "tests/conformance/workspace-node-supervisor-fixture.ts",
+        "tests/conformance/workspace-node-supervisor-hook-cases.ts",
+        "tests/conformance/workspace-node-supervisor-native-cases.ts",
+        "tests/conformance/workspace-node-supervisor-setup-cases.ts",
+        "packages/utils/src/objects.ts",
+        "packages/utils/src/validation.ts",
         "tests/helpers/available-port.ts",
         "tests/helpers/reuse-port-preload.ts",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
@@ -603,7 +609,7 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
         "apps/controller/src/drivers/compute/runtime-startup.ts",
         "apps/controller/src/drivers/plugin/runtime-translator.ts",
         "apps/controller/src/drivers/sandbox/openshell-plugin-runtime.ts",
-        "packages/contracts/src/runtime-failure.mjs",
+        "packages/contracts/src/runtime-failure.ts",
         "tests/conformance/workspace-node-supervisor-cases.ts",
       ];
       const files = await Promise.all(
@@ -621,7 +627,7 @@ for (const [relative, content] of JSON.parse(readFileSync(0, "utf8"))) {
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, content);
 }
-const child = spawnSync(process.execPath, ["--test", "/tmp/proof/tests/conformance/workspace-node-supervisor.test.mjs"], { stdio: "inherit" });
+const child = spawnSync(process.execPath, ["--test", "/tmp/proof/tests/conformance/workspace-node-supervisor.test.ts"], { stdio: "inherit" });
 if (child.error) throw child.error;
 process.exit(child.status ?? 1);
 `;

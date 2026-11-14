@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createGunzip, createZstdDecompress } from "node:zlib";
-import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
+import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.ts";
 
 type RuntimeIdentity = {
   sourceSha: string;

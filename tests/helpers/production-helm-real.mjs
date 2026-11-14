@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
 import { podFailureDiagnostic } from "./k3d-failure-diagnostics.ts";
 import {
   createKubernetesClient,
   diagnosticDeadlineMs,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
 export async function prepareProductionHelmControlPlane({
@@ -341,7 +341,14 @@ export async function prepareProductionHelmControlPlane({
 }
 
 export async function installProductionHelmControlPlane(options) {
-  const { selection, namespace: system, release, run, record } = options;
+  const {
+    selection,
+    namespace: system,
+    release,
+    chartDirectory = "deploy/helm/openclaw-enterprise",
+    run,
+    record,
+  } = options;
   const prepared = await prepareProductionHelmControlPlane(options);
   await run(
     "helm",
@@ -349,7 +356,7 @@ export async function installProductionHelmControlPlane(options) {
       "upgrade",
       "--install",
       release,
-      "deploy/helm/openclaw-enterprise",
+      chartDirectory,
       "-n",
       system,
       "--kubeconfig",

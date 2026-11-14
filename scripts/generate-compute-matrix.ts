@@ -158,9 +158,6 @@ export function validateMatrix(data: unknown, source: string): asserts data is D
   }
 }
 
-export const matrixStart = "<!-- compute-matrix:start -->";
-export const matrixEnd = "<!-- compute-matrix:end -->";
-
 const repository = "https://github.com/openclaw/openclaw-enterprise";
 
 const computeLabels = {
@@ -266,11 +263,7 @@ export function renderDriverMatrixMarkdown(data: DriverMatrix, options: MatrixOp
   return lines.join("\n");
 }
 
-export function replaceDriverMatrixMarkdown(
-  markdown: string,
-  data: DriverMatrix,
-  options: MatrixOptions,
-) {
+function replaceDriverMatrixMarkdown(markdown: string, data: DriverMatrix, options: MatrixOptions) {
   const start = markdown.indexOf(options.matrixStart);
   const end = markdown.indexOf(options.matrixEnd);
   if (start < 0 || end < start || markdown.indexOf(options.matrixStart, start + 1) >= 0) {
@@ -285,10 +278,10 @@ export function replaceDriverMatrixMarkdown(
 
 export const computeMatrixOptions: MatrixOptions = {
   name: "compute",
-  matrixStart,
-  matrixEnd,
+  matrixStart: "<!-- compute-matrix:start -->",
+  matrixEnd: "<!-- compute-matrix:end -->",
   dataPath: "docs/assets/compute-driver-matrix.json",
-  generator: "scripts/generate-compute-matrix.mjs",
+  generator: "scripts/generate-compute-matrix.ts",
   labels: computeLabels,
   detailedCells: false,
   requirementLabel: "Requirement",
@@ -299,7 +292,7 @@ export const pluginMatrixOptions: MatrixOptions = {
   matrixStart: "<!-- plugin-matrix:start -->",
   matrixEnd: "<!-- plugin-matrix:end -->",
   dataPath: "docs/assets/plugin-driver-matrix.json",
-  generator: "scripts/generate-plugin-matrix.mjs",
+  generator: "scripts/generate-plugin-matrix.ts",
   labels: pluginLabels,
   detailedCells: true,
   requirementLabel: "Scope",
@@ -307,14 +300,6 @@ export const pluginMatrixOptions: MatrixOptions = {
 
 export function renderMatrixMarkdown(data: DriverMatrix) {
   return renderDriverMatrixMarkdown(data, computeMatrixOptions);
-}
-
-export function renderPluginMatrixMarkdown(data: DriverMatrix) {
-  return renderDriverMatrixMarkdown(data, pluginMatrixOptions);
-}
-
-export function replaceMatrixMarkdown(markdown: string, data: DriverMatrix) {
-  return replaceDriverMatrixMarkdown(markdown, data, computeMatrixOptions);
 }
 
 export function runDriverMatrixGenerator(options: MatrixOptions, label: string, target: string) {

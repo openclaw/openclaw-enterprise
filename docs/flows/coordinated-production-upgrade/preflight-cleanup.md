@@ -104,7 +104,7 @@ but uncertain creation history permits only the cleanup described below.
 `scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight` runs with a new
 `preflight-cleanup.XXXXXXXX` evidence directory. It sends foreground Job deletes
 with original UID preconditions, then checks the Job, namespace Pod ownership and
-any recorded child. `scripts/upgrade-startup-preflight.mjs:remaining` checks
+any recorded child. `scripts/upgrade-startup-preflight.ts:remaining` checks
 whether original consumers remain. Pod labels are not the ownership authority.
 
 A failed DELETE requires a successful absence read before cleanup can proceed.

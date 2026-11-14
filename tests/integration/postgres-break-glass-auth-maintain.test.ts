@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs";
@@ -31,8 +29,8 @@ import {
   text,
   type SignInApp,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
+import { runAuthMaintainScript } from "./auth-maintain-command-cases.ts";
 
-const repository = fileURLToPath(new URL("../..", import.meta.url));
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const migrationUrl = process.env.OCC_AUTH_MAINTAIN_MIGRATION_DATABASE_URL;
 const adminEmail = "break-glass-recovery@example.test";
@@ -45,48 +43,6 @@ const secrets = {
   "occ-oidc-login/client-secret": "break-glass-client-secret",
 };
 const memberSubject = "9300001";
-
-// The documented one-off maintenance command, run as the migration role.
-async function runMaintenance(migrationUrl: string, args: readonly string[]) {
-  const { code, stdout } = await new Promise<{ code: number; stdout: string }>(
-    (resolve, reject) => {
-      execFile(
-        process.execPath,
-        ["scripts/auth-maintain.mjs", ...args],
-        {
-          cwd: repository,
-          env: {
-            PATH: process.env.PATH,
-            NODE_ENV: "production",
-            OCC_MIGRATION_DATABASE_URL: migrationUrl,
-          },
-          encoding: "utf8",
-          timeout: 30_000,
-        },
-        (error, stdout) => {
-          const code = error ? error.code : 0;
-          if (typeof code !== "number" || error?.killed || error?.signal) {
-            reject(
-              new Error(`Maintenance process failed for ${args[0]} (${error?.signal ?? code})`),
-            );
-            return;
-          }
-          resolve({ code, stdout });
-        },
-      );
-    },
-  );
-  const line = stdout.split("\n").find((entry) => entry.startsWith("{"));
-  let output: unknown;
-  if (line !== undefined) {
-    try {
-      output = JSON.parse(line);
-    } catch {
-      throw new Error(`Maintenance command ${args[0]} returned invalid JSON`);
-    }
-  }
-  return { code, output };
-}
 
 // Idle clients expire after 10 s. /readyz runs SELECT 1 on the controller's own pool,
 // so these probes keep its connection visible to the stopped-writer guard.
@@ -136,7 +92,12 @@ test(
   },
   async (t) => {
     assert.ok(databaseUrl && migrationUrl);
-    const maintain = (args: readonly string[]) => runMaintenance(migrationUrl, args);
+    const maintain = (args: readonly string[]) =>
+      runAuthMaintainScript(args, {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        OCC_MIGRATION_DATABASE_URL: migrationUrl,
+      });
     let app: SignInApp | undefined;
     async function stopController() {
       await app?.close();

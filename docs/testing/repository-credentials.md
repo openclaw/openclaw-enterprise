@@ -55,8 +55,8 @@ authorized equivalent environment.
 For native selection and routing, run:
 
 ```sh
-node --test tests/integration/repository-credentials-client-config.test.mjs \
-  tests/integration/repository-credentials-router.test.mjs
+node --test tests/integration/repository-credentials-client-config.test.ts \
+  tests/integration/repository-credentials-router.test.ts
 ```
 
 ### Protected repository metadata reads
@@ -80,9 +80,9 @@ Build before running the source and materialization checks:
 ```sh
 pnpm build
 node --test tests/integration/repository-credentials-admission.test.mjs \
-  tests/integration/repository-credentials-driver.test.mjs \
+  tests/integration/repository-credentials-driver.test.ts \
   tests/integration/repository-runtime-materialization.test.ts \
-  tests/integration/repository-credentials-router.test.mjs
+  tests/integration/repository-credentials-router.test.ts
 ```
 
 For durable session and recovery checks, prepare a migrated disposable database
@@ -105,7 +105,7 @@ and clock skew; it asserts material erasure without a revocation request.
 pnpm credentials:build
 node --test tests/integration/repository-credentials-package.test.ts
 REPOSITORY_CREDENTIALS_APP_ROOT="$PWD/.build/repository-credentials/client/dist" \
-  node --test tests/integration/repository-credentials-router.test.mjs
+  node --test tests/integration/repository-credentials-router.test.ts
 ```
 
 This verifies the emitted service and client without workspace source or runtime
@@ -306,7 +306,7 @@ Run the `image-pair-qualification` lane using the
 current and incompatible older controller and broker images against disposable
 fixtures, checks the admission protocol, and rejects incompatible pairs. It does
 not prove credential disposal or a live Agent workflow. See the
-[qualification test](../../tests/integration/production-image-real-qualification.test.mjs)
+[qualification test](../../tests/integration/production-image-real-qualification.test.ts)
 for fixture setup and expected probe exchanges.
 
 ## Run an authorized live smoke

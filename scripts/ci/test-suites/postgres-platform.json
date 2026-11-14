@@ -10,12 +10,12 @@
     "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.mjs",
     "tests/integration/postgres-plugin-discovery.test.ts",
-    "tests/integration/postgres-platform-state.test.mjs",
-    "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
+    "tests/integration/postgres-platform-state.test.ts",
+    "tests/integration/postgres-oidc-recovery-replacement.test.ts",
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
-    "tests/integration/postgres-backend-ownership.test.mjs",
-    "tests/integration/postgres-restart-recovery.test.mjs",
+    "tests/integration/postgres-backend-ownership.test.ts",
+    "tests/integration/postgres-restart-recovery.test.ts",
     "tests/integration/postgres-agent-deletion-audit.test.ts",
     "tests/integration/postgres-api-request-audit.test.ts",
     "tests/integration/postgres-agent-audit-read.test.ts",
@@ -25,7 +25,7 @@
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.ts",
     "tests/integration/postgres-worker-audit.test.ts",
-    "tests/integration/postgres-namespace-iam-policy.test.mjs",
+    "tests/integration/postgres-namespace-iam-policy.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
@@ -46,7 +46,7 @@
     "tests/integration/postgres-static-egress.test.mjs",
     "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
-    "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+    "tests/integration/postgres-prepared-github-lifecycle.test.ts",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
     "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
@@ -121,7 +121,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-platform-state.test.mjs",
+      "path": "tests/integration/postgres-platform-state.test.ts",
       "expectedTests": [
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
@@ -147,14 +147,15 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-backend-ownership.test.mjs",
+      "path": "tests/integration/postgres-backend-ownership.test.ts",
       "expectedTests": [
         "development API starts with stale Backend references and permits repair through Agent update",
-        "PostgreSQL Backend ownership persists exact Agent associations and admits only matching managed bindings"
+        "PostgreSQL Backend ownership persists exact Agent associations and admits only matching managed bindings",
+        "PostgreSQL Agent provisioning admits a managed PAT source only with an issued access token matching its Backend"
       ]
     },
     {
-      "path": "tests/integration/postgres-restart-recovery.test.mjs",
+      "path": "tests/integration/postgres-restart-recovery.test.ts",
       "expectedTests": [
         "Namespace creation and deletion retain distinct durable work targets",
         "durable work deduplicates exact ownership and rejects actor or owner collisions",
@@ -193,7 +194,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-namespace-iam-policy.test.mjs",
+      "path": "tests/integration/postgres-namespace-iam-policy.test.ts",
       "expectedTests": [
         "selected native IAM sees original-unit grants and revocations before rollback",
         "PostgreSQL native IAM creates exact Namespace bindings atomically with audit",
@@ -389,7 +390,16 @@
     },
     {
       "path": "tests/integration/postgres-repository-broker-receipts.test.mjs",
-      "expectedTests": ["confirmed broker disposal survives service restart in PostgreSQL"]
+      "expectedTests": [
+        "only the reserving broker generation fences its own reservation",
+        "memory",
+        "postgres",
+        "confirmed broker disposal survives service restart in PostgreSQL",
+        "broker shutdown waits for receipts and loss of unconfirmed authority stays unknown",
+        "delayed-commit",
+        "unavailable",
+        "abrupt-death"
+      ]
     },
     {
       "path": "tests/integration/postgres-password-sign-in-limit.test.ts",
@@ -398,7 +408,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
+      "path": "tests/integration/postgres-oidc-recovery-replacement.test.ts",
       "expectedTests": [
         "online recovery replacement moves the reserved lane and survives a restart with the original seed"
       ]
@@ -411,7 +421,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+      "path": "tests/integration/postgres-prepared-github-lifecycle.test.ts",
       "expectedTests": [
         "authorized GitHub proxy requests mint the registered grant and share one replacement",
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",

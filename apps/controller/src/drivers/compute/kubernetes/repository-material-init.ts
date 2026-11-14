@@ -1,3 +1,5 @@
+import { repositoryCredentialClientStringKeys } from "../../repo/access/client-contracts.ts";
+
 /** Runs in the runtime image before the read-only credential mount is exposed. */
 export const REPOSITORY_MATERIAL_INIT_ENTRYPOINT = String.raw`
 "use strict";
@@ -5,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const clientKeys = ["gatewayOrigin", "gitRemote", "gitUsername", "canonicalApiHost", "apiHost", "repository"];
+const clientKeys = [${repositoryCredentialClientStringKeys.map((key) => JSON.stringify(key)).join(", ")}];
 const limits = { bearer: 256, "client.json": 16384, gitconfig: 16384, "gh/hosts.yml": 16384, "gh/config.yml": 16384, "ca.pem": 65536 };
 const systemCaBundleCandidates = ["/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem", "/etc/pki/tls/certs/ca-bundle.crt"];
 const runtimeRoot = "/run/oce/repository-credentials/sessions/";

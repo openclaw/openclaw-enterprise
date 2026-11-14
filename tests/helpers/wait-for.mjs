@@ -64,6 +64,13 @@ export async function waitUntil(description, check, options) {
 // Polls `read` like waitFor (same options, passed through), except that `false` also
 // means "not yet": for reads that answer false until they can return the awaited value.
 // Unlike waitUntil, other falsy results (null, 0, "") end the wait and are returned.
+/**
+ * @template T
+ * @param {Parameters<typeof waitFor>[0]} description
+ * @param {() => T | false | undefined | PromiseLike<T | false | undefined>} read
+ * @param {Parameters<typeof waitFor>[2]} [options]
+ * @returns {Promise<T>}
+ */
 export function waitForResult(description, read, options) {
   return waitFor(
     description,
