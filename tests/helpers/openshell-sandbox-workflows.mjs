@@ -1,6 +1,7 @@
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.mjs";
+import { emitOpenShellReplacementCheckpoint } from "../../scripts/ci/openshell-progress.mjs";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
@@ -8353,7 +8354,39 @@ export async function waitForReplacementActivation(
   }
 }
 
-async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext) {
+export async function redeployOpenShellReplacement(
+  topology,
+  testContext,
+  reportProgress,
+  diagnose,
+) {
+  if (reportProgress) {
+    emitOpenShellReplacementCheckpoint("redeploy-request");
+  }
+  const redeployed = await topology.request(
+    "POST",
+    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
+  );
+  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+  assert.notEqual(redeployed.data.id, topology.revision.id);
+  const revisionId = redeployed.data.id;
+  const observedAcceptance =
+    reportProgress && typeof revisionId === "string" && revisionId.length > 0;
+  if (observedAcceptance) {
+    emitOpenShellReplacementCheckpoint("activation");
+  }
+  await waitForReplacementActivation(topology, redeployed, testContext, undefined, diagnose);
+  if (observedAcceptance) {
+    emitOpenShellReplacementCheckpoint("reconciliation");
+  }
+  return redeployed;
+}
+
+async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(
+  topology,
+  testContext,
+  reportProgress,
+) {
   // Suspending the upstream Sandbox removes its Pod while retaining the provider resource.
   // Replacement must still discover and retire that Sandbox without relying on Pod observation.
   await kubectl(
@@ -8384,13 +8417,7 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, 
   );
   assert.equal(suspendedSandbox.spec.operatingMode, "Suspended");
 
-  const redeployed = await topology.request(
-    "POST",
-    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
-  );
-  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
-  assert.notEqual(redeployed.data.id, topology.revision.id);
-  await waitForReplacementActivation(topology, redeployed, testContext);
+  const redeployed = await redeployOpenShellReplacement(topology, testContext, reportProgress);
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
   await waitForProviderHarnessPod(topology.placement, redeployed.data);
@@ -9893,7 +9920,11 @@ export function registerProviderLifecycleTest(workflow) {
           // Retire the Harness used by the positive turns before changing DNS. A fresh
           // lookup alone cannot redirect its already established model connection.
           await measureOpenShellStage(testContext, "replacement", () =>
-            assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext),
+            assertDuplicateReconciliationDoesNotDuplicateOpenShell(
+              topology,
+              testContext,
+              workflow === "upstream" && selectedScenario === "full",
+            ),
           );
         }
         if (workflow === "upstream") {

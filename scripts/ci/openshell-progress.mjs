@@ -2,6 +2,11 @@ import { types } from "node:util";
 import { installationPhase } from "./openshell-installation-phase.ts";
 
 export const openShellProgressPrefix = "openclaw-ci-progress ";
+export const openShellReplacementCheckpoints = Object.freeze([
+  "redeploy-request",
+  "activation",
+  "reconciliation",
+]);
 
 const failureCategories = new Set([
   "AssertionError",
@@ -54,6 +59,12 @@ export function openShellProgress(value) {
   if (value?.kind === "openshell-installation") {
     return installationPhase(value);
   }
+  if (value?.kind === "openshell-replacement-checkpoint") {
+    return Object.keys(value).length === 2 &&
+      openShellReplacementCheckpoints.includes(value.checkpoint)
+      ? { kind: value.kind, checkpoint: value.checkpoint }
+      : undefined;
+  }
   if (value?.kind === "openshell-stage-failure") {
     if (
       Object.keys(value).length !== 5 ||
@@ -88,6 +99,13 @@ export function openShellProgress(value) {
 
 export function emitOpenShellProgress(stage, outcome) {
   const value = openShellProgress({ kind: "openshell-stage", stage, outcome });
+  if (value) {
+    process.stdout.write(`\n${openShellProgressPrefix}${JSON.stringify(value)}\n`);
+  }
+}
+
+export function emitOpenShellReplacementCheckpoint(checkpoint) {
+  const value = openShellProgress({ kind: "openshell-replacement-checkpoint", checkpoint });
   if (value) {
     process.stdout.write(`\n${openShellProgressPrefix}${JSON.stringify(value)}\n`);
   }

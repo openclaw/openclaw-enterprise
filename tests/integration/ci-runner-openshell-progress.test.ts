@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { watch } from "node:fs";
 import { copyFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test, { type TestContext } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 import {
   createRunnerFixture,
+  heldClock,
   laneArgs,
   runnerEnv,
   runRunnerAsync,
@@ -18,6 +20,7 @@ import {
 const repositoryUrl = new URL("../../", import.meta.url);
 const repositoryRoot = fileURLToPath(repositoryUrl);
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const execFileAsync = promisify(execFile);
 
 async function reportingFixture(t: TestContext, lane: "failure" | "progress") {
   const root = await createRunnerFixture(t);
@@ -318,5 +321,375 @@ test("CI retains the unfinished upstream stage without changing the failed case"
       );
     }
     assert.equal(upstream.openShellUnfinishedStage, expected);
+  }
+});
+
+test("CI records only observed upstream replacement checkpoints on failure", async (t) => {
+  const file = "tests/integration/openshell-upstream-real.test.ts";
+  const title = "OpenShell model and tool upstream outages fail closed";
+  const stageModule = new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href;
+  const workflowModule = new URL("tests/helpers/openshell-sandbox-workflows.mjs", repositoryUrl)
+    .href;
+  const progressModule = new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href;
+  const lane = "openshell-installers";
+
+  for (const [mode, checkpoint, outcome] of [
+    ["setup", undefined, undefined],
+    ["request", "redeploy-request", "failed"],
+    ["same-revision", "redeploy-request", "failed"],
+    ["activation", "activation", "failed"],
+    ["reconciliation", "reconciliation", "failed"],
+    ["out-of-order", undefined, undefined],
+    ["extra-field", undefined, undefined],
+    ["later-stage", undefined, undefined],
+    ["wrong-case", undefined, undefined],
+    ["success", undefined, undefined],
+  ] as const) {
+    await t.test(mode, async (t) => {
+      const root = await createRunnerFixture(t);
+      const results = join(root, "results/upstream.json");
+      const state = join(root, "state/upstream.jsonl");
+      const success = mode === "success";
+      const name = mode === "wrong-case" ? "another case" : title;
+      await writeFile(
+        join(root, "scripts/ci/prepare.mjs"),
+        "export async function prepareFile() { return { cleanup: async () => {} }; }",
+      );
+      await writeFile(
+        join(root, file),
+        `import assert from "node:assert/strict";
+         import test from "node:test";
+         import { runOpenShellStage } from ${JSON.stringify(stageModule)};
+         import { emitOpenShellReplacementCheckpoint, openShellProgressPrefix } from ${JSON.stringify(progressModule)};
+
+         const mode = ${JSON.stringify(mode)};
+         const failure = new Error("controlled failure " + process.env.CI_RUNNER_FIXTURE_CREDENTIAL);
+         const response = { status: 202, data: { id: "private-replacement-id" } };
+         const agentPath = "/namespaces/fixture/agents/fixture";
+         test(${JSON.stringify(name)}, async (t) => {
+           for (const step of ["installation", "exposure-auth", "initial-model"]) {
+             await runOpenShellStage(t, step, async () => {});
+           }
+           await runOpenShellStage(t, "replacement", async () => {
+             if (mode === "setup") throw failure;
+             if (mode === "out-of-order") {
+               emitOpenShellReplacementCheckpoint("activation");
+               emitOpenShellReplacementCheckpoint("redeploy-request");
+               throw failure;
+             }
+             if (mode === "extra-field") {
+               process.stdout.write(openShellProgressPrefix + JSON.stringify({
+                 kind: "openshell-replacement-checkpoint", checkpoint: "redeploy-request", extra: "private-progress-extra",
+               }) + "\\n");
+               throw failure;
+             }
+             const topology = {
+               namespaceId: "fixture",
+               agent: { id: "fixture" },
+               revision: { id: "private-previous-id" },
+               async request(method, path) {
+                 if (method === "POST") {
+                   assert.equal(path, agentPath + "/deploy");
+                   if (mode === "request") throw failure;
+                   if (mode === "same-revision") {
+                     topology.revision = { id: "same-test-revision" };
+                     return { status: 202, data: topology.revision };
+                   }
+                   return response;
+                 }
+                 assert.equal(method, "GET");
+                 if (path === agentPath) {
+                   return { status: 200, data: {
+                     activeRevisionId: mode === "activation" ? topology.revision.id : response.data.id,
+                   }};
+                 }
+                 assert.equal(path, agentPath + "/deployments/" + response.data.id);
+                 assert.equal(mode, "activation");
+                 throw failure;
+               },
+               async diagnoseRevision() { return {}; },
+             };
+             try {
+               const { redeployOpenShellReplacement } = await import(${JSON.stringify(workflowModule)});
+               const deployed = await redeployOpenShellReplacement(topology, t, true, async () => "");
+               assert.equal(deployed, response);
+             } catch (error) {
+               if (mode === "activation" || mode === "request") assert.equal(error, failure);
+               throw error;
+             }
+             if (mode === "reconciliation" || mode === "wrong-case") throw failure;
+           }, "pod-replacement");
+           if (mode === "later-stage") {
+             await runOpenShellStage(t, "untrusted-upstream", async () => { throw failure; });
+           }
+         });`,
+      );
+      await writeRunnerManifest(root, {
+        lanes: { [lane]: { files: [{ path: file, expectedTests: [name] }] } },
+      });
+      const runner = await runRunnerAsync(laneArgs(root, lane, state, results), {
+        CI_RUNNER_TEST_TIMEOUT_MS: "10000",
+      });
+      assert.equal(runner.error, undefined);
+      assert.equal(runner.status, success ? 0 : 1, runner.stderr);
+      const artifact = await readFile(results, "utf8");
+      const summary: {
+        files: {
+          openShellReplacement?: { checkpoint: string; outcome: string };
+          openShellUnfinishedStage?: string;
+          cleanup: { status: string };
+          issues: { code: string }[];
+          tests: { name: string; status: string; error?: { message: string } }[];
+          measurements: { kind: string; stage: string; outcome: string }[];
+        }[];
+      } = JSON.parse(artifact);
+      const [result] = summary.files;
+      assert.ok(result);
+      assert.equal(result.cleanup.status, "passed");
+      assert.deepEqual(
+        result.openShellReplacement,
+        checkpoint ? { checkpoint, outcome } : undefined,
+      );
+      assert.equal(result.openShellUnfinishedStage, undefined);
+      assert.equal(
+        result.issues.some(({ code }) => code === "test-timeout"),
+        false,
+      );
+      const replacement = result.measurements?.find(
+        ({ kind, stage }) => kind === "openshell-stage" && stage === "replacement",
+      );
+      assert.deepEqual(
+        result.tests.map(({ name, status }) => [name, status]),
+        [[name, success ? "passed" : "failed"]],
+      );
+      assert.equal(replacement?.outcome, success || mode === "later-stage" ? "passed" : "failed");
+      if (mode === "activation" || mode === "reconciliation" || mode === "request") {
+        assert.match(result.tests[0]?.error?.message ?? "", /^controlled failure \[env:/u);
+      }
+      for (const text of [artifact, runner.stdout, runner.stderr]) {
+        assert.doesNotMatch(text, /private-progress-extra|secretauthvalue/u);
+        assert.doesNotMatch(text, /private-replacement-id|private-previous-id/u);
+      }
+    });
+  }
+});
+
+// Send controlled Node events through the real reporter. Native Node scheduling
+// normally emits the live progress first, so a test-body throw alone cannot set this order.
+test("CI binds upstream replacement progress to the case cutoff", async (t) => {
+  const file = "tests/integration/openshell-upstream-real.test.ts";
+  const title = "OpenShell model and tool upstream outages fail closed";
+  const lane = "openshell-installers";
+  const reporterUrl = new URL("scripts/ci/reporter.ts", repositoryUrl).href;
+  const stageModule = new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href;
+  const workflowModule = new URL("tests/helpers/openshell-sandbox-workflows.mjs", repositoryUrl)
+    .href;
+  for (const [mode, expected] of [
+    ["after-failure", undefined],
+    ["after-interruption", undefined],
+    ["after-replacement", undefined],
+    ["delayed-measurement", "failed"],
+    ["before-interruption", "unfinished"],
+    ["earlier-interruption", undefined],
+  ] as const) {
+    await t.test(mode, async (t) => {
+      const root = await createRunnerFixture(t);
+      const results = join(root, "results/upstream.json");
+      const state = join(root, "state/upstream.jsonl");
+      const child = join(root, "reporter-child.mjs");
+      const preload = join(root, "reporter-child-preload.mjs");
+      const interrupted = mode.endsWith("interruption");
+      const ready = join(root, "state/deadline-ready");
+      await writeFile(
+        join(root, "scripts/ci/prepare.mjs"),
+        "export async function prepareFile() { return { cleanup: async () => {} }; }",
+      );
+      await writeFile(join(root, file), "// This control supplies Node events to the reporter.\n");
+      await writeFile(
+        preload,
+        `Object.defineProperty(process, "execPath", { value: ${JSON.stringify(child)} });`,
+      );
+      const activationFile = join(root, "activation-progress.json");
+      if (mode === "before-interruption") {
+        const producer = join(root, "activation-progress.mjs");
+        // Capture the actual fixture's progress through entry into its pending activation poll.
+        // The reporter process below can then focus on deterministic SIGTERM delivery.
+        await writeFile(
+          producer,
+          `import { writeFileSync } from "node:fs";
+           const { runOpenShellStage } = await import(${JSON.stringify(stageModule)});
+           const { redeployOpenShellReplacement } = await import(${JSON.stringify(workflowModule)});
+           const lines = [];
+           const write = process.stdout.write;
+           process.stdout.write = (message) => { lines.push(message); return true; };
+           try {
+             const context = { diagnostic() {} };
+             for (const name of ["installation", "exposure-auth", "initial-model"]) {
+               await runOpenShellStage(context, name, async () => {});
+             }
+             const poll = Promise.withResolvers();
+             const topology = {
+               namespaceId: "fixture",
+               agent: { id: "fixture" },
+               revision: { id: "previous-revision" },
+               async request(method) {
+                 if (method === "POST") return { status: 202, data: { id: "replacement-revision" } };
+                 poll.resolve();
+                 return new Promise(() => {});
+               },
+             };
+             const replacement = runOpenShellStage(context, "replacement", () =>
+               redeployOpenShellReplacement(topology, context, true),
+             );
+             await Promise.race([poll.promise, replacement.then(() => {
+               throw new Error("replacement completed before the controlled interruption");
+             })]);
+           } finally {
+             process.stdout.write = write;
+           }
+           writeFileSync(${JSON.stringify(activationFile)}, JSON.stringify(lines));`,
+        );
+        await execFileAsync(process.execPath, [producer], { timeout: 10_000 });
+      }
+      await writeFile(
+        child,
+        `#!${process.execPath}
+         import reporter from ${JSON.stringify(reporterUrl)};
+         import { readFileSync, writeFileSync } from "node:fs";
+         const data = {
+           name: ${JSON.stringify(title)}, nesting: 0, line: 1, column: 1,
+           file: process.argv.at(-1), details: { type: "test", duration_ms: 1 },
+         };
+         const progress = (value) => ({
+           type: "test:stdout", data: { message: "openclaw-ci-progress " + JSON.stringify(value) + "\\n" },
+         });
+         const stage = (stage, outcome) => progress({ kind: "openshell-stage", stage, outcome });
+         const checkpoint = (checkpoint) => progress({ kind: "openshell-replacement-checkpoint", checkpoint });
+         const failure = { type: "test:fail", data };
+         const failedStage = stage("replacement", "failed");
+         const activation = checkpoint("activation");
+         const measurement = { kind: "openshell-stage", stage: "replacement", outcome: "failed", elapsedMs: 1 };
+         const mode = ${JSON.stringify(mode)};
+         async function* events() {
+           yield { type: "test:dequeue", data };
+           if (mode === "before-interruption") {
+             for (const message of JSON.parse(readFileSync(${JSON.stringify(activationFile)}, "utf8"))) {
+               yield { type: "test:stdout", data: { message } };
+             }
+           } else {
+             for (const name of ["installation", "exposure-auth", "initial-model"]) {
+               yield stage(name, "started");
+               if (mode === "earlier-interruption" && name === "initial-model") break;
+               yield stage(name, "passed");
+             }
+             if (mode !== "earlier-interruption") {
+               yield stage("replacement", "started");
+               yield checkpoint("redeploy-request");
+             }
+           }
+           switch (mode) {
+             case "after-failure":
+               yield failure;
+               yield activation;
+               yield failedStage;
+               break;
+             case "before-interruption":
+             case "earlier-interruption":
+             case "after-interruption": {
+               const hold = setInterval(() => {}, 60_000);
+               const terminated = new Promise((resolve) => process.once("SIGTERM", resolve));
+               writeFileSync(${JSON.stringify(ready)}, "");
+               await terminated;
+               clearInterval(hold);
+               yield { type: "test:interrupted" };
+               if (mode === "after-interruption") yield activation;
+               return;
+             }
+             case "after-replacement":
+               yield failedStage;
+               yield activation;
+               yield failure;
+               break;
+             case "delayed-measurement":
+               yield activation;
+               yield failedStage;
+               yield failure;
+               break;
+           }
+           yield {
+             type: "test:diagnostic",
+             data: { message: "openclaw-ci-measurement " + JSON.stringify(measurement) },
+           };
+         }
+         for await (const line of reporter(events())) process.stdout.write(line);
+         process.exitCode = 1;`,
+        { mode: 0o700 },
+      );
+      await writeRunnerManifest(root, {
+        lanes: { [lane]: { files: [{ path: file, expectedTests: [title] }] } },
+      });
+      const runner = await runRunnerAsync(
+        laneArgs(root, lane, state, results),
+        { CI_RUNNER_TEST_TIMEOUT_MS: interrupted ? "3000" : "10000" },
+        {
+          timeout: 30_000,
+          execArgv: [
+            ...(interrupted ? heldClock(Date.now(), [ready]) : []),
+            "--import",
+            pathToFileURL(preload).href,
+          ],
+        },
+      );
+      assert.equal(runner.error, undefined);
+      assert.equal(runner.status, 1, runner.stderr);
+      const summary: {
+        files: {
+          openShellReplacement?: { checkpoint: string; outcome: string };
+          openShellUnfinishedStage?: string;
+          cleanup: { status: string };
+          issues: { code: string }[];
+          tests: { name: string; status: string }[];
+          measurements?: { kind: string; stage: string; outcome: string; elapsedMs: number }[];
+        }[];
+      } = JSON.parse(await readFile(results, "utf8"));
+      const [result] = summary.files;
+      assert.ok(result);
+      assert.deepEqual(
+        result.openShellReplacement,
+        expected ? { checkpoint: "activation", outcome: expected } : undefined,
+      );
+      assert.equal(
+        result.openShellUnfinishedStage,
+        interrupted && mode !== "earlier-interruption" ? "replacement" : undefined,
+      );
+      assert.equal(
+        result.issues.some(({ code }) => code === "test-timeout"),
+        interrupted,
+      );
+      assert.deepEqual(
+        result.tests.map(({ name, status }) => [name, status]),
+        interrupted ? [] : [[title, "failed"]],
+      );
+      assert.deepEqual(
+        result.measurements,
+        interrupted
+          ? undefined
+          : [{ kind: "openshell-stage", stage: "replacement", outcome: "failed", elapsedMs: 1 }],
+      );
+      assert.equal(result.cleanup.status, "passed");
+      if (interrupted) {
+        const diagnostics: {
+          failures: { reason: string; timeoutMs: number; interruptedTests?: { name: string }[] }[];
+        } = JSON.parse(await readFile(`${state}.diagnostics.json`, "utf8"));
+        const [failure] = diagnostics.failures;
+        assert.ok(failure);
+        assert.equal(failure.reason, "timeout");
+        assert.equal(failure.timeoutMs, 3000);
+        assert.deepEqual(
+          failure.interruptedTests?.map(({ name }) => name),
+          [title],
+        );
+      }
+    });
   }
 });
