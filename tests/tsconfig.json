@@ -35,6 +35,7 @@
     "integration/sandbox-driver-adoption-cases.ts",
     "integration/sandbox-driver-hook-probe-cases.ts",
     "**/*.test.ts",
+    "conformance/configuration-occ-persistence-cases.ts",
     "conformance/kubernetes-dedicated-deploy-fixture.ts",
     "conformance/kubernetes-embedded-replacement-fixture.ts",
     "conformance/kubernetes-gateway-retirement-case.ts",
