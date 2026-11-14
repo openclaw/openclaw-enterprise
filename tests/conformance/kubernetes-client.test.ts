@@ -1,104 +1,44 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { copyFile, writeFile } from "node:fs/promises";
-import { createServer as createHttpServer } from "node:http";
-import { createSecureServer } from "node:http2";
-import { createServer as createHttpsServer } from "node:https";
-import { connect as connectTcp } from "node:net";
+import { copyFile } from "node:fs/promises";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+
+import {
+  readPrivateStatusProxy,
+  RUNTIME_STATUS_PATH,
+} from "../../apps/controller/src/drivers/compute/kubernetes/private-status-proxy.ts";
+import {
+  withComputeAbortSignal,
+  withComputeOperationDeadline,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import type { KubernetesAuthentication } from "../../apps/controller/src/drivers/kubernetes/authentication.ts";
 import {
   createKubernetesClientConfiguration,
   KUBERNETES_KEEP_ALIVE_LIMITS,
   reuseRequestDispatcher,
 } from "../../apps/controller/src/drivers/kubernetes/client.ts";
-import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
-  withComputeAbortSignal,
-  withComputeOperationDeadline,
-} from "../../apps/controller/src/drivers/compute/operation-context.ts";
-import { kubernetesRequest } from "../../apps/controller/src/drivers/kubernetes/request.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
-
-// The certificate's CN is its name: the API server stand-in records it per connection.
-const selfSignedCertificate = (directory, name, subjectAltName) =>
-  selfSigned(directory, { name, commonName: name, subjectAltName });
-
-// A TLS API server that offers HTTP/2 first, like kube-apiserver, requires a
-// client certificate, and records every connection it accepts. With
-// keepAliveHint, it advertises that Keep-Alive header and never closes an idle
-// HTTP/1.1 connection itself, so any close comes from the client.
-async function apiServer(t, directory, clientCertificates, { keepAliveHint } = {}) {
-  const server = await selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
-  const connections = [];
-  const open = new Set();
-  const listener = createSecureServer({
-    key: server.key,
-    cert: server.cert,
-    ca: clientCertificates.map((path) => readFileSync(path)),
-    requestCert: true,
-    rejectUnauthorized: true,
-    allowHTTP1: true,
-  });
-  listener.on("secureConnection", (socket) => {
-    const connection = {
-      protocol: socket.alpnProtocol,
-      client: socket.getPeerCertificate().subject?.CN,
-    };
-    connections.push(connection);
-    open.add(connection);
-    socket.on("close", () => open.delete(connection));
-  });
-  // Per HTTP/1.1 socket: when its last response finished and when the client
-  // closed it.
-  const idle = [];
-  if (keepAliveHint !== undefined) {
-    listener.keepAliveTimeout = 0;
-  }
-  listener.on("request", (request, response) => {
-    response.setHeader("content-type", "application/json");
-    if (keepAliveHint !== undefined) {
-      response.setHeader("keep-alive", keepAliveHint);
-      const socket = request.socket;
-      if (socket.idleRecord === undefined) {
-        socket.idleRecord = { lastResponseAt: undefined, clientClosedAt: undefined };
-        idle.push(socket.idleRecord);
-        // "close" covers a client that resets the socket instead of ending it.
-        for (const event of ["end", "close"]) {
-          socket.on(event, () => (socket.idleRecord.clientClosedAt ??= Date.now()));
-        }
-      }
-      response.on("finish", () => (socket.idleRecord.lastResponseAt = Date.now()));
-    }
-    response.end(JSON.stringify({ kind: "NamespaceList", apiVersion: "v1", items: [] }));
-  });
-  const port = await listen(t, listener);
-  return { caPath: server.certPath, url: `https://127.0.0.1:${port}`, connections, open, idle };
-}
-
-async function writeKubeconfig(directory, server, client, { proxyUrl } = {}) {
-  const kubeconfigPath = join(directory, "kubeconfig");
-  const proxy = proxyUrl === undefined ? "" : `, proxy-url: "${proxyUrl}"`;
-  await writeFile(
-    kubeconfigPath,
-    [
-      "apiVersion: v1",
-      "kind: Config",
-      `clusters: [{name: target, cluster: {server: "${server.url}", certificate-authority: "${server.caPath}"${proxy}}}]`,
-      `users: [{name: operator, user: {client-certificate: "${client.certPath}", client-key: "${client.keyPath}"}}]`,
-      "contexts: [{name: target, context: {cluster: target, user: operator}}]",
-      "current-context: target",
-      "",
-    ].join("\n"),
-    { mode: 0o600 },
-  );
-  return { mode: "kubeconfig", kubeconfigPath, context: "target" };
-}
+  kubernetesRequest,
+  type KubernetesRequestFailures,
+} from "../../apps/controller/src/drivers/kubernetes/request.ts";
+import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
+import { acquireRuntimeDiagnostics } from "./kubernetes-client-diagnostics.ts";
+import {
+  apiServer,
+  connectProxy,
+  recordingApiServer,
+  selfSignedCertificate,
+  writeKubeconfig,
+} from "./kubernetes-client-fixture.ts";
+import { listen } from "../helpers/listen.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 test("Kubernetes API requests reuse keep-alive HTTP/1.1 connections and reconnect when the client certificate rotates", async (t) => {
   const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
@@ -125,7 +65,10 @@ test("Kubernetes API requests reuse keep-alive HTTP/1.1 connections and reconnec
     await core.listNamespace();
   }
   const firstConnections = server.connections.length;
-  assert.ok(firstConnections <= 2, `20 requests opened ${firstConnections} connections`);
+  assert.ok(
+    firstConnections >= 1 && firstConnections <= 2,
+    `20 requests opened ${firstConnections} connections`,
+  );
   for (const connection of server.connections) {
     assert.deepEqual(connection, { protocol: "http/1.1", client: "operator-1" });
   }
@@ -142,52 +85,25 @@ test("Kubernetes API requests reuse keep-alive HTTP/1.1 connections and reconnec
   for (const connection of rotated) {
     assert.deepEqual(connection, { protocol: "http/1.1", client: "operator-2" });
   }
-  await waitUntil("the connections for the old certificate to close", () =>
-    [...server.open].every((connection) => connection.client === "operator-2"),
+  await waitFor("the connections for the old certificate to close", () =>
+    [...server.open].some((connection) => connection.client === "operator-1") ? undefined : true,
   );
 });
 
-// An HTTP CONNECT proxy that tunnels to any address, like a corporate egress proxy.
-async function connectProxy() {
-  const tunnels = [];
-  const sockets = new Set();
-  const proxy = createHttpServer();
-  proxy.on("connect", (request, client, head) => {
-    const [host, port] = request.url.split(":");
-    tunnels.push(request.url);
-    const upstream = connectTcp(Number(port), host, () => {
-      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      upstream.write(head);
-      upstream.pipe(client);
-      client.pipe(upstream);
-    });
-    for (const socket of [client, upstream]) {
-      sockets.add(socket);
-      socket.on("close", () => sockets.delete(socket));
-      socket.on("error", () => undefined);
-    }
-  });
-  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-  return {
-    url: `http://127.0.0.1:${proxy.address().port}`,
-    tunnels,
-    async close() {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      await new Promise((resolve) => proxy.close(resolve));
-    },
-  };
-}
-
 // undici keeps an Agent's options under Symbol("options"), and a ProxyAgent's
 // inner Agent under Symbol("proxy agent"). It has no public accessor for them.
-function undiciSymbol(object, description) {
+function undiciSymbol(object: unknown, description: string): unknown {
+  assert.ok(typeof object === "object" && object !== null, `undici ${description} owner`);
   const symbols = Object.getOwnPropertySymbols(object).filter(
     (candidate) => candidate.description === description,
   );
-  assert.equal(symbols.length, 1, `undici no longer keeps ${description} where this test reads it`);
-  return object[symbols[0]];
+  const [key] = symbols;
+  assert.ok(
+    key !== undefined && symbols.length === 1,
+    `undici no longer keeps ${description} where this test reads it`,
+  );
+  const value: unknown = Reflect.get(object, key);
+  return value;
 }
 
 test("Kubernetes API dispatchers carry the keep-alive limits, directly and through an HTTP proxy", async (t) => {
@@ -200,17 +116,22 @@ test("Kubernetes API dispatchers carry the keep-alive limits, directly and throu
   const server = await selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
   const target = { url: "https://127.0.0.1:6443", caPath: server.certPath };
   for (const proxyUrl of [undefined, "http://127.0.0.1:3128"]) {
-    const authentication = await writeKubeconfig(directory, target, operator, { proxyUrl });
-    const { kubeConfig } = await createKubernetesClientConfiguration(
+    const authentication = await writeKubeconfig(directory, target, operator, proxyUrl);
+    const { sdk, kubeConfig } = await createKubernetesClientConfiguration(
       authentication,
       (message) => new Error(message),
     );
-    const dispatcher = kubeConfig.createDispatcher(kubeConfig.getCurrentCluster(), {
-      ca: readFileSync(server.certPath),
-    });
+    const request = new sdk.RequestContext(target.url, sdk.HttpMethod.GET);
+    await kubeConfig.applySecurityAuthentication(request);
+    const dispatcher = request.getDispatcher();
+    assert.ok(dispatcher, "the configured API request has a dispatcher");
     t.after(() => dispatcher.close());
     const agent = proxyUrl === undefined ? dispatcher : undiciSymbol(dispatcher, "proxy agent");
     const options = undiciSymbol(agent, "options");
+    assert.ok(typeof options === "object" && options !== null);
+    assert.ok(
+      "keepAliveTimeout" in options && "keepAliveMaxTimeout" in options && "allowH2" in options,
+    );
     assert.equal(options.keepAliveTimeout, 4_000, `proxy ${proxyUrl}`);
     assert.equal(options.keepAliveMaxTimeout, 30_000, `proxy ${proxyUrl}`);
     assert.equal(options.allowH2, false, `proxy ${proxyUrl}`);
@@ -232,15 +153,10 @@ for (const viaProxy of [false, true]) {
     for (const [keepAliveHint, limit] of [
       ["timeout=600", limits.keepAliveMaxTimeout],
       ["max=100", limits.keepAliveTimeout],
-    ]) {
-      const server = await apiServer(t, directory, [operator.certPath], { keepAliveHint });
-      const proxy = viaProxy ? await connectProxy() : undefined;
-      if (proxy !== undefined) {
-        t.after(() => proxy.close());
-      }
-      const authentication = await writeKubeconfig(directory, server, operator, {
-        proxyUrl: proxy?.url,
-      });
+    ] as const) {
+      const server = await apiServer(t, directory, [operator.certPath], keepAliveHint);
+      const proxy = viaProxy ? await connectProxy(t, new URL(server.url)) : undefined;
+      const authentication = await writeKubeconfig(directory, server, operator, proxy?.url);
       const { sdk } = await createKubernetesClientConfiguration(
         authentication,
         (message) => new Error(message),
@@ -251,17 +167,19 @@ for (const viaProxy of [false, true]) {
       const core = kubeConfig.makeApiClient(sdk.CoreV1Api);
 
       await core.listNamespace();
-      assert.equal(server.idle.length, 1, `${keepAliveHint}: one connection`);
+      assert.equal(server.idle.size, 1, `${keepAliveHint}: one connection`);
       assert.deepEqual(server.connections, [{ protocol: "http/1.1", client: "operator" }]);
       if (proxy !== undefined) {
-        assert.equal(proxy.tunnels.length, 1, `${keepAliveHint}: one tunnel`);
+        assert.deepEqual(proxy.tunnels, [new URL(server.url).host], `${keepAliveHint}: one tunnel`);
       }
-      const [record] = server.idle;
-      await waitUntil(
+      const { value: record, done } = server.idle.values().next();
+      assert.equal(done, false);
+      const closedAt = await waitFor(
         `${keepAliveHint}: the client to close the idle connection`,
-        () => record.clientClosedAt !== undefined,
+        () => record.clientClosedAt,
       );
-      const idleFor = record.clientClosedAt - record.lastResponseAt;
+      assert.ok(record.lastResponseAt !== undefined, "the TLS API response finished");
+      const idleFor = closedAt - record.lastResponseAt;
       assert.ok(
         // The upper bound only has to stay under undici's 4 s default.
         idleFor >= limit - 100 && idleFor < limit + 2_500,
@@ -271,68 +189,43 @@ for (const viaProxy of [false, true]) {
   });
 }
 
-// A TLS API server stand-in that records each request's path and Authorization
-// header. `respond(request, response)` writes every answer.
-async function recordingApiServer(t, directory, respond) {
-  const certificate = await selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
-  const requests = [];
-  const listener = createHttpsServer(
-    { key: certificate.key, cert: certificate.cert },
-    (request, response) => {
-      requests.push({ path: request.url, authorization: request.headers.authorization });
-      respond(request, response);
-    },
-  );
-  const port = await listen(t, listener);
-  return { caPath: certificate.certPath, url: `https://127.0.0.1:${port}`, requests };
-}
-
-/** A kubeconfig whose identity is a bearer token, like an in-cluster ServiceAccount. */
-async function writeTokenKubeconfig(directory, server) {
-  const kubeconfigPath = join(directory, "kubeconfig");
-  await writeFile(
-    kubeconfigPath,
-    [
-      "apiVersion: v1",
-      "kind: Config",
-      `clusters: [{name: target, cluster: {server: "${server.url}", certificate-authority: "${server.caPath}"}}]`,
-      "users: [{name: controller, user: {token: fixture-token}}]",
-      "contexts: [{name: target, context: {cluster: target, user: controller}}]",
-      "current-context: target",
-      "",
-    ].join("\n"),
-    { mode: 0o600 },
-  );
-  return { mode: "kubeconfig", kubeconfigPath, context: "target" };
-}
-
 const STATUS_PROXY_PATH =
   "/api/v1/namespaces/tenant/pods/agent-pod%3A18791/proxy/openclaw%2Fruntime%2Fstatus";
 
-/** The production Driver's runtime status readback through clients built from `authentication`. */
-function statusReadback(authentication) {
-  const driver = new KubernetesComputeDriver({
-    ...conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
+const requestFailures = {
+  cancelled: (reason) => reason,
+  failed: (error) => error,
+  timedOut: () => new Error("request timed out"),
+  deadlineElapsed: () => new Error("request lifetime elapsed before dispatch"),
+} satisfies KubernetesRequestFailures;
+
+async function statusReadback(authentication: KubernetesAuthentication) {
+  const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
     authentication,
-  });
-  // Pod discovery is not under test; the read itself goes through the Pod proxy.
-  driver.revisionPods = async () => [
-    {
-      metadata: { name: "agent-pod", uid: "agent-uid" },
-      status: { phase: "Running", podIP: "10.42.0.7" },
-    },
-  ];
-  return driver
-    .privateStatusReadback(
-      { harness: { mode: "shared" } },
-      { name: "tenant", plane: "control" },
-      "agent",
-      "/openclaw/runtime/status",
-    )
-    .then(
-      (value) => ({ value }),
-      (error) => ({ error }),
-    );
+    (message) => new Error(message),
+  );
+  return readPrivateStatusProxy(
+    new sdk.CoreV1Api(clientConfiguration),
+    (operation) => kubernetesRequest(operation, requestFailures),
+    { namespace: "tenant", podName: "agent-pod", container: "agent", path: RUNTIME_STATUS_PATH },
+  );
+}
+
+const REDIRECT_SECRET_PATH = "/api/v1/namespaces/occ-system/secrets/x";
+const statusRequest = { path: STATUS_PROXY_PATH, authorization: "Bearer fixture-token" } as const;
+const redirect = {
+  name: DependencyUnavailableError.name,
+  message: "Runtime status answered with a redirect.",
+};
+
+// A stray request could read a Secret or disclose the token to another origin.
+function unexpectedStatusPath(request: IncomingMessage, response: ServerResponse): boolean {
+  if (request.url === STATUS_PROXY_PATH) {
+    return false;
+  }
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end('{"kind":"Secret"}');
+  return true;
 }
 
 // Finding 1347: whoever runs on a Pod's status port writes the proxied answer, and the
@@ -340,38 +233,34 @@ function statusReadback(authentication) {
 // through unchanged. Following it would send the controller's token to another API
 // server path, or fetch another origin from the controller's network position. The
 // readback must make exactly one request and report the redirect as unreadable.
-for (const [target, location] of [
+const locations = [
   ["a relative path", () => "../../../../../../../api/v1/namespaces/occ-system/secrets/x"],
-  ["another API server path", (api) => `${api.url}/api/v1/namespaces/occ-system/secrets/x`],
-  ["another origin", (_api, other) => `${other.url}/collect`],
+  ["another API server path", (apiUrl) => `${apiUrl}${REDIRECT_SECRET_PATH}`],
+  ["another origin", (_apiUrl, otherUrl) => `${otherUrl}/collect`],
   ["itself", () => STATUS_PROXY_PATH],
-]) {
+] satisfies readonly (readonly [string, (apiUrl: string, otherUrl: string) => string])[];
+for (const [target, location] of locations) {
   test(`runtime status readback does not follow a Pod redirect to ${target} (finding 1347)`, async (t) => {
     const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
-    const otherRequests = [];
+    const otherRequests: (string | undefined)[] = [];
     const other = createHttpServer((request, response) => {
       otherRequests.push(request.url);
       response.end("{}");
     });
-    await listen(t, other);
+    const otherPort = await listen(t, other);
     const api = await recordingApiServer(t, directory, (request, response) => {
-      // The API server's own answer for any other path: a body worth stealing.
-      if (request.url !== STATUS_PROXY_PATH) {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end('{"kind":"Secret"}');
+      if (unexpectedStatusPath(request, response)) {
         return;
       }
       response.writeHead(302, {
-        location: location(api, { url: `http://127.0.0.1:${other.address().port}` }),
+        location: location(api.url, `http://127.0.0.1:${otherPort}`),
       });
       response.end();
     });
 
-    const outcome = await statusReadback(await writeTokenKubeconfig(directory, api));
-    assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
-    assert.deepEqual(api.requests, [
-      { path: STATUS_PROXY_PATH, authorization: "Bearer fixture-token" },
-    ]);
+    const authentication = await writeKubeconfig(directory, api, "fixture-token");
+    await assert.rejects(statusReadback(authentication), redirect);
+    assert.deepEqual(api.requests, [statusRequest]);
     assert.deepEqual(otherRequests, []);
     t.diagnostic(
       `API requests: ${api.requests.length}; other-origin requests: ${otherRequests.length}`,
@@ -382,18 +271,13 @@ for (const [target, location] of [
 for (const body of ["truncated", "held open"]) {
   test(`runtime status readback stops at a redirect with a ${body} body`, async (t) => {
     const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
-    let resolveClosed;
-    const closed = new Promise((resolve) => {
-      resolveClosed = resolve;
-    });
+    const { promise: closed, resolve: resolveClosed } = Promise.withResolvers<void>();
     const api = await recordingApiServer(t, directory, (request, response) => {
-      if (request.url !== STATUS_PROXY_PATH) {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end('{"kind":"Secret"}');
+      if (unexpectedStatusPath(request, response)) {
         return;
       }
       response.writeHead(302, {
-        location: "/api/v1/namespaces/occ-system/secrets/x",
+        location: REDIRECT_SECRET_PATH,
         "content-length": "100",
       });
       response.once("close", resolveClosed);
@@ -406,15 +290,12 @@ for (const body of ["truncated", "held open"]) {
     });
 
     // An unfinished body must neither delay the redirect result nor cause a retry.
-    const authentication = await writeTokenKubeconfig(directory, api);
-    const outcome = await withComputeAbortSignal(AbortSignal.timeout(4_000), () =>
-      statusReadback(authentication),
+    const authentication = await writeKubeconfig(directory, api, "fixture-token");
+    await assert.rejects(
+      withComputeAbortSignal(AbortSignal.timeout(4_000), () => statusReadback(authentication)),
+      redirect,
     );
-    assert.equal(api.requests.length, 1, "a redirect must not trigger another request");
-    assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
-    assert.deepEqual(api.requests, [
-      { path: STATUS_PROXY_PATH, authorization: "Bearer fixture-token" },
-    ]);
+    assert.deepEqual(api.requests, [statusRequest]);
     assert.equal(
       await Promise.race([closed.then(() => true), delay(2_000, false, { ref: false })]),
       true,
@@ -425,63 +306,62 @@ for (const body of ["truncated", "held open"]) {
 
 // Finding 1355: undici refuses a 100 Continue or an unrequested 101 with a status-less socket
 // error. The Pod chose that answer, so the readback reports it once instead of retrying it.
-for (const [interim, write] of [
+const interimResponses = [
   [
     "100 Continue",
     (response) => {
       response.writeContinue();
-      response.writeHead(302, { location: "/api/v1/namespaces/occ-system/secrets/x" });
+      response.writeHead(302, { location: REDIRECT_SECRET_PATH });
       response.end();
     },
   ],
   [
     "101 Switching Protocols",
-    (response) =>
+    (response) => {
+      assert.ok(response.socket, "the API sends the unsolicited upgrade over its socket");
       response.socket.write(
         "HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n",
-      ),
+      );
+    },
   ],
-]) {
+] satisfies readonly (readonly [string, (response: ServerResponse) => void])[];
+for (const [interim, write] of interimResponses) {
   test(`runtime status readback reports an unrequested ${interim} once, without a retry`, async (t) => {
     const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
     const api = await recordingApiServer(t, directory, (request, response) => {
-      if (request.url !== STATUS_PROXY_PATH) {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end('{"kind":"Secret"}');
+      if (unexpectedStatusPath(request, response)) {
         return;
       }
       write(response);
     });
-    const authentication = await writeTokenKubeconfig(directory, api);
-    const outcome = await withComputeAbortSignal(AbortSignal.timeout(4_000), () =>
-      statusReadback(authentication),
+    const authentication = await writeKubeconfig(directory, api, "fixture-token");
+    await assert.rejects(
+      withComputeAbortSignal(AbortSignal.timeout(4_000), () => statusReadback(authentication)),
+      {
+        name: DependencyUnavailableError.name,
+        message: "Runtime status answered with an unrequested 1xx status.",
+      },
     );
-    assert.equal(
-      outcome.error?.message,
-      "Runtime status answered with an unrequested 1xx status.",
-      String(outcome.error?.cause ?? outcome.error),
-    );
-    assert.deepEqual(api.requests, [
-      { path: STATUS_PROXY_PATH, authorization: "Bearer fixture-token" },
-    ]);
+    assert.deepEqual(api.requests, [statusRequest]);
   });
 }
 
 test("runtime status readback still retries a dropped connection", async (t) => {
   const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
-  const api = await recordingApiServer(t, directory, (request, response) => {
-    // The first read loses its connection mid-request, as when an API server restarts.
-    if (api.requests.length === 1) {
-      request.socket.destroy();
-      return;
-    }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end('{"revisionId":"revision-1"}');
-  });
-  assert.deepEqual(await statusReadback(await writeTokenKubeconfig(directory, api)), {
-    value: { status: { revisionId: "revision-1" }, podUid: "agent-uid", containerId: undefined },
-  });
-  assert.equal(api.requests.length, 2);
+  const { diagnostics, statusAttempts, podLists } = await acquireRuntimeDiagnostics(t, directory);
+  assert.equal(diagnostics.revisionId, "revision-1");
+  assert.deepEqual(diagnostics.checks, [
+    {
+      component: "gateway",
+      check: "peer-bridge-record",
+      state: "failed",
+      checkedAt: "2026-09-19T12:00:00.000Z",
+      code: "UNAVAILABLE",
+    },
+  ]);
+  assert.equal(statusAttempts, 2, "the dropped status request was retried once");
+  // Compute must re-observe the Pod before accepting each proxied report.
+  assert.equal(podLists.length, 4);
 });
 
 test("runtime status readback through the production client keeps 200 and 404 answers", async (t) => {
@@ -491,20 +371,21 @@ test("runtime status readback through the production client keeps 200 and 404 an
     response.writeHead(status, { "content-type": "application/json" });
     response.end(status === 200 ? '{"revisionId":"revision-1"}' : "");
   });
-  const authentication = await writeTokenKubeconfig(directory, api);
+  const authentication = await writeKubeconfig(directory, api, "fixture-token");
   assert.deepEqual(await statusReadback(authentication), {
-    value: { status: { revisionId: "revision-1" }, podUid: "agent-uid", containerId: undefined },
+    body: { revisionId: "revision-1" },
   });
   // 404 means the status port is not serving yet: no status, no error.
   status = 404;
-  assert.deepEqual(await statusReadback(authentication), { value: undefined });
+  assert.equal(await statusReadback(authentication), undefined);
+  assert.deepEqual(api.requests, [statusRequest, statusRequest]);
   t.diagnostic("200 returned parsed status; 404 returned no status");
 });
 
 test("Kubernetes API clients do not follow a redirect from the API server (finding 1347)", async (t) => {
   const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
   const api = await recordingApiServer(t, directory, (request, response) => {
-    if (request.url.startsWith("/api/v1/namespaces?")) {
+    if (request.url?.startsWith("/api/v1/namespaces?")) {
       response.writeHead(302, { location: "/api/v1/namespaces/occ-system/secrets" });
       response.end();
       return;
@@ -514,14 +395,13 @@ test("Kubernetes API clients do not follow a redirect from the API server (findi
   });
   // The Secret and Configuration Drivers build their clients from this same configuration.
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
-    await writeTokenKubeconfig(directory, api),
+    await writeKubeconfig(directory, api, "fixture-token"),
     (message) => new Error(message),
   );
-  const listed = await new sdk.CoreV1Api(clientConfiguration).listNamespace({ limit: 1 }).then(
-    () => undefined,
-    (error) => error,
+  await assert.rejects(
+    new sdk.CoreV1Api(clientConfiguration).listNamespace({ limit: 1 }),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === 302,
   );
-  assert.equal(listed?.code, 302);
   assert.equal(api.requests.length, 1);
 });
 
@@ -529,7 +409,7 @@ test("Kubernetes API clients do not follow a redirect from the API server (findi
 // must still send each write's method and body, and stop a read when its operation is cancelled.
 test("Kubernetes API clients send write bodies and honor cancellation through the shared library", async (t) => {
   const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
-  const writes = [];
+  const writes: { readonly method: string | undefined; readonly body: string }[] = [];
   const cancel = new AbortController();
   const api = await recordingApiServer(t, directory, (request, response) => {
     // A read of this Namespace never answers; the operation is cancelled once it is in flight.
@@ -539,7 +419,8 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
     }
     let body = "";
     request.setEncoding("utf8");
-    request.on("data", (chunk) => {
+    request.on("data", (chunk: unknown) => {
+      assert.ok(typeof chunk === "string", "the request stream is decoded as UTF-8");
       body += chunk;
     });
     request.on("end", () => {
@@ -549,7 +430,7 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
     });
   });
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
-    await writeTokenKubeconfig(directory, api),
+    await writeKubeconfig(directory, api, "fixture-token"),
     (message) => new Error(message),
   );
   const core = new sdk.CoreV1Api(clientConfiguration);
@@ -558,7 +439,10 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
   const created = await core.createNamespace({ body: namespace });
   assert.equal(created.metadata?.name, "tenant");
   assert.deepEqual(
-    writes.map(({ method, body }) => ({ method, body: body && JSON.parse(body) })),
+    writes.map(({ method, body }) => {
+      const decoded: unknown = JSON.parse(body);
+      return { method, body: decoded };
+    }),
     [{ method: "POST", body: namespace }],
   );
 
@@ -569,37 +453,33 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
       withComputeAbortSignal(new AbortController().signal, () =>
         core.readNamespace({ name: "held" }),
       ),
-  ).then(
-    () => "answered",
-    (error) => error.name,
   );
-  assert.equal(
-    await Promise.race([held, delay(3_000, "still pending", { ref: false })]),
-    "AbortError",
+  await assert.rejects(
+    Promise.race([held, delay(3_000, "still pending", { ref: false })]),
+    (error: unknown) => {
+      const reason: unknown = cancel.signal.reason;
+      return error instanceof DOMException && error.name === "AbortError" && error === reason;
+    },
+  );
+  assert.deepEqual(
+    api.requests.map(({ path }) => path),
+    ["/api/v1/namespaces", "/api/v1/namespaces/held"],
   );
 });
 
 test("Kubernetes dispatch retains the parent deadline through child and per-attempt scopes", async (t) => {
   const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
-  let requests = 0;
   const api = await recordingApiServer(t, directory, (_request, response) => {
-    requests++;
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ metadata: { name: "tenant" } }));
   });
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
-    await writeTokenKubeconfig(directory, api),
+    await writeKubeconfig(directory, api, "fixture-token"),
     (message) => new Error(message),
   );
   const core = new sdk.CoreV1Api(clientConfiguration);
   const signal = new AbortController().signal;
   const deadline = Date.now() + 20_000;
-  const timeout = new Error("request timed out");
-  const failures = {
-    cancelled: (error) => error,
-    failed: (error) => error,
-    timedOut: () => timeout,
-  };
   await assert.rejects(
     withComputeOperationDeadline({ signal, deadlineAt: new Date(deadline).toISOString() }, () =>
       withComputeOperationDeadline(
@@ -610,7 +490,7 @@ test("Kubernetes dispatch retains the parent deadline through child and per-atte
             // so the actual SDK HTTP dispatch must enforce the enclosing absolute bound.
             t.mock.method(Date, "now", () => deadline);
             return core.readNamespace({ name: "tenant" });
-          }, failures),
+          }, requestFailures),
       ),
     ),
     { name: "TimeoutError" },
@@ -622,5 +502,9 @@ test("Kubernetes dispatch retains the parent deadline through child and per-atte
     ),
     { name: "TimeoutError" },
   );
-  assert.equal(requests, 0, "expired or invalid lifetimes never reach the Kubernetes API");
+  assert.equal(
+    api.requests.length,
+    0,
+    "expired or invalid lifetimes never reach the Kubernetes API",
+  );
 });
