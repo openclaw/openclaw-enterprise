@@ -3,17 +3,14 @@ import type {
   RepositoryServiceFactory,
 } from "../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { ServiceConfig } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import { appModule } from "./runtime.mjs";
+import { appFunction } from "./app-functions.ts";
 
-const [
-  { createCredentialService: createService },
-  { preparedSessionConstructor },
-  { developmentSessionConstructor },
-] = await Promise.all([
-  appModule("drivers/repo/access/service"),
-  appModule("drivers/repo/access/session-construction"),
-  appModule("drivers/repo/access/development-session"),
-]);
+const [createService, preparedSessionConstructor, developmentSessionConstructor] =
+  await Promise.all([
+    appFunction("drivers/repo/access/service", "createCredentialService"),
+    appFunction("drivers/repo/access/session-construction", "preparedSessionConstructor"),
+    appFunction("drivers/repo/access/development-session", "developmentSessionConstructor"),
+  ]);
 
 /** Synchronous service fixture with the same construction choice as process composition. */
 export function createCredentialService(

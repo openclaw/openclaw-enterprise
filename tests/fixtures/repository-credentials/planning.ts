@@ -1,5 +1,6 @@
 import type { TestContext } from "node:test";
 import type {
+  Clock,
   Denied,
   RequestHead,
   RequestPlan,
@@ -8,7 +9,7 @@ import type {
   GitHubProfile,
   GitHubTokenConfiguration,
 } from "../../../apps/controller/src/drivers/repo/github/access/types.ts";
-import { appModule } from "./runtime.mjs";
+import { appFunction } from "./app-functions.ts";
 import { createControlledClock } from "./clock.mjs";
 import { createResourceScope } from "./resources.mjs";
 import {
@@ -17,37 +18,41 @@ import {
   custodyLimits,
 } from "./builders.mjs";
 
+interface ResourceScope {
+  after(cleanup: () => void): void;
+  close(primaryError?: unknown): Promise<void>;
+}
+
+const createPlanningResources: () => ResourceScope = createResourceScope;
+const createPlanningClock: (wallMs: number) => Clock = createControlledClock;
+const serviceData: () => unknown = serviceConfigurationData;
+const tokenData: (overrides: Partial<GitHubTokenConfiguration>) => unknown =
+  githubTokenConfigurationData;
+
 export async function createGitHubPlanningFixture(
   t: Pick<TestContext, "after">,
   overrides: Partial<GitHubTokenConfiguration> = {},
 ) {
-  const resources = createResourceScope();
+  const resources = createPlanningResources();
   try {
     const [
-      { createGitHubDriverFactory },
-      { createGitHubStaticTokenOwner },
-      { validateServiceConfig },
-      { admitSession },
-      { createCustody },
-      { validateGitHubConfiguration },
-    ]: [
-      typeof import("../../../apps/controller/src/drivers/repo/github/access/factory.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/github/access/static-token.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/access/configuration.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/access/sessions.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/access/custody.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/github/access/config.ts"),
+      createGitHubDriverFactory,
+      createGitHubStaticTokenOwner,
+      validateServiceConfig,
+      admitSession,
+      createCustody,
+      validateGitHubConfiguration,
     ] = await Promise.all([
-      appModule("drivers/repo/github/access/factory"),
-      appModule("drivers/repo/github/access/static-token"),
-      appModule("drivers/repo/access/configuration"),
-      appModule("drivers/repo/access/sessions"),
-      appModule("drivers/repo/access/custody"),
-      appModule("drivers/repo/github/access/config"),
+      appFunction("drivers/repo/github/access/factory", "createGitHubDriverFactory"),
+      appFunction("drivers/repo/github/access/static-token", "createGitHubStaticTokenOwner"),
+      appFunction("drivers/repo/access/configuration", "validateServiceConfig"),
+      appFunction("drivers/repo/access/sessions", "admitSession"),
+      appFunction("drivers/repo/access/custody", "createCustody"),
+      appFunction("drivers/repo/github/access/config", "validateGitHubConfiguration"),
     ]);
-    const clock = createControlledClock(1700000000000);
-    const config = validateServiceConfig(serviceConfigurationData());
-    const configuration = githubTokenConfigurationData({ allowGraphql: true, ...overrides });
+    const clock = createPlanningClock(1700000000000);
+    const config = validateServiceConfig(serviceData());
+    const configuration = tokenData({ allowGraphql: true, ...overrides });
     const owner = createGitHubStaticTokenOwner({
       token: Buffer.from(`github_pat_${"t".repeat(36)}`),
     });

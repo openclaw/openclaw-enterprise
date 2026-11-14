@@ -57,7 +57,7 @@
     "tests/integration/google-login-transport.test.ts",
     "tests/conformance/slack-channel-directory.test.ts",
     "tests/conformance/bounded-response-reads.test.ts",
-    "tests/conformance/repository-credentials-github.test.mjs",
+    "tests/conformance/repository-credentials-github.test.ts",
     "tests/integration/repository-credentials-driver.test.ts",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
     "tests/integration/known-device-cookie.test.ts",
@@ -113,7 +113,7 @@
     "tests/integration/first-agent-startup.test.ts",
     "tests/conformance/repository-sessions-memory.test.ts",
     "tests/conformance/repository-credentials-github-token.test.ts",
-    "tests/conformance/repository-credentials-registry.test.mjs",
+    "tests/conformance/repository-credentials-registry.test.ts",
     "tests/integration/ci-openshell-preparation.test.ts",
     "tests/integration/ci-openshell.test.ts",
     "tests/conformance/repository-credentials-sessions.test.ts",
@@ -129,7 +129,7 @@
     "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
-    "tests/conformance/repository-credentials-receive-pack.test.mjs",
+    "tests/conformance/repository-credentials-receive-pack.test.ts",
     "tests/integration/runtime-assets.test.mjs",
     "tests/integration/runtime-ai-package-relocation.test.ts",
     "tests/integration/runtime-node-build-jobs.test.ts",
@@ -543,13 +543,13 @@
       "path": "tests/conformance/repository-credentials-contracts.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-github.test.mjs"
+      "path": "tests/conformance/repository-credentials-github.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-github-token.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
+      "path": "tests/conformance/repository-credentials-receive-pack.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-sessions.test.ts"
@@ -634,7 +634,7 @@
       "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
     },
     {
-      "path": "tests/conformance/repository-credentials-registry.test.mjs"
+      "path": "tests/conformance/repository-credentials-registry.test.ts"
     },
     {
       "path": "tests/conformance/repository-material-store.test.ts",

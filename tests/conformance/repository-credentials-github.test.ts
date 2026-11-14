@@ -1,27 +1,24 @@
-import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
 import { parseUnambiguousJson } from "../../apps/controller/src/drivers/json-members.ts";
-import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
-import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/access/provider-transport.ts";
-import {
-  requestHead,
-  serviceConfigurationData,
-} from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
-const config = validateServiceConfig(serviceConfigurationData());
+import type { RequestHead } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import { providerTransportCase } from "./repository-credentials-github-transport-case.ts";
+
+const configuration: unknown = serviceConfigurationData();
+const config = validateServiceConfig(configuration);
 test("gateway authentication preserves canonical syntax, token bounds and route-specific challenges", async (t) => {
   const { factory } = await createGitHubPlanningFixture(t);
   const git = requestHead("GET", "/fixture/repository.git/info/refs?service=git-upload-pack");
   const api = requestHead("GET", "/repos/fixture/repository");
   const bearer = "a".repeat(43);
-  const basic = (token, username = "gateway-session") =>
+  const basic = (token: string, username = "gateway-session") =>
     `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`;
   const canonical = basic(bearer);
   for (const { name, head, authorization, expected } of [
@@ -74,6 +71,8 @@ test("gateway authentication preserves canonical syntax, token bounds and route-
     { name: "non-string authorization", head: api, authorization: [bearer] },
   ]) {
     await t.test(`denies ${name}`, () => {
+      // Exercise raw headers rejected by the Driver even when the caller bypasses its type.
+      // @ts-expect-error Deliberately absent or non-string authorization.
       assert.deepEqual(factory.parseAuthentication(head, authorization), denied);
     });
   }
@@ -105,12 +104,12 @@ test("Git endpoint spellings share authentication and canonical request plans", 
           });
           assert.equal(factory.unauthenticated(head).kind, "challenge");
           assert.equal(factory.parseAuthentication(head, authorization), bearer);
-          for (const profile of ["git-read", "git-write", "git-full"]) {
+          for (const profile of ["git-read", "git-write", "git-full"] as const) {
             const plan = bind(profile).plan(head);
             if (profile === "git-read" && service === "receive") {
               assert.deepEqual(plan, { kind: "denied", status: 400, code: "unsupported-request" });
             } else {
-              assert.equal(plan.kind, undefined);
+              assert.ok(!("kind" in plan));
               assert.equal(plan.origin, "https://github.com");
               assert.equal(plan.target, `/fixture/repository.git/${endpoint}`);
               assert.equal(plan.method, method);
@@ -131,10 +130,11 @@ test("Git normalization preserves raw endpoint and profile denial before acquisi
   t.after(() => service.shutdown(1000));
   const full = service.open({ durationSeconds: 3600, profile: "git-full" });
   const read = service.open({ durationSeconds: 3600, profile: "git-read" });
-  const discovery = "/FiXtUrE/RePoSiToRy/info/refs?service=git-upload-pack";
+  const discoveryPath = "/FiXtUrE/RePoSiToRy/info/refs";
+  const discovery = `${discoveryPath}?service=git-upload-pack`;
   const upload = "/FiXtUrE/RePoSiToRy/git-upload-pack";
   const headers = { "content-type": "application/x-git-upload-pack-request" };
-  for (const [name, head] of [
+  const malformedRequests: [name: string, head: RequestHead][] = [
     ["owner prefix", requestHead("GET", discovery.replace("FiXtUrE", "FiXtUrE-other"))],
     ["repository prefix", requestHead("GET", discovery.replace("RePoSiToRy", "RePoSiToRy-other"))],
     ["nested suffix", requestHead("GET", discovery.replace("RePoSiToRy", "RePoSiToRy.git.git"))],
@@ -149,7 +149,7 @@ test("Git normalization preserves raw endpoint and profile denial before acquisi
     ["endpoint casing", requestHead("GET", discovery.replace("info/refs", "Info/Refs"))],
     ["extra path", requestHead("GET", discovery.replace("info/refs", "info/refs/extra"))],
     ["discovery method", requestHead("POST", discovery)],
-    ["missing service", requestHead("GET", discovery.split("?")[0])],
+    ["missing service", requestHead("GET", discoveryPath)],
     ["unknown service", requestHead("GET", discovery.replace("git-upload-pack", "other"))],
     ["escaped service", requestHead("GET", discovery.replace("git-upload", "%67it-upload"))],
     ["duplicate query", requestHead("GET", `${discovery}&service=git-upload-pack`)],
@@ -162,11 +162,14 @@ test("Git normalization preserves raw endpoint and profile denial before acquisi
       requestHead("POST", upload, { "content-type": `${headers["content-type"]}; charset=utf-8` }),
     ],
     ["protocol version", requestHead("GET", discovery, { "git-protocol": "version=1" })],
-  ]) {
+  ];
+  for (const [name, head] of malformedRequests) {
     await t.test(`denies ${name}`, () => {
       assert.equal(factory.unauthenticated(head).kind, "denied");
       const basic = `Basic ${Buffer.from(`gateway-session:${full.bearer}`).toString("base64")}`;
-      assert.equal(factory.parseAuthentication(head, basic).kind, "denied");
+      const authentication = factory.parseAuthentication(head, basic);
+      assert.ok(typeof authentication !== "string");
+      assert.equal(authentication.kind, "denied");
       assert.deepEqual(service.reserve(full.bearer, head, new AbortController().signal), {
         kind: "denied",
         status: 400,
@@ -182,21 +185,27 @@ test("Git normalization preserves raw endpoint and profile denial before acquisi
       }),
     ]) {
       assert.equal(factory.unauthenticated(head).kind, "challenge");
-      assert.equal(service.reserve(read.bearer, head, new AbortController().signal).kind, "denied");
+      const reservation = service.reserve(read.bearer, head, new AbortController().signal);
+      assert.ok("kind" in reservation);
+      assert.equal(reservation.kind, "denied");
     }
   }
   // Case/suffix normalization belongs to Git endpoints, not the REST policy.
   for (const path of ["/repos/FiXtUrE/RePoSiToRy", "/repos/fixture/repository.git"]) {
-    assert.equal(
-      service.reserve(full.bearer, requestHead("GET", path), new AbortController().signal).kind,
-      "denied",
+    const reservation = service.reserve(
+      full.bearer,
+      requestHead("GET", path),
+      new AbortController().signal,
     );
+    assert.ok("kind" in reservation);
+    assert.equal(reservation.kind, "denied");
   }
   const api = service.reserve(
     full.bearer,
     requestHead("GET", "/repos/fixture/repository"),
     new AbortController().signal,
   );
+  assert.ok(!("kind" in api));
   assert.equal(service.plan(api).target, "/repos/fixture/repository");
   service.cancel(api);
 });
@@ -209,17 +218,17 @@ test("literal .git repository names normalize against the admitted identity", as
   for (const repository of ["fixture/repository.git", "FIXTURE/REPOSITORY.GIT.git"]) {
     const head = requestHead("GET", `/${repository}/info/refs?service=git-upload-pack`);
     assert.equal(factory.unauthenticated(head).kind, "challenge");
-    const plan = bound.driver.plan({ authority: bound.authority, session: {}, head });
+    const plan = bound.plan(head);
+    assert.ok(!("kind" in plan));
     assert.equal(plan.target, "/Fixture/Repository.git.git/info/refs?service=git-upload-pack");
   }
   // A literal suffix is part of this grant's identity; stripping it would select another repository.
   for (const repository of ["fixture/repository", "fixture/repository.git.git.git"]) {
     const head = requestHead("GET", `/${repository}/info/refs?service=git-upload-pack`);
     assert.equal(factory.unauthenticated(head).kind, "denied");
-    assert.equal(
-      bound.driver.plan({ authority: bound.authority, session: {}, head }).kind,
-      "denied",
-    );
+    const plan = bound.plan(head);
+    assert.ok("kind" in plan);
+    assert.equal(plan.kind, "denied");
   }
 });
 
@@ -242,6 +251,7 @@ test("GitHub request plans reconstruct headers without forwarding caller credent
       "git-protocol": "version=2",
     }),
   );
+  assert.ok(!("kind" in git));
   assert.deepEqual(git.requestHeaders, {
     "user-agent": "openclaw-enterprise-repository-credentials",
     "accept-encoding": "identity",
@@ -249,6 +259,7 @@ test("GitHub request plans reconstruct headers without forwarding caller credent
     accept: "application/x-git-upload-pack-advertisement",
   });
   const api = backend.plan(requestHead("POST", "/repos/fixture/repository/pulls", inbound));
+  assert.ok(!("kind" in api));
   assert.deepEqual(api.requestHeaders, {
     "user-agent": "openclaw-enterprise-repository-credentials",
     "accept-encoding": "identity",
@@ -259,240 +270,21 @@ test("GitHub request plans reconstruct headers without forwarding caller credent
   assert.ok(Object.isFrozen(git.requestHeaders));
   assert.ok(Object.isFrozen(api.requestHeaders));
 });
-test("provider transport pins destination and exact issuance scope before receiving credentials", async (t) => {
-  const clock = createControlledClock();
-  const fixture = await startGitHubFixture(t, { clock });
-  const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
-  t.after(() => key.close());
-  const scope = {
-    id: "grant",
-    isolationId: "revision",
-    appId: "12345",
-    installationId: "41",
-    repositoryId: "73",
-    repository: "fixture/repository",
-    profile: "git-read",
-  };
-  for (const { name, origin } of [
-    { name: "plaintext origin", origin: "http://localhost" },
-    { name: "origin with user info", origin: "https://user@example.test" },
-    { name: "origin with path", origin: `${fixture.origin}/path` },
-  ]) {
-    await t.test(`refuses ${name}`, () => {
-      assert.throws(
-        () => createProviderTransport(fixture.tls.ca, clock, prepareProviderScope(origin, scope)),
-        {
-          message: "invalid-provider-origin",
-        },
-      );
-    });
-  }
-  for (const { name, installationId } of [
-    { name: "network path", installationId: "//other.example" },
-    { name: "absolute URL", installationId: "https://other.example" },
-    { name: "parent traversal", installationId: "41/../42" },
-    { name: "query", installationId: "41?x=1" },
-  ]) {
-    await t.test(`refuses installation ${name}`, () => {
-      assert.throws(
-        () =>
-          createProviderTransport(
-            fixture.tls.ca,
-            clock,
-            prepareProviderScope(fixture.origin, {
-              ...scope,
-              installationId,
-            }),
-          ),
-        { message: "invalid-provider-scope" },
-      );
-    });
-  }
-  const invalidScope = { message: "invalid-provider-scope" };
-  for (const { name, changes, refusal } of [
-    {
-      name: "unsafe repository integer",
-      changes: { repositoryId: "9007199254740992" },
-      refusal: invalidScope,
-    },
-    { name: "numeric repository ID", changes: { repositoryId: 73 }, refusal: invalidScope },
-    { name: "numeric installation ID", changes: { installationId: 41 }, refusal: invalidScope },
-    {
-      name: "prototype profile",
-      changes: { profile: "__proto__" },
-      refusal: { message: "unsupported-profile" },
-    },
-  ]) {
-    await t.test(`refuses ${name}`, () => {
-      assert.throws(
-        () =>
-          createProviderTransport(
-            fixture.tls.ca,
-            clock,
-            prepareProviderScope(fixture.origin, { ...scope, ...changes }),
-          ),
-        refusal,
-      );
-    });
-  }
-  let installationReads = 0;
-  const transportScope = {
-    ...scope,
-    get installationId() {
-      return ++installationReads === 1 ? "41" : "42";
-    },
-  };
-  const transport = createProviderTransport(
-    fixture.tls.ca,
-    clock,
-    prepareProviderScope(fixture.origin, transportScope),
-  );
-  assert.equal(installationReads, 1);
-  assert.deepEqual(Object.keys(transport).sort(), ["issue", "revoke"]);
-  assert.ok(Object.isFrozen(transport));
-  // A later caller cannot replace the URL, request body, or admitted permission map.
-  transportScope.repositoryId = "74";
-  transportScope.profile = "git-full";
-  let dispatches = 0;
-  let observations = 0;
-  const attempt = (action) => ({
-    action,
-    deadlineMonoMs: clock.monotonicNow() + 30000,
-    signal: new AbortController().signal,
-    assertAdmitted() {},
-    observeDispatch() {
-      dispatches++;
-    },
-  });
-  const observeResponse = () => {
-    observations++;
-  };
-  for (const { name, authorization } of [
-    { name: "header injection", authorization: "unsafe\r\nHeader: value" },
-    { name: "empty authorization", authorization: "" },
-    { name: "authorization object", authorization: { path: "//other.example" } },
-  ]) {
-    await t.test(`refuses ${name} before dispatch`, async () => {
-      await assert.rejects(
-        transport.issue(authorization, attempt("acquire"), () => {}, observeResponse),
-        /provider-unavailable/,
-      );
-    });
-  }
-  assert.equal(dispatches, 0);
-  assert.equal(fixture.issuesOfTokens.length, 0);
-  let borrowed;
-  let token;
-  await key.withJwt((jwt, assertCurrent) =>
-    transport.issue(jwt, attempt("acquire"), assertCurrent, (response) => {
-      observeResponse();
-      borrowed = response.body;
-      assert.equal(response.status, 201);
-      token = JSON.parse(response.body.toString()).token;
-    }),
-  );
-  assert.ok(
-    borrowed.every((byte) => byte === 0),
-    "transport cleared the borrowed body",
-  );
-  assert.equal(observations, 1);
-  assert.deepEqual(fixture.issuesOfTokens[0].repositoryIds, [73]);
-  assert.deepEqual(fixture.issuesOfTokens[0].permissions, {
-    metadata: "read",
-    contents: "read",
-    issues: "read",
-    pull_requests: "read",
-    checks: "read",
-    statuses: "read",
-  });
-  assert.equal(await transport.revoke(token, attempt("retire")), true);
-  assert.equal(dispatches, 2);
-  assert.equal(fixture.tokenState()[0].revoked, true);
-
-  for (const failure of [
-    "consumer throws",
-    "cancel after capture",
-    "thenable result",
-    "late rejection",
-    "decorated late rejection",
-  ]) {
-    await t.test(failure, async () => {
-      const controller = new AbortController();
-      const diagnostics = [];
-      let captured;
-      let body;
-      let consumes = 0;
-      let thenCalls = 0;
-      const asynchronous = failure.includes("late rejection") ? Promise.withResolvers() : undefined;
-      if (failure === "decorated late rejection") {
-        Object.assign(asynchronous.promise, {
-          providerExpiresAt: clock.wallNow() + 60000,
-          usableUntil: clock.wallNow() + 30000,
-        });
-      }
-      const issuing = key.withJwt((jwt, assertCurrent) =>
-        transport.issue(
-          jwt,
-          { ...attempt("acquire"), signal: controller.signal },
-          assertCurrent,
-          (response) => {
-            consumes++;
-            body = response.body;
-            captured = JSON.parse(body.toString()).token;
-            if (failure === "consumer throws") {
-              throw new Error("fixture consumer failure");
-            }
-            if (failure === "thenable result") {
-              return {
-                then() {
-                  thenCalls++;
-                },
-              };
-            }
-            if (asynchronous) {
-              return asynchronous.promise;
-            }
-            // A captured credential survives cancellation, but the verdict must not return.
-            controller.abort();
-            return undefined;
-          },
-          (observation) => diagnostics.push(observation),
-        ),
-      );
-      await assert.rejects(issuing, /provider-unavailable/);
-      if (asynchronous) {
-        // No test-side rejection handler: node:test must report any escaped rejection.
-        asynchronous.reject(new Error("late callback rejection"));
-        await new Promise(setImmediate);
-      }
-      assert.equal(consumes, 1);
-      assert.equal(thenCalls, 0, "transport must not invoke arbitrary thenables");
-      assert.ok(body.every((byte) => byte === 0));
-      assert.equal(
-        diagnostics.find((entry) => entry.error)?.error,
-        failure === "cancel after capture" ? "cancelled" : "observer-error",
-      );
-      assert.equal(await transport.revoke(captured, attempt("retire")), true);
-    });
-  }
-  assert.equal(dispatches, 12, "one issue and retirement per token, with no retry");
-  assert.equal(fixture.issuesOfTokens.length, 6);
-  assert.ok(fixture.tokenState().every((token) => token.revoked));
-
-  assert.equal(clock.pendingTimers(), 0);
-  assert.deepEqual(fixture.errors, []);
-});
+test(
+  "provider transport pins destination and exact issuance scope before receiving credentials",
+  providerTransportCase,
+);
 test("canonical GitHub responses preserve admitted repository identity", async (t) => {
   const { bind } = await createGitHubPlanningFixture(t, { repository: "Fixture/Repository" });
   const issuePlan = bind("git-full").plan(requestHead("POST", "/repos/Fixture/Repository/issues"));
+  assert.ok(!("kind" in issuePlan));
+  const rewriteJson = issuePlan.responsePolicy.rewriteJson;
+  assert.ok(rewriteJson);
   const canonicalIssue = "https://api.github.com/repos/fixture/repository/issues/1";
-  assert.deepEqual(
-    issuePlan.responsePolicy.rewriteJson({ url: canonicalIssue, body: canonicalIssue }),
-    {
-      url: "https://credentials.example/repos/Fixture/Repository/issues/1",
-      body: canonicalIssue,
-    },
-  );
+  assert.deepEqual(rewriteJson({ url: canonicalIssue, body: canonicalIssue }), {
+    url: "https://credentials.example/repos/Fixture/Repository/issues/1",
+    body: canonicalIssue,
+  });
   for (const prefix of ["repos/fixture/repository", "repositories/73"]) {
     await t.test(`rewrites canonical pagination from ${prefix}`, () => {
       assert.equal(
@@ -513,14 +305,14 @@ test("canonical GitHub responses preserve admitted repository identity", async (
   ]) {
     await t.test(`rejects ${name}`, () => {
       assert.throws(
-        () => issuePlan.responsePolicy.rewriteJson({ url: `https://api.github.com/${target}` }),
+        () => rewriteJson({ url: `https://api.github.com/${target}` }),
         /unsafe-upstream-url/,
       );
     });
   }
 });
 test("installation response parsing separates unique root custody from unambiguous evidence", () => {
-  const cases = [
+  const cases: [input: string | Buffer, token: string | undefined, usable: boolean][] = [
     ['{"token":"owned","permissions":{"contents":"read"}}', "owned", true],
     ['{"token":"owned","permissions":{"contents":"write","contents":"read"}}', "owned", false],
     ['{"token":"owned","permissions":{},"permissions":{}}', "owned", false],
@@ -547,7 +339,9 @@ test("installation response parsing separates unique root custody from unambiguo
     ],
   ];
   for (const [input, token, usable] of cases) {
-    const parsed = parseInstallationTokenResponse(Buffer.from(input));
+    const parsed = parseInstallationTokenResponse(
+      typeof input === "string" ? Buffer.from(input) : input,
+    );
     assert.equal(parsed.token, token);
     assert.equal(parsed.packet !== undefined, usable);
   }
