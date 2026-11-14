@@ -173,6 +173,7 @@
     "tests/integration/ci-openshell-preparation.test.ts": 4500,
     "tests/integration/ci-openshell.test.ts": 25700,
     "tests/integration/ci-prepare-k3d.test.ts": 7500,
+    "tests/integration/ci-prepare-postgres-diagnostics.test.ts": 3500,
     "tests/integration/ci-prepare.test.mjs": 25900,
     "tests/integration/ci-runner.test.mjs": 17900,
     "tests/integration/cli-release.test.ts": 4800,

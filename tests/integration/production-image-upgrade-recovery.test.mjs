@@ -38,7 +38,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.ts";
 import { listen } from "../helpers/listen.ts";
-import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
+import { startFakePostgres } from "../helpers/fake-postgres-server.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
