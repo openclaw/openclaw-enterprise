@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { conformanceKubernetesOptions } from "./kubernetes-compute.mjs";
+
+export { gatewayRouting, options, routedOptions } from "./kubernetes-routed-options.ts";
 
 export const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000001",
@@ -58,40 +59,8 @@ export function preparedAuth(driver, namespace, embedded = false, harnessAuth = 
   });
 }
 
-export function options(overrides = {}) {
-  return {
-    ...conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
-    ...overrides,
-    ...(overrides.runtime === undefined
-      ? {}
-      : {
-          runtime: { gatewayNodeSelector: { "oce-role": "control-plane" }, ...overrides.runtime },
-        }),
-  };
-}
-
 export function digest(value, length = 12) {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
-}
-
-export const gatewayRouting = {
-  hostname: "agents.example.internal",
-  gatewayName: "oce-agent-gateways",
-  gatewayNamespace: "openclaw-system",
-  envoyNamespace: "envoy-gateway-system",
-};
-
-export function routedOptions(overrides = {}) {
-  const configured = options();
-  const { gatewayClients, ...network } = configured.network;
-  return options({
-    ...overrides,
-    gatewayRouting: overrides.gatewayRouting ?? gatewayRouting,
-    network: {
-      ...network,
-      ...(overrides.network ?? {}),
-    },
-  });
 }
 
 /** Construct the immutable settings that production admission resolves before execution. */

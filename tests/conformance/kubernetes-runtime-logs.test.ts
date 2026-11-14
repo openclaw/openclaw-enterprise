@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { inspect } from "node:util";
 
-import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   DependencyUnavailableError,
@@ -22,9 +21,8 @@ function runtimeLogDriverFixture({ twoCluster = false }: { twoCluster?: boolean 
     kubeconfigPath,
     contextName,
     twoCluster,
-    // The JavaScript builders infer their fixed mode discriminants as string.
-    options: (overrides) => options(overrides) as KubernetesComputeDriverOptions,
-    routedOptions: (overrides) => routedOptions(overrides) as KubernetesComputeDriverOptions,
+    options,
+    routedOptions,
   });
 }
 
