@@ -53,7 +53,7 @@ RUN mkdir -p /app/.development/configurations /var/lib/openclaw/bootstrap \
 # The route validators and serializers, precompiled with this image's Node and dependencies
 # so the server loads them instead of compiling every schema at start
 # (apps/controller/src/http/route-compilers.ts).
-RUN node apps/controller/src/precompile-route-schemas.mjs
+RUN node apps/controller/src/precompile-route-schemas.ts
 
 USER node
 ENTRYPOINT ["node"]
@@ -95,7 +95,7 @@ COPY --chown=node:node scripts/lib/auth-maintain-arguments.ts scripts/lib/auth-m
 COPY --chown=node:node deploy/presets deploy/presets
 COPY --chown=node:node scripts/production-healthcheck.mjs scripts/production-healthcheck.mjs
 # As in the development stage: precompiled route validators and serializers for this image.
-RUN node apps/controller/src/precompile-route-schemas.mjs
+RUN node apps/controller/src/precompile-route-schemas.ts
 
 USER node
 ENTRYPOINT ["node"]

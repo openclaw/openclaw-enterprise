@@ -179,7 +179,7 @@ ServiceAccount Driver with OCC before
 exact-resource-authorized API routes.
 Route request validators and response serializers come from
 [`route-compilers.ts`](../../apps/controller/src/http/route-compilers.ts). When
-[`precompile-route-schemas.mjs`](../../apps/controller/src/precompile-route-schemas.mjs)
+[`precompile-route-schemas.ts`](../../apps/controller/src/precompile-route-schemas.ts)
 has written `apps/controller/dist/route-compilers.cjs`, as the image build does, the API
 loads code generated for exactly the same schema, options, Node version and lockfile
 instead of compiling it; anything else compiles at start, as before. The

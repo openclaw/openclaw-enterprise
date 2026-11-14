@@ -301,7 +301,7 @@ runs:
       # to repay the 2-4 CPU-s it takes.
       if: inputs.lane == 'checks-baseline-1' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'postgres-auth' || inputs.lane == 'postgres-platform'
       shell: bash
-      run: node apps/controller/src/precompile-route-schemas.mjs
+      run: node apps/controller/src/precompile-route-schemas.ts
     - name: Prepare hosted platform disk capacity
       id: prepare-disk
       if: (startsWith(inputs.lane, 'k3d-observability') || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration')) && runner.environment == 'github-hosted'
