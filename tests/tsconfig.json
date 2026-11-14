@@ -206,7 +206,6 @@
     "integration/native-browser-launch-postgres-cases.ts",
     "helpers/postgres-worker-revision-queue.ts",
     "conformance/topology-launch-cases.ts",
-    "conformance/workspace-node-supervisor-cases.ts",
     "integration/configuration-credential-save-cases.ts"
   ],
   "references": [
