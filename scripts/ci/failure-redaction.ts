@@ -125,7 +125,7 @@ function redactSecretAssignments(text: string) {
   let result = "";
   let end = 0;
   assignment.lastIndex = 0;
-  for (let match; (match = assignment.exec(text));) {
+  for (let match = assignment.exec(text); match !== null; match = assignment.exec(text)) {
     const [value, key, keyword = "", separator, escapes = "", quote = "", bracket] = match;
     const delimiter = escapes + quote;
     result += text.slice(end, match.index) + key + delimiter + "[redacted]";

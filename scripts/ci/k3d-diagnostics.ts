@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { failureSecrets, type RedactionSecrets } from "./failure-redaction.ts";
@@ -306,7 +306,7 @@ export async function startAgentNamespaceCapture({
           : `/api/v1/events?watch=true&timeoutSeconds=${WATCH_SECONDS}`;
       // The raw watch streams one JSON object per line straight to the cluster's
       // private directory, which cleanup removes; only the projection is kept.
-      let output;
+      let output: FileHandle;
       try {
         output = await open(path, "w", 0o600);
       } catch (error) {

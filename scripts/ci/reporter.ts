@@ -13,6 +13,7 @@ export { openShellTurnoverQualification } from "./reporter-measurements.ts";
 
 type TestResult = Extract<TestEvent, { type: "test:pass" }>["data"];
 type TestCounts = Extract<TestEvent, { type: "test:summary" }>["data"]["counts"];
+type ReportedCounts = Partial<TestCounts & { failed: number }>;
 
 // Node's stream and direct callers share this subset. Direct callers can
 // supply partial events, and Node 24 does not always supply the test IDs.
@@ -23,12 +24,12 @@ type ReporterEventData = Partial<
   >
 > & {
   details?: { duration_ms?: number; type?: string; error?: unknown };
-  counts?: Partial<TestCounts & { failed: number }>;
+  counts?: ReportedCounts;
   message?: string;
   type?: string;
 };
 
-type ReporterEvent = { type: string; data?: ReporterEventData | undefined };
+type ReporterEvent = TestEvent | { type: string; data?: ReporterEventData | undefined };
 type SerializedFailure = {
   cause?: unknown;
   code?: unknown;
@@ -520,12 +521,12 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
   const error = failureFields(rawError);
   const cause = error?.cause ?? rawError;
   const fields = failureFields(cause);
-  const exitCode = error?.exitCode;
-  const signal = error?.signal;
   const { file } = data;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
+  const exitCode = fileFailure ? error?.exitCode : undefined;
+  const signal = fileFailure ? error?.signal : undefined;
   // Only retain coordinates in the known test file, never arbitrary stack text.
-  let failureLocation;
+  let failureLocation: { file: string; line: number; column: number } | undefined;
   if (typeof file === "string" && typeof fields?.stack === "string") {
     const marker = `${file}:`;
     const frame = fields.stack.split("\n").find((line) => line.includes(marker));
@@ -571,7 +572,6 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
                 ? "testCodeFailure"
                 : undefined,
             exitCode:
-              fileFailure &&
               typeof exitCode === "number" &&
               Number.isInteger(exitCode) &&
               exitCode >= 0 &&
@@ -579,7 +579,7 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
                 ? exitCode
                 : undefined,
             signal:
-              fileFailure && (signal === "SIGABRT" || signal === "SIGKILL" || signal === "SIGTERM")
+              signal === "SIGABRT" || signal === "SIGKILL" || signal === "SIGTERM"
                 ? signal
                 : undefined,
             cause:
@@ -682,7 +682,8 @@ export default async function* jsonLinesReporter(
       typeof event.data?.file === "string" &&
       event.data.counts
     ) {
-      const { tests, passed, failed, cancelled, skipped, todo, suites } = event.data.counts;
+      const { tests, passed, failed, cancelled, skipped, todo, suites }: ReportedCounts =
+        event.data.counts;
       yield `${JSON.stringify({
         type: "test:summary",
         data: { tests, passed, failed, cancelled, skipped, todo, suites },
@@ -709,7 +710,7 @@ export default async function* jsonLinesReporter(
       }
       continue;
     }
-    if (!["test:pass", "test:fail", "test:start"].includes(event.type)) {
+    if (event.type !== "test:pass" && event.type !== "test:fail" && event.type !== "test:start") {
       continue;
     }
 
