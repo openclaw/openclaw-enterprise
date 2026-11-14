@@ -373,8 +373,20 @@ test("gateway installation preserves settled phases, operation outcomes and the 
   const fail = async () => {
     throw failure;
   };
-  await assert.rejects(observe(ok, gatewayValues, fail, ok), (error) => error === failure);
-  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  const verifyImages = async (gateway: number) => assert.equal(gateway, 7);
+  await assert.rejects(
+    observe(ok, gatewayValues, fail, ok, verifyImages),
+    (error) => error === failure,
+  );
+  const renderedFailure = new Error("rendered image assertion failed");
+  await assert.rejects(
+    observe(ok, gatewayValues, gatewayHelm, ok, async (gateway) => {
+      await verifyImages(gateway);
+      throw renderedFailure;
+    }),
+    (error) => error === renderedFailure,
+  );
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok, verifyImages), 7);
   acceptWrites();
   assert.deepEqual(receipt.result(), {
     phases: [
@@ -383,15 +395,20 @@ test("gateway installation preserves settled phases, operation outcomes and the 
       { invocation: 2, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
       { invocation: 2, stage: "gateway-helm", enteredMs: 3, outcome: "passed", elapsedMs: 1 },
       { invocation: 2, stage: "gateway-pod-ready", enteredMs: 5, outcome: "passed", elapsedMs: 1 },
+      { invocation: 2, stage: "rendered-images", enteredMs: 7, outcome: "failed", elapsedMs: 1 },
+      { invocation: 3, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
+      { invocation: 3, stage: "gateway-helm", enteredMs: 3, outcome: "passed", elapsedMs: 1 },
+      { invocation: 3, stage: "gateway-pod-ready", enteredMs: 5, outcome: "passed", elapsedMs: 1 },
+      { invocation: 3, stage: "rendered-images", enteredMs: 7, outcome: "passed", elapsedMs: 1 },
     ],
     truncated: false,
   });
-  for (let invocation = 3; invocation <= maxInstallationInvocations; invocation++) {
-    assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  for (let invocation = 4; invocation <= maxInstallationInvocations; invocation++) {
+    assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok, verifyImages), 7);
   }
   acceptWrites();
   // Overflow still performs installation, but emits only one marker across later invocations.
-  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok, verifyImages), 7);
   assert.deepEqual(writes, [
     {
       kind: "openshell-installation",
@@ -402,10 +419,10 @@ test("gateway installation preserves settled phases, operation outcomes and the 
     },
   ]);
   acceptWrites();
-  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok, verifyImages), 7);
   assert.equal(writes.length, 0);
   assert.equal(receipt.result().truncated, true);
-  assert.equal(receipt.result().phases.length, 3 * maxInstallationInvocations - 1);
+  assert.equal(receipt.result().phases.length, 4 * maxInstallationInvocations - 2);
 
   const valuesFailure = new Error("gateway values failed");
   const failingValues = observeGatewayInstallation(
@@ -422,6 +439,9 @@ test("gateway installation preserves settled phases, operation outcomes and the 
       },
       async () => laterOperations.push("gateway-helm"),
       async () => laterOperations.push("gateway-pod-ready"),
+      async () => {
+        laterOperations.push("rendered-images");
+      },
     ),
     (error) => error === valuesFailure,
   );
@@ -442,9 +462,9 @@ test("gateway installation preserves settled phases, operation outcomes and the 
   try {
     for (const sink of [undefined, () => writeSync(readOnly, "diagnostic")]) {
       const install = observeGatewayInstallation(sink);
-      assert.equal(await install(ok, gatewayValues, gatewayHelm, ok), 7);
+      assert.equal(await install(ok, gatewayValues, gatewayHelm, ok, verifyImages), 7);
       await assert.rejects(
-        install(ok, gatewayValues, gatewayHelm, fail),
+        install(ok, gatewayValues, gatewayHelm, fail, verifyImages),
         (error) => error === failure,
       );
     }
@@ -453,67 +473,75 @@ test("gateway installation preserves settled phases, operation outcomes and the 
   }
 });
 
-test("the runner retains an unknown gateway readiness outcome after the test child terminates", (t) => {
-  const directory = temporaryDirectorySync(t, "installation-progress-");
-  const file = "tests/integration/installation.test.ts";
-  mkdirSync(join(directory, dirname(file)), { recursive: true });
-  mkdirSync(join(directory, "scripts/ci"), { recursive: true });
-  writeFileSync(
-    join(directory, "scripts/ci/prepare.mjs"),
-    `import { writeFileSync } from "node:fs";
+for (const terminatedStage of ["gateway-pod-ready", "rendered-images"]) {
+  test(`the runner retains an unknown ${terminatedStage} outcome after the test child terminates`, (t) => {
+    const directory = temporaryDirectorySync(t, "installation-progress-");
+    const file = "tests/integration/installation.test.ts";
+    mkdirSync(join(directory, dirname(file)), { recursive: true });
+    mkdirSync(join(directory, "scripts/ci"), { recursive: true });
+    writeFileSync(
+      join(directory, "scripts/ci/prepare.mjs"),
+      `import { writeFileSync } from "node:fs";
 export function prepareFile({ statePath }) {
   return { cleanup: () => writeFileSync(statePath + ".cleaned", "completed") };
 }`,
-  );
-  const helper = new URL("../helpers/openshell-installation.ts", import.meta.url).href;
-  writeFileSync(
-    join(directory, file),
-    `import test from "node:test";
+    );
+    const helper = new URL("../helpers/openshell-installation.ts", import.meta.url).href;
+    writeFileSync(
+      join(directory, file),
+      `import test from "node:test";
 import { runGatewayInstallation } from ${JSON.stringify(helper)};
-test("terminated readiness", () => runGatewayInstallation(
+async function terminate() {
+  process.kill(process.pid, "SIGTERM");
+  await new Promise(() => {});
+}
+test("terminated installation", () => runGatewayInstallation(
   async () => {}, async () => {}, async () => {},
-  async () => { process.kill(process.pid, "SIGTERM"); await new Promise(() => {}); },
+  ${terminatedStage === "gateway-pod-ready" ? "terminate" : "async () => {}"},
+  ${terminatedStage === "rendered-images" ? "terminate" : 'async () => { throw new Error("rendered image check ran before readiness"); }'},
 ));
 `,
-  );
-  const suite = join(directory, "suite.json");
-  const state = join(directory, "state.json");
-  const results = join(directory, "results.json");
-  writeJson(suite, { version: 1, lanes: { openshell: { files: [{ path: file }] } }, groups: {} });
-  const result = command(runner, [
-    "run",
-    "openshell",
-    "--root",
-    directory,
-    "--manifest",
-    suite,
-    "--state",
-    state,
-    "--results",
-    results,
-  ]);
-  assert.equal(result.status, 1, result.stdout + result.stderr);
-  const [entry] = JSON.parse(readFileSync(results, "utf8")).files;
-  assert.equal(entry.status, "failed");
-  assert.equal(entry.nodeExitCode, 1);
-  assert.equal(entry.fileFailure.error.signal, "SIGTERM");
-  assert.deepEqual(entry.cleanup, { status: "passed" });
-  assert.equal(readFileSync(state + ".cleaned", "utf8"), "completed");
-  assert.equal(entry.installationPhases.truncated, false);
-  const phases: {
-    invocation: number;
-    stage: string;
-    enteredMs: number;
-    outcome: string;
-    elapsedMs?: number;
-  }[] = entry.installationPhases.phases;
-  assert.deepEqual(
-    phases.map(({ invocation, stage, outcome }) => [invocation, stage, outcome]),
-    [
-      [1, "workspace-helm", "passed"],
-      [1, "gateway-helm", "passed"],
-      [1, "gateway-pod-ready", "unknown"],
-    ],
-  );
-  assert.equal(present(phases[2]).elapsedMs, undefined);
-});
+    );
+    const suite = join(directory, "suite.json");
+    const state = join(directory, "state.json");
+    const results = join(directory, "results.json");
+    writeJson(suite, { version: 1, lanes: { openshell: { files: [{ path: file }] } }, groups: {} });
+    const result = command(runner, [
+      "run",
+      "openshell",
+      "--root",
+      directory,
+      "--manifest",
+      suite,
+      "--state",
+      state,
+      "--results",
+      results,
+    ]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    const [entry] = JSON.parse(readFileSync(results, "utf8")).files;
+    assert.equal(entry.status, "failed");
+    assert.equal(entry.nodeExitCode, 1);
+    assert.equal(entry.fileFailure.error.signal, "SIGTERM");
+    assert.deepEqual(entry.cleanup, { status: "passed" });
+    assert.equal(readFileSync(state + ".cleaned", "utf8"), "completed");
+    assert.equal(entry.installationPhases.truncated, false);
+    const phases: {
+      invocation: number;
+      stage: string;
+      enteredMs: number;
+      outcome: string;
+      elapsedMs?: number;
+    }[] = entry.installationPhases.phases;
+    assert.deepEqual(
+      phases.map(({ invocation, stage, outcome }) => [invocation, stage, outcome]),
+      [
+        [1, "workspace-helm", "passed"],
+        [1, "gateway-helm", "passed"],
+        ...(terminatedStage === "rendered-images" ? [[1, "gateway-pod-ready", "passed"]] : []),
+        [1, terminatedStage, "unknown"],
+      ],
+    );
+    assert.equal(present(phases.at(-1)).elapsedMs, undefined);
+  });
+}

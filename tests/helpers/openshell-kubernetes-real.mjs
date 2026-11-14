@@ -1284,22 +1284,23 @@ export function createOpenShellKubernetesFixture({
 
       return values;
     }
-    const gateway = await runGatewayInstallation(
+    return runGatewayInstallation(
       () => installChart(`${instance}-workspace`, openShellWorkspaceHelmChart, workspaceValues),
       gatewayValues,
       (values) => installChart(instance, openShellHelmChart, values),
       () => waitForOpenShellGateway(namespace),
+      async (gateway) => {
+        assertRenderedOpenShellImages({
+          gatewayPod: gateway,
+          statefulSet: await base.resource("statefulset", instance, namespace),
+          configMap: await base.resource("configmap", `${instance}-config`, namespace),
+          gatewayImage: openShellGatewayImage,
+          sandboxImage: openShellSandboxImage,
+          supervisorImage: openShellSupervisorImage,
+          defaultTag: openShellChartVersion,
+        });
+      },
     );
-    assertRenderedOpenShellImages({
-      gatewayPod: gateway,
-      statefulSet: await base.resource("statefulset", instance, namespace),
-      configMap: await base.resource("configmap", `${instance}-config`, namespace),
-      gatewayImage: openShellGatewayImage,
-      sandboxImage: openShellSandboxImage,
-      supervisorImage: openShellSupervisorImage,
-      defaultTag: openShellChartVersion,
-    });
-    return gateway;
   }
 
   async function startOpenShellGatewayPortForward(namespace) {

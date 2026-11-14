@@ -1,5 +1,5 @@
 export const maxInstallationInvocations = 8;
-const stages = ["workspace-helm", "gateway-helm", "gateway-pod-ready"] as const;
+const stages = ["workspace-helm", "gateway-helm", "gateway-pod-ready", "rendered-images"] as const;
 type InstallationStage = (typeof stages)[number];
 
 export interface InstallationPhase {
