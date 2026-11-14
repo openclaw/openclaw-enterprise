@@ -1,6 +1,7 @@
+import type { PathLike } from "node:fs";
 import { lstat } from "node:fs/promises";
 
-export async function privateOwned(path, directory = false) {
+export async function privateOwned(path: PathLike, directory = false): Promise<void> {
   const info = await lstat(path);
   if (
     info.uid !== process.geteuid?.() ||

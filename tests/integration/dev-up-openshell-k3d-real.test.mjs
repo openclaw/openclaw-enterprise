@@ -521,7 +521,7 @@ test(
         execute(
           process.execPath,
           [
-            join(repository, "scripts", "first-agent.mjs"),
+            join(repository, "scripts", "first-agent.ts"),
             `dependency-${suffix}`,
             "--harness",
             "codex",

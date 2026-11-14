@@ -317,7 +317,7 @@ For manual Compose-plus-k3d proof, start the environment above with
 or point `CODEX_ACCESS_TOKEN_FILE` to an absolute private file. Set only one.
 
 ```sh
-node scripts/first-agent.mjs my-agent --harness codex --control-ui
+node scripts/first-agent.ts my-agent --harness codex --control-ui
 ```
 
 `Model response verified:` proves a model turn; a selected version or ready

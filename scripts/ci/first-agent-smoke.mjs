@@ -10,7 +10,7 @@
 // runtime image's trust store, and publishes both to a local registry, reachable
 // on loopback, so Local Setup can select them by digest. `run` starts the
 // Kubernetes-only Local Setup with those images, answers api.openai.com from a
-// stand-in Responses provider, runs scripts/first-agent.mjs for an embedded
+// stand-in Responses provider, runs scripts/first-agent.ts for an embedded
 // OpenClaw Agent, deploys one dedicated Codex Agent through the API, reads both
 // Agents' logs through `occ agent logs`, stops and starts each once, and checks
 // that every reported status matches the cluster and a real model turn.
@@ -186,7 +186,7 @@ export function createStepRecorder(now = () => performance.now()) {
     ["install-reader", "install public reader and select its peer"],
     ["route-model", "route api.openai.com to the stand-in provider"],
     ["initial-admissions", "initial Agent admissions"],
-    ["admit-embedded", "embedded OpenClaw Agent via scripts/first-agent.mjs"],
+    ["admit-embedded", "embedded OpenClaw Agent via scripts/first-agent.ts"],
     ["admit-codex", "dedicated Codex Agent via the API"],
     ["admit-reader-control", "selected reader control via the API"],
     ["codex-chat", "dedicated Codex chat turn"],
@@ -1666,7 +1666,7 @@ async function deployAgent(stack, agent) {
 async function runFirstAgent(stack, modelCredential) {
   const { stdout } = await run(
     process.execPath,
-    [join(root, "scripts/first-agent.mjs"), "smoke-embedded"],
+    [join(root, "scripts/first-agent.ts"), "smoke-embedded"],
     {
       env: {
         ...process.env,

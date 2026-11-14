@@ -126,7 +126,7 @@ After creating the dedicated Agent, bind its exact browser origin to its new Con
 installation=$(request GET "/installation" | jq -er .data.id)
 origin=$(node --input-type=module - "$CONSOLE_ORIGIN" "$NATIVE_ADMIN_DOMAIN" "$RUN_DIR/agent" "$installation" <<'JS'
 import { readFileSync } from "node:fs";
-import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.mjs";
+import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.ts";
 const [consoleOrigin, nativeAdminDomain, agentFile, installation] = process.argv.slice(2);
 const { data: agent } = JSON.parse(readFileSync(agentFile));
 const url = new URL(consoleOrigin);

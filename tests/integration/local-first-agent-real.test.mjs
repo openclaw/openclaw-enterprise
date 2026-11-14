@@ -40,7 +40,7 @@ import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
-const firstAgentScript = fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url));
+const firstAgentScript = fileURLToPath(new URL("../../scripts/first-agent.ts", import.meta.url));
 const selected = process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL === "1";
 const selectedHarness = process.env.OCC_TEST_LOCAL_FIRST_AGENT_HARNESS ?? "openclaw";
 assert.match(selectedHarness, /^(?:openclaw|codex)$/);
