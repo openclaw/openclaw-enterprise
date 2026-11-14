@@ -292,7 +292,7 @@ clears publication buffers on success/failure. Callers own detached reads; clear
   Its serializable in-memory fixture reconnects owners to shared committed state;
   it is not production durability, process-crash, live-provider, installed-runtime,
   cluster or regular Agent workflow proof.
-  `postgres-prepared-github-lifecycle.test.mjs` exercises the durable lifecycle,
+  `postgres-prepared-github-lifecycle.test.ts` exercises the durable lifecycle,
   signed protected exchange, issuer rotation, withdrawal, Agent deletion and quarantine over loopback.
 
 - Read the source: `status.refresh.state`, `lastRefreshAt`, `failureCode`, and
