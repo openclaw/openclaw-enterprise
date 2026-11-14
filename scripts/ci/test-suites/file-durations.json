@@ -101,7 +101,7 @@
     "tests/conformance/openshell-git-runtime.test.mjs": 2800,
     "tests/conformance/openshell-harness-status.test.mjs": 2400,
     "tests/conformance/openshell-oauth-wire.test.mjs": 500,
-    "tests/conformance/openshell-prepared-git-provider.test.mjs": 1500,
+    "tests/conformance/openshell-prepared-git-provider.test.ts": 1500,
     "tests/conformance/platform-state-memory.test.ts": 300,
     "tests/conformance/plugin-compute.test.ts": 29500,
     "tests/conformance/plugin-driver.test.mjs": 2000,
