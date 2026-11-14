@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { copyFile } from "node:fs/promises";
-import {
-  createServer as createHttpServer,
-  type IncomingMessage,
-  type ServerResponse,
-} from "node:http";
+import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -28,7 +24,11 @@ import {
   type KubernetesRequestFailures,
 } from "../../apps/controller/src/drivers/kubernetes/request.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
-import { acquireRuntimeDiagnostics } from "./kubernetes-client-diagnostics.ts";
+import {
+  runtimeDiagnosticsApi,
+  runtimeStatusPath,
+  runtimeStatusTarget,
+} from "./kubernetes-client-diagnostics.ts";
 import {
   apiServer,
   connectProxy,
@@ -199,33 +199,40 @@ const requestFailures = {
   deadlineElapsed: () => new Error("request lifetime elapsed before dispatch"),
 } satisfies KubernetesRequestFailures;
 
-async function statusReadback(authentication: KubernetesAuthentication) {
+async function statusReadback(
+  authentication: KubernetesAuthentication,
+  target: Parameters<typeof readPrivateStatusProxy>[2],
+) {
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
     authentication,
     (message) => new Error(message),
   );
   return readPrivateStatusProxy(
     new sdk.CoreV1Api(clientConfiguration),
-    (operation) => kubernetesRequest(operation, requestFailures),
-    { namespace: "tenant", podName: "agent-pod", container: "agent", path: RUNTIME_STATUS_PATH },
+    (operation) => operation(),
+    target,
   );
 }
 
 const REDIRECT_SECRET_PATH = "/api/v1/namespaces/occ-system/secrets/x";
 const statusRequest = { path: STATUS_PROXY_PATH, authorization: "Bearer fixture-token" } as const;
-const redirect = {
-  name: DependencyUnavailableError.name,
-  message: "Runtime status answered with a redirect.",
-};
+const redirect = "Runtime status answered with a redirect.";
 
-// A stray request could read a Secret or disclose the token to another origin.
-function unexpectedStatusPath(request: IncomingMessage, response: ServerResponse): boolean {
-  if (request.url === STATUS_PROXY_PATH) {
-    return false;
-  }
-  response.writeHead(200, { "content-type": "application/json" });
-  response.end('{"kind":"Secret"}');
-  return true;
+async function assertTerminalStatus(
+  api: Awaited<ReturnType<typeof runtimeDiagnosticsApi>>,
+  message: string,
+) {
+  const request = { path: runtimeStatusPath, authorization: "Bearer fixture-token" };
+  // Compute suppresses unavailable startup evidence. Observe the classified wire
+  // error separately, then count the requests issued by Compute's own retry policy.
+  await assert.rejects(statusReadback(api.authentication, runtimeStatusTarget), {
+    name: DependencyUnavailableError.name,
+    message,
+  });
+  assert.deepEqual(api.statusRequests, [request]);
+  const diagnostics = await api.diagnose();
+  assert.deepEqual(diagnostics.checks, []);
+  assert.deepEqual(api.statusRequests.slice(1), [request], "Compute must issue one status request");
 }
 
 // Finding 1347: whoever runs on a Pod's status port writes the proxied answer, and the
@@ -237,7 +244,7 @@ const locations = [
   ["a relative path", () => "../../../../../../../api/v1/namespaces/occ-system/secrets/x"],
   ["another API server path", (apiUrl) => `${apiUrl}${REDIRECT_SECRET_PATH}`],
   ["another origin", (_apiUrl, otherUrl) => `${otherUrl}/collect`],
-  ["itself", () => STATUS_PROXY_PATH],
+  ["itself", () => runtimeStatusPath],
 ] satisfies readonly (readonly [string, (apiUrl: string, otherUrl: string) => string])[];
 for (const [target, location] of locations) {
   test(`runtime status readback does not follow a Pod redirect to ${target} (finding 1347)`, async (t) => {
@@ -248,39 +255,28 @@ for (const [target, location] of locations) {
       response.end("{}");
     });
     const otherPort = await listen(t, other);
-    const api = await recordingApiServer(t, directory, (request, response) => {
-      if (unexpectedStatusPath(request, response)) {
-        return;
-      }
+    const api = await runtimeDiagnosticsApi(t, directory, (_request, response) => {
       response.writeHead(302, {
         location: location(api.url, `http://127.0.0.1:${otherPort}`),
       });
       response.end();
     });
 
-    const authentication = await writeKubeconfig(directory, api, "fixture-token");
-    await assert.rejects(statusReadback(authentication), redirect);
-    assert.deepEqual(api.requests, [statusRequest]);
+    await assertTerminalStatus(api, redirect);
     assert.deepEqual(otherRequests, []);
-    t.diagnostic(
-      `API requests: ${api.requests.length}; other-origin requests: ${otherRequests.length}`,
-    );
   });
 }
 
 for (const body of ["truncated", "held open"]) {
   test(`runtime status readback stops at a redirect with a ${body} body`, async (t) => {
     const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
-    const { promise: closed, resolve: resolveClosed } = Promise.withResolvers<void>();
-    const api = await recordingApiServer(t, directory, (request, response) => {
-      if (unexpectedStatusPath(request, response)) {
-        return;
-      }
+    const responsesClosed: Promise<void>[] = [];
+    const api = await runtimeDiagnosticsApi(t, directory, (_request, response) => {
       response.writeHead(302, {
         location: REDIRECT_SECRET_PATH,
         "content-length": "100",
       });
-      response.once("close", resolveClosed);
+      responsesClosed.push(new Promise<void>((resolve) => response.once("close", resolve)));
       response.flushHeaders();
       if (body === "truncated") {
         response.write("partial");
@@ -290,22 +286,22 @@ for (const body of ["truncated", "held open"]) {
     });
 
     // An unfinished body must neither delay the redirect result nor cause a retry.
-    const authentication = await writeKubeconfig(directory, api, "fixture-token");
-    await assert.rejects(
-      withComputeAbortSignal(AbortSignal.timeout(4_000), () => statusReadback(authentication)),
-      redirect,
+    await withComputeAbortSignal(AbortSignal.timeout(4_000), () =>
+      assertTerminalStatus(api, redirect),
     );
-    assert.deepEqual(api.requests, [statusRequest]);
     assert.equal(
-      await Promise.race([closed.then(() => true), delay(2_000, false, { ref: false })]),
+      await Promise.race([
+        Promise.all(responsesClosed).then(() => true),
+        delay(2_000, false, { ref: false }),
+      ]),
       true,
-      "the redirect response is cancelled",
+      "both read paths cancel the redirect response",
     );
   });
 }
 
 // Finding 1355: undici refuses a 100 Continue or an unrequested 101 with a status-less socket
-// error. The Pod chose that answer, so the readback reports it once instead of retrying it.
+// error. The Pod chose that answer, so Compute must not retry it.
 const interimResponses = [
   [
     "100 Continue",
@@ -328,27 +324,42 @@ const interimResponses = [
 for (const [interim, write] of interimResponses) {
   test(`runtime status readback reports an unrequested ${interim} once, without a retry`, async (t) => {
     const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
-    const api = await recordingApiServer(t, directory, (request, response) => {
-      if (unexpectedStatusPath(request, response)) {
-        return;
-      }
+    const api = await runtimeDiagnosticsApi(t, directory, (_request, response) => {
       write(response);
     });
-    const authentication = await writeKubeconfig(directory, api, "fixture-token");
-    await assert.rejects(
-      withComputeAbortSignal(AbortSignal.timeout(4_000), () => statusReadback(authentication)),
-      {
-        name: DependencyUnavailableError.name,
-        message: "Runtime status answered with an unrequested 1xx status.",
-      },
+    await withComputeAbortSignal(AbortSignal.timeout(4_000), () =>
+      assertTerminalStatus(api, "Runtime status answered with an unrequested 1xx status."),
     );
-    assert.deepEqual(api.requests, [statusRequest]);
   });
 }
 
 test("runtime status readback still retries a dropped connection", async (t) => {
   const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
-  const { diagnostics, statusAttempts, podLists } = await acquireRuntimeDiagnostics(t, directory);
+  let statusAttempts = 0;
+  const api = await runtimeDiagnosticsApi(t, directory, (request, response) => {
+    statusAttempts += 1;
+    if (statusAttempts === 1) {
+      // An API restart can drop the connection before answering the read.
+      request.socket.destroy();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        revisionId: "revision-1",
+        container: "gateway",
+        podUid: "gateway-uid",
+        runtimeFailure: {
+          component: "gateway",
+          check: "peer-bridge-record",
+          checkedAt: "2026-09-19T12:00:00.000Z",
+          code: "UNAVAILABLE",
+        },
+      }),
+    );
+  });
+  const diagnostics = await api.diagnose();
+  const podLists = api.observedPodLists();
   assert.equal(diagnostics.revisionId, "revision-1");
   assert.deepEqual(diagnostics.checks, [
     {
@@ -372,12 +383,18 @@ test("runtime status readback through the production client keeps 200 and 404 an
     response.end(status === 200 ? '{"revisionId":"revision-1"}' : "");
   });
   const authentication = await writeKubeconfig(directory, api, "fixture-token");
-  assert.deepEqual(await statusReadback(authentication), {
+  const target = {
+    namespace: "tenant",
+    podName: "agent-pod",
+    container: "agent",
+    path: RUNTIME_STATUS_PATH,
+  } as const;
+  assert.deepEqual(await statusReadback(authentication, target), {
     body: { revisionId: "revision-1" },
   });
   // 404 means the status port is not serving yet: no status, no error.
   status = 404;
-  assert.equal(await statusReadback(authentication), undefined);
+  assert.equal(await statusReadback(authentication, target), undefined);
   assert.deepEqual(api.requests, [statusRequest, statusRequest]);
   t.diagnostic("200 returned parsed status; 404 returned no status");
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { TestContext } from "node:test";
 
 import {
@@ -18,7 +18,14 @@ const revisionId = "revision-1";
 const agentId = "agent-1";
 const podName = "gateway-pod";
 const podUid = "gateway-uid";
+export const runtimeStatusTarget = {
+  namespace: namespaceName,
+  podName,
+  container: "gateway",
+  path: "/openclaw/runtime/status",
+} as const;
 const proxyPath = `${namespacePath}/pods/${podName}%3A18791/proxy/openclaw%2Fruntime%2F`;
+export const runtimeStatusPath = `${proxyPath}status`;
 const CHECKED_AT = "2026-09-19T12:00:00.000Z";
 
 const namespace = {
@@ -56,8 +63,12 @@ function answerJson(response: ServerResponse, body: object): void {
   response.end(JSON.stringify(body));
 }
 
-export async function acquireRuntimeDiagnostics(t: TestContext, directory: string) {
-  let statusAttempts = 0;
+export async function runtimeDiagnosticsApi(
+  t: TestContext,
+  directory: string,
+  respondToStatus: (request: IncomingMessage, response: ServerResponse) => void,
+) {
+  const statusRequests: { path: string; authorization: string | undefined }[] = [];
   const runtime = { revisionId, container: "gateway", podUid };
   const api = await recordingApiServer(t, directory, (request, response) => {
     assert.ok(request.url);
@@ -90,34 +101,24 @@ export async function acquireRuntimeDiagnostics(t: TestContext, directory: strin
       case `${proxyPath}diagnostics`:
         answerJson(response, { ...runtime, observedAt: CHECKED_AT, checks: [] });
         break;
-      case `${proxyPath}status`:
-        statusAttempts += 1;
-        if (statusAttempts === 1) {
-          // An API restart can drop the connection before answering the read.
-          request.socket.destroy();
-        } else {
-          answerJson(response, {
-            ...runtime,
-            runtimeFailure: {
-              component: "gateway",
-              check: "peer-bridge-record",
-              checkedAt: CHECKED_AT,
-              code: "UNAVAILABLE",
-            },
-          });
-        }
-        break;
       default:
-        assert.fail(`Unexpected Kubernetes API request ${request.url}`);
+        // Keep requests to a redirect target in the same ledger as the status read.
+        statusRequests.push({ path: request.url, authorization: request.headers.authorization });
+        if (url.pathname === runtimeStatusPath) {
+          respondToStatus(request, response);
+        } else {
+          answerJson(response, { kind: "Secret" });
+        }
     }
   });
 
+  const authentication = await writeKubeconfig(directory, api, "fixture-token");
   const driver = new KubernetesComputeDriver({
     ...conformanceKubernetesOptions({
       gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
       runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
     }),
-    authentication: await writeKubeconfig(directory, api, "fixture-token"),
+    authentication,
   });
   const binding: ComputeAgentRevisionBinding = {
     namespace: {
@@ -166,7 +167,7 @@ export async function acquireRuntimeDiagnostics(t: TestContext, directory: strin
     },
   };
   const admission = driver.admitRevision(binding.revision);
-  const diagnostics = await driver.diagnoseAgentDeployment({
+  const admittedBinding = {
     ...binding,
     revision: {
       ...binding.revision,
@@ -175,7 +176,13 @@ export async function acquireRuntimeDiagnostics(t: TestContext, directory: strin
         ...(admission === undefined ? {} : { admission }),
       },
     },
-  });
-  const podLists = api.requests.filter(({ path }) => path.startsWith(`${namespacePath}/pods?`));
-  return { diagnostics, statusAttempts, podLists };
+  };
+  return {
+    url: api.url,
+    authentication,
+    statusRequests,
+    diagnose: () => driver.diagnoseAgentDeployment(admittedBinding),
+    observedPodLists: () =>
+      api.requests.filter(({ path }) => path.startsWith(`${namespacePath}/pods?`)),
+  };
 }
