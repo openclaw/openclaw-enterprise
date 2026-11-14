@@ -9,18 +9,25 @@ import {
   validateAuthSecret,
   validHttpBaseURL,
 } from "../../apps/controller/src/auth/configuration.ts";
+import type { ControllerAuthOptions } from "../../apps/controller/src/auth/index.ts";
+
+type BootstrapMode = ControllerAuthOptions["mode"];
+type BootstrapEnvironment = Readonly<NodeJS.ProcessEnv>;
+
+interface BootstrapConfiguration {
+  readonly mode: BootstrapMode;
+  readonly databaseUrl: string;
+  readonly auth: Pick<ControllerAuthOptions, "secret" | "baseURL" | "agentDomain">;
+  readonly adminEmail: string;
+}
 
 const DEFAULT_DEV_ADMIN_EMAIL = "admin@openclaw.local";
 
-export function required(env, name) {
-  const value = env[name];
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${name} must be explicitly configured.`);
-  }
-  return value;
+export function required(env: BootstrapEnvironment, name: string): string {
+  return optional(env, name);
 }
 
-export function optional(env, name, fallback) {
+export function optional(env: BootstrapEnvironment, name: string, fallback?: string): string {
   const value = env[name] ?? fallback;
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`${name} must be explicitly configured.`);
@@ -28,7 +35,7 @@ export function optional(env, name, fallback) {
   return value;
 }
 
-function normalizeEmail(raw, name) {
+function normalizeEmail(raw: string, name: string): string {
   const email = raw.trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     throw new Error(`${name} must contain a valid administrator email.`);
@@ -36,8 +43,8 @@ function normalizeEmail(raw, name) {
   return email;
 }
 
-function authBaseURL(raw, mode) {
-  let parsed;
+function authBaseURL(raw: string, mode: BootstrapMode): string {
+  let parsed: URL;
   try {
     parsed = new URL(raw);
   } catch {
@@ -57,7 +64,7 @@ function authBaseURL(raw, mode) {
   return baseURL;
 }
 
-export function bootstrapFailureCode(error) {
+export function bootstrapFailureCode(error: unknown) {
   const message = error instanceof Error ? error.message : "";
   if (/installation[ _]name breaks the Name rule/i.test(message)) {
     return "INSTALLATION_NAME_INVALID";
@@ -85,15 +92,16 @@ export function bootstrapFailureCode(error) {
 }
 
 /** The Job's auth, database and administrator settings in `mode`, read from `env`. */
-export function bootstrapConfiguration(mode, env) {
-  const authConfig = {
-    secret: optional(
-      env,
-      "OCC_AUTH_SECRET",
-      mode === "development" ? "openclaw-development-auth-secret-minimum-32-bytes" : undefined,
-    ),
-    baseURL: authBaseURL(required(env, "OCC_AUTH_BASE_URL"), mode),
-  };
+export function bootstrapConfiguration(
+  mode: BootstrapMode,
+  env: BootstrapEnvironment,
+): BootstrapConfiguration {
+  const secret = optional(
+    env,
+    "OCC_AUTH_SECRET",
+    mode === "development" ? "openclaw-development-auth-secret-minimum-32-bytes" : undefined,
+  );
+  const baseURL = authBaseURL(required(env, "OCC_AUTH_BASE_URL"), mode);
   for (const removed of ["OCC_AUTH_COOKIE_DOMAIN", "OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"]) {
     if (Object.hasOwn(env, removed)) {
       throw new Error(
@@ -101,29 +109,17 @@ export function bootstrapConfiguration(mode, env) {
       );
     }
   }
-  authConfig.agentDomain = required(env, "OCC_AGENT_NATIVE_ADMIN_DOMAIN");
-  deriveSharedCookieDomain(authConfig.baseURL, authConfig.agentDomain);
-  validateAuthSecret(authConfig.secret);
+  const agentDomain = required(env, "OCC_AGENT_NATIVE_ADMIN_DOMAIN");
+  deriveSharedCookieDomain(baseURL, agentDomain);
+  validateAuthSecret(secret);
 
-  if (mode === "production") {
-    return {
-      mode,
-      databaseUrl: required(env, "OCC_DATABASE_URL"),
-      auth: authConfig,
-      adminEmail: normalizeEmail(
-        required(env, "OCC_BOOTSTRAP_ADMIN_EMAIL"),
-        "OCC_BOOTSTRAP_ADMIN_EMAIL",
-      ),
-    };
-  }
-
-  return {
-    mode,
-    databaseUrl: required(env, "OCC_DATABASE_URL"),
-    auth: authConfig,
-    adminEmail: normalizeEmail(
-      optional(env, "OPENCLAW_DEV_EMAIL", DEFAULT_DEV_ADMIN_EMAIL),
-      "OPENCLAW_DEV_EMAIL",
-    ),
-  };
+  const databaseUrl = required(env, "OCC_DATABASE_URL");
+  const adminEmail =
+    mode === "production"
+      ? normalizeEmail(required(env, "OCC_BOOTSTRAP_ADMIN_EMAIL"), "OCC_BOOTSTRAP_ADMIN_EMAIL")
+      : normalizeEmail(
+          optional(env, "OPENCLAW_DEV_EMAIL", DEFAULT_DEV_ADMIN_EMAIL),
+          "OPENCLAW_DEV_EMAIL",
+        );
+  return { mode, databaseUrl, auth: { secret, baseURL, agentDomain }, adminEmail };
 }
