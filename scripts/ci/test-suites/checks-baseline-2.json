@@ -52,7 +52,7 @@
     "tests/integration/ci-runner-first-agent-startup.test.ts",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
-    "tests/integration/k3d-launcher.test.mjs",
+    "tests/integration/k3d-launcher.test.ts",
     "tests/integration/password-sign-in-admission.test.ts",
     "tests/integration/google-login-transport.test.ts",
     "tests/conformance/slack-channel-directory.test.ts",
@@ -399,7 +399,7 @@
       "path": "tests/integration/ci-registry-transport.test.ts"
     },
     {
-      "path": "tests/integration/k3d-launcher.test.mjs"
+      "path": "tests/integration/k3d-launcher.test.ts"
     },
     {
       "path": "tests/integration/ci-openshell-preparation.test.ts"
