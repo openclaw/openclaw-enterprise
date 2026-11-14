@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { K3dCommand, PreparationTiming } from "./k3d-node-images.ts";
+import { captureK3dDiagnostics, type K3dDiagnosticCluster } from "./k3d-preparation-diagnostics.ts";
 import { ownedName } from "./resource-names.ts";
 
 interface FixtureState {
@@ -12,10 +13,7 @@ interface FixtureResource {
   id: string;
 }
 
-interface FixtureCluster extends FixtureResource {
-  directory: string;
-  kubeconfig: string;
-  context: string;
+interface FixtureCluster extends FixtureResource, K3dDiagnosticCluster {
   kubernetesVersion?: string;
 }
 
@@ -33,13 +31,6 @@ interface FixtureDependencies {
     operation: () => Promise<Result>,
   ) => Promise<Result>;
   timedPreparation: PreparationTiming;
-  captureK3dDiagnostics: (options: {
-    execFile: K3dCommand;
-    cluster: FixtureCluster;
-    lane: string;
-    statePath: string;
-    failure: string | undefined;
-  }) => Promise<unknown>;
   fixtureDockerContext: string;
   imageCommandTimeoutMs: number;
   imageBuildBudgetMs: () => number | undefined;
@@ -154,7 +145,6 @@ export function createK3dFixtureStorage({
   progress,
   k3dStage,
   timedPreparation,
-  captureK3dDiagnostics,
   fixtureDockerContext,
   imageCommandTimeoutMs,
   imageBuildBudgetMs,

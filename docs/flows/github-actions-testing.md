@@ -142,7 +142,7 @@ Full Integration requires [compatible cache exports](github-actions-testing/prep
 before OpenShell source builds. These retain their builder and fixed epoch;
 cache credentials stay in preparation. Mutable scopes make cache hits best effort.
 
-Kubernetes preparation records host snapshots. Failed reads, bounded
+`scripts/ci/k3d-preparation-diagnostics.ts` records Kubernetes host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
 Fixture lanes use `--no-rollback` and registered teardown. Staged sign-in also
 disables rollback, but unacknowledged creation requires reconciliation instead of

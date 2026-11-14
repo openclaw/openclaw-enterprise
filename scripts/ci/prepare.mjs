@@ -38,8 +38,8 @@ import {
   ANSI_COLOR,
   captureK3dDiagnostics,
   k3dHostMetrics,
-  redactCredentialLine,
-} from "./k3d-diagnostics.mjs";
+} from "./k3d-preparation-diagnostics.ts";
+import { redactCredentialLine } from "./k3d-node-log.ts";
 import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
 import { createK3dNodeImages } from "./k3d-node-images.ts";
 import { prepareGatewayRouting } from "./routing.ts";
@@ -2352,7 +2352,6 @@ const {
   progress,
   k3dStage,
   timedPreparation,
-  captureK3dDiagnostics,
   fixtureDockerContext,
   imageCommandTimeoutMs,
   imageBuildBudgetMs,
