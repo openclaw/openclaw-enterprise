@@ -5,6 +5,7 @@ import { admissionIdTimestamp } from "../../drivers/repo/access/admission-id.ts"
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
+  controlRequestBodyMaxBytes,
   hasControlCharacter,
   isCanonicalUnixSocketPath,
   matchesRepositorySessionId,
@@ -267,7 +268,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
   ): Promise<Reply> {
     const body = input === undefined ? "" : JSON.stringify(input);
     const bodyBytes = Buffer.byteLength(body);
-    if (bodyBytes > 16 * 1024) {
+    if (bodyBytes > controlRequestBodyMaxBytes) {
       throw new RepositoryCredentialControlError(false);
     }
     try {
