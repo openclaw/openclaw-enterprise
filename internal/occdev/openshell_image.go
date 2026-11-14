@@ -107,11 +107,13 @@ func (r *runner) imageCommand(ctx context.Context, args ...string) ([]byte, bool
 		}
 		// Match the complete engine result for this exact object. In particular,
 		// a connection diagnostic quoting an absent object is not absence.
-		absent := errors.As(err, &exited) && exited.ExitCode() == 1 &&
+		absent := errors.As(err, &exited) &&
+			(exited.ExitCode() == 1 || r.engine == "podman" && exited.ExitCode() == 125) &&
 			(output == "" || output == "[]") &&
 			(diagnostic == "Error response from daemon: No such image: "+reference ||
 				diagnostic == "Error response from daemon: No such image: "+query ||
-				diagnostic == "Error: "+reference+": image not known")
+				diagnostic == "Error: "+reference+": image not known" ||
+				r.engine == "podman" && diagnostic == fmt.Sprintf("Error: unable to inspect %q: failed to find image %s: %s: image not known", query, query, reference))
 		if exited != nil && output == "" {
 			exited.Stderr = append([]byte(nil), stderr.Bytes()...)
 		}

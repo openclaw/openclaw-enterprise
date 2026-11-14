@@ -60,7 +60,9 @@ type developmentState struct {
 }
 
 func (s *developmentState) composeCommand() []string {
-	return []string{"compose", "--project-directory", s.Repository, "--project-name", s.ComposeProject, "-f", filepath.Join(s.directory, "compose.yaml")}
+	// The saved model contains resolved paths and needs no project-directory
+	// override, which podman-compose does not implement.
+	return []string{"compose", "--project-name", s.ComposeProject, "-f", filepath.Join(s.directory, "compose.yaml")}
 }
 func exclusiveWrite(path string, data []byte, mode os.FileMode) (result error) {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)

@@ -26,7 +26,7 @@ func TestBootstrapAuthorizationStopsWithStartupContext(t *testing.T) {
 			// the server never emits a successful OCC response or authorizes a key.
 			fakeProfileCommands(t, map[string]string{
 				"docker": `
-"compose "*) echo bootstrap-fixture ;;
+"ps --all --quiet "*) echo bootstrap-fixture ;;
 "cp bootstrap-fixture:/var/lib/openclaw/bootstrap/initial-admin-service-key.json "*) cp "$OCC_TEST_BOOTSTRAP_KEY" "$3" ;;
 `,
 				"kubectl": `

@@ -72,7 +72,17 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 				}
 				repository = alias
 			}
-			rendered := fmt.Sprintf(`{"networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{"postgres":{"volumes":[{"type":"bind","source":%q,"target":"/docker-entrypoint-initdb.d/00-occ-roles.sql","read_only":%t,"bind":{"selinux":"Z"}}]},"controller":{"ports":["127.0.0.1:4000:3000"]},"worker-kubernetes":{}}}`, source, !tc.writable)
+			rendered := fmt.Sprintf(`{"networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{"postgres":{"image":"example.invalid/postgres:fixture","volumes":[{"type":"bind","source":%q,"target":"/docker-entrypoint-initdb.d/00-occ-roles.sql","read_only":%t,"bind":{"selinux":"Z"}}]},"controller":{"image":"example.invalid/controller:fixture","ports":["127.0.0.1:4000:3000"]},"worker-kubernetes":{"image":"example.invalid/controller:fixture"}}}`, source, !tc.writable)
+			// The launcher loads these files before handing its frozen snapshot to the engine.
+			for name, model := range map[string]string{
+				"compose.yaml":              rendered,
+				"compose.kubernetes.yaml":   "services: {}\n",
+				"compose.native-admin.yaml": "services: {}\n",
+			} {
+				if err := os.WriteFile(filepath.Join(repository, name), []byte(model), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			// Record the real launcher's snapshot at the engine boundary, then fail
 			// startup to exercise rollback. This does not simulate PostgreSQL access.
 			commands := fakeProfileCommands(t, map[string]string{
@@ -82,8 +92,8 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 "ps --all --quiet --filter "*|"volume ls --quiet --filter "*|"network ls --quiet --filter "*) ;;
 "volume ls --filter "*) ;;
 "volume inspect "*|"network inspect "*) exit 1 ;;
-"compose --project-name "*" config") echo ` + shellQuote(rendered) + ` ;;
-"compose "*" up --build -d postgres migrate bootstrap")
+"compose "*" config --quiet"|"compose "*" build postgres migrate bootstrap") ;;
+"compose "*" up --no-build -d postgres migrate bootstrap")
   snapshot=
   while [ "$#" -gt 0 ]; do
     if [ "$1" = -f ]; then

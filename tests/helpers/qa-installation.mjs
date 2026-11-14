@@ -462,10 +462,20 @@ export async function createQaInstallation(
   context,
   controlPlane,
   artifacts,
-  { repositoryInputs = true, sandboxDriver = "none", sandboxNetworkPolicyFile = undefined } = {},
+  {
+    repositoryInputs = true,
+    sandboxDriver: sandbox = process.env.OCC_TEST_QA_SANDBOX_DRIVER ?? "none",
+    sandboxNetworkPolicyFile = undefined,
+  } = {},
 ) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
-  assert.ok(["none", "openshell"].includes(sandboxDriver));
+  const engine = process.env.OCC_TEST_QA_CONTAINER_ENGINE ?? "docker";
+  assert.ok(["docker", "podman"].includes(engine), "invalid QA container engine");
+  assert.ok(["none", "openshell"].includes(sandbox), "invalid QA Sandbox Driver");
+  if (engine === "podman") {
+    assert.equal(controlPlane, "compose", "Podman browser QA selects Compose");
+    assert.equal(sandbox, "openshell", "Podman browser QA uses shipped OpenShell routing");
+  }
   const suffix = randomUUID().slice(0, 8);
   const cluster = `occ-dev-qa-${controlPlane === "compose" ? "c" : "k"}-${suffix}`;
   const directory = await mkdtemp(join(tmpdir(), `${cluster}-`));
@@ -482,14 +492,17 @@ export async function createQaInstallation(
     OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
-    OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,
-    OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
+    OCC_DEVELOPMENT_SANDBOX_DRIVER: sandbox,
+    OCC_DEVELOPMENT_CONTAINER_ENGINE: engine,
     OCC_DEVELOPMENT_COMPOSE_PROJECT: cluster,
     OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
     OCC_DEVELOPMENT_KUBERNETES_CLUSTER: cluster,
     OCC_DEVELOPMENT_KUBERNETES_API_PORT: String(kubePort),
     OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "900",
   };
+  if (engine === "podman") {
+    env.PODMAN_COMPOSE_PROVIDER = "podman-compose";
+  }
   for (const [key, input] of [
     ["OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_TEST_QA_CONTROLLER_IMAGE"],
     ["OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_TEST_QA_RUNTIME_IMAGE"],
@@ -523,6 +536,8 @@ export async function createQaInstallation(
   }
   const f = {
     controlPlane,
+    engine,
+    sandbox,
     directory,
     stateDirectory,
     repositoryInput,
@@ -609,12 +624,12 @@ export async function createQaInstallation(
       }
     },
     async compose(...args) {
-      return f.run("docker", [
+      return f.run(engine, [
         "compose",
         "-p",
         cluster,
         "-f",
-        join(stateDirectory, "compose.yaml"),
+        f.composeRoutingFile ?? join(stateDirectory, "compose.yaml"),
         ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
         ...args,
       ]);
@@ -811,7 +826,21 @@ export async function createQaInstallation(
   });
   if (controlPlane === "compose") {
     const subnet = await selectComposeSubnet({
-      runDocker: (args) => f.run("docker", args),
+      runDocker: async (args) => {
+        if (engine === "podman" && args[1] === "inspect") {
+          // Podman exposes subnets at the top level. Normalize its inventory
+          // for the shared selector, which owns address and overlap validation.
+          const networks = JSON.parse(
+            await f.run(engine, ["network", "inspect", ...args.slice(4)]),
+          );
+          return networks
+            .map((network) =>
+              JSON.stringify(network.subnets?.map(({ subnet }) => ({ Subnet: subnet })) ?? []),
+            )
+            .join("\n");
+        }
+        return f.run(engine, args);
+      },
       subnet: env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR,
     });
     env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = subnet;
@@ -828,7 +857,7 @@ export async function createQaInstallation(
   );
   f.state = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
   assert.equal(f.state.cluster, cluster);
-  assert.equal(f.state.sandboxDriver, sandboxDriver);
+  assert.equal(f.state.sandboxDriver, sandbox);
   f.serviceKey = JSON.parse(
     await protectedText(join(stateDirectory, "initial-admin-service-key.json"), "bootstrap key"),
   ).data.key;
@@ -838,18 +867,48 @@ export async function createQaInstallation(
     const namespace = (await f.api("GET", "/namespaces")).find((ns) => ns.name === "default");
     return namespace?.status === "ready" && namespace;
   });
-  f.presets = await f.api("GET", `/namespaces/${f.defaultNamespace.id}/presets`);
-  if (sandboxDriver === "none") {
-    assert.deepEqual(f.presets.map((p) => p.name).sort(), [
-      "Standard Codex",
-      "Standard OpenClaw",
-      "default-codex",
-    ]);
-  }
   f.configuration = loadYaml(await readFile(join(stateDirectory, "installation.yaml"), "utf8"));
   f.namespace = f.defaultNamespace;
-  if (controlPlane === "compose") {
+  if (controlPlane === "compose" && sandbox === "none") {
     await prepareHybridInstallation(f);
+  } else if (controlPlane === "compose") {
+    // Exercise the launcher's TLS proxy and routing, not the synthetic ingress
+    // used to qualify the Compose profile without a Sandbox Driver.
+    f.consoleUrl = f.state.browserOrigin;
+    f.browserCA = join(stateDirectory, "browser-ca.crt");
+    const compose = loadYaml(await readFile(join(stateDirectory, "compose.yaml"), "utf8"));
+    f.credentials = {
+      email: compose.services.bootstrap.environment.OPENCLAW_DEV_EMAIL,
+      password: compose.services.bootstrap.environment.OPENCLAW_DEV_PASSWORD,
+    };
+    // Theme and Preset preparation recreate these containers. Keep the exact
+    // addresses admitted by the launcher's private Envoy NetworkPolicy.
+    for (const service of ["controller", "worker-kubernetes"]) {
+      const id = (
+        await f.run(engine, [
+          "ps",
+          "--all",
+          "--quiet",
+          "--filter",
+          `label=com.docker.compose.project=${cluster}`,
+          "--filter",
+          `label=com.docker.compose.service=${service}`,
+        ])
+      ).trim();
+      assert.equal(id.split(/\s+/).filter(Boolean).length, 1, `one ${service} container`);
+      const networks = JSON.parse(
+        await f.run(engine, ["inspect", "--format", "{{json .NetworkSettings.Networks}}", id]),
+      );
+      const address = networks[`${cluster}_development`]?.IPAddress;
+      assert.ok(address, `${service} must use the owned development network`);
+      compose.services[service].networks.development = {
+        ...compose.services[service].networks.development,
+        ipv4_address: address,
+      };
+    }
+    // podman-compose cannot merge a null network entry with an override map.
+    // Use a complete private snapshot, preserving the launcher's recorded file.
+    f.composeRoutingFile = await f.write("private-routing.compose.json", compose);
   } else {
     f.consoleUrl = `https://console.${cluster}.oce.localhost:${browserPort}`;
     f.browserCA = join(stateDirectory, "browser-ca.crt");
@@ -862,14 +921,34 @@ export async function createQaInstallation(
     };
   }
   registerQaSecret(f.credentials.password);
+  if (controlPlane === "compose" && sandbox === "openshell") {
+    // OpenShell leaves bundled Presets opt-in. Enable the supported defaults
+    // explicitly so this profile exercises the same chooser as other QA lanes.
+    await prepareQaBundledPresets(f);
+  }
+  f.presets = await f.api("GET", `/namespaces/${f.defaultNamespace.id}/presets`);
+  if (sandbox === "none" || controlPlane === "compose") {
+    assert.deepEqual(f.presets.map((p) => p.name).sort(), [
+      "Standard Codex",
+      "Standard OpenClaw",
+      "default-codex",
+    ]);
+  }
   await f.record("startup", {
     installationId: f.installation.id,
     defaultNamespaceId: f.defaultNamespace.id,
     namespaceId: f.namespace.id,
     presets: f.presets.map(({ id, name }) => ({ id, name })),
-    sandboxDriver,
+    sandboxDriver: sandbox,
+    containerEngine: engine,
   });
   return f;
+}
+
+export async function prepareQaBundledPresets(f) {
+  f.configuration.presets = { includeDefaults: true };
+  await f.saveInstallation(f.configuration);
+  return f.api("GET", `/namespaces/${f.namespace.id}/presets`);
 }
 
 export async function prepareQaConsoleTheme(f) {
@@ -892,6 +971,7 @@ export async function prepareQaConsoleTheme(f) {
               source: themeDirectory,
               target: "/etc/openclaw/console-theme",
               read_only: true,
+              bind: { selinux: "z" },
             },
           ],
         },
@@ -1038,7 +1118,7 @@ export async function createQaAgent(
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
   agent.harnessAuth = auth;
-  if (f.controlPlane === "kubernetes") {
+  if (f.browserCA) {
     // Persist the same native access opt-in as Agent provisioning, including the required scope header.
     const nativeValues = prepareNativeAdminConfiguration(values, {
       publicOrigin: f.consoleUrl,
