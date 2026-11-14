@@ -73,6 +73,12 @@ See [shared CI settings](../release/configuration.md#build-settings) for native 
 
 ### Runtime source verification
 
+For an ARM64 dedicated Codex Harness that runs without a JIT, build the
+[interpreter image](../../deploy/runtime/README.md#build-an-arm64-codex-harness-for-a-sandbox-that-forbids-jit)
+from the chosen runtime digest. Verify a returned JavaScript value through
+the installed Harness. A successful session handshake alone misses failures
+when V8 evaluates the first expression.
+
 To verify runtime changes locally, first
 [resolve the build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments), then run:
 
@@ -313,6 +319,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-14 11:49: Document verification of the optional ARM64 interpreter image. (authoring-run/73fd9679-c55a-46ed-b8fe-840fce2b54b1 - c8c38b5d4317cdd9558b2d8a4fb4271615fa7cd6)
 
 - 2026-11-14 15:07: Document optional native tool selection, image verification, and published client identities. (authoring-run/b93b80a6-de4f-4ade-b2de-0a80efedde44 - 1c56c61909b9f480845f4579e2add893207fa759)
 
