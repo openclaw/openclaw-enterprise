@@ -33,6 +33,7 @@ const mime: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".mp4": "video/mp4",
+  ".webm": "video/webm",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
