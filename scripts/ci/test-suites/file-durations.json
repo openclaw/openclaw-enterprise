@@ -104,7 +104,7 @@
     "tests/conformance/openshell-prepared-git-provider.test.mjs": 1500,
     "tests/conformance/platform-state-memory.test.ts": 300,
     "tests/conformance/plugin-compute.test.ts": 29500,
-    "tests/conformance/plugin-driver.test.mjs": 2000,
+    "tests/conformance/plugin-driver.test.ts": 2000,
     "tests/conformance/plugin-runtime-policy.test.ts": 300,
     "tests/conformance/plugin-runtime-templates.test.ts": 100,
     "tests/conformance/postgres-controller-auth-binding.test.mjs": 2300,
