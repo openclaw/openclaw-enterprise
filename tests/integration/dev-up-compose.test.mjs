@@ -37,9 +37,10 @@ for (const driver of ["docker", "kubernetes"]) {
       assert.notEqual(result.status, 0);
       assert.match(
         result.stderr,
-        // The final browser overlay restores its network, so Compose itself rejects host mode.
+        // The final browser overlay restores its network. Docker Compose rejects
+        // that conflict; podman-compose leaves host-mode rejection to the launcher.
         service === "browser-proxy" && driver === "docker"
-          ? /Docker Compose config failed/
+          ? /Docker Compose config failed|Compose browser-proxy must use the development network/
           : new RegExp(`Compose ${service} must use the development network`),
       );
       await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
