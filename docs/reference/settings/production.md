@@ -5,18 +5,14 @@ For startup configuration and precedence, see the
 
 ## Required production controller environment
 
-The production API is internal-only by default. Operators must provision an
-internal Kubernetes `ClusterIP` Service and a default-deny ingress
-`NetworkPolicy` that allows only explicitly approved namespace and Pod
-selectors. Production Helm validates peer label maps. The cluster must enforce
-NetworkPolicies. Do not expose the listener through a `NodePort`,
-`LoadBalancer`, `hostNetwork`, or public endpoint.
+The production API requires an internal Kubernetes `ClusterIP` Service and
+a default-deny ingress `NetworkPolicy` allowing only approved namespace/Pod
+selectors. Helm validates peer label maps; the cluster must enforce policies.
+Do not expose the listener through `NodePort`, `LoadBalancer`, `hostNetwork`,
+or a public endpoint.
 
-The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
-configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
-OpenShift DNS backends after Service address translation. These grants cover
-API, worker, initialization, collector, Slack proxy, Envoy, and observability
-demo workloads.
+Helm grants workload DNS egress on UDP/TCP `53` and `5353` to configured
+`dns.namespace`/`dns.podLabels` peers; `5353` supports translated OpenShift DNS.
 
 The trusted-operator native admin pilot is the only documented public-ingress
 exception: the console host and Agent wildcard hosts route to OCC through the
@@ -41,12 +37,14 @@ session cookie before forwarding to the native gateway.
 | `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
 | `OCC_GATEWAY_CA_PATH`                      | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                           | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
 
-For Helm, prefer `slackProxy.enabled` over an external
-`api.channelDirectoryProxyUrl`; the
-[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production)
-owns both options' API-only proxy egress and the proxy's `slack.com:443`
-requirement. With neither, the chart renders no proxy egress rule, and Slack
-lookup and credential validation require another approved network route.
+For Helm, directory requests share the selected Gateway proxy by default:
+`gatewayProxy.enabled` selects the bundled server, or `gatewayProxy.url` selects
+an external endpoint. `api.channelDirectoryProxyUrl` overrides only the directory
+route when the API needs a separate proxy. The
+[Slack Channel Driver reference](../drivers/slack-channel.md#enable-lookup-in-production)
+defines API-only proxy egress and the `slack.com:443` requirement. With no
+directory override or Gateway proxy, the chart renders no directory proxy egress
+rule; lookup and credential validation require another approved network route.
 
 `OCC_AGENT_RUNTIME_LOGS_ENABLED` (`true` or `false`, default `true`) switches the
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
@@ -301,7 +299,7 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 credential, runtime-export, and workload isolation boundaries.
 
 The chart rejects obvious malformed quantities such as `foo`, `10MiB`, and
-`1K` in top-level `resources`, `slackProxy.resources`, Collector `resources`,
+`1K` in top-level `resources`, `gatewayProxy.resources`, Collector `resources`,
 and Collector volume size limits, with an error naming the setting. It also
 rejects a value with a leading `-` (negative) and resource names Kubernetes
 refuses. Kubernetes remains responsible for complete quantity validation;

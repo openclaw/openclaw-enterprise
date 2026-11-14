@@ -1633,9 +1633,9 @@ else
 fi
 matches_yaml "${candidate_values}.requested" "${candidate_values}.requested" || die "candidate values must be a YAML object."
 matches_yaml "${candidate_installation}.requested" "${candidate_installation}.requested" || die "candidate Installation must be a YAML object."
-# Keep all settings protected except the supported database phase, proxy and curated catalog
+# Keep all settings protected except the supported database phase and curated catalog
 # selections. New configuration fields remain protected until explicitly reviewed.
-values_guard='del(.api.channelDirectoryProxyUrl, .installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .api == {} then del(.api) else . end | if .installation == {} then del(.installation) else . end'
+values_guard='del(.installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .installation == {} then del(.installation) else . end'
 project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
 # The chart refuses the retired agentNativeAdmin.sharedCookieDomain whatever its
@@ -1650,8 +1650,16 @@ if jq -e --slurpfile candidate "$evidence_dir/candidate-values-guard.json" '
 ' "$evidence_dir/values-guard.json" >/dev/null; then
   project_yaml "$evidence_dir/before-values.yaml" "$values_guard | del(.agentNativeAdmin.sharedCookieDomain)" "$evidence_dir/values-guard.json"
 fi
+# Removing an explicitly disabled legacy proxy changes no active network setting.
+if jq -e --slurpfile candidate "$evidence_dir/candidate-values-guard.json" '
+  (.slackProxy | type == "object" and .enabled == false) and
+  ($candidate[0] | has("slackProxy") | not)
+' "$evidence_dir/values-guard.json" >/dev/null; then
+  project_yaml "$evidence_dir/values-guard.json" 'del(.slackProxy)' "$evidence_dir/values-guard.json.tmp"
+  mv "$evidence_dir/values-guard.json.tmp" "$evidence_dir/values-guard.json"
+fi
 cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||
-  die "candidate values change a protected setting; only database.upgradeMigration, api.channelDirectoryProxyUrl or a validated immutable Installation Secret reference may change; the retired agentNativeAdmin.sharedCookieDomain may be removed."
+  die "candidate values change a protected setting; only database.upgradeMigration or a validated immutable Installation Secret reference may change; the retired agentNativeAdmin.sharedCookieDomain may be removed."
 jq -e '.agentNativeAdmin | type == "object" and has("sharedCookieDomain") | not' \
   "$evidence_dir/candidate-values-guard.json" >/dev/null ||
   die "the chart no longer accepts agentNativeAdmin.sharedCookieDomain; it derives the session cookie scope from auth.baseUrl and agentNativeAdmin.domain. Pass --candidate-values with a private copy of the values that omits only that key. No cluster changes were made."

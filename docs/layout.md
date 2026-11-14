@@ -234,3 +234,7 @@ The optional `deploy/helm/openclaw-observability-demo/` chart owns disposable
 telemetry backends. Its `files/dashboard.json` is also the Compose metrics
 dashboard; Compose provisioning and scraper configurations remain under
 `deploy/metrics/development/`.
+
+The bundled Gateway CONNECT server lives at `apps/controller/src/gateway-proxy.mjs`;
+its chart resources are `deploy/helm/openclaw-enterprise/templates/gateway-proxy.yaml`.
+The operator guide owns bundled/external selection and destination policy.

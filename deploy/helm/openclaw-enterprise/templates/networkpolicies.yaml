@@ -100,28 +100,35 @@ spec:
           port: 443
 {{- end }}
 {{- end }}
-{{- $directoryProxyUrl := .Values.api.channelDirectoryProxyUrl }}
-{{- if not (kindIs "string" $directoryProxyUrl) }}
-{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
+{{- range $setting, $url := dict "gatewayProxy.url" .Values.gatewayProxy.url "api.channelDirectoryProxyUrl" .Values.api.channelDirectoryProxyUrl }}
+{{- if not (kindIs "string" $url) }}
+{{- fail (printf "%s must be an HTTP(S) literal IPv4 endpoint with an explicit port" $setting) }}
 {{- end }}
-{{- if $directoryProxyUrl }}
-{{- if not (regexMatch "^https?://(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$" $directoryProxyUrl) }}
-{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
+{{- if $url }}
+{{- if not (regexMatch "^https?://(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$" $url) }}
+{{- fail (printf "%s must be an HTTP(S) literal IPv4 endpoint with an explicit port" $setting) }}
 {{- end }}
-{{- $proxyParts := splitList ":" (regexReplaceAll "^https?://" $directoryProxyUrl "") }}
+{{- $proxyParts := splitList ":" (regexReplaceAll "^https?://" $url "") }}
 {{- $proxyAddress := index $proxyParts 0 }}
 {{- $proxyPort := int (index $proxyParts 1) }}
 {{- range $octet := splitList "." $proxyAddress }}
 {{- if gt (int $octet) 255 }}
-{{- fail "api.channelDirectoryProxyUrl must contain valid IPv4 octets" }}
+{{- fail (printf "%s must contain valid IPv4 octets" $setting) }}
 {{- end }}
 {{- end }}
 {{- if gt $proxyPort 65535 }}
-{{- fail "api.channelDirectoryProxyUrl must contain a TCP port from 1 to 65535" }}
+{{- fail (printf "%s must contain a TCP port from 1 to 65535" $setting) }}
 {{- end }}
 {{- if eq $proxyAddress "0.0.0.0" }}
-{{- fail "api.channelDirectoryProxyUrl must not use host 0.0.0.0, which names no proxy address" }}
+{{- fail (printf "%s must not use host 0.0.0.0, which names no proxy address" $setting) }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- $directoryProxyUrl := default .Values.gatewayProxy.url .Values.api.channelDirectoryProxyUrl }}
+{{- if $directoryProxyUrl }}
+{{- $proxyParts := splitList ":" (regexReplaceAll "^https?://" $directoryProxyUrl "") }}
+{{- $proxyAddress := index $proxyParts 0 }}
+{{- $proxyPort := int (index $proxyParts 1) }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -142,12 +149,12 @@ spec:
         - protocol: TCP
           port: {{ $proxyPort }}
 {{- end }}
-{{- if .Values.slackProxy.enabled }}
+{{- if and .Values.gatewayProxy.enabled (not .Values.api.channelDirectoryProxyUrl) }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openclaw-enterprise-api-managed-slack-proxy-egress
+  name: openclaw-enterprise-api-managed-gateway-proxy-egress
 spec:
   podSelector:
     matchLabels:
@@ -164,10 +171,10 @@ spec:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
               app.kubernetes.io/instance: {{ .Release.Name | quote }}
-              app.kubernetes.io/component: slack-proxy
+              app.kubernetes.io/component: gateway-proxy
       ports:
         - protocol: TCP
-          port: {{ .Values.slackProxy.port }}
+          port: {{ .Values.gatewayProxy.port }}
 {{- end }}
 {{- if .Values.backend.chatgpt.enabled }}
 {{- $providerCidr := .Values.backend.chatgpt.providerCidr }}

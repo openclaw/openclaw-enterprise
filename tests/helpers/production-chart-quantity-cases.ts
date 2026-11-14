@@ -9,9 +9,9 @@ export const resourceNameAndSignRefusals: readonly StderrRefusal[] = [
   // The quantity check trims the value, so the sign check does too.
   ["resources.requests.cpu", " -1", "resources.requests.cpu must not be negative"],
   [
-    "slackProxy.resources.requests.memory",
+    "gatewayProxy.resources.requests.memory",
     "-64Mi",
-    "slackProxy.resources.requests.memory must not be negative",
+    "gatewayProxy.resources.requests.memory must not be negative",
   ],
   [
     "logging.collector.state.sizeLimit",
@@ -26,9 +26,9 @@ export const resourceNameAndSignRefusals: readonly StderrRefusal[] = [
     "requests.example.com/gpu names a resource",
   ],
   [
-    "slackProxy.resources.limits.hugepages-huge",
+    "gatewayProxy.resources.limits.hugepages-huge",
     "4Mi",
-    "slackProxy.resources.limits.hugepages-huge names a resource",
+    "gatewayProxy.resources.limits.hugepages-huge names a resource",
   ],
   // The name after the domain prefix holds at most 63 characters.
   [

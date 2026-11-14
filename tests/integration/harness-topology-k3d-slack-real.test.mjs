@@ -188,7 +188,7 @@ test(
     // Exercise the enforcing policy rather than checking selectors alone.
     const proxyService = await resource(
       "service",
-      "openclaw-enterprise-slack-proxy",
+      "openclaw-enterprise-gateway-proxy",
       topology.platformNamespace,
     );
     await assertDeniedConnection(
@@ -199,7 +199,7 @@ test(
     );
     const proxyDeployment = await resource(
       "deployment",
-      "openclaw-enterprise-slack-proxy",
+      "openclaw-enterprise-gateway-proxy",
       topology.platformNamespace,
     );
     for (const token of [slack.appToken, slack.botToken, slack.senderBotToken]) {

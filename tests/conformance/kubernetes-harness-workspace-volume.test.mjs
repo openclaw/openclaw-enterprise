@@ -38,7 +38,6 @@ function render(loginMode, node, initialSetup, environment = {}, scratch) {
     undefined,
     { loginMode, environment: [] },
     [],
-    [],
     undefined,
     [],
     initialSetup ? setup : undefined,

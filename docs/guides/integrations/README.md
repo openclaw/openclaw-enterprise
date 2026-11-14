@@ -11,6 +11,7 @@ authentication.
 | Choose which Drivers an Installation loads                   | [Drivers quickstart](../../reference/drivers/selection.md#choose-a-bundled-driver) |
 | Issue managed ChatGPT credentials for dedicated Codex Agents | [ChatGPT Backend (experimental)](chatgpt.md)                                       |
 | Let people send messages to an Agent in Slack                | [Slack](slack.md)                                                                  |
+| Allow Gateway HTTPS through one bundled or external proxy    | [Gateway proxy](gateway-proxy.md)                                                  |
 | Give an Agent access to GitHub repositories                  | [Repository access](../repository-credentials.md)                                  |
 
 For a local OpenShell Agent with native Git and worker-minted GitHub App tokens,

@@ -311,9 +311,9 @@ or dedicated Harness receives the selected model credential; a dedicated Gateway
 renders no model Secret and hands the Credential Gateway's attachments to the
 OpenShell Sandbox instead.
 
-If channels are enabled, set `runtime.channels.proxyUrl` to a literal-IP proxy
+If channels are enabled, set `runtime.proxy.proxyUrl` to a literal-IP proxy
 URL, or to the Helm-managed proxy Service URL paired with
-`runtime.channels.managedProxy` so Compute limits gateway egress to that proxy's
+`runtime.proxy.managedProxy` so Compute limits gateway egress to that proxy's
 Pods by selector. Store the Agent's channel credentials as Namespace Secrets
 referenced by Configuration `secretBindings`; they are available only to the
 dedicated gateway, never to its Codex Harness.

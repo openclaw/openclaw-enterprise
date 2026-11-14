@@ -206,9 +206,9 @@ accounting for node source NAT.
 
 Back up both generated files in the private state directory, then update them:
 
-- `installation.yaml`: set `drivers.compute.configuration.runtime.channels.proxyUrl`
+- `installation.yaml`: set `drivers.compute.configuration.runtime.proxy.proxyUrl`
   for gateway Slack messaging.
-- `helm-values.json`: set `api.channelDirectoryProxyUrl` for Console user and
+- `helm-values.json`: set `gatewayProxy.url` for Console user and
   channel lookup. Kubernetes-only mode runs the production API, where lookup
   stays disabled without this setting.
 

@@ -16,7 +16,7 @@ export async function installManagedSlackProxyFixture({
   const { stdout } = await renderProductionChart(
     {
       "images.controller": controllerImage,
-      "slackProxy.enabled": true,
+      "gatewayProxy.enabled": true,
       "gatewayRouting.enabled": true,
       "gatewayRouting.gatewayName": workspaceGateway.routing.gatewayName,
       "gatewayRouting.gatewayClassName": gateway.spec.gatewayClassName,
@@ -25,13 +25,13 @@ export async function installManagedSlackProxyFixture({
     },
     { namespace, release },
   );
-  const name = "openclaw-enterprise-slack-proxy";
+  const name = "openclaw-enterprise-gateway-proxy";
   const items = (await parseProductionChart(stdout)).filter(
     ({ kind, metadata }) =>
       (metadata.name === name &&
         ["Deployment", "Service", "ServiceAccount", "NetworkPolicy"].includes(kind)) ||
       (kind === "NetworkPolicy" &&
-        metadata.name === "openclaw-enterprise-api-managed-slack-proxy-egress"),
+        metadata.name === "openclaw-enterprise-api-managed-gateway-proxy-egress"),
   );
   assert.equal(items.length, 5, "the chart must supply the proxy and API egress resources");
   for (const item of items) {

@@ -530,17 +530,26 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.requireString" (dict "label" "api.consoleTheme.checksum" "value" .Values.api.consoleTheme.checksum) -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.slackProxy.enabled -}}
-{{- $proxy := .Values.slackProxy -}}
-{{- if .Values.api.channelDirectoryProxyUrl -}}{{- fail "api.channelDirectoryProxyUrl must be empty when slackProxy.enabled uses the chart-managed Service" -}}{{- end -}}
-{{- if not (kindIs "bool" $proxy.enabled) -}}{{- fail "slackProxy.enabled must be a boolean" -}}{{- end -}}
+{{- if hasKey .Values "slackProxy" -}}
+{{- fail "Unsupported legacy proxy settings; select gatewayProxy and matching Compute runtime.proxy" -}}
+{{- end -}}
+{{- if not (kindIs "bool" .Values.gatewayProxy.enabled) -}}{{- fail "gatewayProxy.enabled must be a boolean" -}}{{- end -}}
+{{- if not (kindIs "slice" .Values.gatewayProxy.allowedHosts) -}}{{- fail "gatewayProxy.allowedHosts must be a list" -}}{{- end -}}
+{{- if gt (len .Values.gatewayProxy.allowedHosts) 256 -}}{{- fail "gatewayProxy.allowedHosts allows at most 256 entries" -}}{{- end -}}
+{{- range $host := .Values.gatewayProxy.allowedHosts -}}
+{{- if not (kindIs "string" $host) -}}{{- fail "gatewayProxy.allowedHosts entries must be strings" -}}{{- end -}}
+{{- if and (ne $host "*") (or (gt (len $host) 253) (not (regexMatch "^(\\*\\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" $host))) -}}{{- fail "gatewayProxy.allowedHosts entries must be lowercase DNS names with optional *. prefix, or * for all hosts" -}}{{- end -}}
+{{- end -}}
+{{- if .Values.gatewayProxy.enabled -}}
+{{- $proxy := .Values.gatewayProxy -}}
+{{- if .Values.gatewayProxy.url -}}{{- fail "gatewayProxy.url must be empty when gatewayProxy.enabled uses the chart-managed Service" -}}{{- end -}}
 {{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
-{{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
+{{- fail "gatewayProxy.serviceName must be a DNS-1035 Service name" -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1024) (gt (int $proxy.port) 65535) -}}
-{{- fail "slackProxy.port must be an integer TCP port from 1024 to 65535: the proxy runs as a non-root user without capabilities" -}}
+{{- fail "gatewayProxy.port must be an integer TCP port from 1024 to 65535: the proxy runs as a non-root user without capabilities" -}}
 {{- end -}}
-{{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "gatewayProxy.resources" "requirements" $proxy.resources) -}}
 {{- end -}}
 {{- if $repositoryGit -}}
 {{- if .Values.openshellGit.enabled -}}
@@ -833,12 +842,16 @@ capabilities:
       key: {{ .key | quote }}
 {{- end -}}
 
-{{- define "openclaw.slackProxy.serviceName" -}}
-{{- .Values.slackProxy.serviceName -}}
+{{- define "openclaw.gatewayProxy.serviceName" -}}
+{{- .Values.gatewayProxy.serviceName -}}
 {{- end -}}
 
-{{- define "openclaw.slackProxy.url" -}}
-{{- printf "http://%s.%s.svc:%v" (include "openclaw.slackProxy.serviceName" .) .Release.Namespace (int .Values.slackProxy.port) -}}
+{{- define "openclaw.gatewayProxy.url" -}}
+{{- printf "http://%s.%s.svc:%v" (include "openclaw.gatewayProxy.serviceName" .) .Release.Namespace (int .Values.gatewayProxy.port) -}}
+{{- end -}}
+
+{{- define "openclaw.gatewayProxy.membershipLabel" -}}
+{{- printf "%s.%s.svc" (include "openclaw.gatewayProxy.serviceName" .) .Release.Namespace | sha256sum | trunc 12 -}}
 {{- end -}}
 
 {{- define "openclaw.gatewayRouting.gatewayName" -}}

@@ -1571,6 +1571,9 @@ assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
   "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
+  ...(${historicalCodex} ? {} : {
+    "openclaw-internal-transport-proxy.patch": "1a37ccc2e6b3318247f8d36d633ed1b19e28d059e8de789550a38cb0ab4ba4c9",
+  }),
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {

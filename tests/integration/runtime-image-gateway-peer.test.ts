@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import { describe, test, type TestContext } from "node:test";
@@ -14,7 +15,10 @@ import {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   imageTestOptions,
+  image,
+  execute,
   runDocker,
+  waitForDockerLog,
   commandOutput,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
@@ -478,3 +482,120 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
     },
   );
 });
+
+test(
+  "runtime image proxy preserves only the provisioned Codex transport",
+  imageTestOptions,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-runtime-proxy-"));
+    const prefix = `oce-runtime-proxy-${randomBytes(5).toString("hex")}`;
+    const volume = `${prefix}-material`;
+    const containers: string[] = [];
+    t.after(async () => {
+      for (const name of containers.reverse()) {
+        await runDocker(["rm", "-f", name]).catch(() => {});
+      }
+      await runDocker(["network", "rm", prefix]).catch(() => {});
+      await runDocker(["volume", "rm", volume]).catch(() => {});
+      await rm(directory, { recursive: true, force: true });
+    });
+    await writeFile(join(directory, "token"), randomBytes(32).toString("hex"), { mode: 0o644 });
+    // Both origin aliases have a trusted certificate. A rejected alias therefore
+    // proves the real proxy's destination policy, not TLS verification failure.
+    await execute("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "1",
+      "-keyout",
+      join(directory, "key.pem"),
+      "-out",
+      join(directory, "cert.pem"),
+      "-subj",
+      "/CN=allowed.proxy.test",
+      "-addext",
+      "subjectAltName=DNS:allowed.proxy.test,DNS:denied.proxy.test",
+    ]);
+    await chmod(join(directory, "key.pem"), 0o644);
+    for (const [file, source] of [
+      ["fixture.mjs", new URL("../fixtures/runtime-gateway-proxy.mjs", import.meta.url)],
+      [
+        "gateway-proxy.mjs",
+        new URL("../../apps/controller/src/gateway-proxy.mjs", import.meta.url),
+      ],
+    ] as const) {
+      await writeFile(join(directory, file), await readFile(source));
+    }
+    await runDocker(["network", "create", prefix]);
+    // CI may use a remote Docker daemon: local temporary paths are not valid
+    // daemon bind mounts. Copy proof material into a daemon-owned volume.
+    await runDocker(["volume", "create", volume]);
+    const staging = `${prefix}-material`;
+    containers.push(staging);
+    await runDocker([
+      "create",
+      "--name",
+      staging,
+      "-v",
+      `${volume}:/proof`,
+      "--entrypoint",
+      "node",
+      image,
+    ]);
+    for (const file of ["token", "key.pem", "cert.pem", "fixture.mjs", "gateway-proxy.mjs"]) {
+      await runDocker(["cp", join(directory, file), `${staging}:/proof/${file}`]);
+    }
+    async function start(role: string, aliases: string[]) {
+      const name = `${prefix}-${role}`;
+      containers.push(name);
+      await runDocker([
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--network",
+        prefix,
+        ...aliases.flatMap((alias) => ["--network-alias", alias]),
+        "--read-only",
+        "--user",
+        "1000:1000",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--tmpfs",
+        "/tmp:mode=1777",
+        "-e",
+        "HOME=/tmp",
+        "-e",
+        "CODEX_HOME=/tmp/codex",
+        "-e",
+        "NODE_EXTRA_CA_CERTS=/proof/cert.pem",
+        "-v",
+        `${volume}:/proof:ro`,
+        "--entrypoint",
+        "node",
+        image,
+        "/proof/fixture.mjs",
+        role,
+      ]);
+      return name;
+    }
+    const origin = await start("origin", ["allowed.proxy.test", "denied.proxy.test"]);
+    const proxy = await start("proxy", ["selected-proxy"]);
+    const harness = await start("harness", ["proxy-harness"]);
+    await waitForDockerLog(origin, /origin ready/);
+    await waitForDockerLog(proxy, /proxy ready/);
+    await waitForDockerLog(harness, /listening on:/);
+    const client = await start("client", []);
+    const result = await runDocker(["wait", client], {
+      timeout: 120_000 * imageSmokeTimeoutMultiplier,
+    });
+    const logs = commandOutput(await runDocker(["logs", client]));
+    assert.equal(result.stdout.trim(), "0", failureTail(logs));
+    assert.match(logs, /packaged proxy routing and transport lifecycle passed/);
+  },
+);

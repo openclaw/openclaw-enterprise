@@ -58,6 +58,11 @@ This record preserves the dated changes to the production image upgrade flow. Se
 
 - 2026-11-07 03:01: Freeze reviewed controller compatibility evidence. (authoring-run/4adaf10b-d7e7-46e1-8f30-65993c797458 - ada47832cb112f255f6c51d34dae37acce9760cd)
 
+- 2026-11-09 09:38: Preserve proxy setting protection with immutable Installation Secret upgrades. (authoring-run/5345dc67-30ca-4ae8-bdc2-22a2198d6d57 - c2bc69f00812f68015ed6b24ee3156fe3a29a52f)
+- 2026-11-08 10:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
+
+- 2026-11-05 19:30: Keep general Gateway proxy selection outside image-only candidate changes (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
+
 - 2026-11-07 02:48: Verify selected Agent readiness before completion. (authoring-run/87bf103a-4285-4561-8ab8-6a9f1e265248 - ada47832cb112f255f6c51d34dae37acce9760cd)
 - 2026-11-07 02:27: Validate both writers before stopping either. (authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054 - 7f5489fe39ba84a34987bd22d905e942cf65a8ee)
 
@@ -75,6 +80,7 @@ This record preserves the dated changes to the production image upgrade flow. Se
 - 2026-11-05 11:09: Allow an explicit canonical plugin registration candidate while preserving protected settings. (authoring-run/156a9693-7ea1-4555-a5b7-b4c840568cd5 - 717e8bf2a3ef3fa4d4fa7e53cc6927500533ddbd)
 
 - 2026-11-04 07:28: Validate Console inputs. (authoring-run/78fd39fa-cf99-4b8c-b120-4e344700140d - 2f8d396865b850963bb928beb0399970de430761)
+
 - 2026-11-04 07:14: Validate YAML comparisons. (authoring-run/47f197fd-9f98-4dfb-8162-36589ab6194e - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
 - 2026-11-04 06:40: Diagnose unusable YAML. (authoring-run/1320ca1e-663f-449a-aab9-29102e0c482f - f150505ae48988083ddeebdaffd45978be48d588)

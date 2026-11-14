@@ -53,7 +53,7 @@ function options(overrides = {}) {
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://10.42.0.15:3128" },
+        proxy: { proxyUrl: "http://10.42.0.15:3128" },
       },
     }),
     ...overrides,

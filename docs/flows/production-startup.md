@@ -276,7 +276,7 @@ no egress. Operators maintain addresses for
 [MCP tool discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin)
 independently. Console model selection and Harness egress do not depend on these policies.
 
-When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
+When `gatewayProxy.url` names an approved HTTP(S) proxy at a
 literal IPv4 address and port, the chart passes it to the API and grants only
 that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
 CONNECT to `slack.com:443`. The empty default renders no rule and leaves

@@ -1,7 +1,7 @@
 # Runtime image recipe
 
-Build a public local runtime image for the OpenClaw Enterprise quickstart and
-real-runtime integration tests. The image contains these runtime entrypoints:
+Build a local runtime image for the OpenClaw Enterprise quickstart and
+integration tests. Entrypoints:
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
 - Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
@@ -369,3 +369,6 @@ The `org.openclaw.image.revision` label records the same upstream commit for
 Docker inspection; the build checks that it matches packaged provenance. Local builds
 can pass `--build-arg OCC_BUILD_REVISION=<full-lowercase-git-sha>`; omitted metadata
 remains unknown. Rebuild the runtime image to include this metadata.
+
+
+[Internal proxy bridge](../../docs/flows/gateway-outbound-proxy.md).

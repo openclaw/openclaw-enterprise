@@ -455,14 +455,17 @@ spec:
               value: {{ include "openclaw.trustedProxy.header" $ | quote }}
             {{- end }}
             {{- end }}
-            {{- if $.Values.slackProxy.enabled }}
-            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
-              value: {{ include "openclaw.slackProxy.url" $ | quote }}
-            - name: OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST
-              value: {{ printf "%s.%s.svc" (include "openclaw.slackProxy.serviceName" $) $.Release.Namespace | quote }}
-            {{- else if $.Values.api.channelDirectoryProxyUrl }}
+            {{- if $.Values.api.channelDirectoryProxyUrl }}
             - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
               value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
+            {{- else if $.Values.gatewayProxy.enabled }}
+            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
+              value: {{ include "openclaw.gatewayProxy.url" $ | quote }}
+            - name: OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST
+              value: {{ printf "%s.%s.svc" (include "openclaw.gatewayProxy.serviceName" $) $.Release.Namespace | quote }}
+            {{- else if $.Values.gatewayProxy.url }}
+            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
+              value: {{ $.Values.gatewayProxy.url | quote }}
             {{- end }}
             - name: OCC_API_HTTPS_EGRESS_OPEN
               value: {{ include "openclaw.api.httpsEgressOpen" $ | quote }}

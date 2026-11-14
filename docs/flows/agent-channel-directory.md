@@ -65,12 +65,17 @@ Production composition selects the bundled Slack ChannelDriver only when the
 API has an approved `OCC_CHANNEL_DIRECTORY_PROXY_URL`. Without it, an authorized
 lookup returns `501` before the Secret value is read. Development selects the
 Driver directly. In production the Driver tunnels requests to `slack.com:443`
-through the configured proxy. With the managed proxy enabled, Helm points the
-API at the `openclaw-enterprise-slack-proxy.<namespace>.svc` Service, sets that
+through the configured proxy. Helm uses `api.channelDirectoryProxyUrl` when set
+and otherwise shares the selected Gateway proxy. Profiles retain
+`channels.directoryProxyUrl` for the API-only override. With no override and the
+managed proxy enabled, Helm points the
+API at the `openclaw-enterprise-gateway-proxy.<namespace>.svc` Service, sets that
 exact host in `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`, and limits API egress
 to the proxy Pod selector. With an external literal IPv4 proxy, Helm limits API
-egress to that IP and port. The managed proxy accepts CONNECT only for Slack
-hostnames on port 443, while its NetworkPolicy allows upstream egress to public
+egress to that IP and port, without also granting access to the bundled proxy.
+The override does not change Gateway routing, and proxy failure does not select
+the other endpoint. The managed proxy accepts CONNECT for its configured
+hostnames on port 443 (Slack by default), while its NetworkPolicy allows upstream egress to public
 IPv4 addresses on TCP 443, excluding private and reserved ranges.
 
 In `apps/controller/src/slack-proxy.mjs:createSlackProxyServer`, the managed
@@ -158,8 +163,9 @@ view.
   `operate` grant. A token, scope, rate limit, or provider error returns a
   safe code without the token or upstream payload.
 - A `501` lookup in production means the API has no directory proxy configured.
-  Enable Helm `slackProxy.enabled` or set the approved
-  external proxy IP and port in `api.channelDirectoryProxyUrl`, then verify that
+  Enable Helm `gatewayProxy.enabled` or set the approved
+  external proxy IP and port in `gatewayProxy.url`. For an API-only route, use
+  `api.channelDirectoryProxyUrl` instead. Then verify that
   the proxy permits CONNECT to `slack.com:443`.
 - Directory conformance tests cover provider pagination, safe errors, and native
   HTTP connection recovery after unfinished 429 and 503 response bodies. The
@@ -187,6 +193,8 @@ view.
 
 - 2026-11-13 22:19: Document bounded client write stalls in the accompanying Slack proxy change. (authoring-run/38e47fe4-fe4c-4f85-9b86-3a9cca43424e - bf84c5566fc92f97e7f9a4f7ae1f4a5778a0e83c)
 
+- 2026-11-06 10:19: Retain the directory-only proxy override with shared-default routing and exact API egress (authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf - f4d2e15fc73f6ef43016e0ce959df010bd2be98c)
+- 2026-11-05 19:30: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
 - 2026-11-04 22:37: Document closed-picker reopening and pending activation cancellation in the accompanying local change. (authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-10-30: Send a view's first name lookup alone and the rest after it succeeds, so a revoked grant costs one audited denial. (2939)

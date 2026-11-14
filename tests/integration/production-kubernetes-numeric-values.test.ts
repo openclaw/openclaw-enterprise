@@ -114,7 +114,7 @@ test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, 
 test("Helm refuses unknown resource names and negative quantities", tooling, async () => {
   const values = {
     ...productionCollectorValues,
-    "slackProxy.enabled": "true",
+    "gatewayProxy.enabled": "true",
   };
   for (const [field, value, message] of resourceNameAndSignRefusals) {
     await assert.rejects(render({ ...values, [field]: value }), (error) => {
@@ -131,15 +131,15 @@ test("Helm refuses unknown resource names and negative quantities", tooling, asy
     "resources.limits.cpu": "500m",
     "resources.requests.example\\.com/gpu": "1",
     "resources.limits.example\\.com/gpu": "1",
-    "slackProxy.resources.limits.hugepages-2Mi": "4Mi",
-    "slackProxy.resources.requests.hugepages-1\\.5Gi": "3Gi",
+    "gatewayProxy.resources.limits.hugepages-2Mi": "4Mi",
+    "gatewayProxy.resources.requests.hugepages-1\\.5Gi": "3Gi",
     // A huge page size is any quantity: unsuffixed, or with an exponent.
-    "slackProxy.resources.limits.hugepages-2097152": "4Mi",
-    "slackProxy.resources.limits.hugepages-1e6": "4Mi",
+    "gatewayProxy.resources.limits.hugepages-2097152": "4Mi",
+    "gatewayProxy.resources.limits.hugepages-1e6": "4Mi",
     [`resources.limits.example\\.com/${"g".repeat(63)}`]: "1",
     // Null clears a quantity instead of failing the check.
     "resources.limits.example\\.com/fpga": "null",
-    "slackProxy.resources.requests.ephemeral-storage": "-0",
+    "gatewayProxy.resources.requests.ephemeral-storage": "-0",
     "logging.collector.resources.requests.memory": "384e6",
     "logging.collector.state.sizeLimit": "0",
     "logging.collector.tmp.sizeLimit": "-0.0Mi",

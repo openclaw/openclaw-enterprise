@@ -55,6 +55,8 @@ graph TD
 
 ## Execution Trace
 
+[Gateway proxy routing](gateway-outbound-proxy.md) covers both Gateway modes, not separate Harnesses.
+
 ### 1. Freeze Gateway and Harness settings
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
@@ -304,19 +306,18 @@ version, then calls
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
 to delete exact-owned private and shared claims by UID across all selected targets,
 regardless of the Agent draft's mode. Cleanup retries precede database identity
-removal.
+removal. See the [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
 ## Debugging and Verification
 
 - `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
   reports `worker.openshell-git-continuity-refused` with the failed comparison.
   Held-startup comparisons expose SHA-256 hashes through `keyHash`.
-  Sandbox comparisons report restart count, Never-policy result and ID-change result.
+  Sandbox comparisons report restarts, Never-policy and ID changes.
 - `apps/controller/src/drivers/compute/harness-egress-enrollment.ts:HARNESS_EGRESS_ENROLLMENT_HELPER`
   logs `runtime.protected_startup` with the same startup hash.
   `runtime.process_exit` and `runtime.process_error` report fixed component,
-  exit/signal or spawn-error metadata. Collect these while Pods exist; stop can
-  remove their logs. Reporting failures preserve the guard and restart decisions.
+  exit/signal or spawn-error metadata. Collect logs before stop removes Pods. Reporting failures preserve guards.
   A changed startup still requires a new supported lifecycle; never replay its release.
 - `codex-plugin-stdio.ts:CODEX_PLUGIN_STDIO_HELPER` reports catalog queue, pipe-write,
   pending and matched-reply flags, plus bounded message and unmatched-ID-type counts.
@@ -326,16 +327,15 @@ removal.
 - Check placement, immutable policy, and conflicts:
   `node --test tests/conformance/configuration-occ.test.mjs`.
 - Check guarded activation and recovery:
-  `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with an explicitly
-  provisioned application-role PostgreSQL database.
+  `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with an application-role PostgreSQL database.
 - Check dedicated Gateway repair after an unready predecessor:
   `pnpm test:files --test-name-pattern='dedicated replacement starts a candidate Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
 - Check embedded Gateway repair after a never-served unready predecessor:
   `pnpm test:files --test-name-pattern='never-served unready Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
-- For real model turns, run
+- For model turns:
   `node --test tests/integration/harness-topology-k3d-real.test.mjs` (Kubernetes) with the
   inputs in [the real-runtime suite](../testing/kubernetes.md#run-the-real-runtime-suite-directly).
-  Docker Compute deploys no Agent: it rejects every Harness authentication binding.
+  Docker Compute rejects Harness bindings without deployment.
 - Missing credentials, images, access or either model response fail verification;
   readiness probes, handshakes, fixtures and skipped tests are not substitutes.
 - HTTP 401 before worker admission indicates callback fallthrough from node-only
@@ -360,9 +360,11 @@ removal.
 ## Changelog
 
 - 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
+- 2026-11-08 10:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
 
 - 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 
+- 2026-11-05 19:30: Link proxy routing (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
 - 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
 
 - 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
@@ -384,7 +386,5 @@ removal.
 - 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
 
 - 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
-
-- 2026-10-23 15:51: Rebase the native endpoint trace onto current lifecycle behavior; preserve older entries in linked history. (agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68 - 0b326680a7a388de9331c2ae9f0a7cadf2788fe7)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.

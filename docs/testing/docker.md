@@ -245,6 +245,35 @@ verify its `org.openclaw.test.owner` and `openclaw.upgrade-probe` labels match
 Remove the container by ID and remove that directory. Leave the fixture in place
 if ownership is uncertain.
 
+## Channel-free Gateway proxy qualification
+
+Select `OCC_TEST_GATEWAY_PROXY_REAL=1` and
+`OCC_TEST_GATEWAY_PROXY_URL` for the embedded and dedicated Codex cases in
+`tests/integration/harness-topology-k3d-real.test.mjs`. Supply the disposable
+cluster, database, approved immutable images, and authorized model credentials
+required below. The external endpoint must be reachable from Gateway Pods.
+
+These cases use the authenticated OCC API/worker path and verify a real model
+turn plus the channel-free proxy peer grant. They do not by themselves prove
+bundled host-policy denial, outage, ClawHub installation, or revision persistence;
+those remain required delivery checks in the
+[proxy plan](../../specs/plans/0051-gateway-outbound-proxy.md). Unselected cases
+are skips, not qualification.
+
+## ClawHub qualification boundary
+
+A disposable packaged Gateway on the original proxy experiment searched ClawHub,
+fetched `@steipete/weather`, installed version `1.0.0`, and discovered it after
+Gateway restart through a bundled proxy permitting `clawhub.ai`. TLS verification
+stayed enabled. No model or installed skill was executed. This is a transport and
+local workspace smoke check, not OCE deployment qualification.
+
+The [delivery plan](../../specs/plans/0051-gateway-outbound-proxy.md) retains the
+exact tested image and pending proof. Repeat the workflow through OCC deployment,
+including dedicated workspace delivery and persistence across revision replacement,
+before claiming supported end-to-end ClawHub operation. The refreshed upstream
+runtime still needs its own image and real-workflow qualification.
+
 ## Runtime image startup test environment
 
 The Codex readiness case runs a real app-server with no model credentials or

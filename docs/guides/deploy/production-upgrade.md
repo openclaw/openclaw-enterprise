@@ -142,9 +142,7 @@ chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.y
 ```
 
 Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
-These copies may change the
-[Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
-and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+Proxy settings remain protected. These copies may select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 An explicit candidate may also wrap an existing single `drivers.plugin`
 registration in a one-element array, preserving its `id` and `configuration`.
 Remove retired `agentNativeAdmin.sharedCookieDomain` whatever its value; keep

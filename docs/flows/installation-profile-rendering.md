@@ -179,10 +179,16 @@ already checked in step 3 with the API's `parseCidr` rules
 IPv4-mapped address, and no range that covers every IPv4 peer. Like the chart,
 preflight also refuses a zone ID, which the API accepts.
 
-When `channels.managedSlackProxy` is true, the values also enable the
-chart-managed Slack proxy Service. The chart allows that proxy public IPv4 HTTPS
-egress, excluding private and reserved ranges, and the proxy authorizes Slack
-hostnames. Repository values render only when the input explicitly sets
+The profile's `proxy.bundled` selects the chart-managed Gateway proxy. Its optional
+`proxy.allowedHosts` replaces the Slack-only default. Alternatively `proxy.url`
+selects one external endpoint. Rendering produces Helm `gatewayProxy` and Compute
+`runtime.proxy` together. Profile `channels.directoryProxyUrl` optionally sets
+Helm `api.channelDirectoryProxyUrl`. Helm uses that override for directory
+requests when set; otherwise it shares the Gateway endpoint. Only API proxy
+egress changes with the override, not Compute configuration.
+See [Gateway outbound access](../guides/integrations/gateway-proxy.md).
+
+Repository values render only when the input explicitly sets
 `repository.enabled: true`. Repository provider CIDRs pass through unchanged,
 so operators can keep their existing GitHub ranges without DNS snapshots. The
 renderer copies `repository.serviceName` only when the input sets it, and only
@@ -211,9 +217,10 @@ before writing `installation.yaml`. Optional `runtime.modelProvider.baseUrl` get
 Compute's endpoint rule. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
-`codex_pat` token path configured at Agent creation. If the chart-managed Slack
+`codex_pat` token path configured at Agent creation. If the chart-managed Gateway
 proxy is enabled, Compute receives the generated Service DNS URL and selector
-for gateway-to-proxy egress; the chart grants API-to-proxy egress. Repository
+for gateway-to-proxy egress; the chart grants API-to-proxy egress unless a
+directory override selects another endpoint. Repository
 opt-in adds the GitHub Backend, Repo Driver,
 and worker peer expected by the broker sidecar.
 
@@ -269,7 +276,7 @@ Input-loading failures exit without a preflight report.
 The preflight report lists warnings, external prerequisites, and the next
 operator steps. It tells the operator to update the Installation startup Secret
 before the Helm upgrade, so API and worker pod-template annotations roll when
-startup-only configuration changes. The Slack proxy reads its configuration from its
+startup-only configuration changes. The Gateway proxy reads its configuration from its
 Pod template. Removing the checksum annotation from a previously annotated proxy
 triggers one rollout. Later Installation checksum changes preserve its Pod template.
 The report does not claim live readiness:
@@ -318,6 +325,8 @@ activation, and repository registry creation need separate evidence.
 
 - 2026-11-13: Document how Installation checksum changes affect the Slack proxy during chart upgrades. (authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9, accompanying change)
 
+- 2026-11-06 10:19: Retain the directory-only proxy override with shared-default routing and exact API egress (authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf - f4d2e15fc73f6ef43016e0ce959df010bd2be98c)
+- 2026-11-05 19:30: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
 - 2026-10-28 20:25: Refuse input/output file collisions before cleanup in the accompanying change. (authoring-run/ebaa9b91-58b3-47dc-97d9-ad103250247d - 420d76bcbd15dcd3644e474d413484c35ce22797)

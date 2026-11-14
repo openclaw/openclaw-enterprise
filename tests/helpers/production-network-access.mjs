@@ -420,6 +420,102 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     apiEndpointSlice = updated;
   }
   return {
+    async installGatewayProxy(routing) {
+      const documents = await chart({
+        "gatewayProxy.enabled": true,
+        "gatewayRouting.enabled": routing,
+      });
+      const service = documents.find(
+        ({ kind, metadata }) =>
+          kind === "Service" && metadata.name === "openclaw-enterprise-gateway-proxy",
+      );
+      const policies = documents.filter(
+        ({ kind, metadata }) =>
+          kind === "NetworkPolicy" &&
+          [
+            "openclaw-enterprise-gateway-proxy",
+            "openclaw-enterprise-api-managed-gateway-proxy-egress",
+          ].includes(metadata.name),
+      );
+      assert.equal(policies.length, 2);
+      await apply(
+        policies.map((policy) => ({ ...policy, metadata: { ...policy.metadata, namespace } })),
+      );
+      if (!targets.bundledProxy) {
+        targets.bundledProxy = {
+          host: await pod("bundled-proxy", namespace, service.spec.selector, 3128),
+          port: 3128,
+        };
+      }
+      for (const foreign of [false, true]) {
+        const proxyNamespace = foreign ? destinations : namespace;
+        const hostname = `${service.metadata.name}.${proxyNamespace}.svc`;
+        const configured = fixtureComputeConfiguration();
+        if (routing) {
+          delete configured.network.gatewayClients;
+          configured.gatewayRouting = {
+            gatewayNamespace: namespace,
+            gatewayName: "access",
+            envoyNamespace,
+          };
+        }
+        const { driver } = await createDriver({
+          ...configured,
+          runtime: {
+            transportSecretPrefix: "transport",
+            gatewayStorageClassName: "local-path",
+            proxy: {
+              proxyUrl: `http://${hostname}:3128`,
+              managedProxy: {
+                hostname,
+                namespace: proxyNamespace,
+                podLabels: service.spec.selector,
+                port: 3128,
+              },
+            },
+          },
+        });
+        const namespaceId = `ns_${randomUUID()}`;
+        const tenant = driver.gatewayNamespaceManifest({ namespaceId });
+        // Create, never adopt, Driver-owned namespaces. Only the selected proxy differs;
+        // private routing and Gateway Pod labels cannot authorize a foreign Installation.
+        await apply([tenant], "create");
+        ownedNamespaces.push(tenant.metadata.name);
+        const source = `${foreign ? "foreign" : "own"}proxy${routing ? "routed" : "direct"}`;
+        sources[source] = {
+          namespace: tenant.metadata.name,
+          labels: driver.deployment(
+            source,
+            { namespaceId, agentId: `agt_${randomUUID()}` },
+            { name: tenant.metadata.name, plane: "execution" },
+            image,
+            source,
+            "gateway",
+            {},
+            "info",
+            {
+              name: "configuration-one",
+              revision: 1,
+              revisionId: "revision-one",
+              gatewayManagedMode: true,
+              annotations: {},
+            },
+            true,
+            undefined,
+            {
+              loginMode: "api_key",
+              environment: [
+                {
+                  name: "OPENAI_API_KEY",
+                  valueFrom: { secretKeyRef: { name: "model-key", key: "value" } },
+                },
+              ],
+            },
+          ).spec.template.metadata.labels,
+        };
+        await pod(source, tenant.metadata.name, sources[source].labels, 8080);
+      }
+    },
     async installOpenShellManagement(tenantIndex) {
       if (!managementTenants) {
         const api = baseline.find(

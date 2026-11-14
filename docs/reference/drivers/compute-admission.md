@@ -164,7 +164,7 @@ them. Whether the Installation supplies
 what a method needs (OAuth needs no Sandbox Driver; a credential source needs
 its paired Sandbox) stays a fixed `409`.
 The channel runtime rule stays at deployment: it depends on the execution mode
-and the Installation's `runtime.channels`.
+and the Installation's `runtime.proxy`.
 With `runtime` set, `validateHarnessAuth` refuses `dedicated` without
 `gatewayRouting` (and node enrollment) or `runtime.gatewayNodeSelector`,
 naming the setting, at Agent save too: the execution mode is the Agent's.

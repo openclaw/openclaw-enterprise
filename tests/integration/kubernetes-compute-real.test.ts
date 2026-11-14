@@ -265,7 +265,7 @@ test(
               gatewayNodeSelector: {
                 "kubernetes.io/hostname": await runtimeNodeName(),
               },
-              channels: { proxyUrl: "http://10.42.0.15:3128" },
+              proxy: { proxyUrl: "http://10.42.0.15:3128" },
             },
           },
     );
@@ -743,7 +743,7 @@ test(
           missingConfiguration.error.message,
           /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: /,
         );
-        // This k3d fixture has no runtime.channels proxy and uses the fixture image,
+        // This k3d fixture has no runtime.proxy proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret
         // projection. Real Slack channel runtime proof belongs to the real-runtime suite.
         const updated = await request<ConfigurationResponse>(

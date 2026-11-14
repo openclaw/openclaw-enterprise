@@ -545,8 +545,8 @@ async function startInClusterControllers(
       workerOptions,
       workspaceGateway,
     });
-  const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
-  if (channels !== undefined) {
+  const channels = apiConfiguration.drivers.compute.configuration.runtime?.proxy;
+  if (channels?.managedProxy !== undefined) {
     assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
     // Admission validates Slack credentials before deployment. The chart grants
     // only the API this proxy route; the worker keeps its existing isolation.
@@ -781,8 +781,13 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     configuration.drivers.compute.configuration.gatewayRouting = options.gatewayRouting;
     delete configuration.drivers.compute.configuration.network.gatewayClients;
   }
+  if (options.gatewayProxyUrl !== undefined) {
+    configuration.drivers.compute.configuration.runtime.proxy = {
+      proxyUrl: options.gatewayProxyUrl,
+    };
+  }
   if (slack !== undefined) {
-    configuration.drivers.compute.configuration.runtime.channels = {
+    configuration.drivers.compute.configuration.runtime.proxy = {
       proxyUrl: slack.proxyUrl,
       managedProxy: slack.managedProxy,
     };
@@ -1423,12 +1428,17 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     controller.authentication,
     platformNamespace,
     slack,
-    workspaceGateway === undefined
-      ? {}
-      : {
-          gatewayRouting: workspaceGateway.routing,
-          gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
-        },
+    {
+      ...(options.gatewayProxyUrl === undefined
+        ? {}
+        : { gatewayProxyUrl: options.gatewayProxyUrl }),
+      ...(workspaceGateway === undefined
+        ? {}
+        : {
+            gatewayRouting: workspaceGateway.routing,
+            gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
+          }),
+    },
   );
   // Cases share an Installation, so keep its policy after the Default user case
   // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.

@@ -212,7 +212,7 @@ export function requireCodexPlugin(
 
 /**
  * Enabled channels need a dedicated Agent workload and an Installation channel runtime
- * (`runtime.channels`: isolated credentials and a reviewed proxy). `providers` lists the
+ * (`runtime.proxy`: isolated credentials and a reviewed proxy). `providers` lists the
  * enabled channel providers, in Configuration order.
  */
 export function requireChannelTopology(

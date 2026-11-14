@@ -4,14 +4,14 @@ import net from "node:net";
 import { Duplex } from "node:stream";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { createSlackProxyServer } from "../../apps/controller/src/slack-proxy.mjs";
+import { createGatewayProxyServer } from "../../apps/controller/src/gateway-proxy.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { listen as listenServer } from "../helpers/listen.mjs";
-import { connectThroughProxy, startSlackProxy } from "../helpers/slack-proxy.mjs";
+import { connectThroughProxy, startGatewayProxy } from "../helpers/gateway-proxy.mjs";
 import { within } from "../helpers/wait-for.mjs";
 
-// The bundled Slack proxy (apps/controller/src/slack-proxy.mjs) relays CONNECT tunnels only.
-// These tests drive the real proxy process against loopback upstreams: startSlackProxy
+// The bundled Slack proxy (apps/controller/src/gateway-proxy.mjs) relays CONNECT tunnels only.
+// These tests drive the real proxy process against loopback upstreams: startGatewayProxy
 // redirects its slack.com:443 connections to a local port, so nothing leaves the host.
 // Every wait is bounded (within's 10 s default), so a proxy that stops relaying fails the
 // test instead of hanging it.
@@ -93,7 +93,7 @@ test("a CONNECT tunnel relays bytes both ways and both ends see EOF", testOption
     },
     { allowHalfOpen: true },
   );
-  const { port: proxyPort } = await startSlackProxy(t, { upstreamPort: upstream.address().port });
+  const { port: proxyPort } = await startGatewayProxy(t, { upstreamPort: upstream.address().port });
 
   // Bytes sent with the CONNECT request itself, then a payload far larger than one TCP read.
   const early = randomBytes(1_024);
@@ -121,7 +121,9 @@ test(
       socket.on("error", () => {});
       socket.end(reply);
     });
-    const { port: proxyPort } = await startSlackProxy(t, { upstreamPort: upstream.address().port });
+    const { port: proxyPort } = await startGatewayProxy(t, {
+      upstreamPort: upstream.address().port,
+    });
 
     const tunnel = await openTunnel(t, proxyPort, "slack.com:443");
     assert.match(tunnel.head, established);
@@ -137,7 +139,7 @@ test(
   },
 );
 
-// Drives createSlackProxyServer in this process with a client socket whose writes complete only
+// Drives createGatewayProxyServer in this process with a client socket whose writes complete only
 // when the test says so, as writes do behind a full TCP send buffer. A real slow client only
 // reaches that state when the kernel buffers happen to be full, so the loopback test above
 // rarely catches a proxy that drops queued bytes; this one does every time. `upstreamSocket()`
@@ -172,7 +174,7 @@ function heldClientTunnel(t, upstreamPort, serverOptions) {
   client.on("error", () => {});
   t.after(() => client.destroy());
   const closed = new Promise((resolve) => client.once("close", resolve));
-  const server = createSlackProxyServer(serverOptions);
+  const server = createGatewayProxyServer(serverOptions);
   server.emit("connect", { url: "slack.com:443" }, client, Buffer.alloc(0));
   return {
     client,
@@ -288,7 +290,7 @@ test("an unreachable upstream gets 502 and the proxy keeps serving", testOptions
   const refusing = await refusingPort();
   t.after(() => refusing.release());
   const upstreamPort = refusing.port;
-  const { child, port: proxyPort, stderr } = await startSlackProxy(t, { upstreamPort });
+  const { child, port: proxyPort, stderr } = await startGatewayProxy(t, { upstreamPort });
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const response = await within(connectThroughProxy(proxyPort, "slack.com:443"), "502 response");
@@ -351,7 +353,7 @@ test(
       child,
       port: proxyPort,
       stderr,
-    } = await startSlackProxy(t, {
+    } = await startGatewayProxy(t, {
       upstreamPort: upstream.address().port,
     });
 
@@ -380,7 +382,7 @@ test("the CONNECT allowlist matches whole Slack host names on port 443", testOpt
     socket.on("error", () => {});
     socket.end("fixture-upstream");
   });
-  const { port: proxyPort } = await startSlackProxy(t, {
+  const { port: proxyPort } = await startGatewayProxy(t, {
     upstreamPort: upstream.address().port,
     upstreamHosts: [
       "slack.com",
@@ -432,3 +434,76 @@ test("the CONNECT allowlist matches whole Slack host names on port 443", testOpt
     );
   }
 });
+
+test(
+  "operator host policy permits non-Slack tunnels and scopes wildcard matching",
+  testOptions,
+  async (t) => {
+    const upstream = await listen(t, (socket) => {
+      socket.on("error", () => {});
+      socket.end("permitted-service");
+    });
+    const { port: proxyPort } = await startGatewayProxy(t, {
+      upstreamPort: upstream.address().port,
+      upstreamHosts: ["api.example.test", "one.services.example.test"],
+      allowedHosts: ["api.example.test", "*.services.example.test"],
+    });
+    // DNS/socket redirection is only the local upstream fixture; the production
+    // proxy process evaluates the actual configured policy and relays real bytes.
+    for (const target of ["api.example.test:443", "one.services.example.test:443"]) {
+      const tunnel = await openTunnel(t, proxyPort, target);
+      assert.match(tunnel.head, established);
+      await within(tunnel.closed, "permitted-service close");
+      assert.equal(tunnel.body().toString(), "permitted-service");
+    }
+    for (const target of [
+      "slack.com:443",
+      "services.example.test:443",
+      "evilservices.example.test:443",
+      "api.example.test.evil:443",
+      "api.example.test:80",
+    ]) {
+      assert.match((await openTunnel(t, proxyPort, target)).head, /^HTTP\/1\.1 403 Forbidden/);
+    }
+    // Startup rejects malformed policy rather than widening a mistyped route.
+    for (const allowedHosts of [
+      ["*example.test"],
+      ["https://api.example.test"],
+      "api.example.test",
+    ]) {
+      assert.throws(() => createGatewayProxyServer({ allowedHosts }), /allowedHosts/);
+    }
+  },
+);
+
+test(
+  "an explicit * policy permits unrelated hosts but retains CONNECT port and syntax checks",
+  testOptions,
+  async (t) => {
+    const upstream = await listen(t, (socket) => {
+      socket.on("error", () => {});
+      socket.end("public-service");
+    });
+    const { port: proxyPort } = await startGatewayProxy(t, {
+      upstreamPort: upstream.address().port,
+      upstreamHosts: ["api.example.test", "registry.other.test"],
+      allowedHosts: ["*"],
+    });
+    // Only the upstream sockets are redirected. The real process reads the operator
+    // environment policy, authorizes CONNECT, and relays bytes to both destinations.
+    for (const target of ["api.example.test:443", "registry.other.test:443"]) {
+      const tunnel = await openTunnel(t, proxyPort, target);
+      assert.match(tunnel.head, established);
+      await within(tunnel.closed, "public-service close");
+      assert.equal(tunnel.body().toString(), "public-service");
+    }
+    for (const target of [
+      "api.example.test:80",
+      "api.example.test:8443",
+      "api.example.test:443/path",
+      "user@api.example.test:443",
+    ]) {
+      assert.match((await openTunnel(t, proxyPort, target)).head, /^HTTP\/1\.1 403 Forbidden/);
+    }
+  },
+);

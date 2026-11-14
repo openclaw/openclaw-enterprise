@@ -1658,15 +1658,11 @@ test(
         controllerImage: upgradeImages.controller,
       });
 
-      // Configure a curated catalog and an unused documentation-range proxy in
-      // the reviewed candidate; the live baseline remains unchanged until upgrade.
+      // Configure a curated catalog in the reviewed candidate; the live baseline
+      // remains unchanged until upgrade. Proxy changes use the configuration workflow.
       const candidateValuesPath = join(directory, "candidate-values.json");
       const candidateInstallationPath = join(directory, "candidate-installation.json");
       const candidateValues = JSON.parse(await run("yq", ["-o=json", ".", valuesPath]));
-      candidateValues.api = {
-        ...candidateValues.api,
-        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
-      };
       const candidateInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
       candidateInstallation.drivers.plugin = [
         {
@@ -1817,14 +1813,6 @@ test(
       );
       await retainInstallationSecrets();
       await assertMountedInstallation(successorName);
-      const apiDeployment = await get("deployment", "openclaw-enterprise-api");
-      const apiContainer = apiDeployment.spec.template.spec.containers.find(
-        ({ name }) => name === "api",
-      );
-      assert.equal(
-        apiContainer.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL").value,
-        "http://198.51.100.25:3128",
-      );
       const upgradedInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
       assert.equal(
         upgradedInstallation.drivers.plugin[0].configuration.catalogSource,

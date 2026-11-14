@@ -258,8 +258,8 @@ api:
     checksum: ""
   port: 8080
   clients: []
-  # Optional exact HTTP(S) proxy endpoint for API-side Slack directory lookup.
-  # The proxy must allow CONNECT to slack.com:443; empty disables lookup in production.
+  # Optional API-only directory proxy override. Empty inherits the Gateway proxy.
+  # Use a credential-free HTTP(S) literal IPv4 endpoint with an explicit port.
   channelDirectoryProxyUrl: ""
   # API-only HTTPS egress to explicit provider IPv4 /32 hosts for discovery and login.
   # Hosted codex-plugin needs auth.openai.com and chatgpt.com. Its installation
@@ -289,11 +289,16 @@ api:
     # generic only; ingress-nginx and aws always read x-forwarded-for.
     clientAddressHeader: ""
 
-slackProxy:
-  # Optional chart-managed HTTP CONNECT proxy for Slack channel traffic. It is
-  # inert until enabled. HTTPS egress excludes private and reserved IPv4 ranges.
+gatewayProxy:
+  # Select bundled (enabled) OR an external literal IPv4 HTTP(S) endpoint (url).
+  # No selection preserves networking behavior. No Console editor is required.
   enabled: false
-  serviceName: openclaw-enterprise-slack-proxy
+  url: ""
+  # Exact DNS names, or *.example.com for subdomains only; CONNECT to TCP 443.
+  # Replace/extend this list for Teams, ClawHub, and other required services.
+  # Use ["*"] for all hosts; TCP 443 and public-IPv4-only egress still apply.
+  allowedHosts: [slack.com, "*.slack.com", slack-edge.com, "*.slack-edge.com", slack-msgs.com, "*.slack-msgs.com"]
+  serviceName: openclaw-enterprise-gateway-proxy
   port: 3128
   resources:
     requests:

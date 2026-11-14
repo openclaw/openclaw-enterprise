@@ -82,15 +82,15 @@ Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.
 mismatched `HEAD`/`--source-revision`, chart edits/symlinks and internal evidence/baseline
 aliases before access. Other edits/image provenance are unchecked.
 
-`yq -r` tests for nonempty `preprovisionedNamespace`. Continue on success
-with one `false`; otherwise refuse before access (`preprovisioned-namespace.err`).
+`yq -r` requires `preprovisionedNamespace: false` before access (`preprovisioned-namespace.err`).
 
 Resume locks evidence paths/devices/inodes/aliases and runtime dispatch journals.
 
 `matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings and validates candidates.
-Invalid inputs/unwritable evidence cause `Cannot compare upgrade YAML`.
-Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
-and array-wrapping one registration.
+Invalid inputs/evidence cause `Cannot compare upgrade YAML`.
+Projections/`cmp` permit curated Codex PluginDriver selection
+and array-wrapping one registration. Active proxy settings remain protected.
+Candidates may remove saved `slackProxy.enabled: false`; live comparison remains exact.
 Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
 live comparison stays exact. Immutable reference switches require string keys.
 Startup validates controllers; broker checks only references.

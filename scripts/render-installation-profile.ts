@@ -127,7 +127,7 @@ interface ProfileValues extends SecretValues {
     scraperPodLabels?: InputRecord;
   };
   logging: { collector: { enabled: boolean; exporter?: CollectorExporter } };
-  slackProxy?: { enabled: boolean };
+  gatewayProxy: { enabled: boolean; url?: string; allowedHosts?: unknown[] };
   publicGithubRead?: { enabled: boolean; clusterIP: string; upstreamCidrs: unknown[] };
 }
 interface KubernetesDriver {
@@ -276,7 +276,7 @@ function isLiteralIpv4ProxyUrl(value: string) {
 }
 // Compute and the API's Slack directory also refuse the unspecified address, which names
 // no proxy.
-function channelProxyUrl(value: string) {
+function gatewayProxyUrl(value: string) {
   if (!isLiteralIpv4ProxyUrl(value)) {
     return false;
   }
@@ -1349,11 +1349,21 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
   closed(
     input,
     "input",
-    ["controlPlane", "runtime", "channels", "codex", "repository", "publicGithubRead", "presets"],
+    [
+      "controlPlane",
+      "runtime",
+      "proxy",
+      "channels",
+      "codex",
+      "repository",
+      "publicGithubRead",
+      "presets",
+    ],
     diagnostics,
   );
   const controlPlane = section(input, "controlPlane", diagnostics);
   const runtime = section(input, "runtime", diagnostics);
+  const proxy = section(input, "proxy", diagnostics, false);
   const channels = section(input, "channels", diagnostics, false);
   const codex = section(input, "codex", diagnostics, false);
   const repository = section(input, "repository", diagnostics, false);
@@ -1415,12 +1425,16 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
     ],
     diagnostics,
   );
-  closed(
-    channels,
-    "channels",
-    ["runtimeProxyUrl", "directoryProxyUrl", "managedSlackProxy"],
-    diagnostics,
-  );
+  closed(proxy, "proxy", ["url", "bundled", "allowedHosts"], diagnostics);
+  for (const [retired, replacement] of [
+    ["runtimeProxyUrl", "proxy.url"],
+    ["managedSlackProxy", "proxy.bundled"],
+  ] as const) {
+    if (Object.hasOwn(channels, retired)) {
+      diagnostics.errors.push(`channels.${retired} was removed; use ${replacement}.`);
+    }
+  }
+  closed(channels, "channels", ["directoryProxyUrl"], diagnostics);
   closed(codex, "codex", ["managedServiceAccounts", "modelDiscoveryCidrs"], diagnostics);
   closed(
     repository,
@@ -1504,6 +1518,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
   return {
     controlPlane,
     runtime,
+    proxy,
     channels,
     codex,
     repository,
@@ -1697,6 +1712,7 @@ function buildRendered(
   const {
     controlPlane,
     runtime,
+    proxy,
     channels,
     codex,
     repository,
@@ -1797,12 +1813,8 @@ function buildRendered(
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
     "envoy-gateway-system";
   const repositoryEnabled = asBoolean(repository, ["repository", "enabled"], diagnostics, false);
-  const managedSlackProxyEnabled = asBoolean(
-    channels,
-    ["channels", "managedSlackProxy"],
-    diagnostics,
-  );
-  const managedSlackProxyHost = `openclaw-enterprise-slack-proxy.${namespace}.svc`;
+  const bundledProxyEnabled = asBoolean(proxy, ["proxy", "bundled"], diagnostics);
+  const bundledProxyHost = `openclaw-enterprise-gateway-proxy.${namespace}.svc`;
   if (profile.name === "openclaw" && Object.keys(codex).length > 0) {
     diagnostics.errors.push("codex inputs are only consumed by the codex profile.");
   }
@@ -1816,16 +1828,42 @@ function buildRendered(
       "repository fields other than enabled are only consumed when repository.enabled is true.",
     );
   }
-  if (managedSlackProxyEnabled && channels.directoryProxyUrl !== undefined) {
-    diagnostics.errors.push(
-      "channels.directoryProxyUrl is not consumed when channels.managedSlackProxy enables the chart-managed Slack proxy.",
-    );
+  if (bundledProxyEnabled && proxy.url !== undefined) {
+    diagnostics.errors.push("proxy.url and proxy.bundled are mutually exclusive.");
   }
-  if (managedSlackProxyEnabled && channels.runtimeProxyUrl !== undefined) {
-    diagnostics.errors.push(
-      "channels.runtimeProxyUrl is not consumed when channels.managedSlackProxy enables the chart-managed Slack proxy.",
-    );
+  if (!bundledProxyEnabled && proxy.allowedHosts !== undefined) {
+    diagnostics.errors.push("proxy.allowedHosts requires proxy.bundled.");
   }
+  const allowedHosts =
+    proxy.allowedHosts === undefined
+      ? undefined
+      : stringArray(proxy, ["proxy", "allowedHosts"], diagnostics, {
+          nonempty: false,
+          validate: (host) =>
+            host === "*" ||
+            (host.length <= 253 &&
+              /^(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(
+                host,
+              )),
+          description: "a lowercase DNS name with optional *. prefix, or * for all hosts",
+        });
+  if (allowedHosts !== undefined && allowedHosts.length > 256) {
+    diagnostics.errors.push("proxy.allowedHosts allows at most 256 entries.");
+  }
+  const externalProxyUrl =
+    proxy.url === undefined
+      ? undefined
+      : asString(proxy, ["proxy", "url"], diagnostics, {
+          validate: gatewayProxyUrl,
+          description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
+        });
+  const directoryProxyUrl =
+    channels.directoryProxyUrl === undefined
+      ? undefined
+      : asString(channels, ["channels", "directoryProxyUrl"], diagnostics, {
+          validate: gatewayProxyUrl,
+          description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
+        });
   if (
     codex.managedServiceAccounts !== undefined &&
     Object.keys(managedServiceAccounts).length === 0
@@ -1956,19 +1994,7 @@ function buildRendered(
     },
     api: {
       clients: clientSelectors(controlPlane, diagnostics),
-      ...(managedSlackProxyEnabled || channels.directoryProxyUrl === undefined
-        ? {}
-        : {
-            channelDirectoryProxyUrl: asString(
-              channels,
-              ["channels", "directoryProxyUrl"],
-              diagnostics,
-              {
-                validate: channelProxyUrl,
-                description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
-              },
-            ),
-          }),
+      ...(directoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl: directoryProxyUrl }),
       modelDiscoveryCidrs:
         profile.name === "codex" && codex.modelDiscoveryCidrs !== undefined
           ? stringArray(codex, ["codex", "modelDiscoveryCidrs"], diagnostics, {
@@ -2044,13 +2070,11 @@ function buildRendered(
     repositoryCredentials: {
       enabled: repositoryEnabled,
     },
-    ...(managedSlackProxyEnabled
-      ? {
-          slackProxy: {
-            enabled: true,
-          },
-        }
-      : {}),
+    gatewayProxy: {
+      enabled: bundledProxyEnabled,
+      ...(externalProxyUrl === undefined ? {} : { url: externalProxyUrl }),
+      ...(allowedHosts === undefined ? {} : { allowedHosts }),
+    },
   };
 
   const installation: RenderedInstallation = {
@@ -2187,31 +2211,26 @@ function buildRendered(
                   ),
                 }
               : {}),
-            ...(managedSlackProxyEnabled
+            ...(bundledProxyEnabled
               ? {
-                  channels: {
-                    proxyUrl: `http://${managedSlackProxyHost}:3128`,
+                  proxy: {
+                    proxyUrl: `http://${bundledProxyHost}:3128`,
                     managedProxy: {
-                      hostname: managedSlackProxyHost,
+                      hostname: bundledProxyHost,
                       namespace,
                       podLabels: {
                         "app.kubernetes.io/name": "openclaw-enterprise",
                         "app.kubernetes.io/instance": releaseName,
-                        "app.kubernetes.io/component": "slack-proxy",
+                        "app.kubernetes.io/component": "gateway-proxy",
                       },
                       port: 3128,
                     },
                   },
                 }
-              : channels.runtimeProxyUrl === undefined
+              : externalProxyUrl === undefined
                 ? {}
                 : {
-                    channels: {
-                      proxyUrl: asString(channels, ["channels", "runtimeProxyUrl"], diagnostics, {
-                        validate: channelProxyUrl,
-                        description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
-                      }),
-                    },
+                    proxy: { proxyUrl: externalProxyUrl },
                   }),
           },
         },
@@ -2447,21 +2466,12 @@ function buildRendered(
       );
     }
   }
-  if (
-    channels.runtimeProxyUrl !== undefined ||
-    channels.directoryProxyUrl !== undefined ||
-    managedSlackProxyEnabled
-  ) {
+  if (bundledProxyEnabled) {
     diagnostics.prerequisites.push(
-      "Slack consumers remain inactive until Agent channel configuration and credentials are supplied.",
-    );
-  }
-  if (managedSlackProxyEnabled) {
-    diagnostics.prerequisites.push(
-      "The managed Slack proxy permits Slack hostnames on HTTPS and public IPv4 egress, excluding private and reserved ranges.",
+      "The bundled Gateway proxy permits only configured hostnames on TCP 443 and public IPv4 egress, excluding private and reserved ranges.",
     );
     diagnostics.nextSteps.push(
-      `The managed Slack proxy Service is openclaw-enterprise-slack-proxy.${namespace}.svc:3128; keep Agent Slack channel consumers disabled until credentials and channel policy are configured.`,
+      `The bundled Gateway proxy is ${bundledProxyHost}:3128. Configure proxy.allowedHosts for the integrations you enable; Slack credentials remain Agent-owned.`,
     );
   }
   if (repositoryEnabled) {
