@@ -50,24 +50,29 @@ async function withEnginePeer(
     const nativeRequest = http.request;
     http.request = (
       input: string | URL | RequestOptions,
-      options?: RequestOptions | ((response: IncomingMessage) => void),
-      callback?: (response: IncomingMessage) => void,
+      callback?: RequestOptions | ((response: IncomingMessage) => void),
     ) => {
-      if (typeof input === "string" || input instanceof URL) {
-        return typeof options === "function"
-          ? nativeRequest(input, options)
-          : nativeRequest(input, options ?? {}, callback);
-      }
-      const receive = typeof options === "function" ? options : callback;
+      assert.ok(
+        typeof input !== "string" && !(input instanceof URL),
+        "expected Docker socket options",
+      );
+      assert.ok(typeof callback === "function");
       assert.equal(input.socketPath, "/var/run/docker.sock");
       observer?.onRequest();
       const request = nativeRequest(
-        { ...input, socketPath: undefined, host: "127.0.0.1", port },
+        {
+          hostname: "127.0.0.1",
+          port,
+          method: input.method,
+          path: input.path,
+          headers: input.headers,
+          signal: input.signal,
+        },
         (response) => {
           if (observer) {
             response.once("error", observer.onTransportError);
           }
-          receive?.(response);
+          callback(response);
         },
       );
       if (observer) {
