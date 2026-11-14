@@ -524,8 +524,8 @@ function workEvidenceExistsSql(code: string): string {
 
 // A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
 // serving revision's Gateway; only a worker pass finishes that stop before the deployment fails
-// (finding 1090). Recovery that would end such a deployment on its attempt limit (an expired
-// claim, or queued exhaustion) without a pass instead requeues it once with one more attempt,
+// (finding 1090). A planned handoff can commit the same stop before any yielded-stop attempt.
+// Recovery that would end either deployment at its attempt limit instead grants one more pass,
 // so the predecessor is not left with its Harness, workspace and credentials and no Gateway
 // (finding 1107). PREDECESSOR_STOP_RECOVERY evidence bounds this to once per deployment, so a
 // pass that keeps crashing cannot requeue it forever: the next limit ends it as before. It never
@@ -544,7 +544,19 @@ function recoveringPredecessorStopsSql(candidates: string, excluded: string): st
         AND work.agent_id IS NOT NULL AND work.revision_id IS NOT NULL
         AND work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
         AND ${excluded}
-        AND ${workEvidenceExistsSql("PREDECESSOR_STOP_YIELDED")}
+        AND (
+          ${workEvidenceExistsSql("PREDECESSOR_STOP_YIELDED")}
+          OR EXISTS (
+            SELECT 1
+            FROM occ.agents AS agent
+            WHERE agent.namespace_id = work.namespace_id AND agent.id = work.agent_id
+              AND agent.predecessor_replacement->>'phase' = 'stopping'
+              AND agent.predecessor_replacement->>'candidateRevisionId' = work.revision_id
+              AND agent.predecessor_replacement->>'predecessorRevisionId' = agent.active_revision_id
+              AND agent.predecessor_replacement->>'executionIdentity' IS NOT NULL
+              AND agent.predecessor_replacement->>'completionStartedAt' IS NOT NULL
+          )
+        )
         AND NOT ${workEvidenceExistsSql(PREDECESSOR_STOP_RECOVERY)}
         AND NOT ${workEvidenceExistsSql(ACTIVE_REVISION_RECOVERY)}
     ),`;

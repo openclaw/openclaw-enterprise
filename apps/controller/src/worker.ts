@@ -4835,7 +4835,7 @@ export class ControllerWorker {
           // when it started; a failure retries like this revision's own stop above, and a yield
           // waits on the stopped Agent's drain like that stop's (AGENT_STOP_YIELDED).
           try {
-            await this.finishYieldedPredecessorStops(
+            await this.finishStartedPredecessorStops(
               claim,
               this.refusalWait === undefined ? "yield" : "wait",
               "throw",
@@ -4932,7 +4932,7 @@ export class ControllerWorker {
         // revision stops every predecessor only if its own pass gets that far, and a refusal
         // before then would leave the predecessor's Harness running without its Gateway
         // (finding 1090). It still yields, unless a stored refusal's wait owns the deferral.
-        const predecessorStop = await this.finishYieldedPredecessorStops(
+        const predecessorStop = await this.finishStartedPredecessorStops(
           claim,
           this.refusalWait === undefined ? "yield" : "wait",
         );
@@ -6528,7 +6528,7 @@ export class ControllerWorker {
     if (committedOutcome === "permanent") {
       failureLogFields = {
         ...failureLogFields,
-        ...(await this.finishYieldedPredecessorStops(claim, "wait")),
+        ...(await this.finishStartedPredecessorStops(claim, "wait")),
       };
     }
     await this.state.transactWithQueue(async (unit, queue) => {
@@ -6774,47 +6774,71 @@ export class ControllerWorker {
   }
 
   /**
-   * A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
-   * serving revision's Gateway; only its drain and the Harness deletion were left to a later pass.
-   * Before such work ends in failure (a refusal, exhausted attempts, the deadline), superseded or
-   * stopped, it finishes that stop, so the predecessor ends stopped, as when the stop never
-   * yielded, rather than keeping its Harness and workspace with nothing left to stop it (findings
-   * 1090, 1109). A failure finishes it with the full bounded wait (`drain` "wait"); a superseded
-   * or stopped pass may still yield.
-   * Work that never yielded its predecessor stop leaves the serving revision alone. A stop that
-   * still fails is logged as `predecessorStop` and the result is published anyway, unless
-   * `failures` is "throw": a stopped Agent's revision pass retries it instead (finding 1109).
+   * Finish a predecessor stop this deployment already started before failure, supersession or
+   * explicit Stop. A yielded stop can have touched every earlier version. A planned handoff
+   * without a yielded attempt authorizes recovery of only its exact selected predecessor.
    */
-  private async finishYieldedPredecessorStops(
+  private async finishStartedPredecessorStops(
     claim: ClaimedWork,
     drain: "yield" | "wait" = "wait",
     failures: "log" | "throw" = "log",
   ): Promise<Readonly<Record<string, string | number>>> {
+    const { agentId, namespaceId, revisionId } = claim;
     if (
-      claim.agentId === undefined ||
-      claim.revisionId === undefined ||
+      agentId === undefined ||
+      revisionId === undefined ||
       claim.namespaceTarget !== undefined ||
-      claim.agentTarget !== undefined ||
-      (await this.queue.findWorkAttempt(claim.idempotencyKey, "PREDECESSOR_STOP_YIELDED")) ===
-        undefined
+      claim.agentTarget !== undefined
     ) {
       return {};
     }
-    // This rare recovery decodes every revision up front, outside the try below: an unreadable
-    // one fails the pass rather than being logged as a predecessor stop failure.
-    const revisions = await this.state.read((view) =>
-      view.revisions.listRevisions(claim.namespaceId, claim.agentId!),
+    const yielded = await this.queue.findWorkAttempt(
+      claim.idempotencyKey,
+      "PREDECESSOR_STOP_YIELDED",
     );
-    const revision = revisions.find((candidate) => candidate.id === claim.revisionId);
-    if (revision === undefined || this.compute.requiresStoppedPredecessors?.(revision) !== true) {
+    if (yielded === undefined && !isCandidateDeployment(claim)) {
       return {};
     }
+    const targets = await this.state.read(async (view) => {
+      const candidate = await view.revisions.findRevision(namespaceId, agentId, revisionId);
+      if (
+        candidate === undefined ||
+        this.compute.requiresStoppedPredecessors?.(candidate) !== true
+      ) {
+        return [];
+      }
+      if (yielded !== undefined) {
+        const revisions = await view.revisions.listRevisions(namespaceId, agentId);
+        return revisions.filter((revision) => revision.revision < candidate.revision);
+      }
+      const replacement = await view.agents.findPredecessorReplacement(namespaceId, agentId);
+      if (
+        replacement?.phase !== "stopping" ||
+        replacement.candidateRevisionId !== revisionId ||
+        replacement.executionIdentity === undefined ||
+        replacement.completionStartedAt === undefined
+      ) {
+        return [];
+      }
+      const agent = await view.agents.findAgent(namespaceId, agentId);
+      if (replacement.predecessorRevisionId !== agent?.activeRevisionId) {
+        return [];
+      }
+      const predecessor = await view.revisions.findRevision(
+        namespaceId,
+        agentId,
+        replacement.predecessorRevisionId,
+      );
+      return predecessor !== undefined &&
+        predecessor.revision < candidate.revision &&
+        predecessor.compute.id === this.compute.id &&
+        predecessor.compute.implementation === this.compute.implementation
+        ? [predecessor]
+        : [];
+    });
     try {
-      await this.stopPredecessors(
-        claim,
-        revisions.filter((candidate) => candidate.revision < revision.revision),
-        drain,
-        async (listed) => revisions.find((candidate) => candidate.id === listed.id),
+      await this.stopPredecessors(claim, targets, drain, async (listed) =>
+        targets.find((target) => target.id === listed.id),
       );
       return {};
     } catch (error) {

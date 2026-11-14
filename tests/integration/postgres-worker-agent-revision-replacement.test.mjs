@@ -1664,6 +1664,77 @@ revisionTest(
   },
 );
 
+test(
+  "planned replacement recovers a committed predecessor stop after its only claim expires",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const owner = await fixture.agent("completion-handoff-recovery", {
+      executionMode: "dedicated",
+    });
+    const driver = countingExclusiveCompute(fixture);
+    const events = [];
+    let committed = false;
+    let releaseHandoff;
+    const handoff = new Promise((resolve) => {
+      releaseHandoff = resolve;
+    });
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async (_previous, handoffContext) => {
+      assert.equal(await handoffContext.recordExecutionIdentity("executor-committed"), true);
+      await handoffContext.commitStopping("executor-committed");
+      committed = true;
+      await handoff;
+      return "ready";
+    };
+    await fixture.start(driver.compute);
+    const earlier = await fixture.revision(owner, 1);
+    await fixture.work(earlier, "succeeded");
+    const first = await fixture.revision(owner, 2);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const earlierStops = driver.count(earlier);
+    assert.equal(earlierStops, 1);
+    const candidate = await fixture.revision(owner, 3);
+    await recordPlannedReplacement(fixture, owner, first, candidate);
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    let claim;
+    try {
+      await waitFor("committed handoff before predecessor stop", () => committed || undefined);
+      const boundary = await fixture.state.read((view) =>
+        view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
+      );
+      assert.equal(boundary?.phase, "stopping");
+      assert.equal(boundary.predecessorRevisionId, first.id);
+      assert.equal(boundary.candidateRevisionId, candidate.id);
+      assert.equal(boundary.executionIdentity, "executor-committed");
+      claim = await fixture.work(candidate, "claimed");
+      assert.equal(claim.attempt_count, 1);
+      assert.equal(driver.count(first), 0);
+      assert.equal(driver.preparations(candidate), 0);
+    } finally {
+      const stopping = fixture.stop();
+      releaseHandoff();
+      await stopping;
+    }
+    assert.ok(events.some((event) => event.event === "worker.pass-interrupted"));
+    assert.equal((await fixture.expireClaim(candidate, claim.claim_token)).rowCount, 1);
+    await denyDeploy(fixture, owner);
+    await fixture.start(driver.compute);
+    await fixture.work(candidate, "failed_permanent");
+    assert.equal(driver.preparations(candidate), 0);
+    assert.equal(driver.count(first), 1, "recovery must stop the exact committed predecessor");
+    assert.equal(driver.running.has(first.id), false);
+    assert.equal(
+      driver.count(earlier),
+      earlierStops,
+      "recovery must leave other predecessors alone",
+    );
+    assert.equal((await fixture.workResult(candidate)).rows[0].reason_code, "AUTHORIZATION_DENIED");
+    assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+  },
+);
+
 revisionTest(
   "an expired planned-completion cutoff forces the shared stop before preparing the successor",
   async (fixture) => {

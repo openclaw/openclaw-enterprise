@@ -366,12 +366,11 @@ Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
 On `SIGTERM` or `SIGINT`, shutdown aborts in-flight work, waits for the loop,
 removes readiness, closes the other parts and then PostgreSQL, and emits `worker.stopped`.
 
-Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
-work, failure of a still-provisioning Namespace targeted for `ready`, and audit
-evidence, so final-attempt crashes cannot strand provisioning. At the limit, one more attempt
-goes to a deployment that published its version (`ACTIVE_REVISION_RECOVERY`;
-a failed retry keeps the active runtime) or whose predecessor stop yielded
-(`PREDECESSOR_STOP_RECOVERY`).
+`PostgresWorkQueue.recoverStale()` atomically fails exhausted Work and affected
+provisioning Namespaces with audit evidence. One extra attempt protects a published
+version (`ACTIVE_REVISION_RECOVERY`) or finishes a yielded stop or committed planned
+handoff (`PREDECESSOR_STOP_RECOVERY`). Handoff recovery stops the recorded selected
+predecessor even if the worker denies candidate preparation.
 
 ## Debugging and Verification
 
