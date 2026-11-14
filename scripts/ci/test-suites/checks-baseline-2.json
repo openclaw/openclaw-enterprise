@@ -65,7 +65,7 @@
     "tests/integration/repository-credentials-package.test.ts",
     "tests/integration/package-prepack.test.ts",
     "tests/integration/repository-credentials-restart.test.ts",
-    "tests/conformance/plugin-driver.test.mjs",
+    "tests/conformance/plugin-driver.test.ts",
     "tests/integration/ci-image-reconciliation.test.ts",
     "tests/conformance/repository-runtime-material.test.ts",
     "tests/integration/repository-credentials-server-timeout.test.ts",
@@ -454,7 +454,7 @@
       "path": "tests/conformance/plugin-runtime-policy.test.ts"
     },
     {
-      "path": "tests/conformance/plugin-driver.test.mjs"
+      "path": "tests/conformance/plugin-driver.test.ts"
     },
     {
       "path": "tests/conformance/slack-channel-directory.test.ts"
