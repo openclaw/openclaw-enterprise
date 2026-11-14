@@ -103,7 +103,7 @@ runs:
       run: |
         node --input-type=module <<'NODE'
         import { appendFileSync } from 'node:fs';
-        import { loadTestSuites } from './scripts/ci/test-suites.mjs';
+        import { loadTestSuites } from './scripts/ci/test-suites.ts';
         import { isOpenShellLane } from './scripts/ci/openshell-full-integration.ts';
         const view = process.env.OCC_CI_SUITE_VIEW;
         const name = process.env.CI_SELECTED_LANE;
@@ -461,7 +461,7 @@ runs:
       id: cleanup-lane
       if: always()
       shell: bash
-      run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+      run: node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
     - name: Stop memory sampling
       if: always() && steps.memory-sampler.outputs.pid != ''
       continue-on-error: true

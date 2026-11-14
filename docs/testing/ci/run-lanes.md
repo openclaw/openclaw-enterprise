@@ -32,7 +32,7 @@ To find the owning lane for a file name or path fragment, run from the repositor
 
 ```sh
 node --input-type=module - local-first-agent <<'JS'
-import { loadTestSuites } from './scripts/ci/test-suites.mjs';
+import { loadTestSuites } from './scripts/ci/test-suites.ts';
 
 const { lanes } = loadTestSuites('scripts/ci/test-suites.json');
 
@@ -300,7 +300,7 @@ state file until cleanup completes.
 ```sh
 corepack pnpm exec node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>
 node scripts/ci/run-tests.mjs run <lane> --state <private-state-file> --results <results-file>
-node scripts/ci/cleanup.mjs --state <private-state-file>
+node scripts/ci/cleanup.ts --state <private-state-file>
 ```
 
 Run cleanup after preparation or test failures too. See [local browser diagnostics](../local.md#browser-failure-diagnostics) and the [CI flow](../../flows/github-actions-testing.md) for failure evidence.

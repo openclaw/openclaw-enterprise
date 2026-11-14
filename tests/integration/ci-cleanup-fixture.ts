@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 export const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-export const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
+export const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.ts");
 
 export async function fixture(t: TestContext) {
   const root = await temporaryDirectory(t, "ci-cleanup-test-");

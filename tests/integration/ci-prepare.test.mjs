@@ -20,13 +20,13 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.ts";
-import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
+import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.ts";
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
-import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
+import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   assertStderrMatch,
@@ -507,7 +507,7 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
       const { directory } = JSON.parse(await readFile(contentionPath, "utf8"));
       const cleanup = await spawnResult(
         process.execPath,
-        [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
+        [join(repositoryRoot, "scripts/ci/cleanup.ts"), "--state", statePath],
         { env: { ...process.env, OCC_DOCKER_BIN: docker } },
       );
       assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "foreign bootstrap");
@@ -595,7 +595,7 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
           : "unrelated content";
       const cleanup = await spawnResult(
         process.execPath,
-        [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
+        [join(repositoryRoot, "scripts/ci/cleanup.ts"), "--state", statePath],
         { env: { ...process.env, OCC_DOCKER_BIN: docker } },
       );
 
@@ -1867,6 +1867,8 @@ process.exit(73);
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/test-suites.ts",
+      "scripts/ci/openshell-full-integration.ts",
       "scripts/ci/resource-names.ts",
       "scripts/ci/test-suites/images-packaging.json",
       ".github/workflows/ci-image-cache.yml",
@@ -3387,7 +3389,7 @@ export async function readDefaultCollectorImage(): Promise<never> {
 const prepareUrl = ${JSON.stringify(prepareUrl)};
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === "./logging.mjs" && context.parentURL === prepareUrl) {
+    if (specifier === "./logging.ts" && context.parentURL === prepareUrl) {
       return { url: import.meta.url, shortCircuit: true };
     }
     return nextResolve(specifier, context);

@@ -47,7 +47,7 @@ To qualify one Agent after repository-binding removal, set `file` to
 prerequisites below; pass `--selected-file "$file"` to
 `scripts/ci/prepare.mjs --lane openshell`, then `--file "$file"` to
 `scripts/ci/run-tests.mjs run openshell`, using the same private `--state "$state"`.
-Always run `node scripts/ci/cleanup.mjs --state "$state"`, even after preparation
+Always run `node scripts/ci/cleanup.ts --state "$state"`, even after preparation
 or execution fails. The fixture owns a disposable Kubernetes control plane and
 PostgreSQL, a real OpenShell deployment, and a controlled HTTPS Git issuer. It requires
 authorized model credentials and immutable controller/runtime images matching
@@ -250,7 +250,7 @@ and fails immediately if managed policy selects a restricted sandbox.
 Missing prerequisites fail the lane. Always clean up:
 
 ```sh
-node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
+node scripts/ci/cleanup.ts --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
 
 For scratch, select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts`

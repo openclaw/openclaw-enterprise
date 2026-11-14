@@ -4,7 +4,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { oidcEnrollmentPolicy } from "../../apps/controller/src/auth/oidc-enrollment.ts";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -22,7 +22,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import {
   loadInstallationConfiguration,
@@ -40,7 +40,7 @@ import { helmTemplate } from "../helpers/production-chart.mjs";
 import {
   RenderRefusal,
   renderInstallationProfile,
-} from "../../scripts/render-installation-profile.mjs";
+} from "../../scripts/render-installation-profile.ts";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -171,7 +171,7 @@ function renderCli(
       process.execPath,
       [
         ...(dnsServer === undefined ? [] : ["--import", dnsPreload]),
-        "scripts/render-installation-profile.mjs",
+        "scripts/render-installation-profile.ts",
         "--profile",
         profile,
         "--input",
@@ -360,7 +360,61 @@ async function assertFieldRefusals(profile, input, field, values, message) {
   }
 }
 
-test("renderer supports exactly the openclaw and codex profiles", () => {
+test("renderer supports exactly the openclaw and codex profiles", (t) => {
+  const renderer = join(repository, "scripts/render-installation-profile.ts");
+  const directory = temporaryDirectorySync(t, "oce-profile-cli-");
+  const link = join(directory, "renderer.ts");
+  symlinkSync(renderer, link);
+  const usage = [
+    "Usage: node scripts/render-installation-profile.ts --profile openclaw|codex \\",
+    "  --input <site-inputs.json> --out-dir <rendered-directory>",
+    "",
+    "The renderer writes values.yaml, installation.yaml, and preflight.json. Missing",
+    "or invalid required inputs write preflight.json and exit nonzero.",
+    "",
+  ].join("\n");
+
+  // Direct invocation and an external symlink must both execute the same command.
+  for (const entry of [renderer, link]) {
+    const help = spawnSync(process.execPath, [entry, "--help"], {
+      cwd: repository,
+      encoding: "utf8",
+    });
+    assert.equal(help.status, 0, help.stderr);
+    assert.equal(help.signal, null);
+    assert.equal(help.stdout, usage);
+    assert.equal(help.stderr, "");
+  }
+
+  const unsupported = spawnSync(process.execPath, [renderer, "--unsupported"], {
+    cwd: repository,
+    encoding: "utf8",
+  });
+  assert.equal(unsupported.status, 1, unsupported.stderr);
+  assert.equal(unsupported.signal, null);
+  assert.equal(unsupported.stdout, "");
+  assert.equal(
+    unsupported.stderr,
+    `render-installation-profile: unsupported argument --unsupported.\n\n${usage}\n`,
+  );
+
+  // Importing the renderer must stay inert even when argv[1] points to it.
+  const imported = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `await import(${JSON.stringify(pathToFileURL(renderer).href)});`,
+      renderer,
+      "--unsupported",
+    ],
+    { cwd: repository, encoding: "utf8" },
+  );
+  assert.equal(imported.status, 0, imported.stderr);
+  assert.equal(imported.signal, null);
+  assert.equal(imported.stdout, "");
+  assert.equal(imported.stderr, "");
+
   // A real process: the stdout summary and the files it writes.
   const openclaw = renderCli("openclaw", baseInput());
   assert.equal(openclaw.summary.ok, true);
@@ -502,8 +556,13 @@ test("profiles reject invalid Helm release names before emitting deployment file
             { ...input, controlPlane: { ...input.controlPlane, releaseName } },
             directory,
           ),
-        (error) =>
-          error.status === 1 && /controlPlane.releaseName/.test(error.profileRendererOutput),
+        (error) => {
+          assert.equal(error.status, 1);
+          assert.equal(error.signal, null);
+          assert.equal(error.stderr, "");
+          assert.equal(error.stdout, readFileSync(join(directory, "preflight.json"), "utf8"));
+          return true;
+        },
       );
       const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
       assert.equal(preflight.ok, false);
@@ -578,7 +637,7 @@ test("profile renderer refuses input paths owned by its output directory without
             execFileSync(
               process.execPath,
               [
-                "scripts/render-installation-profile.mjs",
+                "scripts/render-installation-profile.ts",
                 "--profile",
                 "openclaw",
                 "--input",
@@ -626,7 +685,7 @@ test("failed rerenders remove stale deployable artifacts from a reused directory
         execFileSync(
           process.execPath,
           [
-            "scripts/render-installation-profile.mjs",
+            "scripts/render-installation-profile.ts",
             "--profile",
             profile,
             "--input",
@@ -652,7 +711,7 @@ test("failed rerenders remove stale deployable artifacts from a reused directory
         execFileSync(
           process.execPath,
           [
-            "scripts/render-installation-profile.mjs",
+            "scripts/render-installation-profile.ts",
             "--profile",
             profile,
             "--input",
@@ -2200,7 +2259,6 @@ function checkoutWithoutDependencies() {
   const root = mkdtempSync(join(tmpdir(), "oce-profile-checkout-"));
   const sources = [
     "package.json",
-    "scripts/render-installation-profile.mjs",
     "scripts/render-installation-profile.ts",
     "scripts/lib/prepared-repository-installation.mjs",
     "deploy/profiles",

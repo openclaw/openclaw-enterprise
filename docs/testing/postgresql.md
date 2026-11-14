@@ -36,7 +36,7 @@ release that accepts `up --wait`, such as 1.6.0. Then run:
   umask 077
   PG_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-postgres.XXXXXX")"
   printf 'Run directory: %s\n' "$PG_RUN_DIR"
-  trap 'status=$?; node scripts/ci/cleanup.mjs --state "$PG_RUN_DIR/state.json" || status=1; exit "$status"' EXIT
+  trap 'status=$?; node scripts/ci/cleanup.ts --state "$PG_RUN_DIR/state.json" || status=1; exit "$status"' EXIT
   node scripts/ci/prepare.mjs --lane postgres-application \
     --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/owner.env"
   node scripts/ci/run-tests.mjs run postgres-application \
@@ -58,7 +58,7 @@ env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
 Preparation must run first. Do not connect other clients to the prepared
 file database: the suite copies it. The suite rejects a standalone
 `OCC_TEST_DATABASE_URL` without prepared ownership. If interrupted, run
-`node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json` and
+`node scripts/ci/cleanup.ts --state /printed/run/directory/state.json` and
 retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
@@ -96,7 +96,7 @@ is still active. If its cleanup did not finish, run the printed command from the
 original checkout:
 
 ```sh
-node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json
+node scripts/ci/cleanup.ts --state /printed/run/directory/state.json
 ```
 
 Cleanup uses the recorded Compose project, port, and bootstrap file. It tears

@@ -19,7 +19,7 @@ OCE version and publishes a Helm chart. Image-only publication is the default.
 - `.github/workflows/container-publish.yml:jobs.validate`: manual dispatch on
   `main` with its exact source SHA, successful main-push CI run ID, publish flag,
   optional mutable image tag, and opt-in chart flag.
-- `scripts/ci/container-release.mjs:main`: validation, smoke, seal, and publication
+- `scripts/ci/container-release.ts:main`: validation, smoke, seal, and publication
   commands called by the workflow.
 - `scripts/ci/chart-release.ts:publish`: version-tag and chart publication after
   the image receipt exists.
@@ -57,7 +57,7 @@ Source review does not prove a hosted build or registry transfer succeeded.
 
 ### 1. Admit the source and initialize preparation
 
-`scripts/ci/container-release.mjs:validate` checks the trusted workflow, exact
+`scripts/ci/container-release/admission.ts:validate` checks the trusted workflow, exact
 main SHA, successful CI identity, approved Node base digest, and [optional image alias](../release/containers.md#prepare-and-publish).
 A blank alias selects `latest`. Invalid or reserved aliases stop preparation.
 No-push preparation accepts private and public source only when `PUBLISH` is
@@ -185,12 +185,12 @@ Final image checks require `@openclaw/proc-safe/reaper` to return true from
 ### 2. Verify and assemble both platform variants
 
 Fresh native runners execute `.github/workflows/container-check.yml:jobs.runtime-smoke`.
-`container-release.mjs:runtimeBuild` binds `build.json` (`native: false`) to source,
+`scripts/ci/container-release/oci.ts:runtimeBuild` binds `build.json` (`native: false`) to source,
 workflow, run/attempt, CI, base, platform and digest. Receivers verify that identity
 and referenced OCI blobs, rejecting preexisting `platform.json`.
 `built-runtime-*` cannot qualify for publication. Controllers retain one-job build/smoke.
 
-`scripts/ci/container-release.mjs:smoke` requires the selected native architecture.
+`scripts/ci/container-release/native-smoke.ts:smoke` requires the selected native architecture.
 It binds the OCI export to the build digest, loads it with Skopeo, checks the
 loaded config and architecture, and runs startup tests by immutable image ID
 with native deadlines. For containerd, `scripts/upgrade-image-identity.py` exports
@@ -201,7 +201,7 @@ run/attempt, CI, image, base and platform digest. Failed smoke cannot upload
 `platform-*` artifacts; recovery requires both runtime smoke jobs to succeed.
 
 `.github/workflows/container-publish.yml:jobs.assemble` downloads both qualified
-platform artifacts from this run/attempt. `container-release.mjs:assemble`
+platform artifacts from this run/attempt. `scripts/ci/container-release/oci.ts:assemble`
 rejects receipt, platform, size or hash mismatches before linking blobs into one
 OCI layout. Descriptors retain media type, digest, size and platform, excluding
 exporter annotations such as timestamps and local names. Assembly writes the
@@ -217,7 +217,7 @@ the runner remains available; runner loss can prevent cleanup.
 
 ### 3. Seal and enter publication
 
-`scripts/ci/container-release.mjs:seal` rechecks the platform contents and records
+`scripts/ci/container-release/publication.ts:seal` rechecks the platform contents and records
 the archive hash, index digest, each platform’s manifest and config digests,
 source, workflow run and attempt, CI identity, and approved base. Both prepared artifacts must exist
 before `.github/workflows/container-publish.yml:jobs.publish` can start. The
@@ -228,7 +228,7 @@ for retention and package access.
 
 ### 4. Publish and hand off immutable references
 
-`scripts/ci/container-release.mjs:publishPrepared` checks the selected alias,
+`scripts/ci/container-release/publication.ts:publishPrepared` checks the selected alias,
 both seals, archive hashes, index digests, and destinations before either copy.
 During transfer it rechecks source, CI, environment branch policy, and packages.
 It keeps matching source tags and fails on conflicts or ambiguous registry errors.

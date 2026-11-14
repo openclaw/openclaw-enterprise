@@ -34,17 +34,20 @@ function hasFiles(lane: unknown): lane is { files: { path: string }[] } {
 
 export function projectFullIntegrationOpenShell(manifest: {
   lanes: Record<string, unknown>;
-  groups: Record<string, string[]>;
+  groups?: unknown;
 }) {
   const { openshell: original, ...otherLanes } = manifest.lanes;
-  const full = manifest.groups?.full;
+  const groups = manifest.groups;
   if (
     !hasFiles(original) ||
-    !Array.isArray(full) ||
-    full.filter((lane) => lane === "openshell").length !== 1 ||
+    typeof groups !== "object" ||
+    groups === null ||
+    !("full" in groups) ||
+    !Array.isArray(groups.full) ||
+    groups.full.filter((lane) => lane === "openshell").length !== 1 ||
     policyLane in otherLanes ||
     installerLane in otherLanes ||
-    "openshell" in manifest.groups
+    "openshell" in groups
   ) {
     throw new Error("Full Integration requires the canonical OpenShell lane exactly once.");
   }
@@ -66,8 +69,10 @@ export function projectFullIntegrationOpenShell(manifest: {
       [installerLane]: { ...original, files: installers },
     },
     groups: {
-      ...manifest.groups,
-      full: full.flatMap((lane) => (lane === "openshell" ? [policyLane, installerLane] : [lane])),
+      ...groups,
+      full: groups.full.flatMap((lane: unknown) =>
+        lane === "openshell" ? [policyLane, installerLane] : [lane],
+      ),
       openshell: [policyLane, installerLane],
     },
   };

@@ -24,7 +24,7 @@ import {
   waitMilliseconds,
 } from "../../scripts/ci/full-integration-reuse.ts";
 import { projectSkipperRunnerReceipt } from "../../scripts/ci/skipper-release.ts";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 
 async function reuseFixture() {
   const rows = (await selectFreshLanes([], "skipped")).matrix.filter(
@@ -265,7 +265,7 @@ test("full coverage receipts require real case evidence and retain approved same
     spawnSync(
       process.execPath,
       [
-        join(repositoryRoot, "scripts/ci/cleanup.mjs"),
+        join(repositoryRoot, "scripts/ci/cleanup.ts"),
         "--state",
         join(fixtureRoot, "state", `${target}.json`),
         "--results",
@@ -2836,7 +2836,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(finalCleanup.if, "always()");
   assert.equal(
     finalCleanup.run,
-    'node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"',
+    'node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"',
   );
   const suites = JSON.parse(await read("scripts/ci/test-suites.json"));
   assert.ok(dispatcher.on.workflow_dispatch.inputs.lane.options.includes("dev-up-k3d"));

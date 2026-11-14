@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.ts";
-import { loadTestSuites } from "./test-suites.mjs";
+import { loadTestSuites } from "./test-suites.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import {
@@ -31,9 +31,9 @@ import {
   loadRuntimeArtifact,
   runtimeArtifactSelection,
 } from "./runtime-artifact.ts";
-import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
+import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.ts";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.mjs";
+import { runPostgresAdmin } from "./postgres-admin.ts";
 import {
   ANSI_COLOR,
   captureK3dDiagnostics,
@@ -43,7 +43,7 @@ import { redactCredentialLine } from "./k3d-node-log.ts";
 import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
 import { createK3dNodeImages } from "./k3d-node-images.ts";
 import { prepareGatewayRouting } from "./routing.ts";
-import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
+import { prepareLogging, readDefaultCollectorImage } from "./logging.ts";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.mjs";
@@ -57,7 +57,7 @@ import {
   readImageCodexProvenance,
   readRuntimeProvenance,
 } from "./runtime-provenance.ts";
-import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
+import { metricsMonitoringImages } from "./metrics-monitoring-images.ts";
 import {
   prepareRepositoryCredentials,
   prepareRepositoryCredentialsFile,
@@ -478,7 +478,7 @@ function execFile(command, args, options = {}) {
     };
     // Reuse cleanup's supervisor to anchor the group ID until its last signal.
     const child = processGroup
-      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+      ? fork(new URL("./cleanup-command.ts", import.meta.url), [], {
           ...spawnOptions,
           detached: true,
           execArgv: [],
@@ -787,7 +787,7 @@ async function ensurePostgresServer(statePath, state) {
       const quotedStatePath = `'${statePath.replaceAll("'", "'\\''")}'`;
       error.message +=
         `\nDocker subnet pools are exhausted. Clean this run's partial resources with:\n` +
-        `node scripts/ci/cleanup.mjs --state ${quotedStatePath}\n` +
+        `node scripts/ci/cleanup.ts --state ${quotedStatePath}\n` +
         `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
         `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
         `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
@@ -883,7 +883,7 @@ const ciPostgresSettings = Object.freeze([
   "SELECT pg_catalog.pg_reload_conf()",
 ]);
 
-// Administrative SQL on the lane's server, over its published port (postgres-admin.mjs). A
+// Administrative SQL on the lane's server, over its published port (postgres-admin.ts). A
 // failed database step carries the closed diagnostic contract run-tests.mjs reports.
 async function postgresAdmin(server, { database, statements, stage }) {
   try {

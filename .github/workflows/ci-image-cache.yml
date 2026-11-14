@@ -34,6 +34,8 @@ on:
       - scripts/build-runtime-assets.ts
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
+      - scripts/ci/test-suites.ts
+      - scripts/ci/openshell-full-integration.ts
       - scripts/ci/resource-names.ts
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
@@ -141,4 +143,4 @@ jobs:
           echo "source-sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Cleanup
         if: always()
-        run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/image-cache-warm.json"
+        run: node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/image-cache-warm.json"

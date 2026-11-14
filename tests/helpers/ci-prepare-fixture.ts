@@ -288,7 +288,7 @@ export async function fixtureImageCommands(
       env: { ...env, ...options?.env },
     });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
-  const cleanup = () => run("cleanup.mjs", ["--state", statePath]);
+  const cleanup = () => run("cleanup.ts", ["--state", statePath]);
   return {
     statePath,
     githubEnv,
