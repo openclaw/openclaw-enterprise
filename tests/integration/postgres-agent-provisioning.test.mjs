@@ -1359,20 +1359,37 @@ test(
   },
 );
 
+async function preparePermanentProvisioningFailure(context) {
+  const fixture = await createFixture(context);
+  const namespace = await fixture.bootstrapNamespace();
+  const secrets = await createProvisioningSecrets(fixture, namespace.id);
+  const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
+  const { workId, url } = admitted.data.provisioning;
+  const claim = await claimProvisioningWork(fixture.pool, workId);
+  const failure = {
+    code: "PROVISIONING_REJECTED",
+    message: PROVISIONING_NOT_COMPLETED,
+  };
+  async function recordFailure(unit) {
+    const current = await unit.provisioning.findByWorkId(workId);
+    await unit.provisioning.recordFailure(
+      claim,
+      {
+        completedPhase: current.completedPhase,
+        progress: { ...current.progress, error: failure },
+      },
+      { disposition: "permanent", ...failure },
+    );
+  }
+  return { fixture, namespaceId: namespace.id, workId, url, failure, recordFailure };
+}
+
 test(
   "provisioning status never pairs a job with a queue row from a later commit",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const fixture = await createFixture(context);
-    const namespace = await fixture.bootstrapNamespace();
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
-    const { workId, url } = admitted.data.provisioning;
-    const claim = await claimProvisioningWork(fixture.pool, workId);
-    const failure = {
-      code: "PROVISIONING_REJECTED",
-      message: PROVISIONING_NOT_COMPLETED,
-    };
+    const { fixture, workId, url, failure, recordFailure } =
+      await preparePermanentProvisioningFailure(context);
 
     // Stage the worker's permanent failure the way the worker writes it (job and queue row in
     // one transaction) and hold its commit open.
@@ -1385,15 +1402,7 @@ test(
       staged = resolve;
     });
     const committed = fixture.state.transact(async (unit) => {
-      const current = await unit.provisioning.findByWorkId(workId);
-      await unit.provisioning.recordFailure(
-        claim,
-        {
-          completedPhase: current.completedPhase,
-          progress: { ...current.progress, error: failure },
-        },
-        { disposition: "permanent", ...failure },
-      );
+      await recordFailure(unit);
       staged();
       await commitGate;
     });
@@ -1457,34 +1466,16 @@ test(
   "a provisioning failure takes the Namespace lock before its claimed work row",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const fixture = await createFixture(context);
-    const namespace = await fixture.bootstrapNamespace();
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
-    const { workId, url } = admitted.data.provisioning;
-    const claim = await claimProvisioningWork(fixture.pool, workId);
-    const failure = {
-      code: "PROVISIONING_REJECTED",
-      message: PROVISIONING_NOT_COMPLETED,
-    };
+    const { fixture, namespaceId, workId, url, failure, recordFailure } =
+      await preparePermanentProvisioningFailure(context);
 
     // Stopping or deleting a provisioned Agent locks the Namespace, then the Agent, then this
     // claimed work row (cancelByAgent). Hold the Namespace until the worker's permanent failure
     // waits on it; the waiting failure must not hold the work row yet, or the two deadlock.
     let committed;
     try {
-      await withNamespaceLockHeld(fixture.pool, namespace.id, async (lock) => {
-        committed = fixture.state.transact(async (unit) => {
-          const current = await unit.provisioning.findByWorkId(workId);
-          await unit.provisioning.recordFailure(
-            claim,
-            {
-              completedPhase: current.completedPhase,
-              progress: { ...current.progress, error: failure },
-            },
-            { disposition: "permanent", ...failure },
-          );
-        });
+      await withNamespaceLockHeld(fixture.pool, namespaceId, async (lock) => {
+        committed = fixture.state.transact(recordFailure);
         // Surface an early failure through the await below instead of an unhandled rejection.
         committed.catch(() => {});
         // No worker runs here, so the only backend that can wait on this lock is the failure's.
