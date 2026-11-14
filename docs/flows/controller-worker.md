@@ -358,7 +358,7 @@ claim reauthorizes its actor. Successor keys use strictly later time buckets des
 
 `worker.completed` reports the target, outcome, and code. On `namespace.ensure`
 and `namespace.delete`, it can report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
-from the current pass, kept out of the Driver observation.
+from the current pass, outside the Driver observation.
 A result links to the claim by its attempt ID. A repeat of the same pending
 state can skip `reconcile` and use `controller_work.deferred` for that attempt.
 Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
