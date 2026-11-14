@@ -1,14 +1,14 @@
-import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import test, { type TestContext } from "node:test";
 import type {
   ConfigurationDriver,
   ProvisionAgentBody,
-  AgentProvisioningResponse,
   SecretWire,
 } from "@openclaw-enterprise/contracts";
-import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import test, { type TestContext } from "node:test";
+import { AgentProvisioningResponse } from "../../packages/contracts/src/api/resources.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import type { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof createProvisioningFixture>>;
@@ -23,7 +23,7 @@ interface Dependencies {
   ) => Promise<Fixture>;
   createProvisioningConfigurationDriver: (options: { id: string }) => ConfigurationDriver;
   createProvisioningSecrets: (
-    fixture: Pick<Fixture, "request">,
+    fixture: Pick<Fixture, "request" | "requestChecked">,
     namespaceId: string,
   ) => Promise<Secrets>;
   provisioningBody: (namespaceId: string, secrets: Secrets) => ProvisionAgentBody;
@@ -55,7 +55,14 @@ function syntheticProvider() {
 }
 
 async function durableCounts(fixture: Fixture, namespaceId: string) {
-  const { rows } = await fixture.pool.query(
+  const { rows } = await fixture.pool.query<{
+    plans: number;
+    agents: number;
+    configurations: number;
+    revisions: number;
+    work: number;
+    success_audit: number;
+  }>(
     `SELECT
     (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS plans,
     (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents,
@@ -65,6 +72,7 @@ async function durableCounts(fixture: Fixture, namespaceId: string) {
     (SELECT count(*)::integer FROM occ.audit_events WHERE namespace_id = $1 AND action = 'openclaw.agents.provision' AND outcome = 'success') AS success_audit`,
     [namespaceId],
   );
+  assert.ok(rows[0]);
   return rows[0];
 }
 
@@ -106,7 +114,7 @@ export function registerChannelCurrentnessCases({
               { action: "create", resourceKind: "configuration" },
               { action: "operate", resourceKind: "secret" },
             ];
-            await fixture.pool.query(
+            await fixture.pool.query<Record<string, unknown>>(
               "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
               [
                 roleId,
@@ -119,11 +127,11 @@ export function registerChannelCurrentnessCases({
                 ),
               ],
             );
-            await fixture.pool.query(
+            await fixture.pool.query<Record<string, unknown>>(
               "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id) VALUES ($1, NULL, $2, NULL, $3, NULL, NULL)",
               [bindingId, principalId, roleId],
             );
-            await fixture.pool.query(
+            await fixture.pool.query<Record<string, unknown>>(
               "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
               [
                 targetRoleId,
@@ -132,7 +140,7 @@ export function registerChannelCurrentnessCases({
               ],
             );
             const restoreTarget = () =>
-              fixture.pool.query(
+              fixture.pool.query<Record<string, unknown>>(
                 "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id) VALUES ($1, NULL, $2, NULL, $3, NULL, NULL)",
                 [targetBindingId, principalId, targetRoleId],
               );
@@ -168,7 +176,7 @@ export function registerChannelCurrentnessCases({
             try {
               await boundary.entered;
               // Persist only the target-grant revocation. Native IAM and Secret operate remain real.
-              const revoked = await fixture.pool.query(
+              const revoked = await fixture.pool.query<Record<string, unknown>>(
                 "DELETE FROM occ.iam_access_bindings WHERE id = $1",
                 [targetBindingId],
               );
@@ -184,7 +192,8 @@ export function registerChannelCurrentnessCases({
               assert.deepEqual(await durableCounts(fixture, namespace.id), before);
               // Restoring the sole missing grant admits the same operation and validates once.
               await restoreTarget();
-              const accepted = await fixture.request<AgentProvisioningResponse["data"]>(
+              const accepted = await fixture.requestChecked(
+                AgentProvisioningResponse,
                 "POST",
                 `/namespaces/${namespace.id}/agents/provision`,
                 { body },
@@ -199,14 +208,22 @@ export function registerChannelCurrentnessCases({
             } finally {
               boundary.release();
               await pending;
-              await fixture.pool.query("DELETE FROM occ.iam_access_bindings WHERE id = $1", [
-                bindingId,
-              ]);
-              await fixture.pool.query("DELETE FROM occ.iam_roles WHERE id = $1", [roleId]);
-              await fixture.pool.query("DELETE FROM occ.iam_access_bindings WHERE id = $1", [
-                targetBindingId,
-              ]);
-              await fixture.pool.query("DELETE FROM occ.iam_roles WHERE id = $1", [targetRoleId]);
+              await fixture.pool.query<Record<string, unknown>>(
+                "DELETE FROM occ.iam_access_bindings WHERE id = $1",
+                [bindingId],
+              );
+              await fixture.pool.query<Record<string, unknown>>(
+                "DELETE FROM occ.iam_roles WHERE id = $1",
+                [roleId],
+              );
+              await fixture.pool.query<Record<string, unknown>>(
+                "DELETE FROM occ.iam_access_bindings WHERE id = $1",
+                [targetBindingId],
+              );
+              await fixture.pool.query<Record<string, unknown>>(
+                "DELETE FROM occ.iam_roles WHERE id = $1",
+                [targetRoleId],
+              );
             }
           });
         }
@@ -242,11 +259,9 @@ export function registerChannelCurrentnessCases({
             });
           const before = await durableCounts(fixture, namespace.id);
           const body = provisioningBody(namespace.id, secrets);
-          const pending = fixture.request<AgentProvisioningResponse["data"]>(
-            "POST",
-            `/namespaces/${namespace.id}/agents/provision`,
-            { body },
-          );
+          const pending = fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+            body,
+          });
           try {
             await boundary.entered;
             if (change === "delete") {
@@ -256,7 +271,7 @@ export function registerChannelCurrentnessCases({
                 `/namespaces/${namespace.id}/secrets/${secrets.slackBotToken.id}`,
               );
               assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
-              const retained = await fixture.pool.query(
+              const retained = await fixture.pool.query<Record<string, unknown>>(
                 "SELECT id FROM occ.secrets WHERE namespace_id = $1 AND id = $2",
                 [namespace.id, secrets.slackBotToken.id],
               );
@@ -282,9 +297,10 @@ export function registerChannelCurrentnessCases({
             } else {
               assert.equal(response.status, 202, JSON.stringify(response.body));
               assert.equal(calls(), 1, "unchanged ownership, including rotation, validates once");
-              assert.ok(response.data);
+              assert.ok(response.body);
+              const { data } = fixture.readResponse(AgentProvisioningResponse, response);
               fixture.cancelQueuedWorkAtTeardown(
-                response.data.provisioning.workId,
+                data.provisioning.workId,
                 "currentness case complete",
               );
               const replay = await fixture.request(

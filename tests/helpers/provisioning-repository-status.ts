@@ -10,18 +10,17 @@ import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { repositoryBoundary } from "./postgres-worker-revision-support.mjs";
 import { SAVED_REPOSITORY_SELECTION_NOT_APPROVED } from "./refusal-text.mjs";
 
+import type { createProvisioningFixture } from "../integration/postgres-agent-provisioning-fixture.ts";
+import { AgentProvisioningStatusResponse } from "../../packages/contracts/src/api/resources.ts";
+import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import { Check } from "typebox/value";
+
 type Target = {
-  fixture: {
+  fixture: Pick<
+    Awaited<ReturnType<typeof createProvisioningFixture>>,
+    "request" | "requestChecked"
+  > & {
     state: PostgresPlatformState;
-    request: (
-      method: string,
-      path: string,
-    ) => Promise<{
-      status: number;
-      body: unknown;
-      data: unknown;
-      error?: { message: string };
-    }>;
     revokeCurrentPrincipal: () => Promise<unknown>;
     cancelProvisioningAtTeardown: (namespaceId: string, agentId: string) => void;
   };
@@ -85,7 +84,7 @@ export async function assertProvisioningRepositoryStatus(
     calls.push("listOptions");
     throw new Error("withdrawn repository access");
   };
-  const status = await fixture.request("GET", url);
+  const status = await fixture.requestChecked(AgentProvisioningStatusResponse, "GET", url);
   assert.equal(status.status, 200, JSON.stringify(status.body));
   assert.deepEqual(status.data, failed);
   assert.deepEqual(calls, []);
@@ -102,7 +101,8 @@ export async function assertProvisioningRepositoryStatus(
   assert.equal(cancelled?.record.status, "cancelled");
   const retry = await fixture.request("POST", `${url}/retry`);
   assert.equal(retry.status, 409, JSON.stringify(retry.body));
-  assert.equal(retry.error?.message, SAVED_REPOSITORY_SELECTION_NOT_APPROVED);
+  assert.ok(Check(ErrorResponse, retry.body));
+  assert.equal(retry.body.error.message, SAVED_REPOSITORY_SELECTION_NOT_APPROVED);
   assert.deepEqual(calls, ["resolveBindings"]);
   assert.deepEqual(await snapshot(), cancelled, "refused retry must not requeue work");
 

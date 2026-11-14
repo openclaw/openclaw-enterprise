@@ -1314,7 +1314,7 @@ for (const mode of ["unavailable", "refused"] as const) {
 }
 
 // A revision read Restriction can refuse the first deployment to a caller its provisioning job
-// still answers (tests/integration/postgres-agent-provisioning.test.mjs). That caller would find
+// still answers (tests/integration/postgres-agent-provisioning.test.ts). That caller would find
 // nothing on the Deployment tab, so the form keeps following the job, asks once whether the
 // deployment is readable, and opens the Agent when the job succeeds, as before handoff opened it.
 test("Dedicated Agent creation keeps following the job when the first deployment is unreadable", async (t) => {

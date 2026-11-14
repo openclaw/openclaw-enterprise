@@ -10,15 +10,29 @@ import { waitForLockWaiter } from "./postgres-lock-waits.mjs";
 //   holding connection, which fails if the waiting transaction already holds that row.
 // When `probe` settles the transaction rolls back, releasing the lock, and the helper returns
 // `probe`'s result. After a failure the connection is discarded instead of returned to the pool.
+/**
+ * @template T
+ * @param {import("pg").Pool} pool
+ * @param {string} namespaceId
+ * @param {(lock: {
+ *   waitForBlocked: (description: string) => Promise<number>,
+ *   assertNotHeld: (sql: string, params: unknown[], message: string) => Promise<void>
+ * }) => Promise<T>} probe
+ * @returns {Promise<T>}
+ */
 export async function withNamespaceLockHeld(pool, namespaceId, probe) {
   const holder = await pool.connect();
   let failed = false;
   try {
     await holder.query("BEGIN");
-    const backend = await holder.query("SELECT pg_backend_pid() AS pid");
+    const backend = await /** @type {Promise<import("pg").QueryResult<{pid: number}>>} */ (
+      holder.query("SELECT pg_backend_pid() AS pid")
+    );
+    const current = backend.rows[0];
+    assert.ok(current);
     await holder.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [namespaceId]);
     const result = await probe({
-      waitForBlocked: (description) => waitForLockWaiter(pool, backend.rows[0].pid, description),
+      waitForBlocked: (description) => waitForLockWaiter(pool, current.pid, description),
       assertNotHeld: (sql, params, message) =>
         assert.doesNotReject(holder.query(sql, params), message),
     });
