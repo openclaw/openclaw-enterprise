@@ -356,6 +356,17 @@ test("metrics preserves ordinary query rejection and discards its client", async
   assertDiscarded(f);
 });
 
+test("metrics refuses a missing Installation and discards its client", async (t) => {
+  const { f, operation } = await startCollection(t, (client) => client.resolveQuery({ rows: [] }));
+  const [collectorListener] = f.client.listeners("error");
+  assert.ok(collectorListener);
+  f.client.resolveQuery({ rows: [] });
+  await assert.rejects(operation, { message: "Metrics require the singleton Installation." });
+  assertDiscarded(f);
+  // The pool owns its listener after release. The collector must remove its own.
+  assert.ok(!f.client.listeners("error").includes(collectorListener));
+});
+
 test("metrics returns a healthy client with only the pool's idle listener retained", async (t) => {
   const f = controlledMetricsPool();
   const operation = new PostgresMetricsSnapshot(f.pool).collect();

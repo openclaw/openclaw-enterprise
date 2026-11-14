@@ -342,6 +342,37 @@ test("source API rejects routing inputs and registers independently authorized d
   ]);
 });
 
+test("credential source deletion identifies its registration fence without parsing the message", async (t) => {
+  const f = await fixture(t);
+  const created = await f.create("recent source");
+  assert.equal(created.status, 201);
+  const path = f.path + "/" + created.data.id;
+
+  // Retry guidance is returned only after the source's authorization and lookup.
+  const denied = await f.request("DELETE", path, { session: null });
+  assert.equal(denied.status, 401);
+  assert.equal(denied.body.error.reason, undefined);
+  assert.equal(denied.headers.get("retry-after"), null);
+
+  // Removal cannot discard the record while a late Gateway registration could still complete.
+  const pending = await f.request("DELETE", path);
+  assert.equal(pending.status, 503);
+  assert.equal(pending.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(pending.body.error.reason, "credential_registration_pending");
+  assert.equal(pending.headers.get("retry-after"), "70");
+  assert.equal((await f.request("GET", path)).data.state, "deleting");
+
+  // This is the same source and supported retry, after its real controller fence expires.
+  f.passRegistrationFence();
+  const deleted = await f.request("DELETE", path);
+  assert.equal(deleted.status, 204);
+  assert.equal(deleted.headers.get("retry-after"), null);
+  const absent = await f.request("GET", path);
+  assert.equal(absent.status, 404);
+  assert.equal(absent.body.error.reason, undefined);
+  assert.equal(absent.headers.get("retry-after"), null);
+});
+
 test("old source routing records cannot deliver credentials and remain readable and removable", async (t) => {
   const endpoint = "https://models.example.test/v1";
   const f = await fixture(t, {

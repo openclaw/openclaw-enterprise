@@ -1,7 +1,7 @@
 import {
   CODEX_FAILURE_OUTPUT_CLASSES,
   RUNTIME_DIAGNOSTIC_CODES,
-} from "../packages/contracts/src/runtime-failure.mjs";
+} from "../packages/contracts/src/runtime-failure.ts";
 
 import type { RuntimeLogContainerSourceId } from "../packages/contracts/src/runtime-logs.ts";
 import type { FirstAgentApi } from "./first-agent-api.ts";

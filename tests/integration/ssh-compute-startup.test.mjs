@@ -5,7 +5,7 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { testPool } from "../helpers/postgres-database.mjs";
 
 function installation() {

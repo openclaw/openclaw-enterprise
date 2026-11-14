@@ -18,6 +18,8 @@ Use an authorized test channel in one Slack workspace. Both the gateway bot and 
 
 Install Helm and yq. The fixture renders the production Helm chart and applies its Slack proxy Deployment, Service, ServiceAccount, and NetworkPolicies in the disposable namespace. The API and Gateway use the proxy Service DNS name; the proxy permits Slack HTTPS only. The test checks selector-scoped Gateway egress and denies Codex Agent access to the proxy. This proves the rendered resources, not a Helm release installation or upgrade lifecycle.
 
+Before provisioning the Slack-enabled topology or posting, the focused test checks each bot’s existing `conversations.info` response. Each response must identify the exact configured public or private channel and explicitly report boolean `false` for both `is_im` and `is_mpim`. This rule also applies to legacy private channels. The test rejects malformed or contradictory type flags. The separate membership check reports which bot needs a channel invitation.
+
 Put these settings in the private environment file:
 
 | Variable                          | Value                                                                            |
@@ -36,9 +38,16 @@ The test posts a real message and leaves it in the channel. It checks the reply 
 
 ## Service-account coverage
 
-`tests/conformance/service-account-driver.test.ts` and `tests/integration/occ-api.test.mjs` cover lifecycle and API behavior with synthetic providers. The loopback HTTPS Backend regression requires `openssl`. [PostgreSQL tests](postgresql.md) cover persistence and deletion constraints. These do not prove live provider credential revocation or a model turn.
+The [ServiceAccount Driver conformance suite](../../tests/conformance/service-account-driver.test.ts)
+covers the provider contract with synthetic data. The
+[ServiceAccount HTTP suite](../../tests/integration/occ-service-account-lifecycle.test.ts)
+covers native accounts, credential privacy, and Namespace access.
+The [PostgreSQL compensation suite](../../tests/integration/postgres-service-account-compensation.test.ts)
+checks forced deletion and audit details with PostgreSQL and loopback HTTPS
+fixtures. It requires `openssl`. Use the [PostgreSQL setup](postgresql.md).
+Live provider revocation and model turns require separate verification.
 
-[`postgres-service-account-issuance-recovery.test.mjs`](../../tests/integration/postgres-service-account-issuance-recovery.test.mjs)
+[`postgres-service-account-issuance-recovery.test.ts`](../../tests/integration/postgres-service-account-issuance-recovery.test.ts)
 runs the ChatGPT ServiceAccount Driver through OCC over PostgreSQL after an
 issuance that never committed. The next issuance and account deletion reclaim
 the leftover Secret and credential. Ending a session during reclamation must

@@ -1,8 +1,16 @@
 import { createHash } from "node:crypto";
 
-export function githubProviderOrigin(value: string): string {
+export function parseCanonicalGitHubOrigin(value: string): URL | undefined {
   const url = new URL(value);
   if (url.protocol !== "https:" || url.origin !== value || url.username || url.password) {
+    return undefined;
+  }
+  return url;
+}
+
+export function githubProviderOrigin(value: string): string {
+  const url = parseCanonicalGitHubOrigin(value);
+  if (url === undefined) {
     throw new Error("invalid-endpoint");
   }
   return url.origin;

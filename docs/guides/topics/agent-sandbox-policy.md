@@ -39,11 +39,12 @@ instead, and policy changes, including turning editing on, are refused. Policy r
    directly. Check the rules to add, update, or remove. The preview shows field
    errors without saving or applying. **Back to editing** retains the proposal.
 6. Choose **Save for later** to persist the policy without changing the current
-   revision, or **Save and apply to current revision** to save and request live
-   application. Wait for **Applied** before retrying the original tool action.
+   revision, or **Save and apply to current revision** to save the reviewed rules and queue
+   their application together. Wait for **Applied** before retrying the original tool action.
    A successful tool result provides the final execution evidence.
-   If the Console cannot confirm which rules were saved, open **Manage rules**,
-   select **Refresh policy**, and inspect the saved version before applying it.
+   If the combined response is lost, the Console reads the policy again. If that
+   read fails, select **Refresh policy** in the editor to see the saved version
+   and application status before making another change.
 7. To apply a policy saved earlier, choose **Apply saved rules** on the card or
    in the **Manage rules** footer. This action is unavailable while the proposal
    has unsaved edits. **Applying…** waits for provider confirmation. If application
@@ -57,9 +58,10 @@ The schema supplies field descriptions and constraints. Shapes without a form
 use a schema-aware JSON editor. A preview for an older draft or policy version
 cannot replace newer edits. An addition outside the ceiling is rejected with a visible error. Correct the
 retained edit and review it again; the saved policy remains unchanged and no
-application is requested. If saving succeeds but application is rejected, the
-error identifies the saved version. Refresh and inspect the current revision
-before retrying application; the saved change has not been rolled back.
+application is requested. If the running revision changes before
+OCC accepts a combined save and apply, refresh the Agent and review the edit again.
+If the request outcome is uncertain, refresh the saved version and application
+status before submitting another change.
 
 An administrator must first enable editing for the Agent and separately grant
 exact-Agent `manage_policy` and exact-SandboxPolicy `update`. Viewing the policy

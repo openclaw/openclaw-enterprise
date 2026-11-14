@@ -23,10 +23,10 @@ both the admitted revision and the execution. The deployment selects the composi
 execution identity. Protection is explicit even with no plan or bindings. Fence readers that could
 ignore it, refuse missing or unsupported admission, and require a new execution to change protection.
 
-| Protection                         | What Compute may release                                                                                                                                                                                                                                                                          |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unprotected`                      | An explicit no-op for local development or minimal CI. The Agent has a control-plane identity, but OCE does not govern its direct requests. Refuse managed routes, bindings, preparation or clone. Supply no managed or ambient substitute credential.                                            |
-| `protected {authority: execution}` | Sandbox prevents bypass. Every process in the execution shares its egress authority. A route may explicitly require no provider credential. Zero allowed routes means deny all. Carry forward narrower legacy authority only with evidence of equivalence or fresh consent to the wider boundary. |
+| Protection                         | What Compute may release                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unprotected`                      | No Credential Proxy plan: existing no-Proxy deployments or the validated bundled Git-only compatibility profile with exactly one ready static model Harness source matching the bound snapshot and configured Gateway, and no Git bindings. Extra sources and source-free runtime authentication do not qualify. Ordinary Gateway delivery retains its authorization and attachment checks. Refuse requests that require Proxy protection; never substitute Gateway delivery for a protected source. |
+| `protected {authority: execution}` | Sandbox prevents bypass. Every process in the execution shares its egress authority. A route may explicitly require no provider credential. Zero allowed routes means deny all. Carry forward narrower legacy authority only with evidence of equivalence or fresh consent to the wider boundary.                                                                                                                                                                                                    |
 
 OCC validates closed, versioned schemas before reading a Secret or causing effects. A reference is
 an immutable ID and configuration generation. Recreating an object gives it a new ID. Changing
@@ -59,6 +59,53 @@ action, exact target generations, audience, input digest and expiry.
 
 Compute builds the `ProxyPlan` from admitted routes, bindings and source projections. A Sandbox receipt records what was applied;
 wiring and receipts do not authorize requests.
+
+### Classification refusal diagnostics
+
+Proposed amendment for [PR #5448](https://github.com/openclaw/openclaw-enterprise/pull/5448).
+Submitted with the implementation for review under the repository contribution
+policy.
+
+Operators need to identify a provider rule that refused an authenticated request
+before it became an operation. Extend `CredentialProviderDefinition.classify`
+with an optional third argument, `refused?: (rule: number) => void`, retaining its
+`EgressOperation | undefined` return. The selected provider owns rule meanings;
+Credential Proxy owns report selection, and OCC owns audit persistence.
+
+A provider may report synchronously when refusing a matched destination. Each ID
+must be a stable integer from 1 through 255, never reassigned or derived from
+request data. For OpenAI Responses, check destination, method and granted model
+first, then report the first failing root rule. Rule 1 conceals unknown field
+names. No field names, values, bodies or headers enter the diagnostic.
+
+Credential Proxy records a rule only when no operation matches, exactly one
+refused route reports, and that classifier calls the callback exactly once with
+a valid ID. Missing, repeated, invalid or multiple-route reports provide no
+rule; accepted operations discard reports. Existing provider identity and method
+pinning remains binding. Before auditing, the provider must remain current, the
+request must not be cancelled, and its deadline must remain valid for that route.
+
+OCC supplies the optional `classificationRefused` port in its normal composition.
+It verifies the route's execution against the authenticated Installation plan
+and local Installation, then writes through the existing denial audit owner in
+a fresh transaction. The event records `classificationRule`, execution principal,
+source, revision and the original authenticated request ID. It grants no
+operation and reads no Secret. Failure to persist returns `unavailable/authority`;
+success keeps the generic refusal. A composition without the port emits no
+diagnostic. Refusal remains before replay reservation and origin dispatch, so
+repeated refused requests may share an ID; correlate the full audit identity.
+
+Prefer this bounded callback over logging rejected payloads, which exposes
+request data, or provider-side logging, which lacks OCC's authenticated audit
+context. Keeping the current generic refusal alone preserves that debugging gap.
+
+The draft's signed TLS/PostgreSQL case checks persisted attribution and private
+data exclusion, alongside classifier and provider-pinning coverage. Kubernetes,
+supervisor and origin boundaries use fixtures; this is not installed OpenShell
+or live model proof. Require report arbitration, unchanged accepted requests,
+and audit-failure refusal as well. See the
+[Driver contract](../../../docs/reference/drivers/credential-proxy.md) and
+[source-backed flow](../../../docs/flows/credential-source-egress.md#debugging-and-verification).
 
 ### Protected Codex artifact downloads
 
@@ -173,16 +220,16 @@ identity, value version and `usableUntil`. Caller limits may tighten, never wide
 For a dynamic credential, OCC delegates freshness to the Token Service. The sender
 receives only committed material for the authorized operation.
 
-| Interface                                                                       | Responsibility                                                                                                            |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `SecretDriver.readCredentialInput(secret, material, permit, retention, bounds)` | Read the authorized static target with an immutable version, authoritative observation time and expiry where present.     |
-| `WarmCredentialReader.readWarm`                                                 | Read eligible committed material for the exact grant and isolation after the Token Service resolves freshness. |
+| Interface                                                                       | Responsibility                                                                                                        |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `SecretDriver.readCredentialInput(secret, material, permit, retention, bounds)` | Read the authorized static target with an immutable version, authoritative observation time and expiry where present. |
+| `WarmCredentialReader.readWarm`                                                 | Read eligible committed material for the exact grant and isolation after the Token Service resolves freshness.        |
 
-| Lifecycle owner interface                                   | Responsibility                                                                                                                                                                                                                                          |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TokenService.configureRefresh`, `refreshStatus`             | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
-| `prepare`, `removeRefresh`                                  | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
-| `CredentialIssuer.issue`, `inspect`, `retire`               | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
+| Lifecycle owner interface                        | Responsibility                                                                                                                                                                                                                                          |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TokenService.configureRefresh`, `refreshStatus` | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
+| `prepare`, `removeRefresh`                       | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
+| `CredentialIssuer.issue`, `inspect`, `retire`    | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
 
 OCE’s built-in **Token Service** owns the warm reader, encrypted custody and fenced issuer
 attempts. OCC uses it for setup, status, rotation and removal. The worker uses it for background

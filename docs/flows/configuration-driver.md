@@ -1,18 +1,15 @@
 ---
 created: 2026-08-19
-updated: 2026-11-10
-last_updated_session: authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d
+updated: 2026-11-11
+last_updated_session: authoring-run/f2efc59c-e63d-4f5b-a392-e38ad865f04d
 ---
 
 # Configuration Driver and Agent Revision Flow
 
 ## Overview
 
-The OCC API and worker load trusted, singleton Installation settings from
-startup YAML and validate each selected Driver before construction.
-Authenticated API
-requests then create, read, replace, or delete exact Namespace-owned native
-OpenClaw configuration documents through the selected bundled or installed
+Authenticated API requests create, read, replace, or delete exact Namespace-owned
+native OpenClaw configuration documents through the selected bundled or installed
 Configuration Driver. The bundled Kubernetes implementation persists each
 document in a tenant-owned ConfigMap.
 Each Configuration requires immutable `kind: "agent"` and a server-managed
@@ -90,8 +87,7 @@ validation, trust boundaries, and IAM construction.
 [Production composition](../../apps/controller/src/composition/production.ts)
 loads the sole persisted Installation from
 [PostgreSQL platform state](../../packages/occ/src/state/postgres-state.ts).
-The API and worker load the same trusted startup document and persisted
-Installation identity. The [Driver loading flow](driver-plugin-loading.md)
+Both processes use the same startup document and Installation identity. The [Driver loading flow](driver-plugin-loading.md)
 traces process-local construction and the selected Secret, Sandbox, and
 ServiceAccount branches. Existing AgentRevisions retain their selected Compute
 identity and immutable admitted configuration; subsequent Configuration edits
@@ -115,42 +111,43 @@ the exact Configuration.
 `packages/occ/src/index.ts:OpenClawController.createConfiguration`
 
 [Configuration route contracts](../../packages/contracts/src/api/routes.ts)
-are dispatched by the
-[controller request handler](../../apps/controller/src/index.ts) to
-`OpenClawController.createConfiguration`, `getConfiguration`,
-`updateConfiguration`, or `deleteConfiguration` in
-[OCC](../../packages/occ/src/index.ts). OCC resolves server-owned Namespace
-identity and checks the selected IAM Driver before touching tenant data:
-creation targets the exact Namespace-owned Configuration resource; reads,
-updates, and deletes target the exact Configuration identifier in that
-Namespace. POST and PATCH accept bodies up to 6 x (1 MiB + 32 KiB): the
-Kubernetes Driver's 1 MiB of values and the envelope in six-byte JSON escapes.
-Their `onRequest` hook runs `authorizeConfigurationWrite` before the body is
-read, so a caller without the grant gets `403` before any body error; the
-transaction repeats the check. The controller's JSON body parser
-(`apps/controller/src/http/json-depth.ts:tooDeepJsonPath`, registered in
-`createFastifyApp`) then scans the raw text once and refuses a value more than
-24 levels below the body root with `400 INVALID_REQUEST` and a `TOO_DEEP`
-detail, before parsing, schema validation, the NUL/surrogate check or
-`validateConfiguration`; other bodies go to Fastify's default JSON parser.
-Every JSON route shares this parser and limit. Creation requires `kind: "agent"` and a native
-root-object JSON document; omitted or unknown kinds and malformed request
-shapes fail with `400`. Updates require the complete replacement `values`
-document and accept optional `secretBindings` and `expectedGeneration`, refusing
+define requests the [controller request handler](../../apps/controller/src/index.ts)
+dispatches to `createConfiguration`, `getConfiguration`, `updateConfiguration`,
+or `deleteConfiguration` in [OCC](../../packages/occ/src/index.ts). OCC resolves
+the server-owned Namespace and checks the selected IAM Driver before accessing
+tenant data. Create checks Configuration permission at Namespace scope. Read,
+update, and delete target the exact Configuration in that Namespace.
+
+POST and PATCH accept up to 6 × (1 MiB + 32 KiB) for the Kubernetes Driver's
+1 MiB of values and the envelope in six-byte JSON escapes. `onRequest` runs
+`authorizeConfigurationWrite` before reading the body. Without the grant, callers get `403`
+before body errors. OCC rechecks in the transaction.
+For every JSON route, `createFastifyApp` registers
+`apps/controller/src/http/json-depth.ts:tooDeepJsonPath` to scan raw text once.
+A value more than 24 levels below the root gets `400 INVALID_REQUEST` with
+`TOO_DEEP` before parsing or validation. Otherwise Fastify parses the JSON.
+The text validator visits one entry at a time and checks each key before its
+value. It stops at the first NUL (`INVALID_FORMAT`) or unpaired UTF-16 surrogate
+(`INVALID_VALUE`) and returns `400 INVALID_REQUEST` with a capped JSON Pointer.
+To identify caller-supplied IDs for a denial, the controller checks at most 4,096
+path, query, and body entries, including reference-list items.
+
+Creation requires `kind: "agent"` and a native JSON object. Missing or unknown
+kinds and malformed requests fail with `400`. Updates require the complete replacement
+`values` document and accept optional `secretBindings` and `expectedGeneration`, refusing
 a stale one under the row lock with an `/expectedGeneration` `409` detail.
 On Kubernetes Compute, `requireChannelSecretBindings` rejects enabled channels'
 unbound credential references and Slack token SecretRefs unreadable by the Slack
-Channel Driver. `kind`, `generation`, and ownership remain server-owned. OCC
-preserves values and SecretRefs. [Preset admission](agent-presets.md) defers
-renderer-located whole-string Gateway-password variables; Configuration writes
+Channel Driver. `kind`, `generation`, and ownership remain server-owned.
+[Preset admission](agent-presets.md) defers renderer-located whole-string
+Gateway-password variables; Configuration writes
 and deployment require concrete references. Malformed, generation-mismatched,
 or ownership-invalid ConfigMaps fail with `503`.
 Authorization denial fails with `403`, a missing exact resource with `404`, an
 Agent dependency conflict with `409`, and unavailable IAM or storage with
-`503`. OCC separately authorizes `operate` on each Secret
-selected by `secretBindings`, including retained bindings when PATCH omits the
-field. Omission preserves bindings; `{}` clears them. A submitted binding with a
-reserved or invalid destination, or a Secret reference to another Namespace, fails
+`503`. OCC checks `operate` on each bound Secret, including bindings retained when
+PATCH omits `secretBindings`. An empty object (`{}`) clears the bindings. A binding
+with a reserved or invalid destination, or a Secret reference to another Namespace, fails
 with `400 INVALID_REQUEST` and a message naming the rule. A reserved destination
 is also named, with a `/secretBindings/<key>` detail; a malformed one is not
 echoed. A Secret the Namespace does not hold stays `404`. The
@@ -176,25 +173,28 @@ or alter OCC's metadata transaction and compensation boundary.
 
 [Configuration persistence and version snapshots](configuration-driver/persistence-and-revisions.md) traces metadata locking, Driver effects, Agent reference resolution, and snapshot validation after request authorization.
 
+Ordinary deployment retains validated Configuration and Driver identities.
+Admission rejects changed Agent bindings, Configuration content or generation,
+or selected Drivers before recording revisions and work. Provider calls remain
+outside the transaction.
+
 ## Debugging and Verification
 
-The in-process HTTP control in `tests/integration/occ-api.test.mjs` listens on loopback
-and uses the real Slack validator with a synthetic sender. Enabled Slack admits one
-revision, work item, and audit event; GET and matching POST recover the same minimal
-receipt without extra calls. Ordinary and disabled-Slack controls remain. Additional
-cases cover exact Secret checks, draft/Driver drift, late dependency failure,
-revocation, and the canonical generation boundary.
+`tests/integration/occ-api.test.mjs` listens on loopback and uses Slack validation
+with a synthetic sender. It covers one revision/work/success audit,
+receipt recovery without extra calls, ordinary and disabled-Slack deployment,
+Secret authority, Configuration/Driver drift, and late dependency failures.
 
-The separate `tests/integration/postgres-platform-state.test.mjs` control checks
-persisted recovery through a reopened adapter, reconcile counts, and one distinct
-successful deploy audit row. Its sender is synthetic. The HTTP fixture does not test PostgreSQL persistence.
+`tests/integration/postgres-platform-state.test.mjs` separately proves persisted
+recovery through a reopened adapter, reconcile counts, and one successful deploy
+audit. Its sender is synthetic.
 
 Run focused Configuration conformance and integration checks:
 
 ```bash
-node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.mjs tests/conformance/filesystem-configuration.test.ts
+node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.ts tests/conformance/filesystem-configuration.test.ts
 node --test tests/integration/configuration-controller.test.mjs tests/integration/postgres-platform-state.test.mjs
-node --test tests/integration/postgres-platform-state-kubernetes.test.mjs
+node --test tests/integration/postgres-platform-state-kubernetes.test.ts
 ```
 
 PostgreSQL integration requires configured database URLs; skipped cases do not
@@ -233,6 +233,10 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 12:50: Retain validated Configuration and Driver identities. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
+
+- 2026-11-11 21:03: Trace text validation and denial ID lookup. (authoring-run/f2efc59c-e63d-4f5b-a392-e38ad865f04d - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
 
 - 2026-11-10 23:35: Trace Preset Gateway-password placeholder admission and final concrete validation. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
 
@@ -273,6 +277,6 @@ its optional integration is skipped.
 - 2026-10-10 08:00: Kubernetes renders `gateway.bind: lan` for an omitted or `auto` bind; Kubernetes and Docker Compute refuse other unreachable listeners (other binds, non-`0.0.0.0` custom hosts, Tailscale exposure) before version creation. (fix-996-999, findings 996-998)
 - 2026-10-10 11:29: Refuse Kubernetes native listeners that pass local readiness but cannot serve Pod-IP routes before version creation. (authoring-run/f29e292f-76cb-44a1-88b5-e0244f9164fc - f8a837e33b5c03bc0c92065e979485ee06960150)
 - 2026-10-09 19:00: Configuration create and update refuse an `agents` roster every deployment refuses, with deployment's text, through the shared `requireDeployableRoster`; an existing row still reads and deploys as before. (q35-roster-save, finding 874)
-- 2026-10-09 15:00: A failed Configuration delete or update compensates only while the metadata row is unchanged, so a delete or update another request committed after the lock was released is never undone and leaves no orphan ConfigMap. (fix-944-945)
+- 2026-10-09 15:00: OCC rechecks metadata after the failed Configuration delete or update transaction releases its row locks. OCC skips compensation if the recheck detects a changed or deleted row. Compensation proceeds if the recheck fails. (fix-944-945)
 
 [Configuration Driver flow documentation history](configuration-driver/history.md) preserves the older dated entries.

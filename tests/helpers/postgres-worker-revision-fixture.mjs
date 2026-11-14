@@ -14,6 +14,44 @@ import { waitFor } from "./wait-for.mjs";
 import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
 import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
 
+/**
+ * @import { SuiteContext, TestContext } from "node:test"
+ * @import { Pool } from "pg"
+ * @import { Agent, AgentRevision, BackendDefinition, ComputeDriver, Namespace, Principal, RepositoryRevisionState, RevisionHarnessDescriptor } from "../../packages/contracts/src/index.ts"
+ * @import { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts"
+ * @import { ControllerWork, ControllerWorkState } from "../../packages/occ/src/controller-work.ts"
+ * @import { RepositoryWorkerDriver } from "./postgres-worker-revision-support.mjs"
+ * @typedef {{ id: string, idempotencyKey: string }} RevisionWork
+ * @typedef {AgentRevision & RevisionWork} AdmittedRevision
+ * @typedef {{ state: ControllerWorkState, claim_token: string | null, attempt_count: number }} WorkRow
+ * @typedef {{ idempotency_key: string, actor_id: string, attempt_count: number }} MaintenanceRow
+ * @typedef {{ reason_code: string | null, result_data: NonNullable<ControllerWork["resultData"]> | null }} WorkResultRow
+ * @typedef {NonNullable<ControllerWorkerOptions["drivers"]>} RuntimeDrivers
+ * @typedef {RuntimeDrivers["installation"]["drivers"]} DriverSelections
+ * @typedef {Partial<{ [Key in keyof DriverSelections]: Partial<DriverSelections[Key]> }>} DriverOverrides
+ * @typedef {Pick<RevisionWork, "idempotencyKey"> & Partial<Pick<RevisionWork, "id">>} WorkLookup
+ * @typedef {{
+ *   harness?: RevisionHarnessDescriptor,
+ *   sandboxDriverId?: string,
+ *   protectedRepositoryDriver?: { require(capability: "sandbox"): { id: string } },
+ *   repositoryCredentials?: RepositoryRevisionState,
+ *   actorId?: string,
+ *   plugins?: AgentRevision["plugins"],
+ *   workAge?: string,
+ *   controllerSkewMs?: number,
+ *   compute?: Pick<ComputeDriver, "id" | "implementation">
+ * }} RevisionOptions
+ * @typedef {{
+ *   executionMode?: Agent["executionMode"],
+ *   serviceAccountId?: string,
+ *   backendId?: string | null,
+ *   grantHarnessSecret?: boolean,
+ *   auth?: string,
+ *   nonModelSources?: number | undefined,
+ *   modelConfig?: Record<string, unknown> | undefined
+ * }} AgentOptions
+ */
+
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
 // Keep the two worker roles distinct. Tests can still replace the boundary's methods
@@ -169,6 +207,7 @@ export async function disposeStep(step, limitMs, work) {
 // Importing this helper registers no tests or hooks.
 // `exitGraceMs` and `exitBackstopMs` replace the abandoned-step grace and backstop for the
 // fixture's own exit tests.
+/** @param {string} testFile */
 export function createWorkerRevisionFixtures(
   testFile,
   {
@@ -178,12 +217,17 @@ export function createWorkerRevisionFixtures(
 ) {
   exitGraceMs = graceMs;
   // The owning file registers this as a root after hook: `after(cleanup)`.
+  /** @param {TestContext | SuiteContext} [context] */
   function cleanup(context) {
     exitBackstopMs ??= backstopMs;
     exitAfterBackstop();
     exitAfterRootHooks(context);
   }
 
+  /**
+   * @param {Pick<TestContext, "after">} context
+   * @param {Partial<typeof disposeLimitsMs>} limitsMs
+   */
   async function prepareDatabase(context, limitsMs = {}) {
     const limits = { ...disposeLimitsMs, ...limitsMs };
     assert.ok(
@@ -255,6 +299,22 @@ export function createWorkerRevisionFixtures(
     return { url: prepared.env.OCC_TEST_DATABASE_URL, pools, workers, dispose };
   }
 
+  /**
+   * @param {Pick<TestContext, "after">} context
+   * @param {{
+   *   database?: Pick<Awaited<ReturnType<typeof prepareDatabase>>, "url" | "pools" | "workers">,
+   *   leaseDurationMs?: number,
+   *   maxAttempts?: number,
+   *   onHealthy?: ControllerWorkerOptions["onHealthy"],
+   *   onProgress?: ControllerWorkerOptions["onProgress"],
+   *   metrics?: ControllerWorkerOptions["metrics"],
+   *   repoDriver?: RepositoryWorkerDriver,
+   *   driverSelections?: DriverOverrides,
+   *   backends?: BackendDefinition[],
+   *   secretAuthMethod?: string,
+   *   disposeLimitsMs?: Partial<typeof disposeLimitsMs>
+   * }} [options]
+   */
   async function setup(
     context,
     {
@@ -266,7 +326,7 @@ export function createWorkerRevisionFixtures(
       metrics,
       repoDriver,
       driverSelections = {},
-      backends = /** @type {import("../../packages/contracts/src/index.ts").BackendDefinition[]} */ ([]),
+      backends = [],
       secretAuthMethod = "api_key",
       // Shorter teardown step limits, for a test of the teardown itself.
       disposeLimitsMs: limitsMs,
@@ -288,6 +348,7 @@ export function createWorkerRevisionFixtures(
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
     ]);
     database ??= await prepareDatabase(context, limitsMs);
+    /** @param {number} max */
     function createPool(max) {
       const pool = new Pool({ connectionString: database.url, max });
       database.pools.add(pool);
@@ -299,6 +360,7 @@ export function createWorkerRevisionFixtures(
     const state = new PostgresPlatformState(observerPool);
     repoDriver?.bindReceiptState?.(state);
     const installation = await ensureInstallation(state, "revision-worker");
+    /** @type {Principal | undefined} */
     const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
       ["deploy", "agent"],
       ["delete", "agent"],
@@ -309,6 +371,7 @@ export function createWorkerRevisionFixtures(
       "persisted IAM must contain a Principal authorized for Agent lifecycle and Secret cleanup",
     );
 
+    /** @type {Namespace} */
     const namespace = {
       id: `ns_${randomUUID()}`,
       name: `revision-worker-${randomUUID()}`,
@@ -329,6 +392,7 @@ export function createWorkerRevisionFixtures(
       ),
     );
     await state.transact((unit) => unit.namespaces.createNamespace(namespace));
+    /** @type {ComputeDriver} */
     const compute = {
       ...createDevelopmentComputeDriver(),
       ...(repoDriver === undefined
@@ -362,6 +426,10 @@ export function createWorkerRevisionFixtures(
       ],
     );
 
+    /**
+     * @param {string} label
+     * @param {AgentOptions} [options]
+     */
     async function agent(
       label,
       {
@@ -520,6 +588,12 @@ export function createWorkerRevisionFixtures(
       return owner;
     }
 
+    /**
+     * @param {Agent} owner
+     * @param {number} number
+     * @param {RevisionOptions} [options]
+     * @returns {Promise<AdmittedRevision>}
+     */
     async function revision(
       owner,
       number,
@@ -709,6 +783,12 @@ export function createWorkerRevisionFixtures(
       return { ...candidate, createdAt: admitted.createdAt, idempotencyKey };
     }
 
+    /**
+     * @param {WorkLookup} candidate
+     * @param {ControllerWorkState} expected
+     * @param {Parameters<typeof waitFor>[2]} [timeoutMs]
+     * @returns {Promise<WorkRow>}
+     */
     async function work(candidate, expected, timeoutMs) {
       return waitFor(
         `revision ${candidate.id} to become ${expected}`,
@@ -723,6 +803,10 @@ export function createWorkerRevisionFixtures(
       );
     }
 
+    /**
+     * @param {Pick<Agent, "id">} owner
+     * @returns {Promise<RevisionWork>}
+     */
     async function requestStop(owner) {
       await controller.stopAgent(actor.id, namespace.id, owner.id);
       const work = await observerPool.query(
@@ -741,6 +825,17 @@ export function createWorkerRevisionFixtures(
       return { id: owner.id, idempotencyKey };
     }
 
+    /**
+     * @param {ComputeDriver} computeDriver
+     * @param {{
+     *   emit?: ControllerWorkerOptions["emit"],
+     *   convergenceTimeoutMs?: number | undefined,
+     *   providers?: Parameters<typeof createBackendWorkerDrivers>[1],
+     *   pool?: Pool,
+     *   transformDrivers?: (drivers: RuntimeDrivers) => object | undefined,
+     *   repositoryGitMaterial?: ControllerWorkerOptions["repositoryGitMaterial"]
+     * }} [options]
+     */
     function start(
       computeDriver,
       {
@@ -790,6 +885,10 @@ export function createWorkerRevisionFixtures(
       }
     }
 
+    /**
+     * @param {string} label
+     * @param {{ agent?: AgentOptions, revision?: RevisionOptions }} [options]
+     */
     async function admitInitialRevision(
       label,
       { agent: agentOptions, revision: revisionOptions } = {},
@@ -799,6 +898,7 @@ export function createWorkerRevisionFixtures(
       return { owner, candidate };
     }
 
+    /** @param {Pick<Agent, "id">} owner */
     function currentAgent(owner) {
       return state.read((view) => view.agents.findAgent(namespace.id, owner.id));
     }
@@ -814,6 +914,10 @@ export function createWorkerRevisionFixtures(
       return controller.getDeploymentStatus(actor.id, namespace.id, owner.id, candidate.id);
     }
 
+    /**
+     * @param {WorkLookup} candidate
+     * @returns {Promise<import("pg").QueryResult<WorkResultRow>>}
+     */
     function workResult(candidate) {
       return observerPool.query(
         "SELECT reason_code, result_data FROM occ.controller_work WHERE idempotency_key = $1",
@@ -821,6 +925,10 @@ export function createWorkerRevisionFixtures(
       );
     }
 
+    /**
+     * @param {Pick<RevisionWork, "idempotencyKey">} candidate
+     * @param {string} claimToken
+     */
     function expireClaim(candidate, claimToken) {
       return observerPool.query(
         `UPDATE occ.controller_work
@@ -895,6 +1003,10 @@ export function createWorkerRevisionFixtures(
     }
 
     // Advance only this revision's queued observation, preserving its claim and actor.
+    /**
+     * @param {Pick<AgentRevision, "id">} candidate
+     * @returns {Promise<import("pg").QueryResult<MaintenanceRow>>}
+     */
     function advanceMaintenance(candidate) {
       return observerPool.query(
         `UPDATE occ.controller_work SET available_at = clock_timestamp()

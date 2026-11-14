@@ -128,6 +128,16 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
+function refuseConfigurationSetting(
+  problem: { readonly setting: string; readonly requirement: string } | undefined,
+): void {
+  if (problem !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(problem.setting, problem.requirement),
+    );
+  }
+}
+
 /**
  * Refuses a plugins.entries key that names a plugin of `plugins` (by default codex and acpx) in
  * another spelling, such as `Codex` or ` codex` (pluginEntryKeyVariantProblem). The pinned OpenClaw
@@ -147,12 +157,7 @@ export function refusePluginEntryKeyVariants(
   values: Readonly<OpenClawConfigurationDocument>,
   plugins?: readonly string[],
 ): void {
-  const problem = pluginEntryKeyVariantProblem(values, plugins);
-  if (problem !== undefined) {
-    throw new ConfigurationHarnessError(
-      configurationSettingMessage(problem.setting, problem.requirement),
-    );
-  }
+  refuseConfigurationSetting(pluginEntryKeyVariantProblem(values, plugins));
 }
 
 /**
@@ -164,12 +169,7 @@ export function refuseUnreadablePluginPolicyLists(
   values: Readonly<OpenClawConfigurationDocument>,
   options?: ConfigurationValidationOptions,
 ): void {
-  const problem = pluginPolicyListProblem(values, options);
-  if (problem !== undefined) {
-    throw new ConfigurationHarnessError(
-      configurationSettingMessage(problem.setting, problem.requirement),
-    );
-  }
+  refuseConfigurationSetting(pluginPolicyListProblem(values, options));
 }
 
 /**
@@ -184,12 +184,7 @@ export function refuseUnreadablePluginPolicyLists(
  * checked once filled (refusePluginEntryKeyVariants).
  */
 function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): void {
-  const problem = configIncludeProblem(values);
-  if (problem !== undefined) {
-    throw new ConfigurationHarnessError(
-      configurationSettingMessage(problem.setting, problem.requirement),
-    );
-  }
+  refuseConfigurationSetting(configIncludeProblem(values));
 }
 
 /**
@@ -275,7 +270,7 @@ export function refuseStoredConfigurationSettings(values: OpenClawConfigurationD
  * The rules deploy admission runs on an Agent's stored Configuration that depend only on its
  * values, in deploy's order: the model provider settings (finding 1549), then
  * refuseStoredConfigurationSettings. The upgrade helper's startup preflight
- * (scripts/upgrade-startup-preflight.mjs) runs it from the selected controller image on each
+ * (scripts/upgrade-startup-preflight.ts) runs it from the selected controller image on each
  * Agent the upgrade will deploy, before any OCC writer stops (findings 2809, 2816). Deploy's
  * other rules read live state (Drivers, Harness, credentials, plugins, repositories), so they
  * run only at deploy.
@@ -326,12 +321,7 @@ export function refuseInvalidSecretProviderDefaults(
   if (waitsOnVariable(defaults, ["secrets", "defaults"], options)) {
     return;
   }
-  const problem = secretProviderDefaultsProblem(values.secrets);
-  if (problem !== undefined) {
-    throw new ConfigurationHarnessError(
-      configurationSettingMessage(problem.setting, problem.requirement),
-    );
-  }
+  refuseConfigurationSetting(secretProviderDefaultsProblem(values.secrets));
 }
 
 /**

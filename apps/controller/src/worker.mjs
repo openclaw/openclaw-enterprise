@@ -27,6 +27,10 @@ import {
   installationSettingFailureCode,
 } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
+import {
+  controlPlaneAuditDatabaseOptions,
+  controlPlaneAuditEnabled,
+} from "./composition/control-plane-audit.ts";
 
 function configuration() {
   const mode = process.env.NODE_ENV;
@@ -48,6 +52,10 @@ function configuration() {
   return {
     mode,
     databaseUrl,
+    controlPlaneAuditEnabled: controlPlaneAuditEnabled(
+      mode,
+      process.env.OCC_CONTROL_PLANE_AUDIT_ENABLED,
+    ),
     ...workerEnvironmentSettings(process.env),
   };
 }
@@ -171,7 +179,22 @@ try {
       await computeDriver.preflight();
     }
   }
-  pool = await createPostgresPool(databaseUrl, workerDatabasePoolOptions(databaseTimeoutMs));
+  const databasePoolOptions = workerDatabasePoolOptions(databaseTimeoutMs);
+  pool = await createPostgresPool(databaseUrl, {
+    ...databasePoolOptions,
+    ...(options.controlPlaneAuditEnabled
+      ? {
+          connectionTimeoutMillis: Math.min(
+            databasePoolOptions.connectionTimeoutMillis,
+            controlPlaneAuditDatabaseOptions.connectionTimeoutMillis,
+          ),
+          query_timeout: Math.min(
+            databasePoolOptions.query_timeout,
+            controlPlaneAuditDatabaseOptions.query_timeout,
+          ),
+        }
+      : {}),
+  });
   const repositoryOwner = drivers?.repositoryOwner;
   if (repositoryOwner?.controlSocket !== undefined) {
     receiptServer = await startRepositoryReceiptServer({

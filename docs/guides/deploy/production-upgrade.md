@@ -14,11 +14,11 @@ lack the required chart-owned initializer.
 4. [Verify the release](#verify-the-release) with a real workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
 
-Use `--controller-image` for the API and worker; add `--broker-image` when repository credentials are enabled. A broker restart can
-interrupt existing Agent versions. `--runtime-image` updates the gateway and
-runtime image and redeploys every running Agent concurrently. Upgrades stop the
-API and worker during migration and rollout. Allow capacity for old
-and replacement versions to overlap.
+Use `--controller-image` for API and worker. Repository credentials also require
+`--broker-image`; restarting the broker can interrupt existing Agents.
+`--runtime-image` updates Gateway and runtime images, redeploying running Agents
+concurrently. Allow capacity for overlapping versions. API and worker stop during
+migration and rollout.
 
 Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
 Chart files are verified before cluster access.
@@ -51,20 +51,19 @@ Prepare:
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
 - Bash, Python 3, Node.js matching `package.json` `engines.node`, Helm, kubectl,
-  jq, yq, cmp and mktemp. Use an identity authorized for the Helm upgrade.
-  The helper lists Deployments, StatefulSets, Pods and PVCs cluster-wide.
-  In the release namespace, it creates and deletes preflight Jobs, Secrets and
-  NetworkPolicies, gets and lists Jobs, reads Pods, Pod logs and Installation
-  Secrets, and gets, patches and watches Deployments. Rendered cert-manager
-  Certificates require server-side dry-run apply. Changed mutable Installation
-  Secrets require `update` on the named Secret. Confirmed update denial stops
-  preparation. Unverified update access triggers a warning. Staged immutable
-  Secrets remain read-only;
-- for the bundled Collector, the upgrade helper identity needs Kubernetes `get`
-  on the configured config Secret in the release namespace.
-  [Refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
-  from the release checkout and restart the Collector even for image-only
-  releases. Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
+  jq, yq, cmp and mktemp. The Helm upgrade identity lists Deployments, StatefulSets,
+  Pods and PVCs cluster-wide. In the release namespace it creates, reads and deletes
+  preflight Jobs, Secrets and NetworkPolicies, lists Jobs, reads Pods, logs and
+  Installation Secrets, and gets, patches and watches Deployments. Rendered
+  cert-manager Certificates require server-side dry-run apply.
+  Preparation checks named `update` permission for changed mutable Installation
+  Secrets. Apply and resume check named `patch` permission before stopping a
+  running worker. A confirmed denial stops the command. An inconclusive check
+  warns. Staged immutable Secrets remain read-only.
+- for the bundled Collector, grant `get` on its config Secret in the release namespace.
+  [Refresh that Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
+  from the release checkout and restart the Collector, including for image-only releases.
+  Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
   Use `--collector-config-reviewed` only for intentional, reviewed differences.
 - PostgreSQL backups for controller migrations and Agent-volume backups for
   runtime releases that can require data restoration.
@@ -77,7 +76,7 @@ or `linux/arm64`. Freeze those nodes and labels. The helper lists Nodes and
 release namespace ReplicaSets and runs a read-only worker exec check. Local preflight checks protocol compatibility. Check image availability,
 admission, image trust, database durability and session disposal separately.
 
-The serving API must return a complete deployment inventory, even for an empty fleet.
+Check [operator access before the freeze](upgrade-checklist.md#check-operator-access).
 Use an Installation-scoped OCC service key with Installation `read` and
 `administer` and `read` on every Namespace and Agent. Active, desired-running
 Agents with a selected revision and no pending deployment also require Agent
@@ -107,14 +106,6 @@ sessions the worker cannot replace. Plan the interruption and authorized
 replacements. Review affected drafts and deploy grants. Stop if recovery is
 unsafe. Follow the
 [broker recovery procedure](../repository-credentials/installation.md#install-and-verify).
-
-Freeze other Helm changes and disable automation that restarts or scales OCC
-Deployments, including autoscalers. Stop other writers to this Installation’s OCC
-database, including independent APIs, workers and maintenance processes. Confirm nodes are reachable.
-Do not force-delete OCC Pods. Verify that a partitioned process stopped even if
-its Pod is gone. The helper stops only the selected release's API and worker.
-Freeze Agent deployments and settle queued or running work. Freeze draft edits
-for runtime upgrades. Keep these restrictions through recovery.
 
 In the reviewed checkout, use a dedicated Bash shell. Set `OCC_CA_BUNDLE` only
 for a private certificate authority.
@@ -230,15 +221,22 @@ The migration Job uses the candidate controller, initializer's migrator credenti
 is allowed; migrations are not applied. The Helm hook rechecks history; separate
 migrations require completion with `--require-current`.
 
-Pods retain chart security and NetworkPolicy labels. Unconfirmed Job or child
-cleanup blocks Secret/policy removal and upgrade.
+Pods retain chart security and NetworkPolicy labels. Upgrade waits for Jobs and
+Pods to disappear, then Secrets and NetworkPolicies.
 
 With an immutable Installation Secret, keep the live configuration or
 [stage an immutable successor](immutable-installation-upgrade.md) before preflight.
 
-After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
-omit `--preflight-only` and use unused `"$UPGRADE_EVIDENCE"`. Checks repeat.
-Keep writer and draft freezes through recovery.
+After [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources), begin the maintenance window.
+Freeze other Helm changes and disable automation that restarts or scales OCC
+Deployments, including autoscalers. Stop other writers to this Installation’s OCC
+database, including independent APIs, workers and maintenance processes. Confirm nodes are reachable.
+Do not force-delete OCC Pods. Verify that a partitioned process stopped even if
+its Pod is gone. The helper stops only the selected release's API and worker.
+Freeze Agent deployments and settle queued or running work. Freeze draft edits
+for runtime upgrades. Keep these restrictions through recovery.
+
+Omit `--preflight-only` and use unused `"$UPGRADE_EVIDENCE"`. Checks repeat.
 
 Time both interruptions on an isolated, populated installation using separate
 endpoints, the same command, a [protected baseline](upgrade-baseline.md), and
@@ -290,8 +288,9 @@ the upgraded control plane without `completed`; follow
 [recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
 Initial preflight failure leaves writers serving; inspect `preflight-<api|worker|migration>.log`.
+[Application identity checks](../../flows/coordinated-production-upgrade.md) reject a missing, different or unreadable Installation before further writer shutdown.
 Failed resume prevents further shutdown; writers may already be stopped. Inspect
-current `migration-preflight-resume.*` evidence. Preserve evidence and lock;
+current `upgrade-preflight-resume.*` evidence. Preserve evidence and lock;
 follow [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
@@ -366,6 +365,7 @@ both changes in one Helm release before deploying the recorded fleet.
 Keep evidence private. Match `source-revision` to the target source commit,
 `.id` in `installation-after.json` to the expected Installation ID, and `.version`
 in `after-helm-status.json` to this upgrade's deployed Helm revision.
+`after-helm-status.txt` summarizes that same response.
 The `completed` marker confirms Helm revision, API and worker rollout,
 authenticated Installation access, and any selected
 [replacement fleet checks](#upgrade-agent-runtimes) or

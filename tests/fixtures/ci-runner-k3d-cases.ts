@@ -22,10 +22,21 @@ type StartupCase = {
   target: { namespace: string; container: string; labels: Record<string, string> };
 };
 
-export type K3dChildCase = WatchCase | StartupCase | { kind: "stop" } | { kind: "passing" };
+export type K3dChildCase =
+  | WatchCase
+  | StartupCase
+  | { kind: "stop" }
+  | { kind: "passing" }
+  | { kind: "short-lived"; path: string };
 
 export async function registerK3dChildTest(scenario: K3dChildCase) {
   switch (scenario.kind) {
+    case "short-lived":
+      test("agent file passes", async () => {
+        await writeFile(scenario.path, "created and deleted");
+        await delay(100);
+      });
+      break;
     case "watch":
       registerWatchCase(scenario);
       break;
@@ -107,7 +118,7 @@ function registerWatchCase({
 }
 
 async function registerStopCase() {
-  const { followContainerLog } = await import("../helpers/container-log-capture.mjs");
+  const { followContainerLog } = await import("../helpers/container-log-capture.ts");
   let snapshots = 0;
   test("gateway stop is confirmed", async (t) => {
     const log = followContainerLog({

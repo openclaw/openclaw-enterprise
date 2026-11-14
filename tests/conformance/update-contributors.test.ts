@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -24,7 +32,8 @@ function run(
   {
     readme = initialReadme,
     correctionData = corrections,
-  }: { readme?: string; correctionData?: Record<string, unknown> } = {},
+    expectedBase,
+  }: { readme?: string; correctionData?: Record<string, unknown>; expectedBase?: string } = {},
 ) {
   const directory = temporaryDirectorySync(t, "contributors-");
   mkdirSync(join(directory, "scripts"));
@@ -41,6 +50,7 @@ function run(
   const fakeGh = `#!${process.execPath}
 const fs = require("node:fs");
 const endpoint = process.argv[5];
+fs.appendFileSync("requests", endpoint + "\\n");
 const scenario = process.env.FIXTURE_SCENARIO;
 if (scenario === "gh-error") { console.error("sensitive gh diagnostic"); process.exit(1); }
 let response;
@@ -67,14 +77,20 @@ console.log(JSON.stringify(response));
   const gh = join(directory, "bin", "gh");
   writeFileSync(gh, fakeGh);
   chmodSync(gh, 0o755);
-  const result = spawnSync(process.execPath, [script], {
+  const args = expectedBase === undefined ? [] : ["--expected-base", expectedBase];
+  const result = spawnSync(process.execPath, [script, ...args], {
     cwd: directory,
     encoding: "utf8",
     timeout: 10_000,
     env: { PATH: join(directory, "bin"), FIXTURE_SCENARIO: scenario },
   });
   assert.ifError(result.error);
-  return { result, readme: readFileSync(join(directory, "README.md"), "utf8") };
+  const requestsPath = join(directory, "requests");
+  return {
+    result,
+    readme: readFileSync(join(directory, "README.md"), "utf8"),
+    requests: existsSync(requestsPath) ? readFileSync(requestsPath, "utf8").trim().split("\n") : [],
+  };
 }
 
 test("generator collects paginated contributors, corrections and merged authors in stable order", (t) => {
@@ -169,3 +185,185 @@ test("generator refuses results collected across default-branch changes", (t) =>
   assert.match(actual.result.stderr, /Default branch changed during collection/);
   assert.equal(actual.readme, initialReadme);
 });
+
+test("generator accepts the expected base and preserves every byte outside the marker block", (t) => {
+  const prefix = "# Recognition — contributors\r\n<!-- contributors:start -->";
+  const suffix = "<!-- contributors:end -->\r\nFooter with trailing spaces  \r\n";
+  const actual = run(t, "normal", {
+    expectedBase: "a".repeat(40),
+    readme: `${prefix}\n${suffix}`,
+  });
+  assert.equal(actual.result.status, 0, actual.result.stderr);
+  assert.match(actual.result.stdout, /Updated: 4 contributors/);
+  const bytes = Buffer.from(actual.readme);
+  assert.deepEqual(bytes.subarray(0, Buffer.byteLength(prefix)), Buffer.from(prefix));
+  assert.deepEqual(bytes.subarray(-Buffer.byteLength(suffix)), Buffer.from(suffix));
+});
+
+test("generator rejects a stable but different API base before collecting or writing", (t) => {
+  // The API stays at a; this is an initial mismatch, not movement during collection.
+  const actual = run(t, "normal", { expectedBase: "b".repeat(40) });
+  assert.equal(actual.result.status, 1);
+  assert.match(actual.result.stderr, /Default branch does not match the expected base/);
+  assert.equal(actual.readme, initialReadme);
+  assert.deepEqual(actual.requests, [
+    "repos/openclaw/openclaw-enterprise",
+    "repos/openclaw/openclaw-enterprise/commits/main",
+  ]);
+});
+
+test("generator reports no change for an up-to-date wall at the expected base", (t) => {
+  const first = run(t, "normal", { expectedBase: "a".repeat(40) });
+  assert.equal(first.result.status, 0, first.result.stderr);
+  const second = run(t, "normal", { expectedBase: "a".repeat(40), readme: first.readme });
+  assert.equal(second.result.status, 0, second.result.stderr);
+  assert.match(second.result.stdout, /Unchanged: 4 contributors/);
+  assert.equal(second.readme, first.readme);
+});
+
+const workflow = readFileSync(
+  new URL("../../.github/workflows/contributors.yml", import.meta.url),
+  "utf8",
+);
+
+// Execute the literal Bash body from the workflow step.
+function workflowShell(name: string) {
+  const step = workflow.split(`      - name: ${name}\n`)[1]?.split("\n      - name:")[0];
+  assert.ok(step, `Missing workflow step: ${name}`);
+  const shell = step.split("        run: |\n")[1];
+  assert.ok(shell, `Missing shell for: ${name}`);
+  return shell.replace(/^ {10}/gm, "");
+}
+
+test("workflow permits only weekly and manual read-only refreshes in the canonical repository", () => {
+  assert.match(
+    workflow,
+    /\non:\n {2}workflow_dispatch:\n {2}schedule:\n {4}- cron: "17 14 \* \* 3"\n\npermissions:/,
+  );
+  assert.match(workflow, /if: github.repository == 'openclaw\/openclaw-enterprise'\n/);
+  assert.match(workflow, /\npermissions:\n {2}contents: read\n {2}pull-requests: read\n/);
+  assert.doesNotMatch(workflow, /:\s+write(?:-all)?\b|secrets\.|create-pull-request/);
+  assert.match(workflow, /ref: \$\{\{ github.sha \}\}/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.equal(workflow.split("GH_TOKEN:").length - 1, 1);
+  assert.match(workflow, /name: Refresh the contributor wall\n {8}env:\n {10}GH_TOKEN:/);
+  assert.match(workflow, /if: steps.export.outputs.changed == 'true'\n/);
+  assert.match(workflow, /uses: actions\/upload-artifact@[0-9a-f]{40}\n/);
+  assert.match(workflow, /path: \$\{\{ runner.temp \}\}\/contributors.patch\n/);
+  assert.match(
+    workflowShell("Refresh the contributor wall"),
+    /test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"\n.*--expected-base "\$GITHUB_SHA"/,
+  );
+});
+
+test("manual branch validation runs before checkout and admits only the exact default branch", () => {
+  assert.ok(
+    workflow.indexOf("name: Validate the manual branch") <
+      workflow.indexOf("uses: actions/checkout@"),
+  );
+  assert.match(
+    workflow,
+    /name: Validate the manual branch\n {8}if: github.event_name == 'workflow_dispatch'\n/,
+  );
+  assert.match(workflow, /DEFAULT_BRANCH: \$\{\{ github.event.repository.default_branch \}\}/);
+  for (const [branch, ref, status] of [
+    ["Main", "refs/heads/Main", 0],
+    ["Main", "refs/heads/main", 1],
+    ["Main", "refs/tags/Main", 1],
+    ["", "refs/heads/", 1],
+  ] as const) {
+    const result = spawnSync("bash", ["-c", workflowShell("Validate the manual branch")], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, DEFAULT_BRANCH: branch, GITHUB_REF: ref },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, status, result.stderr);
+    if (status !== 0) {
+      assert.match(result.stdout, /Select the current default branch/);
+      assert.ok(!result.stdout.includes(ref));
+    }
+  }
+});
+
+test(
+  "export shell binds the patch and no-change result to the event commit",
+  {
+    skip: process.platform !== "linux" && "The Actions runner uses Linux sha256sum.",
+  },
+  (t) => {
+    const directory = temporaryDirectorySync(t, "contributors-export-");
+    const temp = temporaryDirectorySync(t, "contributors-artifact-");
+    const environment = {
+      PATH: process.env.PATH,
+      LC_ALL: "C",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+    };
+    function git(...args: string[]) {
+      const result = spawnSync("git", args, { cwd: directory, encoding: "utf8", env: environment });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    }
+    git("init", "--quiet");
+    writeFileSync(join(directory, "README.md"), initialReadme);
+    git("add", "README.md");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--quiet",
+      "-m",
+      "Initial",
+    );
+    const base = git("rev-parse", "HEAD");
+    const output = join(temp, "output");
+    const summary = join(temp, "summary");
+    function exportPatch(sha = base) {
+      writeFileSync(output, "");
+      writeFileSync(summary, "");
+      return spawnSync("bash", ["-c", workflowShell("Export the README patch")], {
+        cwd: directory,
+        encoding: "utf8",
+        env: {
+          ...environment,
+          GITHUB_SHA: sha,
+          RUNNER_TEMP: temp,
+          GITHUB_OUTPUT: output,
+          GITHUB_STEP_SUMMARY: summary,
+          GITHUB_RUN_ID: "42",
+          GITHUB_RUN_ATTEMPT: "2",
+        },
+      });
+    }
+    assert.equal(exportPatch().status, 0);
+    assert.equal(readFileSync(output, "utf8"), "changed=false\n");
+    assert.equal(existsSync(join(temp, "contributors.patch")), false);
+    assert.match(readFileSync(summary, "utf8"), /No contributor changes. No artifact uploaded./);
+    assert.ok(readFileSync(summary, "utf8").includes(base));
+    assert.match(readFileSync(summary, "utf8"), /Run: 42, attempt: 2/);
+
+    const updated = initialReadme.replace(
+      "<!-- contributors:end -->",
+      "Contributor\n<!-- contributors:end -->",
+    );
+    writeFileSync(join(directory, "README.md"), updated);
+    assert.notEqual(exportPatch("b".repeat(40)).status, 0);
+    assert.equal(existsSync(join(temp, "contributors.patch")), false);
+    const result = exportPatch();
+    assert.equal(result.status, 0, result.stderr);
+    const patch = readFileSync(join(temp, "contributors.patch"));
+    const before = git("rev-parse", "HEAD:README.md");
+    const after = git("hash-object", "README.md");
+    assert.ok(patch.toString().includes(`index ${before}..${after} 100644`));
+    assert.equal(
+      readFileSync(output, "utf8"),
+      `sha256=${createHash("sha256").update(patch).digest("hex")}\nchanged=true\n`,
+    );
+    git("checkout", "--", "README.md");
+    git("apply", "--check", "--index", join(temp, "contributors.patch"));
+    git("apply", "--index", join(temp, "contributors.patch"));
+    assert.equal(readFileSync(join(directory, "README.md"), "utf8"), updated);
+  },
+);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 type WatchRecord = { type: string; object: object };
 
@@ -8,6 +9,7 @@ type Watch = {
   kind: "watch";
   pods: WatchRecord[];
   events: WatchRecord[];
+  shortLivedPath?: string;
 };
 
 type Stop = {
@@ -44,11 +46,25 @@ export function runK3dKubectl(scenario: K3dKubectlScenario) {
   }
 }
 
-function watchAgentNamespace(args: string[], { pods, events }: Watch) {
+async function watchAgentNamespace(args: string[], { pods, events, shortLivedPath }: Watch) {
   const query = args.at(-1);
   assert.ok(query);
   const records = query.startsWith("/api/v1/pods?") ? pods : events;
-  initialWatchBookmark();
+  if (shortLivedPath) {
+    await delay(800);
+    const alreadyGone = existsSync(shortLivedPath);
+    initialWatchBookmark();
+    if (!alreadyGone) {
+      while (!existsSync(shortLivedPath)) {
+        await delay(10);
+      }
+    } else {
+      setTimeout(() => {}, 60_000);
+      return;
+    }
+  } else {
+    initialWatchBookmark();
+  }
   for (const record of records) {
     process.stdout.write(`${JSON.stringify(record)}\n`);
   }

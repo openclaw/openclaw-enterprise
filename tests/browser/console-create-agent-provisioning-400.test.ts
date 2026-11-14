@@ -807,6 +807,63 @@ test("Credential Gateway creation registers the same model source for both dedic
   }
 });
 
+test("Model source refusal survives repeated empty checks before explicit retry", async (t) => {
+  const { fixture, calls } = await modelSourceFixture(t);
+  const namespace = await readyNamespace(fixture, "Retained source refusal");
+  const { page, secret } = await openModelSourceForm(t, fixture, namespace);
+  const requests = apiRequests(page, fixture.origin);
+  const path = `/namespaces/${namespace.id}/credential-sources`;
+  const reason = "Model source registration is unavailable for this Installation.";
+  let refuse = true;
+  await page.route(`${fixture.origin}${path}`, (route) => {
+    if (route.request().method() === "POST" && refuse) {
+      return route.fulfill(apiErrorResponse(409, "RESOURCE_CONFLICT", reason));
+    }
+    return route.fallback();
+  });
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: reason }).waitFor();
+  const writes = nonAuthWriteRequests(requests);
+  const check = page.getByRole("button", { name: "Check credential registration" });
+  // Real empty list reads must preserve the POST refusal without retrying any writes.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const reads = pathRequests(requests, "GET", path).length;
+    await check.click();
+    await waitForEnabled(check);
+    await page
+      .getByText(
+        `${reason} No credential registration is visible. The selected Secret remains saved. Resolve the reported problem with an administrator if needed, then select Create Agent to retry.`,
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(pathRequests(requests, "GET", path).length, reads + 1);
+    assert.deepEqual(nonAuthWriteRequests(requests), writes);
+    assert.equal(calls.length, 0);
+  }
+  // Once the reported problem is corrected, only the explicit retry registers the
+  // original source and carries the same saved Secret into provisioning.
+  refuse = false;
+  const response = await submitCreateAgent(page, fixture, namespace.id, {
+    path: "agents/provision",
+  });
+  assert.equal(response.status(), 503); // This fixture has no durable provisioning queue.
+  const registrations = pathRequests(requests, "POST", path);
+  assert.equal(registrations.length, 2);
+  assert.deepEqual(present(registrations[1]).body, present(registrations[0]).body);
+  assert.deepEqual(object(present(registrations[1]).body).secrets, { api_key: secret.ref });
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/iam/access-bindings`).length,
+    0,
+  );
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, {
+    method: "credential_source",
+    sourceId: present(calls[0]).sourceId,
+  });
+});
+
 test("source destination rejection allows correction only after confirming no registration exists", async (t) => {
   const { fixture, calls } = await modelSourceFixture(t);
   const namespace = await readyNamespace(fixture, "Source destination correction");
@@ -836,6 +893,12 @@ test("source destination rejection allows correction only after confirming no re
   assert.equal(calls.length, 0);
   await page.getByRole("button", { name: "Check credential registration" }).click();
   await waitForEnabled(field);
+  await page
+    .getByText(
+      "Credential destination authorization must match the Installation model provider. No credential registration exists. Correct the source configuration and try again.",
+      { exact: true },
+    )
+    .waitFor();
   await field.fill("https://models.example.test/v1");
   const result = await submitCreateAgent(page, fixture, namespace.id, { path: "agents/provision" });
   assert.equal(result.status(), 503); // The fixture has no durable provisioning queue.
