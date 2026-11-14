@@ -223,15 +223,15 @@ export function readFileEvidence(
     relativePath: string;
     laneName: string;
     env: NodeJS.ProcessEnv;
-    testName?: string | undefined;
+    focused: boolean;
   },
   evidence: FileEvidence,
   issues: Issue[],
 ): void {
-  const { root, absolutePath, relativePath, laneName, env, testName } = context;
+  const { root, absolutePath, relativePath, laneName, env, focused } = context;
   const events = parseReporter(output.stdout, output.error?.code === "ETIMEDOUT");
   if (
-    testName !== undefined &&
+    focused &&
     events.some((event) => {
       const type = reporterField(event, "type");
       if (type !== "test:pass" && type !== "test:fail") {

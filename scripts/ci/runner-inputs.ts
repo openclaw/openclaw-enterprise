@@ -618,11 +618,11 @@ export function fileConcurrency(lane: RunnerLane, issues: RunnerIssue[]) {
 
 export function selectLane(
   manifest: RunnerManifest,
-  laneName: string,
-  selectedFile?: string,
-  testName?: string,
+  laneName: unknown,
+  selectedFile?: unknown,
+  testName?: unknown,
 ) {
-  let lane = manifest.lanes.get(laneName);
+  let lane = typeof laneName === "string" ? manifest.lanes.get(laneName) : undefined;
   const issues = [...manifest.issues];
 
   if (lane && selectedFile !== undefined) {
@@ -642,7 +642,7 @@ export function selectLane(
           issue(
             "invalid-test-selection",
             "--test-name must exactly match one required manifest case",
-            { file: selectedFile },
+            { file: selected.path },
           ),
         );
       }
@@ -661,7 +661,7 @@ export function selectLane(
         optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
-      const error = openShellHarnessError(laneName, selected.path, fileInputEnv(lane, selected));
+      const error = openShellHarnessError(lane.name, selected.path, fileInputEnv(lane, selected));
       if (error) {
         issues.push(
           issue("invalid-file-selection", error, { lane: laneName, file: selected.path }),

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fork } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -482,6 +483,108 @@ export function registerCompleteLifecycleCases() {
           },
         );
       }
+      await t.test("phase child keeps selection receipts and path refusal timing", async (t) => {
+        const root = await createRunnerFixture(t);
+        const manifestPath = join(root, "scripts/ci/test-suites.json");
+        const file = "tests/integration/phase.test.mjs";
+        const marker = join(root, "ran");
+        const name = "selected phase case";
+        await writeFile(
+          join(root, file),
+          `import { writeFile } from "node:fs/promises";
+import test from "node:test";
+test(${JSON.stringify(name)}, () => writeFile(${JSON.stringify(marker)}, "ran"));
+`,
+        );
+        await writeRunnerManifest(
+          root,
+          { lanes: { lifecycle: { files: [{ path: file, expectedTests: [name] }] } } },
+          "scripts/ci/test-suites.json",
+        );
+
+        // Start the real phase child to exercise values the public CLI cannot serialize.
+        // A bad selection must still publish its receipt. A bad result path is
+        // reached only after the selected file runs.
+        const cases = [
+          { fields: { lane: null, file: 1, statePath: null }, issue: "missing-lane" },
+          { fields: { file: null, testName: {} }, issue: "invalid-file-selection" },
+          { fields: { testName: null }, issue: "invalid-test-selection" },
+          { fields: { resultsPath: null }, issue: null },
+        ];
+        for (const [index, { fields, issue }] of cases.entries()) {
+          const resultsPath = join(root, "results", `${index}.json`);
+          const child = fork(runnerPath, ["__lifecycle-phase"], {
+            cwd: root,
+            env: runnerEnv({ OPENCLAW_CI_COMPLETE_PHASE: "1" }),
+            detached: true,
+            execArgv: [],
+            stdio: ["ignore", "ignore", "pipe", "ipc"],
+          });
+          let stderr = "";
+          child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+            stderr += chunk;
+          });
+          let reply: Record<string, unknown> | undefined;
+          const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+            (resolveExit, rejectExit) => {
+              child.once("error", rejectExit);
+              child.once("close", (code, signal) => resolveExit({ code, signal }));
+            },
+          );
+          let timedOut = false;
+          const timeout = setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGKILL");
+          }, 15_000);
+          child.on("message", (message: unknown) => {
+            if (isJsonObject(message) && message.type === "ci-lifecycle-result") {
+              reply = message;
+              child.send({ type: "ci-lifecycle-ack" });
+            }
+          });
+          child.send({
+            phase: "run",
+            root,
+            manifestPath,
+            lane: "lifecycle",
+            statePath: join(root, "state", "phase.json"),
+            resultsPath,
+            file,
+            ...fields,
+          });
+          try {
+            assert.deepEqual(await exited, { code: null, signal: "SIGKILL" });
+          } finally {
+            clearTimeout(timeout);
+          }
+          assert.equal(timedOut, false, stderr);
+          assert.deepEqual(reply, {
+            type: "ci-lifecycle-result",
+            exitCode: 1,
+            uncertain: false,
+            ...(issue === null ? { error: { code: "phase-failed" } } : {}),
+          });
+          if (issue === null) {
+            assert.match(stderr, /run-tests: passed tests\/integration\/phase\.test\.mjs/);
+            assert.equal(await readFile(marker, "utf8"), "ran");
+            await assert.rejects(readFile(resultsPath), { code: "ENOENT" });
+          } else {
+            const report = jsonObject(
+              parseJson(await readFile(resultsPath, "utf8")),
+              "run receipt",
+            );
+            assert.equal(report.sourceSha, runnerEnv().GITHUB_SHA);
+            assert.deepEqual(report.files, []);
+            assert.ok(isJsonArray(report.issues));
+            assert.deepEqual(
+              report.issues.map((entry) => jsonObject(entry, "selection issue").code),
+              [issue],
+            );
+            assert.ok(stderr.includes(`run-tests: issue ${issue}`), stderr);
+            await assert.rejects(readFile(marker), { code: "ENOENT" });
+          }
+        }
+      });
     },
   );
 

@@ -80,9 +80,12 @@ export function preparationIdentity(prefix: unknown): string | undefined {
 }
 
 export async function readRuntimeProvenance(
-  statePath: string,
-  { lane, preparationId }: { lane: string; preparationId: string | undefined },
+  statePath: unknown,
+  { lane, preparationId }: { lane: unknown; preparationId: string | undefined },
 ): Promise<Partial<Record<RuntimeRole, RuntimeProvenance>> | undefined> {
+  if (typeof statePath !== "string") {
+    return undefined;
+  }
   let records: unknown;
   try {
     const state: unknown = JSON.parse(await readFile(statePath, "utf8"));

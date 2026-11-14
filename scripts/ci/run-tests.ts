@@ -139,7 +139,7 @@ async function runFile(
   file: RunnerFile,
   { statePath, prepareFile, preparationId }: FilePreparation,
   setup: Setup,
-  testName?: string,
+  testName?: unknown,
 ) {
   const issues: RunnerIssue[] = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -313,6 +313,9 @@ async function runFile(
       if (testName !== undefined) {
         // Only the Node child needs a regex. Parent accounting uses the literal
         // name, and rejects any extra cases selected by Node's ancestry rules.
+        if (typeof testName !== "string") {
+          throw new TypeError("The test name must be a string.");
+        }
         const escaped = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         args.push("--test-name-pattern", new RegExp(`^${escaped}$`).toString());
       }
@@ -344,7 +347,14 @@ async function runFile(
 
       readFileEvidence(
         nodeResult,
-        { root, absolutePath, relativePath, laneName: lane.name, env, testName },
+        {
+          root,
+          absolutePath,
+          relativePath,
+          laneName: lane.name,
+          env,
+          focused: testName !== undefined,
+        },
         evidence,
         issues,
       );
@@ -552,11 +562,11 @@ type ScheduledFileResult = Awaited<ReturnType<typeof runFile>> & {
 async function runLane(
   root: string,
   manifest: RunnerManifest,
-  laneName: string,
-  statePath: string,
-  resultsPath: string,
-  selectedFile: string | undefined,
-  testName: string | undefined,
+  laneName: unknown,
+  statePath: unknown,
+  resultsPath: unknown,
+  selectedFile: unknown,
+  testName: unknown,
 ) {
   const source = sourceEvidence(root);
   const { lane, issues } = selectLane(manifest, laneName, selectedFile, testName);
@@ -565,9 +575,12 @@ async function runLane(
   let preservedNodeExitCode = 0;
   let preparationId: string = randomUUID();
   try {
-    const state: unknown = JSON.parse(await readFile(statePath, "utf8"));
-    if (optionalReporterField(state, "lane") === laneName) {
-      preparationId = preparationIdentity(optionalReporterField(state, "prefix")) ?? preparationId;
+    if (typeof statePath === "string") {
+      const state: unknown = JSON.parse(await readFile(statePath, "utf8"));
+      if (optionalReporterField(state, "lane") === laneName) {
+        preparationId =
+          preparationIdentity(optionalReporterField(state, "prefix")) ?? preparationId;
+      }
     }
   } catch {
     // Stateless runs still share one fresh identity across their files.
@@ -586,6 +599,9 @@ async function runLane(
     );
   }
   if (lane && issues.length === 0) {
+    if (typeof statePath !== "string") {
+      throw new TypeError("The lane state path must be a string.");
+    }
     await mkdir(dirname(statePath), { recursive: true });
     // prepareFile and cleanup update the lane state file; never interleave them.
     let setupQueue: Promise<unknown> = Promise.resolve();
@@ -724,7 +740,10 @@ function logFailures(files: readonly ScheduledFileResult[]) {
   }
 }
 
-async function writeSummary(path: string, summary: unknown) {
+async function writeSummary(path: unknown, summary: unknown) {
+  if (typeof path !== "string") {
+    throw new TypeError("The result path must be a string.");
+  }
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(summary, null, 2)}\n`);
 }
@@ -751,10 +770,15 @@ async function completePhaseChild() {
   let uncertain = false;
   let error: { code: "phase-failed" } | undefined;
   try {
-    if (!isObject(request)) {
-      throw new Error("Invalid lifecycle phase request.");
+    // Null has no fields. Other JSON values with no phase leave the default reply.
+    if (request === null || request === undefined) {
+      throw new TypeError("Missing lifecycle phase request.");
     }
-    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = request;
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = isObject(
+      request,
+    )
+      ? request
+      : {};
     if (phase === "prepare") {
       if (typeof root !== "string") {
         throw new Error("Invalid lifecycle phase root.");
@@ -784,15 +808,8 @@ async function completePhaseChild() {
         throw new Error("Invalid lifecycle manifest path.");
       }
       const manifest = loadRunnerManifest(manifestPath, process.env.OCC_CI_SUITE_VIEW);
-      if (
-        typeof root !== "string" ||
-        typeof lane !== "string" ||
-        typeof statePath !== "string" ||
-        typeof resultsPath !== "string" ||
-        (file !== undefined && typeof file !== "string") ||
-        (testName !== undefined && typeof testName !== "string")
-      ) {
-        throw new Error("Invalid lifecycle run request.");
+      if (typeof root !== "string") {
+        throw new Error("Invalid lifecycle phase root.");
       }
       exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
       uncertain = abandonedSteps > 0;
