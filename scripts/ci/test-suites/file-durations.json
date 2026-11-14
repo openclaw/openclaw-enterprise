@@ -324,7 +324,7 @@
     "tests/integration/production-kubernetes-packaging.test.mjs": 26900,
     "tests/integration/profile-preflight-chart-parity.test.ts": 4900,
     "tests/integration/profile-public-github-read.test.mjs": 700,
-    "tests/integration/profile-renderer.test.mjs": 5600,
+    "tests/integration/profile-renderer.test.ts": 5600,
     "tests/integration/protected-driver-registration.test.ts": 3400,
     "tests/integration/protected-repository-metadata-read.test.mjs": 400,
     "tests/integration/public-github-read-http.test.mjs": 6500,
