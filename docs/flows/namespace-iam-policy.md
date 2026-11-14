@@ -263,7 +263,7 @@ behavior.
   configuration change at restart, and the authority fences.
 - `node --test tests/conformance/occ-api-security.test.mjs` checks that Agent
   responses expose `servicePrincipalId` without accepting caller-supplied values.
-- `node --test tests/integration/postgres-namespace-iam-policy.test.mjs` checks
+- `node --test tests/integration/postgres-namespace-iam-policy.test.ts` checks
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.ts`
   checks that an unknown commit does not wait for a later rollback query.
