@@ -260,9 +260,9 @@ before replacing the controller images.
 
 <a id="failure-conditions"></a>
 
-- **Namespace provisioning fails:** A `worker.completed` log for `namespace.ensure` with
-  `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes returned HTTP 403 while the
-  worker reconciled the tenant's quota, limits, or network policies. Check the worker's
+- **Namespace provisioning or deletion fails:** A `worker.completed` log for `namespace.ensure`
+  or `namespace.delete` with `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes
+  returned HTTP 403 while the worker reconciled or cleaned up the tenant's resources. Check the worker's
   [tenant-local RoleBinding](../../guides/deploy/production-agents.md#grant-tenant-rolebindings) in the affected target.
   Also verify namespace ownership labels, restricted Pod Security labels, and enforced
   NetworkPolicies in each selected tenant target. Existing

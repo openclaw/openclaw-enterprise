@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-12
-last_updated_session: authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d
+updated: 2026-11-14
+last_updated_session: fix-4929
 ---
 
 # Controller Worker Flow
@@ -356,9 +356,9 @@ exhausting attempts close the item and schedule another while the version stays
 selected and running within its credential deadline; outages never retire it. Each
 claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
-`worker.completed` reports the target, outcome, and code. On `namespace.ensure`,
-it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
-from the current pass. The hint stays out of the Driver observation.
+`worker.completed` reports the target, outcome, and code. On `namespace.ensure`
+and `namespace.delete`, it can report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
+from the current pass, kept out of the Driver observation.
 A result links to the claim by its attempt ID. A repeat of the same pending
 state can skip `reconcile` and use `controller_work.deferred` for that attempt.
 Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
@@ -424,6 +424,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-14 10:00: Hint tenant access on delete. (fix-4929)
 - 2026-11-12 14:03: Save development claim evidence. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
 - 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
 

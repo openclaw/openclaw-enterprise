@@ -133,8 +133,8 @@ import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts"
 import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
-  captureNamespaceEnsureHint,
-  type NamespaceEnsureHintCode,
+  captureNamespaceHint,
+  type NamespaceHintCode,
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
@@ -561,7 +561,7 @@ interface DispatchResult {
   readonly outcome: Outcome;
   readonly code: string;
   readonly observation?: Observation;
-  readonly hintCode?: NamespaceEnsureHintCode;
+  readonly hintCode?: NamespaceHintCode;
   readonly decision?: AuthorizationDecision;
   readonly authorization?: AuthorizationRequest;
 }
@@ -6143,10 +6143,7 @@ export class ControllerWorker {
             });
           },
         );
-      const observed =
-        claim.namespaceTarget === "ready"
-          ? await captureNamespaceEnsureHint(async () => (await observe()) as NamespaceEnsureResult)
-          : { observation: await observe() };
+      const observed = await captureNamespaceHint(observe);
       const { observation } = observed;
       if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
