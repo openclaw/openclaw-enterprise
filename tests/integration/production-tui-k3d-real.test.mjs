@@ -253,6 +253,15 @@ test(
         "staging harness checkout must be clean",
       );
     }
+    let chartDirectory;
+    if (stagedSignin) {
+      const { stageSigninChart } = await import("../helpers/signin/chart.ts");
+      chartDirectory = await stageSigninChart({
+        harnessRoot,
+        directory,
+        plan: stagedSignin.signinPlan,
+      });
+    }
     const supportIdentities =
       support && (await support.inspectSigninSupport(run, supportReferences));
     if (rehearsalSelected) {
@@ -526,7 +535,7 @@ test(
         materialization = await prepareMaterialization({
           providerMaterial,
           supportIdentities,
-          chartDirectory: join(harnessRoot, "deploy/helm/openclaw-enterprise"),
+          chartDirectory,
           system,
           release,
           directory,

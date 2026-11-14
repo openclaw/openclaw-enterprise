@@ -93,7 +93,7 @@ COPY --chown=node:node scripts/auth-maintain.ts scripts/auth-maintain.ts
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.mjs scripts/lib/auth-maintain-arguments.mjs
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.ts scripts/lib/auth-maintain-arguments.ts
 COPY --chown=node:node deploy/presets deploy/presets
-COPY --chown=node:node scripts/production-healthcheck.mjs scripts/production-healthcheck.mjs
+COPY --chown=node:node scripts/production-healthcheck.ts scripts/production-healthcheck.ts
 # As in the development stage: precompiled route validators and serializers for this image.
 RUN node apps/controller/src/precompile-route-schemas.ts
 

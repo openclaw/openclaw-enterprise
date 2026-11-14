@@ -24,7 +24,14 @@ test("staging runtime lane preserves the reviewed Codex version in its child", c
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
 
-const signinChanges = ["compatible", "controller", "catalog", "runtime", "catalog-source"] as const;
+const signinChanges = [
+  "compatible",
+  "controller",
+  "catalog",
+  "runtime",
+  "catalog-source",
+  "probe",
+] as const;
 
 for (const change of signinChanges) {
   test(`staging sign-in preparation checks the current ${change} source pair`, (t) =>
@@ -114,6 +121,10 @@ async function checkWorkflowCommand(
   if (signin === "catalog-source") {
     // The catalog source alone must invalidate the reviewed reader contract.
     await writeFile(join(root, "scripts/migration-catalog.ts"), "// Unreviewed catalog input\n");
+  }
+  if (signin === "probe") {
+    // The new script is a production build input even though the reviewed pair has only .mjs.
+    await cp("scripts/production-healthcheck.ts", join(root, "scripts/production-healthcheck.ts"));
   }
   const unrelated = (
     await git([
@@ -555,6 +566,10 @@ else:
           assert.equal(plan.previous.version, 3);
           assert.equal(plan.candidate.version, 3);
           assert.equal(plan.previous.buildInputs, plan.candidate.buildInputs);
+          assert.equal(
+            plan.previous.buildInputs,
+            "797f9d81cebb649ecec631cae57bdcb43172e26e47a8619d60e07eb2ff78caa3",
+          );
           assert.equal(
             plan.migrationTree,
             (

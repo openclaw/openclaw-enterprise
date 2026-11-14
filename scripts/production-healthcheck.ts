@@ -1,11 +1,11 @@
 import { stat } from "node:fs/promises";
 
-function milliseconds(name, fallback) {
+function milliseconds(name: string, fallback: number): number {
   const value = Number(process.env[name] ?? fallback);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-async function healthMarker(name, label) {
+async function healthMarker(name: string, label: "readiness" | "liveness") {
   const marker = process.env[name];
   if (typeof marker !== "string" || !marker.startsWith("/")) {
     throw new Error(`The worker ${label} marker must be an explicit absolute path.`);

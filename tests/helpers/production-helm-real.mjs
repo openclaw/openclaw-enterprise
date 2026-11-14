@@ -341,7 +341,14 @@ export async function prepareProductionHelmControlPlane({
 }
 
 export async function installProductionHelmControlPlane(options) {
-  const { selection, namespace: system, release, run, record } = options;
+  const {
+    selection,
+    namespace: system,
+    release,
+    chartDirectory = "deploy/helm/openclaw-enterprise",
+    run,
+    record,
+  } = options;
   const prepared = await prepareProductionHelmControlPlane(options);
   await run(
     "helm",
@@ -349,7 +356,7 @@ export async function installProductionHelmControlPlane(options) {
       "upgrade",
       "--install",
       release,
-      "deploy/helm/openclaw-enterprise",
+      chartDirectory,
       "-n",
       system,
       "--kubeconfig",
