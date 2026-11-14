@@ -11,7 +11,11 @@ import type {
   ControlRequest,
   ControlResponse,
 } from "../../../access/control-contracts.ts";
-import { assertClientDirectoryAvailable, writeClientConfiguration } from "./config.ts";
+import {
+  assertClientDirectoryAvailable,
+  isClientSessionId,
+  writeClientConfiguration,
+} from "./config.ts";
 
 function assertOperatorAdmissionId(admissionId: string): void {
   if (!/^[0-9]{13}-[0-9a-f-]{36}$/.test(admissionId)) {
@@ -305,7 +309,7 @@ async function main(): Promise<void> {
     );
   } else if (operation === "status" || operation === "close") {
     const id = options.get("--session");
-    if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    if (!isClientSessionId(id)) {
       throw new Error("invalid-arguments");
     }
     const result = await callControl(
