@@ -105,7 +105,7 @@
     "tests/integration/compute-singleton-worker.test.mjs",
     "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.ts",
-    "tests/integration/oidc-id-token.test.mjs",
+    "tests/integration/oidc-id-token.test.ts",
     "tests/integration/repository-credentials-shutdown.test.mjs",
     "tests/conformance/repository-transactions.test.mjs",
     "tests/integration/google-id-token.test.mjs",
@@ -704,7 +704,7 @@
       "path": "tests/integration/google-login-transport.test.ts"
     },
     {
-      "path": "tests/integration/oidc-id-token.test.mjs"
+      "path": "tests/integration/oidc-id-token.test.ts"
     },
     {
       "path": "tests/integration/oidc-login-transport.test.ts"
