@@ -108,7 +108,9 @@ async function setup(context, { sandboxDriver } = {}) {
   await state.transact((unit) => unit.namespaces.createNamespace(namespace));
   const compute = createDevelopmentComputeDriver();
   const configuration = createInstallationDriverConfiguration();
-  if (sandboxDriver) configuration.drivers.sandbox = { id: sandboxDriver.id };
+  if (sandboxDriver) {
+    configuration.drivers.sandbox = { id: sandboxDriver.id };
+  }
   const secretDriver = createTestSecretDriver({ id: configuration.drivers.secret.id });
 
   async function agent() {
