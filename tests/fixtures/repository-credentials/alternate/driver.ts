@@ -32,7 +32,7 @@ export type AlternateDriverEvent =
     }
   | { kind: "retire" | "finalize" | "authentication"; sessionId: string };
 
-type AlternateDriverObservation =
+export type AlternateDriverObservation =
   | { kind: "capture" | "settlement-started" | "settlement-completed"; attemptId: string }
   | { kind: "plan"; method: string };
 

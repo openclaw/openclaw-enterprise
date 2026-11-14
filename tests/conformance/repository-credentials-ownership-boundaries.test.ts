@@ -5,6 +5,7 @@ import type {
   CredentialRef,
   DriverCustody,
   RepositoryBackend,
+  RepositoryBackendFactory,
   RequestHead,
 } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
@@ -14,12 +15,7 @@ import type {
 import type { RepositoryCredentialSessionResult } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import {
-  createAlternateFixtureFactory,
-  fixtureEvents,
-  isBackendFactory,
-  requireFixtureDriver,
-} from "../fixtures/repository-credentials/alternate-shape.ts";
+import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
 import {
   fixtureRepository,
   startGitHubFixture,
@@ -35,6 +31,21 @@ const { createCredentialService } = await import("../fixtures/repository-credent
 const completed = { kind: "completed", status: 200 } as const;
 const unavailable = { kind: "not-dispatched", code: "exchange-unavailable" };
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+function isBackendFactory(value: unknown): value is RepositoryBackendFactory {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "create" in value &&
+    typeof value.create === "function" &&
+    "resolve" in value &&
+    typeof value.resolve === "function" &&
+    "parseAuthentication" in value &&
+    typeof value.parseAuthentication === "function" &&
+    "unauthenticated" in value &&
+    typeof value.unauthenticated === "function"
+  );
+}
 
 function fixtureHead(clock: Clock, rawTarget: string): RequestHead {
   const result = requestHead("GET", rawTarget, {}, { receivedMonoMs: clock.monotonicNow() });
@@ -272,7 +283,7 @@ test(
       expectedSenderCalls: 0,
       expectedDispatches: 0,
     };
-    const factory = createAlternateFixtureFactory({
+    const factory = createAlternateDriverFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -312,17 +323,17 @@ test(
     assert.deepEqual(await work, scenario.expectedOutcome);
     assert.equal(requireStatus(service, opened.session.sessionId).state, "OPEN");
     assert.equal(requireStatus(service, opened.session.sessionId).activeUses, 1);
-    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "retire").length, 0);
+    assert.equal(factory.events.filter(({ kind }) => kind === "retire").length, 0);
     authenticationRelease.resolve();
     await eventually(() => requireStatus(service, opened.session.sessionId).activeUses === 0);
     assert.equal(senderCalls, scenario.expectedSenderCalls);
     assert.equal(dispatches, scenario.expectedDispatches);
-    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "rotate").length, 1);
-    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "authentication").length, 1);
+    assert.equal(factory.events.filter(({ kind }) => kind === "rotate").length, 1);
+    assert.equal(factory.events.filter(({ kind }) => kind === "authentication").length, 1);
     service.close(opened.session.sessionId);
     await eventually(() => requireStatus(service, opened.session.sessionId).state === "DISPOSED");
-    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "retire").length, 1);
-    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "finalize").length, 1);
+    assert.equal(factory.events.filter(({ kind }) => kind === "retire").length, 1);
+    assert.equal(factory.events.filter(({ kind }) => kind === "finalize").length, 1);
   },
 );
 
@@ -332,7 +343,7 @@ test(
   async (t) => {
     const clock = createControlledClock();
     const config = validateServiceConfig(await createServiceConfiguration(t, { providerQueue: 1 }));
-    const factory = createAlternateFixtureFactory({
+    const factory = createAlternateDriverFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -342,7 +353,8 @@ test(
     const queued = service.open({ durationSeconds: 3600, profile: "git-write" });
     const settlementEntered = Promise.withResolvers<void>();
     const settlementRelease = Promise.withResolvers<void>();
-    const firstDriver = requireFixtureDriver(factory.drivers[0]);
+    const firstDriver = factory.drivers[0];
+    assert.ok(firstDriver);
     const settle = firstDriver.settle.bind(firstDriver);
     let acquisitionSettlements = 0;
     // Hold the real captured outcome at the provider boundary. Queue occupancy,
@@ -389,7 +401,7 @@ test(
     await tick();
     assert.equal(queuedCompleted, false);
     assert.deepEqual(
-      fixtureEvents(factory).map(({ kind, sessionId }) => ({ kind, sessionId })),
+      factory.events.map(({ kind, sessionId }) => ({ kind, sessionId })),
       [{ kind: "rotate", sessionId: running.session.sessionId }],
     );
 
@@ -412,7 +424,7 @@ test(
     assert.equal(runningStatus.cleanup.auxiliaryPending, true);
     assert.equal(acquisitionSettlements, 0);
     assert.equal(
-      fixtureEvents(factory).filter(({ kind }) => kind === "retire" || kind === "finalize").length,
+      factory.events.filter(({ kind }) => kind === "retire" || kind === "finalize").length,
       0,
     );
 
@@ -440,7 +452,7 @@ test(
       },
     ];
     for (const scenario of cases) {
-      const events = fixtureEvents(factory).filter(
+      const events = factory.events.filter(
         ({ sessionId }) => sessionId === scenario.opened.session.sessionId,
       );
       assert.equal(
