@@ -149,7 +149,8 @@ export async function honorsDisconnectsDuringIam(t: TestContext) {
             t.after(() => {
               client.destroy();
             });
-            const result = once(client, disconnect ? "error" : "response", { signal: t.signal });
+            // Cleanup can destroy the socket after the test deadline. Keep its error listener alive.
+            const result = once(client, disconnect ? "error" : "response");
             result.catch(() => {});
             client.end(JSON.stringify(body));
             const { request: raw, response } = await incoming;
@@ -378,7 +379,7 @@ export async function rechecksCredentialSourceGrants(t: TestContext) {
           }),
           agent: false,
         });
-        const result = once(client, "error", { signal: t.signal });
+        const result = once(client, "error");
         result.catch(() => {});
         client.on("response", (reply) => reply.resume());
         client.end(JSON.stringify({}));
@@ -405,8 +406,7 @@ export async function rechecksCredentialSourceGrants(t: TestContext) {
         assert.equal(tokenReads(), reads + 1, "the late callback did yield a fixture token");
         assert.equal(fixture.calls.length, 2, "a late source token must not reach discovery");
       } finally {
-        // Release the producer even on the decisive red assertion; all event waits
-        // share the native test deadline so cleanup cannot remain held indefinitely.
+        // Release the producer even if the assertion fails. Its completion wait uses the test deadline.
         resume.resolve();
         client?.destroy();
         if (started) {
