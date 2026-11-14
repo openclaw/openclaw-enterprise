@@ -316,12 +316,14 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   assert.deepEqual(selected.cells[1].unselected, [
     "codex-search-config",
+    "agent-audit",
     "git-write",
     "git-push-denied",
     "slack",
   ]);
   assert.deepEqual(selected.cells[0].notApplicable, [
     "codex-search-config",
+    "agent-audit",
     "git-write",
     "git-push-denied",
     "slack",
@@ -364,6 +366,20 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   });
   assert.equal(secrets.browser, true);
   assert.deepEqual(secrets.requiredEnv, ["OCC_TEST_QA_CODEX_TOKEN_FILE"]);
+  const audit = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "agent-audit" });
+  assert.deepEqual(
+    audit.cells.filter(({ scenarios }) => scenarios.length > 0).map(({ cell }) => cell),
+    ["compose/Codex"],
+  );
+  assert.deepEqual(audit.requiredEnv, ["OCC_TEST_QA_CODEX_TOKEN_FILE"]);
+  assert.throws(
+    () =>
+      selectQaMatrix({
+        OCC_TEST_QA_SCENARIOS: "agent-audit",
+        OCC_TEST_QA_INSTALLATION: "kubernetes",
+      }),
+    /not applicable/,
+  );
   const sandbox = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "sandbox-policy",
     OCC_TEST_QA_PRESET: "Codex",
@@ -467,7 +483,8 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   // An equally sized selection still omits default coverage if it substitutes a manual scenario.
   assert.equal(
     selectQaMatrix({
-      OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets,git-write,slack,namespace-lifecycle",
+      OCC_TEST_QA_SCENARIOS:
+        "model-ui,console-secrets,agent-audit,git-write,slack,namespace-lifecycle",
     }).scope,
     "partial:selected",
   );

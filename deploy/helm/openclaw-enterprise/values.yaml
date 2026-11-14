@@ -113,6 +113,10 @@ agentNativeAdmin:
 agentRuntimeLogs:
   enabled: true
 
+# Durable request and worker audit records, plus the authorized Agent audit API.
+controlPlaneAudit:
+  enabled: false
+
 bootstrap:
   adminEmail: ""
   password:

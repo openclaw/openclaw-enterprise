@@ -14,7 +14,7 @@ REVOKE ALL ON occ.plugin_releases FROM PUBLIC, occ_app;
 GRANT SELECT, INSERT ON occ.plugin_releases TO occ_app;
 --> statement-breakpoint
 ALTER TABLE occ.iam_restrictions DROP CONSTRAINT iam_restrictions_action_valid,
-  ADD CONSTRAINT iam_restrictions_action_valid CHECK (action IN ('create','read','update','delete','deploy','operate','administer','read_logs','manage_policy','publish_plugins'));
+  ADD CONSTRAINT iam_restrictions_action_valid CHECK (action IN ('create','read','update','delete','deploy','operate','administer','read_logs','manage_policy','read_audit','publish_plugins'));
 --> statement-breakpoint
 ALTER TABLE occ.credential_sources ADD COLUMN plugin_release_digest text, ADD COLUMN plugin_server_name text,
   ADD CONSTRAINT credential_source_template_release FOREIGN KEY (namespace_id, plugin_release_digest)

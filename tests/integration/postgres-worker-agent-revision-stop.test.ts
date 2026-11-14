@@ -430,11 +430,54 @@ async function stopAudit(fixture: Fixture, owner: { id: string }) {
   const audit = await fixture.observerPool.query<{ reason_code: string }>(
     `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
      WHERE namespace_id = $1 AND resource_id = $2
-       AND (action = 'openclaw.agents.lifecycle.stop' OR details->>'reasonCode' = 'AGENT_STOP_YIELDED')
+       AND action = 'openclaw.agents.lifecycle.stop'
      ORDER BY reason_code`,
     [fixture.namespace.id, owner.id],
   );
   return audit.rows.map(({ reason_code: code }) => code);
+}
+
+async function assertStopYieldAudit(
+  fixture: Fixture,
+  owner: { id: string },
+  first: WorkIdentity,
+  second?: WorkIdentity,
+) {
+  const audit = await fixture.observerPool.query<{
+    action: string;
+    outcome: string;
+    work_id: string;
+    work_state: string;
+    attempt_id: string;
+    claim_id: string | null;
+  }>(
+    `SELECT deferred.action, deferred.outcome, deferred.details->>'workId' AS work_id,
+            deferred.details->>'workState' AS work_state,
+            deferred.details->>'attemptId' AS attempt_id, claim.id AS claim_id
+       FROM occ.audit_events AS deferred
+       LEFT JOIN occ.audit_events AS claim
+         ON claim.id = deferred.details->>'attemptId'
+        AND claim.namespace_id = deferred.namespace_id
+        AND claim.resource_kind = deferred.resource_kind
+        AND claim.resource_id = deferred.resource_id
+        AND claim.details->>'workId' = deferred.details->>'workId'
+        AND claim.action = 'openclaw.controller_work.claimed'
+      WHERE deferred.namespace_id = $1 AND deferred.resource_kind = 'agent'
+        AND deferred.resource_id = $2 AND deferred.details->>'reasonCode' = 'AGENT_STOP_YIELDED'`,
+    [fixture.namespace.id, owner.id],
+  );
+  // A yield returns the same job to the queue. It has its own evidence and
+  // names the claim that yielded, even if the worker coalesces its log lines.
+  assert.ok(audit.rows.some(({ work_id }) => work_id === first.idempotencyKey));
+  for (const row of audit.rows) {
+    assert.ok(row.work_id === first.idempotencyKey || row.work_id === second?.idempotencyKey);
+    assert.equal(row.action, "openclaw.controller_work.deferred");
+    assert.equal(row.outcome, "success");
+    assert.equal(row.work_state, "queued");
+    assert.match(row.attempt_id, /^aud_/);
+    assert.equal(row.claim_id, row.attempt_id);
+  }
+  assert.equal(new Set(audit.rows.map(({ attempt_id }) => attempt_id)).size, audit.rows.length);
 }
 
 // A provisioned caller that keeps every fixture grant except delete, so a refusal comes from the
@@ -551,9 +594,9 @@ test(
     const current = required(await fixture.currentAgent(owner));
     assert.equal(current.desiredRuntimeState, "stopped");
     assert.equal(current.activeRevisionId, undefined);
-    // A yield is neither audited nor recorded as evidence; each stop records one outcome, and
-    // no pass of either stop failed.
+    // Each stop records one terminal outcome even when the worker yielded during the drain.
     assert.deepEqual(await stopAudit(fixture, owner), ["AGENT_ALREADY_STOPPED", "AGENT_STOPPED"]);
+    await assertStopYieldAudit(fixture, owner, first, second);
     for (const stop of [first, second]) {
       assert.ok(stopPasses(events, stop).every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
     }
@@ -758,13 +801,14 @@ for (const change of ["redeploy", "deletion"]) {
           },
           30_000,
         );
-        // Quiet: one logged yield, and no failed pass or failure audit for the deleted Agent.
+        // Deletion removes the queued stop without recording a terminal stop outcome.
         assert.deepEqual(await stopAudit(fixture, owner), []);
         assert.deepEqual(
           stopPasses(events, stop).map(({ code }) => code),
           ["AGENT_STOP_YIELDED"],
         );
       }
+      await assertStopYieldAudit(fixture, owner, stop);
       // While yielded the Harness kept running and the pointer named it.
       assert.deepEqual(record.harnessStops, []);
       assert.deepEqual([...record.pointers], [candidate.id]);

@@ -901,6 +901,11 @@ test(
         );
       }
       await assertBootstrapInstallationResponse(authorized);
+      // Production requires an explicit opt-in before it records these HTTP events.
+      const defaultAudit = await pool.query(
+        "SELECT id FROM occ.audit_events WHERE kind = 'api_request'",
+      );
+      assert.equal(defaultAudit.rowCount, 0);
       function requestWithBootstrapKey(path: "/installation" | "/namespaces", init: RequestInit) {
         // The credential belongs only to this disposable loopback Controller.
         const address = new URL(endpoint);
@@ -1034,6 +1039,7 @@ test(
       const restart = async (
         drivers: DriverOptions,
         logger?: ReturnType<typeof memoryLog>["logger"],
+        controlPlaneAuditEnabled = false,
       ) => {
         assert.ok(app);
         await app.close();
@@ -1044,6 +1050,7 @@ test(
           authSecret,
           authBaseURL,
           nativeAdmin,
+          controlPlaneAuditEnabled,
           drivers: await productionDrivers({
             ...drivers,
             configurationRoot: join(passwordDirectory, "configurations"),
@@ -1395,6 +1402,34 @@ test(
           });
         },
       );
+      await restart({ includeDefaults: true }, apiLog.logger, true);
+      const optedIn = await fetch(`${endpoint}/namespaces/${defaultNamespaceId}`, {
+        headers: authenticatedHeaders(session),
+      });
+      assert.equal(optedIn.status, 200);
+      const optedInBody = record(parsePrivateJson(await optedIn.text(), "Namespace response"));
+      assert.equal(recordId(optedInBody.data), defaultNamespaceId);
+      const requestId = optedIn.headers.get("x-request-id");
+      assert.ok(requestId);
+      const optedInAudit = await pool.query(
+        `SELECT action, resource_kind, resource_id
+         FROM occ.audit_events
+         WHERE kind = 'api_request' AND details->'__occAuditMetadata'->>'requestId' = $1
+         ORDER BY occurred_at, id`,
+        [requestId],
+      );
+      assert.deepEqual(optedInAudit.rows, [
+        {
+          action: "openclaw.api.request.admitted",
+          resource_kind: "installation",
+          resource_id: recordId(row(installation)),
+        },
+        {
+          action: "openclaw.api.request.result",
+          resource_kind: "namespace",
+          resource_id: defaultNamespaceId,
+        },
+      ]);
     } finally {
       if (app !== undefined) {
         await app.close();

@@ -220,9 +220,19 @@ test(
               store.transact(async (unit) => {
                 await unit.audit.append(event);
                 await unit.audit.append(minimal);
+                // Redelivery keeps the stored fact and cannot use its ID for different evidence.
+                await unit.audit.append({ ...event });
+                await assert.rejects(
+                  unit.audit.append({ ...event, details: { count: 2 } }),
+                  /audit event ID already identifies different evidence/,
+                );
                 await assert.rejects(unit.audit.append(rejected), ScopeViolationError);
                 await assertDecoded(unit, event);
                 await assertDecoded(unit, minimal);
+                assert.equal(
+                  (await unit.audit.list()).filter((row) => row.id === event.id).length,
+                  1,
+                );
                 assert.equal(
                   (await unit.audit.list()).some((row) => row.id === rejected.id),
                   false,

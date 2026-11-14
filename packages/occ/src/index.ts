@@ -45,6 +45,7 @@ export {
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
   CONFIGURED_IAM_ID_PREFIXES,
+  CONTROLLER_WORK_AUDIT_ACTIONS,
   connectionValuesChanged,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
@@ -326,6 +327,7 @@ import {
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
+  AuditAppendUnavailableError,
   DependencyUnavailableError,
   RuntimeDiagnosticsTransportError,
   DeviceAuthorizationScopeMismatchError,
@@ -423,6 +425,7 @@ import {
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
 import type { StoredOAuthClient } from "./ports/oauth-client.ts";
+import type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
 import {
   InMemoryPlatformState,
   type PlatformReadView,
@@ -705,6 +708,7 @@ export {
   waitsOnVariable,
 } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
+export { AuditAppendUnavailableError } from "./errors.ts";
 export {
   PostgresHumanAuthentication,
   UserAlreadyExistsError,
@@ -740,6 +744,7 @@ export type {
   HumanAuthenticationMaintenanceStatus,
 } from "./state/human-authentication-maintenance.ts";
 export { createPostgresPool } from "./state/postgres-pool.ts";
+export type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
 export type {
   RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
@@ -836,6 +841,12 @@ export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 /** Holds the caller's authority in a unit of work; throws when it is no longer current. */
 export type AuthorityFence = (state: PlatformUnitOfWork) => Promise<void>;
 
+export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super("The Agent audit disclosure record is unavailable.");
+  }
+}
+
 /**
  * The Installation `iam` configuration (RFC-0026), with the configuration's own names. OCC writes
  * each Role, Group, and binding as an ordinary IAM row with a configured ID prefix.
@@ -874,6 +885,7 @@ export interface ControllerOptions {
   readonly now?: () => Date;
   readonly createId?: (kind: ResourceKind) => string;
   readonly state?: PlatformStateStore;
+  readonly agentAuditState?: AgentAuditState<PlatformUnitOfWork>;
   readonly recordOperations?: boolean;
   readonly backends?: readonly BackendDefinition[];
   readonly defaultPresets?: readonly PresetDraftDefinition[];
@@ -2324,8 +2336,10 @@ export class OpenClawController {
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
   private readonly state: PlatformStateStore;
+  private readonly agentAuditState: ControllerOptions["agentAuditState"];
   private readonly transactionContext = new AsyncLocalStorage<PlatformUnitOfWork>();
   private readonly authorityFence = new AsyncLocalStorage<AuthorityFence>();
+  private readonly requestAuditId = new AsyncLocalStorage<string>();
   private readonly provisioningContext = new AsyncLocalStorage<ClaimedWork>();
   private readonly mutationRollbacks = new AsyncLocalStorage<(() => Promise<void>)[]>();
   private readonly shouldRecordOperations: boolean;
@@ -2383,6 +2397,7 @@ export class OpenClawController {
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
+    this.agentAuditState = options.agentAuditState;
     this.shouldRecordOperations = options.recordOperations ?? true;
     this.backends = validateBackendDefinitions(options.backends ?? []);
     this.defaultPresets = immutableCopy(options.defaultPresets ?? []);
@@ -3481,6 +3496,50 @@ export class OpenClawController {
     });
   }
 
+  async listAgentAuditEvents(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    selection: AgentAuditSelection,
+    holdSession: AuthorityFence,
+    disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
+  ) {
+    const state = this.agentAuditState;
+    const driver = this.authorizationAuthority(principalId);
+    const authorize = driver.authorize;
+    if (
+      state === undefined ||
+      this.authorization !== undefined ||
+      !state.supportsAuthorization(this.state, driver, authorize)
+    ) {
+      throw new NotImplementedError(
+        "The selected State and IAM Driver do not support Agent audit.",
+      );
+    }
+    const target = { kind: "agent", id: agentId, namespaceId } as const;
+    return state.transact(this.installation.id, async (unit) => {
+      await holdSession(unit);
+      // An unauthorized caller cannot lock Agent or Namespace records. Recheck after
+      // taking the locks so no policy change can commit between approval and disclosure.
+      await this.authorize(principalId, "read_audit", target, driver, authorize);
+      if (!(await state.holdResource(unit, this.installation.id, namespaceId, agentId))) {
+        throw new ScopeViolationError(
+          "The active Agent does not belong to the exact ready Namespace.",
+        );
+      }
+      const decision = await this.authorize(principalId, "read_audit", target, driver, authorize);
+      const entries = await state.list(unit, namespaceId, agentId, selection);
+      const events = entries.slice(0, selection.limit);
+      try {
+        await unit.audit.append(disclosure(events.length, decision));
+      } catch {
+        throw new AgentAuditDisclosureUnavailableError();
+      }
+      await holdSession(unit);
+      return { events, hasNextPage: entries.length > selection.limit };
+    });
+  }
+
   async getAgentRuntimeImages(principalId: string, namespaceId: string, agentId: string) {
     const agent = await this.getAgent(principalId, namespaceId, agentId);
     if (!agent.activeRevisionId) {
@@ -3912,40 +3971,43 @@ export class OpenClawController {
       // rename never uncovers a different refusal. A request admitted alongside with the same
       // name still fails in its job.
       await this.refuseTakenAgentName(state, namespace.id, input.name);
-      const record = await state.provisioning.create({
-        workId,
-        namespaceId: namespace.id,
-        actorId: principalId,
-        requestId,
-        requestFingerprint: requestFingerprintHex,
-        plan: {
-          name: input.name,
-          ...(reservedAgentId === undefined ? {} : { reservedAgentId }),
-          configuration: configurationInput,
-          harnessAuth,
-          executionMode,
-          gatewayManagedMode,
-          ...(backendId === undefined ? {} : { backendId }),
-          ...(plugins === undefined ? {} : { plugins }),
-          ...(driver && plugins && Object.keys(plugins).length
-            ? { pluginDriver: this.pluginOwner(driver) }
-            : {}),
-          ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
-          ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
-          ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
-          ...(workspace.initialWorkspaceFiles === undefined
-            ? {}
-            : { initialWorkspaceFiles: workspace.initialWorkspaceFiles }),
-          ...(workspace.workspaceDefaultsId === undefined
-            ? {}
-            : { workspaceDefaultsId: workspace.workspaceDefaultsId }),
-          drivers: {
-            compute: compute.id,
-            configuration: configurationDriver.id,
-            iam: this.selectedDriver("iam").id,
+      const record = await state.provisioning.create(
+        {
+          workId,
+          namespaceId: namespace.id,
+          actorId: principalId,
+          requestId,
+          requestFingerprint: requestFingerprintHex,
+          plan: {
+            name: input.name,
+            ...(reservedAgentId === undefined ? {} : { reservedAgentId }),
+            configuration: configurationInput,
+            harnessAuth,
+            executionMode,
+            gatewayManagedMode,
+            ...(backendId === undefined ? {} : { backendId }),
+            ...(plugins === undefined ? {} : { plugins }),
+            ...(driver && plugins && Object.keys(plugins).length
+              ? { pluginDriver: this.pluginOwner(driver) }
+              : {}),
+            ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
+            ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
+            ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
+            ...(workspace.initialWorkspaceFiles === undefined
+              ? {}
+              : { initialWorkspaceFiles: workspace.initialWorkspaceFiles }),
+            ...(workspace.workspaceDefaultsId === undefined
+              ? {}
+              : { workspaceDefaultsId: workspace.workspaceDefaultsId }),
+            drivers: {
+              compute: compute.id,
+              configuration: configurationDriver.id,
+              iam: this.selectedDriver("iam").id,
+            },
           },
         },
-      });
+        this.requestAuditId.getStore(),
+      );
       await this.authorizeProvisioningRecord(state, principalId, record.record, {
         admission: true,
       });
@@ -4093,6 +4155,30 @@ export class OpenClawController {
         });
       }
       const retried = await state.provisioning.retryByWorkId(namespaceId, workId, principalId);
+      const requestId = this.requestAuditId.getStore();
+      if (requestId !== undefined) {
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId: this.installation.id,
+          namespaceId,
+          occurredAt: this.timestamp(),
+          kind: "mutation",
+          actorId: principalId,
+          source: "occ",
+          action: CONTROLLER_WORK_AUDIT_ACTIONS.queued,
+          resource:
+            retried.agentId === undefined
+              ? { kind: "namespace", id: namespaceId, namespaceId }
+              : { kind: "agent", id: retried.agentId, namespaceId },
+          outcome: "success",
+          requestId,
+          details: {
+            workId: retried.workId,
+            ...(retried.agentId === undefined ? {} : { agentId: retried.agentId }),
+            reasonCode: "PROVISIONING_RETRY_REQUESTED",
+          },
+        });
+      }
       const work = await state.operations.findWork(record.workId);
       return Object.freeze({ provisioning: provisioningProgress(retried, work, this.clock()) });
     });
@@ -4224,7 +4310,11 @@ export class OpenClawController {
         revisionId: revision.id,
       });
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
+      if (
+        error instanceof WorkClaimLostError ||
+        error instanceof AuditAppendUnavailableError ||
+        error instanceof PostgresCommitOutcomeUnknownError
+      ) {
         throw error;
       }
       const observed = await this.read((state) =>
@@ -6577,6 +6667,11 @@ export class OpenClawController {
    */
   withAuthorityFence<T>(fence: AuthorityFence, work: () => Promise<T>): Promise<T> {
     return this.authorityFence.run(fence, work);
+  }
+
+  /** Attach the server-generated HTTP request ID to any work this operation queues. */
+  withRequestAuditId<T>(requestId: string, work: () => Promise<T>): Promise<T> {
+    return this.requestAuditId.run(requestId, work);
   }
 
   /**
@@ -13006,6 +13101,7 @@ export class OpenClawController {
           await state.repositorySessions.withdrawFinite(
             { namespaceId: namespace.id, agentId: agent.id, revisionId: revision!.id },
             this.timestamp(),
+            this.requestAuditId.getStore(),
           );
         }
       }
@@ -14378,6 +14474,46 @@ export class OpenClawController {
     return revision;
   }
 
+  private async cancelProvisioningForAgent(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Pick<Agent, "id" | "namespaceId">,
+    trigger: "stop" | "delete",
+  ): Promise<void> {
+    const reasonCode = "PROVISIONING_CANCELLED";
+    const cancelled = await state.provisioning.cancelByAgent(agent.namespaceId, agent.id, {
+      code: reasonCode,
+      message:
+        trigger === "stop"
+          ? "Provisioning was cancelled because the Agent was stopped."
+          : "Provisioning was cancelled because the Agent was deleted.",
+    });
+    const requestId = this.requestAuditId.getStore();
+    // A recorded claim still needs a result if request audit was disabled after the claim.
+    if (cancelled === undefined || (requestId === undefined && cancelled.attemptId === undefined)) {
+      return;
+    }
+    await state.audit.append({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId: this.installation.id,
+      namespaceId: agent.namespaceId,
+      occurredAt: this.timestamp(),
+      kind: "mutation",
+      actorId: principalId,
+      source: "occ",
+      action: CONTROLLER_WORK_AUDIT_ACTIONS.provisioningCancelled,
+      resource: { kind: "agent", namespaceId: agent.namespaceId, id: agent.id },
+      outcome: "success",
+      ...(requestId === undefined ? {} : { requestId }),
+      details: {
+        workId: cancelled.workId,
+        reasonCode,
+        trigger,
+        ...(cancelled.attemptId === undefined ? {} : { attemptId: cancelled.attemptId }),
+      },
+    });
+  }
+
   async stopAgent(
     principalId: string,
     namespaceId: string,
@@ -14405,10 +14541,7 @@ export class OpenClawController {
       if (agent.status === "deleting") {
         return agent;
       }
-      await state.provisioning.cancelByAgent(namespaceId, agentId, {
-        code: "PROVISIONING_CANCELLED",
-        message: "Provisioning was cancelled because the Agent was stopped.",
-      });
+      await this.cancelProvisioningForAgent(state, principalId, agent, "stop");
       const stopped = await state.agents.transitionAgentDesiredRuntimeState(
         namespaceId,
         agentId,
@@ -14480,6 +14613,7 @@ export class OpenClawController {
               "The Namespace deletion work changed during retry.",
             );
           }
+          const requestId = this.requestAuditId.getStore();
           await state.audit.append({
             id: `aud_${crypto.randomUUID()}`,
             installationId: this.installation.id,
@@ -14491,6 +14625,7 @@ export class OpenClawController {
             action: "openclaw.namespaces.delete.retry",
             resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
             outcome: "success",
+            ...(requestId === undefined ? {} : { requestId }),
             details: {
               workId,
               previousAttemptCount: work.attemptCount,
@@ -14651,10 +14786,7 @@ export class OpenClawController {
       if (!agent) {
         throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
       }
-      await state.provisioning.cancelByAgent(namespace.id, agent.id, {
-        code: "PROVISIONING_CANCELLED",
-        message: "Provisioning was cancelled because the Agent was deleted.",
-      });
+      await this.cancelProvisioningForAgent(state, principalId, agent, "delete");
       // Deletion ends delivery ownership immediately, including never-deployed Agents.
       await state.workspaceSetups.delete(namespace.id, agent.id);
       // Keep in-flight teardown idempotent. The original caller can explicitly
@@ -14693,6 +14825,7 @@ export class OpenClawController {
           ) {
             throw new ResourceStateConflictError("The Agent deletion work changed during retry.");
           }
+          const requestId = this.requestAuditId.getStore();
           await state.audit.append({
             id: `aud_${crypto.randomUUID()}`,
             installationId: this.installation.id,
@@ -14704,6 +14837,7 @@ export class OpenClawController {
             action: "openclaw.agents.delete.retry",
             resource: { kind: "agent", namespaceId: namespace.id, id: agent.id },
             outcome: "success",
+            ...(requestId === undefined ? {} : { requestId }),
             details: {
               workId,
               previousAttemptCount: work.attemptCount,
@@ -14992,8 +15126,16 @@ export class OpenClawController {
     principalId: string,
     action: AuthorizationRequest["action"],
     target: AuthorizationTarget,
+    selected?: IAMDriver,
+    authorize?: IAMDriver["authorize"],
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const authorization = await this.authorizationDecision(principalId, action, target);
+    const authorization = await this.authorizationDecision(
+      principalId,
+      action,
+      target,
+      selected,
+      authorize,
+    );
     if (!authorization.decision.allowed) {
       throw new AuthorizationDeniedError(
         isNonEmptyString(authorization.decision.reason)
@@ -19194,7 +19336,7 @@ export class OpenClawController {
     operation: ReconciliationOperation,
   ): Promise<void> {
     if (this.shouldRecordOperations) {
-      await state.operations.append(operation);
+      await state.operations.append(operation, this.requestAuditId.getStore());
     }
   }
 }

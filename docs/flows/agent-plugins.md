@@ -1,6 +1,6 @@
 ---
 created: 2026-09-08
-updated: 2026-11-13
+updated: 2026-11-14
 last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
@@ -8,7 +8,7 @@ last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 
 ## Overview
 
-OCC rate-limits callers and checks Namespace authority before reading uploads. The [Plugin Driver](../../apps/controller/src/drivers/plugin/import-package.ts) reports omitted components. Revisions pin the release digest, Driver and policy. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
+OCC limits and authorizes uploads before parsing. Configured [request auditing](audit-ledger.md) records each outcome. The [Plugin Driver](../../apps/controller/src/drivers/plugin/import-package.ts) reports omitted components. Revisions pin the release digest, Driver and policy. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
 
 ## Entry Points
 
@@ -159,10 +159,9 @@ PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
 check cannot see. Configuration save and Compute Drivers refuse policies the
 Gateway refuses at load, such as `untrusted`.
 
-Agent save and deploy check the combined 8 MiB skill limit. [Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) loads the pinned Namespace files and mounts them read-only. The [Gateway](../../deploy/runtime/openclaw-pinned-skill-sources.patch) rejects same-name workspace substitutions. Workers retain executable modes and use their local `SKILL.md`.
+Save and deploy enforce the combined 8 MiB skill limit. [Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) mounts pinned Namespace files read-only. The [Gateway](../../deploy/runtime/openclaw-pinned-skill-sources.patch) rejects same-name workspace substitutions. Workers retain executable modes and read local `SKILL.md`.
 
-The Kubernetes ConfigMap is immutable and per version. A version prepared
-by an earlier controller keeps its earlier `config.toml` (without
+Each version has an immutable Kubernetes ConfigMap. Earlier versions retain their `config.toml` (without
 `[plugins._default]` (#508), without `approval_policy` (#1995), or with
 `on-failure` as written) until the Agent is deployed again; `KubernetesComputeDriver.reconcilePluginRuntimeConfigMap` refuses any
 other difference. OpenShell dedicated Codex has no such allowance and needs a
@@ -357,6 +356,8 @@ over 25% CPU wait in its final 15 s and no idle 5 s interval to qualify as starv
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 00:19: Audit uploads. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 917b778aa302240e8bc8ca93e8b4a48c7e0d23e9)
 
 - 2026-11-13 23:00: Trace Namespace release admission and projection. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - f253066ab39d0225a230f0547c4c7d4169f386a3)
 
