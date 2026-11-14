@@ -1404,6 +1404,7 @@ test("installed Skipper retains only attributed evidence on rejected gateway req
         .split("\n")
         .map((line) => {
           const [key, value] = line.split("=");
+          assert.ok(key, "step output must have a key");
           return [key.toUpperCase(), value];
         }),
     );
@@ -1473,7 +1474,9 @@ test("installed Skipper retains only attributed evidence on rejected gateway req
           },
           modelEvents: async () => {
             const events = snapshots.shift();
-            if (!events) throw new Error(marker);
+            if (!events) {
+              throw new Error(marker);
+            }
             return events;
           },
         }),
