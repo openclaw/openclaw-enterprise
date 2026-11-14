@@ -18,7 +18,8 @@ interface ProviderRequestDependencies {
   readonly authorization: string;
   readonly attempt: ProviderAttempt;
   readonly assertMaterialCurrent: () => void;
-  readonly observeResponse: (response: ProviderResponse) => void;
+  /** Synchronous borrow. Capture owned material here; the transport clears the body on return. */
+  readonly consumeResponse: (response: ProviderResponse) => undefined;
   readonly observe?: (observation: ProviderObservation) => void;
 }
 
@@ -30,15 +31,15 @@ export function sendProviderRequest({
   authorization,
   attempt,
   assertMaterialCurrent,
-  observeResponse,
+  consumeResponse,
   observe,
-}: ProviderRequestDependencies): Promise<ProviderResponse> {
+}: ProviderRequestDependencies): Promise<void> {
   return new Promise((resolve, reject) => {
     const responseChunks: Buffer[] = [];
     let responseBytes = 0;
     let request: ClientRequest | undefined;
     let response: IncomingMessage | undefined;
-    let result: ProviderResponse | undefined;
+    let consumed = false;
     let failed = false;
     let settled = false;
     let cancelDeadline: () => void = () => {};
@@ -64,14 +65,13 @@ export function sendProviderRequest({
       cancelDeadline();
       attempt.signal.removeEventListener("abort", cancel);
       discardResponseChunks();
-      if (failed || !result) {
+      if (failed || !consumed) {
         if (!failed) {
           report({ stage, error: "response-error" });
         }
-        result?.body.fill(0);
         reject(new Error("provider-unavailable"));
       } else {
-        resolve(result);
+        resolve();
       }
     };
     const fail = (error: ProviderObservation["error"] = "request-error") => {
@@ -118,11 +118,28 @@ export function sendProviderRequest({
       incoming.on("end", function completeResponse() {
         if (!failed) {
           report({ stage: "complete", responseComplete: incoming.complete });
-          result = { status: incoming.statusCode ?? 0, body: Buffer.concat(responseChunks) };
+          const body = Buffer.concat(responseChunks);
           try {
-            observeResponse(result);
+            const result = consumeResponse({ status: incoming.statusCode ?? 0, body });
+            if (result !== undefined) {
+              try {
+                // Intrinsic brand check: observe native Promise rejection without
+                // awaiting it or invoking a non-Promise's arbitrary then method.
+                Promise.prototype.then.call(
+                  result,
+                  () => {},
+                  () => {},
+                );
+              } catch {
+                // A non-Promise return has no rejection to observe.
+              }
+              throw new Error("invalid-provider-consumer-return");
+            }
+            consumed = true;
           } catch {
             fail("observer-error");
+          } finally {
+            body.fill(0);
           }
         }
         discardResponseChunks();

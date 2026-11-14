@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { gatewayRoutingPins } from "../../scripts/ci/routing.mjs";
+import { gatewayRoutingPins } from "../../scripts/ci/routing.ts";
 import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
 import { registerQaSecret } from "./qa-secrets.mjs";
 

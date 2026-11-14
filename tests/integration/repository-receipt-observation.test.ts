@@ -23,7 +23,7 @@ import {
   createTlsMaterial,
   listen as listenOrigin,
 } from "../fixtures/repository-credentials/process.mjs";
-import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
+import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 

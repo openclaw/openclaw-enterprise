@@ -139,11 +139,11 @@ export default defineConfig(
   {
     files: [
       "apps/controller/src/console/**/*.{mjs,mts}",
-      "scripts/docs-site/site.mjs",
-      "scripts/docs-site/api-explorer.mjs",
+      "scripts/docs-site/site.mts",
+      "scripts/docs-site/api-explorer.mts",
       "scripts/console-storybook/story.ts",
       "scripts/console-storybook/public/*.mjs",
-      "scripts/docs-site/compute-matrix-browser.mjs",
+      "scripts/docs-site/compute-matrix-browser.mts",
     ],
     languageOptions: {
       globals: {

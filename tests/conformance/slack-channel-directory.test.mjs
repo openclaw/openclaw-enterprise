@@ -6,8 +6,8 @@ import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
+import { listen } from "../helpers/listen.ts";
 import { SLACK_ROUTE_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import {
   connectThroughProxy,

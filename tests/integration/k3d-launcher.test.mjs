@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -56,7 +56,6 @@ async function runLauncher(
     activeLock = false,
     foreignState = false,
     checkoutBuiltState = false,
-    alreadyReset = false,
     stateVersion = 1,
     resourceOwner = "openclaw-ci-test",
     preparedHarness,
@@ -67,6 +66,8 @@ async function runLauncher(
     preparedModel,
     preparedBaseUrl,
     namespaceListFailure = false,
+    afterReset = false,
+    realPreparationAdmission = false,
   } = {},
 ) {
   const root = await temporaryDirectory(context, `oce-k3d-${engine}-launcher-`);
@@ -78,6 +79,7 @@ async function runLauncher(
   const state = join(root, "state", "openclaw-enterprise", `k3d-${engine}-${stateHarness}`);
   const invocation = join(root, "node-invocation.json");
   const prepareCount = join(root, "prepare-count");
+  const preparationInvocations = join(root, "preparation-invocations.jsonl");
   const imagePulls = join(root, "image-pulls");
   const clipboard = join(root, "clipboard");
   const resetCalled = join(root, "reset-called");
@@ -150,6 +152,27 @@ esac
 exit 91
 `,
   );
+  const admissionProbe = join(root, "admission-probe.mjs");
+  if (realPreparationAdmission) {
+    // Run actual input admission, then stop at the image gate before any resources.
+    // Only downstream setup and the eventual model-test process remain inert.
+    await writeFile(
+      admissionProbe,
+      `
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
+
+appendFileSync(${JSON.stringify(preparationInvocations)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+const result = spawnSync(process.execPath, process.argv.slice(2), {
+  encoding: "utf8",
+  env: { ...process.env, OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "fixture-mutable" },
+});
+assert.equal(result.status, 1);
+assert.match(result.stderr, /must be an immutable image@sha256 reference/);
+`,
+    );
+  }
   await writeCommand(
     bin,
     "node",
@@ -162,6 +185,7 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   [ -z "$OCC_TEST_KUBERNETES_CODEX_IMAGE" ] || exit 92
   [ -z "$OCC_TEST_PRODUCTION_CONTROLLER_IMAGE" ] || exit 92
   [ -n "$NODE_BASE_IMAGE" ] || exit 94
+  ${realPreparationAdmission ? `'${process.execPath}' '${admissionProbe}' "$@" || exit $?` : ""}
   count="$(cat '${prepareCount}' 2>/dev/null || printf '0')"
   count="$((count + 1))"
   printf '%s\\n' "$count" > '${prepareCount}'
@@ -184,6 +208,7 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
   record.model = process.env.MODEL;
   record.baseUrl = process.env.BASE_URL;
   record.apiKeySet = process.env.KEY_PRESENT === "true";
+  record.originalKey = process.env.OPENAI_API_KEY === "test-only-value";
   fs.writeFileSync(process.env.INVOCATION, JSON.stringify(record));
 '
 `,
@@ -197,6 +222,7 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
     action === "down" ||
     foreignState ||
     checkoutBuiltState ||
+    afterReset ||
     activeLock
   ) {
     await mkdir(state, { recursive: true });
@@ -216,14 +242,8 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
       join(state, "env"),
       "OCC_TEST_KUBERNETES_KUBECONFIG=/private/demo/kubeconfig\nOCC_TEST_KUBERNETES_CONTEXT=k3d-demo\n",
     );
-    await writeFile(join(state, "ready"), "");
-    if (alreadyReset) {
-      // A prior reset deleted the exported environment but kept the state file.
-      await rm(join(state, "env"));
-      await rm(join(state, "ready"));
-      await writeFile(join(state, "reset"), "");
-    }
-    if (action !== "reset" && action !== "down") {
+    await writeFile(join(state, afterReset ? "reset" : "ready"), "");
+    if (action !== "reset" && action !== "down" && !afterReset) {
       await writeFile(
         join(state, "demo.json"),
         `${JSON.stringify({
@@ -270,6 +290,8 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
       ...process.env,
       DOCKER_HOST: "",
       OPENAI_API_KEY: apiKey,
+      CODEX_ACCESS_TOKEN: "",
+      OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
       OCC_TEST_OPENAI_MODEL: inheritedModel,
       OCC_TEST_CODEX_OPENAI_BASE_URL: inheritedBaseUrl,
       OCC_TEST_OPENSHELL_MODEL_BASE_URL: selectedHarness === "openclaw" ? inheritedBaseUrl : "",
@@ -296,16 +318,34 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
   if (staleDemo) {
     await assert.rejects(access(join(state, "demo.json")), { code: "ENOENT" });
   }
-  assert.equal(
-    await readFile(prepareCount, "utf8"),
-    action === "get" ||
-      action === "copy" ||
-      action === "info" ||
-      action === "reset" ||
-      action === "down"
-      ? "0\n"
-      : "2\n",
-  );
+  let expectedPreparations = afterReset ? "1\n" : "2\n";
+  if (["get", "copy", "info", "reset", "down"].includes(action)) {
+    expectedPreparations = "0\n";
+  }
+  assert.equal(await readFile(prepareCount, "utf8"), expectedPreparations);
+  if (realPreparationAdmission) {
+    const preparations = (await readFile(preparationInvocations, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    // A fresh launch creates lane state before file preparation; reset reuses it.
+    // Reaching the image gate alone cannot distinguish these preparation modes.
+    assert.deepEqual(
+      preparations,
+      (afterReset ? ["--file"] : ["--selected-file", "--file"]).map((selection) => [
+        "scripts/ci/prepare.mjs",
+        "--lane",
+        "openshell",
+        selection,
+        "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        "--state",
+        join(state, "state.json"),
+        "--github-env",
+        join(state, "env"),
+      ]),
+      "native launcher must prepare the selected lane before preparing the same file",
+    );
+  }
   if (action === "copy") {
     return { clipboard: await readFile(clipboard, "utf8"), stdout };
   }
@@ -512,11 +552,11 @@ test("k3d rejects another checkout's prepared state before reset or reuse", asyn
 test("k3d rejects a prepared native image built from a checkout", async (context) => {
   // Older preparation recorded the checkout commit; the Gateway refuses that image,
   // and a reset must not let the saved state bypass the rejection.
-  for (const alreadyReset of [false, true]) {
+  for (const afterReset of [false, true]) {
     await assert.rejects(
       runLauncher(context, "docker", ["test", "--harness", "openclaw"], {
         checkoutBuiltState: true,
-        alreadyReset,
+        afterReset,
       }),
       /predates the pinned runtime; run '.\/scripts\/k3d down --harness openclaw'/,
     );
@@ -657,23 +697,11 @@ test("native OpenClaw preparation requires its API key instead of a Codex token"
     ["openclaw", "test-only-value", nativeFile, "", /requires a prior prepareLane/],
     ["openclaw", "", nativeFile, "", /Missing required CI input\(s\): OPENAI_API_KEY/],
     ["", "test-only-value", nativeFile, "", /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/],
-    [
-      "openclaw",
-      "test-only-value",
-      firstAgentFile,
-      "",
-      /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/,
-    ],
-    [
-      "openclaw",
-      "test-only-value",
-      firstAgentFile,
-      "openclaw",
-      /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/,
-    ],
+    ["openclaw", "test-only-value", firstAgentFile, "", /requires a prior prepareLane/],
+    ["openclaw", "test-only-value", firstAgentFile, "openclaw", /requires a prior prepareLane/],
   ]) {
-    // Only the native file may reach its owned-state check without Codex credentials.
-    // The first-Agent workflow still creates a Codex Agent, even under a native selector.
+    // Native selection and the ordinary API-key installer can reach the owned-state
+    // check without a PAT; an unselected Sandbox test still requires its PAT.
     await assert.rejects(
       execute(
         process.execPath,
@@ -714,12 +742,19 @@ test("native OpenClaw preparation requires its API key instead of a Codex token"
     ["openclaw", "test-only-value", /CI state already exists/],
     ["openclaw", "", /Missing required CI input\(s\): OPENAI_API_KEY/],
   ]) {
-    // An existing owned state stops bootstrap before infrastructure effects. Only the
-    // native helper's explicit selection may pass credential admission without Codex.
+    // An existing owned state stops bootstrap before infrastructure effects. The
+    // native helper selects its single workflow to avoid unrelated PAT requirements.
     await assert.rejects(
       execute(
         process.execPath,
-        ["scripts/ci/prepare.mjs", "--lane", "openshell", "--state", existingState],
+        [
+          "scripts/ci/prepare.mjs",
+          "--lane",
+          "openshell",
+          ...(helperHarness === "openclaw" ? ["--selected-file", nativeFile] : []),
+          "--state",
+          existingState,
+        ],
         {
           env: {
             ...process.env,
@@ -736,4 +771,47 @@ test("native OpenClaw preparation requires its API key instead of a Codex token"
       expected,
     );
   }
+});
+
+for (const afterReset of [false, true]) {
+  test(`native launcher preserves custom destinations through ${afterReset ? "reset" : "fresh"} preparation`, async (context) => {
+    for (const action of ["test", "demo"]) {
+      const endpoint = "https://model.example.test/v1";
+      const explicit = action === "test";
+      const result = await runLauncher(
+        context,
+        "docker",
+        [
+          action,
+          "--engine",
+          "docker",
+          "--harness",
+          "openclaw",
+          ...(explicit ? ["--base-url", endpoint] : []),
+        ],
+        {
+          afterReset,
+          realPreparationAdmission: true,
+          inheritedBaseUrl: explicit ? "https://inherited.example.test/v1" : endpoint,
+          preparedBaseUrl: "https://prepared.example.test/v1",
+        },
+      );
+      assert.equal(result.baseUrl, endpoint);
+      assert.equal(result.originalKey, true);
+    }
+  });
+}
+
+test("native launcher rejects malformed destinations before preparation", async (context) => {
+  const malformed = "malformed-native-endpoint-sentinel";
+  await assert.rejects(
+    runLauncher(context, "docker", ["test", "--engine", "docker", "--harness", "openclaw"], {
+      inheritedBaseUrl: malformed,
+    }),
+    (error) => {
+      assert.match(error.stderr, /The OpenShell model endpoint must be a valid absolute URL/);
+      assert.doesNotMatch(error.stdout + error.stderr, new RegExp(malformed));
+      return true;
+    },
+  );
 });

@@ -1137,7 +1137,7 @@ export interface PlatformOperationReadRepository {
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
-  append(operation: PlatformOperation): Promise<void>;
+  append(operation: PlatformOperation, requestId?: string): Promise<void>;
   /**
    * Requeue the exact deleting Agent's terminal teardown initiated by
    * `initiatingActorId`, assigning it to `actorId` (the same actor for a plain
@@ -1314,7 +1314,8 @@ export function assertSameCredentialSourceFields(
 
 function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string {
   if (operation.kind === "agent") {
-    return `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`;
+    const key = `agent:${operation.resourceId}:${operation.action}:${operation.target}`;
+    return operation.target === "deleted" ? key : `${key}:${operation.operationId}`;
   }
   if (operation.kind === "agent_revision" && operation.target === CREDENTIAL_WITHDRAWAL_TARGET) {
     return credentialWithdrawalWorkKey(operation.resourceId, operation.operationId);
@@ -3255,7 +3256,8 @@ function repositories(
         (policy.version === existing.version &&
           !isDeepStrictEqual(policy.additions, existing.additions)) ||
         (policy.version !== existing.version &&
-          (previousApplication?.state === "pending" || application !== undefined))
+          (previousApplication?.state === "pending" || application !== undefined)) ||
+        (previousApplication?.state === "pending" && application === undefined)
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy version transition.");
       }

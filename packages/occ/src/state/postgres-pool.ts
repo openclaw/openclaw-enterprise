@@ -40,8 +40,15 @@ async function constructPostgresPool(
   databaseUrl: string,
   { authMode = process.env.OCC_DATABASE_AUTH ?? "password", ...limits }: PostgresPoolOptions,
 ): Promise<pg.Pool> {
+  // Undefined caller fields are unspecified; retain the URL, environment and
+  // pg defaults for those settings.
+  for (const key of Object.keys(limits) as (keyof typeof limits)[]) {
+    if (limits[key] === undefined) {
+      delete limits[key];
+    }
+  }
   if (authMode === "password") {
-    return new pg.Pool(verifyIpHostIdentity({ connectionString: databaseUrl, ...limits }));
+    return new pg.Pool(verifyIpHostIdentity({ connectionString: databaseUrl, ...limits }, limits));
   }
   if (authMode !== "azure-workload-identity") {
     throw new Error("Unsupported OCC_DATABASE_AUTH mode.");
@@ -86,19 +93,40 @@ async function constructPostgresPool(
   );
 }
 
+/** Consume pg's URL once, then apply only the caller's defined options. */
+function resolveExplicitClientOptions(
+  config: pg.ClientConfig,
+  limits: Omit<PostgresPoolOptions, "authMode">,
+): pg.ClientConfig {
+  const { connectionString, ...explicit } = config;
+  if (connectionString === undefined) {
+    return { ...explicit, ...limits };
+  }
+  // Parse at connection time to retain pg's TLS-file reads. A consumed
+  // connectionString, including a nested query parameter, must not be reparsed.
+  const parsed = parse(connectionString) as unknown as pg.ClientConfig;
+  delete parsed.connectionString;
+  return { ...explicit, ...parsed, ...limits };
+}
+
 /**
  * pg sends a TLS servername only for DNS hosts. For an IP literal it sends none,
  * and Node then checks the certificate against "localhost": any database-CA-signed
  * DNS:localhost certificate would pass verify-full for every IP host. Bind the
  * identity check to the effective IP instead, so an iPAddress SAN must match, as
  * libpq requires. DNS hosts, Unix sockets, plaintext and explicitly unverified
- * modes keep pg's configuration unchanged.
+ * modes do not need this identity check.
  */
-function verifyIpHostIdentity(config: pg.PoolConfig): pg.PoolConfig {
+function verifyIpHostIdentity(
+  config: pg.PoolConfig,
+  limits: Omit<PostgresPoolOptions, "authMode"> = {},
+): pg.PoolConfig {
+  // max belongs to pg-pool and already takes precedence there.
+  const hasClientOptions = Object.keys(limits).some((key) => key !== "max");
   let address: string | undefined;
   try {
     address = verifiedIpAddress(config);
-    if (address === undefined) {
+    if (address === undefined && !hasClientOptions) {
       return config;
     }
   } catch {
@@ -113,8 +141,11 @@ function verifyIpHostIdentity(config: pg.PoolConfig): pg.PoolConfig {
   // keeps pg's per-connection reads of sslrootcert/sslcert/sslkey files.
   class IpHostClient extends pg.Client {
     constructor(clientConfig: pg.ClientConfig = config) {
-      const address = verifiedIpAddress(clientConfig);
-      super(address === undefined ? clientConfig : bindIpIdentity(clientConfig, address));
+      const resolved = hasClientOptions
+        ? resolveExplicitClientOptions(clientConfig, limits)
+        : clientConfig;
+      const address = verifiedIpAddress(resolved);
+      super(address === undefined ? resolved : bindIpIdentity(resolved, address));
     }
   }
   return { ...config, Client: IpHostClient };

@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
-import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { withoutShellStartup } from "./environment.ts";
@@ -32,6 +32,7 @@ const bashExecutable = "/bin/bash";
 // Callers isolate scenario environments in fixture.env and leave the parent PATH,
 // cwd and provider executables unchanged. Reuse discovery, never scenario renders.
 let configurationProvider;
+/** @type {Promise<string> | undefined} */
 let cliBuild;
 let cliDirectory;
 after(async () => {
@@ -63,7 +64,7 @@ async function writeExecutable(path, body) {
 
 // The external commands dev-up runs (the container engine, yq, uname, the project's occ,
 // and k3d, kubectl and helm for Kubernetes Compute) are bash scripts answered by the
-// fixture's command server (fixture-command-server.mjs), so their logic below runs in
+// fixture's command server (fixture-command-server.ts), so their logic below runs in
 // the test process: a command costs a bash start instead of a node start. The real CLI,
 // scripts/dev-up and scripts/dev-down still start each one as a process. A command
 // sends the environment variables below.
@@ -95,6 +96,7 @@ const forwardedEnv = [
   "OCC_DOCKER_AGENT_IMAGE",
   "OCC_DOCKER_GATEWAY_IMAGE",
   "OCC_DOCKER_RUNTIME_IMAGE",
+  "OPENCLAW_DEV_PORT",
   "PODMAN_COMPOSE_PROVIDER",
   "SAFETY_LOG",
 ];
@@ -184,7 +186,8 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     );
   const composeCommandIndex = () =>
     args.findIndex(
-      (arg, index) => index > 0 && ["config", "build", "up", "ps", "cp", "exec"].includes(arg),
+      (arg, index) =>
+        index > 0 && ["config", "build", "up", "ps", "cp", "exec", "down"].includes(arg),
     );
   // The real Compose renders the configuration, as this command's own child did: the
   // command runs it with its own environment and these overrides.
@@ -317,7 +320,7 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   if (command === "build") {
     exit(0);
   }
-  if (command === "up") {
+  if (command === "up" || command === "down") {
     exit(0);
   }
   if (command === "ps") {
@@ -552,6 +555,19 @@ function lifecycleCommand(fake, invocation, io) {
       exit(1);
     } else if (
       args[0] === "ps" &&
+      args[1] === "--format" &&
+      scenario === "docker-stack-holds-api-port"
+    ) {
+      // The default Docker-compatible stack's controller still publishes the API port.
+      output(
+        [
+          "openclaw-enterprise-development-controller-1",
+          `127.0.0.1:${env.OPENCLAW_DEV_PORT}->3000/tcp`,
+          "com.docker.compose.project=openclaw-enterprise-development,com.docker.compose.service=controller",
+        ].join("\t"),
+      );
+    } else if (
+      args[0] === "ps" &&
       state.compose &&
       args.includes("label=com.docker.compose.service=browser-proxy")
     ) {
@@ -604,15 +620,15 @@ function lifecycleCommand(fake, invocation, io) {
             ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
             [
               "openclaw-development/openshell-gateway:occ-dev-owned",
-              "f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+              "d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
             ],
             [
               "openclaw-development/openshell-sandbox:occ-dev-owned",
-              "1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+              "f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
             ],
             [
               "openclaw-development/openshell-supervisor:occ-dev-owned",
-              "ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+              "deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
             ],
           ]
             .map(
@@ -649,6 +665,15 @@ function lifecycleCommand(fake, invocation, io) {
     if (args[0] === "cluster" && args[1] === "list") {
       output(JSON.stringify(state.clusters.map((name) => ({ name }))));
     } else if (args[0] === "cluster" && args[1] === "create") {
+      if (scenario === "cluster-create-rolled-back") {
+        // k3d's own rollback after a port clash: nothing of the cluster remains.
+        return fail(
+          "ERRO[0009] Failed Cluster Start: Failed to start server k3d-" +
+            args[2] +
+            "-serverlb: Bind for 127.0.0.1:3000 failed: port is already allocated\n" +
+            "FATA[0009] Cluster creation FAILED, all changes have been rolled back!",
+        );
+      }
       state.clusters.push(args[2]);
       save();
       if (scenario === "cluster-create-failed") {
@@ -830,6 +855,23 @@ async function writeFakeCommand(fake, path, command) {
   );
 }
 
+/**
+ * @typedef {"docker" | "podman"} ContainerEngine
+ * @typedef {"success" | "bootstrap-failed" | "worker-exited" | "worker-timeout" | "api-unauthorized" | "api-mismatch"} StartupScenario
+ * @typedef {{
+ *   engine?: ContainerEngine,
+ *   scenario?: StartupScenario,
+ *   dockerAlias?: boolean,
+ *   podmanDockerApi?: boolean,
+ *   podmanJsonConfig?: boolean,
+ *   dockerPlatformName?: string,
+ *   macosPodmanMachine?: "rootful" | "rootless",
+ *   containerConnection?: string,
+ *   containerHost?: string,
+ * }} FixtureOptions
+ * @param {import("node:test").TestContext} t
+ * @param {FixtureOptions} [options]
+ */
 async function createFixture(t, options = {}) {
   const directory = await realpath(await temporaryDirectory(t, "openclaw-dev-up-"));
 
@@ -967,13 +1009,21 @@ exit 86
 
 // Only external engine and cluster commands are inert. Configuration rendering,
 // selection, state ownership, rollback, and authenticated HTTP use the real code.
+/**
+ * @typedef {"success" | "cancelled-creation" | "docker-stack-holds-api-port" | "node-dns-refused" |
+ *   "compose-up-failed" | "compose-down-failed" | "cluster-create-rolled-back" | "cluster-create-failed" |
+ *   "cluster-delete-failed" | "readiness-blocked" | "api-unauthorized" | "api-mismatch"} LifecycleScenario
+ * @param {Awaited<ReturnType<typeof createFixture>>} fixture
+ * @param {LifecycleScenario} [scenario]
+ * @param {{engine?: ContainerEngine}} [options]
+ */
 async function prepareLifecycleCommands(fixture, scenario = "success", options = {}) {
   const engine = options.engine ?? "docker";
   const bin = join(fixture.directory, "bin");
   // Isolate the launcher contract; real sandbox enforcement is covered by the
   // real-cluster lifecycle suite, not this external-command fixture.
   await writeFile(
-    join(fixture.fixtureRepository, "scripts", "prepare-development-codex-seccomp.mjs"),
+    join(fixture.fixtureRepository, "scripts", "prepare-development-codex-seccomp.ts"),
     'process.stdout.write(JSON.stringify({ mode: "RuntimeDefault", profileName: "" }));\n',
   );
   fixture.env.SAFETY_LOG = join(fixture.directory, "lifecycle.log");
@@ -1013,6 +1063,7 @@ async function writeOverride(fixture, name, lines) {
   return path;
 }
 
+/** @param {{ directory: string }} fixture */
 async function customRuntimeOverride(fixture) {
   return writeOverride(fixture, "compose.custom-runtime.yaml", [
     "services:",
@@ -1024,6 +1075,7 @@ async function customRuntimeOverride(fixture) {
   ]);
 }
 
+/** @param {{ directory: string }} fixture */
 async function perImageOverride(fixture) {
   return writeOverride(fixture, "compose.per-image.yaml", [
     "services:",
@@ -1035,6 +1087,7 @@ async function perImageOverride(fixture) {
   ]);
 }
 
+/** @param {{ directory: string }} fixture */
 async function publicControllerOverride(fixture) {
   return writeOverride(fixture, "compose.public-controller.yaml", [
     "services:",
@@ -1044,6 +1097,10 @@ async function publicControllerOverride(fixture) {
   ]);
 }
 
+/**
+ * @param {{ emptyEnv: string }} fixture
+ * @param {string} [overridePath]
+ */
 function composeOptions(fixture, overridePath) {
   const options = [
     "--env-file",
@@ -1062,6 +1119,19 @@ function composeOptions(fixture, overridePath) {
 // Like spawnSync with encoding utf8 (status, signal, stdout, stderr, and error on a
 // failed start or timeout), but without blocking this process: its command server must
 // answer the fake commands the program runs.
+/**
+ * @typedef {{
+ *   status: number | null,
+ *   signal: NodeJS.Signals | null,
+ *   stdout: string,
+ *   stderr: string,
+ *   error: Error | undefined,
+ * }} CommandResult
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ cwd?: string | undefined, env?: NodeJS.ProcessEnv | undefined, timeout?: number }} [options]
+ * @returns {Promise<CommandResult>}
+ */
 function runCommand(command, args, { cwd, env, timeout } = {}) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -1089,6 +1159,10 @@ function runCommand(command, args, { cwd, env, timeout } = {}) {
   });
 }
 
+/**
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ */
 function runDevUp(args, env) {
   return runCommand(bashExecutable, ["scripts/dev-up", ...args], {
     cwd: env.DEV_UP_FIXTURE_REPOSITORY,
@@ -1096,6 +1170,7 @@ function runDevUp(args, env) {
   });
 }
 
+/** @param {NodeJS.ProcessEnv} env */
 function runDevDown(env) {
   return runCommand(bashExecutable, ["scripts/dev-down"], {
     cwd: env.DEV_UP_FIXTURE_REPOSITORY,
@@ -1105,10 +1180,19 @@ function runDevDown(env) {
 
 // A dev-up log the fixture may not have written yet: a missing file is no records, and blank
 // lines are skipped.
+/**
+ * @param {string} path
+ * @returns {Promise<unknown[]>}
+ */
 function readJsonLines(path) {
   return readJsonLinesFile(path, { missingOk: true, skipBlank: true });
 }
 
+/**
+ * @template {{ args: string[] }} Invocation
+ * @param {Invocation[]} logs
+ * @returns {Invocation[]}
+ */
 function composeInvocations(logs) {
   return logs.filter(
     (entry) =>

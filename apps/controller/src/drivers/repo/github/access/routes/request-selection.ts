@@ -5,7 +5,8 @@ import type {
   PreparedGitHubUseRequest,
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../../../access/backend-contracts.ts";
-import { parseUnambiguousJson } from "../../../access/json-members.ts";
+import { parseUnambiguousJson } from "../../../../json-members.ts";
+import { parseCanonicalGitHubOrigin } from "../origin.ts";
 import { planDraftPull } from "../prepared-draft-pull.ts";
 import { classifyRoute } from "./classification.ts";
 import { allowsGraphqlInput } from "../graphql-input.ts";
@@ -73,10 +74,9 @@ export function selectGitHubRequest(
 }
 
 function matchesOrigin(origin: string, request: GitHubRequest): boolean {
-  const url = new URL(origin);
+  const url = parseCanonicalGitHubOrigin(origin);
   return (
-    url.origin === origin &&
-    url.protocol === "https:" &&
+    url !== undefined &&
     url.hostname === request.target.host &&
     Number(url.port || 443) === request.target.port
   );
@@ -224,6 +224,7 @@ function installationApiOperation(
   const graph = path === "/graphql";
   const maximumBody = scope === "github-repository" && !graph ? 1024 * 1024 : 64 * 1024;
   const read = method === "GET" || method === "HEAD";
+  const apiRoot = path === "/" && read && query === "";
   if (
     head.contentEncoding !== "identity" ||
     // Dedicated credential issuance is not ordinary repository collaboration.
@@ -235,7 +236,8 @@ function installationApiOperation(
     headers["git-protocol"] !== undefined ||
     (graph
       ? method !== "POST" || query !== ""
-      : !/^\/(?:repos\/[\w-]+\/[\w.-]+(?:\/[\w.-]+)*|orgs\/[\w-]+(?:\/[\w.-]+)*|users\/[\w-]+(?:\/[\w.-]+)*|user(?:\/repos)?|installation\/repositories|search\/[\w-]+|rate_limit)$/.test(
+      : !apiRoot &&
+        !/^\/(?:repos\/[\w-]+\/[\w.-]+(?:\/[\w.-]+)*|orgs\/[\w-]+(?:\/[\w.-]+)*|users\/[\w-]+(?:\/[\w.-]+)*|user(?:\/repos)?|installation\/repositories|search\/[\w-]+|rate_limit)$/.test(
           path,
         )) ||
     path.split("/").some((s) => s === "." || s === "..") ||

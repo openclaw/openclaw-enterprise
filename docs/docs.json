@@ -102,7 +102,8 @@
               "guides/repository-credentials/openshell-read-only",
               "guides/repository-credentials/openshell-git-renewal",
               "guides/kubernetes-setup",
-              "guides/deploy/quickstart-session"
+              "guides/deploy/quickstart-session",
+              "guides/deploy/native-admin-domain-recovery"
             ]
           },
           {
@@ -309,6 +310,10 @@
                       {
                         "page": "guides/topics/plugins",
                         "label": "Overview"
+                      },
+                      {
+                        "page": "guides/topics/openclaw-plugins",
+                        "label": "OpenClaw Plugins"
                       },
                       {
                         "page": "guides/topics/plugins-configure",
@@ -771,6 +776,10 @@
                     "label": "Upgrade Recovery"
                   },
                   {
+                    "page": "guides/deploy/production-preflight-cleanup",
+                    "label": "Preflight Cleanup"
+                  },
+                  {
                     "page": "guides/deploy/production-helm-recovery",
                     "label": "Helm Recovery"
                   },
@@ -975,9 +984,11 @@
               "testing/openshell",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
+              "testing/openshell-permission-diagnostics",
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
+              "testing/static-egress-upgrade",
               "testing/protected-repository-custody"
             ]
           },
@@ -1240,6 +1251,7 @@
               "flows/platform-startup",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
+              "flows/coordinated-production-upgrade/preflight-cleanup",
               "flows/tenant-restore",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",

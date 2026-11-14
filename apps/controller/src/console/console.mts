@@ -1055,15 +1055,18 @@ function forgetRetainedView(taken: ReturnType<typeof peekRetainedView>) {
   }
 }
 
-// Names a recheck that outlasts stillCheckingDelayMs beside the page's actions, so a held page
-// is not mistaken for a stuck one (finding 1442). Returns a function that removes the note.
-function showStillChecking() {
-  const actions = app.querySelector(".content .page-actions");
-  if (!actions) {
+// Names a recheck that outlasts stillCheckingDelayMs, so a held page is not mistaken
+// for a stuck one (finding 1442). Mounted Agent checks stay visible beside scrolled drafts.
+function showStillChecking({ mountedAgent = false } = {}) {
+  const container = mountedAgent ? app : app.querySelector(".content .page-actions");
+  if (!container) {
     return () => {};
   }
-  const note = element("p", { className: "checking-status", role: "status" });
-  actions.prepend(note);
+  const note = element("p", {
+    className: mountedAgent ? "checking-status checking-status--mounted" : "checking-status",
+    role: "status",
+  });
+  container.prepend(note);
   note.textContent = "Still checking…";
   return () => note.remove();
 }
@@ -3171,7 +3174,7 @@ async function revalidateMountedAgent(current: Route) {
   let clearStillChecking: (() => void) | undefined;
   const stillChecking = setTimeout(() => {
     if (isCurrent()) {
-      clearStillChecking = showStillChecking();
+      clearStillChecking = showStillChecking({ mountedAgent: true });
     }
   }, stillCheckingDelayMs);
   try {
