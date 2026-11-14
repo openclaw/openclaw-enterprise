@@ -4377,6 +4377,10 @@ test("Installation Backend IDs and Agent backendId share the API schema's charac
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.equal(created.data.backendId, id);
 
+  const read = await controller.request("GET", `${collection}/${created.data.id}`);
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.data.backendId, id);
+
   // 201 code points; DEL and C1 controls (PostgreSQL's [[:cntrl:]] refuses both); line and
   // paragraph separators.
   for (const backendId of [
