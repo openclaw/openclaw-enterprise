@@ -133,7 +133,7 @@
     "tests/integration/runtime-node-build-jobs.test.ts",
     "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-credentials-tool-evidence.test.ts",
-    "tests/integration/client-address.test.mjs",
+    "tests/integration/client-address.test.ts",
     "tests/integration/full-integration-preflight.test.mjs",
     "tests/integration/container-promote.test.ts",
     "tests/conformance/controller-stop-yields.test.ts",
@@ -701,7 +701,7 @@
       "path": "tests/integration/password-sign-in-policy.test.ts"
     },
     {
-      "path": "tests/integration/client-address.test.mjs"
+      "path": "tests/integration/client-address.test.ts"
     },
     {
       "path": "tests/integration/password-sign-in-admission.test.ts"
