@@ -21,6 +21,8 @@ import {
   validateFields,
 } from "../dom.mjs";
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
+import { importedConnectionEditor } from "./plugin-connection.mjs";
+import { pluginImportControl } from "./plugin-import.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
@@ -145,6 +147,7 @@ export function pluginWarningText(warning: PluginDeploymentWarning) {
 export function renderAgentPlugins(
   context: PluginDiscoveryContext & {
     agentId: string;
+    publishPluginsAllowed?(): Promise<boolean | undefined>;
     drafts: Pick<DraftScope, "get" | "track" | "forget">;
   },
   {
@@ -208,7 +211,8 @@ export function renderAgentPlugins(
   const hasBoundCredential =
     agent.harnessAuth?.method === "credential_source" ||
     (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
-  const codex = configuredHarnessId(snapshot.values) === "codex";
+  const harnessId = configuredHarnessId(snapshot.values);
+  const codex = harnessId === "codex";
   // The saved capabilities already resolve the OpenClaw Harness, including the default.
   let openClawDriver = false;
   // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
@@ -224,6 +228,7 @@ export function renderAgentPlugins(
     context,
     input,
     catalogPath: `${path}/plugins`,
+    onCreateConnection: importedConnectionEditor(context, path, readCapabilities),
     requestBody: (body) => body,
     canDiscover: () =>
       !updateDenied &&
@@ -334,6 +339,25 @@ export function renderAgentPlugins(
     feedback,
     saveError,
   );
+
+  let importVisible = false;
+  function showNamespaceImport(anchor: HTMLElement) {
+    if (agent.executionMode === "dedicated" && !importVisible) {
+      void context.publishPluginsAllowed?.().then((allowed) => {
+        if (context.isCurrent() && allowed === true && !importVisible) {
+          importVisible = true;
+          anchor.after(
+            pluginImportControl(context, () => {
+              discovery.reset();
+              if (!updateDenied) {
+                readCapabilities();
+              }
+            }),
+          );
+        }
+      });
+    }
+  }
 
   context.drafts.track("plugins", (): PluginDraft | undefined => {
     const dirty =
@@ -539,6 +563,9 @@ export function renderAgentPlugins(
           catalogCredential = capabilities.discoveryCredential;
           openClawDriver = capabilities.driver?.implementation === "occ/openclaw-plugin";
           catalogCapabilityChecked = true;
+          if (openClawDriver) {
+            showNamespaceImport(discovery.fields.section);
+          }
           discovery.fields.setCapabilities(capabilities);
           discovery.update();
           defaultApprovers.hidden = capabilities.approvers?.agent !== true;
@@ -625,6 +652,15 @@ export function renderAgentPlugins(
       ),
       saveReason,
     );
+    // A reader cannot fetch Agent plugin capabilities. Without Agent or model settings,
+    // OCC defaults to OpenClaw. Incomplete model selections can still be saved as drafts.
+    const values = snapshot.values;
+    if (
+      harnessId === "openclaw" ||
+      (values !== undefined && values.agents === undefined && values.models === undefined)
+    ) {
+      showNamespaceImport(saveReason);
+    }
   });
   return section;
 }

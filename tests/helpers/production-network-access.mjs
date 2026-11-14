@@ -239,9 +239,6 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       database: 5432,
       cluster: 6443,
       exporter: 443,
-      provider: 443,
-      authentication: 443,
-      catalog: 443,
       unexpected: 443,
     }).map(async ([name, port]) => {
       targets[name] = { host: await pod(name, destinations, {}, port), port };
@@ -262,7 +259,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     ),
     port: 10443,
   };
-  for (const name of ["database", "cluster", "exporter", "provider", "authentication", "catalog"]) {
+  for (const name of ["database", "cluster", "exporter"]) {
     targets[`${name}WrongPort`] = { ...targets[name], port: targets[name].port + 1 };
   }
 
@@ -274,15 +271,14 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     "cluster.cidrs[0]": `${targets.cluster.host}/32`,
     "cluster.port": targets.cluster.port,
     "logging.collector.exporter.cidr": `${targets.exporter.host}/32`,
-    "backend.chatgpt.providerCidr": `${targets.provider.host}/32`,
     "gatewayRouting.envoyNamespace": envoyNamespace,
     "gatewayRouting.gatewayName": "access",
     "gatewayRouting.gatewayClassName": "fixture",
     "gatewayRouting.apiKeySecretName": "fixture",
   };
-  const chart = async (overrides = {}, release) =>
+  const chart = async (overrides = {}) =>
     parseProductionChart(
-      (await renderProductionChart({ ...values, ...overrides }, { namespace, release })).stdout,
+      (await renderProductionChart({ ...values, ...overrides }, { namespace })).stdout,
     );
   const baseline = await chart();
   const sources = {};
@@ -449,28 +445,26 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
         ];
         const managementSources = {
           management: { namespace: system, labels: management },
+          managementapi: { namespace: system, labels: sources.api.labels },
+          managementworker: { namespace: system, labels: sources.worker.labels },
           managementinitialization: { namespace: system, labels: sources.initialization.labels },
           ordinary: { namespace, labels: { app: "ordinary-tenant" } },
           foreignsupervisor: { namespace: envoyNamespace, labels: supervisor },
         };
-        for (const component of ["api", "worker"]) {
-          const labels = sources[component].labels;
-          managementSources[`management${component}`] = { namespace: system, labels };
-          // cluster-installation.md supplies this source-side prerequisite; the renderer
-          // under test must supply ingress. It must not be masked by a fixture ingress grant.
-          resources.push(
-            policy(`management-${component}-egress`, system, {
-              podSelector: { matchLabels: labels },
-              policyTypes: ["Egress"],
-              egress: [
-                {
-                  to: [{ podSelector: { matchLabels: management } }],
-                  ports: [{ protocol: "TCP", port: 8080 }],
-                },
-              ],
-            }),
-          );
-        }
+        // The worker needs a source grant. Only the management ingress policy
+        // decides whether the API can reach this listener.
+        resources.push(
+          policy("management-worker-egress", system, {
+            podSelector: { matchLabels: sources.worker.labels },
+            policyTypes: ["Egress"],
+            egress: [
+              {
+                to: [{ podSelector: { matchLabels: management } }],
+                ports: [{ protocol: "TCP", port: 8080 }],
+              },
+            ],
+          }),
+        );
         managementTenants = [];
         for (const [index, space] of [namespace, destinations].entries()) {
           const id = `ns_${randomUUID()}`;
@@ -532,12 +526,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       // Let each selected caller send to the second listener. Leave the unconfigured
       // tenant unrestricted until its production policies have been applied.
       await apply(
-        [
-          "managementapi",
-          "managementworker",
-          `supervisor${tenantIndex}`,
-          `gateway${tenantIndex}`,
-        ].map((name) =>
+        ["managementworker", `supervisor${tenantIndex}`, `gateway${tenantIndex}`].map((name) =>
           policy("verify-management-port-" + name, sources[name].namespace, {
             podSelector: { matchLabels: sources[name].labels },
             policyTypes: ["Egress"],
@@ -878,39 +867,19 @@ print(json.dumps(payload))
     },
     async install(phase) {
       const documents =
-        phase === "optional"
-          ? await chart({
-              "backend.chatgpt.enabled": true,
-              "gatewayRouting.enabled": true,
-              "api.modelDiscoveryCidrs[0]": `${targets.authentication.host}/32`,
-              "api.modelDiscoveryCidrs[1]": `${targets.catalog.host}/32`,
-            })
-          : baseline;
+        phase === "routing" ? await chart({ "gatewayRouting.enabled": true }) : baseline;
       const policies = documents.filter(
         (object) =>
           object?.kind === "NetworkPolicy" &&
           (phase !== "bootstrap" || object.metadata.annotations?.["helm.sh/hook"]),
       );
-      if (phase === "optional") {
-        // The unrelated release was unrestricted in the baseline. Isolate its probe
-        // before checking that this release's discovery grant cannot authorize it.
-        const isolation = (await chart({}, "other")).find(
-          ({ kind, metadata }) =>
-            kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-default-deny",
-        );
-        assert.ok(isolation, "the unrelated release must render its own default-deny policy");
-        policies.push({
-          ...isolation,
-          metadata: { ...isolation.metadata, name: "other-release-default-deny" },
-        });
-      }
       await apply(
         policies.map((policy) => ({
           ...policy,
           metadata: { ...policy.metadata, namespace: policy.metadata.namespace ?? namespace },
         })),
       );
-      envoyEnabled = phase === "optional";
+      envoyEnabled = phase === "routing";
     },
     async verify({ source, allow = [], deny = [], controlSource }) {
       const names = [...allow, ...deny];

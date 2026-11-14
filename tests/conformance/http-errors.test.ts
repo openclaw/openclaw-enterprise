@@ -1133,7 +1133,7 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again.",
+        "OCC could not reach the sign-in service at auth.openai.com. Check HTTPS connectivity from the API server, then try again.",
     },
   ],
   [
@@ -1244,6 +1244,7 @@ const NOT_PROVISIONING_REFUSALS = [
   "INSTALLATION_EXISTS",
   "METHOD_NOT_ALLOWED",
   "NATIVE_ADMIN_RETURN_RATE_LIMITED",
+  "RATE_LIMITED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "UNKNOWN_OUTCOME",
 ];

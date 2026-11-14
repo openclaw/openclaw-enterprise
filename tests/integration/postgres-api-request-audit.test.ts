@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { Pool } from "pg";
 
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
+import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
@@ -54,22 +56,41 @@ test(
     const admittedAction = "openclaw.api.request.admitted";
     const resultAction = "openclaw.api.request.result";
     const logs: Record<string, unknown>[] = [];
-    const { app, pool, state, principal, inject, deployAgent } = await createPostgresAgentApp(t, {
-      label: "api-audit",
-      authSecret,
-      requestAudit: true,
-      stateOptions: { auditWriteTimeoutMs: 100 },
-      appOptions: {
-        logger: createOccLogger({
-          component: "occ-api-request-audit-test",
-          destination: jsonLineDestination(logs),
-        }),
-      },
-    });
+    const { app, pool, state, principal, controller, inject, deployAgent } =
+      await createPostgresAgentApp(t, {
+        label: "api-audit",
+        authSecret,
+        requestAudit: true,
+        stateOptions: { auditWriteTimeoutMs: 100 },
+        appOptions: {
+          logger: createOccLogger({
+            component: "occ-api-request-audit-test",
+            destination: jsonLineDestination(logs),
+          }),
+        },
+      });
 
     const created = await inject("POST", "/namespaces", { name: `API audit ${randomUUID()}` });
     assert.equal(created.statusCode, 201, created.body);
     const namespace = created.json().data;
+    // Uploads check publication permission before parsing. Requests that reach the handler
+    // still need admission evidence before the Driver inspects or publishes the package.
+    controller.installPluginDrivers([new OCCPluginDriver()]);
+    const releasePath = `/namespaces/${namespace.id}/plugin-releases`;
+    const archiveBase64 = await importedPluginPackage(t, "request-audit-marker");
+    const preview = await inject("POST", `${releasePath}/preview`, { archiveBase64 });
+    assert.equal(preview.statusCode, 200, preview.body);
+    const { digest, archiveSha256 } = preview.json().data;
+    const publish = await inject("POST", releasePath, { archiveBase64, digest, archiveSha256 });
+    assert.equal(publish.statusCode, 200, publish.body);
+    await pool.query(
+      `INSERT INTO occ.iam_restrictions
+        (id, namespace_id, action, resource_kind, resource_id, effect)
+       VALUES ($1, $2, 'publish_plugins', 'namespace', $2, 'deny')`,
+      [`restriction-${randomUUID()}`, namespace.id],
+    );
+    const refusedUpload = await inject("POST", releasePath, {});
+    assert.equal(refusedUpload.statusCode, 403, refusedUpload.body);
     const read = await inject("GET", `/namespaces/${namespace.id}`);
     assert.equal(read.statusCode, 200, read.body);
     const head = await inject("HEAD", `/namespaces/${namespace.id}`);
@@ -238,6 +259,9 @@ test(
       resultResource = installationResource,
     ] of [
       [created, "createNamespace", "POST", 201, principal.id, "success", true],
+      [preview, "previewPluginRelease", "POST", 200, principal.id, "success", true],
+      [publish, "publishPluginRelease", "POST", 200, principal.id, "success", true],
+      [refusedUpload, "publishPluginRelease", "POST", 403, principal.id, "denied", false],
       [read, "getNamespace", "GET", 200, principal.id, "success", true, namespaceResource],
       [head, "getNamespace", "HEAD", 200, principal.id, "success", true, namespaceResource],
       [invalid, "createNamespace", "POST", 400, "unresolved", "failure", false],
@@ -280,6 +304,20 @@ test(
           event.action === "openclaw.namespaces.create" && event.resource.id === namespace.id,
       ),
     );
+    // The Namespace mutation records only the digest. The denied attempt names the grant
+    // that failed even though it never reached the handler.
+    const publication = forRequest(publish).find((event) => event.kind === "mutation");
+    assert.deepEqual(publication?.resource, namespaceResource);
+    assert.deepEqual(publication?.details, { digest });
+    const publishDenial = forRequest(refusedUpload).find(
+      (event) => event.kind === "authorization_denial",
+    );
+    assert.equal(publishDenial?.actorId, principal.id);
+    assert.deepEqual(publishDenial?.authorization, {
+      principalId: principal.id,
+      action: "publish_plugins",
+      resource: namespaceResource,
+    });
     const committedRecords = forRequest(createdDuringOutage);
     assert.deepEqual(
       committedRecords.filter((event) => event.kind === "api_request").map(({ action }) => action),

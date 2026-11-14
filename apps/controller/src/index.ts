@@ -256,6 +256,7 @@ interface RequiredPermission {
     | "associated_service_account"
     | "existing_namespace"
     | "bound_secret"
+    | "imported_plugin_release"
     | "directory_lookup"
     | "selected_secret"
     | "iam_binding_target"
@@ -475,7 +476,29 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   }
 }
 
-/** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
+function validateOperationBody(request: FastifyRequest, operation: OccApiRoute): void {
+  const hasRequestBody =
+    request.body !== undefined ||
+    Number(request.headers["content-length"] ?? 0) > 0 ||
+    request.headers["transfer-encoding"] !== undefined;
+  if (operation.operationId === "deployAgent" && !hasRequestBody) {
+    request.body = {};
+  }
+  if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
+    throw failure(
+      400,
+      "INVALID_REQUEST",
+      "The request does not match the operation contract: this operation accepts no request body.",
+    );
+  }
+  const unstorable =
+    unstorableTextFailure("params", request.params) ?? unstorableTextFailure("body", request.body);
+  if (unstorable !== undefined) {
+    throw unstorable;
+  }
+}
+
+/** Preset and Configuration routes that share the pre-body grant check. */
 function authorizesBeforeBody(operation: OccApiRoute): boolean {
   return (
     operation.operationId === "createPreset" ||
@@ -693,12 +716,19 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  const readImportedRelease: RequiredPermission = {
+    action: "read",
+    resourceKind: "namespace",
+    scope: "requested",
+    condition: "imported_plugin_release",
+  };
   if (
     operation.operationId === "discoverAgentPlugins" ||
     operation.operationId === "discoverAgentPluginDetails"
   ) {
     return [
       { ...permission, scope: "namespace" },
+      ...(operation.operationId === "discoverAgentPluginDetails" ? [readImportedRelease] : []),
       {
         action: "operate",
         resourceKind: "secret",
@@ -721,6 +751,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     const create = operation.operationId === "createCredentialSource";
     return [
       { ...permission, scope: create ? "namespace" : "requested" },
+      ...(create ? [readImportedRelease] : []),
       {
         action: "operate",
         resourceKind: "secret",
@@ -846,6 +877,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope:
           creatingAgent || operation.operationId === "provisionAgent" ? "namespace" : "requested",
       },
+      readImportedRelease,
     ];
     if (creatingAgent || operation.operationId === "updateAgent") {
       permissions.push({
@@ -947,6 +979,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       { action: "create", resourceKind: "agent", scope: "namespace" },
       { action: "create", resourceKind: "configuration", scope: "namespace" },
       { action: "administer", resourceKind: "installation", scope: "requested" },
+      ...(operation.operationId === "retryAgentProvisioning" ? [readImportedRelease] : []),
       ...(["read", "operate", "deploy"] as const).map((action) => ({
         action,
         resourceKind: "agent" as const,
@@ -989,6 +1022,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { ...permission, scope: "requested" },
       { action: "read", resourceKind: "agent", scope: "requested" },
+      ...(operation.operationId === "discoverSavedAgentPluginDetails" ? [readImportedRelease] : []),
       ...(operation.operationId === "getSavedAgentPluginPolicyCapabilities"
         ? []
         : [
@@ -1084,7 +1118,7 @@ function permissionDescription(
   ) {
     const verb = operation.operationId === "getAgentProvisioning" ? "read" : "retry";
     // The provisioning_work rows are described here, not per row.
-    return `Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can ${verb} it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.`;
+    return `Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can ${verb} it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.${verb === "retry" ? " Retrying a plan that uses an imported plugin release also requires read permission on the Namespace." : ""}`;
   }
   const names: Record<ResourceKind, string> = {
     installation: "Installation",
@@ -1107,6 +1141,9 @@ function permissionDescription(
       }
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
+      }
+      if (condition === "imported_plugin_release") {
+        return "Requires read permission on the requested Namespace when using an imported plugin release.";
       }
       if (condition === "directory_lookup") {
         if (resourceKind === "secret") {
@@ -2263,12 +2300,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /**
-   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
-   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
-   * path and the caller, so it runs here, in onRequest, before the body is read: a caller
-   * without the grant gets the same 403 or 404 and audit row as when the check ran in the
-   * handler, and the controller never buffers the body. The handler repeats the check in its
-   * transaction, with the Secret binding checks that need the body.
+   * Preset and Configuration writes allow large bodies. Their grant
+   * checks need only the caller and path, so onRequest can refuse an unauthorized upload
+   * before buffering it. Mutations recheck authority in their transaction.
    */
   async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
     const context = contexts.get(request);
@@ -2295,6 +2329,38 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       params.namespaceId as string,
       operation.operationId === "updatePreset" ? params.presetId : undefined,
     );
+  }
+
+  async function performResourceRequest(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    operation: OccApiRoute,
+    routeAuditSink: AuditSink | undefined,
+  ) {
+    if (routeAuditSink === undefined) {
+      return performFenced(request, reply, operation);
+    }
+    // Admission here means the request can enter the handler. The handler still
+    // checks the caller's permission for the exact operation and target.
+    if (
+      controller !== undefined &&
+      requestAuditState.has(request) &&
+      !(await appendRequestAudit(routeAuditSink, request, operation, {
+        action: API_REQUEST_AUDIT_ACTIONS.admitted,
+        outcome: "success",
+      }))
+    ) {
+      throw dependencyUnavailable();
+    }
+    if (controller === undefined) {
+      await performFenced(request, reply, operation);
+    } else {
+      await controller.withRequestAuditId(request.id, () =>
+        performFenced(request, reply, operation),
+      );
+    }
+    // Wait for an asynchronous onSend hook when perform called reply.send().
+    return reply;
   }
 
   // Each OCC transaction that writes durable authority (an Owner binding or deploy-time grants)
@@ -2571,16 +2637,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       // Targets match Namespace deletion, operationTarget() for creation, and
       // requireInstallationAdmin. The console reads this answer
       // instead of an Installation-only read, which the API audits when it is refused.
-      const [namespaceDelete, agentCreate, secretCreate, installationAdminister] =
+      const [namespaceDelete, agentCreate, secretCreate, installationAdminister, publishPlugins] =
         await Promise.all([
           callerMay(context.actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
           ...(["agent", "secret"] as const).map((kind) =>
             callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
           ),
           callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
+          callerMay(context.actorId, "publish_plugins", {
+            kind: "namespace",
+            id: namespaceId,
+            namespaceId,
+          }),
         ]);
       reply.send({
         data: {
+          publishPlugins,
           delete: namespaceDelete,
           agents: { create: agentCreate },
           secrets: { create: secretCreate },
@@ -2706,6 +2778,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       });
       reply.header("cache-control", "no-store");
       reply.send({ data: models, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (
+      operation.operationId === "previewPluginRelease" ||
+      operation.operationId === "publishPluginRelease"
+    ) {
+      const result = await controller.importPluginRelease(
+        context.actorId,
+        namespaceId,
+        {
+          archiveBase64: body?.archiveBase64 as string,
+          ...(body?.marketplaceEntry === undefined
+            ? {}
+            : { marketplaceEntry: body.marketplaceEntry as string }),
+        },
+        operation.operationId === "publishPluginRelease"
+          ? {
+              digest: body?.digest as string,
+              archiveSha256: body?.archiveSha256 as string,
+              audit: (digest) =>
+                event(
+                  operation,
+                  request,
+                  { kind: "namespace", id: namespaceId, namespaceId },
+                  "mutation",
+                  context,
+                  undefined,
+                  { outcome: "success", details: { digest } },
+                ),
+            }
+          : undefined,
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: result, meta: { requestId: request.id } });
       return;
     }
 
@@ -4881,6 +4988,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         handler,
       });
     }
+    // Charge both inspections to the same principal across Namespaces and sessions.
+    // The burst permits ten consecutive preview and publication pairs.
+    const pluginUploadRateLimit = new RequestRateLimiter(20, 1 / 3);
     for (const operation of occApiRoutes) {
       // Bootstrap has its own transactional evidence. Runtime log reads have their own
       // disclosure gate and can also return a download.
@@ -4889,97 +4999,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         operation.operationId === "getAgentDeploymentRuntimeLogs"
           ? undefined
           : requestAuditSink;
-      const permissions = requiredPermissions(operation);
-      const schema: DocumentedFastifySchema = {
-        ...operation.schema,
-        operationId: operation.operationId,
-        summary: operation.summary,
-        description: permissionDescription(permissions, operation),
-        tags: [...operation.tags],
-        "x-openclaw-permissions": permissions,
-        ...(operation.operationId === "bootstrapInstallation" ||
-        operation.operationId === "listAgentAuditEvents"
-          ? { security: [{ sessionCookie: [] }] }
-          : {}),
-      } as DocumentedFastifySchema;
-      routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
-        method: operation.method as HTTPMethods,
-        url: operation.path,
-        ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
-        ...(operation.operationId === "putAgentWorkspaceFile"
-          ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" ||
-              operation.operationId === "validateAgentCreate" ||
-              operation.operationId === "provisionAgent"
-            ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
-              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
-              : operation.operationId === "createConfiguration" ||
-                  operation.operationId === "updateConfiguration"
-                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
-                : {}),
-        schema,
-        onRequest: async (request) => {
-          await admit(request, operation);
-          if (authorizesBeforeBody(operation)) {
-            await resolveIdentity(request, operation);
-            await authorizeBeforeBody(request, operation);
-          }
-        },
-        preValidation: async (request) => {
-          const hasRequestBody =
-            request.body !== undefined ||
-            Number(request.headers["content-length"] ?? 0) > 0 ||
-            request.headers["transfer-encoding"] !== undefined;
-          if (operation.operationId === "deployAgent" && !hasRequestBody) {
-            request.body = {};
-          }
-          if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
-            throw failure(
-              400,
-              "INVALID_REQUEST",
-              "The request does not match the operation contract: this operation accepts no request body.",
-            );
-          }
-          const unstorable =
-            unstorableTextFailure("params", request.params) ??
-            unstorableTextFailure("body", request.body);
-          if (unstorable !== undefined) {
-            throw unstorable;
-          }
-        },
-        ...(authorizesBeforeBody(operation)
-          ? {}
-          : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => {
-          if (routeAuditSink === undefined) {
-            return performFenced(request, reply, operation);
-          }
-          // Admission here means the request can enter the handler. The handler still
-          // checks the caller's permission for the exact operation and target.
-          if (
-            controller !== undefined &&
-            requestAuditState.has(request) &&
-            !(await appendRequestAudit(routeAuditSink, request, operation, {
-              action: API_REQUEST_AUDIT_ACTIONS.admitted,
-              outcome: "success",
-            }))
-          ) {
-            throw dependencyUnavailable();
-          }
-          if (controller === undefined) {
-            await performFenced(request, reply, operation);
-          } else {
-            await controller.withRequestAuditId(request.id, () =>
-              performFenced(request, reply, operation),
-            );
-          }
-          // Wait for an asynchronous onSend hook when perform called reply.send().
-          return reply;
-        },
-        ...(routeAuditSink === undefined
+      const auditOptions =
+        routeAuditSink === undefined
           ? {}
           : {
+              config: { auditManagementRequest: true as const },
               onSend: async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
                 const audit = requestAuditState.get(request);
                 if (audit === undefined || audit.resultSelected || controller === undefined) {
@@ -5013,7 +5037,94 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 });
                 return payload;
               },
-            }),
+            };
+      const permissions = requiredPermissions(operation);
+      const schema: DocumentedFastifySchema = {
+        ...operation.schema,
+        operationId: operation.operationId,
+        summary: operation.summary,
+        description: permissionDescription(permissions, operation),
+        tags: [...operation.tags],
+        "x-openclaw-permissions": permissions,
+        ...(operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents"
+          ? { security: [{ sessionCookie: [] }] }
+          : {}),
+      } as DocumentedFastifySchema;
+      if (
+        operation.operationId === "previewPluginRelease" ||
+        operation.operationId === "publishPluginRelease"
+      ) {
+        routes.post<
+          RouteGenericInterface,
+          { rateLimit: RequestRateLimiter; auditManagementRequest?: true }
+        >(
+          operation.path,
+          {
+            schema,
+            preValidation: async (request) => validateOperationBody(request, operation),
+            bodyLimit: options.maxBodyBytes ?? 4 * Math.ceil((16 * 1024 * 1024) / 3) + 1024,
+            ...auditOptions,
+            config: { ...auditOptions.config, rateLimit: pluginUploadRateLimit },
+            onRequest: async (request, reply) => {
+              await admit(request, operation);
+              await resolveIdentity(request, operation);
+              const context = contexts.get(request);
+              if (!context) {
+                throw dependencyUnavailable();
+              }
+              if (!controller) {
+                throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+              }
+              const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+              if (retryAfter !== undefined) {
+                reply.header("retry-after", String(retryAfter));
+                throw failure(
+                  429,
+                  "RATE_LIMITED",
+                  "Too many plugin uploads. Wait before retrying.",
+                );
+              }
+              const { namespaceId } = request.params as { namespaceId: string };
+              await controller.authorizePluginPublication(context.actorId, namespaceId);
+            },
+          },
+          async (request, reply) =>
+            performResourceRequest(request, reply, operation, routeAuditSink),
+        );
+        continue;
+      }
+      routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
+        method: operation.method as HTTPMethods,
+        url: operation.path,
+        ...auditOptions,
+        ...(operation.operationId === "putAgentWorkspaceFile"
+          ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
+          : operation.operationId === "createAgent" ||
+              operation.operationId === "validateAgentCreate" ||
+              operation.operationId === "provisionAgent"
+            ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
+            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+              : operation.operationId === "createConfiguration" ||
+                  operation.operationId === "updateConfiguration"
+                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                : {}),
+        schema,
+        onRequest: async (request) => {
+          await admit(request, operation);
+          if (authorizesBeforeBody(operation)) {
+            await resolveIdentity(request, operation);
+            await authorizeBeforeBody(request, operation);
+          }
+        },
+        preValidation: async (request) => validateOperationBody(request, operation),
+        ...(authorizesBeforeBody(operation)
+          ? {}
+          : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
+        handler: async (request, reply) => {
+          return performResourceRequest(request, reply, operation, routeAuditSink);
+        },
       });
     }
   });

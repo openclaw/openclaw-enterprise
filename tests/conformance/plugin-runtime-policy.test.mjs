@@ -1880,6 +1880,16 @@ for (const launcher of dedicatedGatewayLaunchers) {
     const { calls, files } = await runOpenClawRuntimeHelper(undefined, [], {
       ...launcher,
       baseConfig,
+      // Unmanaged Gateways require the pinned core for tool policy without a managed skill patch.
+      files: [
+        [
+          "/opt/oce/runtime/provenance.json",
+          JSON.stringify({
+            source: "https://github.com/openclaw/openclaw",
+            commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+          }),
+        ],
+      ],
     });
     const native = calls.findIndex(({ args }) => args?.[1] === "gateway");
     const validate = calls.findIndex(

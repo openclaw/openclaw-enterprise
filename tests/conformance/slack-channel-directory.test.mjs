@@ -483,9 +483,7 @@ test("Slack credential checks read only a whole ${NAME} token string as an env r
 });
 
 test("Slack credential checks name the missing proxy only when production expects one and Slack never answered", async (t) => {
-  // Finding 2521: production composition passes expectProxy. With no proxy URL, an auth.test
-  // that Slack never answers usually means the Installation has no Slack route, so the refusal
-  // names the Helm setting and still allows a retry for an open route that timed out (2531).
+  // A restricted Installation may depend on a proxy. A response from Slack proves a route exists.
   const check = (driver, value = token) =>
     driver.validateCredentials(
       { channels: { slack: { mode: "http", botToken: "${SLACK_BOT_TOKEN}" } } },

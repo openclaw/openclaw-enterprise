@@ -45,6 +45,7 @@ import type {
   NativeRepositorySender,
   RepositoryCredentialMaterialRef,
   ComputeRevisionContext,
+  InspectedPluginPackage,
   ConfigurationDriver,
   Driver,
   IAMDriver,
@@ -5884,6 +5885,10 @@ export class ControllerWorker {
     if (workspaceSetup !== undefined && this.compute.supportsWorkspaceSetup !== true) {
       return { result: { outcome: "permanent", code: "WORKSPACE_SETUP_UNSUPPORTED" } };
     }
+    const importedPins = revision.plugins?.importedReleases;
+    // Prepare and activation can use the same material within this reconciliation.
+    let importedMaterial:
+      Promise<Readonly<Record<string, InspectedPluginPackage>> | undefined> | undefined;
     return {
       context: {
         ...(revision.egressPlan === undefined
@@ -5983,6 +5988,20 @@ export class ControllerWorker {
                 }),
             }),
         secretEnvironment: Object.freeze(resolved),
+        ...(importedPins && {
+          loadImportedPluginReleases: () =>
+            (importedMaterial ??= this.state.read(async (view) => {
+              const releases: Record<string, InspectedPluginPackage> = {};
+              for (const [id, pin] of Object.entries(importedPins)) {
+                const release = await view.pluginReleases.find(revision.namespaceId, pin.digest);
+                if (!release || release.digest !== pin.digest) {
+                  return undefined;
+                }
+                releases[id] = release;
+              }
+              return releases;
+            })),
+        }),
         harnessAuth,
         ...(credentialSources.length === 0
           ? {}

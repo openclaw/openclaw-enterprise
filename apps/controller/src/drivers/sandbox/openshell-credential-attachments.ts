@@ -6,6 +6,7 @@ import type {
   CredentialSourceAttachment,
   CredentialSourceType,
   CredentialWithdrawalContext,
+  ImportedPluginConnectionTemplate,
 } from "@openclaw-enterprise/contracts";
 import {
   configurationSettingMessage,
@@ -40,6 +41,8 @@ import {
   managedCredentialBinding,
   managedMcpCredentialBindings,
   managedMcpInstallForSourceConfig,
+  managedMcpInstallsForRevision,
+  managedSelectionsForRevision,
   managedMcpSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
 import {
@@ -61,6 +64,7 @@ interface OpenShellAttachmentSources {
       sourceId: string,
       config: Readonly<Record<string, string>>,
       gateway: () => OpenShellGatewayPlacement | undefined,
+      template?: ImportedPluginConnectionTemplate,
     ): Omit<OpenShellProviderProfile, "annotations">;
   };
   requiredToolBinaries(binary?: string): readonly string[];
@@ -88,9 +92,12 @@ export class OpenShellCredentialAttachments {
       context.revision.plugins?.plugins,
       managedGoogleInstall,
     );
-    for (const { install, sourceId } of managedMcpCredentialBindings(
-      context.revision.plugins?.plugins,
-    )) {
+    const revisionInstalls = managedMcpInstallsForRevision(context.revision);
+    const bindings = managedMcpCredentialBindings(
+      managedSelectionsForRevision(context.revision),
+      revisionInstalls,
+    );
+    for (const { install, sourceId } of bindings) {
       const source = context.sources.find(({ id }) => id === sourceId);
       if (source && !managedMcpSlotAcceptsSource(install, source)) {
         throw new ScopeViolationError(
@@ -99,8 +106,20 @@ export class OpenShellCredentialAttachments {
       }
     }
     for (const source of context.sources.filter(({ config }) => config.protocol === "mcp")) {
-      const install = managedMcpInstallForSourceConfig(source.config);
-      if (!install || !managedMcpSlotAcceptsSource(install, source)) {
+      const install = managedMcpInstallForSourceConfig(
+        source.config,
+        source.importedPluginTemplate,
+      );
+      if (
+        !install ||
+        !revisionInstalls.some((entry) => entry.id === install.id && entry.url === install.url) ||
+        (source.importedPluginTemplate &&
+          !bindings.some(
+            (binding) =>
+              binding.install.id === install.id && binding.sourceId === source.id && binding.active,
+          )) ||
+        !managedMcpSlotAcceptsSource(install, source)
+      ) {
         throw new ScopeViolationError(
           "The attached credential does not match a reviewed MCP slot.",
         );
@@ -190,8 +209,11 @@ export class OpenShellCredentialAttachments {
       }
       // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
       // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
-      const profile = type.profile(source.id, source.config, () =>
-        this.backend.client.placement(context.namespace.name),
+      const profile = type.profile(
+        source.id,
+        source.config,
+        () => this.backend.client.placement(context.namespace.name),
+        source.importedPluginTemplate,
       );
       await ensureOpenShellProviderProfile(client, workspace, profile, context.signal);
       attachments.push(
@@ -200,6 +222,9 @@ export class OpenShellCredentialAttachments {
           ref: name,
           ...((source.id === binding?.sourceId || source.config.protocol === "mcp") && {
             requestScope: {
+              ...(source.importedPluginTemplate && {
+                importedPluginTemplate: source.importedPluginTemplate,
+              }),
               ...bearerTokenEndpoint(source.config),
               scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
             },

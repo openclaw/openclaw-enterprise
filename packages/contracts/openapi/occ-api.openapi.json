@@ -679,6 +679,15 @@
                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
               },
+              "importedPluginTemplate": {
+                "additionalProperties": false,
+                "properties": {
+                  "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "serverName": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["releaseSha256", "serverName"],
+                "type": "object"
+              },
               "name": {
                 "maxLength": 200,
                 "minLength": 1,
@@ -1100,6 +1109,7 @@
                   { "const": "NAMESPACE_NOT_EMPTY", "type": "string" },
                   { "const": "PAYLOAD_TOO_LARGE", "type": "string" },
                   { "const": "UNSUPPORTED_MEDIA_TYPE", "type": "string" },
+                  { "const": "RATE_LIMITED", "type": "string" },
                   { "const": "UNKNOWN_OUTCOME", "type": "string" },
                   { "const": "NOT_IMPLEMENTED", "type": "string" },
                   { "const": "INTERNAL_ERROR", "type": "string" },
@@ -15282,7 +15292,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.",
         "operationId": "createAgent",
         "parameters": [
           {
@@ -15991,6 +16001,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "administer",
             "condition": "gateway_managed_mode_disabled",
@@ -17059,6 +17075,7 @@
                               "id": { "type": "string" },
                               "logoUrl": { "type": "string" },
                               "name": { "type": "string" },
+                              "policyScope": { "const": "enablement_only", "type": "string" },
                               "privacyPolicyUrl": { "type": "string" },
                               "remoteId": { "type": "string" },
                               "selectableWithoutTools": { "type": "boolean" },
@@ -17267,7 +17284,7 @@
     },
     "/namespaces/{namespaceId}/agents/plugins/details": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.",
         "operationId": "discoverAgentPluginDetails",
         "parameters": [
           {
@@ -17437,6 +17454,7 @@
                         "id": { "type": "string" },
                         "logoUrl": { "type": "string" },
                         "name": { "type": "string" },
+                        "policyScope": { "const": "enablement_only", "type": "string" },
                         "privacyPolicyUrl": { "type": "string" },
                         "remoteId": { "type": "string" },
                         "selectableWithoutTools": { "type": "boolean" },
@@ -17609,6 +17627,12 @@
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
           {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
+          {
             "action": "operate",
             "condition": "selected_secret",
             "resourceKind": "secret",
@@ -17619,7 +17643,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
         "operationId": "provisionAgent",
         "parameters": [
           {
@@ -18240,6 +18264,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           {
@@ -18547,7 +18577,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision/{workId}/retry": {
       "post": {
-        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.",
+        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs. Retrying a plan that uses an imported plugin release also requires read permission on the Namespace.",
         "operationId": "retryAgentProvisioning",
         "parameters": [
           {
@@ -18790,6 +18820,12 @@
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           {
             "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
             "condition": "provisioning_work",
             "resourceKind": "agent",
             "scope": "requested"
@@ -19018,7 +19054,7 @@
     },
     "/namespaces/{namespaceId}/agents/validate": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when gatewayManagedMode is set to false.",
         "operationId": "validateAgentCreate",
         "parameters": [
           {
@@ -19421,6 +19457,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "administer",
             "condition": "gateway_managed_mode_disabled",
@@ -20403,7 +20445,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.",
         "operationId": "updateAgent",
         "parameters": [
           {
@@ -20461,7 +20503,8 @@
                 "additionalProperties": false,
                 "anyOf": [
                   { "required": ["configurationId"] },
-                  { "required": ["gatewayManagedMode"] }
+                  { "required": ["gatewayManagedMode"] },
+                  { "required": ["credentialSources", "expectedCredentialSources"] }
                 ],
                 "properties": {
                   "backendId": {
@@ -20501,6 +20544,23 @@
                       { "const": "embedded", "type": "string" },
                       { "const": "dedicated", "type": "string" }
                     ]
+                  },
+                  "expectedCredentialSources": {
+                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "sourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["sourceId"],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array",
+                    "uniqueItems": true
                   },
                   "gatewayManagedMode": {
                     "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
@@ -21146,6 +21206,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "administer",
             "condition": "gateway_managed_mode_changed",
@@ -21916,7 +21982,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -22489,6 +22555,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "deploy", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           { "action": "read", "resourceKind": "configuration", "scope": "requested" },
           {
             "action": "read",
@@ -22531,7 +22603,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy-first": {
       "post": {
-        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgentFirst",
         "parameters": [
           {
@@ -22781,6 +22853,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "deploy", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "phase": "fresh_admission",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           { "action": "read", "resourceKind": "configuration", "scope": "requested" },
           {
             "action": "read",
@@ -27386,6 +27465,7 @@
                               "id": { "type": "string" },
                               "logoUrl": { "type": "string" },
                               "name": { "type": "string" },
+                              "policyScope": { "const": "enablement_only", "type": "string" },
                               "privacyPolicyUrl": { "type": "string" },
                               "remoteId": { "type": "string" },
                               "selectableWithoutTools": { "type": "boolean" },
@@ -27884,7 +27964,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/plugins/details": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.",
         "operationId": "discoverSavedAgentPluginDetails",
         "parameters": [
           {
@@ -28009,6 +28089,7 @@
                         "id": { "type": "string" },
                         "logoUrl": { "type": "string" },
                         "name": { "type": "string" },
+                        "policyScope": { "const": "enablement_only", "type": "string" },
                         "privacyPolicyUrl": { "type": "string" },
                         "remoteId": { "type": "string" },
                         "selectableWithoutTools": { "type": "boolean" },
@@ -28181,6 +28262,12 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "operate",
             "condition": "authenticated_plugin_discovery",
@@ -35887,6 +35974,15 @@
                             "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
+                          "importedPluginTemplate": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "serverName": { "maxLength": 128, "minLength": 1, "type": "string" }
+                            },
+                            "required": ["releaseSha256", "serverName"],
+                            "type": "object"
+                          },
                           "name": {
                             "maxLength": 200,
                             "minLength": 1,
@@ -36102,7 +36198,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for CredentialSource resources in the requested Namespace. Requires operate permission on each Secret named in the request body secrets.",
+        "description": "Requires create permission for CredentialSource resources in the requested Namespace. Requires read permission on the requested Namespace when using an imported plugin release. Requires operate permission on each Secret named in the request body secrets.",
         "operationId": "createCredentialSource",
         "parameters": [
           {
@@ -36148,6 +36244,15 @@
                     "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
                     "description": "Non-secret source configuration keyed by catalog field name.",
                     "maxProperties": 32,
+                    "type": "object"
+                  },
+                  "importedPluginTemplate": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                      "serverName": { "maxLength": 128, "minLength": 1, "type": "string" }
+                    },
+                    "required": ["releaseSha256", "serverName"],
                     "type": "object"
                   },
                   "name": {
@@ -36321,6 +36426,12 @@
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
+          {
+            "action": "read",
+            "condition": "imported_plugin_release",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          },
           {
             "action": "operate",
             "condition": "bound_secret",
@@ -37881,7 +37992,8 @@
                                     { "const": "administer", "type": "string" },
                                     { "const": "read_logs", "type": "string" },
                                     { "const": "manage_policy", "type": "string" },
-                                    { "const": "read_audit", "type": "string" }
+                                    { "const": "read_audit", "type": "string" },
+                                    { "const": "publish_plugins", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -38051,7 +38163,8 @@
                             { "const": "administer", "type": "string" },
                             { "const": "read_logs", "type": "string" },
                             { "const": "manage_policy", "type": "string" },
-                            { "const": "read_audit", "type": "string" }
+                            { "const": "read_audit", "type": "string" },
+                            { "const": "publish_plugins", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -38133,7 +38246,8 @@
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
                                   { "const": "manage_policy", "type": "string" },
-                                  { "const": "read_audit", "type": "string" }
+                                  { "const": "read_audit", "type": "string" },
+                                  { "const": "publish_plugins", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -38465,7 +38579,8 @@
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
                                   { "const": "manage_policy", "type": "string" },
-                                  { "const": "read_audit", "type": "string" }
+                                  { "const": "read_audit", "type": "string" },
+                                  { "const": "publish_plugins", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -39082,6 +39197,7 @@
                         "agents": { "create": true },
                         "delete": true,
                         "installation": { "administer": true },
+                        "publishPlugins": true,
                         "secrets": { "create": true }
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -39120,6 +39236,10 @@
                           "required": ["administer"],
                           "type": "object"
                         },
+                        "publishPlugins": {
+                          "description": "Whether the caller may publish plugin releases in this Namespace.",
+                          "type": "boolean"
+                        },
                         "secrets": {
                           "additionalProperties": false,
                           "properties": {
@@ -39132,7 +39252,7 @@
                           "type": "object"
                         }
                       },
-                      "required": ["delete", "agents", "secrets", "installation"],
+                      "required": ["publishPlugins", "delete", "agents", "secrets", "installation"],
                       "type": "object"
                     },
                     "meta": {
@@ -39347,6 +39467,533 @@
         "tags": ["Namespaces"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/plugin-releases": {
+      "post": {
+        "description": "Requires publish_plugins permission on the requested Namespace.",
+        "operationId": "publishPluginRelease",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "archiveBase64": "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA==",
+                    "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+                    "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "archiveBase64": {
+                    "description": "A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed.",
+                    "maxLength": 22369624,
+                    "minLength": 4,
+                    "type": "string"
+                  },
+                  "archiveSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "digest": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "marketplaceEntry": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["archiveBase64", "digest", "archiveSha256"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+                        "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+                        "format": "agent-plugins",
+                        "mcpServers": [],
+                        "name": "reporting",
+                        "skills": ["report"],
+                        "unsupported": [],
+                        "version": "1.0.0"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "archiveSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "description": { "type": "string" },
+                        "digest": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "format": {
+                          "anyOf": [
+                            { "const": "agent-plugins", "type": "string" },
+                            { "const": "claude", "type": "string" }
+                          ]
+                        },
+                        "mcpServers": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bearerEnv": { "type": "string" },
+                              "name": { "type": "string" },
+                              "url": { "type": "string" }
+                            },
+                            "required": ["name", "url"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "name": { "type": "string" },
+                        "skills": { "items": { "type": "string" }, "type": "array" },
+                        "unsupported": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "component": { "type": "string" },
+                              "reason": { "type": "string" }
+                            },
+                            "required": ["component", "reason"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "version": { "type": "string" }
+                      },
+                      "required": [
+                        "name",
+                        "format",
+                        "digest",
+                        "archiveSha256",
+                        "skills",
+                        "mcpServers",
+                        "unsupported"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The uploaded plugin package cannot be inspected."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Publish a reviewed plugin release in this Namespace",
+        "tags": ["Namespaces"],
+        "x-openclaw-permissions": [
+          { "action": "publish_plugins", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/plugin-releases/preview": {
+      "post": {
+        "description": "Requires publish_plugins permission on the requested Namespace.",
+        "operationId": "previewPluginRelease",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "archiveBase64": "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA=="
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "archiveBase64": {
+                    "description": "A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed.",
+                    "maxLength": 22369624,
+                    "minLength": 4,
+                    "type": "string"
+                  },
+                  "marketplaceEntry": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["archiveBase64"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+                        "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+                        "format": "agent-plugins",
+                        "mcpServers": [],
+                        "name": "reporting",
+                        "skills": ["report"],
+                        "unsupported": [],
+                        "version": "1.0.0"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "archiveSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "description": { "type": "string" },
+                        "digest": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "format": {
+                          "anyOf": [
+                            { "const": "agent-plugins", "type": "string" },
+                            { "const": "claude", "type": "string" }
+                          ]
+                        },
+                        "mcpServers": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bearerEnv": { "type": "string" },
+                              "name": { "type": "string" },
+                              "url": { "type": "string" }
+                            },
+                            "required": ["name", "url"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "name": { "type": "string" },
+                        "skills": { "items": { "type": "string" }, "type": "array" },
+                        "unsupported": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "component": { "type": "string" },
+                              "reason": { "type": "string" }
+                            },
+                            "required": ["component", "reason"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "version": { "type": "string" }
+                      },
+                      "required": [
+                        "name",
+                        "format",
+                        "digest",
+                        "archiveSha256",
+                        "skills",
+                        "mcpServers",
+                        "unsupported"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The uploaded plugin package cannot be inspected."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Inspect the components of a plugin package or marketplace entry",
+        "tags": ["Namespaces"],
+        "x-openclaw-permissions": [
+          { "action": "publish_plugins", "resourceKind": "namespace", "scope": "requested" }
         ]
       }
     },

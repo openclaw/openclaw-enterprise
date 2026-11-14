@@ -232,36 +232,11 @@ async function startsUp(environment, label) {
   assert.equal(await startupCode(environment), "PERSISTENCE_UNAVAILABLE", label);
 }
 
-const loginEgress = (objects) =>
-  objects
-    .filter(({ kind }) => kind === "NetworkPolicy")
-    .map(({ metadata }) => /-api-(google|oidc)-login-egress$/.exec(metadata.name)?.[1])
-    .filter(Boolean)
-    .sort();
-
-// Renders `values` and checks what the chart gives the API: exactly `settings`, a default
-// login egress per listed provider (any address except link-local, on TCP 443 only), and no
-// sign-in or trusted-proxy setting for the worker. Returns the API's env.
-async function renders(label, values, settings, egress) {
+// Only the API receives sign-in and trusted-proxy settings.
+async function renders(label, values, settings) {
   const objects = await render(values);
   const rendered = signInSettings(deploymentEnv(objects, "api"));
   assert.deepEqual(rendered, settings, label);
-  assert.deepEqual(loginEgress(objects), egress, label);
-  for (const provider of egress) {
-    assert.deepEqual(
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "NetworkPolicy" && metadata.name.endsWith(`-api-${provider}-login-egress`),
-      ).spec.egress,
-      [
-        {
-          to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
-          ports: [{ protocol: "TCP", port: 443 }],
-        },
-      ],
-      `${label}: ${provider}`,
-    );
-  }
   assert.ok(
     !deploymentEnv(objects, "worker").some(({ name }) =>
       /^OCC_AUTH_(GITHUB_|GOOGLE_|OIDC_|TRUSTED_PROXY_|CLIENT_IP_HEADER)/.test(name),
@@ -274,8 +249,8 @@ async function renders(label, values, settings, egress) {
 // Each accepted case renders as `settings`, parses as `parsed` and starts the API.
 function acceptsEach(cases) {
   return settle(
-    cases.map(async ({ label, values, settings, parsed, egress }) => {
-      const environment = await renders(label, values, settings, egress);
+    cases.map(async ({ label, values, settings, parsed }) => {
+      const environment = await renders(label, values, settings);
       assert.deepEqual(humanLoginConfiguration(environment), parsed, label);
       await startsUp(environment, label);
     }),
@@ -540,17 +515,13 @@ const codePointName = (codePoint) => `U+${codePoint.toString(16).toUpperCase().p
 const urls = (list, chart, { api, job = api }) =>
   list.map((baseUrl) => ({ baseUrl, chart, api, job }));
 
-// Secret placement and egress are chart concerns: the API only ever sees the resolved
+// Secret placement is a chart concern: the API only ever sees the resolved
 // credentials, so these refusals have no parser counterpart.
 const chartOnly = (provider, cases) =>
   settle(
     cases.map(async ([name, values, chart]) => {
       assert.match(await refusal(values), chart, `${provider}: ${name}`);
     }),
-  );
-const emptyEgress = (provider) =>
-  new RegExp(
-    `auth\\.${provider}\\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \\[\\] in a values file or with --set-json,`,
   );
 
 after(() => rm(directory, { recursive: true, force: true }));
@@ -566,8 +537,6 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       await settle(
         cases.map(async ({ preset, proxy, googleEnabled }) => {
           const label = `${preset}, Google ${googleEnabled ? "on" : "off"}`;
-          // Reuse these renders to cover the example install's egress and Secret
-          // placement: only the API receives sign-in and trusted-proxy settings.
           const environment = await renders(
             label,
             { ...proxy.values, ...(googleEnabled ? googleUpgradeValues(recoveryUserId) : {}) },
@@ -575,7 +544,6 @@ describe("sign-in chart parity", { concurrency: true }, () => {
               ...(googleEnabled ? googleUpgradeSettings(recoveryUserId) : defaultInstallSettings),
               ...proxy.env,
             },
-            googleEnabled ? ["google"] : [],
           );
           assert.deepEqual(
             humanLoginConfiguration(environment).google,
@@ -660,14 +628,12 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           values: googleUpgradeValues(recoveryUserId),
           settings: googleUpgradeSettings(recoveryUserId),
           parsed: { google: googleParsed },
-          egress: ["google"],
         },
         {
           label: "Google only, hosted domains",
           values: googleUpgradeValues(recoveryUserId, domains),
           settings: googleUpgradeSettings(recoveryUserId, domains),
           parsed: { google: { ...googleParsed, allowedDomains: domains } },
-          egress: ["google"],
         },
         {
           // The default is not rendered: the API reads an absent setting as "all".
@@ -675,7 +641,6 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           values: { ...googleUpgradeValues(recoveryUserId), "auth.passwordSignIn": "all" },
           settings: googleUpgradeSettings(recoveryUserId),
           parsed: { google: googleParsed },
-          egress: ["google"],
         },
       ]);
     },
@@ -722,70 +687,46 @@ describe("sign-in chart parity", { concurrency: true }, () => {
         values: oidcUpgradeValues(recoveryUserId, ...issuerAndExtra),
         settings: oidcUpgradeSettings(recoveryUserId, ...issuerAndExtra),
         parsed: { oidc: parsed },
-        egress: ["oidc"],
       });
-      // A listed CIDR replaces the default, link-local included, for each provider.
-      const narrowed = render({
-        ...googleUpgradeValues(recoveryUserId),
-        ...oidcUpgradeValues(recoveryUserId),
-        "auth.google.egressCidrs[0]": "169.254.10.0/24",
-        "auth.oidc.egressCidrs[0]": "198.51.100.0/24",
-      }).then((objects) => {
-        for (const [provider, cidr] of [
-          ["google", "169.254.10.0/24"],
-          ["oidc", "198.51.100.0/24"],
-        ]) {
-          assert.deepEqual(
-            objects.find(({ metadata }) => metadata.name.endsWith(`-api-${provider}-login-egress`))
-              .spec.egress[0].to,
-            [{ ipBlock: { cidr } }],
-            provider,
-          );
-        }
-      });
-      await settle([
-        narrowed,
-        acceptsEach([
-          oidcOnly("OIDC, URLs padded with whitespace the API trims", oidc, padded),
-          oidcOnly(
-            "OIDC, an issuer without a path, padded with whitespace the API trims",
-            { ...oidc, ...bare },
-            paddedBare,
-          ),
-          oidcOnly("OIDC only", oidc),
-          oidcOnly(
-            "OIDC only, basic token auth and a label",
-            { ...oidc, ...keycloak, ...extra },
-            keycloak,
-            extra,
-          ),
-          {
-            // The default token method is not rendered: the API reads its absence as post.
-            ...oidcOnly("OIDC, explicit default token auth", oidc, fixtureOidcIssuer, {
-              tokenAuth: "client_secret_post",
-            }),
-            settings: oidcUpgradeSettings(recoveryUserId),
+      await acceptsEach([
+        oidcOnly("OIDC, URLs padded with whitespace the API trims", oidc, padded),
+        oidcOnly(
+          "OIDC, an issuer without a path, padded with whitespace the API trims",
+          { ...oidc, ...bare },
+          paddedBare,
+        ),
+        oidcOnly("OIDC only", oidc),
+        oidcOnly(
+          "OIDC only, basic token auth and a label",
+          { ...oidc, ...keycloak, ...extra },
+          keycloak,
+          extra,
+        ),
+        {
+          // The default token method is not rendered: the API reads its absence as post.
+          ...oidcOnly("OIDC, explicit default token auth", oidc, fixtureOidcIssuer, {
+            tokenAuth: "client_secret_post",
+          }),
+          settings: oidcUpgradeSettings(recoveryUserId),
+        },
+        {
+          label: "Google and OIDC, recovery-only password sign-in",
+          values: {
+            ...googleUpgradeValues(recoveryUserId),
+            ...oidcUpgradeValues(recoveryUserId),
+            "auth.passwordSignIn": "recovery-only",
           },
-          {
-            label: "Google and OIDC, recovery-only password sign-in",
-            values: {
-              ...googleUpgradeValues(recoveryUserId),
-              ...oidcUpgradeValues(recoveryUserId),
-              "auth.passwordSignIn": "recovery-only",
-            },
-            settings: {
-              ...googleUpgradeSettings(recoveryUserId),
-              ...oidcUpgradeSettings(recoveryUserId),
-              OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
-            },
-            parsed: {
-              google: googleParsed,
-              oidc,
-              passwordSignIn: "recovery-only",
-            },
-            egress: ["google", "oidc"],
+          settings: {
+            ...googleUpgradeSettings(recoveryUserId),
+            ...oidcUpgradeSettings(recoveryUserId),
+            OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
           },
-        ]),
+          parsed: {
+            google: googleParsed,
+            oidc,
+            passwordSignIn: "recovery-only",
+          },
+        },
       ]);
     },
   );
@@ -911,100 +852,57 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     },
   );
 
-  test(
-    "the chart refuses Google Secret and egress settings the API cannot observe",
-    tooling,
-    async () => {
-      const google = googleUpgradeValues(recoveryUserId);
-      await chartOnly("google", [
-        [
-          "the Better Auth Secret",
-          { ...google, "auth.google.secretName": "occ-auth" },
-          /auth\.google\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "one key for client ID and secret",
-          { ...google, "auth.google.clientSecretKey": "client-id" },
-          /auth\.google client ID and client secret must use different Secret keys/,
-        ],
-        [
-          "a hostname egress",
-          { ...google, "auth.google.egressCidrs[0]": "accounts.google.com" },
-          /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an invalid egress address",
-          { ...google, "auth.google.egressCidrs[0]": "142.250.300.0/24" },
-          /auth\.google\.egressCidrs contains an invalid IPv4 address/,
-        ],
-        [
-          "a /0 egress entry",
-          { ...google, "auth.google.egressCidrs[0]": "0.0.0.0/0" },
-          /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an empty-string egress list",
-          { ...google, "auth.google.egressCidrs": "" },
-          emptyEgress("google"),
-        ],
-        [
-          "an empty-string domain allowlist",
-          { ...google, "auth.google.allowedDomains": "" },
-          /auth\.google\.allowedDomains must be a list of DNS domain names/,
-        ],
-        [
-          "an HTTP base URL",
-          { ...google, "auth.baseUrl": "http://oce.example.internal" },
-          /auth\.google requires an HTTPS auth\.baseUrl/,
-        ],
-      ]);
-    },
-  );
+  test("the chart refuses Google Secret settings the API cannot observe", tooling, async () => {
+    const google = googleUpgradeValues(recoveryUserId);
+    await chartOnly("google", [
+      [
+        "the Better Auth Secret",
+        { ...google, "auth.google.secretName": "occ-auth" },
+        /auth\.google\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "one key for client ID and secret",
+        { ...google, "auth.google.clientSecretKey": "client-id" },
+        /auth\.google client ID and client secret must use different Secret keys/,
+      ],
+      [
+        "an empty-string domain allowlist",
+        { ...google, "auth.google.allowedDomains": "" },
+        /auth\.google\.allowedDomains must be a list of DNS domain names/,
+      ],
+      [
+        "an HTTP base URL",
+        { ...google, "auth.baseUrl": "http://oce.example.internal" },
+        /auth\.google requires an HTTPS auth\.baseUrl/,
+      ],
+    ]);
+  });
 
-  test(
-    "the chart refuses OIDC Secret and egress settings the API cannot observe",
-    tooling,
-    async () => {
-      const oidc = oidcUpgradeValues(recoveryUserId);
-      await chartOnly("oidc", [
-        [
-          "the Google sign-in Secret",
-          { ...oidc, ...googleOn, "auth.oidc.secretName": "occ-google-login" },
-          /auth\.oidc\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "the Better Auth Secret",
-          { ...oidc, "auth.oidc.secretName": "occ-auth" },
-          /auth\.oidc\.secretName must name a dedicated Secret/,
-        ],
-        [
-          "one key for client ID and secret",
-          { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
-          /auth\.oidc client ID and client secret must use different Secret keys/,
-        ],
-        [
-          "a hostname egress",
-          { ...oidc, "auth.oidc.egressCidrs[0]": "tenant.idp.example.test" },
-          /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "a /0 egress entry",
-          { ...oidc, "auth.oidc.egressCidrs[0]": "0.0.0.0/0" },
-          /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an empty-string egress list",
-          { ...oidc, "auth.oidc.egressCidrs": "" },
-          emptyEgress("oidc"),
-        ],
-        [
-          "an HTTP base URL",
-          { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
-          /auth\.oidc requires an HTTPS auth\.baseUrl/,
-        ],
-      ]);
-    },
-  );
+  test("the chart refuses OIDC Secret settings the API cannot observe", tooling, async () => {
+    const oidc = oidcUpgradeValues(recoveryUserId);
+    await chartOnly("oidc", [
+      [
+        "the Google sign-in Secret",
+        { ...oidc, ...googleOn, "auth.oidc.secretName": "occ-google-login" },
+        /auth\.oidc\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "the Better Auth Secret",
+        { ...oidc, "auth.oidc.secretName": "occ-auth" },
+        /auth\.oidc\.secretName must name a dedicated Secret/,
+      ],
+      [
+        "one key for client ID and secret",
+        { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
+        /auth\.oidc client ID and client secret must use different Secret keys/,
+      ],
+      [
+        "an HTTP base URL",
+        { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
+        /auth\.oidc requires an HTTPS auth\.baseUrl/,
+      ],
+    ]);
+  });
 
   test(
     "install notes warn when sign-in is exposed without a trusted proxy, and never fail",
@@ -1049,60 +947,22 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           defaultInstallSettings,
           key,
         );
-        assert.equal(
-          objects.filter(
-            ({ kind, metadata }) =>
-              kind === "NetworkPolicy" && /-login-egress$/.test(metadata.name),
-          ).length,
-          0,
-          key,
-        );
       }),
     );
   });
 
   test(
-    "the chart tells the API whether a sign-in egress rule opens HTTPS to any address",
+    "the API accepts the chart's direct HTTPS hint and rejects an invalid hint",
     tooling,
     async () => {
-      // Production names a missing Slack proxy for an unanswered Slack check only when API
-      // egress is closed; an open sign-in rule can reach Slack directly (finding 2533). The chart
-      // reports open exactly when it renders a login egress rule to 0.0.0.0/0, from any provider.
-      const google = googleUpgradeValues(recoveryUserId);
-      const oidc = oidcUpgradeValues(recoveryUserId);
-      const narrowed = (provider) => ({ [`auth.${provider}.egressCidrs[0]`]: "203.0.113.0/24" });
       const flag = "OCC_API_HTTPS_EGRESS_OPEN";
-      await settle(
-        [
-          ["password only", {}, "false"],
-          ["Google", google, "true"],
-          ["Google narrowed", { ...google, ...narrowed("google") }, "false"],
-          ["OIDC", oidc, "true"],
-          ["OIDC narrowed", { ...oidc, ...narrowed("oidc") }, "false"],
-        ].map(async ([label, values, open]) => {
-          const objects = await render(values);
-          assert.deepEqual(
-            deploymentEnv(objects, "api").filter(({ name }) => name === flag),
-            [{ name: flag, value: open }],
-            label,
-          );
-          const anyAddress = objects.some(
-            ({ kind, metadata, spec }) =>
-              kind === "NetworkPolicy" &&
-              /-api-(google|oidc)-login-egress$/.test(metadata.name) &&
-              spec.egress.some(({ to }) => to.some(({ ipBlock }) => ipBlock?.cidr === "0.0.0.0/0")),
-          );
-          assert.equal(String(anyAddress), open, label);
-          assert.ok(!deploymentEnv(objects, "worker").some(({ name }) => name === flag), label);
-        }),
+      const objects = await render({});
+      assert.deepEqual(
+        deploymentEnv(objects, "api").filter(({ name }) => name === flag),
+        [{ name: flag, value: "true" }],
       );
-      // The API accepts the rendered value and refuses anything but true or false.
-      const environment = await renders(
-        "Google egress flag",
-        google,
-        googleUpgradeSettings(recoveryUserId),
-        ["google"],
-      );
+      assert.ok(!deploymentEnv(objects, "worker").some(({ name }) => name === flag));
+      const environment = await renders("direct HTTPS", {}, defaultInstallSettings);
       const [accepted, refused] = await settle([
         startupCode({ ...environment, [flag]: "true" }),
         startupCode({ ...environment, [flag]: "open" }),

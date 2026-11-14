@@ -230,6 +230,45 @@ test("execution peer label maps reject non-string values before rendering", tool
   }
 });
 
+test(
+  "explicit retired API egress restrictions must be removed before upgrade",
+  tooling,
+  async (t) => {
+    for (const key of [
+      "api.modelDiscoveryCidrs",
+      "api.pluginDiscoveryCidrs",
+      "auth.google.egressCidrs",
+      "auth.oidc.egressCidrs",
+      "backend.chatgpt.providerCidr",
+    ]) {
+      const setting = key.endsWith("Cidrs") ? key + "[0]" : key;
+      await assert.rejects(
+        render({ [setting]: "192.0.2.14/32" }, { isUpgrade: true }),
+        (error) =>
+          isHelmError(error) &&
+          error.stderr.includes(key + " is retired.") &&
+          error.stderr.includes("apply your own API Pod NetworkPolicy"),
+        key,
+      );
+    }
+    // An upgrade that retains only the former chart defaults has no operator restriction to replace.
+    const directory = await temporaryDirectory(t, "oce-empty-api-egress-");
+    const file = join(directory, "values.yaml");
+    await writeFile(
+      file,
+      JSON.stringify({
+        api: { modelDiscoveryCidrs: [], pluginDiscoveryCidrs: [] },
+        auth: {
+          google: { egressCidrs: [] },
+          oidc: { egressCidrs: [] },
+        },
+        backend: { chatgpt: { providerCidr: "" } },
+      }),
+    );
+    await render({}, { valuesFiles: [file], isUpgrade: true });
+  },
+);
+
 test("database and Kubernetes API egress refuse an empty host list", tooling, async (t) => {
   // An empty list would render NetworkPolicies with no route to the database or API server.
   const directory = await temporaryDirectory(t, "oce-empty-cidrs-");

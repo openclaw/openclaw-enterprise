@@ -1,21 +1,20 @@
 ---
 created: 2026-09-08
-updated: 2026-11-12
-last_updated_session: authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97
+updated: 2026-11-14
+last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-OCC validates selections against the Harness catalog and snapshots the Driver and policy at deployment. The Harness owns tools and approvals.
+OCC limits and authorizes uploads before parsing. Configured [request auditing](audit-ledger.md) records each outcome. The [Plugin Driver](../../apps/controller/src/drivers/plugin/import-package.ts) reports omitted components. Revisions pin the release digest, Driver and policy. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
 
 ## Entry Points
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, then deployment.
-- Requires Agent permission, valid selections and a compatible PluginDriver.
+- Create or update `Agent.plugins`, then deploy. This requires Agent permission and a compatible PluginDriver.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
   [OpenClawController](../../packages/occ/src/index.ts), and
   [bundled PluginDrivers](../../apps/controller/src/drivers/plugin/index.ts).
@@ -45,6 +44,8 @@ graph TD
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot version"]
+  B -->|imported skills| V["Mount verified files in the Gateway"]
+  V --> I
   B -->|managed MCP| K["Project worker MCP and Gateway tool selections"]
   K --> L["Sandbox applies account and tool request policy"]
   L --> I
@@ -91,8 +92,8 @@ Managed MCP uses Secret Driver, rechecking before `tools/list`.
 Closing cancels; account changes clear results; Harness changes clear selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
 bound size/time, reject redirects and credential echoes, and return safe metadata
 with `Cache-Control: no-store`.
-`apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
-`requires_local_executor`; explicit `true` without skills remains unavailable.
+For hosted Codex entries, `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts
+an omitted `requires_local_executor`. Explicit `true` requires skills.
 Details reject unmatched MCP/scheduled tasks. Optional stdio
 `NativeCodexPluginCatalogReader` rejects invalid `plugin/list` results and stops its child.
 
@@ -122,9 +123,9 @@ detects conflicting enablement defaults. `BundledPluginDriverBase.validate`
 allowlists it for OCC's fixed `PluginPolicyValidationError` advice.
 Unrecognized refusals stay generic. The Console preserves rejected drafts.
 
-[Save](../../apps/controller/src/console/agents/plugins.mts#L396) keeps out-of-range
+[Save](../../apps/controller/src/console/agents/plugins.mts#L419) keeps out-of-range
 **Plugin selections JSON** text and skips Agent `GET`/`PATCH`.
-[Picker edits](../../apps/controller/src/console/agents/plugin-fields.mts#L414)
+[Picker edits](../../apps/controller/src/console/agents/plugin-fields.mts#L416)
 stop. [Available catalogs](../guides/console/configuration-plugins-and-files.md#plugins-tab)
 remain browsable.
 
@@ -135,10 +136,10 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks the pinned Driver against the Harness. Gateway and worker each verify their assets from Compute’s package descriptors.
+OCC snapshots Configuration, Driver and selections. Before cutover the worker checks Driver/Harness compatibility. Gateway and worker verify assets against Compute’s package descriptors.
 
-- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
+- **CLI packages.** Gateway loads skills. Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
+- **Hosted MCP packages.** The worker advertises the account’s selected tools. Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return results or denials through Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
 Withdrawal removes credential injection. Recovery preserves other attachments.
@@ -158,8 +159,9 @@ PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
 check cannot see. Configuration save and Compute Drivers refuse policies the
 Gateway refuses at load, such as `untrusted`.
 
-The Kubernetes ConfigMap is immutable and per version. A version prepared
-by an earlier controller keeps its earlier `config.toml` (without
+Save and deploy enforce the combined 8 MiB skill limit. [Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) mounts pinned Namespace files read-only. The [Gateway](../../deploy/runtime/openclaw-pinned-skill-sources.patch) rejects same-name workspace substitutions. Workers retain executable modes and read local `SKILL.md`.
+
+Each version has an immutable Kubernetes ConfigMap. Earlier versions retain their `config.toml` (without
 `[plugins._default]` (#508), without `approval_policy` (#1995), or with
 `on-failure` as written) until the Agent is deployed again; `KubernetesComputeDriver.reconcilePluginRuntimeConfigMap` refuses any
 other difference. OpenShell dedicated Codex has no such allowance and needs a
@@ -313,14 +315,11 @@ for container recovery.
 
 `apps/controller/src/worker.ts:finalizeRevision`
 
-Before the worker commits `activeRevisionId`, preparation failure leaves the
-prior pointer unchanged. After commit, activation/finalization failure retains
-the candidate pointer and records `REVISION_FINALIZATION_INCOMPLETE` for retry.
+Preparation failure preserves the prior `activeRevisionId`. After commit, activation or finalization failure retains the candidate pointer and records `REVISION_FINALIZATION_INCOMPLETE` for retry.
 Embedded Kubernetes replacement runs after commit; the old gateway may already
-be stopped. The previous version remains stored, without pointer rollback or
-an availability guarantee during cutover. See the [controller worker flow](controller-worker.md).
+be stopped. The previous version stays stored. Cutover has no availability or rollback guarantee. See the [controller worker flow](controller-worker.md).
 
-Successful completion reports `REVISION_ACTIVATED` or `REVISION_ALREADY_ACTIVE`.
+Success reports `REVISION_ACTIVATED` or `REVISION_ALREADY_ACTIVE`.
 A candidate pointer alone is not readiness evidence. Agent turns use native
 policy; the workspace and gateway database remain Agent-owned.
 
@@ -332,26 +331,15 @@ shutdown, or permanent failure latch exists. Warnings describe deployment comple
 
 ## Debugging and Verification
 
-The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. CPU wait is the larger PSI or throttled
-delta, capped by throttled periods; missing, nonfinite or reset samples cannot establish starvation. An OpenClaw
-timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 s stretch is idle
+OpenClaw caps the model probe deadline at 600 seconds. It caps throttled time by throttled periods, then
+takes the larger of that time and PSI wait. Missing, nonfinite or reset samples cannot establish starvation. A timeout requires
+over 25% CPU wait in its final 15 s and no idle 5 s interval to qualify as starved
 (`timeoutWindowMs`, `timeoutWindowCpuWaitMs`, `timeoutWindowIdleMs`).
 
-- Compare `Agent.plugins` with the version snapshot and deployment status.
-  An Agent write alone does not prove runtime installation.
-- Invalid or unsupported policy leaves Agent desired state unchanged. Startup checks
-  catalog membership, authenticated metadata, ownership and effective native
-  configuration; failure keeps the candidate unready.
-- When readiness fails, check native packages, release drift, connector
-  authentication and effective policy; keep credentials out of logs.
-- On an SSH Compute refusal (section 3), clear plugin maps and default approver
-  policies, or use compatible Kubernetes.
-- For plugin warnings, check deployment status for `PLUGIN_INSTALL_FAILED` or
-  `PLUGIN_AUTH_REQUIRED` and the admitted `pluginId`. Confirm its runtime and
-  gateway entries are disabled. Never infer plugin attribution from native logs.
-- Prove behavior with a model-chosen plugin call in a normal Agent turn, then
-  disable or remove it and verify another Agent is unchanged. Source or
-  fixture tests are not native runtime proof.
+- Compare `Agent.plugins`, the revision snapshot and deployment status. Invalid policy leaves desired state unchanged. Startup verifies catalog membership, ownership, authentication and native configuration.
+- For `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`, check that both runtime and Gateway disable the deployment’s `pluginId`. Keep credentials out of logs.
+- SSH Compute refuses plugin maps and default approvers before host effects. Use compatible Kubernetes or clear both.
+- Verify a model-chosen plugin call. Remove it, redeploy and check both the target and an unaffected Agent.
 
 ## Related docs
 
@@ -369,11 +357,17 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-14 00:19: Audit uploads. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 917b778aa302240e8bc8ca93e8b4a48c7e0d23e9)
+
+- 2026-11-13 23:00: Trace Namespace release admission and projection. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - f253066ab39d0225a230f0547c4c7d4169f386a3)
+
 - 2026-11-12 11:28: Accept omitted hosted executor metadata. (authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
 
 - 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
 
 - 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
+
+- 2026-11-05 04:01: Trace Namespace publication, pinned skill delivery and imported MCP enforcement. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - d4c9146f564444412e93181b3b6b6c9c1e3b4820)
 
 - 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
 

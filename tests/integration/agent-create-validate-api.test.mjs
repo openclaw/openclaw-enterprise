@@ -205,8 +205,9 @@ async function setupConfigurationAdmission(t) {
     assert.deepEqual(await snapshot(), before);
     return result;
   };
-  const expectRefused = async (configuration, message) => {
-    const refused = await withoutWrites(() => f.validate({ configuration }));
+  const expectRefused = async (configuration, message, selections) => {
+    const candidate = { configuration, plugins: selections };
+    const refused = await withoutWrites(() => f.validate(candidate));
     assert.equal(refused.status, 400, JSON.stringify(refused.body));
     assert.deepEqual(refused.body.error, { code: "INVALID_REQUEST", message });
     const saved = await withoutWrites(() => save(configuration));
@@ -216,7 +217,7 @@ async function setupConfigurationAdmission(t) {
     // Agent create authorization still answers before the Configuration refusal.
     const denied = await withoutWrites(async () => {
       const auditStart = f.auditSink.events.length;
-      const result = await f.validate({ configuration }, { session: deniedSession });
+      const result = await f.validate(candidate, { session: deniedSession });
       assertWriteAuthorizationDenial(
         f.auditSink.events.slice(auditStart),
         {
@@ -254,10 +255,11 @@ async function setupConfigurationAdmission(t) {
 test("Agent create preflight applies the required Configuration Driver admission", async (t) => {
   const f = await setupConfigurationAdmission(t);
   // An empty string is harmless, but only the real Configuration Driver rejects this native
-  // credential slot. Compare the public errors so a different 400 cannot satisfy the case.
+  // credential slot. Its error must also take precedence over an unavailable plugin release.
   await f.expectRefused(
     { kind: "agent", values: { cron: { webhookToken: "" } } },
     "Configuration field /cron/webhookToken holds a credential value inline, where a reference is required. Make the value a ${NAME} reference or a SecretRef.",
+    { [`occ-import:${"0".repeat(64)}`]: { enabled: true } },
   );
   // Plain native values and a supported reference still pass admission and save.
   await f.expectAccepted({ kind: "agent", values: {} });

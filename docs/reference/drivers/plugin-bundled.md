@@ -22,11 +22,7 @@ drivers:
 ```
 
 Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
-using a PAT or a Secret containing one. Hosted discovery needs API HTTPS to
-`auth.openai.com` and `chatgpt.com`. The
-[Codex profile](../../guides/deploy/installation-profiles.md#hosted-discovery-egress)
-renders matching Helm egress; manual YAML needs equivalent policy. The driver
-does not configure Kubernetes networking.
+using a PAT or a Secret containing one. Hosted discovery connects to `auth.openai.com` and `chatgpt.com` from the API Server. By default, the [Helm installation](../../guides/operate/network-isolation.md) can reach both over HTTPS.
 
 The `openai-curated` setting above enables browsing without a credential or
 provider request.
@@ -103,10 +99,11 @@ selections and still requires the Agent's projected credentials and provider
 access. Unknown configuration options, arbitrary sources or versions, and
 external PluginDriver packages are rejected.
 
-| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                               |
-| -------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.             |
-| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
+| Driver ID      | Implementation        | Agent Harness      | Catalog source                                                                                                            |
+| -------------- | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw  | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.                          |
+| `occ-plugin`   | `occ/openclaw-plugin` | Dedicated OpenClaw | Bundled CLI and MCP packages. [Namespace releases](../namespace-plugin-releases.md) provide skills or hosted MCP servers. |
+| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex    | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`.              |
 
 Codex startup resolves current identity, release metadata, and concrete apps from
 `plugin/read`'s `detail.apps` and `detail.skills`. Hosted discovery supports skills

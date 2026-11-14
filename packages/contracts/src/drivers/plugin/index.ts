@@ -1,3 +1,8 @@
+import type {
+  InspectedPluginPackage,
+  PluginConnectionRelease,
+  ImportedMcpServer,
+} from "./import-package.ts";
 import type { Driver } from "../index.ts";
 import type {
   Agent,
@@ -32,23 +37,38 @@ export interface PluginDriver extends Driver {
   /** Harness family authorized to use this catalog. */
   readonly harnessId: "openclaw" | "codex";
   readonly policyCapabilities: PluginPolicyCapabilities;
+  /** Inspects untrusted package bytes without installing code, resolving credentials or fetching a source. */
+  inspectPackage?(archive: Uint8Array, marketplaceEntry?: string): Promise<InspectedPluginPackage>;
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
-    choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
+    templateConfig?(
+      release: PluginConnectionRelease,
+      server: ImportedMcpServer,
+    ): Readonly<Record<string, string>>;
+    choices(
+      sources: readonly CredentialSource[],
+      releases?: readonly PluginConnectionRelease[],
+    ): readonly AgentPluginCredentialSlot[];
     /** Returns a reviewed MCP discovery target only for a compatible slot and source. */
     mcpToolDiscovery?(
       pluginId: string,
       slotId: string,
       source: CredentialSource,
+      release?: PluginConnectionRelease,
     ): { readonly endpoint: string } | undefined;
     validate(
       selections: PluginDesiredState,
       sources: readonly CredentialSource[],
       modelSourceId?: string,
+      releases?: Readonly<Record<string, InspectedPluginPackage>>,
     ): void;
   };
   /** Checks policy support without installing plugins or performing authenticated discovery. */
-  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
+  validatePolicies(
+    selections: PluginDesiredState,
+    defaultApprovers?: PluginApprovers,
+    releases?: Readonly<Record<string, InspectedPluginPackage>>,
+  ): void;
   /**
    * Side-effect-free check of admitted selections against the Agent's Configuration values,
    * at Agent save, provisioning and deployment. Throws ConfigurationHarnessError, naming the setting but

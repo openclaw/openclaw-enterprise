@@ -30,7 +30,7 @@ to the same administrator Role, with no Namespace or resource filter:
 | Resource kind                                | Actions                                                                 |
 | -------------------------------------------- | ----------------------------------------------------------------------- |
 | `installation`                               | `administer`, `read`                                                    |
-| `namespace`                                  | `create`, `read`, `delete`                                              |
+| `namespace`                                  | `create`, `read`, `delete`, `publish_plugins`                           |
 | `configuration`, `preset`, `service_account` | `create`, `read`, `update`, `delete`                                    |
 | `secret`                                     | `create`, `read`, `update`, `delete`, `operate`                         |
 | `credential_source`                          | `create`, `read`, `update`, `delete`, `operate`                         |
@@ -289,9 +289,8 @@ The subject must be an existing human Principal or a ServicePrincipal in the
 path Namespace, by its ID: an email address is refused with a message that says
 to use the person's `principalId`. A human does not need a separate Namespace
 ServicePrincipal.
-The Role and target must exist in the path Namespace. `namespace` Permissions
-support only `read`; for a `namespace` target, `resourceId` must equal the
-Namespace ID in the path.
+The Role and target must exist in the path Namespace. Namespace Roles can grant
+`read` or `publish_plugins` on that Namespace's exact `resourceId`.
 An exact Agent binding also covers that Agent's revisions and sandbox policy. A
 ServiceAccount resource is not an IAM identity. Caller IDs, scope, wildcard
 targets, Groups, and unknown permissions are rejected. An invalid Permission,

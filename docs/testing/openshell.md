@@ -274,9 +274,9 @@ preserving access. Suggestions and decorated logs are read through OCC.
 
 ### Native OpenClaw with k3d
 
-The [k3d helper](kubernetes.md#develop-with-local-containers-and-k3d) prepares
-the native test and builds the sibling `../openclaw` checkout. Set
-`OCC_K3D_OPENCLAW_SOURCE` to use another absolute checkout path.
+The [k3d helper](kubernetes.md#develop-with-local-containers-and-k3d) builds `../openclaw`.
+To select another checkout, set `OCC_K3D_OPENCLAW_SOURCE` to its absolute path.
+See [imported plugin workflows](plugins.md#imported-plugins-on-dedicated-openclaw).
 
 ```sh
 ./scripts/k3d test --harness openclaw

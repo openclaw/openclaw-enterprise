@@ -172,8 +172,7 @@ or manual YAML. Keep `values.yaml`, `installation.yaml`, and `controlPlane.insta
 Without profiles, this branch refuses overwrites and selects curated discovery;
 Codex profiles use hosted discovery.
 
-Hosted discovery requires [paired networking](installation-profiles.md#hosted-discovery-egress);
-the startup Secret alone grants none.
+For hosted discovery, verify HTTPS from the API Server to `auth.openai.com` and `chatgpt.com`.
 
 ```bash
 (
@@ -239,7 +238,7 @@ Set `bootstrap-pvc.yaml` name, namespace, size, and protected `storageClassName`
 
 For `logging.level`, see [Choose the log level](../observability.md#1-choose-the-log-level).
 [Configure native admin domains](native-admin.md#steps).
-For Slack Agents, configure both proxy paths in the
+For Slack Agents, configure the gateway proxy and choose the API connection in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 

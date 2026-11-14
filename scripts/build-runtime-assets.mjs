@@ -47,6 +47,14 @@ const appliedPatches = [
     sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   },
   {
+    file: "openclaw-managed-skill-installs.patch",
+    sha256: "1e19885e42f6958244de9ef563f6223b5599a062c82569e793c9f554f7e4207f",
+  },
+  {
+    file: "openclaw-pinned-skill-sources.patch",
+    sha256: "eadf1158a618c44c22b4a6b5d92e9831093ffc95bcc15f039970b98bb70adb39",
+  },
+  {
     file: "openclaw-node-setup-renewal.patch",
     sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
   },

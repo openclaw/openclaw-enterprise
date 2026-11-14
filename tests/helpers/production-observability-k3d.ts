@@ -608,6 +608,8 @@ export async function installObservabilityControlPlane(
         name: `Private content ${suffix}`,
         configurationId: config.id,
         executionMode,
+        // The fixture image has no managed Gateway controls. Model-turn runs use the native image.
+        ...(modelTurns ? {} : { gatewayManagedMode: false }),
         harnessAuth: {
           method: "api_key",
           source: { kind: "secret", namespaceId: namespace.id, id: credential.id },

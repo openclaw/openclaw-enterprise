@@ -1,4 +1,5 @@
 import type { Static } from "typebox";
+import type { InspectedPluginPackage } from "./drivers/plugin/import-package.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
@@ -171,6 +172,7 @@ export {
   ConnectionTemplateValidationError,
   connectionValuesChanged,
   isFlowOwnedOAuthParameter,
+  isOAuthBearerToken,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,
@@ -559,8 +561,14 @@ type CredentialSourceOwner =
 
 export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
 
+export interface ImportedPluginConnectionTemplate {
+  readonly releaseSha256: string;
+  readonly serverName: string;
+}
+
 /** OCC source admission, including its owner and Secret references, never credential values. */
 export type CredentialSource = CredentialSourceOwner & {
+  readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -573,6 +581,7 @@ export type CredentialSource = CredentialSourceOwner & {
 };
 
 export interface CredentialSourceMetadata {
+  readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
   readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
   readonly id: string;
@@ -817,6 +826,7 @@ export interface PluginCatalogEntry {
   readonly unavailableReason?: string;
   readonly unavailableHelp?: PluginCatalogLink;
   readonly selectableWithoutTools?: boolean;
+  readonly policyScope?: "enablement_only";
   readonly tools: readonly PluginToolCatalogEntry[] | null;
 }
 
@@ -826,7 +836,15 @@ export interface PluginCatalogPage {
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
+export function importedPluginDigest(id: string): string | undefined {
+  return /^occ-import:([a-f0-9]{64})$/u.exec(id)?.[1];
+}
+
+export type ImportedPluginReleasePin = Pick<InspectedPluginPackage, "digest" | "mcpServers">;
+
 export interface PluginRevisionState {
+  /** Release IDs are scoped to the revision's Namespace. Keep only MCP routing data here. */
+  readonly importedReleases?: Readonly<Record<string, ImportedPluginReleasePin>>;
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
 }
@@ -887,7 +905,9 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const record = asRecord(value);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
+    Object.keys(record).some(
+      (key) => key !== "driver" && key !== "plugins" && key !== "importedReleases",
+    )
   ) {
     return false;
   }
@@ -895,9 +915,28 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
     return false;
   }
   try {
-    normalizePluginDesiredState(record.plugins, (message) => {
+    const selections = normalizePluginDesiredState(record.plugins, (message) => {
       throw new Error(message);
     });
+    const imported = asRecord(record.importedReleases);
+    const ids = Object.keys(selections ?? {}).filter(
+      (id) => selections?.[id]?.enabled && importedPluginDigest(id),
+    );
+    if (
+      (record.importedReleases !== undefined && !imported) ||
+      Object.keys(imported ?? {}).length !== ids.length ||
+      !ids.every((id) => {
+        const pin = asRecord(imported?.[id]);
+        return (
+          pin !== undefined &&
+          pin.digest === importedPluginDigest(id) &&
+          Array.isArray(pin.mcpServers) &&
+          Object.keys(pin).length === 2
+        );
+      })
+    ) {
+      return false;
+    }
   } catch {
     return false;
   }
@@ -1256,6 +1295,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "read_logs",
   "manage_policy",
   "read_audit",
+  "publish_plugins",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1269,7 +1309,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
   Record<ResourceKind, readonly PermissionAction[]>
 > = Object.freeze({
   installation: Object.freeze(["read", "administer"] as const),
-  namespace: Object.freeze(["create", "read", "delete"] as const),
+  namespace: Object.freeze(["create", "read", "delete", "publish_plugins"] as const),
   configuration: Object.freeze(["create", "read", "update", "delete"] as const),
   preset: Object.freeze(["create", "read", "update", "delete"] as const),
   service_account: Object.freeze(["create", "read", "update", "delete"] as const),
@@ -1290,6 +1330,15 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
+
+/** Only these operations on a Namespace itself can be delegated by a Namespace Role. */
+export function namespaceRoleMayGrant(permission: Readonly<Permission>): boolean {
+  return (
+    permission.resourceKind !== "namespace" ||
+    permission.action === "read" ||
+    permission.action === "publish_plugins"
+  );
+}
 
 export function isSupportedPermission(permission: Readonly<Permission>): boolean {
   return SUPPORTED_PERMISSION_ACTIONS[permission.resourceKind].includes(permission.action);
@@ -1532,6 +1581,16 @@ export type {
   SandboxHarnessRestart,
   SandboxHarnessObservation,
 } from "./drivers/sandbox/index.ts";
+export {
+  canonicalPluginPackageContent,
+  PluginPackageInspectionError,
+} from "./drivers/plugin/import-package.ts";
+export type {
+  ImportedPluginSkill,
+  ImportedMcpServer,
+  PluginConnectionRelease,
+  InspectedPluginPackage,
+} from "./drivers/plugin/import-package.ts";
 export type {
   PluginDriver,
   PluginDriverContext,

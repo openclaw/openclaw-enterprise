@@ -112,6 +112,16 @@ true
 {{- end -}}
 {{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under backend.chatgpt" -}}{{- end -}}
 {{- if hasKey .Values "workspaceFiles" -}}{{- fail "workspaceFiles is retired; configure private Envoy Gateway routing under gatewayRouting" -}}{{- end -}}
+{{- range $name, $restriction := dict
+  "api.modelDiscoveryCidrs" .Values.api.modelDiscoveryCidrs
+  "api.pluginDiscoveryCidrs" .Values.api.pluginDiscoveryCidrs
+  "auth.google.egressCidrs" (default dict .Values.auth.google).egressCidrs
+  "auth.oidc.egressCidrs" (default dict .Values.auth.oidc).egressCidrs
+  "backend.chatgpt.providerCidr" (default dict .Values.backend.chatgpt).providerCidr -}}
+{{- if $restriction -}}
+{{- fail (printf "%s is retired. Remove it to leave API Pod egress unrestricted by the chart, or apply your own API Pod NetworkPolicy before removing it." $name) -}}
+{{- end -}}
+{{- end -}}
 {{- range $name, $image := .Values.images -}}
 {{- include "openclaw.validateImageReference" (dict "label" (printf "images.%s" $name) "image" $image) -}}
 {{- end -}}
@@ -203,10 +213,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if eq $google.clientIdKey $google.clientSecretKey -}}{{- fail "auth.google client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google native browser access is not supported" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $google.egressCidrs) (kindIs "slice" $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $google.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.google.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
 {{- end -}}
 {{- $oidcCa := default dict $oidc -}}
 {{- if and (hasKey $oidcCa "enrollment") (not $oidcCa.enabled) -}}{{- fail "auth.oidc.enrollment requires auth.oidc.enabled: true" -}}{{- end -}}
@@ -253,10 +259,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
 {{- $displayName := regexReplaceAll $jsTrim (toString (default "" $oidc.displayName)) "" -}}
 {{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $oidc.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.oidc.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
 {{- end -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
 {{- $preset := toString (default "" $proxy.preset) -}}
@@ -528,6 +530,29 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if hasKey .Values.api.consoleTheme "checksum" -}}
 {{- include "openclaw.requireString" (dict "label" "api.consoleTheme.checksum" "value" .Values.api.consoleTheme.checksum) -}}
+{{- end -}}
+{{- end -}}
+{{- $directoryProxyUrl := .Values.api.channelDirectoryProxyUrl -}}
+{{- if not (kindIs "string" $directoryProxyUrl) -}}
+{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" -}}
+{{- end -}}
+{{- if $directoryProxyUrl -}}
+{{- if not (regexMatch "^https?://(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$" $directoryProxyUrl) -}}
+{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" -}}
+{{- end -}}
+{{- $proxyParts := splitList ":" (regexReplaceAll "^https?://" $directoryProxyUrl "") -}}
+{{- $proxyAddress := index $proxyParts 0 -}}
+{{- $proxyPort := int (index $proxyParts 1) -}}
+{{- range $octet := splitList "." $proxyAddress -}}
+{{- if gt (int $octet) 255 -}}
+{{- fail "api.channelDirectoryProxyUrl must contain valid IPv4 octets" -}}
+{{- end -}}
+{{- end -}}
+{{- if gt $proxyPort 65535 -}}
+{{- fail "api.channelDirectoryProxyUrl must contain a TCP port from 1 to 65535" -}}
+{{- end -}}
+{{- if eq $proxyAddress "0.0.0.0" -}}
+{{- fail "api.channelDirectoryProxyUrl must not use host 0.0.0.0, which names no proxy address" -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.slackProxy.enabled -}}

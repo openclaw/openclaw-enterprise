@@ -43,7 +43,7 @@ import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src
 import {
   createScopedController,
   apiServerPodProxySourceCidrs,
-  withFirstPrepareRevisionFailureDiagnostic,
+  withRevisionFailureDiagnostics,
 } from "../helpers/openshell-sandbox-workflows.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -520,7 +520,11 @@ test(
         pool: new pg.Pool({ connectionString: databaseUrl }),
         drivers: {
           ...selectedDrivers,
-          computeDriver: withFirstPrepareRevisionFailureDiagnostic(selectedDrivers.computeDriver),
+          computeDriver: withRevisionFailureDiagnostics(selectedDrivers.computeDriver, {
+            AUTH_SECRET: authSecret,
+            BOOTSTRAP_PASSWORD: credentials.password,
+            GATEWAY_API_KEY: workspaceGateway.apiKey,
+          }),
         },
         pollIntervalMs: 100,
         leaseDurationMs: 10_000,

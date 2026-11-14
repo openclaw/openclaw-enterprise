@@ -62,6 +62,7 @@ export type PluginRuntimeSpec =
   | {
       readonly kind: "openclaw";
       readonly selections: PluginDesiredState;
+      readonly importedReleases?: NonNullable<AgentRevision["plugins"]>["importedReleases"];
       readonly pluginApprovers?: AgentRevision["pluginApprovers"];
     }
   | {
@@ -187,7 +188,12 @@ export function pluginRuntimeSpecForRevision(
           ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
           ...(publicGithubRead === undefined ? {} : { publicGithubRead }),
         }
-      : { kind: "openclaw", selections: state.plugins, pluginApprovers: revision.pluginApprovers };
+      : {
+          kind: "openclaw",
+          selections: state.plugins,
+          pluginApprovers: revision.pluginApprovers,
+          ...(state.importedReleases && { importedReleases: state.importedReleases }),
+        };
   validateDriverMatchesRuntime(revision, runtime);
   return runtime;
 }

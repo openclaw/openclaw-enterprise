@@ -178,13 +178,15 @@ const RULES: readonly Rule[] = [
     replace: (_match, name, separator) => `${name}${separator}${mark("header")}`,
   },
   {
-    // `Bearer <token>` and `bearer token <token>` outside a header, whatever the token's
-    // length or prefix. Words without a digit (`bearer authentication failed`) stay.
+    // Keep colon-separated credentials whole, including short segments. Preserve ordinary prose.
     pattern: new RegExp(
-      `${START}(bearer${GAP}+(?:token${GAP}+)?)${notRedacted}([A-Za-z0-9._~+/-]{8,}=*)`,
+      `${START}(bearer${GAP}+(?:token${GAP}+)?)${notRedacted}([A-Za-z0-9._~+/:-]+=*)`,
       "gi",
     ),
-    replace: (match, prefix, value) => (/[0-9]/.test(value) ? `${prefix}${mark("bearer")}` : match),
+    replace: (match, prefix, value) =>
+      value.includes(":") || (value.length >= 8 && /[0-9]/.test(value))
+        ? `${prefix}${mark("bearer")}`
+        : match,
   },
   {
     // `Basic <base64 of user:password>` outside a header. Only a value that decodes to a

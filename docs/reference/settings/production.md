@@ -12,10 +12,12 @@ selectors. Production Helm validates peer label maps. The cluster must enforce
 NetworkPolicies. Do not expose the listener through a `NodePort`,
 `LoadBalancer`, `hostNetwork`, or public endpoint.
 
+The chart leaves API Server egress to the cluster operator. To restrict it, apply your own NetworkPolicy to the release API Pods and include DNS, control-plane dependencies, and provider endpoints that the Installation uses. Helm rejects nonempty retired API provider CIDR settings. Remove them to use this default.
+
 The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
 configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
 OpenShift DNS backends after Service address translation. These grants cover
-API, worker, initialization, collector, Slack proxy, Envoy, and observability
+worker, initialization, collector, Slack proxy, Envoy, and observability
 demo workloads.
 
 The trusted-operator native admin pilot is the only documented public-ingress
@@ -37,16 +39,11 @@ session cookie before forwarding to the native gateway.
 | `OCC_PREPROVISIONED_NAMESPACE`             | Optional JSON `{"namespaceId","uid"}` binding one operator-created namespace; set by Helm.                         | API and worker. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).                   |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.         |
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.                   |
-| `OCC_API_HTTPS_EGRESS_OPEN`                | Optional `true` or `false`, default `false`; set by Helm.                                                          | API only; `true` (open sign-in egress) makes an unanswered Slack check a retryable `503`.                                    |
+| `OCC_API_HTTPS_EGRESS_OPEN`                | Helm sets `true`. Other installations default to `false`.                                                          | Controls the diagnostic for an unanswered direct Slack credential check.                                                     |
 | `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
 | `OCC_GATEWAY_CA_PATH`                      | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                           | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
 
-For Helm, prefer `slackProxy.enabled` over an external
-`api.channelDirectoryProxyUrl`; the
-[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production)
-owns both options' API-only proxy egress and the proxy's `slack.com:443`
-requirement. With neither, the chart renders no proxy egress rule, and Slack
-lookup and credential validation require another approved network route.
+The API Server contacts Slack directly by default. Set `slackProxy.enabled` to route requests through the managed proxy or set `api.channelDirectoryProxyUrl` for an external proxy. See the [Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production).
 
 `OCC_AGENT_RUNTIME_LOGS_ENABLED` (`true` or `false`, default `true`) switches the
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
@@ -146,10 +143,9 @@ These optional variables reach only the API, never other workloads.
 The API Deployment uses `Recreate`: an upgrade stops the old API Pod first, so
 two controllers never serve together. Activation still requires closed ingress and stopped identity writers.
 
-Google and OIDC have API-only HTTPS egress rules. Empty provider `egressCidrs`
-allows every address except link-local `169.254.0.0/16`. An explicit list replaces
-that default, including the exception; keep it narrow. Direct GitHub sign-in
-settings are rejected. See [upgrade instructions](../../guides/deploy/oidc-upgrade.md).
+The API Server connects to the configured OIDC token and JWKS endpoints. If your
+cluster restricts API egress, permit both. For direct GitHub sign-in settings,
+follow the [upgrade instructions](../../guides/deploy/oidc-upgrade.md).
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
 return `403` on API calls (sign-in still works), and the API logs
@@ -192,13 +188,7 @@ guarded profile and `OCC_AUTH_RECOVERY_USER_ID` recovery user; see
 | `OCC_AUTH_GOOGLE_CLIENT_SECRET`   | `auth.google` Secret key `clientSecretKey` | Google OAuth client secret, read from the dedicated `auth.google.secretName` Secret.                                                               |
 | `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` | `auth.google.allowedDomains`               | Optional comma-separated hosted domains. When set, the ID token's `hd` must match one and `email_verified` must be `true`. Requires the client ID. |
 
-With `auth.google.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-google-login-egress` on TCP 443 for
-`oauth2.googleapis.com` and `www.googleapis.com`. Empty `auth.google.egressCidrs`
-allows any address except link-local `169.254.0.0/16`; narrow it with an egress proxy.
-Rendering fails on incomplete Google values, a Secret shared with any other
-chart Secret, `agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed
-domain that is not a DNS name.
+The API Server connects to `oauth2.googleapis.com` and `www.googleapis.com` over HTTPS. Rendering rejects incomplete Google settings, a shared Secret, native administration with Google, an HTTP base URL, or an invalid allowed domain.
 
 ### OIDC sign-in
 

@@ -8,17 +8,18 @@ override grants, and one action never implies another. See
 
 ## Actions
 
-| Action       | What it permits                                                                                                                                                                |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `create`     | Create a resource in its parent Installation or Namespace.                                                                                                                     |
-| `read`       | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                                             |
-| `update`     | Change a resource or its credential.                                                                                                                                           |
-| `delete`     | Request deletion of the exact resource.                                                                                                                                        |
-| `deploy`     | Create an Agent revision or recover its exact first-deployment receipt.                                                                                                        |
-| `operate`    | Chat in an Agent browser UI, stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
-| `administer` | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions.                 |
-| `read_logs`  | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                                     |
-| `read_audit` | Read selected audit metadata for one Agent. Requires a direct AccessBinding on the Agent and a human session.                                                                  |
+| Action            | What it permits                                                                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `create`          | Create a resource in its parent Installation or Namespace.                                                                                                                     |
+| `read`            | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                                             |
+| `update`          | Change a resource or its credential.                                                                                                                                           |
+| `delete`          | Request deletion of the exact resource.                                                                                                                                        |
+| `deploy`          | Create an Agent revision or recover its exact first-deployment receipt.                                                                                                        |
+| `operate`         | Chat in an Agent browser UI, stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
+| `administer`      | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions.                 |
+| `read_logs`       | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                                     |
+| `read_audit`      | Read selected audit metadata for one Agent. Requires a direct AccessBinding on the Agent and a human session.                                                                  |
+| `publish_plugins` | Preview or publish a plugin release in the target Namespace.                                                                                                                   |
 
 ## Resources and scopes
 
@@ -29,7 +30,7 @@ service principal. Grant `read_logs` and `read_audit` separately.
 | Resource kind                                   | Actions                                                                                                             | Scope checked                                                                                                                                                                                                                                                                                                                                              |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`installation`](../api.md#installation)        | `read`, `administer`                                                                                                | Singleton Installation.                                                                                                                                                                                                                                                                                                                                    |
-| [`namespace`](../api.md#namespaces)             | `create`, `read`, `delete`                                                                                          | Installation for create; exact Namespace otherwise.                                                                                                                                                                                                                                                                                                        |
+| [`namespace`](../api.md#namespaces)             | `create`, `read`, `delete`, `publish_plugins`                                                                       | Installation for create; exact Namespace otherwise.                                                                                                                                                                                                                                                                                                        |
 | [`configuration`](../api.md#configurations)     | `create`, `read`, `update`, `delete`                                                                                | Namespace for create; exact Configuration otherwise.                                                                                                                                                                                                                                                                                                       |
 | [`preset`](../presets.md)                       | `create`, `read`, `update`, `delete`                                                                                | Namespace for create; list needs Namespace `read` and returns only Presets with exact `read`. Exact Preset otherwise.                                                                                                                                                                                                                                      |
 | [`service_account`](../api.md#service-accounts) | `create`, `read`, `update`, `delete`                                                                                | Namespace for create; exact ServiceAccount otherwise. Credential creation also uses `update`.                                                                                                                                                                                                                                                              |
@@ -41,7 +42,8 @@ service principal. Grant `read_logs` and `read_audit` separately.
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential
 source lists check each returned resource. Listing Agents, ServiceAccounts or Presets also requires `namespace:read`;
-listing AgentRevisions also requires `agent:read` on the parent. The
+using an imported plugin release in an Agent selection or a new CredentialSource requires `namespace:read` on its Namespace.
+Listing AgentRevisions also requires `agent:read` on the parent. The
 [HTTP API reference](../api.md#operations) lists exact targets and conditions for
 each operation.
 
@@ -156,7 +158,7 @@ except `create`.
 It refuses, with `400 INVALID_REQUEST`, a Role with a combination no operation
 checks, such as `secret:read_logs` or `configuration:deploy`, because it would
 grant nothing, and a Role with any `create` Permission, which no exact-resource
-binding can grant. On `namespace` it accepts only `read`.
+binding can grant. On `namespace` it accepts `read` and `publish_plugins`.
 It can bind an existing human Principal or a Namespace-local ServicePrincipal
 to an existing exact resource, including the path Namespace itself. Exact
 Namespace access does not grant access to child resources.

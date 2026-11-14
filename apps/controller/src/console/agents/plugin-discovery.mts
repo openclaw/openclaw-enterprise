@@ -25,7 +25,7 @@ type CatalogRequest = { cursor?: string; q?: string } | { pluginId: string };
 
 interface PluginDiscoveryOptions extends Pick<
   PluginFieldsOptions,
-  "input" | "saveHint" | "createApproverField"
+  "input" | "saveHint" | "createApproverField" | "onCreateConnection"
 > {
   context: PluginDiscoveryContext;
   canDiscover(): boolean;
@@ -83,6 +83,7 @@ export function createPluginDiscovery({
   unsupportedMessage = "This Installation's Plugin Driver does not offer catalog browsing. You can edit configured selections or JSON, or ask an operator to select a catalog-capable Driver.",
   availableMessage = "Load plugins available to this credential. Your plugin selections stay unchanged.",
   createApproverField,
+  onCreateConnection,
 }: PluginDiscoveryOptions) {
   let generation = 0;
   let prefetched = false;
@@ -101,6 +102,7 @@ export function createPluginDiscovery({
     input,
     ...(saveHint !== undefined ? { saveHint } : {}),
     ...(createApproverField ? { createApproverField } : {}),
+    ...(onCreateConnection ? { onCreateConnection } : {}),
     onLoadPlugins: (direction, q) => {
       if (direction === "search") {
         scheduleSearch(q);
@@ -148,8 +150,11 @@ export function createPluginDiscovery({
       if (entry.toolStatus === "loading") {
         entries.set(id, { ...entry, toolStatus: undefined });
       }
-      if (entry.managedTools?.status === "loading") {
-        entries.set(id, { ...entries.get(id)!, managedTools: undefined });
+      if (entry.managedTools) {
+        const settled = Object.entries(entry.managedTools).filter(
+          ([, result]) => result.status !== "loading",
+        );
+        entries.set(id, { ...entries.get(id)!, managedTools: Object.fromEntries(settled) });
       }
     }
   }
@@ -296,7 +301,10 @@ export function createPluginDiscovery({
       status: "loading",
     };
     if (pending) {
-      entries.set(id, { ...entry, managedTools: pending });
+      entries.set(id, {
+        ...entry,
+        managedTools: { ...entry.managedTools, [pending.connection.slot]: pending },
+      });
     } else {
       if (!entry.remoteId || entry.toolStatus === "loading") {
         return;
@@ -308,7 +316,9 @@ export function createPluginDiscovery({
       const current = entries.get(id);
       return context.isCurrent() &&
         active === generation &&
-        (pending ? current?.managedTools === pending : current?.remoteId === entry.remoteId)
+        (pending
+          ? current?.managedTools?.[pending.connection.slot] === pending
+          : current?.remoteId === entry.remoteId)
         ? current
         : undefined;
     };
@@ -331,7 +341,14 @@ export function createPluginDiscovery({
         pending
           ? {
               ...current,
-              managedTools: { ...pending, status: "loaded", tools: detail.tools ?? [] },
+              managedTools: {
+                ...current.managedTools,
+                [pending.connection.slot]: {
+                  ...pending,
+                  status: "loaded",
+                  tools: detail.tools ?? [],
+                },
+              },
             }
           : { ...current, ...detail, toolStatus: "loaded", toolError: undefined },
       );
@@ -357,7 +374,13 @@ export function createPluginDiscovery({
       entries.set(
         id,
         pending
-          ? { ...current, managedTools: { ...pending, status: "error", message } }
+          ? {
+              ...current,
+              managedTools: {
+                ...current.managedTools,
+                [pending.connection.slot]: { ...pending, status: "error", message },
+              },
+            }
           : { ...current, toolStatus: undefined, toolError: message },
       );
     } finally {

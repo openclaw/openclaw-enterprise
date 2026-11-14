@@ -31,6 +31,15 @@ node --test tests/integration/kubernetes-plugin-status-real.test.mjs
 
 This checks status transport and restart behavior with controlled producers. It does not prove native plugin compatibility.
 
+## Imported plugins on dedicated OpenClaw
+
+The OpenShell lane runs two plugin import cases in separate databases. Select one of these files with the lane runner’s `--file` option:
+
+- `tests/integration/openshell-imported-skill-real.test.ts` deploys, upgrades, and removes a published skill. The worker executes its script, and the managed Gateway refuses native installation.
+- `tests/integration/openshell-imported-mcp-real.test.ts` verifies a selected call reaches the hosted server, an excluded call receives HTTP 403, and changing the release changes the active credential and tools.
+
+Both cases use a dedicated OpenClaw worker with an authorized model and the real OpenShell cluster. See [running Kubernetes model turns](kubernetes.md#kubernetes-model-turns-and-secrets) for the runtime prerequisites.
+
 ## Native startup metadata reads
 
 After credential authorization under the [contribution policy](../../CONTRIBUTING.md), inject `CODEX_ACCESS_TOKEN` without printing it. Set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to an available immutable image containing Codex `0.164.0`, and start Docker.

@@ -272,6 +272,12 @@ test("Agent and CredentialSource operations document the permissions they check"
   // Registration and update read each referenced Secret's value for the gateway.
   assert.deepEqual(permissions("createCredentialSource"), [
     { action: "create", resourceKind: "credential_source", scope: "namespace" },
+    {
+      action: "read",
+      resourceKind: "namespace",
+      scope: "requested",
+      condition: "imported_plugin_release",
+    },
     { action: "operate", resourceKind: "secret", scope: "request_body", condition: "bound_secret" },
   ]);
   assert.deepEqual(permissions("updateCredentialSource"), [

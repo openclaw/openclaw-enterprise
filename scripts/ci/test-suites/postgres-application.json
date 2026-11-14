@@ -43,6 +43,7 @@
       "path": "tests/integration/postgres-worker-agent-revision.test.mjs",
       "expectedTests": [
         "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
+        "the worker resolves only the revision's pinned imported release for projection",
         "the revision worker activates admitted candidates, retires predecessors, and rejects revoked, malformed, and wrong-owner effects",
         "the revision worker rejects associated-account access revoked after admission before invoking Compute",
         "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",

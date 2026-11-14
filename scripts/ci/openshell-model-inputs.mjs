@@ -1,5 +1,11 @@
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 
+// These fixtures run native OpenClaw even when their enclosing lane selects Codex.
+export const importedOpenClawTestFiles = [
+  "tests/integration/openshell-imported-skill-real.test.ts",
+  "tests/integration/openshell-imported-mcp-real.test.ts",
+];
+
 const codexOnlyFiles = new Set([
   "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
   "tests/integration/openshell-refresh-real.test.ts",
@@ -23,6 +29,7 @@ export function openShellRequiredEnv(lane, file, requiredEnv, env) {
   const gatewayFile =
     codexOnlyFiles.has(file) ||
     [
+      ...importedOpenClawTestFiles,
       "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
       "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",

@@ -151,24 +151,7 @@ export function productionChartRendererRefusalCases({
       "retired ChatGPT integration key",
       {
         "integrations.chatgpt.enabled": "true",
-        "integrations.chatgpt.providerCidr": "198.51.100.25/32",
       },
-    ],
-    [
-      "unrestricted ChatGPT provider egress",
-      { ...chatgptValues, "backend.chatgpt.providerCidr": "0.0.0.0/0" },
-    ],
-    [
-      "ChatGPT provider host that is not an IPv4 address",
-      { ...chatgptValues, "backend.chatgpt.providerCidr": "999.1.2.3/32" },
-    ],
-    [
-      "ChatGPT provider host with a leading-zero octet",
-      { ...chatgptValues, "backend.chatgpt.providerCidr": "01.2.3.4/32" },
-    ],
-    [
-      "ChatGPT Backend without an approved provider host",
-      { ...chatgptValues, "backend.chatgpt.providerCidr": "" },
     ],
     [
       "ChatGPT admin key shared with installation configuration",

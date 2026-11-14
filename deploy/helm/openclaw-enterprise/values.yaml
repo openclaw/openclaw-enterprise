@@ -67,11 +67,6 @@ auth:
     # Google Workspace hosted domains (the ID token's hd claim). Empty accepts any
     # Google account; set, it also requires a verified email address.
     allowedDomains: []
-    # API Pod HTTPS egress for oauth2.googleapis.com and www.googleapis.com; browsers,
-    # not the API, reach accounts.google.com. Empty allows TCP 443 to any address except
-    # link-local 169.254.0.0/16; Google publishes no small stable range, so narrow it with
-    # an egress proxy.
-    egressCidrs: []
   # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0) for
   # existing password accounts (API Pod only). Requires HTTPS and a recovery account. Its
   # Secret must differ from auth.google's. Copy issuer and the three URLs
@@ -102,9 +97,6 @@ auth:
     # createAccount.requireVerifiedEmail defaults to true; false permits an absent
     # or false email_verified claim without marking the email as verified.
     # Admission group strings are one exact group; arrays contain exact strings.
-    # API Pod HTTPS egress for the token and JWKS URLs. Empty allows TCP 443 to any
-    # address except link-local 169.254.0.0/16; list the IdP's IPv4 ranges to narrow it.
-    egressCidrs: []
 
 agentNativeAdmin:
   # Agent DNS suffix: at most 214 characters, reserving the per-Agent host prefix.
@@ -143,9 +135,6 @@ backend:
     enabled: false
     secretName: occ-chatgpt-admin
     key: admin-key
-    # IPv4 /32 destination seen by the pod network for api.chatgpt.com:443.
-    # This permits network egress; it does not configure a forward proxy.
-    providerCidr: ""
 
 repositoryCredentials:
   # Deploy the native repository sender. Select repository.nativeSender in Installation YAML.
@@ -259,17 +248,8 @@ api:
   port: 8080
   clients: []
   # Optional exact HTTP(S) proxy endpoint for API-side Slack directory lookup.
-  # The proxy must allow CONNECT to slack.com:443; empty disables lookup in production.
+  # The proxy must allow CONNECT to slack.com:443. Without a proxy the API connects directly.
   channelDirectoryProxyUrl: ""
-  # API-only HTTPS egress to explicit provider IPv4 /32 hosts for discovery and login.
-  # Hosted codex-plugin needs auth.openai.com and chatgpt.com. Its installation
-  # profile resolves these unless CIDRs are supplied; refresh on DNS changes.
-  # Console model selection does not require discovery.
-  modelDiscoveryCidrs: []
-  # Independent API-only HTTPS egress for managed MCP plugin discovery.
-  # List reviewed endpoint IPv4 /32 hosts; refresh on DNS changes.
-  # This grants TCP 443. Other ports require an external egress policy.
-  pluginDiscoveryCidrs: []
   # Trust client-address headers from a proxy in front of the API. Off by default:
   # the API then rejects forwarded headers and keys sign-in limits on the socket peer.
   # With a preset, requests whose socket peer is inside cidrs may carry forwarded

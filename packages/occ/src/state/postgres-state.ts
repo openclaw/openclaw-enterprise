@@ -48,6 +48,7 @@ import type {
   Identity,
   Installation,
   Namespace,
+  InspectedPluginPackage,
   PluginDesiredState,
   PluginDriverIdentity,
   PluginApprovers,
@@ -111,6 +112,7 @@ import type {
   NamespaceRepository,
   PersistedNamespace,
   PresetRepository,
+  PluginReleaseRepository,
   PlatformAuditSink,
   PlatformOperation,
   PlatformReadView,
@@ -141,7 +143,7 @@ import {
   harnessAuthMatches,
   credentialSourcesMatch,
   validCredentialSourceSnapshots,
-  namespaceRoleGrantsBeyondRead,
+  namespaceRoleGrantsLifecycleAccess,
   assertBindingSubjectNotEmail,
   validHarnessAuthSnapshot,
 } from "./platform-state.ts";
@@ -580,7 +582,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 }
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
-  cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
+  cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress, cs.plugin_release_digest, cs.plugin_server_name,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -645,6 +647,12 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     name: text(row, "name"),
     type: text(row, "type"),
     config: config as Record<string, string>,
+    ...(row.plugin_release_digest != null && {
+      importedPluginTemplate: {
+        releaseSha256: text(row, "plugin_release_digest"),
+        serverName: text(row, "plugin_server_name"),
+      },
+    }),
     ...(row.egress == null
       ? {}
       : { egress: jsonObject(row.egress) as unknown as ProtectedEgressSource }),
@@ -2382,6 +2390,40 @@ export class PostgresPlatformState implements PlatformStateStore {
       )[0];
       return found === undefined ? undefined : presetFromRow(found);
     };
+    const pluginReleases: PluginReleaseRepository = {
+      find: async (namespaceId, digest) => {
+        const result = await client.query(
+          "SELECT document FROM occ.plugin_releases WHERE namespace_id = $1 AND digest = $2",
+          [namespaceId, digest],
+        );
+        return rows(result.rows)[0]?.document as InspectedPluginPackage | undefined;
+      },
+      list: async (namespaceId) =>
+        rows(
+          (
+            await client.query(
+              `SELECT jsonb_strip_nulls(jsonb_build_object('name', document->'name', 'version', document->'version',
+          'description', document->'description', 'digest', digest, 'mcpServers',document->'mcpServers')) AS summary FROM occ.plugin_releases
+          WHERE namespace_id = $1 ORDER BY document->>'name', digest`,
+              [namespaceId],
+            )
+          ).rows,
+        ).map(
+          (row) =>
+            row.summary as Pick<
+              InspectedPluginPackage,
+              "name" | "description" | "digest" | "version" | "mcpServers"
+            >,
+        ),
+      publish: async (namespaceId, actorId, release) => {
+        await client.query(
+          `INSERT INTO occ.plugin_releases (namespace_id, digest, actor_id, document) VALUES ($1, $2, $3, $4::jsonb)
+           ON CONFLICT (namespace_id, digest) DO NOTHING`,
+          [namespaceId, release.digest, actorId, JSON.stringify(release)],
+        );
+      },
+    };
+
     const presets: PresetRepository = {
       findPreset,
       listPresetSummaries: async (namespaceId) =>
@@ -3101,8 +3143,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10)`,
+           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, plugin_release_digest, plugin_server_name)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12)`,
           [
             source.id,
             source.namespaceId,
@@ -3114,6 +3156,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
             source.ownerCapability,
+            source.importedPluginTemplate?.releaseSha256 ?? null,
+            source.importedPluginTemplate?.serverName ?? null,
           ],
         );
         if (secretInputs.length > 0) {
@@ -3879,6 +3923,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
+    // Refuse unsupported inline skill files before PostgreSQL sends them to the revision decoder.
+    const admittedSpec = `CASE WHEN r.admitted_spec @? '$.plugins.importedReleases.*.skills'
+      THEN NULL ELSE r.admitted_spec END AS admitted_spec`;
     const findRevisionRow = async (
       namespaceId: string,
       agentId: string,
@@ -3888,7 +3935,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode,
+                      ${admittedSpec}, r.gateway_managed_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -3909,7 +3956,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode,
+                      ${admittedSpec}, r.gateway_managed_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -4267,8 +4314,10 @@ export class PostgresPlatformState implements PlatformStateStore {
         ) {
           throw new ScopeViolationError("The IAM Role must belong to an available Namespace.");
         }
-        if (namespaceRoleGrantsBeyondRead(role)) {
-          throw new ScopeViolationError("Namespace IAM Roles support only Namespace read.");
+        if (namespaceRoleGrantsLifecycleAccess(role)) {
+          throw new ScopeViolationError(
+            "Namespace IAM Roles can read the Namespace or publish plugins in it.",
+          );
         }
         await client.query(
           "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, $2, $3, $4::jsonb)",
@@ -4394,10 +4443,10 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The IAM AccessBinding Role does not exist in this Namespace.",
           );
         }
-        if (binding.resourceKind === "namespace" && namespaceRoleGrantsBeyondRead(role)) {
+        if (binding.resourceKind === "namespace" && namespaceRoleGrantsLifecycleAccess(role)) {
           throw new IAMPolicyValidationError(
             "/roleId",
-            "Namespace IAM Roles support only Namespace read.",
+            "Namespace IAM Roles can read the Namespace or publish plugins in it.",
           );
         }
         if (!(await lockTarget(namespace.id, binding.resourceKind, binding.resourceId))) {
@@ -4652,6 +4701,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         this.requireInitialized(context),
       ),
       presets,
+      pluginReleases,
       secrets,
       credentialSources,
       serviceAccounts,

@@ -203,7 +203,15 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { managedInstalls, managedMcpCredentialBinding } from "../../plugin/managed-catalog.ts";
+import {
+  managedInstalls,
+  importedMcpInstall,
+  managedMcpInstallsForRevision,
+  managedMcpCredentialBinding,
+  managedMcpCredentialBindings,
+  managedSelectionsForImportedReleases,
+  managedSelectionsForRevision,
+} from "../../plugin/managed-catalog.ts";
 import { requireManagedCredentialRuntime } from "../../plugin/managed-runtime.ts";
 import {
   validatePlaintextNativeGateway,
@@ -302,6 +310,11 @@ import {
   gatewayRuntimeEntrypoint,
 } from "./runtime-entrypoints.ts";
 
+import {
+  importedPluginMaterial,
+  importedPluginDeployment,
+  type ImportedPluginMaterial,
+} from "./imported-plugin-skills.ts";
 import {
   REPOSITORY_MATERIAL_GENERATION,
   repositoryMaterialCurrent,
@@ -667,6 +680,7 @@ const OPENSHELL_CODEX_LAUNCH = "openshell-codex-launch:v1:";
 
 interface PluginRuntimeSnapshot {
   readonly name: string;
+  readonly importedMaterial?: ImportedPluginMaterial;
   readonly runtime: PluginRuntimeSpec;
 }
 
@@ -6588,9 +6602,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const sandboxDriver = this.sandboxDriverForRevision(revision);
     const providerOwnsHarnessEndpoint = sandboxDriver?.harnessEndpoint !== undefined;
     requireManagedCredentialRuntime(
-      revision.plugins?.plugins,
+      managedSelectionsForRevision(revision),
       sandboxDriver?.implementation,
       this.credentialGatewayDriver?.implementation,
+      managedMcpInstallsForRevision(revision),
     );
     requireNativeWorkerSandbox(revision.harness, sandboxDriver);
     if (sandboxDriver !== undefined && embedded) {
@@ -6844,13 +6859,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return { ...result, repositoryCredentialMaterialMissing: material.missing };
     }
     const repositoryMaterial = material?.spec;
-    const pluginRuntime = this.pluginRuntimeSnapshot(
-      admittedRevision,
-      this.codexRepositoryBrokerNetworkPolicy(
+    const pluginRuntime = await this.withImportedPluginMaterial(
+      this.pluginRuntimeSnapshot(
         admittedRevision,
-        repositoryConsumer,
-        repositoryMaterial,
+        this.codexRepositoryBrokerNetworkPolicy(
+          admittedRevision,
+          repositoryConsumer,
+          repositoryMaterial,
+        ),
       ),
+      context,
     );
     if (repositoryMaterial !== undefined) {
       await this.prepareRevisionStage("repository_material", () =>
@@ -7031,9 +7049,52 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ),
     );
     if (!embedded && pluginRuntime !== undefined) {
-      await this.prepareRevisionStage("plugin_runtime", () =>
-        this.reconcilePluginRuntimeConfigMap(pluginRuntime, pluginOwnership, gatewayNamespace),
-      );
+      await this.prepareRevisionStage("plugin_runtime", async () => {
+        await this.reconcilePluginRuntimeConfigMap(
+          pluginRuntime,
+          pluginOwnership,
+          gatewayNamespace,
+        );
+        if (pluginRuntime.importedMaterial) {
+          // The revision snapshot is deleted after cutover or rollback; its immutable chunks follow it.
+          const parent = await this.getOwned(
+            "ConfigMap",
+            pluginRuntime.name,
+            gatewayNamespace,
+            pluginOwnership,
+          );
+          const uid = parent?.metadata?.uid;
+          if (typeof uid !== "string" || !uid) {
+            throw new DependencyUnavailableError(
+              "The imported plugin snapshot has no Kubernetes owner UID.",
+            );
+          }
+          for (const chunk of pluginRuntime.importedMaterial.chunks) {
+            const object = this.manifest(
+              "v1",
+              "ConfigMap",
+              chunk.name,
+              pluginOwnership,
+              gatewayNamespace,
+            );
+            await this.reconcile(
+              {
+                ...object,
+                metadata: {
+                  ...object.metadata,
+                  ownerReferences: [
+                    { apiVersion: "v1", kind: "ConfigMap", name: pluginRuntime.name, uid },
+                  ],
+                },
+                immutable: true,
+                data: { content: chunk.content },
+              },
+              pluginOwnership,
+              gatewayNamespace,
+            );
+          }
+        }
+      });
     }
     let launchPrepared = false;
     try {
@@ -7942,7 +8003,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
         materialInput,
       );
-      const pluginRuntime = this.pluginRuntimeSnapshot(
+      const snapshot = this.pluginRuntimeSnapshot(
         admittedRevision,
         this.codexRepositoryBrokerNetworkPolicy(
           admittedRevision,
@@ -7954,6 +8015,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         currentRevisionId !== revision.id ||
         annotations[REPOSITORY_MATERIAL_GENERATION] !== repositoryMaterial?.generation
       ) {
+        const pluginRuntime = await this.withImportedPluginMaterial(snapshot, context);
         const deliveredHarnessAuth = await this.deliverHarnessAuth(
           admittedRevision,
           context,
@@ -8047,13 +8109,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       namespace,
       materialInput,
     );
-    const pluginRuntime = this.pluginRuntimeSnapshot(
-      admittedRevision,
-      this.codexRepositoryBrokerNetworkPolicy(
+    const pluginRuntime = await this.withImportedPluginMaterial(
+      this.pluginRuntimeSnapshot(
         admittedRevision,
-        repositoryConsumer,
-        repositoryMaterial,
+        this.codexRepositoryBrokerNetworkPolicy(
+          admittedRevision,
+          repositoryConsumer,
+          repositoryMaterial,
+        ),
       ),
+      context,
     );
     if (repositoryMaterial !== undefined) {
       await this.reconcileRepositoryIngress(
@@ -11738,7 +11803,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       runtime.kind === "openclaw" &&
       selectedIds.length > 0 &&
-      selectedIds.every((id) => managedInstalls.some((install) => install.id === id))
+      selectedIds.every(
+        (id) =>
+          id.startsWith("occ-import:") || managedInstalls.some((install) => install.id === id),
+      )
     ) {
       return []; // The image supplies all selected packages.
     }
@@ -15055,10 +15123,48 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (runtime === undefined) {
       return undefined;
     }
-    return {
-      name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
-      runtime,
-    };
+    const name = `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+    if (
+      runtime.kind === "openclaw" &&
+      runtime.importedReleases &&
+      Object.keys(runtime.importedReleases).length &&
+      (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated")
+    ) {
+      throw new ConfigurationFailure("Imported plugins require a dedicated OpenClaw Harness.");
+    }
+    return { name, runtime };
+  }
+
+  private async withImportedPluginMaterial(
+    snapshot: PluginRuntimeSnapshot | undefined,
+    context: ComputeRevisionContext | undefined,
+  ): Promise<PluginRuntimeSnapshot | undefined> {
+    const pins =
+      snapshot?.runtime.kind === "openclaw" ? snapshot.runtime.importedReleases : undefined;
+    if (!snapshot || !pins || Object.keys(pins).length === 0) {
+      return snapshot;
+    }
+    const releases = await context?.loadImportedPluginReleases?.();
+    if (
+      !releases ||
+      Object.keys(releases).length !== Object.keys(pins).length ||
+      !Object.entries(pins).every(
+        ([id, pin]) =>
+          releases[id]?.digest === pin.digest &&
+          isDeepStrictEqual(releases[id]?.mcpServers, pin.mcpServers),
+      )
+    ) {
+      throw new ConfigurationFailure(
+        "The imported plugin material does not match the admitted release pins.",
+      );
+    }
+    try {
+      return { ...snapshot, importedMaterial: importedPluginMaterial(snapshot.name, releases) };
+    } catch (error) {
+      throw new ConfigurationFailure(
+        error instanceof Error ? error.message : "Invalid imported plugin release.",
+      );
+    }
   }
 
   private pluginRuntimeOwnership(revision: AgentRevision): Ownership {
@@ -16023,7 +16129,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
       seen.add(source.id);
     }
-    return resolved;
+    // An imported account stays bound to the Agent across release changes. Only the
+    // revision's exact server selection can attach it to a Sandbox, including on recovery.
+    const active = new Set(
+      managedMcpCredentialBindings(
+        managedSelectionsForRevision(revision),
+        managedMcpInstallsForRevision(revision),
+      )
+        .filter((binding) => binding.install.importedPluginTemplate && binding.active)
+        .map((binding) => binding.sourceId),
+    );
+    return resolved.filter((source) => !source.importedPluginTemplate || active.has(source.id));
   }
 
   private harnessAuthForRevision(
@@ -16804,8 +16920,31 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // The image supplies the releases. Both processes receive only package identities and
     // reviewed tool selections, never account credentials.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
-      const { selections } = pluginRuntime.runtime;
+      const imported = pluginRuntime.runtime.importedReleases ?? {};
+      const selections = managedSelectionsForImportedReleases(
+        pluginRuntime.runtime.selections,
+        imported,
+      );
       const packages = [];
+      for (const [id, release] of Object.entries(imported)) {
+        for (const server of release.mcpServers) {
+          const install = importedMcpInstall(release, server);
+          const binding = managedMcpCredentialBinding(selections, install);
+          if (!binding?.active) {
+            continue;
+          }
+          packages.push({
+            kind: "imported-mcp",
+            ...(role === "gateway" && { id }),
+            releaseSha256: release.digest,
+            server: install.server,
+            manifestName: server.name,
+            url: install.url,
+            environment: install.credentialEnvironment,
+            toolNames: binding.toolNames,
+          });
+        }
+      }
       for (const install of managedInstalls) {
         const selection = selections[install.id];
         if (!selection || (!selection.enabled && role !== "gateway")) {
@@ -16944,6 +17083,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           value: JSON.stringify(pluginWarnings),
         });
       }
+    }
+    if (role === "gateway" && pluginRuntime?.importedMaterial) {
+      const delivery = importedPluginDeployment(pluginRuntime.importedMaterial, image);
+      volumes.push(...delivery.volumes);
+      volumeMounts.push(...delivery.volumeMounts);
+      initContainers.push({ ...delivery.initContainer });
     }
     if (repositoryMaterial !== undefined) {
       if ((role === "gateway" && !embedded) || runtime === undefined) {
@@ -17537,6 +17682,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         const existingData = existing.data ?? {};
         if (
           existing.immutable !== true ||
+          (desired.metadata.ownerReferences !== undefined &&
+            !isDeepStrictEqual(
+              existing.metadata.ownerReferences,
+              desired.metadata.ownerReferences,
+              // The Kubernetes client deserializes wire references into V1OwnerReference instances.
+              { skipPrototype: true },
+            )) ||
           Object.entries(annotations).some(
             ([name, value]) => existing.metadata.annotations?.[name] !== value,
           ) ||

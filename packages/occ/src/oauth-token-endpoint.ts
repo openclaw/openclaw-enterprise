@@ -1,4 +1,5 @@
 import {
+  isOAuthBearerToken,
   isOAuthScopeToken,
   type OAuthConnectionGrant,
   type OAuthConnectionRegistration,
@@ -99,8 +100,7 @@ export async function requestOAuthTokens(
     throw new BrowserAuthorizationError("exchange_refused", "fix_configuration");
   }
   if (
-    !isNonEmptyString(body?.access_token) ||
-    !/^[A-Za-z0-9._~+/-]+=*$/.test(body.access_token) ||
+    !isOAuthBearerToken(body?.access_token) ||
     typeof body.token_type !== "string" ||
     body.token_type.toLowerCase() !== "bearer" ||
     !isPositiveSafeInteger(body.expires_in)

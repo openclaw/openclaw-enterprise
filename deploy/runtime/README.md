@@ -64,11 +64,7 @@ Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
 against the Dockerfile.
 
-Dedicated Gateways require the supporting source recorded in this recipe and
-validate their effective native configuration before starting. The required
-Gateway tool policy covers core dispatch, automation authority and Codex
-dynamic tools. Older or unknown source images remain unready; source checks
-and configuration validation do not replace runtime qualification.
+Dedicated Gateways verify the pinned source and validate native configuration before startup. Their tool policy covers dispatch, automation and Codex dynamic tools. Managed Gateways verify the skill installation patch. Gateways serving imported skills also verify the source-pinning patch before loading the read-only skill roots.
 
 The Codex adapter preserves namespaced IDs with an explicit native
 provider. For a custom endpoint, OCE compiles its private Gateway model references

@@ -161,8 +161,7 @@ ChatGPT Backend admin credential path:
     "managedServiceAccounts": {
       "workspaceId": "11111111-1111-4111-8111-111111111111",
       "adminSecretName": "occ-chatgpt-admin",
-      "adminSecretKey": "admin-key",
-      "providerCidr": "198.51.100.30/32"
+      "adminSecretKey": "admin-key"
     }
   }
 }
@@ -190,20 +189,6 @@ To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
 and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
-
-### Hosted discovery egress
-
-With hosted `codex-plugin`, omitted `codex.modelDiscoveryCidrs` resolves
-`auth.openai.com` and `chatgpt.com` from the renderer host into Helm
-`api.modelDiscoveryCidrs`. This grants only release API Pods TCP 443 to those
-IPv4 `/32` hosts.
-
-Supplied lists stay unchanged without DNS queries; `[]` requires an external
-HTTPS policy for both hosts. DNS failure leaves both YAML files absent.
-
-Verify API Pod DNS/NAT destinations and **Load plugins** with an authorized PAT.
-Rerender and upgrade Helm after address changes; this initial snapshot does not
-refresh itself.
 
 ### External sign-in and trusted proxies
 
@@ -241,9 +226,9 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`google` and `oidc` accept `secretName`, `clientIdKey`, `clientSecretKey` and
-`egressCidrs`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
-`trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
+`google` and `oidc` accept `secretName`, `clientIdKey` and `clientSecretKey`.
+OIDC also accepts `tokenAuth` and `displayName`.
+The `generic` trusted proxy preset requires `trustedProxy.clientAddressHeader`.
 Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
 `origin`, and `x-api-key`; use a header that carries plain client addresses, such as
 `x-forwarded-for` or `x-real-ip`.
@@ -359,20 +344,21 @@ the install as ready:
   `runtime.gatewayStorageClassName` for gateway state.
 - For Codex, the configured localhost seccomp profile installed and verified on
   every node selected by `runtime.nodeSelector`.
-- For Slack, a proxy route for both gateway runtime traffic and Console
-  directory lookup. The managed proxy serves both; external proxies need both
-  URLs. Rendering proxy wiring does not enable a Slack consumer. Either profile
+- For Slack, give gateway runtime traffic a proxy route. The API Server can
+  connect directly to Slack for Console directory lookup. The managed proxy
+  serves both paths. Rendering proxy wiring does not enable a Slack consumer. Either profile
   can install the managed
   proxy for API directory lookup and dedicated gateway use, but Slack-enabled
   Agents require dedicated Codex execution. The example input sets
   `managedSlackProxy: true` to use the chart-managed proxy Service. Its network
   policy allows public IPv4 HTTPS, excluding private and reserved ranges, and the
   proxy authorizes Slack hostnames, so connectivity survives Slack DNS rotation.
-  For an external proxy, omit `managedSlackProxy` and provide literal IPv4
-  `runtimeProxyUrl` and `directoryProxyUrl` inputs.
+  For an external gateway proxy, omit `managedSlackProxy` and set
+  `runtimeProxyUrl` to its literal IPv4 URL. Set `directoryProxyUrl` if the
+  API Server must use a proxy for directory lookup.
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
-  See [discovery egress](#hosted-discovery-egress).
+  The API Server needs HTTPS access to `auth.openai.com` and `chatgpt.com`.
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

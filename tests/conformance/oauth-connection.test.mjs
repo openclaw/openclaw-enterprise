@@ -28,6 +28,7 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   });
   assert.equal(new URL(started.authorizationUrl).searchParams.get("resource"), request.resource);
   let responseScope;
+  let accessToken = randomUUID();
   t.mock.method(globalThis, "fetch", async (_url, init) => {
     assert.equal(init.headers.has("authorization"), false);
     assert.equal(init.body.get("client_id"), request.clientId);
@@ -37,7 +38,7 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
       assert.equal(init.body.has("scope"), false);
     }
     return Response.json({
-      access_token: randomUUID(),
+      access_token: accessToken,
       token_type: "Bearer",
       expires_in: 120,
       refresh_token: "test-refresh",
@@ -79,6 +80,8 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
       code: "grant_scope_mismatch",
     },
   );
+  accessToken += "\r\nX-Injected: yes";
+  await assert.rejects(exchange(), { code: "invalid_access_token" });
 });
 
 async function oauthCustody() {
@@ -92,7 +95,8 @@ async function oauthCustody() {
 test("the Token Service keeps the first access token in custody and serializes rotation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
   const requests = [];
-  const first = randomUUID();
+  // Cloudflare's OAuth provider returns opaque user:grant:secret tokens for hosted MCP.
+  const first = [randomUUID(), randomUUID(), randomUUID()].join(":");
   const second = randomUUID();
   const originalGrant = randomUUID();
   const rotatedGrant = randomUUID();

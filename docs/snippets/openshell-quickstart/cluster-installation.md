@@ -186,7 +186,7 @@ jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
   "$RUN_DIR/installation.json" > "$RUN_DIR/installation-with-peers.json"
 jq '.worker.replicaCount=1' \
   "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
-# The API registers model credentials and the worker manages workspaces through OpenShell.
+# Allow the worker to manage workspaces through OpenShell.
 kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
   jq -e --arg ns "$PLATFORM_NS" --arg release "$RELEASE" '
     .spec as $svc | select($svc.type=="ClusterIP" and ($svc.selector|length)>0
@@ -195,8 +195,7 @@ kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
     {apiVersion:"networking.k8s.io/v1", kind:"NetworkPolicy",
      metadata:{namespace:$ns,name:"oce-controller-openshell-management"},
      spec:{podSelector:{matchLabels:{"app.kubernetes.io/name":"openclaw-enterprise",
-       "app.kubernetes.io/instance":$release},matchExpressions:[
-       {key:"app.kubernetes.io/component",operator:"In",values:["api","worker"]}]},
+       "app.kubernetes.io/instance":$release,"app.kubernetes.io/component":"worker"}},
        policyTypes:["Egress"],egress:[
          {to:[{ipBlock:{cidr:($svc.clusterIP+"/32")}}],ports:[{protocol:"TCP",port:8080}]},
          {to:[{podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
@@ -208,7 +207,7 @@ save_session
 upgrade_installation
 ```
 
-Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. For a live Agent in its verified namespace, stage the current platform helper and renderer and run `deployment_network` in its saved session to replace a name-only grant.
+The worker uses the egress rule above. At deployment, the management listener admits the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. For a live Agent in its verified namespace, stage the current platform helper and renderer and run `deployment_network` in its saved session to replace a name-only grant.
 
 If namespace ownership has changed or the Agent’s Gateway Service is gone, withdraw the obsolete grant directly. Inspect its source namespace, Agent or supervisor Pod selector, and destination management selector with `kube -n "$PLATFORM_NS" get networkpolicy "$policy" -o yaml`. Match them to the recorded owner. Confirm a separate restrictive ingress policy still selects the management Pods so deleting the grant keeps them isolated. Then run `kube -n "$PLATFORM_NS" delete networkpolicy "$policy"` with the verified policy name. Preserve grants for other tenants and callers.
 

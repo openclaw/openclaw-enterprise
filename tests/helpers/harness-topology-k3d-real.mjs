@@ -479,12 +479,6 @@ async function configureInClusterOidc({
     name: "oidc-ca",
     secret: { secretName, items: [{ key: "ca.crt", path: "ca.crt" }] },
   });
-  manifests.items
-    .find(({ kind }) => kind === "NetworkPolicy")
-    .spec.egress.push({
-      to: [{ ipBlock: { cidr: `${oidc.address}/32` } }],
-      ports: [{ protocol: "TCP", port: 8443 }],
-    });
 }
 
 async function startInClusterControllers(
@@ -548,8 +542,7 @@ async function startInClusterControllers(
   const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
   if (channels !== undefined) {
     assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
-    // Admission validates Slack credentials before deployment. The chart grants
-    // only the API this proxy route; the worker keeps its existing isolation.
+    // The API uses the same managed proxy as the installed chart for Slack admission.
     apiContainer.env.push(
       { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: channels.proxyUrl },
       { name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST", value: channels.managedProxy.hostname },
@@ -2152,6 +2145,14 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     // ServicePrincipal's operate grants. A deploy by a caller who cannot operate a source writes
     // none and is refused; tests/integration/postgres-default-users.test.ts covers that refusal.
 
+    if (options.gatewayManagedMode === false) {
+      // Only the Installation administrator can enable native installs for these operator workflows.
+      agent = await adminRequest("PATCH", `/namespaces/${namespaceId}/agents/${agent.data.id}`, {
+        gatewayManagedMode: false,
+      });
+      assert.equal(agent.status, 200, JSON.stringify(agent.error));
+      assert.equal(agent.data.gatewayManagedMode, false);
+    }
     deployed = await request("POST", `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`);
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
   }

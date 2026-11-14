@@ -261,7 +261,7 @@ otherwise masks startup files. Emitted paths stay unchanged; noncolliding paths
 remain available.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
-selects only `api`, `worker`, and `initialization` Pods with the release identity.
+selects `worker` and `initialization` Pods with the release identity.
 It allows DNS, database egress to every `database.cidrs` host, and
 Kubernetes API egress to every `cluster.cidrs` host. Collectors use their separate
 DNS, API, and exporter policy; unknown or missing component labels retain
@@ -269,13 +269,7 @@ default-deny. Pre-install initialization has only its hook DNS/database grants.
 Destinations must be explicit IPv4 `/32` hosts; refresh them when managed
 endpoint addresses change. Chart ports take no leading zeros: `0443` fails.
 
-`deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` renders separate
-API-only TCP 443 policies for `api.modelDiscoveryCidrs` and
-`api.pluginDiscoveryCidrs`. Each accepts explicit IPv4 `/32` hosts and defaults to
-no egress. Operators maintain addresses for
-[model discovery](../reference/console/create-and-deploy.md#create-an-agent) and
-[MCP tool discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin)
-independently. Console model selection and Harness egress do not depend on these policies.
+The chart restricts API Server ingress to configured clients. API egress follows cluster policy, so [MCP discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin) needs no provider Helm entry.
 
 When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
 literal IPv4 address and port, the chart passes it to the API and grants only
@@ -411,6 +405,8 @@ until tenant deployment/TUI procedures run.
 - 2026-11-08 07:15: Clarify receipt directory. (authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40 - 7e2eb23a7f55b5f375e52883fcb6a7bb0f10049e)
 
 - 2026-11-08 05:16: Document the preserved intent and stop before dispatch when the receipt notice write fails. (authoring-run/5809b7e1-70ee-4446-8c3a-020e78a0e7af - e0d329d9ad9560e954ce94889079ef55ba43080f)
+
+- 2026-11-05 23:27: Trace API Server connectivity for model and MCP discovery. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 30037b3d8929ce73cb8f01dd0a9ec6ebf2d3fae6)
 
 - 2026-11-04 23:30: Check complete handoff reports, including receipt outcomes. (authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a - ce06d47cfb0b4fb29495ad4bc85bb71aa5941975)
 

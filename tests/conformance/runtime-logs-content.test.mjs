@@ -1084,6 +1084,7 @@ test("bounded key and path patterns mask key values, flags, queries and token pr
     [`"/cb?${value}"`, '"/cb?[redacted:query]"'],
     ["see /a#b?c", "see /a#b?c"],
     [`bearer token ${value} for upstream`, "bearer token [redacted:bearer] for upstream"],
+    ["Bearer account::grant::secret for upstream", "Bearer [redacted:bearer] for upstream"],
     ["bearer authentication failed", "bearer authentication failed"],
     // A flag only the text rules know, right after a literal escape.
     [`log\\n--db-password ${value}`, "log\\n--db-password [redacted:key-value]"],

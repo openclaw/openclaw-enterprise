@@ -187,8 +187,10 @@ async function productionDrivers({
   configurationRoot,
   iam,
 }: DriverOptions = {}): Promise<InstallationRuntimeDrivers> {
+  const base = createInstallationDriverConfiguration();
   const configuration = {
-    ...createInstallationDriverConfiguration(),
+    ...base,
+    drivers: { ...base.drivers, plugin: [{ id: "occ-plugin", configuration: {} }] },
     ...(iam === undefined ? {} : { iam }),
     presets: { includeDefaults, ...(files === undefined ? {} : { files }) },
   };
@@ -206,6 +208,7 @@ async function productionDrivers({
   const { installation } = runtime;
   return {
     installation,
+    pluginDrivers: runtime.pluginDrivers ?? [],
     ...(runtime.defaultPresets === undefined ? {} : { defaultPresets: runtime.defaultPresets }),
     ...(runtime.shadowedDefaultPresets === undefined
       ? {}

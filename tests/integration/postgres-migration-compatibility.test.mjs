@@ -2351,6 +2351,68 @@ test(
 );
 
 test(
+  "Canonical upgrade grants Namespace plugin publication only to the unchanged Installation administrator",
+  requiresHistoryPostgres,
+  async (context) => {
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "publish", {
+      prefix: 78,
+    });
+    // Freeze the built-in Role before plugin publication. Reordering its grants was valid, as was editing its permissions.
+    const previous = [
+      ["installation", ["administer", "read"]],
+      ["namespace", ["create", "read", "delete"]],
+      ["configuration", ["create", "read", "update", "delete"]],
+      ["service_account", ["create", "read", "update", "delete"]],
+      ["secret", ["create", "read", "update", "delete", "operate"]],
+      ["preset", ["create", "read", "update", "delete"]],
+      ["credential_source", ["create", "read", "update", "delete", "operate"]],
+      [
+        "agent",
+        ["create", "read", "update", "delete", "deploy", "operate", "administer", "manage_policy"],
+      ],
+      ["agent_revision", ["read"]],
+      ["sandbox_policy", ["read", "update"]],
+    ]
+      .flatMap(([resourceKind, actions]) => actions.map((action) => ({ action, resourceKind })))
+      .reverse();
+    const stock = `role_admin_${randomUUID()}`;
+    const customized = `role_admin_${randomUUID()}`;
+    const altered = previous.slice(1);
+    await db.migrator.query(
+      `INSERT INTO occ.iam_roles(id, name, permissions) VALUES
+      ($1, 'Installation administrator', $2::jsonb), ($3, 'Installation administrator', $4::jsonb)`,
+      [stock, JSON.stringify(previous), customized, JSON.stringify(altered)],
+    );
+
+    // A migrated Installation may already restrict audit access before plugin publication exists.
+    await db.app.query(
+      "INSERT INTO occ.iam_restrictions(id, action, resource_kind) VALUES ('restrict-audit', 'read_audit', 'agent')",
+    );
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preNamespacePluginReleases",
+    });
+    const { rows } = await db.app.query(
+      "SELECT id, permissions FROM occ.iam_roles WHERE id = ANY($1::text[])",
+      [[stock, customized]],
+    );
+    await db.app.query(
+      "INSERT INTO occ.iam_restrictions(id, action, resource_kind) VALUES ('restrict-publication', 'publish_plugins', 'namespace')",
+    );
+    assert.deepEqual(
+      (await db.app.query("SELECT action FROM occ.iam_restrictions ORDER BY action")).rows,
+      [{ action: "publish_plugins" }, { action: "read_audit" }],
+    );
+    const permissions = new Map(rows.map(({ id, permissions }) => [id, permissions]));
+    assert.deepEqual(permissions.get(stock), [
+      ...previous,
+      { action: "publish_plugins", resourceKind: "namespace" },
+    ]);
+    assert.deepEqual(permissions.get(customized), altered);
+  },
+);
+
+test(
   "Canonical migration commands preserve main data and serialize fresh/repeat runners",
   concurrentHistoryPostgres,
   async (context) => {
@@ -2437,6 +2499,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preNamespacePluginReleases"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2932,6 +2995,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preNamespacePluginReleases"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3129,6 +3193,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preNamespacePluginReleases"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -3220,6 +3285,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preNamespacePluginReleases"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3244,6 +3310,7 @@ test(
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         const rollbackTag = [
+          [78, "CREATE TRIGGER"],
           [77, "CREATE FUNCTION"],
           [76, "CREATE INDEX"],
           [75, "CREATE TRIGGER"],

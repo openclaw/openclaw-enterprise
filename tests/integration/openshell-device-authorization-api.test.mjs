@@ -360,7 +360,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     if (reason === "unreachable") {
       assert.match(
         rejected.body.error.message,
-        /auth\.openai\.com.*HTTPS egress.*API Pods.*api\.modelDiscoveryCidrs/,
+        /auth\.openai\.com.*HTTPS connectivity from the API server/,
       );
     } else {
       assert.equal(rejected.body.error.message, "Device login could not start. Try again.");

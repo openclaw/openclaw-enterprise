@@ -7,8 +7,11 @@ import type {
   Agent,
   AgentRevision,
   CredentialSource,
+  PluginRevisionState,
   Secret,
 } from "../../packages/contracts/src/index.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import {
@@ -21,7 +24,7 @@ import { waitUntil } from "../helpers/wait-for.mjs";
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const options = { ...requiresPostgres, timeout: 30_000 };
-async function fixture(t: TestContext, sourceCount = 2) {
+async function fixture(t: TestContext, sourceCount = 2, pluginState?: PluginRevisionState) {
   await ensurePostgresAgentBootstrap(t, {
     label: "revision-owner",
     authSecret: "revision-owner-fixture-signing-secret",
@@ -79,7 +82,8 @@ async function fixture(t: TestContext, sourceCount = 2) {
     backendId: null,
     harnessAuth: { method: "credential_source", sourceId: sources[0]!.id },
     credentialSources: sources.map((source) => ({ sourceId: source.id })),
-    executionMode: "embedded",
+    executionMode: pluginState ? "dedicated" : "embedded",
+    ...(pluginState && { plugins: pluginState.plugins, pluginDriver: pluginState.driver }),
     gatewayManagedMode: true,
     servicePrincipalId: id("service-agent"),
     desiredRuntimeState: "stopped",
@@ -102,11 +106,12 @@ async function fixture(t: TestContext, sourceCount = 2) {
     harness: {
       id: "openclaw",
       version: "1.0.0",
-      mode: "embedded",
+      mode: agent.executionMode,
       overrides: {},
       configuration: {},
     },
     compute: { id: "fixture-compute", implementation: "fixture" },
+    ...(pluginState && { plugins: pluginState }),
     executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt,
@@ -378,5 +383,124 @@ test(
       );
       assert.deepEqual(await bytes(fresh), before);
     });
+  },
+);
+
+test(
+  "PostgreSQL keeps a plugin publication and a template source in the same Namespace",
+  options,
+  async (t) => {
+    const driver = new OCCPluginDriver();
+    const archive = await importedPluginPackage(t, "original release bytes", {
+      mcpUrl: "https://reports.example.test/mcp",
+    });
+    const release = await driver.inspectPackage(Buffer.from(archive, "base64"));
+    const { digest } = release;
+    const pluginId = `occ-import:${digest}`;
+    const pins = { [pluginId]: { digest, mcpServers: release.mcpServers } };
+    const plugins = {
+      driver: { id: driver.id, implementation: driver.implementation },
+      plugins: { [pluginId]: { enabled: true } },
+      importedReleases: pins,
+    };
+    const { pool, store, ns, sources, agent, input } = await fixture(t, 1, plugins);
+    const source: CredentialSource = {
+      ...sources[0]!,
+      id: id("cs"),
+      name: id("template"),
+      type: "bearer-token",
+      config: {
+        protocol: "mcp",
+        host: "reports.example.test",
+        path: "/mcp",
+        env_var: "REPORTS_TOKEN",
+      },
+      importedPluginTemplate: { releaseSha256: digest, serverName: "probe" },
+      secrets: { token: sources[0]!.secrets.api_key! },
+    };
+    await assert.rejects(
+      store.transact((state) => state.credentialSources.createCredentialSource(source)),
+      {
+        name: "ScopeViolationError",
+        message: "The resource violates its exact platform ownership or state.",
+      },
+    );
+    await store.transact(async (state) => {
+      await state.pluginReleases.publish(ns.id, "publisher", release);
+      await state.credentialSources.createCredentialSource(source);
+    });
+    await store.transact((state) =>
+      state.pluginReleases.publish(ns.id, "other-publisher", { ...release, name: "overwritten" }),
+    );
+    await store.read(async (state) => {
+      assert.deepEqual(await state.pluginReleases.find(ns.id, digest), release);
+      assert.deepEqual(
+        (await state.credentialSources.findCredentialSource(ns.id, source.id))
+          ?.importedPluginTemplate,
+        source.importedPluginTemplate,
+      );
+      assert.deepEqual(await state.pluginReleases.list(ns.id), [
+        {
+          name: release.name,
+          version: release.version,
+          description: release.description,
+          digest,
+          mcpServers: release.mcpServers,
+        },
+      ]);
+    });
+    const next = { ...input, id: id("rev"), revision: input.revision + 1 };
+    await store.transact(async (unit) => {
+      await unit.revisions.createRevision(input);
+      await unit.revisions.createRevision(next);
+    });
+    const stored = await pool.query(
+      "SELECT admitted_spec #> '{plugins,importedReleases}' AS pins FROM occ.agent_revisions WHERE agent_id=$1",
+      [agent.id],
+    );
+    assert.deepEqual(stored.rows, [{ pins }, { pins }]);
+    await store.read(async (view) => {
+      const history = await view.revisions.listRevisions(ns.id, agent.id);
+      assert.deepEqual(
+        history.map((revision) => revision.plugins),
+        [plugins, plugins],
+      );
+    });
+
+    // An unsupported row with inline files cannot expose its content through either revision read.
+    const invalidId = id("rev");
+    await pool.query(
+      `INSERT INTO occ.agent_revisions (id, namespace_id, agent_id, revision_number, backend_id,
+          admitted_spec, gateway_managed_mode, admitted_at)
+       SELECT $1, namespace_id, agent_id, revision_number+1, backend_id,
+          jsonb_set(admitted_spec, '{plugins,importedReleases}', $2::jsonb), gateway_managed_mode, admitted_at
+       FROM occ.agent_revisions WHERE id=$3`,
+      [invalidId, JSON.stringify({ [pluginId]: release }), next.id],
+    );
+    const refused = { message: "Persisted saved configuration is invalid." };
+    await assert.rejects(
+      store.read((view) => view.revisions.listRevisions(ns.id, agent.id)),
+      refused,
+    );
+    await assert.rejects(
+      store.read((view) => view.revisions.findRevision(ns.id, agent.id, invalidId)),
+      refused,
+    );
+    // A compromised app write cannot repoint an existing source or replace an admitted release's content.
+    await assert.rejects(
+      pool.query("UPDATE occ.credential_sources SET plugin_server_name=$2 WHERE id=$1", [
+        source.id,
+        "other",
+      ]),
+      { code: "42501" },
+    );
+    await assert.rejects(
+      pool.query("UPDATE occ.plugin_releases SET actor_id=$3 WHERE namespace_id=$1 AND digest=$2", [
+        ns.id,
+        digest,
+        "other-actor",
+      ]),
+      { code: "42501" },
+    );
   },
 );

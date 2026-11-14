@@ -49,7 +49,8 @@ import {
 import {
   managedCredentialBinding,
   managedMcpCredentialBinding,
-  managedMcpInstalls,
+  managedSelectionsForRevision,
+  managedMcpInstallsForRevision,
   managedInstalls,
 } from "../plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
@@ -3538,6 +3539,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
                 Object.values(credentials).map((slot) => slot.delivery.env),
               )
             : []),
+          ...managedMcpInstallsForRevision(context.revision).flatMap((install) =>
+            install.importedPluginTemplate ? [install.credentialEnvironment] : [],
+          ),
           // Only the attached provider supplies its identity-bound credential alias.
           // A static placeholder would survive withdrawal and shadow its absence.
           ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
@@ -3734,9 +3738,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     const previousMcpRules = asRecord(asRecord(existing.spec?.policy)?.network_policies);
-    for (const install of managedMcpInstalls) {
+    const managedSelections = managedSelectionsForRevision(context.revision);
+    for (const install of managedMcpInstallsForRevision(context.revision)) {
       // Native detach preserves the original launch policy. Reconstruct it from the revision.
-      const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
+      const binding = managedMcpCredentialBinding(managedSelections, install);
       const network = managedMcpNetwork(install, binding?.toolNames ?? []);
       if (
         !mcpPolicies.some((policy) => policy.install.id === install.id) &&
@@ -4793,8 +4798,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     const baselineRules = asRecord(baseline.network_policies);
-    for (const install of managedMcpInstalls) {
-      const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
+    const managedSelections = managedSelectionsForRevision(context.revision);
+    for (const install of managedMcpInstallsForRevision(context.revision)) {
+      const binding = managedMcpCredentialBinding(managedSelections, install);
       const expected = managedMcpNetwork(install, binding?.toolNames ?? []);
       if (sameOpenShellPolicy(baselineRules?.[expected.name], expected)) {
         assertNoManagedMcpRouteOverlap(candidate.network_policies, install, [expected.name]);

@@ -156,6 +156,8 @@ const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
 // Reviewed core, automation and Codex adapter enforcement. Update together
 // with the runtime source pin and archive provenance.
 export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "513c12703ad9a9161cc123e0b8ed4ecb811aa6b3";
+const GATEWAY_MANAGED_SKILLS_PATCH_SHA256 =
+  "1e19885e42f6958244de9ef563f6223b5599a062c82569e793c9f554f7e4207f";
 
 type SettingError = (setting: string, requirement: string) => Error;
 
@@ -400,7 +402,7 @@ class GatewayToolPolicyError extends Error {
     super(message);
   }
 }
-function requireGatewayToolPolicyRuntime() {
+function requireGatewayPolicyRuntime(managedMode) {
   const invalid = "The dedicated Gateway cannot verify its runtime provenance: it is missing, unreadable, or malformed. It remains unready; use the OCE runtime image matching the controller.";
   let provenance;
   try {
@@ -408,17 +410,18 @@ function requireGatewayToolPolicyRuntime() {
   } catch {
     throw new GatewayToolPolicyError(invalid);
   }
-  if (provenance?.source === "https://github.com/openclaw/openclaw" &&
-      provenance?.commit === ${JSON.stringify(GATEWAY_TOOL_POLICY_SOURCE_COMMIT)}) {
-    return;
-  }
-  // Classify refused input only; keep the exact source and commit acceptance unchanged.
   if (provenance === null || typeof provenance !== "object" || Array.isArray(provenance) ||
       typeof provenance.source !== "string" || provenance.source.length === 0 ||
       typeof provenance.commit !== "string" || !/^[a-fA-F0-9]{40}$/.test(provenance.commit)) {
     throw new GatewayToolPolicyError(invalid);
   }
-  throw new GatewayToolPolicyError("The dedicated Gateway runtime provenance does not match the controller's pinned OpenClaw source/revision. It remains unready; use the OCE runtime image matching the controller.");
+  if (provenance.source !== "https://github.com/openclaw/openclaw" ||
+      provenance.commit !== ${JSON.stringify(GATEWAY_TOOL_POLICY_SOURCE_COMMIT)}) {
+    throw new GatewayToolPolicyError("The dedicated Gateway runtime provenance does not match the controller's pinned OpenClaw source/revision. It remains unready; use the OCE runtime image matching the controller.");
+  }
+  if (managedMode && provenance.patches?.["openclaw-managed-skill-installs.patch"] !== ${JSON.stringify(GATEWAY_MANAGED_SKILLS_PATCH_SHA256)}) {
+    throw new GatewayToolPolicyError("The managed Gateway requires an OCE runtime image that enforces skill installation and publication controls.");
+  }
 }
 // OpenClaw refuses to read its configuration while an earlier Gateway process may still own
 // the state: after an unclean exit, a restarted container runs in a new PID namespace and

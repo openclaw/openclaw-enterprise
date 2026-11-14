@@ -37,6 +37,7 @@ import {
   tooling,
 } from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
+import { googleUpgradeValues, oidcUpgradeValues } from "../helpers/production-sign-in.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
@@ -98,7 +99,6 @@ const productionExamples = new URL("../../deploy/examples/production/", import.m
 const helm = process.env.OCC_HELM_BIN ?? "helm";
 const chatgptValues = {
   "backend.chatgpt.enabled": "true",
-  "backend.chatgpt.providerCidr": "198.51.100.25/32",
 };
 const slackProxyValues = {
   "slackProxy.enabled": "true",
@@ -125,10 +125,6 @@ const sandboxValues = {
 const googleLoginValues = {
   "auth.google.enabled": "true",
   "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
-};
-const googleEgressValues = {
-  "auth.google.egressCidrs[0]": "140.82.112.0/20",
-  "auth.google.egressCidrs[1]": "192.30.252.0/22",
 };
 const trustedProxyValues = {
   "api.trustedProxy.preset": "ingress-nginx",
@@ -512,7 +508,13 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
 // Evaluate the selector-only, numeric-port ingress rules rendered by this chart.
 // This checks additive policy semantics, not live CNI enforcement.
 function matchesPolicySelector(selector = {}, labels = {}) {
-  const expressions = (selector.matchExpressions ?? []).map(({ key, operator }) => {
+  const expressions = (selector.matchExpressions ?? []).map(({ key, operator, values }) => {
+    if (operator === "In") {
+      return values.includes(labels[key]);
+    }
+    if (operator === "NotIn") {
+      return !values.includes(labels[key]);
+    }
     assert.equal(operator, "Exists", "Extend the evaluator for new selector operators");
     return Object.hasOwn(labels, key);
   });
@@ -747,6 +749,7 @@ test(
       "NetworkPolicy",
       "openclaw-enterprise-execution-api-egress",
     );
+    assert.equal(policy.spec.podSelector.matchLabels["app.kubernetes.io/component"], "worker");
     assert.equal(policy.spec.egress[0].ports[0].port, 6443);
   },
 );
@@ -1164,15 +1167,11 @@ test("production Helm values example renders the backendless default chart", too
     assert.ok(!env.some(({ name }) => /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name)));
   }
   assert.ok(
-    !objects.some(({ metadata }) => /-api-(google|oidc)-login-egress$/.test(metadata.name)),
-  );
-  assert.ok(
     initialization.spec.template.spec.volumes.some(
       ({ name, secret }) => name === "database-ca" && secret?.secretName === "occ-rds-ca",
     ),
   );
   assert.equal(objects.filter(({ kind }) => kind === "Secret").length, 0);
-  assert.ok(!objects.some(({ metadata }) => metadata.name.endsWith("-api-chatgpt-egress")));
 });
 
 test(
@@ -1274,17 +1273,6 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       "github-primary",
       "--authority",
       "prepared-git",
-    ]);
-    const proxyPolicy = findResource(
-      objects,
-      "NetworkPolicy",
-      "openclaw-enterprise-api-channel-directory-egress",
-    );
-    assert.deepEqual(proxyPolicy.spec.egress, [
-      {
-        to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
     ]);
     assert.ok(objects.some(({ kind }) => kind === "Gateway"));
     assert.ok(objects.some(({ kind }) => kind === "EnvoyProxy"));
@@ -2786,7 +2774,7 @@ test(
         {
           key: "app.kubernetes.io/component",
           operator: "In",
-          values: ["api", "worker", "initialization"],
+          values: ["worker", "initialization"],
         },
       ],
     });
@@ -2798,130 +2786,60 @@ test(
       dependencyEgress.spec.egress.find(({ ports }) => ports.some(({ port }) => port === 443)).to,
       [{ ipBlock: { cidr: "10.43.0.1/32" } }, { ipBlock: { cidr: "10.43.0.2/32" } }],
     );
-    assert.ok(!objects.some(({ metadata }) => metadata.name.endsWith("-api-chatgpt-egress")));
   },
 );
-
-function assertApiEgressPolicy(objects, name, cidrs, port, message) {
-  const policy = findResource(objects, "NetworkPolicy", name);
-  assert.ok(policy, message);
-  assert.deepEqual(policy.spec, {
-    podSelector: {
-      matchLabels: {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": "oce",
-        "app.kubernetes.io/component": "api",
-      },
-    },
-    policyTypes: ["Egress"],
-    egress: [
-      {
-        to: cidrs.map((cidr) => ({ ipBlock: { cidr } })),
-        ports: [{ protocol: "TCP", port }],
-      },
-    ],
-  });
-  return policy;
-}
 
 test(
-  "optional model discovery grants only API HTTPS egress to configured hosts",
+  "the chart leaves API egress to the operator and isolates other components",
   tooling,
   async () => {
-    const name = "openclaw-enterprise-api-model-discovery-egress";
-    const defaults = await renderObjects();
-    assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
     const objects = await renderObjects({
-      "api.modelDiscoveryCidrs[0]": "198.51.100.25/32",
-      "api.modelDiscoveryCidrs[1]": "198.51.100.26/32",
+      ...gatewayRoutingValues,
+      ...chatgptValues,
+      ...googleUpgradeValues(googleLoginValues["auth.recoveryUserId"]),
+      ...oidcUpgradeValues(googleLoginValues["auth.recoveryUserId"]),
+      ...slackProxyValues,
     });
-    assertApiEgressPolicy(
-      objects,
-      name,
-      ["198.51.100.25/32", "198.51.100.26/32"],
-      443,
-      "configured discovery destinations must render an egress policy",
+    const api = objects.find(
+      ({ kind, metadata }) =>
+        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
     );
-    for (const cidr of [
-      "0.0.0.0/0",
-      "198.51.100.0/24",
-      "api.openai.com",
-      "999.1.1.1/32",
-      "01.2.3.4/32",
-    ]) {
-      await assert.rejects(
-        render({ "api.modelDiscoveryCidrs[0]": cidr }),
-        /api.modelDiscoveryCidrs/,
+    const policies = objects.filter(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" &&
+        (metadata.namespace ?? "openclaw-system") === (api.metadata.namespace ?? "openclaw-system"),
+    );
+    const labels = api.spec.template.metadata.labels;
+    // A single selecting Egress policy would isolate the API even if every other permit was removed.
+    const selected = policies.filter(({ spec }) => matchesPolicySelector(spec.podSelector, labels));
+    assert.ok(selected.some(({ spec }) => spec.policyTypes.includes("Ingress")));
+    assert.deepEqual(
+      selected
+        .filter(({ spec }) => spec.policyTypes.includes("Egress"))
+        .map(({ metadata }) => metadata.name),
+      [],
+    );
+    const deny = policies.find(
+      ({ metadata }) => metadata.name === "openclaw-enterprise-default-deny",
+    );
+    assert.deepEqual(deny.spec.policyTypes, ["Ingress", "Egress"]);
+    for (const component of ["worker", "initialization", "slack-proxy", "collector"]) {
+      assert.ok(
+        matchesPolicySelector(deny.spec.podSelector, {
+          ...labels,
+          "app.kubernetes.io/component": component,
+        }),
+        component,
       );
     }
-    await assert.rejects(
-      render({ "api.modelDiscoveryCidrs": "198.51.100.25/32" }),
-      /api.modelDiscoveryCidrs/,
-    );
   },
 );
 
-test("MCP plugin discovery has independent API HTTPS egress", tooling, async () => {
-  const name = "openclaw-enterprise-api-plugin-discovery-egress";
-  const modelName = "openclaw-enterprise-api-model-discovery-egress";
+test("the API can use a configured Slack directory proxy", tooling, async () => {
   const defaults = await renderObjects();
-  assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
-
-  const pluginValues = {
-    "api.pluginDiscoveryCidrs[0]": "203.0.113.15/32",
-    "api.pluginDiscoveryCidrs[1]": "203.0.113.16/32",
-  };
-  const pluginOnly = await renderObjects(pluginValues);
-  assert.ok(!pluginOnly.some(({ metadata }) => metadata.name === modelName));
-  const pluginPolicy = assertApiEgressPolicy(
-    pluginOnly,
-    name,
-    ["203.0.113.15/32", "203.0.113.16/32"],
-    443,
-    "configured MCP hosts must render their own API egress policy",
-  );
-
-  // Configuring both lists retains their distinct policies and destinations.
-  const modelValues = { "api.modelDiscoveryCidrs[0]": "198.51.100.25/32" };
-  const modelOnly = await renderObjects(modelValues);
-  assert.ok(!modelOnly.some(({ metadata }) => metadata.name === name));
-  const modelPolicy = assertApiEgressPolicy(
-    modelOnly,
-    modelName,
-    ["198.51.100.25/32"],
-    443,
-    "configured model host must render its own API egress policy",
-  );
-  const combined = await renderObjects({ ...pluginValues, ...modelValues });
-  assert.deepEqual(findResource(combined, "NetworkPolicy", name), pluginPolicy);
-  assert.deepEqual(findResource(combined, "NetworkPolicy", modelName), modelPolicy);
-
-  for (const cidr of ["0.0.0.0/0", "203.0.113.0/24", "mcp.example.invalid"]) {
-    await assert.rejects(
-      render({ "api.pluginDiscoveryCidrs[0]": cidr }),
-      /api.pluginDiscoveryCidrs/,
-    );
-  }
-  await assert.rejects(
-    render({ "api.pluginDiscoveryCidrs": "203.0.113.15/32" }),
-    /api.pluginDiscoveryCidrs/,
-  );
-});
-
-test("Slack directory proxy grants only API egress to its exact endpoint", tooling, async () => {
-  const name = "openclaw-enterprise-api-channel-directory-egress";
-  const defaults = await renderObjects();
-  assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
   const objects = await renderObjects({
     "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
   });
-  assertApiEgressPolicy(
-    objects,
-    name,
-    ["198.51.100.25/32"],
-    3128,
-    "configured directory proxy must render API egress",
-  );
   const proxyEnvironment = (objects, component) =>
     objects
       .find(
@@ -2971,11 +2889,9 @@ test(
     const deployment = named("Deployment", "openclaw-enterprise-slack-proxy");
     const service = named("Service", "openclaw-enterprise-slack-proxy");
     const proxyPolicy = named("NetworkPolicy", "openclaw-enterprise-slack-proxy");
-    const apiPolicy = named("NetworkPolicy", "openclaw-enterprise-api-managed-slack-proxy-egress");
     assert.ok(deployment);
     assert.ok(service);
     assert.ok(proxyPolicy);
-    assert.ok(apiPolicy);
     assert.equal(
       deployment.spec.template.spec.serviceAccountName,
       "openclaw-enterprise-slack-proxy",
@@ -3008,25 +2924,6 @@ test(
         value: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
       },
     );
-    assert.deepEqual(apiPolicy.spec.egress, [
-      {
-        to: [
-          {
-            namespaceSelector: {
-              matchLabels: { "kubernetes.io/metadata.name": "openclaw-system" },
-            },
-            podSelector: {
-              matchLabels: {
-                "app.kubernetes.io/name": "openclaw-enterprise",
-                "app.kubernetes.io/instance": "oce",
-                "app.kubernetes.io/component": "slack-proxy",
-              },
-            },
-          },
-        ],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
-    ]);
     const apiProxyPeer = {
       namespaceSelector: {
         matchLabels: { "kubernetes.io/metadata.name": "openclaw-system" },
@@ -3367,7 +3264,7 @@ test(
 );
 
 test(
-  "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
+  "the optional ChatGPT Backend isolates admin credentials and tenant Secrets",
   tooling,
   async () => {
     const { stdout } = await render(chatgptValues);
@@ -3410,22 +3307,6 @@ test(
         assert.ok(rule.resources?.includes("secrets") !== true);
       }
     }
-
-    // Only API Pods may reach the single approved provider/proxy host, exclusively over HTTPS.
-    const providerPolicy = findResource(
-      objects,
-      "NetworkPolicy",
-      "openclaw-enterprise-api-chatgpt-egress",
-    );
-    assert.ok(providerPolicy);
-    assert.equal(providerPolicy.spec.podSelector.matchLabels["app.kubernetes.io/component"], "api");
-    assert.deepEqual(providerPolicy.spec.policyTypes, ["Egress"]);
-    assert.deepEqual(providerPolicy.spec.egress, [
-      {
-        to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
-        ports: [{ protocol: "TCP", port: 443 }],
-      },
-    ]);
   },
 );
 
@@ -3440,21 +3321,15 @@ async function signInObjects(overrides) {
       value,
     ]),
   );
-  const egress = findResource(
-    objects,
-    "NetworkPolicy",
-    "openclaw-enterprise-api-google-login-egress",
-  );
-  return { objects, selected, apiEnv, egress };
+  return { objects, selected, apiEnv };
 }
 
 test(
-  "optional Google sign-in reaches only the API through a dedicated Secret and Google egress",
+  "optional Google sign-in reaches only the API through a dedicated Secret",
   tooling,
   async () => {
-    const { objects, selected, apiEnv, egress } = await signInObjects({
+    const { objects, selected, apiEnv } = await signInObjects({
       ...googleLoginValues,
-      ...googleEgressValues,
       ...trustedProxyValues,
     });
     assert.deepEqual(selected("Deployment", "api").spec.strategy, { type: "Recreate" });
@@ -3479,34 +3354,9 @@ test(
         assert.ok(!(container.env ?? []).some(({ name }) => signInEnv.test(name)));
       }
     }
-    assert.deepEqual(egress.spec.podSelector.matchLabels, {
-      "app.kubernetes.io/name": "openclaw-enterprise",
-      "app.kubernetes.io/instance": "oce",
-      "app.kubernetes.io/component": "api",
-    });
-    assert.deepEqual(egress.spec.policyTypes, ["Egress"]);
-    assert.deepEqual(egress.spec.egress, [
-      {
-        to: [{ ipBlock: { cidr: "140.82.112.0/20" } }, { ipBlock: { cidr: "192.30.252.0/22" } }],
-        ports: [{ protocol: "TCP", port: 443 }],
-      },
-    ]);
     assert.equal(objects.filter(({ kind }) => kind === "Secret").length, 0);
   },
 );
-
-test("Google sign-in egress defaults to HTTPS except link-local", tooling, async () => {
-  const { apiEnv, egress } = await signInObjects(googleLoginValues);
-  assert.equal(apiEnv.OCC_AUTH_TRUSTED_PROXY_CIDRS, undefined);
-  assert.equal(apiEnv.OCC_AUTH_TRUSTED_PROXY_PRESET, undefined);
-  assert.equal(apiEnv.OCC_AUTH_CLIENT_IP_HEADER, undefined);
-  assert.deepEqual(egress.spec.egress, [
-    {
-      to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
-      ports: [{ protocol: "TCP", port: 443 }],
-    },
-  ]);
-});
 
 test(
   "trusted proxy presets render the client-address header for the API only",
@@ -3564,12 +3414,11 @@ test(
         { value: "x-client-address" },
       ],
     ]) {
-      const { selected, apiEnv, egress } = await signInObjects(overrides);
+      const { selected, apiEnv } = await signInObjects(overrides);
       assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_CIDRS, { value: cidrs });
       assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_PRESET, { value: preset });
       assert.deepEqual(apiEnv.OCC_AUTH_CLIENT_IP_HEADER, header);
       assert.ok(!Object.keys(apiEnv).some((name) => name.startsWith("OCC_AUTH_GOOGLE_")));
-      assert.equal(egress, undefined);
       const worker = selected("Deployment", "worker").spec.template.spec.containers[0];
       assert.ok(!worker.env.some(({ name }) => signInEnv.test(name)));
     }
@@ -3595,31 +3444,6 @@ test(
         "Google sign-in with an invalid recovery user",
         { ...googleLoginValues, "auth.recoveryUserId": "admin@example.invalid" },
         /auth\.recoveryUserId must be/,
-      ],
-      [
-        "Google sign-in with a hostname egress",
-        { ...googleLoginValues, "auth.google.egressCidrs[0]": "github.com" },
-        /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-      ],
-      [
-        "Google sign-in with an invalid egress address",
-        { ...googleLoginValues, "auth.google.egressCidrs[0]": "140.82.312.0/20" },
-        /invalid IPv4 address/,
-      ],
-      [
-        "Google sign-in with a leading-zero egress octet",
-        { ...googleLoginValues, "auth.google.egressCidrs[0]": "140.82.112.08/20" },
-        /explicit IPv4 CIDRs/,
-      ],
-      [
-        "Google sign-in with a /0 egress entry",
-        { ...googleLoginValues, "auth.google.egressCidrs[0]": "0.0.0.0/0" },
-        /prefixes 1 through 32/,
-      ],
-      [
-        "Google sign-in with an empty-string egress list",
-        { ...googleLoginValues, "auth.google.egressCidrs": "" },
-        /auth\.google\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \[\] in a values file or with --set-json,/,
       ],
       [
         "Google sign-in sharing the Better Auth Secret",
@@ -4586,20 +4410,18 @@ test(
       "gateway.envoyproxy.io/owning-gateway-namespace": gatewayNamespace,
       "gateway.envoyproxy.io/owning-gateway-name": gatewayName,
     };
-    const apiEnvoyEgress = findResource(
+    const workerEnvoyEgress = findResource(
       configured,
       "NetworkPolicy",
       "openclaw-enterprise-controller-envoy-egress",
     );
-    assert.equal(apiEnvoyEgress.metadata.namespace, gatewayNamespace);
-    assert.deepEqual(apiEnvoyEgress.spec.podSelector.matchLabels, {
+    assert.equal(workerEnvoyEgress.metadata.namespace, gatewayNamespace);
+    assert.deepEqual(workerEnvoyEgress.spec.podSelector.matchLabels, {
+      "app.kubernetes.io/component": "worker",
       "app.kubernetes.io/name": "openclaw-enterprise",
       "app.kubernetes.io/instance": "oce",
     });
-    assert.deepEqual(apiEnvoyEgress.spec.podSelector.matchExpressions, [
-      { key: "app.kubernetes.io/component", operator: "In", values: ["api", "worker"] },
-    ]);
-    assert.deepEqual(apiEnvoyEgress.spec.egress, [
+    assert.deepEqual(workerEnvoyEgress.spec.egress, [
       {
         to: [
           {
@@ -5171,6 +4993,7 @@ test(
     for (const override of [{}, { [portKey]: 10443 }]) {
       const rendered = await resources((await render({ ...prepared, ...override })).stdout);
       const { spec } = rendered.find(({ metadata }) => metadata?.name === issuerPolicyName);
+      assert.equal(spec.podSelector.matchLabels["app.kubernetes.io/component"], "worker");
       assert.deepEqual(spec.egress, [
         {
           to: [{ ipBlock: { cidr: "192.0.2.19/32" } }],

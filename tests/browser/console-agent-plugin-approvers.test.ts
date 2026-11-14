@@ -18,6 +18,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
@@ -195,6 +196,98 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await enabled.uncheck();
   await save(false);
   catalog.release();
+});
+
+test("The dedicated Agent draft can select a published skill while its hosted server stays off", async (t) => {
+  const { fixture, namespace: resource } = await createReadyConsoleNamespace(
+    t,
+    "Namespace plugin import",
+  );
+  const namespace = entity(resource);
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-namespace-plugin"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const agent = agentEntity(
+    await fixture.createAgent(
+      namespace.id,
+      "Report reader",
+      {},
+      {
+        executionMode: "dedicated",
+        harnessAuth: null,
+      },
+    ),
+  );
+  // The Namespace publisher can read this default-Harness Agent but cannot edit it.
+  const publisher = record(
+    await fixture.createNamespaceMember("plugin-publisher", namespace.id, [
+      ["read", "namespace"],
+      ["publish_plugins", "namespace"],
+      ["read", "agent"],
+      ["read", "agent_revision"],
+      ["read", "configuration"],
+    ]),
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  const { page: publishPage } = await newPage(t, fixture, { browser });
+  await login(publishPage, fixture, url, record(publisher.credentials));
+  await publishPage
+    .getByText("These are the version draft's plugin selections, read-only", { exact: false })
+    .waitFor();
+  await publishPage.getByText("Import plugin", { exact: true }).click();
+  const archive = await importedPluginPackage(t, "readable marker", {
+    mcpUrl: "https://reports.example.com/mcp",
+  });
+  await publishPage.getByLabel("Package archive").setInputFiles({
+    name: "reports.tgz",
+    mimeType: "application/gzip",
+    buffer: Buffer.from(archive, "base64"),
+  });
+  const preview = publishPage.waitForResponse((response) =>
+    response.url().endsWith("/plugin-releases/preview"),
+  );
+  await publishPage.getByRole("button", { name: "Preview package", exact: true }).click();
+  const reviewed = responseData(await (await preview).json());
+  assert.deepEqual(reviewed.skills, ["import-probe"]);
+  const digest = text(reviewed.digest);
+  const publish = publishPage.waitForResponse(
+    (response) =>
+      response.url().endsWith("/plugin-releases") && response.request().method() === "POST",
+  );
+  await publishPage.getByRole("button", { name: "Publish to Namespace", exact: true }).click();
+  assert.equal(responseData(await (await publish).json()).digest, digest);
+  await publishPage
+    .getByText("Release published to this Namespace’s plugin catalog.", { exact: true })
+    .waitFor();
+
+  // Publication updates the Namespace inventory. Only an explicit Agent save stages the release for deployment.
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const pluginId = "occ-import:" + digest;
+  const title = "import-probe 1.0.0 (" + digest.slice(0, 12) + ")";
+  const existing = responseData(await fixture.request("GET", path)).plugins;
+  assert.equal(record(existing ?? {})[pluginId], undefined);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByRole("button", { name: title, exact: true }).click();
+  await dialog.getByRole("button", { name: "Add " + title, exact: true }).click();
+  const account = dialog.getByRole("combobox", { name: "probe", exact: true });
+  assert.equal(await account.locator("option:checked").textContent(), "Leave this server off");
+  assert.equal(
+    await dialog.getByRole("checkbox", { name: "Enable " + title, exact: true }).isChecked(),
+    true,
+  );
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+  assert.deepEqual(record(responseData(await fixture.request("GET", path)).plugins)[pluginId], {
+    enabled: true,
+  });
 });
 
 test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {

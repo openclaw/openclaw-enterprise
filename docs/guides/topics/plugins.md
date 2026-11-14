@@ -10,9 +10,10 @@ compatible Plugin Driver before an Agent can save nonempty plugin selections.
 - **Embedded OpenClaw** supports the bundled Diffs plugin on Kubernetes. Diffs
   lets an Agent show the difference between two pieces of text. Start with
   [Configure Agent plugins](plugins-configure.md).
-- **Dedicated OpenClaw** supports managed CLI plugins (such as Google Workspace)
-  and hosted MCP plugins (such as Slack) on Kubernetes. Start with
-  [Get started with managed OpenClaw plugins](openclaw-plugins.md).
+- **Dedicated OpenClaw** on Kubernetes supports managed CLI and hosted MCP
+  plugins, plus Namespace packages with skills or hosted MCP servers. See
+  [Get started with managed OpenClaw plugins](openclaw-plugins.md) or
+  [import a custom plugin](plugins-configure.md#import-a-plugin-for-a-dedicated-openclaw-agent).
 - **Dedicated Codex** can use selected apps from its curated catalog when the
   Agent uses a ChatGPT login and the runtime supports their approval
   policy. An API-key Agent deploys with each selected app disabled and a

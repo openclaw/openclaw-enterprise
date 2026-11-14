@@ -25,7 +25,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
-import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import {
+  importedOpenClawTestFiles,
+  openShellHarnessError,
+  openShellRequiredEnv,
+} from "./openshell-model-inputs.mjs";
 import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
@@ -3931,6 +3935,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
         "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
         "tests/integration/openshell-plugin-install-real.test.ts",
+        ...importedOpenClawTestFiles,
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
         "tests/integration/openshell-refresh-real.test.ts",
         "tests/integration/openshell-upstream-real.test.ts",

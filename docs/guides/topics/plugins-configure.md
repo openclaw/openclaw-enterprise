@@ -11,6 +11,15 @@ plugin map first. Then select the plugins offered for the Agent's Harness and
 deploy a new version. This also lets you correct an older embedded OpenClaw Agent
 whose selections belonged to the Codex Driver.
 
+## Import a plugin for a dedicated OpenClaw Agent
+
+The Installation must enable the [OpenClaw Plugin Driver](../../reference/drivers/plugin-bundled.md) for the OpenClaw Harness. Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. Publishing requires `namespace:publish_plugins` on the target Namespace. The built-in Installation administrator Role includes this permission.
+
+1. Choose a tar or gzip-compressed tar package of up to 16 MiB. Leave the marketplace entry blank to import the plugin at the archive root, even if the archive also contains a marketplace. To import a marketplace entry, enter its exact name. If the entry points to a remote repository, upload the resolved plugin package separately.
+2. Select **Preview package**. Review the skills, hosted MCP servers and excluded components. **Publish to Namespace** makes that release available to Agents in the same Namespace.
+3. With `namespace:read` on the release's Namespace, open **Configure plugins**, add the published release and choose the hosted servers to use. You can leave a server off and use the skills. To enable a server, the Installation administrator must include `/usr/local/bin/node` in the [OpenShell Credential Gateway’s `toolBinaries`](../../reference/drivers/openshell-credential-gateway.md). Creating a connection from the server template also requires `credential_source:create` in that Namespace and `secret:operate` on the token Secret. Attach the connection to the Agent, then select the account and allowed tools.
+4. Choose **Save plugin selections**, then **Deploy new version**. Both actions require `namespace:read` while the draft references an imported release. To upgrade, publish the changed package, replace the old release in the draft and deploy again. To remove its skills and tools, remove the selection and deploy.
+
 ## Use the console
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
@@ -79,10 +88,7 @@ principal `credential_source:operate` on it.
 [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
 · [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
 
-Allow the OCE API to reach the MCP endpoint for **Load tools**. For HTTPS port 443,
-set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refresh
-them when DNS changes. Other ports need the Installation's managed egress policy.
-This setting is separate from model discovery. Worker calls use the Sandbox policy.
+**Load tools** sends an authenticated MCP `tools/list` request from the OCE API Server to the configured endpoint. The Helm chart leaves API Server egress open, so adding a provider requires no Helm update. If discovery fails, check DNS, TLS and cluster network access from the API Pod. Worker tool calls use the Agent’s Sandbox policy.
 
 Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
 Choose the tools to enable, then save and deploy. Loading tools again refreshes

@@ -16,6 +16,7 @@ import type {
   CredentialSource,
   CredentialSourceType,
   HarnessAuthSnapshot,
+  InspectedPluginPackage,
   HarnessExecutionMode,
   Namespace,
   OpenClawConfigurationDocument,
@@ -41,6 +42,10 @@ import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sand
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
 export interface ComputeRevisionContext {
+  /** Loads only this revision's pinned releases from its Namespace when Compute projects files. */
+  readonly loadImportedPluginReleases?: () => Promise<
+    Readonly<Record<string, InspectedPluginPackage>> | undefined
+  >;
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
   /** A fresh read of the still-authorized revision and its exact committed installation. */
