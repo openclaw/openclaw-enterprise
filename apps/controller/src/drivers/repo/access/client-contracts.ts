@@ -41,6 +41,18 @@ export interface RepositoryCredentialClientConfiguration {
   readonly pushRefAllowlist?: readonly string[];
 }
 
+export const repositoryCredentialClientStringKeys = Object.freeze([
+  "gatewayOrigin",
+  "gitRemote",
+  "gitUsername",
+  "canonicalApiHost",
+  "apiHost",
+  "repository",
+] as const satisfies readonly Exclude<
+  keyof RepositoryCredentialClientConfiguration,
+  "pushRefAllowlist"
+>[]);
+
 /** Check the canonical HTTPS gateway and its same-origin Git remote after URL parsing. */
 export function isValidGitClientConnection(
   origin: URL,
