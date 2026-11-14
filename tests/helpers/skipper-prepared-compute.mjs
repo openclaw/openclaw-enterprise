@@ -42,6 +42,19 @@ export async function waitFor(description, observe, timeout = 120_000) {
   assert.fail("timed out: " + description);
 }
 
+/**
+ * @param {import("./egress-upgrade-contracts.ts").ConnectedApi} api
+ * @param {string} agentPath
+ */
+export async function configureSkipperTransport(api, agentPath) {
+  const path = agentPath + "/runtime-credentials";
+  const { transportConfigured } = record(await api("GET", path));
+  assert.equal(typeof transportConfigured, "boolean", "expected boolean transportConfigured");
+  if (transportConfigured === false) {
+    await api("POST", path, {});
+  }
+}
+
 /** Operate only the supplied fresh, local Compute installation and its synthetic model. */
 export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   // Keep the controller key in this client, never in the environment inherited by Git or kubectl.
@@ -204,10 +217,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     resourceKind: "secret",
     resourceId: secret.id,
   });
-  const runtime = record(await api("GET", agentPath + "/runtime-credentials"));
-  if (!runtime.transportConfigured) {
-    await api("POST", agentPath + "/runtime-credentials", {});
-  }
+  await configureSkipperTransport(api, agentPath);
   await checkpoint("deploy-request-started", { agentId: agent.id });
   const revision = identified(await api("POST", agentPath + "/deploy", undefined, 202));
   const harnessSelection = record(revision.harness);

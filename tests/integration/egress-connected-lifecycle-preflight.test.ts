@@ -639,7 +639,12 @@ type UpgradeFault = RetirementFault & {
   traffic?: ProviderTraffic;
   window?: UpgradeWindow;
   changedInstallation?: boolean;
-  missingIdentity?: "replacement" | "unbound";
+  replacement?: { id?: string; ref?: unknown };
+  createdSource?: { id?: string };
+  adoptedSource?: { id?: string };
+  boundNamespaceId?: string;
+  creates?: string[];
+  retirementRequests?: string[];
 };
 
 // These protocol peers exercise the real upgrade helper's ownership decisions;
@@ -776,7 +781,7 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   };
   const stack = {
     namespace: { id: namespaceId },
-    namespacePath: `/namespaces/${namespaceId}`,
+    namespacePath: `/namespaces/${fault.boundNamespaceId ?? namespaceId}`,
     placement: "fixture-placement",
     installation: { id: "installation" },
     supplierPods: [],
@@ -788,7 +793,7 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   };
   const ledger: UpgradeLedger = fault.recording?.ledger ?? { resources: [] };
   const sourceReads: string[] = [];
-  let requests = 0;
+  const retirementRequests = fault.retirementRequests ?? [];
   const evidence = {
     runId,
     credentials: { initial: "synthetic" },
@@ -802,8 +807,9 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
     },
     async api(method: string, path: string) {
       if (method === "PATCH") {
+        assert.equal(path, `${stack.namespacePath}/credential-sources/${existingId}`);
         return {
-          ...(fault.missingIdentity !== "unbound" && { id: existingId }),
+          ...(fault.adoptedSource ?? { id: existingId }),
           state: "ready",
           egress: { adoption: "live", retention: "none" },
         };
@@ -820,8 +826,13 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
       }
       return { id: createdId, namespaceId, name: `egress-refused-${runId}`, ...fault.readback };
     },
-    async request(_method: string, _path: string, body?: unknown) {
-      const index = requests++;
+    async request(method: string, path: string, body?: unknown) {
+      const index = retirementRequests.length;
+      retirementRequests.push(path);
+      if (index === 1 || index === 2) {
+        assert.equal(method, "PATCH");
+        assert.equal(path, `${stack.namespacePath}/credential-sources/${existingId}`);
+      }
       // Both retirement probes send the API's structured reference to the selected Secret.
       if (index === 0 || index === 2) {
         assert.deepEqual(record(body).secrets, {
@@ -850,10 +861,11 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   const owned = {
     provider,
     async create(kind: string) {
+      fault.creates?.push(kind);
       if (kind === "secrets") {
-        return fault.missingIdentity === "replacement" ? {} : { ref: replacementRef };
+        return fault.replacement ?? { id: replacementRef.id, ref: replacementRef };
       }
-      return { id: existingId };
+      return fault.createdSource ?? { id: existingId };
     },
   };
   const deployment = {
@@ -868,7 +880,7 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   return {
     retained,
     get requestCount() {
-      return requests;
+      return retirementRequests.length;
     },
     ledger,
     provider,
@@ -939,8 +951,55 @@ test("upgrade and retirement quiet windows reject TCP arrivals without HTTP", as
 });
 
 test("upgrade readiness requires both retirement resource identities", async (t) => {
-  for (const missingIdentity of ["replacement", "unbound"] as const) {
-    await t.test(missingIdentity, async (t) => {
+  const ref = {
+    kind: "secret",
+    id: "sec_22222222-2222-4222-8222-222222222222",
+    namespaceId: "ns_11111111-1111-4111-8111-111111111111",
+  };
+  const cases: { name: string; fault: UpgradeFault; error: RegExp }[] = [
+    {
+      name: "returned Namespace differs from bound path",
+      fault: { boundNamespaceId: "ns_22222222-2222-4222-8222-222222222222" },
+      error: /upgrade Namespace must match the bound path/,
+    },
+    {
+      name: "missing reference",
+      fault: { replacement: {} },
+      error: /expected the OCC Secret reference/,
+    },
+    {
+      name: "reference to another Secret",
+      fault: { replacement: { id: "sec_33333333-3333-4333-8333-333333333333", ref } },
+      error: /identify the created Secret/,
+    },
+    {
+      name: "reference to another Namespace",
+      fault: {
+        replacement: {
+          id: ref.id,
+          ref: { ...ref, namespaceId: "ns_22222222-2222-4222-8222-222222222222" },
+        },
+      },
+      error: /select this Namespace/,
+    },
+    {
+      name: "invalid created source",
+      fault: { createdSource: { id: "" } },
+      error: /valid created source ID/,
+    },
+    {
+      name: "missing adopted source",
+      fault: { adoptedSource: {} },
+      error: /identify the created source/,
+    },
+    {
+      name: "different adopted source",
+      fault: { adoptedSource: { id: "cs_22222222-2222-4222-8222-222222222222" } },
+      error: /identify the created source/,
+    },
+  ];
+  for (const { name, fault, error } of cases) {
+    await t.test(name, async (t) => {
       const diagnostics: string[] = [];
       const recording = await createRunEvidence(
         { signal: t.signal, diagnostic: (line: string) => diagnostics.push(line) },
@@ -949,12 +1008,21 @@ test("upgrade readiness requires both retirement resource identities", async (t)
       );
       t.after(() => rm(recording.directory, { recursive: true, force: true }));
       // The operator can replace the controller as soon as this diagnostic is visible.
-      await assert.rejects(
-        controllerUpgradePeers(t, { missingIdentity, recording }),
-        missingIdentity === "replacement"
-          ? /expected the OCC Secret reference/
-          : /expected a string observation/,
-      );
+      const creates: string[] = [];
+      const retirementRequests: string[] = [];
+      await assert.rejects(async () => {
+        const peer = await controllerUpgradePeers(t, {
+          ...fault,
+          recording,
+          creates,
+          retirementRequests,
+        });
+        await peer.run();
+      }, error);
+      if (fault.boundNamespaceId) {
+        assert.deepEqual(creates, []);
+      }
+      assert.deepEqual(retirementRequests, []);
       assert.ok(
         !diagnostics.some((line) => line.startsWith("egress-connected controller-upgrade-ready ")),
       );

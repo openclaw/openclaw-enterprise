@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { Check } from "typebox/value";
+import { CredentialSourceId } from "../../packages/contracts/src/index.ts";
 import { assertSecretReference, protectedSourceBody } from "./egress-connected-inputs.mjs";
 import {
   controllerComponents,
@@ -46,13 +48,21 @@ export async function prepareControllerUpgrade(
   const { input, controller } = setup;
   const { api, runId, credentials, checkpoint } = evidence;
   const { namespacePath, pool, namespace } = stack;
+  assert.equal(
+    namespacePath,
+    `/namespaces/${namespace.id}`,
+    "upgrade Namespace must match the bound path",
+  );
   const replacement = record(
     await owned.create("secrets", {
       name: `egress-upgrade-${runId}`,
       value: credentials.initial,
     }),
   );
+  const replacementId = replacement.id;
   assertSecretReference(replacement);
+  assert.equal(replacement.ref.id, replacementId, "reference must identify the created Secret");
+  assert.equal(replacement.ref.namespaceId, namespace.id, "reference must select this Namespace");
   const created = record(
     await owned.create(
       "credential-sources",
@@ -63,13 +73,15 @@ export async function prepareControllerUpgrade(
       ),
     ),
   );
+  const unboundId = created.id;
+  assert.ok(Check(CredentialSourceId, unboundId), "upgrade requires a valid created source ID");
   const unbound = record(
-    await api("PATCH", `${namespacePath}/credential-sources/${readString(created.id)}`, {
+    await api("PATCH", `${namespacePath}/credential-sources/${unboundId}`, {
       adoption: "live",
       authorityScope: "execution",
     }),
   );
-  const unboundId = readString(unbound.id);
+  assert.equal(unbound.id, unboundId, "adoption must identify the created source");
   assert.equal(unbound.state, "ready");
   assert.deepEqual(unbound.egress, { adoption: "live", retention: "none" });
   // Do not stop a Worker with an in-flight operation or manufacture an unfinished
