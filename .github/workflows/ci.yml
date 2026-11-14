@@ -595,6 +595,35 @@ jobs:
       - name: Install, deploy, chat, stop and start
         id: smoke
         run: node scripts/ci/first-agent-smoke.mjs run
+      - name: Verify First Agent Smoke retirement notices
+        if: ${{ !cancelled() && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          RETIREMENT_NOTICES: ${{ steps.smoke.outputs.retirement-notices }}
+        run: |
+          expected='["held-sockets","peer-withdrawal","old-harness-pod-termination","retired-sockets-closed","successor-deploy","selected-control-after-unselected-probe"]'
+          if [[ ${#RETIREMENT_NOTICES} -gt 1024 ]] ||
+            ! jq -es --arg smoke "$SMOKE_OUTCOME" --argjson expected "$expected" '
+            length == 1 and (.[0] |
+              .rows as $rows |
+              keys == ["completed", "rows", "status"] and
+              (.rows | type == "array" and length <= ($expected | length)) and
+              .completed == ($rows | length) and
+              all($rows[]; keys == ["durationMs", "outcome", "stage"] and
+                (.durationMs | type == "number" and . >= 0 and . <= 9007199254740991 and . == floor) and
+                (.outcome == "ok" or .outcome == "failed")) and
+              [$rows[].stage] == $expected[:($rows | length)] and
+              all($rows[:-1][]; .outcome == "ok") and
+              (if .status == "ok" then
+                ($rows | length) == ($expected | length) and all($rows[]; .outcome == "ok")
+              elif $smoke == "failure" and .status == "failed" then true
+              else $smoke == "failure" and .status == "unreached" and $rows == []
+              end))
+          ' <<< "$RETIREMENT_NOTICES" >/dev/null 2>&1; then
+            echo "::warning title=First Agent Smoke retirement notices::Retirement notice sequence or outcome is incomplete or invalid"
+            exit 1
+          fi
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report

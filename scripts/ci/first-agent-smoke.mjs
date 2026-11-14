@@ -1983,6 +1983,8 @@ process.stdin.on('data', () => { clearInterval(interval); agent.destroy(); proce
   return { child, done, count: () => (output.match(/^ok$/gm) ?? []).length, closed: () => closed };
 }
 
+const retirementNotices = [];
+let completedRetirementWaits = 0;
 const retirementWaitStages = new Map([
   ["held sockets", "held-sockets"],
   ["observeReaderPeer withdraw", "peer-withdrawal"],
@@ -1995,13 +1997,13 @@ const retirementWaitStages = new Map([
 // One line per proveRetirement sub-wait, so a slow retirement step names its slow wait
 // (61fba7ca2 spent 357 s of that step in silence). Logged on failure too.
 /** @template T @param {string} name @param {() => T} operation */
-export async function retirementWait(name, operation, now = () => performance.now()) {
+async function retirementWait(name, operation) {
   const started = Date.now();
   const stage = process.env.GITHUB_ACTIONS === "true" ? retirementWaitStages.get(name) : undefined;
   let observedAt;
   if (stage !== undefined) {
     try {
-      observedAt = now();
+      observedAt = performance.now();
     } catch {
       // A clock failure leaves the wait unobserved.
     }
@@ -2012,23 +2014,42 @@ export async function retirementWait(name, operation, now = () => performance.no
     outcome = "ok";
     return result;
   } finally {
+    completedRetirementWaits += 1;
     log(
       `reader retirement: ${name} ${outcome} at ${new Date().toISOString()} after ${Date.now() - started} ms`,
     );
     if (observedAt !== undefined) {
       try {
-        const durationMs = Math.round(now() - observedAt);
+        const durationMs = Math.round(performance.now() - observedAt);
         if (Number.isSafeInteger(durationMs) && durationMs >= 0) {
           const notice = { stage, durationMs, outcome: outcome === "ok" ? "ok" : "failed" };
-          writeSync(
-            process.stderr.fd,
-            `::notice title=First Agent Smoke retirement wait::${JSON.stringify(notice)}\n`,
-          );
+          const line = `::notice title=First Agent Smoke retirement wait::${JSON.stringify(notice)}\n`;
+          if (writeSync(process.stderr.fd, line) === Buffer.byteLength(line)) {
+            retirementNotices.push(notice);
+          }
         }
       } catch {
         // Optional timing must preserve the operation's result or rejection.
       }
     }
+  }
+}
+
+async function writeRetirementNoticeOutput() {
+  if (!process.env.GITHUB_OUTPUT) {
+    return;
+  }
+  const phase = timings.find(({ phase }) => phase === "reader-retirement");
+  try {
+    // Report only notices written by this run, with the enclosing phase outcome.
+    const output = {
+      status: phase?.status ?? "unreached",
+      completed: completedRetirementWaits,
+      rows: retirementNotices,
+    };
+    await appendFile(process.env.GITHUB_OUTPUT, `retirement-notices=${JSON.stringify(output)}\n`);
+  } catch {
+    // The job's notice check is advisory.
   }
 }
 
@@ -2495,8 +2516,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         await summarize();
       }
     } finally {
-      if (command === "run" && process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_TEMP) {
-        await writeTimingReport(process.env.RUNNER_TEMP);
+      if (command === "run" && process.env.GITHUB_ACTIONS === "true") {
+        if (process.env.RUNNER_TEMP) {
+          await writeTimingReport(process.env.RUNNER_TEMP);
+        }
+        await writeRetirementNoticeOutput();
       }
     }
   }
