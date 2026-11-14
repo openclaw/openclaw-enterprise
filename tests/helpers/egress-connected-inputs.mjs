@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
+import { Check } from "typebox/value";
+import { SecretReference } from "../../packages/contracts/src/api/common.ts";
+import { isArray, isRecord, parseJson, readString, record } from "./egress-observation-values.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 
 export const protectedEgressCapability =
@@ -28,6 +31,7 @@ export function validateConnectedDatabaseUrl(value) {
 
 // The runner chooses where its service credential can go. The separate stack
 // manifest is checked against that choice, never used to select a credential file.
+/** @param {NodeJS.ProcessEnv} env */
 export function takeConnectedControllerBinding(env) {
   const serviceKey = env.OCC_TEST_EGRESS_CONNECTED_SERVICE_KEY;
   delete env.OCC_TEST_EGRESS_CONNECTED_SERVICE_KEY; // Do not pass it to kubectl or other children.
@@ -35,9 +39,9 @@ export function takeConnectedControllerBinding(env) {
     typeof serviceKey === "string" && serviceKey.length > 0 && !/\s/.test(serviceKey),
     "the runner must supply the prepared controller service key",
   );
-  const { apiOrigin, namespaceId, model, providerOrigin } = JSON.parse(
-    env.OCC_TEST_EGRESS_CONNECTED_CONTROLLER,
-  );
+  const binding = record(parseJson(readString(env.OCC_TEST_EGRESS_CONNECTED_CONTROLLER)));
+  const apiOrigin = readString(binding.apiOrigin);
+  const { namespaceId, model, providerOrigin } = binding;
   const api = new URL(apiOrigin);
   assert.ok(
     (api.protocol === "http:" || api.protocol === "https:") &&
@@ -51,41 +55,63 @@ export function takeConnectedControllerBinding(env) {
 
 // Inputs describe an already installed, disposable protected stack. They do not
 // authorize this test to install a gateway, change trust, or relax admission.
-export function validateConnectedInputs(
+/**
+ * @param {unknown} input
+ * @param {Pick<ReturnType<typeof takeConnectedControllerBinding>, "apiOrigin" | "namespaceId" | "model" | "providerOrigin">} controller
+ * @param {{ wholeExecution?: boolean, allowControllerUpgrade?: boolean }} [profile]
+ */
+export function validateConnectedInputs(input, controller, profile = {}) {
+  assertConnectedManifest(input, controller, profile);
+  return input;
+}
+
+/**
+ * @param {unknown} input
+ * @param {Pick<ReturnType<typeof takeConnectedControllerBinding>, "apiOrigin" | "namespaceId" | "model" | "providerOrigin">} controller
+ * @param {{ wholeExecution?: boolean, allowControllerUpgrade?: boolean }} profile
+ * @returns {asserts input is import("./egress-upgrade-contracts.ts").ConnectedStackInputs}
+ */
+function assertConnectedManifest(
   input,
   controller,
-  { wholeExecution = false, allowControllerUpgrade = false } = {},
+  { wholeExecution = false, allowControllerUpgrade = false },
 ) {
+  assert.ok(isRecord(input));
+  const providerInput = record(input.provider);
+  const backend = record(input.openShellBackend);
+  const images = record(input.images);
   assert.equal(input.version, 2);
   assert.equal(input.apiOrigin, controller.apiOrigin, "controller origin disagrees with runner");
   assert.equal(input.namespaceId, controller.namespaceId, "tenant disagrees with runner");
   assert.equal(input.model, controller.model, "model disagrees with runner");
-  assert.equal(input.provider.origin, controller.providerOrigin, "fixture disagrees with runner");
+  assert.equal(providerInput.origin, controller.providerOrigin, "fixture disagrees with runner");
   assert.equal(input.serviceKeyPath, undefined, "manifest must not select a controller key file");
-  assert.match(input.namespaceId ?? "", /^ns_[A-Za-z0-9_-]+$/);
-  assert.match(input.model ?? "", /^[a-zA-Z0-9][a-zA-Z0-9._-]+$/);
+  assert.match(readString(input.namespaceId ?? ""), /^ns_[A-Za-z0-9_-]+$/);
+  assert.match(readString(input.model ?? ""), /^[a-zA-Z0-9][a-zA-Z0-9._-]+$/);
   for (const path of [
     input.kubeconfigPath,
-    input.provider?.certificatePath,
-    input.provider?.privateKeyPath,
-    input.openShellBackend?.rootCertificatePath,
+    providerInput.certificatePath,
+    providerInput.privateKeyPath,
+    backend.rootCertificatePath,
   ]) {
     assert.ok(
       typeof path === "string" && isAbsolute(path),
       "explicit absolute fixture/trust paths are required",
     );
   }
-  assert.match(input.kubernetesContext ?? "", /^k3d-/);
-  assert.match(input.controllerNamespace ?? "", /^[a-z0-9-]+$/);
-  assert.ok(input.controllerSelector && !/[\r\n]/.test(input.controllerSelector));
-  assert.match(input.openShellGatewayNamespace ?? "", /^[a-z0-9-]+$/);
-  assert.ok(input.openShellGatewaySelector && !/[\r\n]/.test(input.openShellGatewaySelector));
-  assert.match(input.runtimeClass ?? "", /^[a-z0-9-]+$/);
-  for (const image of Object.values(input.images ?? {})) {
-    assert.match(image, /^[^\s@]+@sha256:[a-f0-9]{64}$/);
+  assert.match(readString(input.kubernetesContext ?? ""), /^k3d-/);
+  assert.match(readString(input.controllerNamespace ?? ""), /^[a-z0-9-]+$/);
+  assert.ok(input.controllerSelector && !/[\r\n]/.test(String(input.controllerSelector)));
+  assert.match(readString(input.openShellGatewayNamespace ?? ""), /^[a-z0-9-]+$/);
+  assert.ok(
+    input.openShellGatewaySelector && !/[\r\n]/.test(String(input.openShellGatewaySelector)),
+  );
+  assert.match(readString(input.runtimeClass ?? ""), /^[a-z0-9-]+$/);
+  for (const image of Object.values(images)) {
+    assert.match(readString(image), /^[^\s@]+@sha256:[a-f0-9]{64}$/);
   }
   assert.deepEqual(
-    Object.keys(input.images ?? {}).sort(),
+    Object.keys(images).sort(),
     ["agent", "controller", "gateway", "openShellGateway", "sandbox", "supervisor"].sort(),
   );
   // Explicit operator verification of the genuine intended executable in the
@@ -103,44 +129,45 @@ export function validateConnectedInputs(
       undefined,
       "legacy connector inputs cannot claim whole-execution authority",
     );
-    const pin = input.credentialConnector;
+    const pin = record(input.credentialConnector);
     assert.ok(pin && typeof pin.path === "string" && pin.path.startsWith("/") && pin.path !== "/");
     assert.equal(posix.normalize(pin.path), pin.path);
     assert.ok(
       !pin.path.endsWith("/") &&
         ![...pin.path].some((char) => char.charCodeAt(0) <= 32 || char.charCodeAt(0) === 127),
     );
-    assert.match(pin.sha256 ?? "", /^[a-f0-9]{64}$/);
-    assert.equal(pin.image, input.images.agent);
+    assert.match(readString(pin.sha256 ?? ""), /^[a-f0-9]{64}$/);
+    assert.equal(pin.image, images.agent);
     assert.equal(pin.verification, "operator-verified-image-executable");
   }
   for (const head of [input.oceCommit, input.harnessCommit, input.supplierCommit]) {
-    assert.match(head ?? "", /^[a-f0-9]{40}$/);
+    assert.match(readString(head ?? ""), /^[a-f0-9]{40}$/);
   }
   if (input.controllerUpgrade !== undefined) {
     assert.equal(allowControllerUpgrade, true, "this caller does not perform controller upgrades");
-    const upgrade = input.controllerUpgrade;
+    const upgrade = record(input.controllerUpgrade);
     assert.equal(wholeExecution, true, "controller upgrades require the whole-execution lane");
     assert.deepEqual(Object.keys(upgrade).sort(), ["fromCommit", "fromImage", "timeoutMs"]);
-    assert.match(upgrade.fromCommit ?? "", /^[a-f0-9]{40}$/);
+    assert.match(readString(upgrade.fromCommit ?? ""), /^[a-f0-9]{40}$/);
     assert.notEqual(upgrade.fromCommit, input.oceCommit, "select different controller revisions");
-    assert.match(upgrade.fromImage ?? "", /^[^\s@]+@sha256:[a-f0-9]{64}$/);
+    assert.match(readString(upgrade.fromImage ?? ""), /^[^\s@]+@sha256:[a-f0-9]{64}$/);
     assert.notEqual(
-      upgrade.fromImage.split("@sha256:")[1],
-      input.images.controller.split("@sha256:")[1],
+      readString(upgrade.fromImage).split("@sha256:")[1],
+      readString(images.controller).split("@sha256:")[1],
       "select different controller image digests",
     );
     assert.ok(
-      Number.isSafeInteger(upgrade.timeoutMs) &&
+      typeof upgrade.timeoutMs === "number" &&
+        Number.isSafeInteger(upgrade.timeoutMs) &&
         upgrade.timeoutMs >= 60_000 &&
         upgrade.timeoutMs <= 15 * 60_000,
       "controller upgrade must allow between one and fifteen minutes",
     );
   }
-  const gateway = new URL(input.openShellBackend.endpoint);
+  const gateway = new URL(readString(backend.endpoint));
   assert.equal(gateway.protocol, "https:");
   assert.equal(gateway.username + gateway.password + gateway.search + gateway.hash, "");
-  const auth = input.openShellBackend.auth;
+  const auth = record(backend.auth);
   assert.ok(auth && typeof auth === "object", "explicit Backend authentication is required");
   const authPaths =
     auth.mode === "bearerTokenFile" ? ["path"] : ["certificatePath", "privateKeyPath"];
@@ -155,8 +182,8 @@ export function validateConnectedInputs(
       "explicit absolute Backend authentication paths are required",
     );
   }
-  assert.equal(input.openShellBackend.insecureTransport, undefined);
-  const provider = new URL(input.provider.origin);
+  assert.equal(backend.insecureTransport, undefined);
+  const provider = new URL(readString(providerInput.origin));
   assert.equal(provider.protocol, "https:");
   assert.ok(
     provider.hostname.endsWith(".test") || provider.hostname === "host.openshell.internal",
@@ -164,20 +191,20 @@ export function validateConnectedInputs(
   );
   assert.equal(provider.pathname, "/v1");
   assert.equal(provider.username + provider.password + provider.search + provider.hash, "");
-  assert.ok(isIP(input.provider.bindHost), "explicit provider listener IP is required");
+  assert.ok(isIP(readString(providerInput.bindHost)), "explicit provider listener IP is required");
   assert.ok(
-    Number.isSafeInteger(input.provider.bindPort) &&
-      input.provider.bindPort > 0 &&
-      input.provider.bindPort < 65536,
+    typeof providerInput.bindPort === "number" &&
+      Number.isSafeInteger(providerInput.bindPort) &&
+      providerInput.bindPort > 0 &&
+      providerInput.bindPort < 65536,
   );
   if (wholeExecution) {
     // The supplier terminal exchange only supports inspected HTTPS on 443.
-    assert.equal(input.provider.bindPort, 443, "execution authority requires HTTPS port 443");
+    assert.equal(providerInput.bindPort, 443, "execution authority requires HTTPS port 443");
   } else {
-    assert.ok(input.provider.bindPort > 1024);
+    assert.ok(providerInput.bindPort > 1024);
   }
-  assert.equal(Number(provider.port || 443), input.provider.bindPort);
-  return input;
+  assert.equal(Number(provider.port || 443), providerInput.bindPort);
 }
 
 // Both installed callers bind their evidence before touching the prepared stack.
@@ -198,6 +225,7 @@ export function assertConnectedCheckout(input) {
 
 // The gateway client loads proto3 with defaults:false and longs:String. An
 // omitted uint64 is zero, while present values must retain all 64 bits.
+/** @param {unknown} value */
 export function connectedReceiptRevision(value) {
   if (value === undefined) {
     return "0";
@@ -207,21 +235,45 @@ export function connectedReceiptRevision(value) {
   return value;
 }
 
+/** @param {unknown} result */
 export function assertNoConnectedAssistantOutput(result) {
+  assert.ok(isRecord(result), "expected Codex turn response");
   assert.equal(result.assistant, "", "no staged response text may escape a failed delivery");
+  assert.ok(isArray(result.items), "expected Codex turn events");
   assert.equal(
-    result.items.some(
-      (event) =>
-        (event.method === "item/agentMessage/delta" && Boolean(event.params?.delta)) ||
-        (["item/started", "item/completed"].includes(event.method) &&
-          event.params?.item?.type === "agentMessage" &&
-          Boolean(event.params.item.text)),
-    ),
+    result.items.some((entry) => {
+      assert.ok(entry != null, "expected Codex turn event");
+      const event = record(entry);
+      const params = record(event.params);
+      const item = record(params.item);
+      return (
+        (event.method === "item/agentMessage/delta" && Boolean(params.delta)) ||
+        ((event.method === "item/started" || event.method === "item/completed") &&
+          item.type === "agentMessage" &&
+          Boolean(item.text))
+      );
+    }),
     false,
     "a failed delivery must not expose partial assistant output",
   );
 }
 
+/**
+ * @param {unknown} value
+ * @returns {asserts value is { ref: import("../../packages/contracts/src/index.ts").SecretReference }}
+ */
+export function assertSecretReference(value) {
+  assert.ok(
+    isRecord(value) && Check(SecretReference, value.ref),
+    "expected the OCC Secret reference",
+  );
+}
+
+/**
+ * @param {string} name
+ * @param {import("../../packages/contracts/src/index.ts").SecretReference} secretRef
+ * @param {string} origin
+ */
 export function protectedSourceBody(name, secretRef, origin) {
   return {
     name,
@@ -285,25 +337,30 @@ export function sendConnectedRequest({ apiOrigin, serviceKey }, wire, signal) {
 
 // Check the captured envelope, not a guessed client return shape. The same
 // serializer is exercised through Fastify's real content parser in offline proof.
+/**
+ * @param {{ status: number, body?: unknown }} response
+ * @param {number} expectedStatus
+ * @returns {unknown}
+ */
 export function assertConnectedResponse(response, expectedStatus) {
+  const body = response.body;
+  const error = record(body).error;
+  const code = record(error).code;
   assert.equal(
     response.status,
     expectedStatus,
-    `HTTP ${response.status}; error code ${response.body?.error?.code ?? "absent"}`,
+    `HTTP ${response.status}; error code ${code ?? "absent"}`,
   );
   if (expectedStatus === 204) {
     assert.equal(response.body, undefined);
     return undefined;
   }
-  assert.ok(
-    response.body && typeof response.body === "object",
-    "actual JSON response body is required",
-  );
-  assert.equal(typeof response.body.meta?.requestId, "string");
+  assert.ok(isRecord(body), "actual JSON response body is required");
+  assert.equal(typeof record(body.meta).requestId, "string");
   if (expectedStatus >= 400) {
-    assert.equal(typeof response.body.error?.code, "string");
-    return response.body.error;
+    assert.equal(typeof code, "string");
+    return error;
   }
-  assert.ok(response.body.data !== undefined, "actual response data is required");
-  return response.body.data;
+  assert.ok(body.data !== undefined, "actual response data is required");
+  return body.data;
 }

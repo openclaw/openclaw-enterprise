@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
+import { record as observationRecord } from "./egress-observation-values.ts";
 import { assertConnectedResponse } from "./egress-connected-inputs.mjs";
 
 // The API deliberately closes internal failures. Preserve its status and only known error codes,
@@ -23,8 +24,9 @@ export async function deleteInstalledResource({ remove, record, prepared }) {
     try {
       const response = await remove();
       status = response.status;
-      const { code } = assertConnectedResponse(response, status) ?? {};
-      const reason = cleanupCodes.has(code) ? code : "unclassified-response";
+      const { code } = observationRecord(assertConnectedResponse(response, status));
+      const reason =
+        typeof code === "string" && cleanupCodes.has(code) ? code : "unclassified-response";
       return { status, reason: status === 204 ? "deleted" : reason };
     } catch {
       return { status, reason: status === null ? "response-not-confirmed" : "invalid-response" };

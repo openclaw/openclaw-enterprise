@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   assertNoConnectedAssistantOutput,
+  assertSecretReference,
   protectedAgentBody,
   protectedConfigurationBody,
   protectedSourceBody,
@@ -24,17 +25,24 @@ import {
 import {
   prepareControllerUpgrade,
   observeControllerUpgrade,
-} from "../helpers/egress-controller-upgrade.mjs";
+} from "../helpers/egress-controller-upgrade.ts";
+import { describeGatewayAppServerDeclaration } from "../helpers/egress-native-exec-observation.ts";
 import {
-  describeGatewayAppServerDeclaration,
   observeConnectedOperation,
   rememberCustodyContext,
   safeConnectedFailure,
-} from "../helpers/egress-connected-failure.mjs";
+} from "../helpers/egress-connected-failure.ts";
 import {
-  observeFailedTurnSessions,
-  requireSupervisorReconnect,
-} from "../helpers/egress-supervisor-reconnect.mjs";
+  entries,
+  hasResourceId,
+  hasStringField,
+  isArray,
+  isRecord,
+  readString,
+  record,
+} from "../helpers/egress-observation-values.ts";
+import { observeFailedTurnSessions } from "../helpers/egress-supervisor-processes.ts";
+import { requireSupervisorReconnect } from "../helpers/egress-supervisor-reconnect.ts";
 import { tryDirectTcp } from "../helpers/egress-custody-observations.mjs";
 import {
   encodeSyntheticEvents,
@@ -88,15 +96,16 @@ test(
       await requireSupervisorReconnect(setup, stack, evidence, deployment, installed);
       await verifyManagedClientsAndDirectBypass(setup, evidence, owned, installed, turns);
       if (upgrade) {
+        const upgradeSetup = { ...setup, input: { ...setup.input, controllerUpgrade: upgrade } };
         const retained = await prepareControllerUpgrade(
-          setup,
+          upgradeSetup,
           stack,
           evidence,
           owned,
           deployment,
           installed,
         );
-        await observeControllerUpgrade(setup, stack, evidence, owned, deployment, retained);
+        await observeControllerUpgrade(upgradeSetup, stack, evidence, owned, deployment, retained);
         await turns.successfulTurn("retained-after-controller-upgrade", "initial");
         // Isolate the IAM phase after a fresh authenticated session without
         // changing the retained process, key, configuration or denial assertions.
@@ -135,6 +144,7 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     name: `egress-${runId}`,
     value: credentials.initial,
   });
+  assertSecretReference(secret);
   const created = await create(
     "credential-sources",
     protectedSourceBody(`egress-${runId}`, secret.ref, controller.providerOrigin),
@@ -150,6 +160,7 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     adoption: "live",
     authorityScope: "execution",
   });
+  assert.ok(hasResourceId(source), "expected the adopted credential source");
   assert.equal(source.id, created.id);
   assert.ok(
     source.ownerCapability === ownerCapability,
@@ -169,6 +180,7 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     "agents",
     protectedAgentBody(`egress-${runId}`, configuration.id, source.id),
   );
+  assert.ok(hasStringField(agent, "servicePrincipalId"), "expected Agent service principal");
   const sourceRole = await create("iam/roles", {
     name: `egress-${runId}`,
     permissions: [{ action: "operate", resourceKind: "credential_source" }],
@@ -177,9 +189,9 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     "iam/access-bindings",
     sourceAccessBindingBody(agent, sourceRole, source),
   );
-  const principalBindings = (await api("GET", `${namespacePath}/iam/access-bindings`)).filter(
-    ({ subjectId }) => subjectId === agent.servicePrincipalId,
-  );
+  const principalBindings = entries(
+    await api("GET", `${namespacePath}/iam/access-bindings`),
+  ).filter(({ subjectId }) => subjectId === agent.servicePrincipalId);
   assert.deepEqual(
     principalBindings.map(({ id }) => id),
     [binding.id],
@@ -190,12 +202,14 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     `${namespacePath}/agents/${agent.id}/runtime-credentials`,
     {},
   );
+  assert.ok(isRecord(transport));
   assert.equal(transport.transportConfigured, true);
   await checkpoint("deploy-request", { agentId: agent.id });
   const revision = await api("POST", `${namespacePath}/agents/${agent.id}/deploy`, undefined, 202);
+  assert.ok(hasResourceId(revision), "expected an admitted revision");
+  const harnessAuth = record(revision.harnessAuth);
   assert.ok(
-    revision.harnessAuth?.method === "credential_source" &&
-      revision.harnessAuth.sourceId === source.id,
+    harnessAuth.method === "credential_source" && harnessAuth.sourceId === source.id,
     "the admitted Harness must select the adopted source",
   );
   await checkpoint("deployed", {
@@ -291,7 +305,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
   const serving = await identity();
   const unchanged = async () => {
     assert.equal(
-      (await api("GET", `${namespacePath}/agents/${agent.id}`)).activeRevisionId,
+      record(await api("GET", `${namespacePath}/agents/${agent.id}`)).activeRevisionId,
       revision.id,
     );
     assert.deepEqual(
@@ -305,6 +319,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
       "the same registered supervisor must remain installed",
     );
   };
+  /** @param {string} phase @param {string} [expected] @param {number | null} [expectedHttpStatus] */
   const turn = async (phase, expected = "completed", expectedHttpStatus = null) => {
     const startedAt = new Date().toISOString();
     const nonce = `OCE-EGRESS-${randomUUID()}`;
@@ -339,9 +354,14 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
       "gateway-turn-verification",
       () => {
         excludesCredentials(result, "Codex response/events");
+        assert.ok(isRecord(result), "expected Codex turn response");
         assert.equal(result.status, expected, `${phase}: actual Codex terminal status`);
+        assert.ok(isArray(result.items), "expected Codex turn events");
         assert.equal(
-          result.items.some((event) => event.params?.willRetry === true),
+          result.items.some((event) => {
+            assert.ok(event != null, "expected Codex turn event");
+            return record(record(event).params).willRetry === true;
+          }),
           false,
           "protected calls must not automatically retry",
         );
@@ -356,7 +376,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
           // Native status distinguishes incomplete capture from a fixed refusal.
           // Origin counts and custody transitions distinguish the two refusal paths.
           assert.deepEqual(
-            result.error?.codexErrorInfo,
+            record(result.error).codexErrorInfo,
             { httpConnectionFailed: { httpStatusCode: expectedHttpStatus } },
             "expected the scenario's structured supplier refusal",
           );
@@ -386,7 +406,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
     assert.deepEqual(provider.errors, [], "synthetic provider failed independently of enforcement");
     await checkpoint("turn-complete", {
       turnPhase: phase,
-      status: result.status,
+      status: record(result).status,
       requestId,
       upstreamAfter: provider.observations.length,
     });
@@ -445,7 +465,7 @@ async function verifyManagedClientsAndDirectBypass(setup, evidence, owned, insta
   assert.equal(installation.enforcement.authorityScope, "execution");
   for (const { binding } of installation.plan.routes) {
     assert.equal(binding.source.source.generation, 2, "install the explicitly adopted generation");
-    assert.deepEqual(binding.source.provider, { id: "openai-static-https", generation: 3 });
+    assert.deepEqual(record(binding.source).provider, { id: "openai-static-https", generation: 3 });
     assert.deepEqual(binding.grant, {
       kind: "inference",
       models: [controller.model],
@@ -648,7 +668,7 @@ async function verifyHostileResponsesAndRecovery(owned, turns) {
   const { provider } = owned;
   const { turn, unchanged, successfulTurn } = turns;
   // Oversize fails during HTTP capture; incomplete is finite HTTP with unfinished SSE.
-  for (const [mode, expectedHttpStatus] of [
+  for (const [mode, expectedHttpStatus] of /** @type {const} */ ([
     ["reflect-body", 403],
     ["reflect-header", 403],
     ["reflect-split-id", 403],
@@ -656,7 +676,7 @@ async function verifyHostileResponsesAndRecovery(owned, turns) {
     ["reflect-message-citation", 403],
     ["oversize", 409],
     ["incomplete", 403],
-  ]) {
+  ])) {
     provider.setMode(mode);
     const before = provider.observations.length;
     const { nonce } = await turn(mode, "failed", expectedHttpStatus);
@@ -689,13 +709,13 @@ async function observeCredentialLeaks(setup, stack, evidence, owned, deployment,
   const { api, ledger, excludesCredentials, credentials, directory, checkpoint } = evidence;
   const { provider } = owned;
   const { agent, deploymentPath } = deployment;
-  const runtime = await api("GET", `${deploymentPath}/runtime`);
-  const logs = runtime.sources.filter(({ available }) => available);
+  const runtime = record(await api("GET", `${deploymentPath}/runtime`));
+  const logs = entries(runtime.sources).filter(({ available }) => available);
   assert.ok(logs.length > 0);
   for (const { id } of logs) {
     await api(
       "GET",
-      `${deploymentPath}/runtime/logs?source=${encodeURIComponent(id)}&tailLines=1000`,
+      `${deploymentPath}/runtime/logs?source=${encodeURIComponent(readString(id))}&tailLines=1000`,
     );
   }
   await api("POST", `${deploymentPath}/diagnostics`);
@@ -746,7 +766,9 @@ async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployme
   const withdrawal = await waitFor(
     "the recorded owner's withdrawal outcome",
     async () => {
-      const status = await api("GET", `${agentPath}/credential-sources/${source.id}/withdrawal`);
+      const status = record(
+        await api("GET", `${agentPath}/credential-sources/${source.id}/withdrawal`),
+      );
       assert.equal(status.revisionId, revision.id);
       assert.equal(status.credentialSourceId, source.id);
       if (status.withdrawalInProgress) {
@@ -804,7 +826,7 @@ async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployme
   assert.equal(audit.rows[0].outcome, "success");
   assert.equal(audit.rows[0].revision_id, revision.id);
   assert.equal(audit.rows[0].actor_id, stopped.actor_id);
-  const current = await api("GET", agentPath);
+  const current = record(await api("GET", agentPath));
   assert.equal(current.desiredRuntimeState, "stopped");
   assert.equal(current.activeRevisionId, undefined);
   const podUids = new Set(

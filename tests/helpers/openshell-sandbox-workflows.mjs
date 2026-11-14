@@ -22,6 +22,7 @@ import {
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.ts";
 import assert from "node:assert/strict";
+import { isArray, readString, record } from "./egress-observation-values.ts";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import dns from "node:dns";
@@ -80,6 +81,7 @@ import {
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
+  observedTurn,
   tokenEchoDigest,
   tokenEchoReply,
   summarizeWorkerEvents,
@@ -100,6 +102,23 @@ import {
   keycloakUserClient,
   startKeycloak,
 } from "../helpers/keycloak-real.mjs";
+
+/** @param {unknown} turn */
+function turnMessages(turn) {
+  const items = record(turn).items;
+  assert.ok(isArray(items), "expected Codex turn messages");
+  return items.map((message) => {
+    assert.ok(message != null, "expected a Codex message");
+    return record(message);
+  });
+}
+
+/** @param {unknown} turn */
+function completedTurnItems(turn) {
+  return turnMessages(turn)
+    .filter(({ method }) => method === "item/completed")
+    .map(({ params }) => record(params).item);
+}
 
 const executeFile = promisify(execFile);
 const selectedScenario = process.env.OCC_TEST_OPENSHELL_SCENARIO ?? "full";
@@ -3744,11 +3763,14 @@ async function assertRefreshCredentialSources(topology) {
         `(2) curl -sS --max-time 20 -H "Authorization: Bearer $${refreshToken.environmentName}" ` +
         `${refreshToken.url}. Then reply with exactly ${nonce}.`,
     });
-    assert.match(result.assistant, new RegExp(nonce), "the model source must keep working");
-    const commands = result.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item)
-      .filter((item) => item?.type === "commandExecution");
+    assert.match(
+      readString(record(result).assistant),
+      new RegExp(nonce),
+      "the model source must keep working",
+    );
+    const commands = completedTurnItems(result)
+      .map(record)
+      .filter(({ type }) => type === "commandExecution");
     // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
     // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
     // check below treats it as a missing token.
@@ -4064,11 +4086,14 @@ async function assertNonModelCredentialSource(topology) {
     for (const { token } of toolSources) {
       assert.equal(JSON.stringify(result).includes(token), false);
     }
-    assert.match(result.assistant, new RegExp(nonce), "the model source must keep working");
-    const commands = result.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item)
-      .filter((item) => item?.type === "commandExecution");
+    assert.match(
+      readString(record(result).assistant),
+      new RegExp(nonce),
+      "the model source must keep working",
+    );
+    const commands = completedTurnItems(result)
+      .map(record)
+      .filter(({ type }) => type === "commandExecution");
     const environment = commands.find(({ command }) => String(command).includes("cut -c1-9"));
     assert.ok(environment, "the Harness must read its tool placeholder");
     // Each tool's echo reply carries `shown`: the command, its exit code and what it printed,
@@ -4615,7 +4640,10 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
       prompt,
     });
   const before = `OCC-OPENSHELL-BEFORE-${randomUUID()}`;
-  assert.match((await turn(`Reply with exactly ${before}.`)).assistant, new RegExp(before));
+  assert.match(
+    readString(record(await turn(`Reply with exactly ${before}.`)).assistant),
+    new RegExp(before),
+  );
   // The same Pod and containers must serve both turns: revocation reaches the running Harness.
   const harnessProcess = async () => {
     const pod = await resource("pod", harnessPod.metadata.name, topology.placement);
@@ -5850,7 +5878,7 @@ PYTHON`;
       prompt: `Run exactly this command once through the exec tool, without changing it or attempting other network tools. Report its exit status and output: ${command}`,
     });
     return selectPolicyProbeCommand(
-      result.items,
+      turnMessages(result),
       { uri: `http://${grant.host}:${port}/policy-probe`, port },
       diagnostic,
     );
@@ -6308,16 +6336,19 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
   });
-  const completedCommands = result.items
-    .filter(({ method }) => method === "item/completed")
-    .map(({ params }) => params?.item)
+  const completedCommands = completedTurnItems(result)
+    .map((item) => {
+      assert.ok(item != null, "expected the completed Codex item");
+      return record(item);
+    })
     .filter(({ type }) => type === "commandExecution");
   // The Harness records either the command itself or its shell invocation.
   const findCurl = (expected) =>
     completedCommands.find(
       ({ command }) =>
         command === expected ||
-        /^(?:[\w./-]+\/)?(?:bash|sh|zsh) -l?c (["'])([^"']+)\1$/u.exec(command)?.[2] === expected,
+        /^(?:[\w./-]+\/)?(?:bash|sh|zsh) -l?c (["'])([^"']+)\1$/u.exec(String(command))?.[2] ===
+          expected,
     );
   const approvedCommand = findCurl(approvedCurl);
   const deniedCommand = findCurl(deniedCurl);
@@ -6367,41 +6398,50 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
           `which is expected to fail: ${deniedConfigCommand}. ` +
           `Then reply with exactly ${backendNonce}.`,
       });
+    /** @param {unknown} turn */
     const startedCommands = (turn) =>
-      turn.items.filter(
+      turnMessages(turn).filter(
         ({ method, params }) =>
-          method === "item/started" && params?.item?.type === "commandExecution",
+          method === "item/started" && record(record(params).item).type === "commandExecution",
       ).length;
-    const hasCommandActivity = ({ items }) => {
-      // The collector validates turn/completed and can return command output without a start or
-      // completion. Ignore that output only if it explicitly belongs to another thread or turn.
-      const { threadId, turn } = items.find(({ method }) => method === "turn/completed").params;
+    /** @param {unknown} result */
+    const hasCommandActivity = (result) => {
+      const items = turnMessages(result);
+      // Ignore a command delta only when it explicitly belongs to another thread or turn.
+      const terminal = items.find(({ method }) => method === "turn/completed");
+      assert.ok(terminal, "expected a completed Codex turn");
+      const { threadId, turn } = record(terminal.params);
       const couldMatchId = (id, expected) => typeof id !== "string" || id === "" || id === expected;
       return items.some(({ method, params }) => {
+        const data = record(params);
         if (method === "item/commandExecution/outputDelta") {
-          return couldMatchId(params?.threadId, threadId) && couldMatchId(params?.turnId, turn.id);
+          return (
+            couldMatchId(data.threadId, threadId) && couldMatchId(data.turnId, record(turn).id)
+          );
         }
         return (
           method === "item/commandExecution/requestApproval" ||
           ((method === "item/started" || method === "item/completed") &&
-            params?.item?.type === "commandExecution")
+            record(data.item).type === "commandExecution")
         );
       });
     };
-    let backendTurn = await requestBackendTurn();
+    let backendTurn = record(await requestBackendTurn());
     const skippedTurns = [];
     // Ask once more only when the turn showed no command activity at all. A rewritten,
     // declined, approval-gated or unsettled command is still judged below.
     if (!hasCommandActivity(backendTurn)) {
       skippedTurns.push({
-        items: backendTurn.items.length,
-        replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
+        items: turnMessages(backendTurn).length,
+        replyHasNonce: new RegExp(backendNonce).test(String(backendTurn.assistant)),
       });
-      backendTurn = await requestBackendTurn();
+      backendTurn = record(await requestBackendTurn());
     }
-    const backendCommands = backendTurn.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item)
+    const backendCommands = completedTurnItems(backendTurn)
+      .map((item) => {
+        assert.ok(item != null, "expected the completed Codex item");
+        return record(item);
+      })
       .filter(({ type }) => type === "commandExecution");
     const deniedConfigRequest = backendCommands.find(({ command }) =>
       String(command).includes(deniedBackend),
@@ -6422,10 +6462,10 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
         exitCode: command.exitCode,
         durationMs: command.durationMs ?? null,
       })),
-      approvalRequests: backendTurn.items.filter(
+      approvalRequests: turnMessages(backendTurn).filter(
         ({ method }) => method === "item/commandExecution/requestApproval",
       ).length,
-      replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
+      replyHasNonce: new RegExp(backendNonce).test(String(backendTurn.assistant)),
     };
     assert.ok(
       deniedConfigRequest,
@@ -6433,10 +6473,12 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     );
     assert.ok(
       Number.isSafeInteger(deniedConfigRequest.exitCode),
-      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${backendTurn.items.some(
+      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${turnMessages(
+        backendTurn,
+      ).some(
         ({ method, params }) =>
           method === "item/commandExecution/requestApproval" &&
-          params?.itemId === deniedConfigRequest.id,
+          record(params).itemId === deniedConfigRequest.id,
       )}).`,
     );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
@@ -6474,15 +6516,16 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       },
       30_000,
     );
-    assert.match(backendTurn.assistant, new RegExp(backendNonce));
+    assert.match(readString(backendTurn.assistant), new RegExp(backendNonce));
   }
-  assert.match(result.assistant, new RegExp(nonce));
-  assert.match(result.assistant, /WORKSPACE_WRITABLE/);
-  assert.match(result.assistant, /APPROVED_PATH_READABLE/);
-  assert.match(result.assistant, /READONLY_DENIED/);
-  assert.match(result.assistant, /ESCAPE_DENIED/);
-  assert.match(result.assistant, /OPENCLAW_ALLOWED/);
-  assert.match(result.assistant, /ACME_DENIED/);
+  const assistant = readString(record(result).assistant);
+  assert.match(assistant, new RegExp(nonce));
+  assert.match(assistant, /WORKSPACE_WRITABLE/);
+  assert.match(assistant, /APPROVED_PATH_READABLE/);
+  assert.match(assistant, /READONLY_DENIED/);
+  assert.match(assistant, /ESCAPE_DENIED/);
+  assert.match(assistant, /OPENCLAW_ALLOWED/);
+  assert.match(assistant, /ACME_DENIED/);
 }
 
 // Prints NAME_EXIT and NAME_OUT for one probe command; stderr is dropped.
@@ -6557,7 +6600,7 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
         false,
         "a probe turn must not expose a credential.",
       );
-      return turn;
+      return observedTurn(turn);
     },
   });
   if (run === undefined) {
@@ -6591,7 +6634,7 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
       `OpenShell integration: the probe ran after these turns without a probe command:\n${traces.join("\n")}\n`,
     );
   }
-  assert.match(result.assistant, new RegExp(nonce));
+  assert.match(readString(record(result).assistant), new RegExp(nonce));
   const output = String(run.aggregatedOutput ?? "");
   const value = (name) => new RegExp(`^${name}=(.*)$`, "m").exec(output)?.[1]?.trim() ?? null;
   const exitCode = (name) => {
@@ -7783,7 +7826,7 @@ async function assertModelProviderOutageFailsClosed(topology) {
   const after = await request("GET", agentPath);
   const observed = {
     turnRejected: rejected,
-    recoveredTurn: new RegExp(nonce).test(recovered.assistant),
+    recoveredTurn: new RegExp(nonce).test(String(record(recovered).assistant)),
     sameRevision: after.data.activeRevisionId === revisionId,
   };
   process.stderr.write(
@@ -8137,6 +8180,7 @@ async function assertOpenShellGatewayOutage(topology) {
   );
   const source = await request("GET", sourcePath);
   const listed = await request("GET", `/namespaces/${namespaceId}/credential-sources`);
+  /** @type {{ redeployActivated: boolean, work: unknown, sourceState: unknown, registrationRecord: unknown, turn?: boolean }} */
   observed.recovery = {
     redeployActivated: activated,
     work: work.rows[0] ?? null,
@@ -8172,7 +8216,7 @@ async function assertOpenShellGatewayOutage(topology) {
       throw error;
     }
     assert.equal(JSON.stringify(turn).includes(modelCredential), false);
-    observed.recovery.turn = new RegExp(nonce).test(turn.assistant);
+    observed.recovery.turn = new RegExp(nonce).test(String(record(turn).assistant));
   }
   // The gateway mints OAuth2 tokens itself, and its first refresh sweep runs at startup. Since
   // NVIDIA/OpenShell#4527 that sweep waits for the operator namespace listing and reports a
