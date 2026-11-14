@@ -681,6 +681,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if kindIs "slice" $routing.remoteNodeCidrs -}}
 {{- range $cidr := $routing.remoteNodeCidrs -}}
 {{- include "openclaw.networkPolicy.cidr" (dict "name" "gatewayRouting.remoteNodeCidrs" "value" $cidr) -}}
+{{- if hasSuffix "/0" (toString $cidr) -}}{{- fail "gatewayRouting.remoteNodeCidrs must not allow every address; list the remote node sources" -}}{{- end -}}
 {{- end -}}
 {{- else if not (kindIs "invalid" $routing.remoteNodeCidrs) -}}
 {{- fail "gatewayRouting.remoteNodeCidrs must be a list of IPv4 or IPv6 CIDR strings" -}}
