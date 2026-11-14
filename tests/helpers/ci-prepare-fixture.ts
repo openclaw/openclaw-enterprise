@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -13,8 +13,7 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.ts";
 
-// Shared by ci-prepare.test.mjs and ci-prepare-k3d.test.ts, which split the
-// preparation cases so Checks and Conformance 2 can run them at the same time.
+// Shared by the CI preparation suites.
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 
 export const digest = "a".repeat(64);
@@ -26,6 +25,38 @@ export async function fixture(t: CleanupRegistrar) {
   const root = await temporaryDirectory(t, "ci-prepare-test-");
   await mkdir(root, { recursive: true });
   return root;
+}
+
+// A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
+// (a fake server's, when the case runs SQL).
+export function composePostgres(name: string, port = 45431) {
+  return {
+    id: `compose-postgres-${name}`,
+    kind: "compose-postgres",
+    owner: `openclaw-ci-${name}`,
+    status: "ready",
+    name: `openclaw_ci_pg_${name}`,
+    composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+    port,
+  };
+}
+
+// A postgres-application lane state holding the server and any other resources.
+export async function writePostgresState(
+  statePath: string,
+  server: ReturnType<typeof composePostgres>,
+  ...resources: FixtureResource[]
+) {
+  const state = {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres-application",
+    prefix: server.owner,
+    statePath,
+    resources: [server, ...resources],
+  };
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  await chmod(statePath, 0o600);
 }
 
 // Lane preparation stderr opens with timing and host metrics, and assert.match's default

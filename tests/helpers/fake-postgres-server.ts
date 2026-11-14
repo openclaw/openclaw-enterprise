@@ -1,6 +1,8 @@
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
+import type { TestContext } from "node:test";
+import { listen } from "./listen.ts";
 
-// A PostgreSQL server for the CI preparation and cleanup tests (ci-prepare*.test.mjs,
+// A PostgreSQL server for the CI preparation and cleanup tests (ci-prepare test suites,
 // ci-cleanup-postgres-cases.ts): scripts/ci/postgres-admin.ts connects to a lane server's
 // published port, and this listens on one in the test process. It speaks just enough of the frontend/
 // backend protocol for node-postgres: startup, a cleartext password request, and simple
@@ -15,47 +17,62 @@ import { createServer } from "node:net";
 // asynchronous child process, never spawnSync.
 //
 // With `socketPath`, it listens on that Unix socket instead and reports `port` as given.
-/**
- * @typedef {object} FakePostgresSession
- * @property {string | undefined} user
- * @property {string | undefined} database
- * @property {string | undefined} password
- * @property {string[]} queries
- *
- * @typedef {object} FakePostgresAnswer
- * @property {string} [error]
- * @property {boolean} [hang]
- * @property {Record<string, string>[]} [rows]
- *
- * @callback FakePostgresQuery
- * @param {string} query
- * @param {FakePostgresSession} session
- * @returns {FakePostgresAnswer | void | Promise<FakePostgresAnswer | void>}
- */
+type FakePostgresSession = {
+  user: string | undefined;
+  database: string | undefined;
+  password: string | undefined;
+  queries: string[];
+};
 
-/**
- * @param {{ port?: number, socketPath?: string, onQuery?: FakePostgresQuery }} [options]
- */
-export async function startFakePostgres({ port = 0, socketPath, onQuery = () => undefined } = {}) {
-  /** @type {FakePostgresSession[]} */
-  const sessions = [];
-  const sockets = new Set();
+type FakePostgresAnswer = {
+  error?: string;
+  hang?: boolean;
+  rows?: Record<string, string>[];
+};
+
+export type FakePostgresQuery = (
+  query: string,
+  session: FakePostgresSession,
+) => FakePostgresAnswer | void | Promise<FakePostgresAnswer | void>;
+
+type FakePostgresOptions = {
+  port?: number;
+  socketPath?: string;
+  onQuery?: FakePostgresQuery;
+};
+
+export async function startFakePostgres({
+  port = 0,
+  socketPath,
+  onQuery = () => undefined,
+}: FakePostgresOptions = {}) {
+  const sessions: FakePostgresSession[] = [];
+  const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     socket.on("error", () => {});
     serveSession(socket, sessions, onQuery);
   });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
+    const listening = () => {
+      server.off("error", reject);
+      resolve();
+    };
     server.once("error", reject);
     if (socketPath) {
-      server.listen(socketPath, resolve);
+      server.listen(socketPath, listening);
     } else {
-      server.listen(port, "127.0.0.1", resolve);
+      server.listen(port, "127.0.0.1", listening);
     }
   });
+  const address = server.address();
+  if (!socketPath && (address === null || typeof address === "string")) {
+    server.close();
+    throw new Error("PostgreSQL fixture did not bind a TCP port");
+  }
   return {
-    port: socketPath ? port : /** @type {import("node:net").AddressInfo} */ (server.address()).port,
+    port: typeof address === "object" && address !== null ? address.port : port,
     sessions,
     // Every query, as "<database>\t<query>", in arrival order.
     queries: () =>
@@ -70,30 +87,41 @@ export async function startFakePostgres({ port = 0, socketPath, onQuery = () => 
       for (const socket of sockets) {
         socket.destroy();
       }
-      await new Promise((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
 }
 
-function message(type, body = Buffer.alloc(0)) {
+// Keep the port owned while pg connects. Closing an accepted socket before startup
+// makes connect() fail without exposing the port to another PostgreSQL fixture.
+export async function rejectPostgresStartup(t: Pick<TestContext, "after">, port = 0) {
+  const connections: Promise<void>[] = [];
+  const server = createServer((socket) => {
+    connections.push(new Promise<void>((resolve) => socket.once("close", () => resolve())));
+    socket.destroy();
+  });
+  return { port: await listen(t, server, "127.0.0.1", { port }), connections };
+}
+
+function message(type: string, body: Buffer = Buffer.alloc(0)) {
   const header = Buffer.alloc(5);
   header.write(type, 0, "latin1");
   header.writeInt32BE(body.length + 4, 1);
   return Buffer.concat([header, body]);
 }
 
-function int32(...values) {
+function int32(...values: number[]) {
   const buffer = Buffer.alloc(values.length * 4);
   values.forEach((value, index) => buffer.writeInt32BE(value, index * 4));
   return buffer;
 }
 
-const cstring = (value) => Buffer.from(`${value}\0`, "utf8");
+const cstring = (value: string) => Buffer.from(`${value}\0`, "utf8");
 const readyForQuery = () => message("Z", Buffer.from("I", "latin1"));
 
-function textRows(rows) {
+function textRows(rows: Record<string, string>[]) {
   const columns = Object.keys(rows[0] ?? {});
-  const count = (value) => {
+  const count = (value: number) => {
     const bytes = Buffer.alloc(2);
     bytes.writeInt16BE(value);
     return bytes;
@@ -122,7 +150,11 @@ function textRows(rows) {
         Buffer.concat([
           count(columns.length),
           ...columns.map((column) => {
-            const value = Buffer.from(row[column], "utf8");
+            const text = row[column];
+            if (typeof text !== "string") {
+              throw new Error(`PostgreSQL fixture row is missing text column ${column}`);
+            }
+            const value = Buffer.from(text, "utf8");
             return Buffer.concat([int32(value.length), value]);
           }),
         ]),
@@ -131,7 +163,7 @@ function textRows(rows) {
   ];
 }
 
-function errorResponse(text) {
+function errorResponse(text: string) {
   return message(
     "E",
     Buffer.concat([
@@ -146,11 +178,15 @@ function errorResponse(text) {
   );
 }
 
-function serveSession(socket, sessions, onQuery) {
-  let buffer = Buffer.alloc(0);
-  let session;
+function serveSession(socket: Socket, sessions: FakePostgresSession[], onQuery: FakePostgresQuery) {
+  let buffer: Buffer = Buffer.alloc(0);
+  let session: FakePostgresSession | undefined;
   let queue = Promise.resolve();
   socket.on("data", (chunk) => {
+    if (!Buffer.isBuffer(chunk)) {
+      socket.destroy();
+      return;
+    }
     buffer = Buffer.concat([buffer, chunk]);
     for (;;) {
       if (!session) {
@@ -158,6 +194,10 @@ function serveSession(socket, sessions, onQuery) {
           return;
         }
         const length = buffer.readInt32BE(0);
+        if (length < 8) {
+          socket.destroy();
+          return;
+        }
         if (buffer.length < length) {
           return;
         }
@@ -170,10 +210,12 @@ function serveSession(socket, sessions, onQuery) {
           continue;
         }
         const fields = body.toString("utf8").split("\0");
-        const parameters = new Map();
+        const parameters = new Map<string, string>();
         for (let index = 0; index + 1 < fields.length; index += 2) {
-          if (fields[index]) {
-            parameters.set(fields[index], fields[index + 1]);
+          const key = fields[index];
+          const value = fields[index + 1];
+          if (key && value !== undefined) {
+            parameters.set(key, value);
           }
         }
         session = {
@@ -189,8 +231,12 @@ function serveSession(socket, sessions, onQuery) {
       if (buffer.length < 5) {
         return;
       }
-      const type = String.fromCharCode(buffer[0]);
+      const type = buffer.toString("latin1", 0, 1);
       const length = buffer.readInt32BE(1);
+      if (length < 4) {
+        socket.destroy();
+        return;
+      }
       if (buffer.length < length + 1) {
         return;
       }
@@ -208,10 +254,11 @@ function serveSession(socket, sessions, onQuery) {
       } else if (type === "Q") {
         const query = body.toString("utf8").replace(/\0$/, "");
         session.queries.push(query);
+        const activeSession = session;
         queue = queue.then(async () => {
-          const answer = await onQuery(query, session);
+          const answer = await onQuery(query, activeSession);
           if (answer?.hang || socket.destroyed) {
-            return new Promise(() => {});
+            return new Promise<void>(() => {});
           }
           socket.write(
             Buffer.concat([
