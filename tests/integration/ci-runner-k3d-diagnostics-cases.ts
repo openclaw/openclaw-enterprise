@@ -340,6 +340,73 @@ export async function checkBoundedAgentNamespaceActivity(t: TestContext) {
   assert.doesNotMatch(pairText, /do-not-publish|unrelated system event/);
   assert.deepEqual(await readdir(clusterDirectory), []);
 
+  // A namespace that exists only before the delayed watch connects must still be captured.
+  const lifecycle = join(root, "short-lived-activity");
+  const originalState = await readRecord(statePath);
+  const agentFile = join(root, "tests/integration/agent.test.mjs");
+  const originalAgentScenario = await readRecord(`${agentFile}.scenario.json`);
+  await writeK3dKubectl(root, { kind: "watch", pods, events, shortLivedPath: lifecycle });
+  await writeJson(`${agentFile}.scenario.json`, { kind: "short-lived", path: lifecycle });
+  const fastState = join(root, "state/k3d-fast.json");
+  await writeJson(fastState, originalState);
+  const fast = runRunnerSync(
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      fastState,
+      "--results",
+      join(root, "results/k3d-fast.json"),
+    ],
+    { OCC_KUBECTL_BIN: kubectl },
+  );
+  assert.equal(fast.status, 0, fast.stderr);
+  const fastReport = await readRecord(`${fastState}.diagnostics.json`);
+  const fastActivity = firstRecord(fastReport.agentNamespaces, "short-lived activity");
+  assert.deepEqual(fastActivity.namespaces, ["occ-agent-a"]);
+  assert.deepEqual(podReadiness(fastActivity.pods), [
+    ["ADDED", false],
+    ["MODIFIED", true],
+    ["DELETED", true],
+  ]);
+  assert.deepEqual(await readdir(clusterDirectory), []);
+  await rm(lifecycle);
+
+  // A stalled optional watch must not keep the independent test from running.
+  await writeK3dKubectl(root, { kind: "watch", pods, events });
+  const stalledState = join(root, "state/k3d-stalled.json");
+  const stalledResults = join(root, "results/k3d-stalled.json");
+  await writeJson(stalledState, originalState);
+  const stalled = runRunnerSync(
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      stalledState,
+      "--results",
+      stalledResults,
+    ],
+    { OCC_KUBECTL_BIN: kubectl, CI_RUNNER_STALLED_WATCH: "1" },
+  );
+  assert.equal(stalled.status, 0, stalled.stderr);
+  assert.match(stalled.stderr, /Agent namespace activity unavailable/);
+  assert.equal(await readFile(lifecycle, "utf8"), "created and deleted");
+  assert.deepEqual(await readdir(clusterDirectory), []);
+  assert.equal(record((await readRecord(stalledResults)).counts, "stalled counts").passed, 1);
+  await writeK3dKubectl(root, { kind: "watch", pods, events });
+  await writeJson(`${agentFile}.scenario.json`, originalAgentScenario);
+
+  await rm(lifecycle);
+  await writeJson(`${agentFile}.scenario.json`, { kind: "short-lived", path: lifecycle });
+
   // A second cluster whose directory is gone fails the capture after the first cluster's
   // watches started. The file still runs, and those watches are stopped: left running,
   // their child processes would hold the runner until the watch timeout.
@@ -387,6 +454,7 @@ export async function checkBoundedAgentNamespaceActivity(t: TestContext) {
     },
   );
   assert.equal(broken.status, 0, broken.stderr);
+  assert.equal(await readFile(lifecycle, "utf8"), "created and deleted");
   assert.match(
     broken.stderr,
     /Agent namespace activity unavailable for tests\/integration\/agent\.test\.mjs/,
@@ -686,6 +754,46 @@ export async function checkFailedWaitContainerLog(t: TestContext) {
     (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
     [],
   );
+
+  // Failed synchronization must retain independent failed-wait logs and original outcomes.
+  const stalledState = join(root, "state/k3d-stalled-wait.json");
+  const stalledResults = join(root, "results/k3d-stalled-wait.json");
+  await writeJson(stalledState, state);
+  const stalled = runRunnerSync(
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      stalledState,
+      "--results",
+      stalledResults,
+    ],
+    { OCC_KUBECTL_BIN: kubectl, PATH: `${bin}:${process.env.PATH}`, CI_RUNNER_STALLED_WATCH: "1" },
+  );
+  assert.equal(stalled.status, 1, stalled.stderr);
+  assert.match(stalled.stderr, /Agent namespace activity unavailable/);
+  const stalledCounts = record((await readRecord(stalledResults)).counts, "stalled wait counts");
+  assert.equal(stalledCounts.failed, 1);
+  assert.equal(stalledCounts.passed, 1);
+  const stalledText = await readFile(`${stalledState}.diagnostics.json`, "utf8");
+  const stalledReport = record(parseJson(stalledText), "stalled wait report");
+  assert.equal(stalledReport.agentNamespaces, undefined);
+  const stalledLog = firstRecord(stalledReport.containerLogs, "stalled wait logs");
+  assert.equal(stalledLog.reason, log.reason);
+  assert.deepEqual(stalledLog.lines, log.lines);
+  const stalledSnapshot = firstRecord(stalledLog.snapshots, "stalled snapshots");
+  assert.deepEqual(stalledSnapshot.pods, snapshot.pods);
+  assert.deepEqual(stalledSnapshot.events, snapshot.events);
+  assert.equal(
+    record(records(stalledLog.snapshots, "stalled snapshots")[1], "later snapshot").unavailable,
+    true,
+  );
+  assert.doesNotMatch(stalledText, /do-not-publish|secretauthvalue|childonlysecret/);
+  assert.deepEqual(await readdir(clusterDirectory), []);
 
   // A different lane must not inherit retained state or the sidecar from this lane.
   await assert.rejects(readFile(statePath), { code: "ENOENT" });

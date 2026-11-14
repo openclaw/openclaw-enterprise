@@ -176,6 +176,16 @@ follow [native image checks](../../release/containers.md#check-native-images-wit
 
 A lane fails if required cases are missing, skipped, marked TODO, or failed, or if cleanup fails. This includes skipped suites and Go tests. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
 
+Before each k3d file, the runner awaits initial Pod/Event synchronization
+([flow](../../flows/github-actions-testing.md#2-prepare-resources-under-the-job-owner)).
+The independent private `OPENCLAW_CI_CONTAINER_LOG_DIR` remains available when
+watch startup fails. On failed waits,
+`tests/helpers/container-log-capture.ts` records markers, Pod/event snapshots
+and logs, waiting up to 60 seconds for container exit.
+`scripts/ci/k3d-diagnostics.mjs:projectContainerLog` keeps at most 1,500 lines,
+redacts environment values and secret shapes in lines and event messages, and
+adds the record to the same report under `containerLogs`. The platform recovery
+test follows its fixture gateway, which logs its drain, across Agent stop.
 Shared k3d runtime preparation adds `runtimeProvenance` to lane results and
 Kubernetes diagnostics for the selected Gateway and Agent images. Each record
 lists the observed local image ID and imported platform manifest digest.
