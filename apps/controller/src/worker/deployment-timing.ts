@@ -1,5 +1,3 @@
-import type { ComputeReadiness } from "@openclaw-enterprise/contracts";
-
 interface DeployTiming {
   passes: number;
   passStartedAt: number;
@@ -51,7 +49,7 @@ export class DeploymentTimings {
       return undefined;
     }
     return {
-      observeReadiness(observation: ComputeReadiness): void {
+      observeReadiness(observation: { readonly ready: boolean }): void {
         const now = Date.now();
         if (!observation.ready) {
           timing.firstUnreadyAt ??= now;
@@ -79,6 +77,7 @@ export class DeploymentTimings {
     if (terminal) {
       this.timings.delete(key);
     }
+    // Phase intervals use the worker wall clock; elapsed time advances database claim age with the worker monotonic clock.
     return {
       durationMs: now - timing.passStartedAt,
       deployPasses: timing.passes,
