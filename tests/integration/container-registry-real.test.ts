@@ -56,14 +56,15 @@ async function cleanupScratch(t: TestContext, { directory, registryLabel }: Scra
   if (registryLabel !== undefined) {
     try {
       // Docker may have started the registry even if its client lost the response.
+      const dockerOptions = { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" } as const;
       const id = execFileSync(
         "docker",
         ["ps", "--all", "--quiet", "--no-trunc", "--filter", `label=${registryLabel}`],
-        { encoding: "utf8" },
+        dockerOptions,
       ).trim();
       if (id) {
         assert.match(id, /^[a-f0-9]{64}$/);
-        execFileSync("docker", ["rm", "-f", id], { stdio: "pipe" });
+        execFileSync("docker", ["rm", "-f", id], { ...dockerOptions, stdio: "pipe" });
       }
     } catch (error) {
       failures.push(error);
