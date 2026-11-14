@@ -1296,8 +1296,14 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
       } else if (args.includes("get") && args.includes("jobs")) {
         out({ items: state.initJobActive ? [{ status: { active: 0, conditions: [] } }] : [] });
       } else if (args.includes("get") && args.includes("replicasets")) {
-        const selector = requiredArg("--selector");
-        const component = selector.endsWith("component=worker") ? "worker" : "api";
+        const selectorIndex = args.indexOf("--selector");
+        const labels = selectorIndex < 0 ? [] : args[selectorIndex + 1]?.split(",");
+        const component = ["api", "worker"].find((name) =>
+          labels?.includes(`app.kubernetes.io/component=${name}`),
+        );
+        if (!component) {
+          return fail(1, "expected --selector with an API or worker component for ReplicaSets");
+        }
         out({
           items: [
             {
